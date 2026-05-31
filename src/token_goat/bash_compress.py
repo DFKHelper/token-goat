@@ -126,6 +126,10 @@ __all__ = [
     "DockerComposeFilter",
     "HelmFilter",
     "KubectlLogsFilter",
+    # CI log filters
+    "GhRunLogFilter",
+    "ActFilter",
+    "GenericCIFilter",
 ]
 
 import math
@@ -1603,6 +1607,16 @@ _NPM_AUDIT_PKG_RE: Final[re.Pattern[str]] = re.compile(
 _NPM_ERR_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*npm (?:ERR!|error)\s|^\s*ERROR\s", re.IGNORECASE
 )
+# Matches the start of a human-mode ``npm audit`` advisory block header:
+# "# <package-name>\n  Severity: moderate\n  ..." repeated per advisory.
+_NPM_AUDIT_ADVISORY_HDR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^# [a-z0-9@._/-]", re.IGNORECASE
+)
+_NPM_AUDIT_SEVERITY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Severity:\s+(low|moderate|high|critical)\s*$", re.IGNORECASE
+)
+# ``npm audit --json`` top-level vulnerability keys: "vulnerabilities": {...}
+# The key count is determined by parsing, not a regex.
 
 
 class NodePackageFilter(Filter):
@@ -1620,6 +1634,12 @@ class NodePackageFilter(Filter):
     * **Keep** every ``npm ERR!`` / ``npm error`` block verbatim.
     * **Keep** vulnerability counts but collapse per-package audit detail.
     * **Keep** the final ``added/changed/removed N packages in Xs`` line.
+    * **``npm audit --json``**: collapse the ``vulnerabilities`` object when it
+      has >10 entries, retaining only critical/high entries and emitting a
+      count summary for the rest.
+    * **``npm audit`` (human mode)**: collapse duplicate advisory blocks for
+      the same severity that exceed 10 entries, keeping unique package names
+      and the final ``found N vulnerabilities`` summary line verbatim.
     """
 
     name = "npm"
@@ -1629,6 +1649,18 @@ class NodePackageFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         merged = self._combine_output(stdout, stderr)
+
+        # Detect ``npm audit`` subcommand.
+        positionals = _positional_args(argv[1:])
+        is_audit = "audit" in positionals
+
+        if is_audit:
+            # JSON mode: ``npm audit --json`` or ``npm audit --json --audit-level=...``
+            if "--json" in argv:
+                return _compress_npm_audit_json(merged)
+            # Human mode: collapse duplicate advisory blocks.
+            return _compress_npm_audit_human(merged)
+
         lines = merged.split("\n")
         kept: list[str] = []
         deprecated_pkgs: dict[str, int] = {}
@@ -1660,6 +1692,135 @@ class NodePackageFilter(Filter):
                 "run `npm audit` for detail]"
             )
         return self._finalize(kept)
+
+
+def _compress_npm_audit_json(text: str) -> str:
+    """Compress ``npm audit --json`` output.
+
+    When the ``vulnerabilities`` object has more than 10 entries, keep only
+    critical/high severity entries and replace the rest with a count sentinel.
+    The ``metadata`` block (totals) is always preserved.
+    """
+    import json as _json  # noqa: PLC0415 — lazy import, json is stdlib
+
+    try:
+        data = _json.loads(text)
+    except (ValueError, TypeError):
+        return text  # Not valid JSON — pass through unchanged.
+
+    vulns = data.get("vulnerabilities", {})
+    if not isinstance(vulns, dict) or len(vulns) <= 10:
+        return text  # Short enough — no compression needed.
+
+    # Partition by severity: keep critical/high; summarise the rest.
+    keep: dict[str, object] = {}
+    collapsed_count = 0
+    collapsed_severities: dict[str, int] = {}
+    for pkg, info in vulns.items():
+        severity = ""
+        if isinstance(info, dict):
+            severity = str(info.get("severity", "")).lower()
+        if severity in ("critical", "high"):
+            keep[pkg] = info
+        else:
+            collapsed_count += 1
+            collapsed_severities[severity] = collapsed_severities.get(severity, 0) + 1
+
+    if collapsed_count:
+        sev_summary = ", ".join(
+            f"{v} {k}" for k, v in sorted(collapsed_severities.items())
+        )
+        keep["__token_goat__"] = (
+            f"{collapsed_count} lower-severity entries collapsed ({sev_summary}); "
+            "run `npm audit --json` for full output"
+        )
+    data["vulnerabilities"] = keep
+    return _json.dumps(data, indent=2)
+
+
+_NPM_AUDIT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^found \d+|^Severity:|^==|^-{3,}", re.IGNORECASE
+)
+
+
+def _compress_npm_audit_human(text: str) -> str:
+    """Compress human-mode ``npm audit`` output.
+
+    Advisory blocks share a common format:
+
+    .. code-block:: text
+
+        # <package>
+          Severity: moderate
+          <title>
+          ...
+        fix available via ...
+
+    When more than 10 advisory blocks exist for any single severity level,
+    keep only the first 10 for that severity and emit a count summary.  The
+    final ``found N vulnerabilities`` summary line is always preserved.
+    """
+    lines = text.split("\n")
+    # Identify advisory block boundaries (lines starting with "# <pkg>").
+    # Each block runs from the header line until (but not including) the next
+    # header line, a summary line, or the end of output.
+    blocks: list[tuple[int, int, str]] = []  # (start_idx, end_idx, severity)
+    i = 0
+    while i < len(lines):
+        if _NPM_AUDIT_ADVISORY_HDR_RE.match(lines[i]):
+            start = i
+            severity = "unknown"
+            # Peek ahead up to 5 lines for "Severity: ..." to classify.
+            for j in range(i + 1, min(i + 6, len(lines))):
+                m = _NPM_AUDIT_SEVERITY_RE.match(lines[j])
+                if m:
+                    severity = m.group(1).lower()
+                    break
+            # Find the end of this block (next header, summary line, or EOF).
+            end = i + 1
+            while end < len(lines):
+                ln = lines[end]
+                if _NPM_AUDIT_ADVISORY_HDR_RE.match(ln):
+                    break
+                if _NPM_AUDIT_SUMMARY_RE.match(ln):
+                    break
+                end += 1
+            blocks.append((start, end, severity))
+            i = end
+        else:
+            i += 1
+
+    if not blocks:
+        return text  # No advisory blocks found — pass through.
+
+    # Group blocks by severity; keep the first 10 per severity.
+    MAX_PER_SEV = 10
+    sev_count: dict[str, int] = {}
+    # Build a set of block indices to keep.
+    keep_blocks: set[int] = set()
+    for idx, (_, _, sev) in enumerate(blocks):
+        sev_count[sev] = sev_count.get(sev, 0) + 1
+        if sev_count[sev] <= MAX_PER_SEV:
+            keep_blocks.add(idx)
+
+    # Build a set of line indices to drop.
+    drop_lines: set[int] = set()
+    collapsed_sev: dict[str, int] = {}
+    for idx, (start, end, sev) in enumerate(blocks):
+        if idx not in keep_blocks:
+            for li in range(start, end):
+                drop_lines.add(li)
+            collapsed_sev[sev] = collapsed_sev.get(sev, 0) + 1
+
+    if not drop_lines:
+        return text  # Nothing to collapse.
+
+    kept: list[str] = [ln for i, ln in enumerate(lines) if i not in drop_lines]
+    notes: list[str] = []
+    for sev, cnt in sorted(collapsed_sev.items()):
+        notes.append(f"collapsed {cnt} duplicate {sev} advisories")
+    Filter._emit_notes(kept, notes)
+    return _squeeze_blank_lines("\n".join(kept))
 
 
 # --- Docker ----------------------------------------------------------------
@@ -2455,6 +2616,359 @@ def _compress_gh_list(text: str, subcommand: str) -> str:
     notes = [f"showing first {max_rows} of {total_data_rows} {subcommand}s"]
     Filter._emit_notes(kept_lines, notes)
     return _squeeze_blank_lines("\n".join(kept_lines))
+
+
+# --- GitHub Actions log (gh run view --log) --------------------------------
+
+# ISO-8601 timestamp prefix as emitted by ``gh run view --log``:
+# ``2024-01-15T12:34:56.1234567Z ``
+_GH_LOG_TIMESTAMP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s?"
+)
+# ``##[group]Step name`` / ``##[endgroup]``
+_GH_LOG_GROUP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^##\[group\](.*)"
+)
+_GH_LOG_ENDGROUP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^##\[endgroup\]"
+)
+# ``Run actions/checkout@v3`` setup lines (appear at the start of action runs).
+_GH_LOG_SETUP_ACTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Run [a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+@"
+)
+# Post-run cleanup steps emitted by the runner after the job.
+_GH_LOG_POST_STEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Post job cleanup\.|^Cleaning up orphan processes|^Post Run "
+)
+# Runner boilerplate lines.
+_GH_LOG_BOILERPLATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Setting up runner|^Runner version |^Operating System\s+:\s|^Virtual Environment"
+    r"|^Prepare all required actions|^Getting action download info"
+    r"|^Download action repository|^Complete job name:"
+)
+# Failure indicators — always keep verbatim.
+_GH_LOG_FAILURE_RE: Final[re.Pattern[str]] = re.compile(
+    r"error:|Error:|ERROR|FAILED|failed|##\[error\]|##\[warning\]"
+    r"|Process completed with exit code [^0]",
+    re.IGNORECASE,
+)
+
+
+class GhRunLogFilter(Filter):
+    """Compress ``gh run view --log`` GitHub Actions raw log output.
+
+    ``gh run view --log`` dumps every log line from every step, each prefixed
+    with an ISO-8601 timestamp.  A 100-step CI run easily produces 2,000+
+    lines.
+
+    Compression model:
+
+    * **Strip** ISO-8601 timestamp prefixes (``2024-01-15T12:34:56.1234567Z``).
+    * **Collapse** ``##[group]`` / ``##[endgroup]`` bodies when the group
+      contains more than 20 lines and has no failure signal — keep the group
+      name and a line count.
+    * **Collapse** ``Run actions/checkout@v3`` and similar setup action blocks
+      to a single ``Setup: N actions`` summary.
+    * **Drop** post-run cleanup steps (``Post job cleanup.``, ``Cleaning up
+      orphan processes``, ``Post Run <action>``).
+    * **Drop** runner boilerplate (``Setting up runner``, OS/version headers).
+    * **Keep** every failure line verbatim.
+    """
+
+    name = "gh-run-log"
+    binaries = frozenset(["gh"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        name = p.name.lower()
+        if stem not in {"gh"} and name not in {"gh"}:
+            return False
+        positionals = _positional_args(argv[1:])
+        # Must be ``gh run view`` with ``--log`` flag.
+        return (
+            len(positionals) >= 2
+            and positionals[0] == "run"
+            and positionals[1] == "view"
+            and "--log" in argv
+        )
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        setup_actions: list[str] = []
+        dropped_boilerplate = 0
+        dropped_cleanup = 0
+        collapsed_groups = 0
+
+        # Group-collapse state.
+        in_group = False
+        group_name = ""
+        group_lines: list[str] = []
+        group_has_failure = False
+        GROUP_COLLAPSE_THRESHOLD = 20
+
+        def _flush_group() -> None:
+            nonlocal collapsed_groups
+            if not group_lines:
+                return
+            if group_has_failure or len(group_lines) <= GROUP_COLLAPSE_THRESHOLD:
+                kept.extend(group_lines)
+            else:
+                kept.append(
+                    f"[group: {group_name} — {len(group_lines)} lines collapsed by token-goat]"
+                )
+                collapsed_groups += 1
+
+        for raw_line in lines:
+            # Strip timestamp prefix first.
+            line = _GH_LOG_TIMESTAMP_RE.sub("", raw_line)
+
+            # Boilerplate — drop.
+            if _GH_LOG_BOILERPLATE_RE.match(line):
+                dropped_boilerplate += 1
+                continue
+
+            # Post-run cleanup — drop.
+            if _GH_LOG_POST_STEP_RE.match(line):
+                dropped_cleanup += 1
+                continue
+
+            # Group markers.
+            m_group = _GH_LOG_GROUP_RE.match(line)
+            if m_group:
+                # Flush any previous open group before starting a new one.
+                _flush_group()
+                in_group = True
+                group_name = m_group.group(1).strip()
+                group_lines = []
+                group_has_failure = False
+                continue
+
+            if _GH_LOG_ENDGROUP_RE.match(line):
+                _flush_group()
+                in_group = False
+                group_lines = []
+                continue
+
+            # Setup action lines ("Run actions/checkout@v3") — collect for summary.
+            if _GH_LOG_SETUP_ACTION_RE.match(line):
+                setup_actions.append(line)
+                continue
+
+            # All other lines: if we're inside a group, buffer them.
+            if in_group:
+                if _GH_LOG_FAILURE_RE.search(line):
+                    group_has_failure = True
+                group_lines.append(line)
+            else:
+                kept.append(line)
+
+        # Flush any group that wasn't closed before EOF.
+        _flush_group()
+
+        # Emit setup actions summary.
+        if setup_actions:
+            kept.append(f"[token-goat: Setup: {len(setup_actions)} action(s) collapsed]")
+
+        notes: list[str] = []
+        if dropped_boilerplate:
+            notes.append(f"dropped {dropped_boilerplate} boilerplate lines")
+        if dropped_cleanup:
+            notes.append(f"dropped {dropped_cleanup} cleanup lines")
+        if collapsed_groups:
+            notes.append(f"collapsed {collapsed_groups} log group(s)")
+        Filter._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- act (local GitHub Actions runner) ------------------------------------
+
+# ``act`` log lines look like: ``[job-name/step-name]   | output here``
+# or ``[job-name/step-name] ✅`` / ``[job-name/step-name] ❌``
+_ACT_JOB_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[(?P<job>[^\]]+)\]\s+\|\s*(?P<body>.*)"
+)
+_ACT_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[(?P<job>[^\]]+)\]\s+(?P<status>[✅❌✓✗])"
+)
+# Docker pull progress inside act (same shape as DockerFilter progress).
+_ACT_DOCKER_PULL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[(?:[^\]]+)\]\s+\|\s*"
+    r"(?:Pulling |Waiting\s*$|Verifying |Extracting |Pull complete|Digest:|Status:|Unable to find image)",
+    re.IGNORECASE,
+)
+# Verbose matrix expansion: ``[matrix: {"os": "ubuntu-latest", "node": "18"}]``
+_ACT_MATRIX_EXPAND_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[.*\]\s+Matrix:"
+)
+
+
+class ActFilter(Filter):
+    """Compress ``act`` (local GitHub Actions runner) output.
+
+    ``act`` prefixes every log line with ``[job-name/step-name] | ``.  Large
+    runs produce thousands of prefix-decorated lines.
+
+    Compression model:
+
+    * **Strip** ``[job/step] | `` prefix from body lines when collapsing.
+    * **Collapse** Docker pull progress inside act (``Pulling``, ``Waiting``,
+      ``Pull complete``, ``Digest:``, etc.).
+    * **Keep** ``✅`` / ``❌`` job status lines verbatim.
+    * **Collapse** verbose matrix expansion lines to a count.
+    * **Keep** every failure/error line verbatim.
+    """
+
+    name = "act"
+    binaries = frozenset(["act"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        docker_pull_dropped = 0
+        matrix_lines: list[str] = []
+
+        for line in lines:
+            # Always keep status lines (✅ ❌) verbatim (they carry the prefix
+            # intentionally to show which job passed/failed).
+            if _ACT_STATUS_RE.match(line):
+                kept.append(line)
+                continue
+
+            # Docker pull progress — collapse.
+            if _ACT_DOCKER_PULL_RE.match(line):
+                docker_pull_dropped += 1
+                continue
+
+            # Matrix expansion lines — collect for summary.
+            if _ACT_MATRIX_EXPAND_RE.match(line):
+                matrix_lines.append(line)
+                continue
+
+            # Strip ``[job/step] | `` prefix from body lines before further checks.
+            m = _ACT_JOB_PREFIX_RE.match(line)
+            body = m.group("body") if m else line
+
+            # Failure lines — keep stripped body verbatim.
+            if _GH_LOG_FAILURE_RE.search(body):
+                kept.append(body)
+                continue
+
+            kept.append(body)
+
+        notes: list[str] = []
+        if docker_pull_dropped:
+            notes.append(f"collapsed {docker_pull_dropped} docker-pull progress lines")
+        if matrix_lines:
+            notes.append(f"collapsed {len(matrix_lines)} matrix expansion lines")
+        Filter._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- GenericCIFilter (catch-all for CI log patterns) -----------------------
+
+# ISO-8601 or date-time-like timestamp prefix in generic CI/pipeline logs.
+# Matches: ``2024-01-15T12:34:56Z ``, ``2024-01-15 12:34:56 ``,
+#          ``[2024-01-15T12:34:56.123Z] ``.
+_CI_TIMESTAMP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\]?\s+"
+)
+# ANSI escape sequence (any CSI sequence or OSC sequence).
+_CI_ANSI_RE: Final[re.Pattern[str]] = re.compile(
+    r"\x1b(?:\[[0-9;]*[mABCDEFGHJKSTf]|\](?:[^\x07\x1b]|\x1b[^\\])*(?:\x07|\x1b\\))"
+)
+# Heartbeat / ping / health-check log lines.
+_CI_HEARTBEAT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:heartbeat|ping|health.?check|keepalive|keep.alive)\b",
+    re.IGNORECASE,
+)
+# Log level prefixes.
+_CI_DEBUG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:DEBUG|TRACE|VERBOSE)\b[\s:]", re.IGNORECASE
+)
+_CI_INFO_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*INFO\b[\s:]", re.IGNORECASE
+)
+# Keywords that trigger GenericCIFilter matching.
+_CI_COMMAND_KEYWORDS: Final[frozenset[str]] = frozenset([
+    "--log", "logs", "pipeline", "workflow",
+])
+
+
+class GenericCIFilter(Filter):
+    """Catch-all filter for CI log patterns not covered by specific filters.
+
+    Fires when the raw command contains any of: ``--log``, ``logs``,
+    ``pipeline``, ``workflow``.  Applies universal CI log noise reduction
+    without assuming any particular tool.
+
+    Compression model:
+
+    * **Strip** ISO-8601 / date-time timestamp prefixes from each line.
+    * **Strip** stray ANSI escape sequences from non-interactive output.
+    * **Collapse** ``DEBUG:`` / ``TRACE:`` lines to a count per run.
+    * **Keep** ``INFO:`` lines verbatim.
+    * **Collapse** repeated heartbeat / ping / health-check lines to a count.
+    * **Keep** every failure/error line verbatim.
+    """
+
+    name = "generic-ci"
+    binaries = frozenset()  # Matched via custom matches() only.
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        cmd_str = " ".join(argv).lower()
+        return any(kw in cmd_str for kw in _CI_COMMAND_KEYWORDS)
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        debug_count = 0
+        heartbeat_count = 0
+
+        for line in lines:
+            # Strip timestamp prefix.
+            line = _CI_TIMESTAMP_RE.sub("", line)
+            # Strip stray ANSI escapes (non-interactive CI output).
+            line = _CI_ANSI_RE.sub("", line)
+
+            # Always keep failure lines.
+            if _GH_LOG_FAILURE_RE.search(line):
+                kept.append(line)
+                continue
+
+            # Heartbeat / health-check lines — collapse.
+            if _CI_HEARTBEAT_RE.search(line):
+                heartbeat_count += 1
+                continue
+
+            # DEBUG / TRACE — collapse to count.
+            if _CI_DEBUG_RE.match(line):
+                debug_count += 1
+                continue
+
+            kept.append(line)
+
+        notes: list[str] = []
+        if debug_count:
+            notes.append(f"collapsed {debug_count} DEBUG/TRACE lines")
+        if heartbeat_count:
+            notes.append(f"collapsed {heartbeat_count} heartbeat/health-check lines")
+        Filter._emit_notes(kept, notes)
+        return self._finalize(kept)
 
 
 # --- AWS CLI ---------------------------------------------------------------
@@ -10411,7 +10925,21 @@ FILTERS: list[Filter] = [
     GcloudFilter(),
     # AzureCliFilter handles the Azure CLI `az` binary.
     AzureCliFilter(),
+    # GhRunLogFilter must precede GhFilter: both match `gh`, but GhRunLogFilter
+    # only fires for `gh run view --log` (the raw log variant) and provides
+    # richer timestamp-stripping and group-collapsing.  GhFilter remains the
+    # catch-all for all other `gh` subcommands.
+    GhRunLogFilter(),
     GhFilter(),
+    # ActFilter handles the `act` local GitHub Actions runner.
+    ActFilter(),
+    # GenericCIFilter is a keyword-matched catch-all for generic CI log output.
+    # It must be placed LAST (or near last) because its matches() fires on any
+    # command containing ``--log``/``logs``/``pipeline``/``workflow`` — which
+    # would incorrectly claim commands handled by more specific filters if
+    # placed earlier.  The only exception is that it must appear before the
+    # truly generic GenericFilter (if one exists).
+    GenericCIFilter(),
     RuffFilter(),
     MypyFilter(),
     # ESLintFilter precedes LinterFilter so `eslint` routes to the dedicated
