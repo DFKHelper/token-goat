@@ -395,8 +395,9 @@ class TestSelectFilter:
         assert f is not None and f.name == "terraform"
 
     def test_aws(self):
+        # AwsCliFilter is registered before AwsFilter, so it wins dispatch.
         f = bc.select_filter(["aws", "s3", "ls"])
-        assert f is not None and f.name == "aws"
+        assert f is not None and f.name == "aws-cli"
 
     def test_pip(self):
         f = bc.select_filter(["pip", "install", "foo"])
