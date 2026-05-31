@@ -655,7 +655,7 @@ def _run_read_like_command(
         # for a cache hit — we already counted the savings on the original call.
         session.mark_file_read(session_id, file_target.rel_path, symbol=item_part)
         if json_output:
-            out = {k: v for k, v in cached_result.items() if k not in ("bytes_total", "bytes_extracted")}
+            out = {k: v for k, v in cached_result.items() if k not in _INTERNAL_RESULT_FIELDS}
             typer.echo(json.dumps(out, separators=(",", ":")))
         else:
             cb, ca = _context_bounds(cached_result)
@@ -736,7 +736,7 @@ def _run_read_like_command(
     ):
         note = f"[from project: {file_target.project.root}]"
         if json_output:
-            out = {k: v for k, v in result.items() if k not in ("bytes_total", "bytes_extracted")}
+            out = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
             out["_project_root"] = str(file_target.project.root)
             typer.echo(json.dumps(out, separators=(",", ":")))
             return
@@ -750,7 +750,7 @@ def _run_read_like_command(
 
     if json_output:
         # Strip internal stat fields — model never acts on them; stats are recorded above.
-        out = {k: v for k, v in result.items() if k not in ("bytes_total", "bytes_extracted")}
+        out = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
         typer.echo(json.dumps(out, separators=(",", ":")))
         return
     cb, ca = _context_bounds(result)
@@ -927,7 +927,7 @@ def _run_read_line_range(
         and file_target.current_project is not None
     )
     if json_output:
-        out: dict[str, object] = {k: v for k, v in result.items() if k not in ("bytes_total", "bytes_extracted")}
+        out: dict[str, object] = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
         if cross_project:
             out["_project_root"] = str(file_target.project.root)
         typer.echo(json.dumps(out, separators=(",", ":")))
@@ -1027,6 +1027,11 @@ _STUB_VIEW_INCLUDE_KINDS: frozenset[str] = frozenset({
 # skeleton without hitting context limits.
 _STUB_VIEW_MAX_SYMBOLS: int = 80
 
+#: Internal stat fields stored in ``SymbolResult`` / ``SectionResult`` dicts that
+#: are never forwarded to callers — they drive savings accounting only.
+#: Defined once here to avoid repeating the same tuple in every JSON-emission site.
+_INTERNAL_RESULT_FIELDS: frozenset[str] = frozenset({"bytes_total", "bytes_extracted"})
+
 
 def _format_stub_line(name: str, kind: str, line: int, signature: str | None) -> str:
     """Render one symbol entry for the skeleton view."""
@@ -1076,7 +1081,6 @@ def stub_view(
     ][:_STUB_VIEW_MAX_SYMBOLS]
 
     if json_output:
-        import json as _json  # noqa: PLC0415
         out = [
             {
                 "name": row["name"],
@@ -1086,7 +1090,7 @@ def stub_view(
             }
             for row in filtered
         ]
-        typer.echo(_json.dumps(out, separators=(",", ":")))
+        typer.echo(json.dumps(out, separators=(",", ":")))
         return
 
     typer.echo(f"# Skeleton: {file_rel}  ({len(filtered)} symbols)")
