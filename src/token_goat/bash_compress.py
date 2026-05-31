@@ -77,15 +77,18 @@ __all__ = [
     "CmakeFilter",
     "ComposerFilter",
     "CurlFilter",
+    "DartFilter",
     "DeltaFilter",
     "DiffFilter",
     "DotnetFilter",
     "EzaFilter",
     "FdFilter",
+    "FlutterFilter",
     "GradleFilter",
     "JqFilter",
     "MavenFilter",
     "MixFilter",
+    "PubFilter",
     "PythonFilter",
     "RsyncFilter",
     "RubyFilter",
@@ -5722,6 +5725,410 @@ def _split_into_hunks(block: list[str]) -> list[list[str]]:
     return hunks
 
 
+# --- Flutter / Dart / pub --------------------------------------------------
+
+#: Flutter build compilation lines: "Compiling lib/..." noise
+_FLUTTER_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Compiling\s+lib/"
+)
+#: Flutter build success line: "✓ Built build/..." — always keep
+_FLUTTER_BUILT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[✓✔]\s+Built\s+\S"
+)
+#: Flutter font asset lines: "Font asset ..."
+_FLUTTER_FONT_ASSET_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Font asset\s"
+)
+#: Flutter "Running Gradle task" — always keep
+_FLUTTER_GRADLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Running Gradle task\s"
+)
+#: Flutter test progress lines: "00:XX +N:" or "00:XX +N -M:"
+_FLUTTER_TEST_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d{2}:\d{2}\s+[+\d]"
+)
+#: Flutter test summary: "All tests passed!" / "N tests passed" / "N tests failed"
+_FLUTTER_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:All tests passed!|\d+\s+test[s]?\s+(?:passed|failed))"
+)
+#: Flutter pub dependency resolution/change lines to keep
+_FLUTTER_PUB_KEEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Resolving dependencies|Changed \d+|No dependencies changed|Got dependencies|"
+    r"Downloading packages|Building package executable|Package\s+\w+\s+is)"
+)
+#: Flutter pub new package lines: "+ package_name version" — collapse to count
+_FLUTTER_PUB_PKG_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\+\s+\S+\s+\S+"
+)
+
+
+class FlutterFilter(Filter):
+    """Compress ``flutter build``, ``flutter test``, ``flutter run``, ``flutter pub`` output.
+
+    Flutter emits hundreds of verbose compilation lines and dependency resolution
+    lines that obscure the few signals the agent actually needs.
+
+    Compression model:
+
+    * **flutter build**:
+
+      - Collapse ``Compiling lib/…`` lines to a count.
+      - Keep ``✓ Built build/…`` success lines verbatim.
+      - Collapse ``Font asset …`` lines to a count.
+      - Keep ``Running Gradle task…`` lines verbatim.
+      - Keep every ``warning:`` / ``error:`` diagnostic.
+
+    * **flutter test**:
+
+      - Collapse ``00:XX +N:`` progress lines to a final summary count.
+      - Keep failure blocks verbatim (lines containing ``FAILED``/``Error``).
+      - Keep ``All tests passed!`` / ``N tests passed/failed`` summary.
+
+    * **flutter pub get / pub upgrade**:
+
+      - Keep ``Resolving dependencies…`` verbatim.
+      - Collapse ``+ package_name version`` lines to a count.
+      - Keep ``Changed N dependencies`` / ``No dependencies changed`` verbatim.
+      - Keep every ``error:`` / ``warning:`` line verbatim.
+    """
+
+    name = "flutter"
+    binaries = frozenset(["flutter"])
+    subcommands = frozenset(["build", "test", "run", "pub"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+        if subcommand == "test":
+            return self._compress_test(stdout, stderr)
+        if subcommand == "pub":
+            return self._compress_pub(stdout, stderr)
+        # build / run and anything else
+        return self._compress_build(stdout, stderr)
+
+    def _compress_build(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        compile_count = 0
+        font_count = 0
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _FLUTTER_GRADLE_RE.match(line) or _FLUTTER_BUILT_RE.match(line):
+                kept.append(line)
+                continue
+            if _FLUTTER_COMPILING_RE.match(line):
+                compile_count += 1
+                continue
+            if _FLUTTER_FONT_ASSET_RE.match(line):
+                font_count += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if compile_count:
+            notes.append(f"collapsed {compile_count} 'Compiling lib/' lines")
+        if font_count:
+            notes.append(f"collapsed {font_count} font asset lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_test(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        progress_count = 0
+        in_failure = False
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                in_failure = True
+                kept.append(line)
+                continue
+            # Check summary before progress — "00:XX +N: All tests passed!" is both.
+            if _FLUTTER_TEST_SUMMARY_RE.search(line):
+                in_failure = False
+                kept.append(line)
+                continue
+            if in_failure:
+                # Keep indented failure body until a blank or progress line.
+                if not line.strip() or _FLUTTER_TEST_PROGRESS_RE.match(line):
+                    in_failure = False
+                    if not line.strip():
+                        kept.append(line)
+                    else:
+                        progress_count += 1
+                else:
+                    kept.append(line)
+                continue
+            if _FLUTTER_TEST_PROGRESS_RE.match(line):
+                progress_count += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if progress_count:
+            notes.append(f"collapsed {progress_count} test progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_pub(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        pkg_count = 0
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _FLUTTER_PUB_KEEP_RE.match(line):
+                kept.append(line)
+                continue
+            if _FLUTTER_PUB_PKG_LINE_RE.match(line):
+                pkg_count += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if pkg_count:
+            notes.append(f"collapsed {pkg_count} package dependency lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- Dart ------------------------------------------------------------------
+
+#: dart analyze: "Analyzing ..." header
+_DART_ANALYZING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Analyzing\s"
+)
+#: dart analyze result lines to always keep
+_DART_ANALYZE_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:No issues found!|\d+ issue[s]? found\.|warning -|error -|info -|hint -)"
+)
+#: dart test progress: dots or "00:XX +N" style progress lines
+_DART_TEST_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d{2}:\d{2}\s+[+\d]|^[\.]+$"
+)
+#: dart compile completion line
+_DART_COMPILE_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Generated:\s|Compiling\s)"
+)
+#: dart test summary: "All tests passed" / "N tests failed"
+_DART_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:All tests passed\.?|\d+\s+test[s]?\s+(?:passed|failed))"
+)
+
+
+class DartFilter(Filter):
+    """Compress ``dart compile``, ``dart test``, ``dart pub``, ``dart analyze`` output.
+
+    Dart toolchain output can be verbose with progress dots and dependency lists.
+
+    Compression model:
+
+    * **dart analyze**:
+
+      - Keep ``Analyzing …`` header.
+      - Keep ``No issues found!`` / ``N issues found`` summary.
+      - Keep individual diagnostic lines verbatim (already compact).
+
+    * **dart test**:
+
+      - Collapse dot-progress and ``00:XX +N`` progress lines to a count.
+      - Keep failure blocks and final summary verbatim.
+
+    * **dart compile exe**:
+
+      - Keep ``Compiling …`` and ``Generated: …`` lines verbatim.
+      - Keep every ``error:`` / ``warning:`` diagnostic.
+
+    * **dart pub get / upgrade**:
+
+      - Delegate to :class:`PubFilter` logic (same package-count collapsing).
+    """
+
+    name = "dart"
+    binaries = frozenset(["dart"])
+    subcommands = frozenset(["compile", "test", "pub", "analyze", "run", "format"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0] if positionals else ""
+        if subcommand == "analyze":
+            return self._compress_analyze(stdout, stderr)
+        if subcommand == "test":
+            return self._compress_test(stdout, stderr)
+        if subcommand == "pub":
+            return self._compress_pub(stdout, stderr)
+        # compile, run, format: light compression — keep everything except noise
+        return self._compress_generic(stdout, stderr)
+
+    def _compress_analyze(self, stdout: str, stderr: str) -> str:
+        # dart analyze output is already compact; mostly pass through.
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        for line in lines:
+            # Keep all analyze output — it's already compact and high-signal.
+            if (
+                _DART_ANALYZING_RE.match(line)
+                or _DART_ANALYZE_RESULT_RE.match(line)
+                or _ERROR_SIGNAL_RE.search(line)
+                or line.strip()
+            ):
+                kept.append(line)
+        return self._finalize(kept)
+
+    def _compress_test(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        progress_count = 0
+        in_failure = False
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                in_failure = True
+                kept.append(line)
+                continue
+            # Check summary before progress — "00:XX +N: All tests passed." is both.
+            if _DART_TEST_SUMMARY_RE.search(line):
+                in_failure = False
+                kept.append(line)
+                continue
+            if in_failure:
+                if not line.strip() or _DART_TEST_PROGRESS_RE.match(line):
+                    in_failure = False
+                    if not line.strip():
+                        kept.append(line)
+                    else:
+                        progress_count += 1
+                else:
+                    kept.append(line)
+                continue
+            if _DART_TEST_PROGRESS_RE.match(line):
+                progress_count += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if progress_count:
+            notes.append(f"collapsed {progress_count} test progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_pub(self, stdout: str, stderr: str) -> str:
+        """Delegate to pub-style compression."""
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        pkg_count = 0
+        download_count = 0
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _PUB_KEEP_RE.match(line):
+                kept.append(line)
+                continue
+            if _PUB_PKG_LINE_RE.match(line):
+                pkg_count += 1
+                continue
+            if _PUB_DOWNLOADING_RE.match(line):
+                download_count += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if pkg_count:
+            notes.append(f"collapsed {pkg_count} package lines")
+        if download_count:
+            notes.append(f"collapsed {download_count} download lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_generic(self, stdout: str, stderr: str) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        for line in lines:
+            if _DART_COMPILE_DONE_RE.match(line) or _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            kept.append(line)
+        return self._finalize(kept)
+
+
+# --- pub (standalone) -------------------------------------------------------
+
+#: pub keep lines: resolution headers and change summaries
+_PUB_KEEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Resolving dependencies|Changed \d+|No dependencies changed|Got dependencies|"
+    r"Downloading packages|Building package executable)"
+)
+#: pub new/changed package lines: "+ package_name version" or "> package_name version"
+_PUB_PKG_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[+>!]\s+\S+\s+\S+"
+)
+#: pub downloading lines: "Downloading package_name version..."
+_PUB_DOWNLOADING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Downloading\s+\S+\s+\S+"
+)
+
+
+class PubFilter(Filter):
+    """Compress ``pub get``, ``pub upgrade``, and ``pub publish`` output.
+
+    The Dart/Flutter ``pub`` package manager emits one line per package during
+    dependency resolution, which can be hundreds of lines on a large project.
+    The only signals the agent needs are the resolution header, any errors, and
+    the final "Changed N dependencies" summary.
+
+    Compression model:
+
+    * Keep ``Resolving dependencies…`` header verbatim.
+    * Collapse ``Downloading package_name version…`` lines to a count.
+    * Collapse ``+ package_name version`` lines (new/upgraded packages) to a
+      count.
+    * Keep ``Changed N dependencies`` / ``No dependencies changed`` verbatim.
+    * Keep every ``error:`` / ``warning:`` line verbatim.
+    """
+
+    name = "pub"
+    binaries = frozenset(["pub"])
+    subcommands = frozenset(["get", "upgrade", "publish", "add", "remove"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        pkg_count = 0
+        download_count = 0
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _PUB_KEEP_RE.match(line):
+                kept.append(line)
+                continue
+            if _PUB_PKG_LINE_RE.match(line):
+                pkg_count += 1
+                continue
+            if _PUB_DOWNLOADING_RE.match(line):
+                download_count += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if pkg_count:
+            notes.append(f"collapsed {pkg_count} package lines")
+        if download_count:
+            notes.append(f"collapsed {download_count} download lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # --- Swift -----------------------------------------------------------------
 
 #: Swift compiler build-phase lines: "CompileSwift normal arm64 path/to/File.swift"
@@ -6348,6 +6755,12 @@ FILTERS: list[Filter] = [
     # other deployment-style tooling.
     AnsibleFilter(),
     PreCommitFilter(),
+    # FlutterFilter handles `flutter build/test/run/pub`; DartFilter handles
+    # `dart compile/test/pub/analyze`; PubFilter handles standalone `pub get/upgrade`.
+    # All three are disjoint from every other filter.
+    FlutterFilter(),
+    DartFilter(),
+    PubFilter(),
     # SwiftFilter handles `swift build/test/run/package`; registered before
     # XcodeFilter (disjoint binaries so ordering is cosmetic but explicit).
     SwiftFilter(),
