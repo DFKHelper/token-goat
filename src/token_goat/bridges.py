@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 from typing import cast
 
+from . import paths
 from .util import get_logger
 
 _LOG = get_logger("bridges")
@@ -331,7 +332,7 @@ def _write_plugin_file(plugins_dir: Path, filename: str, content: str) -> Path:
     Returns the absolute path of the written file.  Both opencode and openclaw
     share this step; the only difference is the filename and content string.
     """
-    plugins_dir.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(plugins_dir)
     plugin_path = plugins_dir / filename
     plugin_path.write_text(content, encoding="utf-8")
     return plugin_path
@@ -469,7 +470,7 @@ def install_openclaw_plugin() -> str:
     plugin_path = _write_plugin_file(openclaw_plugins_dir(), _OPENCLAW_FILENAME, OPENCLAW_PLUGIN_TS)
 
     cfg_path = openclaw_config_path()
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(cfg_path.parent)
     try:
         cfg: dict[str, object] = _load_json_config(cfg_path) if cfg_path.exists() else {}
     except (json.JSONDecodeError, OSError) as e:

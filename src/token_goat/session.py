@@ -118,7 +118,7 @@ from typing import Any, Final, TypedDict, TypeVar
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
-from .util import get_logger
+from .util import env_int, get_logger
 
 _LOG = get_logger("session")
 
@@ -2428,15 +2428,8 @@ def _get_session_max_bytes() -> int:
     is absent, non-numeric, or zero/negative, falls back to
     :data:`_SESSION_MAX_BYTES` (2 MB).
     """
-    raw = os.environ.get("TOKEN_GOAT_SESSION_MAX_BYTES", "").strip()
-    if raw:
-        try:
-            v = int(raw)
-            if v > 0:
-                return v
-        except (ValueError, TypeError):
-            pass
-    return _SESSION_MAX_BYTES
+    v = env_int("TOKEN_GOAT_SESSION_MAX_BYTES", 0)
+    return v if v > 0 else _SESSION_MAX_BYTES
 
 
 def _trim_session_for_size(cache: SessionCache, max_bytes: int) -> bool:

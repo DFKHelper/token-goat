@@ -62,6 +62,7 @@ from .hooks_common import (
 from .hooks_common import (
     LOG as _LOG,
 )
+from .util import env_int as _env_int
 from .util import sanitize_surrogates as _sanitize_surrogates
 
 # Environment variable that disables Bash output compression at the hook layer.
@@ -2176,15 +2177,7 @@ def _bash_max_process_bytes() -> int:
     unset.  Clamped to at least 1 KiB so a misconfigured zero does not truncate
     all output.
     """
-    import os  # noqa: PLC0415
-
-    raw = os.environ.get("TOKEN_GOAT_BASH_MAX_PROCESS_BYTES", "").strip()
-    if raw:
-        try:
-            return max(1024, int(raw))
-        except (ValueError, OverflowError):
-            pass
-    return _BASH_DEFAULT_MAX_PROCESS_BYTES
+    return _env_int("TOKEN_GOAT_BASH_MAX_PROCESS_BYTES", _BASH_DEFAULT_MAX_PROCESS_BYTES, lo=1024)
 
 
 def _apply_output_size_cap(stdout: str, stderr: str) -> tuple[str, str, bool]:
