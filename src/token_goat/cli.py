@@ -437,29 +437,36 @@ def main() -> None:
 _INLINE_INDEX_RECENCY_SECS = 60
 
 
-def _inline_symbol_search(name: str, proj: Project) -> list[dict]:
+def _inline_symbol_search(
+    name: str,
+    proj: Project,
+    *,
+    kind_filter: list[str] | None = None,
+) -> list[dict]:
     """Parse recently-modified unindexed files and search for *name*.
 
     Called when the DB returns 0 results for a project that is otherwise
     indexed.  Walks files under the project root whose mtime is within
     :data:`_INLINE_INDEX_RECENCY_SECS`, runs them through
     :func:`~token_goat.parser.index_file`, and returns any symbol whose name
-    matches (exact, case-sensitive).  Results are annotated with the
+    matches (exact or glob, case-sensitive).  Results are annotated with the
     ``not_indexed`` flag so callers can surface the ``(not yet indexed)``
     marker to the user.
 
     Returns an empty list on any error so the caller falls through normally.
     """
+    import fnmatch  # noqa: PLC0415
+
     try:
         from . import parser as parser_mod  # noqa: PLC0415
 
+        is_glob = _is_glob_pattern(name)
         cutoff = time.time() - _INLINE_INDEX_RECENCY_SECS
         results: list[dict] = []
         root = proj.root
         for candidate in root.rglob("*"):
             if not candidate.is_file():
                 continue
-            # Skip directories we never index.
             if any(part in parser_mod.SKIP_DIRS for part in candidate.parts):
                 continue
             suffix = candidate.suffix.lower()
@@ -475,19 +482,74 @@ def _inline_symbol_search(name: str, proj: Project) -> list[dict]:
             if fi is None:
                 continue
             for sym in fi.symbols:
-                if sym.name == name:
-                    results.append({
-                        "file": fi.rel_path,
-                        "line": sym.line,
-                        "kind": sym.kind,
-                        "name": sym.name,
-                        "signature": sym.signature,
-                        "not_indexed": True,
-                    })
-        return results
+                name_match = fnmatch.fnmatchcase(sym.name, name) if is_glob else sym.name == name
+                if not name_match:
+                    continue
+                if kind_filter and sym.kind not in kind_filter:
+                    continue
+                results.append({
+                    "file": fi.rel_path,
+                    "line": sym.line,
+                    "kind": sym.kind,
+                    "name": sym.name,
+                    "signature": sym.signature,
+                    "not_indexed": True,
+                })
+        return _rank_symbol_results(results, name)
     except Exception:  # noqa: BLE001
         _LOG.debug("_inline_symbol_search failed for %r", name, exc_info=True)
         return []
+
+
+_SYMBOL_KIND_ALIASES: dict[str, list[str]] = {
+    "fn": ["function"],
+    "func": ["function"],
+    "class": ["class"],
+    "method": ["method"],
+    "const": ["const"],
+    "interface": ["interface"],
+    "enum": ["enum"],
+    "var": ["var"],
+    "type": ["type"],
+}
+
+
+def _symbol_kind_filter(types: list[str]) -> list[str]:
+    """Expand user-supplied ``--type`` values to canonical DB kind strings."""
+    out: list[str] = []
+    for t in types:
+        out.extend(_SYMBOL_KIND_ALIASES.get(t.lower(), [t.lower()]))
+    return list(dict.fromkeys(out))
+
+
+def _is_glob_pattern(query: str) -> bool:
+    return "*" in query or "?" in query
+
+
+def _glob_to_sql_like(query: str) -> str:
+    escaped = query.replace("%", r"\%").replace("_", r"\_")
+    return escaped.replace("*", "%").replace("?", "_")
+
+
+def _rank_symbol_results(results: list[dict], query: str) -> list[dict]:
+    """Sort results by match tier: exact name → prefix → substring.
+
+    Within each tier the original DB order is preserved (stable sort).
+    Wildcard queries skip tiering and return in DB order.
+    """
+    if _is_glob_pattern(query):
+        return results
+    q_lower = query.lower()
+
+    def _tier(row: dict) -> int:
+        n = row["name"].lower()
+        if n == q_lower:
+            return 0
+        if n.startswith(q_lower):
+            return 1
+        return 2
+
+    return sorted(results, key=_tier)
 
 
 @app.command(rich_help_panel="Core")
@@ -511,6 +573,14 @@ def symbol(
         "--refs",
         help="Annotate each result with its reference count: [N refs].",
     ),
+    filter_types: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--type",
+        help=(
+            "Filter by symbol kind: fn, class, method, const, interface, enum, var, type. "
+            "Repeat to allow multiple kinds: --type fn --type method"
+        ),
+    ),
 ) -> None:
     """Find a symbol definition by name (function, class, method, type, constant, etc.).
 
@@ -518,6 +588,11 @@ def symbol(
     other named definitions matching the given name. Use ``--all-projects`` to search
     across all indexed projects (useful for skills and plugins). Use ``--limit`` to
     control max results (default 50).
+
+    Glob patterns: ``get_*`` matches any symbol starting with ``get_``.
+
+    Type filter: ``--type fn`` returns only functions; ``--type class --type interface``
+    returns classes and interfaces.  Shorthand ``fn`` maps to ``function``.
 
     Close-match auto-redirect: when the requested name returns zero results
     *and* the project has exactly one close-match candidate at high
@@ -527,6 +602,9 @@ def symbol(
     marker in plain-text output so the substitution is auditable.  Use
     ``--strict`` to opt out and get the previous behaviour."""
     _db = _lazy_import("db")
+
+    kind_filter = _symbol_kind_filter(filter_types) if filter_types else []
+    is_glob = _is_glob_pattern(name)
 
     use_tty_color = sys.stdout.isatty() and not as_json
 
@@ -609,15 +687,27 @@ def symbol(
         Pulled out so the auto-redirect path can re-run the same query with
         a different name without duplicating the SELECT or the row-shaping.
         """
+        _is_glob_q = _is_glob_pattern(target)
+        name_op = "LIKE" if _is_glob_q else "="
+        name_param = _glob_to_sql_like(target) if _is_glob_q else target
+        kind_clause = ""
+        kind_params: tuple[object, ...] = ()
+        if kind_filter:
+            placeholders = ",".join("?" * len(kind_filter))
+            kind_clause = f" AND sg.kind IN ({placeholders})"
+            kind_params = tuple(kind_filter)
+        sql = (
+            "SELECT sg.project_hash, p.root, sg.name, sg.kind, sg.file_rel, sg.line, sg.signature "
+            "FROM symbols_global sg "
+            "JOIN projects p ON p.hash = sg.project_hash "
+            f"WHERE sg.name {name_op} ?{kind_clause} LIMIT ?"
+        )
         with _db.open_global() as gconn:
             rows_raw_inner = gconn.execute(
-                "SELECT sg.project_hash, p.root, sg.name, sg.kind, sg.file_rel, sg.line, sg.signature "
-                "FROM symbols_global sg "
-                "JOIN projects p ON p.hash = sg.project_hash "
-                "WHERE sg.name = ? LIMIT ?",
-                (target, limit),
+                sql,
+                (name_param, *kind_params, limit),
             ).fetchall()
-        return [
+        raw = [
             {
                 "project": r["root"],
                 "file": r["file_rel"],
@@ -628,6 +718,7 @@ def symbol(
             }
             for r in rows_raw_inner
         ]
+        return _rank_symbol_results(raw, target)
 
     if all_projects:
         try:
@@ -641,7 +732,7 @@ def symbol(
         # auto-redirect target so the DB is hit exactly once.
         close: list[str] = []
         redirected: str | None = None
-        if not results:
+        if not results and not is_glob:
             from difflib import get_close_matches  # noqa: PLC0415
 
             pool = _global_symbol_pool()
@@ -676,12 +767,22 @@ def symbol(
 
         Same role as :func:`_global_query` for the single-project branch.
         """
+        _is_glob_q = _is_glob_pattern(target)
+        name_op = "LIKE" if _is_glob_q else "="
+        name_param = _glob_to_sql_like(target) if _is_glob_q else target
+        kind_clause = ""
+        kind_params: tuple[object, ...] = ()
+        if kind_filter:
+            placeholders = ",".join("?" * len(kind_filter))
+            kind_clause = f" AND kind IN ({placeholders})"
+            kind_params = tuple(kind_filter)
+        sql = f"SELECT name, kind, file_rel, line, signature FROM symbols WHERE name {name_op} ?{kind_clause} LIMIT ?"
         rows_raw_inner = _query_project(
             proj.hash,
-            "SELECT name, kind, file_rel, line, signature FROM symbols WHERE name = ? LIMIT ?",
-            (target, limit),
+            sql,
+            (name_param, *kind_params, limit),
         )
-        return [
+        raw = [
             {
                 "file": r["file_rel"],
                 "line": r["line"],
@@ -691,6 +792,7 @@ def symbol(
             }
             for r in rows_raw_inner
         ]
+        return _rank_symbol_results(raw, target)
 
     results = _project_query(name)
 
@@ -718,7 +820,7 @@ def symbol(
     if not results and not hint:
         # Project is indexed but symbol not found — check recently-modified files
         # that the background worker may not have processed yet.
-        inline = _inline_symbol_search(name, proj)
+        inline = _inline_symbol_search(name, proj, kind_filter=kind_filter or None)
         if inline:
             results = inline
             inline_hit = True
@@ -727,7 +829,7 @@ def symbol(
                 len(inline), name,
             )
 
-    if not results and not hint and not inline_hit:
+    if not results and not hint and not inline_hit and not is_glob:
         from difflib import get_close_matches  # noqa: PLC0415
 
         pool = _project_symbol_pool(proj.hash)
