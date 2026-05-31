@@ -61,6 +61,10 @@ __all__ = [
     "Filter",
     "FILTERS",
     "_safe_decode",
+    "_collapse_to_count",
+    "_dedup_lines",
+    "_keep_errors_verbatim",
+    "_strip_timestamps",
     "bytes_to_tokens",
     "cap_bytes",
     "cap_tokens",
@@ -141,7 +145,7 @@ import math
 import os
 import re
 import shlex
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -742,6 +746,155 @@ def _preserve_stderr_on_error(
     if exit_code != 0 and stderr.strip():
         return (stdout.rstrip() + "\n---\n" + stderr.rstrip()) if stdout.strip() else stderr
     return None
+
+
+# ---------------------------------------------------------------------------
+# Shared filter helpers — DRY utilities used by multiple Filter subclasses
+# ---------------------------------------------------------------------------
+
+#: Consolidated timestamp regex covering all common CI/log formats:
+#:  ``2024-01-01T00:00:00Z``, ``2024-01-01 00:00:00``,
+#:  ``[2024-01-01T00:00:00.123Z]``, ``HH:MM:SS`` prefix.
+_TIMESTAMP_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[?\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\]?\s*"
+    r"|^\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+"
+)
+
+
+def _strip_timestamps(lines: list[str]) -> list[str]:
+    """Strip common ISO-8601 / datetime / HH:MM:SS timestamp prefixes from each line.
+
+    Covers the timestamp formats used by ``gh run view --log``, generic CI
+    pipelines, kubectl logs, and any tool that prepends date/time to lines:
+
+    * ISO-8601 with optional fractional seconds and Z suffix:
+      ``2024-01-15T12:34:56.123Z ``
+    * ISO-8601 with space separator: ``2024-01-15 12:34:56 ``
+    * Bracket-wrapped: ``[2024-01-15T12:34:56Z] ``
+    * Time-only: ``12:34:56.789 ``
+
+    Lines without a recognised prefix are returned unchanged.  Mutating the
+    original list is avoided; a new list is always returned.
+    """
+    return [_TIMESTAMP_PREFIX_RE.sub("", ln) for ln in lines]
+
+
+def _collapse_to_count(
+    lines: list[str],
+    label: str,
+    *,
+    keep_last: int = 0,
+) -> list[str]:
+    """Replace *lines* with a single ``[token-goat: collapsed N <label> lines]`` marker.
+
+    When *keep_last* > 0, the last *keep_last* lines from *lines* are
+    appended verbatim after the marker (useful for preserving the final
+    progress/summary line in a long run).
+
+    Returns *lines* unchanged when it is empty, so callers can always
+    call this unconditionally.
+
+    Args:
+        lines: The lines to collapse.  May be empty.
+        label: Singular noun used in the count message, e.g.
+            ``"dependency download"`` → ``"collapsed 42 dependency download lines"``.
+        keep_last: How many of the last lines to preserve verbatim after
+            the count marker.  Defaults to 0 (full collapse).
+
+    Returns:
+        A new list: ``["[token-goat: collapsed N <label> lines]"]``, with up
+        to *keep_last* suffix lines appended.  Returns *lines* unchanged when
+        ``len(lines) == 0``.
+    """
+    n = len(lines)
+    if n == 0:
+        return lines
+    marker = f"[token-goat: collapsed {n} {label} line{'s' if n != 1 else ''}]"
+    if keep_last > 0 and keep_last < n:
+        return [marker, *lines[-keep_last:]]
+    return [marker]
+
+
+def _dedup_lines(
+    lines: list[str],
+    max_per_key: int = 1,
+    *,
+    key_fn: Callable[[str], str] | None = None,
+) -> tuple[list[str], int]:
+    """Keep only the first *max_per_key* occurrences of each unique key in *lines*.
+
+    Deduplicates a sequence of lines (e.g. deprecation warnings, lint notices,
+    log entries) by bucketing on a key derived from each line.  The first
+    *max_per_key* lines for a given key are kept verbatim; additional
+    occurrences are silently dropped (counted so the caller can emit a note).
+
+    Args:
+        lines: Lines to deduplicate.
+        max_per_key: Maximum occurrences to keep per unique key.  Defaults to
+            1 (keep the first occurrence only).
+        key_fn: Optional callable ``(line: str) -> str`` returning the
+            deduplication key for a line.  When *None*, the entire stripped
+            line is used as the key — equivalent to ``lambda ln: ln.strip()``.
+            Common alternatives:
+
+            * ``lambda ln: ln[:60]`` — prefix-based (Yarn classic warnings)
+            * ``lambda ln: ln.split(":")[0]`` — prefix-before-colon
+
+    Returns:
+        A ``(kept_lines, dropped_count)`` tuple where *kept_lines* is the
+        deduplicated list and *dropped_count* is the number of lines that
+        were dropped.  The caller is responsible for emitting a compression
+        note when *dropped_count* > 0.
+    """
+    if key_fn is None:
+        key_fn = str.strip
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    dropped = 0
+    for line in lines:
+        key = key_fn(line)
+        count = seen.get(key, 0)
+        seen[key] = count + 1
+        if count < max_per_key:
+            out.append(line)
+        else:
+            dropped += 1
+    return out, dropped
+
+
+def _keep_errors_verbatim(
+    lines: list[str],
+    error_patterns: list[re.Pattern[str]] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Partition *lines* into error lines and other lines.
+
+    Many filters need to split a list into "errors that must survive unchanged"
+    and "lines eligible for collapsing / deduplication".  This helper
+    centralises that split so each filter doesn't re-implement it.
+
+    Args:
+        lines: Lines to partition.
+        error_patterns: Optional list of compiled regex patterns.  A line is
+            classified as an error when *any* pattern produces a match via
+            ``pattern.search(line)``.  When *None*, the default set is used:
+            lines containing ``error:``, ``Error:``, ``FAILED``, ``fatal:``,
+            or ``exception``.
+
+    Returns:
+        ``(error_lines, other_lines)`` where *error_lines* preserves the
+        original order of matched lines and *other_lines* preserves the
+        original order of non-matched lines.
+    """
+    if error_patterns is None:
+        error_patterns = [_ERROR_SIGNAL_RE]
+    error_lines: list[str] = []
+    other_lines: list[str] = []
+    for line in lines:
+        if any(pat.search(line) for pat in error_patterns):
+            error_lines.append(line)
+        else:
+            other_lines.append(line)
+    return error_lines, other_lines
 
 
 # ---------------------------------------------------------------------------
@@ -2488,8 +2641,12 @@ class KubectlLogsFilter(Filter):
 
 
 def _strip_timestamp(line: str) -> str:
-    """Remove leading ISO-8601 timestamp from a log line for pattern comparison."""
-    return _KUBE_TIMESTAMP_RE.sub("", line).strip()
+    """Remove leading ISO-8601 timestamp from a log line for pattern comparison.
+
+    Delegates to the shared :data:`_TIMESTAMP_PREFIX_RE` so all timestamp
+    formats (ISO-8601, compact datetime, HH:MM:SS) are handled consistently.
+    """
+    return _TIMESTAMP_PREFIX_RE.sub("", line).strip()
 
 
 def _dedup_log_lines(lines: list[str], keep_first_n: int = 3) -> list[str]:
@@ -2830,7 +2987,9 @@ class GhRunLogFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         merged = self._combine_output(stdout, stderr)
-        lines = merged.split("\n")
+        # Strip timestamp prefixes upfront using the shared helper so the rest
+        # of the loop works on clean, prefix-free lines.
+        lines = _strip_timestamps(merged.split("\n"))
         kept: list[str] = []
         setup_actions: list[str] = []
         dropped_boilerplate = 0
@@ -2856,10 +3015,7 @@ class GhRunLogFilter(Filter):
                 )
                 collapsed_groups += 1
 
-        for raw_line in lines:
-            # Strip timestamp prefix first.
-            line = _GH_LOG_TIMESTAMP_RE.sub("", raw_line)
-
+        for line in lines:
             # Boilerplate — drop.
             if _GH_LOG_BOILERPLATE_RE.match(line):
                 dropped_boilerplate += 1
@@ -3065,14 +3221,13 @@ class GenericCIFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         merged = self._combine_output(stdout, stderr)
-        lines = merged.split("\n")
+        # Strip timestamp prefixes upfront using the shared helper.
+        lines = _strip_timestamps(merged.split("\n"))
         kept: list[str] = []
         debug_count = 0
         heartbeat_count = 0
 
         for line in lines:
-            # Strip timestamp prefix.
-            line = _CI_TIMESTAMP_RE.sub("", line)
             # Strip stray ANSI escapes (non-interactive CI output).
             line = _CI_ANSI_RE.sub("", line)
 
@@ -6426,15 +6581,15 @@ class UvFilter(Filter):
         """
         lines = [ln for ln in text.split("\n") if ln.strip()]
         # Preserve error lines regardless of list length.
-        error_lines = [ln for ln in lines if _ERROR_SIGNAL_RE.search(ln)]
-        pkg_lines = [ln for ln in lines if not _ERROR_SIGNAL_RE.search(ln)]
+        error_lines, pkg_lines = _keep_errors_verbatim(lines)
         _UV_FREEZE_THRESHOLD = 50
         _UV_FREEZE_SHOW = 20
         if len(pkg_lines) <= _UV_FREEZE_THRESHOLD:
             return text.rstrip()
         shown = pkg_lines[:_UV_FREEZE_SHOW]
-        remaining = len(pkg_lines) - _UV_FREEZE_SHOW
-        result = shown + [f"[token-goat: {remaining} more packages elided; use uv pip freeze for full list]"]
+        tail = pkg_lines[_UV_FREEZE_SHOW:]
+        collapsed = _collapse_to_count(tail, "package")
+        result = shown + collapsed
         if error_lines:
             result.extend(error_lines)
         return "\n".join(result)
@@ -6811,7 +6966,7 @@ class YarnFilter(Filter):
         lines = text.split("\n")
         kept: list[str] = []
         fetch_dropped = 0
-        warnings_seen: dict[str, int] = {}
+        warning_lines: list[str] = []
         in_fetch_phase = False
 
         for line in lines:
@@ -6819,14 +6974,9 @@ class YarnFilter(Filter):
                 kept.append(line)
                 in_fetch_phase = False
                 continue
-            # Deduplicate warning lines.
+            # Collect warning lines for deduplication below.
             if _YARN_WARNING_RE.match(line):
-                # Key on the first 60 chars of the warning message.
-                key = line[:60]
-                warnings_seen[key] = warnings_seen.get(key, 0) + 1
-                if warnings_seen[key] == 1:
-                    kept.append(line)
-                # else: duplicate warning — silently drop
+                warning_lines.append(line)
                 continue
             # Detect fetch phase start: "[2/4] Fetching packages..."
             if re.match(r"^\[2/4\]", line):
@@ -6844,10 +6994,18 @@ class YarnFilter(Filter):
                 continue
             kept.append(line)
 
+        # Deduplicate warning lines (key on first 60 chars) and append after body.
+        if warning_lines:
+            deduped, dup_warnings = _dedup_lines(
+                warning_lines, max_per_key=1, key_fn=lambda ln: ln[:60],
+            )
+            kept.extend(deduped)
+        else:
+            dup_warnings = 0
+
         notes: list[str] = []
         if fetch_dropped:
             notes.append(f"collapsed {fetch_dropped} individual fetch lines")
-        dup_warnings = sum(v - 1 for v in warnings_seen.values() if v > 1)
         if dup_warnings:
             notes.append(f"deduplicated {dup_warnings} repeated warning lines")
         self._emit_notes(kept, notes)
@@ -9784,8 +9942,7 @@ class ComposerFilter(Filter):
         download_count = 0
         dropped_progress = 0
         dropped_funding = 0
-        seen_warnings: set[str] = set()
-        dropped_dup_warnings = 0
+        warning_lines: list[str] = []
 
         for line in lines:
             # Always keep errors verbatim.
@@ -9808,17 +9965,19 @@ class ComposerFilter(Filter):
             if _COMPOSER_DOWNLOADING_RE.match(line):
                 download_count += 1
                 continue
-            # Deduplicate deprecation/constraint warnings (keep first occurrence).
+            # Collect deprecation/constraint warnings for deduplication.
             if _COMPOSER_WARNING_RE.match(line):
-                key = line.strip()
-                if key in seen_warnings:
-                    dropped_dup_warnings += 1
-                    continue
-                seen_warnings.add(key)
-                kept.append(line)
+                warning_lines.append(line)
                 continue
             # Always keep autoload, operations summary, and other informational lines.
             kept.append(line)
+
+        # Deduplicate warnings (keep first occurrence per unique text) and append.
+        if warning_lines:
+            deduped, dropped_dup_warnings = _dedup_lines(warning_lines, max_per_key=1)
+        else:
+            deduped, dropped_dup_warnings = [], 0
+        kept.extend(deduped)
 
         notes: list[str] = []
         if install_count:
@@ -10183,8 +10342,7 @@ class PowerShellFilter(Filter):
         debug_count = 0
         install_module_count = 0
         progress_count = 0
-        seen_warnings: set[str] = set()
-        dup_warning_count = 0
+        warning_lines: list[str] = []
 
         for line in lines:
             # Terminating error detail lines: always keep
@@ -10203,14 +10361,9 @@ class PowerShellFilter(Filter):
             if _PWSH_DEBUG_RE.match(line):
                 debug_count += 1
                 continue
-            # WARNING lines: keep unique, deduplicate repeats
+            # WARNING lines: collect for deduplication.
             if _PWSH_WARNING_RE.match(line):
-                key = line.strip()
-                if key in seen_warnings:
-                    dup_warning_count += 1
-                else:
-                    seen_warnings.add(key)
-                    kept.append(line)
+                warning_lines.append(line)
                 continue
             # Install-Module progress lines
             if _PWSH_INSTALL_MODULE_RE.match(line):
@@ -10221,6 +10374,13 @@ class PowerShellFilter(Filter):
                 progress_count += 1
                 continue
             kept.append(line)
+
+        # Deduplicate WARNING lines (keep first occurrence) and append after body.
+        if warning_lines:
+            deduped, dup_warning_count = _dedup_lines(warning_lines, max_per_key=1)
+        else:
+            deduped, dup_warning_count = [], 0
+        kept.extend(deduped)
 
         notes: list[str] = []
         if verbose_count:
