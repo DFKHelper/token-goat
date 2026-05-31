@@ -184,6 +184,12 @@ __all__ = [
     "PhpStanFilter",
     # Swift linter
     "SwiftLintFilter",
+    # Bun JS runtime
+    "BunFilter",
+    # Deno JS/TS runtime
+    "DenoFilter",
+    # Biome JS/TS linter/formatter
+    "BiomeFilter",
 ]
 
 import math
@@ -3906,16 +3912,18 @@ class LinterFilter(Filter):
 
     * **pyright**: ``src/foo.py:3: error: incompatible type``
     * **pylint**: similar: falls through to dedupe_by_key.
-    * **tsc / stylelint / biome / rome**: stanza-style (like ESLint).
+    * **tsc / stylelint / rome**: stanza-style (like ESLint).
 
     Note: ``eslint`` is handled by the more specific :class:`ESLintFilter`
+    which is registered before this filter in ``FILTERS``.
+    Note: ``biome`` is handled by the more specific :class:`BiomeFilter`
     which is registered before this filter in ``FILTERS``.
     """
 
     name = "linter"
     binaries = frozenset([
         "pyright", "pylint", "tsc",
-        "stylelint", "biome", "rome",
+        "stylelint", "rome",
     ])
 
     def compress(
@@ -14006,6 +14014,575 @@ def _pylint_code_name(line: str) -> str:
     return m.group(1) if m else "?"
 
 
+# --- Bun -------------------------------------------------------------------
+
+#: bun install per-package download progress: "  foo@1.0.0 ↕ 100 kB"
+_BUN_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\S+@\S+\s+(?:↕|↑|↓|\[downloading\]|\[installed\]|\[cached\])",
+    re.IGNORECASE,
+)
+#: bun install lockfile / summary lines to always keep
+_BUN_INSTALL_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Saved\s+lockfile|No\s+changes|"
+    r"installed|packages\s+installed|Resolving|Resolved|"
+    r"\d+\s+package[s]?\s+(?:installed|removed|updated|added)|"
+    r"bun\s+install\s+v)",
+    re.IGNORECASE,
+)
+#: bun test result header per file: "bun test v1.0.0 (hash)" and timing
+_BUN_TEST_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^bun\s+test\s+v\d|^---+\s*$|^\s*\d+\s+tests?\s+(?:passed|failed|skipped)"
+    r"|\d+\s+(?:pass|fail|skip)",
+    re.IGNORECASE,
+)
+#: bun test individual PASS line: " ✓ test name (N ms)"
+_BUN_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*✓\s+",
+)
+#: bun test individual FAIL line: " ✗ test name" (keep always)
+_BUN_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:✗|×|FAIL|✕)\s+",
+    re.IGNORECASE,
+)
+#: bun build asset lines: "chunk … (N kB)"
+_BUN_BUILD_ASSET_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:chunk|asset|dist/|build/|\./)\S+\s+[\d.]+\s+(?:kB|MB|B)",
+    re.IGNORECASE,
+)
+#: bun build summary: "[N files] (N kB)"
+_BUN_BUILD_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[\d+\]\s+\[[\d.]+\s*(?:kB|MB|B)\]"
+    r"|^\s*\d+\s+file[s]?\s+built"
+    r"|Done in|Build succeeded|Build failed",
+    re.IGNORECASE,
+)
+
+
+class BunFilter(Filter):
+    """Compress ``bun install`` / ``bun test`` / ``bun build`` output.
+
+    Bun is a fast JavaScript runtime and package manager.  Each subcommand
+    has distinct verbosity patterns.
+
+    Compression model for ``bun install`` / ``bun add`` / ``bun remove``:
+
+    * **Drop** per-package download/resolution progress lines.
+    * **Keep** lockfile save notice, install summary ("N packages installed"),
+      and version header.
+    * **Keep** all ``error:`` / ``warn:`` lines verbatim.
+
+    Compression model for ``bun test``:
+
+    * **Drop** individual PASS (✓) lines — keep only FAIL (✗) lines.
+    * **Keep** timing header, pass/fail/skip summary, and error details.
+    * Pass-through when total output ≤ 30 lines (output is already compact).
+
+    Compression model for ``bun build``:
+
+    * **Drop** individual asset/chunk output lines when there are > 10 of them
+      (collapse to a count note).
+    * **Keep** the build summary line ("N files built in Xms").
+    * **Keep** all error lines verbatim.
+    """
+
+    name = "bun"
+    binaries = frozenset(["bun", "bunx"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        return stem in self.binaries
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = [tok for tok in argv[1:] if not tok.startswith("-")]
+        subcmd = positionals[0].lower() if positionals else ""
+
+        merged = self._combine_output(stdout, stderr)
+
+        if subcmd in ("install", "add", "remove", "i"):
+            return self._compress_install(merged)
+        if subcmd in ("test",):
+            return self._compress_test(merged)
+        if subcmd in ("build",):
+            return self._compress_build(merged)
+
+        # Generic pass-through for bun run, bun x, etc.
+        lines = merged.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+        if len(non_empty) <= 80:
+            return merged.rstrip()
+        return _head_tail_compress(non_empty, head=60, tail=20, label="lines").rstrip()
+
+    def _compress_install(self, text: str) -> str:
+        lines = text.split("\n")
+        kept: list[str] = []
+        progress_dropped = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _BUN_INSTALL_SUMMARY_RE.search(line):
+                kept.append(line)
+                continue
+            if _BUN_DOWNLOAD_RE.match(line):
+                progress_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if progress_dropped:
+            notes.append(f"collapsed {progress_dropped} per-package download/resolution lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_test(self, text: str) -> str:
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        # Already compact — pass through.
+        if len(non_empty) <= 30:
+            return text.rstrip()
+
+        kept: list[str] = []
+        passes_dropped = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _BUN_TEST_FAIL_RE.match(line):
+                kept.append(line)
+                continue
+            if _BUN_TEST_HEADER_RE.match(line):
+                kept.append(line)
+                continue
+            if _BUN_TEST_PASS_RE.match(line):
+                passes_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if passes_dropped:
+            notes.append(f"collapsed {passes_dropped} passing test lines (✓)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_build(self, text: str) -> str:
+        lines = text.split("\n")
+        kept: list[str] = []
+        asset_lines: list[str] = []
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                # Flush asset buffer first.
+                if asset_lines:
+                    self._flush_assets(kept, asset_lines)
+                    asset_lines = []
+                kept.append(line)
+                continue
+            if _BUN_BUILD_SUMMARY_RE.search(line):
+                if asset_lines:
+                    self._flush_assets(kept, asset_lines)
+                    asset_lines = []
+                kept.append(line)
+                continue
+            if _BUN_BUILD_ASSET_RE.match(line):
+                asset_lines.append(line)
+                continue
+            kept.append(line)
+
+        # Flush any trailing asset lines.
+        if asset_lines:
+            self._flush_assets(kept, asset_lines)
+
+        return self._finalize(kept)
+
+    @staticmethod
+    def _flush_assets(kept: list[str], asset_lines: list[str]) -> None:
+        _THRESHOLD = 10
+        if len(asset_lines) <= _THRESHOLD:
+            kept.extend(asset_lines)
+        else:
+            kept.extend(asset_lines[:_THRESHOLD])
+            remaining = len(asset_lines) - _THRESHOLD
+            kept.append(
+                f"[token-goat: {remaining} more asset/chunk lines elided; "
+                "run `bun build` for full output]"
+            )
+
+
+# --- Deno ------------------------------------------------------------------
+
+#: deno test pass lines: "ok | test name ... N ms"
+_DENO_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:ok\s+\||\bpassed\b|✓)\s+",
+    re.IGNORECASE,
+)
+#: deno test fail lines — keep
+_DENO_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:FAILED|not\s+ok\s+\||✗|failed)\s*",
+    re.IGNORECASE,
+)
+#: deno test summary line: "test result: ok. N passed; N failed ..."
+_DENO_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^test\s+result:|^(?:ok\.|FAILED\.)\s+\d+\s+passed",
+    re.IGNORECASE,
+)
+#: deno compile / check progress: "Check file://..."
+_DENO_CHECK_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Check\s+(?:file://|https?://)",
+    re.IGNORECASE,
+)
+#: deno permission warnings
+_DENO_PERM_WARN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Deno\s+requests|Warning:\s+(?:--allow-|Deno\.|Granted))",
+    re.IGNORECASE,
+)
+#: deno download / cache lines: "Download https://..."
+_DENO_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Download\s+https?://",
+    re.IGNORECASE,
+)
+#: deno compile output artifacts: "Compile file://... -> ./binary"
+_DENO_COMPILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Compile\s+",
+    re.IGNORECASE,
+)
+
+
+class DenoFilter(Filter):
+    """Compress ``deno test`` / ``deno compile`` / ``deno check`` output.
+
+    Deno is a modern JavaScript/TypeScript runtime.  Its subcommands produce
+    characteristic verbosity that can be aggressively condensed.
+
+    Compression model for ``deno test``:
+
+    * **Drop** individual passing test lines (``ok | test name … N ms``).
+    * **Drop** ``Download https://…`` module cache lines.
+    * **Keep** failing test lines (``FAILED | …``) verbatim.
+    * **Keep** ``test result:`` summary lines.
+    * Pass-through when total output ≤ 30 lines.
+
+    Compression model for ``deno compile``:
+
+    * **Drop** ``Download https://…`` module fetch lines — collapse to count.
+    * **Keep** ``Compile …`` and build artifact lines.
+    * **Keep** any error lines.
+
+    Compression model for ``deno check`` / ``deno lint``:
+
+    * **Drop** ``Check file://…`` / ``Check https://…`` progress lines.
+    * **Keep** all diagnostic (error/warning) lines verbatim.
+    * Pass-through when output is short.
+
+    Permission warnings (``Deno requests …``) are kept verbatim regardless
+    of subcommand — they signal missing ``--allow-*`` flags.
+    """
+
+    name = "deno"
+    binaries = frozenset(["deno"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        positionals = [tok for tok in argv[1:] if not tok.startswith("-")]
+        subcmd = positionals[0].lower() if positionals else ""
+
+        merged = self._combine_output(stdout, stderr)
+
+        if subcmd == "test":
+            return self._compress_test(merged)
+        if subcmd in ("compile", "bundle"):
+            return self._compress_compile(merged)
+        if subcmd in ("check", "lint", "fmt"):
+            return self._compress_check(merged)
+
+        # Generic: drop download lines; pass through the rest.
+        return self._compress_generic(merged)
+
+    def _compress_test(self, text: str) -> str:
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+        if len(non_empty) <= 30:
+            return text.rstrip()
+
+        kept: list[str] = []
+        passes_dropped = 0
+        downloads_dropped = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _DENO_TEST_FAIL_RE.match(line):
+                kept.append(line)
+                continue
+            if _DENO_TEST_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            if _DENO_PERM_WARN_RE.match(line):
+                kept.append(line)
+                continue
+            if _DENO_DOWNLOAD_RE.match(line):
+                downloads_dropped += 1
+                continue
+            if _DENO_TEST_PASS_RE.match(line):
+                passes_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if passes_dropped:
+            notes.append(f"collapsed {passes_dropped} passing test lines")
+        if downloads_dropped:
+            notes.append(f"dropped {downloads_dropped} module download/cache lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_compile(self, text: str) -> str:
+        lines = text.split("\n")
+        kept: list[str] = []
+        downloads_dropped = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _DENO_PERM_WARN_RE.match(line):
+                kept.append(line)
+                continue
+            if _DENO_COMPILE_RE.match(line):
+                kept.append(line)
+                continue
+            if _DENO_DOWNLOAD_RE.match(line):
+                downloads_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if downloads_dropped:
+            notes.append(f"dropped {downloads_dropped} module download lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_check(self, text: str) -> str:
+        lines = text.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+        if len(non_empty) <= 30:
+            return text.rstrip()
+
+        kept: list[str] = []
+        check_dropped = 0
+        downloads_dropped = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _DENO_PERM_WARN_RE.match(line):
+                kept.append(line)
+                continue
+            if _DENO_CHECK_PROGRESS_RE.match(line):
+                check_dropped += 1
+                continue
+            if _DENO_DOWNLOAD_RE.match(line):
+                downloads_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if check_dropped:
+            notes.append(f"dropped {check_dropped} Check progress lines")
+        if downloads_dropped:
+            notes.append(f"dropped {downloads_dropped} module download lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_generic(self, text: str) -> str:
+        lines = text.split("\n")
+        kept: list[str] = []
+        downloads_dropped = 0
+
+        for line in lines:
+            if _DENO_PERM_WARN_RE.match(line):
+                kept.append(line)
+                continue
+            if _DENO_DOWNLOAD_RE.match(line):
+                downloads_dropped += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if downloads_dropped:
+            notes.append(f"dropped {downloads_dropped} module download lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- Biome -----------------------------------------------------------------
+
+#: Biome diagnostic file header: "/path/to/file.ts graphql/noUndefinedVariables"
+#: or just "file.ts"  with a rule on the next line
+_BIOME_FILE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:/|[A-Za-z]:\\|\.{1,2}/)\S+\.[a-z]+\s*$"
+    r"|^[^\s/]+\.[a-z]+\s+(?:lint/|format/|assists/)\S+",
+    re.IGNORECASE,
+)
+#: Biome diagnostic location: "  NN │ code snippet"
+_BIOME_SOURCE_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\d+\s+[│|]\s"
+)
+#: Biome action hint: "  i Use X instead."  or  "  ℹ Note:"
+_BIOME_HINT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:[iℹ]|ℹ️|Note:)\s+"
+)
+#: Biome rule violation line: "  × some/rule/name ━━━"
+_BIOME_RULE_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+[×✖✕]\s+\S+/\S+\s+(?:━+|─+)"
+)
+#: Biome summary line: "Found N diagnostics in N files in Xms"
+_BIOME_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Found\s+\d+\s+diagnostic|^Checked\s+\d+\s+file|^Formatted\s+\d+\s+file"
+    r"|^\d+\s+(?:error|warning|info)",
+    re.IGNORECASE,
+)
+#: Biome "Caution" / "note:" context annotation lines
+_BIOME_ANNOTATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:Caution:|note:|help:|suggestion:)\s+",
+    re.IGNORECASE,
+)
+
+
+class BiomeFilter(Filter):
+    """Compress ``biome check`` / ``biome lint`` / ``biome format`` output.
+
+    Biome (formerly Rome) is a fast JS/TS linter and formatter.  It emits
+    verbose per-file diagnostic stanzas with source excerpts, rule names,
+    and action hints.  On a large project these stanzas easily run to
+    hundreds of lines for the same handful of rules.
+
+    Compression model:
+
+    * **Group** diagnostics by rule name across all files.
+    * **Keep** up to 3 diagnostic stanzas per rule (file header + rule
+      violation line + up to 2 source excerpt lines).  Additional stanzas
+      for the same rule are collapsed to a single count note.
+    * **Drop** source-excerpt lines (``NN │ code``) beyond the first 2 per
+      stanza — they are context that the agent does not need repeated.
+    * **Drop** per-stanza action hint lines (``i Use X instead.``) — the
+      rule name carries the fix information.
+    * **Keep** the ``Found N diagnostics`` summary line verbatim.
+    * **Keep** all ``error:`` / ``Error`` lines verbatim.
+    * Pass-through when output ≤ 40 lines (already compact).
+    """
+
+    name = "biome"
+    binaries = frozenset(["biome", "@biomejs/biome"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Handle "npx biome" and "pnpx biome".  "bunx biome" is intentionally
+        # NOT claimed here: `bunx` is claimed by BunFilter which appears earlier
+        # in FILTERS; bunx commands that don't match a specific bun subcommand
+        # fall through to BunFilter's generic pass-through.
+        if stem in ("npx", "pnpx") and len(argv) > 1:
+            return argv[1].lower() in ("biome", "@biomejs/biome")
+        return stem == "biome"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        non_empty = [ln for ln in lines if ln.strip()]
+
+        if len(non_empty) <= 40:
+            return merged.rstrip()
+
+        # Walk stanzas: each stanza is bounded by a file-header-like line or
+        # rule-violation line.  We group by rule code and keep the first 3
+        # complete stanzas per rule.
+        kept: list[str] = []
+        rule_count: dict[str, int] = {}  # rule → stanzas kept
+        rule_collapsed: dict[str, int] = {}  # rule → stanzas collapsed
+        in_stanza: bool = False
+        current_rule: str = ""
+        stanza_lines: list[str] = []
+        source_lines_in_stanza = 0
+        _MAX_STANZAS_PER_RULE = 3
+        _MAX_SOURCE_LINES = 2
+
+        def flush_stanza() -> None:
+            nonlocal stanza_lines, source_lines_in_stanza
+            if not stanza_lines:
+                return
+            rule = current_rule
+            kept_count = rule_count.get(rule, 0)
+            if kept_count < _MAX_STANZAS_PER_RULE:
+                rule_count[rule] = kept_count + 1
+                kept.extend(stanza_lines)
+            else:
+                rule_collapsed[rule] = rule_collapsed.get(rule, 0) + 1
+            stanza_lines = []
+            source_lines_in_stanza = 0
+
+        for line in lines:
+            # Summary lines always pass through.
+            if _BIOME_SUMMARY_RE.match(line):
+                flush_stanza()
+                in_stanza = False
+                kept.append(line)
+                continue
+            # Error signals always pass through.
+            if _ERROR_SIGNAL_RE.search(line) and not _BIOME_SOURCE_LINE_RE.match(line):
+                flush_stanza()
+                in_stanza = False
+                kept.append(line)
+                continue
+            # Rule violation line starts a new stanza.
+            if _BIOME_RULE_LINE_RE.match(line):
+                flush_stanza()
+                m = re.search(r"(\S+/\S+)", line)
+                current_rule = m.group(1) if m else "unknown"
+                in_stanza = True
+                stanza_lines = [line]
+                source_lines_in_stanza = 0
+                continue
+            if not in_stanza:
+                kept.append(line)
+                continue
+            # Inside a stanza: apply per-line rules.
+            if _BIOME_HINT_RE.match(line) or _BIOME_ANNOTATION_RE.match(line):
+                # Drop action hints and annotations.
+                continue
+            if _BIOME_SOURCE_LINE_RE.match(line):
+                if source_lines_in_stanza < _MAX_SOURCE_LINES:
+                    stanza_lines.append(line)
+                    source_lines_in_stanza += 1
+                # Else drop: we already have enough context.
+                continue
+            stanza_lines.append(line)
+
+        flush_stanza()
+
+        # Emit collapse notes for rules that had stanzas dropped.
+        if rule_collapsed:
+            for rule, cnt in sorted(rule_collapsed.items()):
+                kept.append(
+                    f"[token-goat: +{cnt} more {rule} diagnostic(s) elided; "
+                    "run `biome check` for full output]"
+                )
+
+        return self._finalize(kept)
+
+
 # ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
@@ -14023,9 +14600,12 @@ FILTERS: list[Filter] = [
     CargoFilter(),
     # PnpmFilter and YarnFilter are more specific than NodePackageFilter and must
     # precede it so that pnpm/yarn commands get dedicated compression rather than
-    # the generic npm/pnpm/yarn/bun handler.
+    # the generic npm/pnpm/yarn/bun handler.  BunFilter also precedes
+    # NodePackageFilter so that `bun install/test/build` get dedicated
+    # compression rather than the generic npm/pnpm/yarn/bun fallback.
     PnpmFilter(),
     YarnFilter(),
+    BunFilter(),
     NodePackageFilter(),
     # NxFilter handles `nx` (Nx monorepo) and `npx nx` / `pnpx nx`.  Must
     # follow NodePackageFilter so that plain `npx <not-nx>` still routes to
@@ -14090,6 +14670,11 @@ FILTERS: list[Filter] = [
     PylintFilter(),
     OxlintFilter(),
     ESLintFilter(),
+    # BiomeFilter precedes LinterFilter: LinterFilter claims `biome` as a
+    # fallback binary; BiomeFilter provides richer stanza-level compression
+    # grouped by rule across all files.  BiomeFilter.matches() also handles
+    # `npx biome` / `bunx biome`.
+    BiomeFilter(),
     LinterFilter(),
     GrepFilter(),
     # Dedicated git sub-filters must precede GitFilter: each claims a specific
@@ -14168,6 +14753,10 @@ FILTERS: list[Filter] = [
     # SwiftLintFilter handles `swiftlint`; disjoint from SwiftFilter (which claims
     # `swift build/test/run`).  Position is cosmetic.
     SwiftLintFilter(),
+    # DenoFilter handles `deno test/compile/check/lint/fmt`.  Disjoint binary
+    # from every other filter so position is cosmetic — placed alongside other
+    # JS runtime / tooling filters.
+    DenoFilter(),
     # CmakeFilter precedes MakeFilter so cmake's configure/build output gets
     # the specialised percentage-line collapsing; cmake can also drive make
     # but cmake --build wraps the actual build system transparently.
