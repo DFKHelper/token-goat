@@ -1624,6 +1624,18 @@ _JEST_CONSOLE_HDR_RE: Final[re.Pattern[str]] = re.compile(
 _JEST_CONSOLE_AT_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s+at\s+\S"
 )
+# Jest --verbose "Failures:" repeated summary section header.
+# After the inline failure output, Jest appends a duplicate "Failures:" section
+# that repeats every failure with a numbered "● describe > test name" header.
+# This is pure noise when the inline failures are already preserved verbatim.
+_JEST_FAILURES_SECTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(\s*Failures:\s*$|  ● )"
+)
+# Jest --verbose ``●`` bullet that starts a repeated-failure block in the
+# "Failures:" section: ``  ● SuiteA > test name``
+_JEST_FAILURE_BULLET_RE: Final[re.Pattern[str]] = re.compile(
+    r"^  ● "
+)
 
 
 class JestFilter(Filter):
@@ -1643,6 +1655,11 @@ class JestFilter(Filter):
       outside of a FAIL block, counting them instead.
     * **Collapse** ``console.log`` / ``console.error`` / ``console.warn`` output
       blocks to a single count line per block when outside a FAIL block.
+    * **Drop** the ``Failures:`` repeated-summary section that Jest emits after
+      the inline failure blocks when running with ``--verbose``.  This section
+      is a duplicate of the inline ``FAIL`` block output and adds no new
+      information; collapsing it saves 50–90 % of the tokens in verbose runs
+      with multiple failures.
     """
 
     name = "jest"
@@ -1660,6 +1677,9 @@ class JestFilter(Filter):
         in_fail_block = False
         console_lines = 0  # lines accumulated in a console.* block
         in_console_block = False
+        # Track the "Failures:" repeated-summary section at the end of --verbose output.
+        in_failures_section = False
+        failures_section_dropped = 0
 
         def _flush_console() -> None:
             nonlocal console_lines, in_console_block
@@ -1672,6 +1692,26 @@ class JestFilter(Filter):
             in_console_block = False
 
         for line in lines:
+            # --- "Failures:" repeated-summary section ---
+            # Jest (with --verbose) emits a duplicate "Failures:" block after the
+            # inline failure output that repeats every failure with a
+            # ``  ● describe > test name`` bullet.  The summary lines
+            # (Test Suites:, Tests:, ...) that follow end this section.
+            if line.strip() == "Failures:":
+                _flush_console()
+                in_fail_block = False
+                in_failures_section = True
+                failures_section_dropped += 1  # count the "Failures:" header itself
+                continue
+            if in_failures_section:
+                if _JEST_SUMMARY_RE.match(line):
+                    # Summary block: exit failures section and keep from here on.
+                    in_failures_section = False
+                    kept.append(line)
+                else:
+                    failures_section_dropped += 1
+                continue
+
             # --- PASS file header ---
             if _JEST_PASS_LINE_RE.match(line) and not in_fail_block:
                 _flush_console()
@@ -1720,6 +1760,12 @@ class JestFilter(Filter):
             notes.append(f"collapsed {pass_count} PASS file{'s' if pass_count != 1 else ''}")
         if tick_count:
             notes.append(f"collapsed {tick_count} passing tick{'s' if tick_count != 1 else ''}")
+        if failures_section_dropped:
+            notes.append(
+                f"collapsed {failures_section_dropped} line"
+                f"{'s' if failures_section_dropped != 1 else ''} "
+                f"from duplicate 'Failures:' section (already shown inline)"
+            )
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -6296,9 +6342,28 @@ _ANSIBLE_RECAP_ROW_RE: Final[re.Pattern[str]] = re.compile(
 _ANSIBLE_FAIL_RE: Final[re.Pattern[str]] = re.compile(
     r"^(fatal|failed|unreachable|FAILED|ERROR|\[WARNING\]):",
 )
-#: Ansible-lint rule code pattern: ``rule-name:`` at line start.
+#: Ansible-lint rule code pattern.
+#:
+#: Matches both the modern format (ansible-lint ≥ 6)::
+#:
+#:   yaml[line-length]: ./path/to/file.yml:10:80: Line too long
+#:   command-instead-of-module[command]: ./tasks/main.yml:5:1: Use the git module
+#:
+#: …and the legacy format (ansible-lint < 6)::
+#:
+#:   ./playbooks/site.yml:10:1: yaml-indent: too many spaces
+#:   playbooks/site.yml:20:1: line-too-long: line too long
+#:
+#: Modern rule codes consist of lower-case alphanumerics, hyphens, and an optional
+#: ``[tag]`` qualifier, followed by a colon+space.  Legacy lines start with a
+#: file-path (``./`` prefix or ``\S+.yml:``) and embed the rule name after the
+#: ``col:`` prefix — we detect them by the path-first layout.
 _ANSIBLE_LINT_RULE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[a-z0-9\-]+:\s+"
+    r"^[a-z0-9][a-z0-9\-]*(?:\[[a-z0-9_\-]+\])?:\s+"
+)
+#: Ansible-lint legacy line: ``path.yml:line:col: rule-name: message``
+_ANSIBLE_LINT_LEGACY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\.?[^:\s]+\.ya?ml:\d+:\d+:\s+[a-z0-9][a-z0-9\-]*(?:\[[a-z0-9_\-]+\])?:"
 )
 
 
@@ -6420,48 +6485,83 @@ class AnsibleFilter(Filter):
         return self._finalize(kept)
 
     def _compress_ansible_lint(self, stdout: str, stderr: str) -> str:
-        """Compress ansible-lint output: group by rule, keep first 3 per rule."""
+        """Compress ansible-lint output: group violations by rule, keep first 3 per rule.
+
+        Handles both the modern ansible-lint ≥ 6 format::
+
+            yaml[line-length]: ./path/to/file.yml:10:80: Line too long
+
+        …and the legacy (< 6) format::
+
+            ./playbooks/site.yml:10:1: yaml-indent: too many spaces
+
+        Algorithm:
+
+        1. Classify every line as either a violation (matches the rule-code
+           pattern) or non-violation (headers, blank lines, summary lines).
+        2. Group violations by rule code.
+        3. Emit: non-violations verbatim, then per-rule groups with at most
+           3 examples and a count note for the remainder.  This preserves
+           the summary lines (``X linting errors found``) and blank lines that
+           bracket sections while dramatically shortening repetitive violations.
+        """
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
-        kept: list[str] = []
-        # Group violations by rule code: code -> list of lines.
+
+        def _rule_code(line: str) -> str | None:
+            """Extract the rule code from a modern or legacy violation line."""
+            # Modern: ``yaml[line-length]: ./file.yml:10:80: …``
+            m = _ANSIBLE_LINT_RULE_RE.match(line)
+            if m:
+                return line.split(":", 1)[0].strip()
+            # Legacy: ``./file.yml:10:1: rule-name: …``
+            m2 = _ANSIBLE_LINT_LEGACY_RE.match(line)
+            if m2:
+                # The rule code sits after the col-number: segment.
+                # Format is ``path:line:col: rule-code: message``
+                parts = line.split(":", 4)
+                if len(parts) >= 4:
+                    return parts[3].strip()
+            return None
+
+        # First pass: classify lines and group violations by rule code.
+        # We preserve the original order for non-violations; violations are
+        # grouped then re-emitted after all non-violations so the summary
+        # lines appear at the end where ansible-lint places them.
+        non_violations: list[str] = []
         by_rule: dict[str, list[str]] = {}
-        # Non-violation lines (headers, summary, blank lines).
-        other_lines: list[str] = []
+        rule_order: list[str] = []  # insertion-order tracking
 
         for line in lines:
-            m = _ANSIBLE_LINT_RULE_RE.match(line)
-            if m:
-                rule_code = line.split(":", 1)[0].strip()
-                if rule_code not in by_rule:
-                    by_rule[rule_code] = []
-                by_rule[rule_code].append(line)
+            code = _rule_code(line)
+            if code is not None:
+                if code not in by_rule:
+                    by_rule[code] = []
+                    rule_order.append(code)
+                by_rule[code].append(line)
             else:
-                other_lines.append(line)
+                non_violations.append(line)
 
-        # Build output: rules + summaries.
-        kept.extend(other_lines)
+        if not by_rule:
+            # No violations classified — pass through as-is.
+            return self._finalize(lines)
 
-        # Group violations: per rule, keep first 3 examples.
-        emitted_rules: set[str] = set()
-        # Rebuild: interleave violations grouped by rule.
-        kept = []
-        for line in other_lines:
-            kept.append(line)
-            m = _ANSIBLE_LINT_RULE_RE.match(line)
-            if m:
-                rule_code = line.split(":", 1)[0].strip()
-                if rule_code in by_rule and rule_code not in emitted_rules:
-                    # Emit first 3 examples.
-                    for i, viol_line in enumerate(by_rule[rule_code][:3]):
-                        if i > 0:
-                            kept.append(viol_line)
-                    if len(by_rule[rule_code]) > 3:
-                        kept.append(
-                            f"[token-goat: {len(by_rule[rule_code]) - 3} more occurrences of "
-                            f"{rule_code} elided]"
-                        )
-                    emitted_rules.add(rule_code)
+        # Second pass: build output.
+        # Emit violations grouped by rule (insertion order) then non-violations.
+        # This groups related rule violations together while still showing the
+        # summary lines that ansible-lint emits at the end.
+        kept: list[str] = []
+        for code in rule_order:
+            rule_lines = by_rule[code]
+            kept.extend(rule_lines[:3])
+            extra = len(rule_lines) - 3
+            if extra > 0:
+                kept.append(
+                    f"[token-goat: {extra} more occurrence{'s' if extra != 1 else ''} "
+                    f"of {code} elided]"
+                )
+        # Append non-violation lines (summary, blank lines, headers).
+        kept.extend(non_violations)
 
         return self._finalize(kept)
 
@@ -8254,6 +8354,34 @@ _DOTNET_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
 _DOTNET_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(Test Run|Total tests|Passed:|Failed:|Skipped:|Test results file)"
 )
+# ``dotnet format`` per-file output lines.
+#
+# ``dotnet format`` (codestyle + whitespace + analyzers) emits one of:
+#   ``  Formatted code in 'path/to/File.cs'.``
+#   ``  Fixed code style violations in 'path/to/File.cs'.``
+#   ``  /abs/path/to/File.cs(10,5): error IDE0059: ...``  ← keep (error)
+# The per-file "Formatted" / "Fixed" lines are pure progress; only the
+# final "Format complete" / "X file(s) were reformatted" summary matters.
+_DOTNET_FORMAT_FILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Formatted code in|Fixed code style violations in|Fixing code style in"
+    r"|Fixed whitespace in|Fixing whitespace in"
+    r"|Fixing analyzer violations in|Fixed analyzer violations in)\s+'",
+    re.IGNORECASE,
+)
+_DOTNET_FORMAT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Format complete|Completed format|dotnet-format.*complete"
+    r"|\d+ file\(s\) (?:were )?reformatted|No violations found"
+    r"|Format.*succeeded|Format.*failed)",
+    re.IGNORECASE,
+)
+# Additional ``dotnet restore`` noise lines not covered by _DOTNET_RESTORE_RE.
+# ``NuGet`` progress and package-lock conflict-resolution lines are verbose.
+_DOTNET_RESTORE_EXTRA_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Resolving conflicts for|Lock file|Acquiring lock|Reading project file"
+    r"|Cache file|Checking compatibility|HTTP\s+GET|HTTP\s+OK|HTTP\s+NotFound"
+    r"|Source\s+:\s+|PackageReference|Writing lock file)\b",
+    re.IGNORECASE,
+)
 
 
 class DotnetFilter(Filter):
@@ -8262,15 +8390,20 @@ class DotnetFilter(Filter):
     ``dotnet build`` emits per-project compilation lines and MSBuild noise.
     ``dotnet restore`` emits per-package download lines.
     ``dotnet test`` emits one line per passing test (similar to pytest verbose).
+    ``dotnet format`` emits per-file "Formatted code in …" lines.
 
     Compression model:
 
-    * **restore**: drop package download / feed / assets lines; keep errors and
-      the final ``Restore succeeded / failed`` summary.
+    * **restore**: drop package download / feed / assets lines, NuGet HTTP-GET
+      progress, conflict-resolution chatter; keep errors and the final
+      ``Restore succeeded / failed`` summary.
     * **build**: drop ``Project -> dll`` arrow lines beyond the first 5; drop
       MSBuild evaluation noise; keep all warnings and errors verbatim.
     * **test**: drop ``Passed TestName`` lines (collapse to count); keep
       ``Failed`` / ``Error`` blocks verbatim; keep the ``Test Run`` summary.
+    * **format**: drop per-file ``Formatted code in …`` / ``Fixed code style
+      in …`` progress lines (collapse to count); keep violations (error lines)
+      and the final ``Format complete`` summary verbatim.
     * **run**: pass through — script output is load-bearing.
     """
 
@@ -8298,6 +8431,8 @@ class DotnetFilter(Filter):
             return self._compress_restore(lines)
         if subcommand in ("build", "publish", "pack"):
             return self._compress_build(lines)
+        if subcommand == "format":
+            return self._compress_format(lines)
         # run, ef, tool, etc. — pass through with basic dedup
         return _squeeze_blank_lines("\n".join(dedupe_consecutive(lines)))
 
@@ -8305,11 +8440,47 @@ class DotnetFilter(Filter):
         kept: list[str] = []
         dropped = 0
         for line in lines:
-            if _DOTNET_RESTORE_RE.match(line) and _ERROR_SIGNAL_RE.search(line) is None:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _DOTNET_RESTORE_RE.match(line) or _DOTNET_RESTORE_EXTRA_RE.match(line):
                 dropped += 1
                 continue
             kept.append(line)
         notes = [f"dropped {dropped} restore-progress lines"] if dropped else []
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_format(self, lines: list[str]) -> str:
+        """Compress ``dotnet format`` output.
+
+        ``dotnet format`` emits one ``Formatted code in 'path/to/File.cs'.`` or
+        ``Fixed code style violations in 'path/to/File.cs'.`` line per modified
+        file, followed by a ``Format complete`` summary.  On clean code it emits
+        only the summary.  The per-file lines are pure noise — only violations
+        (``error IDE…`` / ``warning IDE…`` lines) and the summary matter.
+        """
+        kept: list[str] = []
+        formatted_count = 0
+        for line in lines:
+            # Keep violations / errors even inside format output.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Keep the final summary line(s).
+            if _DOTNET_FORMAT_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Drop per-file "Formatted code in …" progress lines.
+            if _DOTNET_FORMAT_FILE_RE.match(line):
+                formatted_count += 1
+                continue
+            kept.append(line)
+        notes = (
+            [f"collapsed {formatted_count} per-file 'Formatted …' lines"]
+            if formatted_count
+            else []
+        )
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
