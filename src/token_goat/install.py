@@ -413,7 +413,7 @@ def install_linux_autostart() -> tuple[bool, str]:
 
     if _systemd_user_available():
         svc_dir = _systemd_user_dir()
-        svc_dir.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(svc_dir)
         svc_path = _systemd_service_path()
         svc_path.write_text(
             "[Unit]\n"
@@ -470,7 +470,7 @@ def install_linux_autostart() -> tuple[bool, str]:
     # Fallback: XDG autostart .desktop file. Works on desktop sessions (GNOME,
     # KDE, XFCE). On WSL the SessionStart watchdog fills the gap.
     desktop = _xdg_autostart_path()
-    desktop.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(desktop.parent)
     desktop.write_text(
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -637,7 +637,7 @@ def install_mac_autostart() -> tuple[bool, str]:
 
     cmd_args = paths.python_runner_argv("worker", "--daemon")
     plist_path = _launchd_plist_path()
-    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(plist_path.parent)
 
     # XML-escape every argument and path to guard against injection when a
     # homedir or binary path contains characters special to XML (<, >, &, ", ').
@@ -645,7 +645,7 @@ def install_mac_autostart() -> tuple[bool, str]:
         f"        <string>{_xml_escape(arg)}</string>" for arg in cmd_args
     )
     log_dir = paths.logs_dir()
-    log_dir.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(log_dir)
 
     plist_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -777,7 +777,7 @@ def _write_hook_wrapper() -> Path:
     safe and picks up any change in the interpreter path.
     """
     wrapper_path = paths.hook_wrapper_path()
-    wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(wrapper_path.parent)
     content = paths.hook_wrapper_content()
     paths.atomic_write_text(wrapper_path, content)
     if sys.platform != "win32":
@@ -971,7 +971,7 @@ def _write_settings_json(settings_path: Path, data: dict[str, object]) -> None:
 def patch_settings_json() -> tuple[bool, str]:
     """Add token-goat hooks to ~/.claude/settings.json idempotently. Preserves other hooks."""
     settings_path = claude_settings_path()
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(settings_path.parent)
 
     if settings_path.exists():
         try:
@@ -1065,7 +1065,7 @@ def _patch_md_block(md_path: Path, begin_marker: str, end_marker: str, content: 
     Extracted to eliminate the identical replace-or-append pattern duplicated
     in ``patch_claude_md`` and ``patch_codex_agents_md``.
     """
-    md_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(md_path.parent)
     block = f"{begin_marker}\n{content}\n{end_marker}"
 
     if md_path.exists():
@@ -1374,7 +1374,7 @@ SKILL_MD_CONTENT = (
 def write_skill() -> str:
     """Write the token-goat skill to the Claude Code skills directory."""
     sd = skill_dir()
-    sd.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(sd)
     skill_path = sd / "SKILL.md"
     skill_path.write_text(SKILL_MD_CONTENT, encoding="utf-8")
     _LOG.info("skill written: %s (%d bytes)", skill_path, len(SKILL_MD_CONTENT.encode()))
@@ -1427,7 +1427,7 @@ def patch_codex_config(binary: str) -> str:
     import tomli_w  # noqa: PLC0415
 
     cfg_path = codex_config_path()
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(cfg_path.parent)
 
     existing = tomllib.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
 

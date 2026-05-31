@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO, TypedDict, cast
 
-from .util import get_logger
+from .util import env_float, get_logger
 
 if sys.platform == "win32":
     import msvcrt
@@ -204,14 +204,12 @@ WORKER_RESTART_THROTTLE_SECS = 30.0
 # Prevents worker hang on pathologically large generated files (e.g. a 50 MB
 # minified JS bundle). Overridable via TOKEN_GOAT_INDEX_TIMEOUT_SECS env var.
 # The default 30 s gives tree-sitter plenty of time on realistic source files.
-INDEX_TIMEOUT_SECS: float = float(os.environ.get("TOKEN_GOAT_INDEX_TIMEOUT_SECS", "30"))
+INDEX_TIMEOUT_SECS: float = env_float("TOKEN_GOAT_INDEX_TIMEOUT_SECS", 30.0, lo=0.1)
 
 # Worker RSS threshold (MB) above which indexing is suspended and only eviction
 # runs, preventing OOM on repos with many large files.
 # Overridable via TOKEN_GOAT_MEMORY_PRESSURE_MB env var.
-MEMORY_PRESSURE_THRESHOLD_MB: float = float(
-    os.environ.get("TOKEN_GOAT_MEMORY_PRESSURE_MB", "500")
-)
+MEMORY_PRESSURE_THRESHOLD_MB: float = env_float("TOKEN_GOAT_MEMORY_PRESSURE_MB", 500.0, lo=1.0)
 
 # Consecutive failures before exponential backoff kicks in (per path).
 _BACKOFF_FAILURE_THRESHOLD = 3

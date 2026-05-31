@@ -142,7 +142,6 @@ __all__ = [
 ]
 
 import math
-import os
 import re
 import shlex
 from collections.abc import Callable, Iterable
@@ -151,7 +150,7 @@ from pathlib import Path
 from typing import Final
 
 from .render.ansi import strip_ansi
-from .util import get_logger
+from .util import env_int, get_logger
 
 _LOG = get_logger("bash_compress")
 
@@ -186,15 +185,8 @@ DEFAULT_MAX_INPUT_BYTES: Final[int] = 500 * 1024  # 500 KiB
 
 def _get_max_input_bytes() -> int:
     """Return the effective MAX_INPUT_BYTES cap (env override or default)."""
-    raw = os.environ.get("TOKEN_GOAT_FILTER_MAX_BYTES", "")
-    if raw.strip():
-        try:
-            val = int(raw.strip())
-            if val > 0:
-                return val
-        except ValueError:
-            pass
-    return DEFAULT_MAX_INPUT_BYTES
+    v = env_int("TOKEN_GOAT_FILTER_MAX_BYTES", 0)
+    return v if v > 0 else DEFAULT_MAX_INPUT_BYTES
 
 #: Trailing marker appended to every compressed output so the agent knows it is
 #: looking at a summary and can opt out if it needs the raw view.  Kept short
