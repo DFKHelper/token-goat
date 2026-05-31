@@ -1149,7 +1149,10 @@ class PytestFilter(Filter):
 # --- Jest / Vitest / Mocha -------------------------------------------------
 
 _JEST_PASS_LINE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*(?:PASS|✓|√)\s+\S"
+    # File-level PASS header: `PASS  src/foo.test.js` (optional leading spaces
+    # for indentation) OR a bare `✓`/`√` file header at column 0.  Per-test
+    # ticks are indented (2+ spaces before `✓`) and handled separately.
+    r"^(?:\s*PASS\s+\S|[✓√]\s+\S)"
 )
 _JEST_FAIL_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:FAIL|✗|×|✘)\s+\S"
@@ -1157,10 +1160,20 @@ _JEST_FAIL_LINE_RE: Final[re.Pattern[str]] = re.compile(
 _JEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
     r"^(Test Suites|Tests|Snapshots|Time|Ran all test suites):"
 )
+# console.log / console.error / console.warn header emitted by Jest's --verbose
+_JEST_CONSOLE_HDR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*console\.(log|error|warn|info|debug)\s"
+)
+# Indented console-output body lines (spaces/tabs then non-whitespace, inside a
+# console block.  We detect the block by tracking whether the previous line was
+# a console header or another body line at the same indent depth.)
+_JEST_CONSOLE_AT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+at\s+\S"
+)
 
 
 class JestFilter(Filter):
-    """Compress Jest / Vitest / Mocha output.
+    """Compress Jest / Mocha / Ava / Tap output.
 
     Jest emits ``PASS`` and ``FAIL`` headers per test file plus a final
     summary block.  Failures include diff-style output (``Expected`` /
@@ -1172,12 +1185,14 @@ class JestFilter(Filter):
     * **Keep** ``FAIL`` blocks with their full body (signature + diff).
     * **Keep** the final ``Test Suites: …`` / ``Tests: …`` / ``Snapshots: …``
       / ``Time: …`` summary lines.
-    * **Drop** the per-file pass list (``✓ should do thing (5 ms)``) outside of
-      a FAIL block.
+    * **Drop** the per-test passing tick lines (``✓ should do thing (5 ms)``)
+      outside of a FAIL block, counting them instead.
+    * **Collapse** ``console.log`` / ``console.error`` / ``console.warn`` output
+      blocks to a single count line per block when outside a FAIL block.
     """
 
     name = "jest"
-    binaries = frozenset(["jest", "vitest", "mocha", "ava", "tap"])
+    binaries = frozenset(["jest", "mocha", "ava", "tap"])
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -1187,25 +1202,195 @@ class JestFilter(Filter):
         lines = merged.split("\n")
         kept: list[str] = []
         pass_count = 0
+        tick_count = 0
         in_fail_block = False
+        console_lines = 0  # lines accumulated in a console.* block
+        in_console_block = False
+
+        def _flush_console() -> None:
+            nonlocal console_lines, in_console_block
+            if console_lines:
+                kept.append(
+                    f"  [token-goat: collapsed {console_lines} console output line"
+                    f"{'s' if console_lines != 1 else ''}]"
+                )
+            console_lines = 0
+            in_console_block = False
+
         for line in lines:
+            # --- PASS file header ---
             if _JEST_PASS_LINE_RE.match(line) and not in_fail_block:
+                _flush_console()
                 pass_count += 1
                 continue
+            # --- FAIL file header ---
             if _JEST_FAIL_LINE_RE.match(line):
+                _flush_console()
                 in_fail_block = True
                 kept.append(line)
                 continue
             # Blank line ends a fail block.
             if not line.strip() and in_fail_block:
                 in_fail_block = False
-            # Suppress the per-test pass tick when outside a fail block.
+                kept.append(line)
+                continue
+            # Inside a FAIL block: pass everything through verbatim.
+            if in_fail_block:
+                kept.append(line)
+                continue
+            # --- console.* block handling (outside FAIL block only) ---
+            if _JEST_CONSOLE_HDR_RE.match(line):
+                _flush_console()
+                in_console_block = True
+                console_lines = 1  # count the header line itself
+                continue
+            if in_console_block:
+                stripped = line.strip()
+                # Empty line or a non-indented line ends the console block.
+                if not stripped or (line and not line[0].isspace()):
+                    _flush_console()
+                    # Fall through to handle this line normally.
+                else:
+                    console_lines += 1
+                    continue
+            # --- per-test passing tick (✓ / √) ---
             stripped = line.lstrip()
-            if not in_fail_block and stripped.startswith(("✓", "√")):
+            if stripped.startswith(("✓", "√")):
+                tick_count += 1
                 continue
             kept.append(line)
+
+        _flush_console()
+        notes: list[str] = []
         if pass_count:
-            kept.append(f"[token-goat: collapsed {pass_count} PASS files]")
+            notes.append(f"collapsed {pass_count} PASS file{'s' if pass_count != 1 else ''}")
+        if tick_count:
+            notes.append(f"collapsed {tick_count} passing tick{'s' if tick_count != 1 else ''}")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- Vitest ----------------------------------------------------------------
+
+_VITEST_FILE_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*✓\s+\S.*\([\d.]+\s*\w+\)"
+)
+_VITEST_FILE_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:×|FAIL|✗|✘)\s+\S"
+)
+_VITEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(Test Files|Tests|Modules|Duration|Start at)[\s:]+\d"
+)
+# Per-test pass lines inside a suite file block: leading spaces + ✓
+_VITEST_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{2,}✓\s"
+)
+# stdout/stderr output blocks emitted by Vitest's `--reporter=verbose`
+_VITEST_STDOUT_HDR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*stdout\s*\|"
+)
+
+
+class VitestFilter(Filter):
+    """Compress Vitest output.
+
+    Vitest's verbose reporter emits per-file blocks starting with ``✓ file``
+    (pass) or ``× file`` / ``FAIL file`` (fail), followed by indented
+    per-test lines.  Summary ends with ``Test Files: N passed`` and
+    ``Duration: Xs``.
+
+    Compression model:
+
+    * **Drop** file-level ``✓ file`` pass lines — collapse to count.
+    * **Keep** file-level ``×`` / ``FAIL`` lines verbatim with full body.
+    * **Collapse** indented ``✓ test name`` pass lines to count per block.
+    * **Keep** ``×`` / failing test lines within a FAIL block verbatim.
+    * **Keep** ``Test Files: …`` / ``Tests: …`` / ``Duration: …`` summary.
+    * **Collapse** stdout / console output blocks to line count.
+    """
+
+    name = "vitest"
+    binaries = frozenset(["vitest"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        kept: list[str] = []
+        pass_file_count = 0
+        pass_tick_count = 0
+        in_fail_block = False
+        stdout_lines = 0
+        in_stdout_block = False
+
+        def _flush_stdout() -> None:
+            nonlocal stdout_lines, in_stdout_block
+            if stdout_lines:
+                kept.append(
+                    f"  [token-goat: collapsed {stdout_lines} stdout line"
+                    f"{'s' if stdout_lines != 1 else ''}]"
+                )
+            stdout_lines = 0
+            in_stdout_block = False
+
+        for line in lines:
+            # File-level PASS header.
+            if _VITEST_FILE_PASS_RE.match(line) and not in_fail_block:
+                _flush_stdout()
+                pass_file_count += 1
+                continue
+            # File-level FAIL header.
+            if _VITEST_FILE_FAIL_RE.match(line):
+                _flush_stdout()
+                in_fail_block = True
+                kept.append(line)
+                continue
+            # Summary lines always kept.
+            if _VITEST_SUMMARY_RE.match(line):
+                _flush_stdout()
+                kept.append(line)
+                continue
+            # Blank line ends a fail block.
+            if not line.strip() and in_fail_block:
+                in_fail_block = False
+                kept.append(line)
+                continue
+            # Inside a FAIL block: pass everything verbatim.
+            if in_fail_block:
+                kept.append(line)
+                continue
+            # stdout block handling.
+            if _VITEST_STDOUT_HDR_RE.match(line):
+                _flush_stdout()
+                in_stdout_block = True
+                stdout_lines = 1
+                continue
+            if in_stdout_block:
+                stripped = line.strip()
+                if not stripped or (line and not line[0].isspace()):
+                    _flush_stdout()
+                    # Fall through.
+                else:
+                    stdout_lines += 1
+                    continue
+            # Per-test passing tick (indented ✓).
+            if _VITEST_TEST_PASS_RE.match(line):
+                pass_tick_count += 1
+                continue
+            kept.append(line)
+
+        _flush_stdout()
+        notes: list[str] = []
+        if pass_file_count:
+            notes.append(
+                f"collapsed {pass_file_count} passing file{'s' if pass_file_count != 1 else ''}"
+            )
+        if pass_tick_count:
+            notes.append(
+                f"collapsed {pass_tick_count} passing tick{'s' if pass_tick_count != 1 else ''}"
+            )
+        self._emit_notes(kept, notes)
         return self._finalize(kept)
 
 
@@ -1979,14 +2164,17 @@ class LinterFilter(Filter):
 
     Filters dispatched:
 
-    * **eslint**: ``  3:12  error  'foo' is defined but never used  no-unused-vars``
     * **pyright**: ``src/foo.py:3: error: incompatible type``
     * **pylint**: similar: falls through to dedupe_by_key.
+    * **tsc / stylelint / biome / rome**: stanza-style (like ESLint).
+
+    Note: ``eslint`` is handled by the more specific :class:`ESLintFilter`
+    which is registered before this filter in ``FILTERS``.
     """
 
     name = "linter"
     binaries = frozenset([
-        "eslint", "pyright", "pylint", "tsc",
+        "pyright", "pylint", "tsc",
         "stylelint", "biome", "rome",
     ])
 
@@ -2003,7 +2191,7 @@ class LinterFilter(Filter):
                 fmt="[token-goat: +{count} more matching {key_value}]",
             )
             return _squeeze_blank_lines("\n".join(compressed))
-        # ESLint: stanza-style.
+        # tsc / stylelint / biome / rome: stanza-style like ESLint.
         return _compress_eslint_stanza(merged)
 
 
@@ -2067,6 +2255,131 @@ def _emit_eslint_rules(per_rule: dict[str, list[str]]) -> list[str]:
         if len(entries) > 3:
             out.append(f"  [token-goat: +{len(entries) - 3} more {rule} violations]")
     return out
+
+
+# --- ESLint ----------------------------------------------------------------
+
+# ESLint summary footer: "✖ 47 problems (12 errors, 35 warnings)"
+_ESLINT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[✖✗✘x×]\s+\d+\s+problem"
+)
+# ESLint issue line: "  12:8  error   'foo' is defined…   no-unused-vars"
+_ESLINT_ISSUE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\d+:\d+\s+(error|warning|info)\s+.+\S\s+\S+$"
+)
+
+
+class ESLintFilter(Filter):
+    """Compress ESLint output.
+
+    ESLint's default formatter emits a stanza per file::
+
+        path/to/file.js
+          12:8  error    'foo' is not defined   no-undef
+          15:1  warning  Missing semicolon       semi
+        ...
+        ✖ 47 problems (12 errors, 35 warnings)
+
+    Compression model:
+
+    * **Fast path**: exit 0 → collapse to ``ESLint: no errors``.
+    * **Drop** file stanzas that contain zero issue lines (blank/no-problem
+      files that appear only because they were linted).
+    * **Keep** all ``error`` severity issue lines verbatim.
+    * **Deduplicate** ``warning`` lines: keep up to 3 per rule per file, then
+      summarise ``+N more <rule> warnings``.
+    * **Keep** the final ``✖ N problems (N errors, N warnings)`` summary.
+    """
+
+    name = "eslint"
+    binaries = frozenset(["eslint"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+
+        # Fast path: clean exit — all we need to communicate is "no errors".
+        if exit_code == 0:
+            # Look for a summary line; if none present (quiet mode), emit terse.
+            lines = merged.splitlines()
+            summary = next(
+                (ln for ln in lines if _ESLINT_SUMMARY_RE.match(ln.strip())),
+                None,
+            )
+            return summary if summary else "ESLint: no errors"
+
+        lines = merged.split("\n")
+        out: list[str] = []
+        current_file_header: str | None = None
+        # Actual issue lines (matching _ESLINT_ISSUE_RE) for the current file.
+        current_issues: list[str] = []
+        # Has the current stanza seen at least one line matching _ESLINT_ISSUE_RE?
+        current_has_issues: bool = False
+
+        def _flush_file() -> None:
+            """Emit the current file stanza, skipping zero-issue files."""
+            nonlocal current_file_header, current_issues, current_has_issues
+            if current_file_header is None:
+                current_issues = []
+                current_has_issues = False
+                return
+            # Drop entire stanza when no actual issue lines were collected.
+            if not current_has_issues:
+                current_file_header = None
+                current_issues = []
+                current_has_issues = False
+                return
+            out.append(current_file_header)
+            # Group warnings by rule for deduplication; errors are always kept.
+            warn_by_rule: dict[str, list[str]] = {}
+            for issue in current_issues:
+                m = _ESLINT_ISSUE_RE.match(issue)
+                if m and m.group(1) == "warning":
+                    rule = issue.rsplit(None, 1)[-1].strip()
+                    warn_by_rule.setdefault(rule, []).append(issue)
+                else:
+                    # Non-warning (error / info / unrecognised): keep as-is.
+                    out.append(issue)
+            # Emit deduplicated warnings.
+            for rule, entries in sorted(warn_by_rule.items()):
+                out.extend(entries[:3])
+                if len(entries) > 3:
+                    out.append(
+                        f"  [token-goat: +{len(entries) - 3} more {rule} warnings]"
+                    )
+            current_file_header = None
+            current_issues = []
+            current_has_issues = False
+
+        for line in lines:
+            # Summary footer — always keep.
+            if _ESLINT_SUMMARY_RE.match(line.strip()):
+                _flush_file()
+                out.append(line)
+                continue
+            # File header line.
+            if _ESLINT_FILE_RE.match(line):
+                _flush_file()
+                current_file_header = line
+                current_issues = []
+                current_has_issues = False
+                continue
+            # Issue line inside a stanza.
+            if current_file_header is not None and _ESLINT_ISSUE_RE.match(line):
+                current_issues.append(line)
+                current_has_issues = True
+                continue
+            # Any other line (blank, etc.) outside a stanza or between stanzas.
+            if current_file_header is None:
+                out.append(line)
+            else:
+                # Non-issue line inside a stanza (e.g. blank separator).
+                # Collect in issues list; only emitted if stanza has real issues.
+                current_issues.append(line)
+
+        _flush_file()
+        return _squeeze_blank_lines("\n".join(out))
 
 
 # --- mypy ------------------------------------------------------------------
@@ -6000,6 +6313,10 @@ def _trim_repeated_prefix(
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
+    # VitestFilter must follow JestFilter: vitest binaries are disjoint from
+    # jest/mocha/ava/tap so ordering is cosmetic, but explicit placement keeps
+    # test-runner filters together and documents the split clearly.
+    VitestFilter(),
     CargoFilter(),
     NodePackageFilter(),
     DockerFilter(),
@@ -6008,6 +6325,10 @@ FILTERS: list[Filter] = [
     GhFilter(),
     RuffFilter(),
     MypyFilter(),
+    # ESLintFilter precedes LinterFilter so `eslint` routes to the dedicated
+    # filter; LinterFilter handles tsc / stylelint / biome / rome / pyright /
+    # pylint which share no binaries with ESLintFilter.
+    ESLintFilter(),
     LinterFilter(),
     GrepFilter(),
     GitFilter(),
