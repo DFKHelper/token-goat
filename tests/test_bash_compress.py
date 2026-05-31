@@ -4055,3 +4055,194 @@ class TestSysPackageFilterBrew:
         f = bc.select_filter(["brew", "install", "wget"])
         assert f is not None
         assert f.name == "sys-pkg"
+
+
+# ---------------------------------------------------------------------------
+# ProtocFilter
+# ---------------------------------------------------------------------------
+
+
+class TestProtocFilter:
+    """Tests for ProtocFilter (Protocol Buffer compiler output compression)."""
+
+    def test_drops_info_lines(self) -> None:
+        """[libprotobuf INFO ...] lines are dropped as noise."""
+        text = (
+            "[libprotobuf INFO google/protobuf/compiler/parser.cc:234] "
+            "No syntax specified for the proto file: my.proto. "
+            "Please use a syntax statement.\n"
+            "[libprotobuf INFO google/protobuf/descriptor.cc:98] "
+            "Loaded proto descriptor from disk.\n"
+            "my.proto: warning: Import google/protobuf/empty.proto is unused.\n"
+        )
+        f = bc.ProtocFilter()
+        result = f.apply(text, "", 0, ["protoc", "--go_out=.", "my.proto"])
+        # INFO content must not appear as actual lines (the compression note
+        # mentions "libprotobuf INFO" as a label, so check for the full
+        # source-location pattern that only real INFO lines carry).
+        assert "google/protobuf/descriptor.cc:98" not in result.text
+        assert "Loaded proto descriptor from disk" not in result.text
+        assert "dropped" in result.text
+        assert "Import google/protobuf/empty.proto is unused" in result.text
+
+    def test_keeps_warning_lib_lines(self) -> None:
+        """[libprotobuf WARNING ...] lines are kept verbatim."""
+        text = (
+            "[libprotobuf INFO google/protobuf/compiler/parser.cc:234] info noise\n"
+            "[libprotobuf WARNING google/protobuf/compiler/proto3_optional.cc:59] "
+            "Proto3 optional is not yet fully supported.\n"
+        )
+        f = bc.ProtocFilter()
+        result = f.apply(text, "", 0, ["protoc", "my.proto"])
+        assert "[libprotobuf WARNING" in result.text
+        # The INFO line body must not appear; only the compression note mentions the label.
+        assert "info noise" not in result.text
+
+    def test_keeps_proto_diagnostics(self) -> None:
+        """file.proto:N:N: error/warning diagnostics are kept verbatim."""
+        stderr = (
+            "src/api/user.proto:42:5: Field name \"UserId\" should be "
+            "lower_snake_case, such as \"user_id\".\n"
+            "src/api/user.proto:55:3: \"UnknownMsg\" is not defined.\n"
+        )
+        f = bc.ProtocFilter()
+        result = f.apply("", stderr, 1, ["protoc", "--python_out=.", "src/api/user.proto"])
+        assert 'src/api/user.proto:42:5:' in result.text
+        assert 'src/api/user.proto:55:3:' in result.text
+
+    def test_keeps_file_not_found(self) -> None:
+        """'File not found.' errors are preserved."""
+        stderr = (
+            "google/protobuf/descriptor.proto: File not found.\n"
+            "my.proto: File not found.\n"
+        )
+        f = bc.ProtocFilter()
+        result = f.apply("", stderr, 1, ["protoc", "my.proto"])
+        assert "google/protobuf/descriptor.proto: File not found." in result.text
+        assert "my.proto: File not found." in result.text
+
+    def test_deduplicates_repeated_warnings(self) -> None:
+        """Identical warning lines are collapsed to one occurrence + count note."""
+        repeated_warn = (
+            "[libprotobuf WARNING google/protobuf/compiler/parser.cc:234] "
+            "No syntax specified for the proto file: my.proto. "
+            "Please use a syntax statement.\n"
+        )
+        # 15 identical warning lines (deeply nested import graph scenario).
+        text = repeated_warn * 15
+        f = bc.ProtocFilter()
+        result = f.apply(text, "", 0, ["protoc", "--go_out=.", "my.proto"])
+        # Warning should appear once; the extra 14 should be counted.
+        assert "No syntax specified" in result.text
+        assert result.text.count("No syntax specified") == 1
+        assert "collapsed" in result.text
+
+    def test_keeps_summary_line(self) -> None:
+        """'N errors generated.' summary lines survive."""
+        text = (
+            "src/foo.proto:10:3: \"Unknown\" is not defined.\n"
+            "src/foo.proto:20:5: Field name must be lower_snake_case.\n"
+            "2 errors generated.\n"
+        )
+        f = bc.ProtocFilter()
+        result = f.apply(text, "", 1, ["protoc", "src/foo.proto"])
+        assert "2 errors generated." in result.text
+
+    def test_successful_run_no_output(self) -> None:
+        """protoc with no output (clean success) produces minimal result."""
+        f = bc.ProtocFilter()
+        result = f.apply("", "", 0, ["protoc", "--go_out=.", "my.proto"])
+        # No notes should appear when there's nothing to collapse.
+        assert "dropped" not in result.text
+        assert "collapsed" not in result.text
+
+    def test_select_filter_dispatches_protoc(self) -> None:
+        """select_filter routes protoc to ProtocFilter."""
+        f = bc.select_filter(["protoc", "--go_out=.", "my.proto"])
+        assert f is not None
+        assert f.name == "protoc"
+
+    def test_select_filter_dispatches_buf(self) -> None:
+        """select_filter routes buf build/generate to ProtocFilter."""
+        f = bc.select_filter(["buf", "generate"])
+        assert f is not None
+        assert f.name == "protoc"
+
+    def test_compression_applied_on_large_output(self) -> None:
+        """Compressing 30 INFO lines reduces byte count."""
+        info_line = (
+            "[libprotobuf INFO google/protobuf/compiler/parser.cc:234] "
+            "No syntax specified for file: proto/foo.proto.\n"
+        )
+        stdout = info_line * 30
+        stdout += "1 warning generated.\n"
+        f = bc.ProtocFilter()
+        result = f.apply(stdout, "", 0, ["protoc", "proto/foo.proto"])
+        assert result.compressed_bytes < len(stdout.encode())
+        assert "1 warning generated." in result.text
+
+
+# ---------------------------------------------------------------------------
+# MakeFilter — ninja-specific output
+# ---------------------------------------------------------------------------
+
+
+class TestMakeFilterNinja:
+    """Tests for MakeFilter handling ninja build output.
+
+    Ninja is handled by MakeFilter (same binaries set) but has a slightly
+    different output style: it does not emit make[N] recursion markers, but
+    does emit compiler-invocation echo lines and builds with percentage
+    progress from the ninja build system itself.
+    """
+
+    def test_ninja_matches_make_filter(self) -> None:
+        """select_filter routes 'ninja' to MakeFilter."""
+        f = bc.select_filter(["ninja"])
+        assert f is not None
+        assert f.name == "make"
+
+    def test_ninja_keeps_error_lines(self) -> None:
+        """ninja: error lines survive compression."""
+        text = (
+            "[1/3] gcc -c src/main.c -o src/main.o\n"
+            "[2/3] gcc -c src/util.c -o src/util.o\n"
+            "src/util.c:42: error: implicit declaration of function 'missing_fn'\n"
+            "[3/3] FAILED: src/util.o\n"
+            "ninja: build stopped: subcommand failed.\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(text, "", 1, ["ninja"])
+        assert "error: implicit declaration" in result.text
+        assert "FAILED" in result.text
+
+    def test_ninja_drops_compiler_invocation_echo(self) -> None:
+        """gcc/clang compiler invocation echo lines are dropped."""
+        text = (
+            "gcc -c -O2 -Wall src/alpha.c -o build/alpha.o\n"
+            "gcc -c -O2 -Wall src/beta.c -o build/beta.o\n"
+            "gcc -o build/myapp build/alpha.o build/beta.o\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(text, "", 0, ["ninja"])
+        assert "gcc -c -O2" not in result.text
+        assert "compiler-invocation" in result.text
+
+    def test_ninja_build_success_minimal_output(self) -> None:
+        """A clean ninja build with only compiler echoes compresses well."""
+        lines = [f"clang -c src/file_{i}.cc -o build/file_{i}.o" for i in range(20)]
+        text = "\n".join(lines)
+        f = bc.MakeFilter()
+        result = f.apply(text, "", 0, ["ninja"])
+        assert result.compressed_bytes < len(text.encode())
+
+    def test_ninja_handles_link_line(self) -> None:
+        """Linker lines (non-compiler echoes) are kept by default."""
+        text = (
+            "gcc -c src/main.c -o build/main.o\n"
+            "Linking CXX executable build/myapp\n"
+        )
+        f = bc.MakeFilter()
+        result = f.apply(text, "", 0, ["ninja"])
+        # Linker output is not matched by the compiler-echo RE so it passes through.
+        assert "Linking CXX executable" in result.text

@@ -143,6 +143,33 @@ __all__ = [
     "GhRunLogFilter",
     "ActFilter",
     "GenericCIFilter",
+    # Filters in FILTERS registry but not previously exported
+    "CargoFilter",
+    "MakeFilter",
+    "MypyFilter",
+    "PipFilter",
+    "TerraformFilter",
+    "AnsibleFilter",
+    "PytestFilter",
+    "JestFilter",
+    "VitestFilter",
+    "NodePackageFilter",
+    "DockerFilter",
+    "KubectlFilter",
+    "AwsFilter",
+    "GhFilter",
+    "RuffFilter",
+    "ESLintFilter",
+    "LinterFilter",
+    "GrepFilter",
+    "GitFilter",
+    "GoTestFilter",
+    "PreCommitFilter",
+    "FzfFilter",
+    "LazyGitFilter",
+    "GenericFilter",
+    # Protobuf compiler filter
+    "ProtocFilter",
 ]
 
 import math
@@ -11973,6 +12000,117 @@ class SysPackageFilter(Filter):
         return self._finalize(out)
 
 
+# --- protoc ----------------------------------------------------------------
+
+#: libprotobuf INFO log lines: ``[libprotobuf INFO file.cc:N] message``
+_PROTOC_INFO_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[libprotobuf INFO "
+)
+#: libprotobuf WARNING/ERROR log lines — always keep.
+_PROTOC_LIB_WARN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[libprotobuf (?:WARNING|ERROR) "
+)
+#: Proto file diagnostic: ``path/to/file.proto:N:N: error/warning: message``
+_PROTOC_DIAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[^\s:][^:]*\.proto:\d+:\d+: (?:warning|error):",
+    re.IGNORECASE,
+)
+#: File-not-found errors: ``path/to/file.proto: File not found.``
+_PROTOC_NOT_FOUND_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[^\s:][^:]*\.proto: File not found\."
+)
+#: "N errors generated." / "N warnings generated." summary lines.
+_PROTOC_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ (?:errors?|warnings?) generated\.",
+    re.IGNORECASE,
+)
+
+
+class ProtocFilter(Filter):
+    """Compress ``protoc`` (Protocol Buffer compiler) output.
+
+    ``protoc`` generates one line per file it processes and emits verbose
+    ``[libprotobuf INFO ...]`` log lines at log level INFO (the default for
+    many invocations).  On a large proto tree with many imports this can
+    produce hundreds of lines of noise before a single diagnostic.
+
+    Compression model:
+
+    * **Drop** ``[libprotobuf INFO …]`` lines (verbose parse/load logging).
+    * **Keep** ``[libprotobuf WARNING …]`` and ``[libprotobuf ERROR …]`` lines.
+    * **Keep** every ``file.proto:N:N: error:`` / ``file.proto:N:N: warning:``
+      diagnostic verbatim.
+    * **Keep** ``File not found.`` errors verbatim.
+    * **Keep** the ``N errors generated.`` / ``N warnings generated.`` summary.
+    * **Collapse** repeated identical warning lines from the same file to a
+      count (protoc can emit the same "no syntax specified" warning dozens of
+      times for deeply nested import graphs).
+    * **Errors** (exit_code != 0 with no diagnostics matched): preserve all
+      stderr unchanged so the agent sees the raw error.
+    """
+
+    name = "protoc"
+    binaries = frozenset(["protoc", "protoc-gen-go", "protoc-gen-grpc", "buf"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+
+        kept: list[str] = []
+        dropped_info = 0
+        # Track repeated identical warning lines; value = repeat count.
+        warn_seen: dict[str, int] = {}
+        deduped_warns = 0
+
+        for line in lines:
+            # Always keep error signals from the generic helper.
+            if _ERROR_SIGNAL_RE.search(line) and not _PROTOC_INFO_RE.match(line):
+                kept.append(line)
+                continue
+            # Drop INFO-level libprotobuf log lines.
+            if _PROTOC_INFO_RE.match(line):
+                dropped_info += 1
+                continue
+            # Always keep WARNING/ERROR libprotobuf lines.
+            if _PROTOC_LIB_WARN_RE.match(line):
+                if line in warn_seen:
+                    warn_seen[line] += 1
+                    deduped_warns += 1
+                    continue
+                warn_seen[line] = 1
+                kept.append(line)
+                continue
+            # Keep proto diagnostics (file.proto:N:N: error/warning:).
+            if _PROTOC_DIAG_RE.match(line):
+                if line in warn_seen:
+                    warn_seen[line] += 1
+                    deduped_warns += 1
+                    continue
+                warn_seen[line] = 1
+                kept.append(line)
+                continue
+            # Keep "File not found." errors.
+            if _PROTOC_NOT_FOUND_RE.match(line):
+                kept.append(line)
+                continue
+            # Keep summary lines.
+            if _PROTOC_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Keep everything else (short output, custom plugin stderr, etc.).
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_info:
+            notes.append(f"dropped {dropped_info} [libprotobuf INFO] lines")
+        if deduped_warns:
+            notes.append(f"collapsed {deduped_warns} duplicate warning/diagnostic lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
@@ -12145,6 +12283,9 @@ FILTERS: list[Filter] = [
     BlackIsortFilter(),
     # SysPackageFilter handles system package managers: apt-get, apt, apk, brew.
     SysPackageFilter(),
+    # ProtocFilter handles the Protocol Buffer compiler (protoc) and buf.
+    # Disjoint binaries from every other filter so position is cosmetic.
+    ProtocFilter(),
 ]
 
 
