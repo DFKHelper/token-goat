@@ -230,6 +230,11 @@ __all__ = [
     "ForgeFilter",
     # golangci-lint multi-linter Go aggregator
     "GolangciLintFilter",
+    # AI coding assistant CLI output filters
+    "AiderFilter",
+    "GhCopilotFilter",
+    "GeminiCliFilter",
+    "ClaudeCliFilter",
 ]
 
 import math
@@ -18644,6 +18649,525 @@ class ForgeFilter(Filter):
         return self._finalize(out)
 
 
+# ---------------------------------------------------------------------------
+# AI coding assistant CLI output filters
+# ---------------------------------------------------------------------------
+# These filters compress the verbose output of popular AI coding assistant
+# CLIs: aider, gh copilot, gemini (Gemini CLI), and claude (Claude Code CLI).
+# All four emit high-noise output (token counts, cost lines, progress spinners,
+# and session metadata) that surrounds the small amount of signal (errors,
+# diff summaries, and final answers) actually useful to the model.
+# ---------------------------------------------------------------------------
+
+# aider ─────────────────────────────────────────────────────────────────────
+#: aider "applying edits" progress block: "Applying edits...", "Applied edit to …"
+_AIDER_APPLYING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Applying\s+edit(?:s)?(?:\s+to\s+\S+)?|Applied\s+edit\s+to\s+\S+)\s*\.{0,3}\s*$",
+    re.IGNORECASE,
+)
+#: aider token usage line: "Tokens: 1234 sent, 567 received."
+_AIDER_TOKENS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Tokens:\s+\d[\d,]*\s+sent,\s+\d[\d,]*\s+received",
+    re.IGNORECASE,
+)
+#: aider cost line: "Cost: $0.0012 message, $0.0034 session."
+_AIDER_COST_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Cost:\s+\$[\d.]+\s+message,\s+\$[\d.]+\s+session",
+    re.IGNORECASE,
+)
+#: aider repo-map / context-loading noise
+_AIDER_REPOMAP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Repo-map:|Added\s+\S+\s+to\s+the\s+chat|Removed\s+\S+\s+from\s+the\s+chat"
+    r"|Loading\s+repo\s+map|Updating\s+repo\s+map"
+    r"|Scanning\s+repo\s+contents"
+    r"|Using\s+\d+\s+tokens\s+of\s+repo\s+map)",
+    re.IGNORECASE,
+)
+#: aider "aider v1.x.x" version banner
+_AIDER_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*aider\s+v\d+\.\d+",
+    re.IGNORECASE,
+)
+#: aider "Use ctrl-c" / "Run with --help" footer noise
+_AIDER_FOOTER_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Use\s+ctrl-c|Run\s+with\s+--help|You\s+can\s+skip\s+this|Tip:|Note:)",
+    re.IGNORECASE,
+)
+#: aider diff/edit block start: "Applied edits to N file(s):" or "Diff:"
+_AIDER_DIFF_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Applied\s+edits?\s+to\s+\d+\s+file|Diff\s*:)",
+    re.IGNORECASE,
+)
+
+
+class AiderFilter(Filter):
+    """Compress ``aider`` terminal AI coding assistant output.
+
+    ``aider`` emits verbose output for every AI edit session: token usage and
+    cost per message, repo-map loading progress, "applying edits" spinners,
+    version banners, and footer tips.  The useful content is the actual edit
+    summary (diffs applied, errors, and warnings).
+
+    Compression model:
+
+    * **Token/cost lines** (``Tokens: … sent, … received.``, ``Cost: $…``):
+      collapsed to a single summary line per session run.
+    * **"Applying edits" progress lines**: collapsed to a count.
+    * **Repo-map loading noise** (``Repo-map:``, ``Added … to the chat``,
+      ``Loading repo map``, etc.): dropped.
+    * **Version banner** (``aider v1.x.x``): dropped.
+    * **Footer tips** (``Use ctrl-c``, ``Tip:``, ``Note:``): dropped.
+    * **Diff headers and error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "aider"
+    binaries = frozenset(["aider"])
+    subcommands: frozenset[str] = frozenset()  # aider has no subcommands
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        return p.stem.lower() in {"aider"}
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        token_lines: list[str] = []
+        cost_lines: list[str] = []
+        applying_count = 0
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Token usage lines — accumulate for summary.
+            if _AIDER_TOKENS_RE.match(line):
+                token_lines.append(line.strip())
+                continue
+            # Cost lines — accumulate for summary.
+            if _AIDER_COST_RE.match(line):
+                cost_lines.append(line.strip())
+                continue
+            # Applying edits progress — count.
+            if _AIDER_APPLYING_RE.match(line):
+                applying_count += 1
+                continue
+            # Repo-map noise — drop.
+            if _AIDER_REPOMAP_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Version banner and footer tips — drop.
+            if _AIDER_BANNER_RE.match(line) or _AIDER_FOOTER_NOISE_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Diff headers — always keep.
+            if _AIDER_DIFF_HEADER_RE.match(line):
+                kept.append(line)
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if applying_count:
+            out.append(
+                f"[token-goat: {applying_count} 'applying edits' progress line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if token_lines:
+            # Emit last token usage line (most recent = current session total).
+            notes.append(f"token usage: {token_lines[-1]}")
+        if cost_lines:
+            notes.append(f"cost: {cost_lines[-1]}")
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# gh copilot ─────────────────────────────────────────────────────────────────
+#: gh copilot "Explanation:" section header
+_GH_COPILOT_EXPLAIN_HDR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Explanation\s*:|Welcome to GitHub Copilot)",
+    re.IGNORECASE,
+)
+#: gh copilot disclaimer / legal lines
+_GH_COPILOT_DISCLAIMER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Disclaimer:|This response was|GitHub Copilot|The commands?\s+(?:above|below)|"
+    r"Please review|Always review|Remember to|Note:|Tip:)",
+    re.IGNORECASE,
+)
+#: gh copilot spinner/progress lines
+_GH_COPILOT_SPINNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Asking GitHub Copilot|Generating|Thinking|Fetching)\s*\.{0,3}\s*$",
+    re.IGNORECASE,
+)
+#: gh copilot "Welcome to GitHub Copilot in the CLI" banner lines
+_GH_COPILOT_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Welcome to GitHub Copilot|Using GitHub Copilot|Authenticated as)",
+    re.IGNORECASE,
+)
+
+
+class GhCopilotFilter(Filter):
+    """Compress ``gh copilot explain`` and ``gh copilot suggest`` output.
+
+    GitHub Copilot CLI wraps its answers in verbose boilerplate: spinner lines,
+    welcome banners, legal disclaimers, and "review this carefully" footers that
+    dwarf the actual suggestion or explanation.
+
+    Compression model:
+
+    * **Spinner / progress lines** (``Asking GitHub Copilot…``,
+      ``Generating…``): dropped.
+    * **Welcome/auth banners** (``Welcome to GitHub Copilot in the CLI``,
+      ``Authenticated as …``): dropped.
+    * **Disclaimer / review footers** (``Disclaimer:``, ``Always review``,
+      ``Note:``, ``Tip:``): dropped.
+    * **The actual explanation or suggestion body**: always kept verbatim.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "gh-copilot"
+    binaries = frozenset(["gh"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        name = p.name.lower()
+        if stem not in {"gh"} and name not in {"gh"}:
+            return False
+        positionals = _positional_args(argv[1:])
+        # Must be ``gh copilot explain`` or ``gh copilot suggest``.
+        return (
+            len(positionals) >= 2
+            and positionals[0] == "copilot"
+            and positionals[1] in {"explain", "suggest"}
+        )
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Spinner / progress lines — drop.
+            if _GH_COPILOT_SPINNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Welcome/auth banners — drop.
+            if _GH_COPILOT_BANNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Disclaimer/review footers — drop.
+            if _GH_COPILOT_DISCLAIMER_RE.match(line):
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} boilerplate/disclaimer line(s)")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# gemini (Google Gemini CLI) ─────────────────────────────────────────────────
+#: Gemini CLI "✓ Model: gemini-2.5-pro" / "✓ Theme: …" startup status lines
+_GEMINI_STARTUP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:[✓✗►]|>)\s*(?:Model:|Theme:|Tools:|Sandbox:|Checkpointing:|"
+    r"Context(?:\s+limit)?:|Version:|Authenticated(?:\s+as)?:|Connecting)",
+    re.IGNORECASE,
+)
+#: Gemini CLI "Gemini CLI vN.N.N" version banner
+_GEMINI_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Gemini\s+CLI\s+v\d+",
+    re.IGNORECASE,
+)
+#: Gemini CLI "Token usage: X / Y (Z%)" context meter
+_GEMINI_TOKEN_METER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Token\s+usage|Context|Tokens):\s+[\d,]+\s*/\s*[\d,]+",
+    re.IGNORECASE,
+)
+#: Gemini CLI tool-call spinner: "⠋ Calling run_shell_command…" / "✓ Called read_file"
+_GEMINI_TOOL_SPINNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏✓✗►✦])\s+(?:Call(?:ing|ed)|Execut(?:ing|ed)|Running)\s+\S+",
+)
+#: Gemini CLI "Type /help for commands" footer
+_GEMINI_FOOTER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Type\s+/help|Press\s+Ctrl|Use\s+Ctrl|Tip:|Note:)",
+    re.IGNORECASE,
+)
+#: Gemini CLI "Thinking…" / "Generating…" spinner text line
+_GEMINI_THINKING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Thinking|Generating|Processing)\s*\.{0,3}\s*$",
+    re.IGNORECASE,
+)
+
+
+class GeminiCliFilter(Filter):
+    """Compress ``gemini`` (Google Gemini CLI) command output.
+
+    The Gemini CLI emits startup status blocks (model, theme, tools, context),
+    per-turn tool-call spinners, token-usage meters, and footer tips that
+    surround the actual AI response content.
+
+    Compression model:
+
+    * **Startup status lines** (``✓ Model: …``, ``✓ Theme: …``, etc.):
+      collapsed to a single "N startup status lines" summary.
+    * **Version banner** (``Gemini CLI vN.N.N``): dropped.
+    * **Token-usage meters** (``Token usage: X / Y (Z%)``): kept as the last
+      seen value (context information useful for debugging).
+    * **Tool-call spinner lines** (``⠋ Calling run_shell_command…``):
+      collapsed to a count.
+    * **"Thinking…" / "Generating…" spinner**: dropped.
+    * **Footer tips** (``Type /help``, ``Press Ctrl``): dropped.
+    * **The actual AI response body**: always kept verbatim.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "gemini-cli"
+    binaries = frozenset(["gemini"])
+    subcommands: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        return p.stem.lower() in {"gemini"}
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        startup_count = 0
+        tool_spinner_count = 0
+        last_token_meter: str | None = None
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Version banner — drop.
+            if _GEMINI_BANNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Startup status lines — count.
+            if _GEMINI_STARTUP_RE.match(line):
+                startup_count += 1
+                continue
+            # Token-usage meter — keep last seen.
+            if _GEMINI_TOKEN_METER_RE.match(line):
+                last_token_meter = line.strip()
+                continue
+            # Tool-call spinners — count.
+            if _GEMINI_TOOL_SPINNER_RE.match(line):
+                tool_spinner_count += 1
+                continue
+            # "Thinking…" / "Generating…" spinners — drop.
+            if _GEMINI_THINKING_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Footer tips — drop.
+            if _GEMINI_FOOTER_RE.match(line):
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if startup_count:
+            out.append(
+                f"[token-goat: {startup_count} Gemini CLI startup status line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+            )
+        if tool_spinner_count:
+            out.append(
+                f"[token-goat: {tool_spinner_count} tool-call spinner line(s) collapsed]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if last_token_meter:
+            notes.append(f"context: {last_token_meter}")
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# claude CLI (Claude Code terminal output) ────────────────────────────────────
+#: claude CLI "◆ claude-sonnet-4-5 (API)" / "◇ claude-opus" session header
+_CLAUDE_CLI_MODEL_HDR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:[◆◇►✦])\s+claude-",
+    re.IGNORECASE,
+)
+#: claude CLI token/cost stats line: "↑ 1234 ↓ 567 tokens · $0.0012"
+_CLAUDE_CLI_STATS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[↑↓⇑⇓]\s*\d[\d,]*\s*[↑↓⇑⇓]?\s*\d[\d,]*\s*tokens",
+    re.IGNORECASE,
+)
+#: claude CLI "Token limit: X / Y (Z%)" context meter
+_CLAUDE_CLI_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Context(?:\s+window)?|Token\s+limit):\s+[\d,]+\s*/\s*[\d,]+",
+    re.IGNORECASE,
+)
+#: claude CLI "Press Ctrl-C" / "Enter / to show menu" footer
+_CLAUDE_CLI_FOOTER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Press\s+Ctrl|Enter\s+/|Type\s+/|Use\s+Ctrl|Tip:|Note:)",
+    re.IGNORECASE,
+)
+#: claude CLI "◎ Thinking…" / "◎ Generating…" spinner
+_CLAUDE_CLI_SPINNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:[◎⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏])\s+(?:Thinking|Generating|Processing|Running)\s*\.{0,3}\s*$",
+)
+#: claude CLI "> Using tool:" / "✓ Tool result:" tool call lines
+_CLAUDE_CLI_TOOL_LOG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:>\s+Using\s+tool:|✓\s+Tool\s+result:|◎\s+Tool:)",
+    re.IGNORECASE,
+)
+
+
+class ClaudeCliFilter(Filter):
+    """Compress ``claude`` (Claude Code CLI) terminal output.
+
+    The ``claude`` CLI emits a session header (model name, API key source),
+    per-turn token/cost statistics, context-window meters, tool-call log lines,
+    and "Thinking…" spinners that surround the actual AI response.
+
+    Compression model:
+
+    * **Session header lines** (``◆ claude-sonnet-4-5 (API)``): dropped
+      (the model name is not needed in the captured output).
+    * **Token/cost stat lines** (``↑ 1234 ↓ 567 tokens · $0.0012``): kept as
+      the last seen value per run — useful for cost tracking.
+    * **Context-window meters** (``Context: X / Y (Z%)``): kept as the last
+      seen value.
+    * **"Thinking…" spinners**: dropped.
+    * **Tool-call log lines** (``> Using tool: …``, ``✓ Tool result: …``):
+      collapsed to a count.
+    * **Footer tips** (``Press Ctrl-C``, ``Enter / to show menu``): dropped.
+    * **The actual AI response body**: always kept verbatim.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "claude-cli"
+    binaries = frozenset(["claude"])
+    subcommands: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        # Only match the ``claude`` binary invoked with no subcommands or with
+        # ``--print`` / ``-p`` (non-interactive single-turn mode).  Avoid
+        # claiming claude-related sub-tools (claude-code, etc.) unless the stem
+        # is exactly "claude".
+        if stem != "claude":
+            return False
+        # Skip installation/setup subcommands that produce different output.
+        positionals = _positional_args(argv[1:])
+        skip_subcmds = {"install", "update", "doctor", "config", "login", "logout"}
+        return not (positionals and positionals[0] in skip_subcmds)
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        tool_log_count = 0
+        last_stats: str | None = None
+        last_context: str | None = None
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Session header — drop.
+            if _CLAUDE_CLI_MODEL_HDR_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Token/cost stats — keep last.
+            if _CLAUDE_CLI_STATS_RE.match(line):
+                last_stats = line.strip()
+                continue
+            # Context meter — keep last.
+            if _CLAUDE_CLI_CONTEXT_RE.match(line):
+                last_context = line.strip()
+                continue
+            # "Thinking…" spinners — drop.
+            if _CLAUDE_CLI_SPINNER_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Tool-call log lines — count.
+            if _CLAUDE_CLI_TOOL_LOG_RE.match(line):
+                tool_log_count += 1
+                continue
+            # Footer tips — drop.
+            if _CLAUDE_CLI_FOOTER_RE.match(line):
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = list(kept)
+
+        notes: list[str] = []
+        if tool_log_count:
+            notes.append(f"collapsed {tool_log_count} tool-call log line(s)")
+        if last_stats:
+            notes.append(f"stats: {last_stats}")
+        if last_context:
+            notes.append(f"context: {last_context}")
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -18698,6 +19222,10 @@ FILTERS: list[Filter] = [
     GcloudFilter(),
     # AzureCliFilter handles the Azure CLI `az` binary.
     AzureCliFilter(),
+    # GhCopilotFilter must precede GhRunLogFilter and GhFilter: all three match
+    # the `gh` binary, but GhCopilotFilter only fires for `gh copilot explain/suggest`
+    # and is therefore strictly more specific.
+    GhCopilotFilter(),
     # GhRunLogFilter must precede GhFilter: both match `gh`, but GhRunLogFilter
     # only fires for `gh run view --log` (the raw log variant) and provides
     # richer timestamp-stripping and group-collapsing.  GhFilter remains the
@@ -18933,6 +19461,12 @@ FILTERS: list[Filter] = [
     # disjoint binary from every other filter so position is cosmetic —
     # placed alongside HardhatFilter as both target EVM smart contracts.
     ForgeFilter(),
+    # AiderFilter handles `aider`; disjoint binary from every other filter.
+    AiderFilter(),
+    # GeminiCliFilter handles `gemini` (Google Gemini CLI); disjoint binary.
+    GeminiCliFilter(),
+    # ClaudeCliFilter handles `claude` (Claude Code CLI); disjoint binary.
+    ClaudeCliFilter(),
 ]
 
 

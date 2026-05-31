@@ -1508,6 +1508,180 @@ def unpatch_codex_agents_md() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Gemini CLI hook integration
+# ---------------------------------------------------------------------------
+# Gemini CLI uses ~/.gemini/settings.json (global) or .gemini/settings.json
+# (per-project).  The hooks format is structurally identical to Claude Code's
+# settings.json — an object mapping event names to arrays of matcher+hook-list
+# entries, with JSON on stdin/stdout and exit-code semantics.
+#
+# Key differences from Claude Code:
+#   - Event names: BeforeTool / AfterTool / SessionStart / PreCompress
+#     (vs PreToolUse / PostToolUse / SessionStart / PreCompact)
+#   - Tool names: run_shell_command, read_file, write_file, replace, glob,
+#     grep_search (vs Read, Bash, Edit, Write, Glob, Grep)
+#   - Output field: decision: "allow"/"deny" + reason
+#     (vs continue: true/false + hookSpecificOutput)
+#   - hookSpecificOutput.tool_input merges with model args (same field name)
+#
+# We use the same subprocess hook protocol (tg-hook.cmd / tg-hook.sh) and
+# add a --harness gemini flag so the dispatcher can apply format translation.
+# ---------------------------------------------------------------------------
+
+# Gemini CLI tool name → token-goat internal tool name.  Used both for the
+# BeforeTool matcher regex and in the bridge payload normalisation layer.
+_GEMINI_TOOL_TO_TG: dict[str, str] = {
+    "run_shell_command": "Bash",
+    "read_file": "Read",
+    "read_many_files": "Read",
+    "list_directory": "Read",
+    "write_file": "Write",
+    "replace": "Edit",
+    "glob": "Glob",
+    "grep_search": "Grep",
+    "search_file_content": "Grep",  # legacy alias kept by Gemini CLI
+    "web_search": "WebFetch",
+    "web_fetch": "WebFetch",
+}
+
+# Regex patterns for BeforeTool / AfterTool matchers:
+# read-equivalent tools
+_GEMINI_READ_MATCHER = (
+    "run_shell_command|read_file|read_many_files|list_directory|glob|grep_search|search_file_content"
+)
+# edit-equivalent tools
+_GEMINI_EDIT_MATCHER = "write_file|replace"
+# web-fetch equivalent tools
+_GEMINI_FETCH_MATCHER = "web_search|web_fetch"
+
+
+def gemini_dir() -> Path:
+    """Return the global Gemini CLI config directory (~/.gemini)."""
+    return Path.home() / ".gemini"
+
+
+def gemini_settings_path() -> Path:
+    """Return the path to ~/.gemini/settings.json where Gemini CLI hooks are configured."""
+    return gemini_dir() / "settings.json"
+
+
+def _gemini_hooks_block() -> dict[str, list[_HookMatcherEntry]]:
+    """Build the Gemini CLI settings.json hooks structure.
+
+    Gemini CLI uses BeforeTool/AfterTool/SessionStart/PreCompress instead of
+    PreToolUse/PostToolUse/SessionStart/PreCompact, but the JSON wire format
+    is otherwise identical to Claude Code's settings.json.
+
+    All hook commands get ``--harness gemini`` appended so the dispatcher in
+    :mod:`token_goat.hooks_common` can apply any Gemini-specific payload
+    translation (tool-name remapping, decision→continue field normalisation).
+    """
+    runner = _hook_runner_command
+
+    def _entry(matcher: str, event_name: str, timeout: int) -> _HookMatcherEntry:
+        cmd = runner("hook", event_name, "--harness", "gemini")
+        return {
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": cmd, "timeout": timeout}],
+        }
+
+    return {
+        "SessionStart": [_entry("startup", "session-start", 30000)],
+        "BeforeTool": [
+            _entry(_GEMINI_READ_MATCHER, "pre-read", 5000),
+            _entry(_GEMINI_FETCH_MATCHER, "pre-fetch", 2000),
+        ],
+        "AfterTool": [
+            _entry(_GEMINI_EDIT_MATCHER, "post-edit", 2000),
+            _entry(_GEMINI_READ_MATCHER, "post-read", 2000),
+            _entry("run_shell_command", "post-bash", 3000),
+            _entry(_GEMINI_FETCH_MATCHER, "post-fetch", 3000),
+        ],
+        "PreCompress": [_entry("*", "pre-compact", 5000)],
+    }
+
+
+def patch_gemini_settings() -> str:
+    """Merge token-goat hooks into ~/.gemini/settings.json idempotently.
+
+    Creates the file with an empty JSON object if it does not exist.  Uses the
+    same _merge_token_goat_hooks / _strip_token_goat_entries helpers used by
+    the Claude and Codex integrations so the idempotency semantics are identical.
+
+    Returns the path of the settings file written.
+    """
+    settings_path = gemini_settings_path()
+    paths.ensure_dir(settings_path.parent)
+
+    existing: dict[str, object] = {}
+    if settings_path.exists():
+        try:
+            raw = settings_path.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                existing = parsed
+        except (json.JSONDecodeError, OSError) as e:
+            _LOG.warning("gemini settings.json read failed, starting fresh: %s", e)
+
+    our_hooks = _gemini_hooks_block()
+    existing_hooks_raw = existing.get("hooks", {})
+    existing_hooks: dict[str, list[dict[str, object]]] = (
+        existing_hooks_raw if isinstance(existing_hooks_raw, dict) else {}
+    )
+    _merge_token_goat_hooks(existing_hooks, our_hooks)
+    existing["hooks"] = existing_hooks
+
+    paths.atomic_write_text(settings_path, json.dumps(existing, indent=2))
+    _LOG.info("gemini settings.json written: %s", settings_path)
+    return str(settings_path)
+
+
+def unpatch_gemini_settings() -> str:
+    """Remove token-goat entries from ~/.gemini/settings.json.
+
+    Returns a human-readable status string.
+    """
+    settings_path = gemini_settings_path()
+    if not settings_path.exists():
+        return "gemini settings.json not found"
+
+    try:
+        raw = settings_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (json.JSONDecodeError, OSError) as e:
+        return f"error reading gemini settings.json: {e}"
+
+    if not isinstance(data, dict):
+        return "gemini settings.json is not a JSON object; skipped"
+
+    hooks_raw = data.get("hooks", {})
+    hooks: dict[str, list[dict[str, object]]] = (
+        hooks_raw if isinstance(hooks_raw, dict) else {}
+    )
+    _strip_token_goat_hooks(hooks)
+    data["hooks"] = hooks
+    paths.atomic_write_text(settings_path, json.dumps(data, indent=2))
+    return str(settings_path)
+
+
+def _check_gemini_settings() -> str:
+    """Return 'installed' if ~/.gemini/settings.json has token-goat hooks."""
+    settings_path = gemini_settings_path()
+    if not settings_path.exists():
+        return "not installed (gemini settings.json absent)"
+    try:
+        raw = settings_path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (json.JSONDecodeError, OSError):
+        return "error (gemini settings.json malformed)"
+    if not isinstance(data, dict):
+        return "error (gemini settings.json not a JSON object)"
+    hooks_raw = data.get("hooks", {})
+    hooks: dict[str, object] = hooks_raw if isinstance(hooks_raw, dict) else {}
+    return "installed" if _hooks_contain_token_goat(hooks) else "not installed"
+
+
+# ---------------------------------------------------------------------------
 # Integration status check
 # ---------------------------------------------------------------------------
 
@@ -1701,6 +1875,7 @@ def check_status() -> dict[str, str]:
         status["worker autostart"] = _check_linux_autostart()
         status["update cron"] = _check_linux_update_cron()
     status["Codex hooks (config.toml)"] = _check_codex_config()
+    status["Gemini CLI hooks (settings.json)"] = _check_gemini_settings()
     from . import bridges  # noqa: PLC0415
     status["opencode plugin"] = bridges._check_opencode_plugin()
     status["openclaw plugin"] = bridges._check_openclaw_plugin()
@@ -2006,13 +2181,38 @@ def plan_install(
             detail="append/replace delimited block",
         ))
 
-    # 6. optional gemini (no-op placeholder until format is documented)
+    # 6. optional gemini — BeforeTool/AfterTool/SessionStart/PreCompress hooks
     if install_gemini:
+        gs_path = gemini_settings_path()
+        if gs_path.exists():
+            try:
+                gs_raw = gs_path.read_text(encoding="utf-8")
+                gs_data = json.loads(gs_raw)
+                existing_count = sum(
+                    1
+                    for entries in (gs_data.get("hooks", {}) or {}).values()
+                    if isinstance(entries, list)
+                    for e in entries
+                    for h in (e.get("hooks", []) if isinstance(e, dict) else [])
+                    if isinstance(h, dict) and _is_token_goat_hook(str(h.get("command", "")))
+                )
+                action = "update" if existing_count else "create"
+                detail = (
+                    f"would replace {existing_count} existing token-goat hook entries"
+                    if existing_count
+                    else "would add token-goat hooks block (preserving other hooks)"
+                )
+            except (json.JSONDecodeError, OSError):
+                action = "update"
+                detail = "could not read existing settings; will merge idempotently"
+        else:
+            action = "create"
+            detail = "file does not exist; would create with token-goat hooks"
         plan.append(_PlanEntry(
             component="gemini: hooks",
-            target="(not yet supported)",
-            action="skip",
-            detail="Gemini CLI hook format is not yet publicly documented",
+            target=str(gs_path),
+            action=action,
+            detail=detail,
         ))
 
     # 7. optional opencode / openclaw
@@ -2271,11 +2471,7 @@ def install_all(
         _run_step(result, "codex: AGENTS.md", patch_codex_agents_md)
 
     if install_gemini:
-        result["gemini: hooks"] = (
-            "skipped — Gemini CLI hook format is not yet publicly documented; "
-            "no integration installed. Run `token-goat doctor` for status."
-        )
-        _LOG.info("install step: gemini — skipped (format not yet documented)")
+        _run_step(result, "gemini: hooks", patch_gemini_settings)
 
     if install_opencode or install_openclaw:
         from . import bridges  # noqa: PLC0415
@@ -2399,16 +2595,18 @@ def _stop_worker() -> str:
 def uninstall_all(
     purge: bool = False,
     codex: bool = False,
+    gemini: bool = False,
     opencode: bool = False,
     openclaw: bool = False,
 ) -> dict[str, str]:
     """Reverse install. With purge=True also deletes the data directory."""
     t0 = time.monotonic()
     _LOG.info(
-        "uninstall_all: starting (platform=%s purge=%s codex=%s opencode=%s openclaw=%s)",
+        "uninstall_all: starting (platform=%s purge=%s codex=%s gemini=%s opencode=%s openclaw=%s)",
         sys.platform,
         purge,
         codex,
+        gemini,
         opencode,
         openclaw,
     )
@@ -2440,6 +2638,9 @@ def uninstall_all(
     if codex:
         result["codex: config.toml"] = unpatch_codex_config()
         result["codex: AGENTS.md"] = unpatch_codex_agents_md()
+
+    if gemini:
+        result["gemini: hooks"] = _ok_fail(True, f"unpatched — {unpatch_gemini_settings()}")
 
     if opencode or openclaw:
         from . import bridges  # noqa: PLC0415
