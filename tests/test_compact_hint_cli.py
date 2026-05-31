@@ -1,0 +1,324 @@
+"""Tests for compact-hint CLI enhancements: --diff, --sections, --score, --auto."""
+from __future__ import annotations
+
+import pytest
+from typer.testing import CliRunner
+
+import token_goat.paths as paths
+from token_goat import cli, compact, session
+
+runner = CliRunner()
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _invoke(args: list[str]) -> object:
+    """Invoke the CLI with the given args and return the result."""
+    return runner.invoke(cli.app, args)
+
+
+# ---------------------------------------------------------------------------
+# find_latest_session_id
+# ---------------------------------------------------------------------------
+
+class TestFindLatestSessionId:
+    def test_returns_none_when_no_sessions(self, tmp_data_dir):
+        result = compact.find_latest_session_id()
+        assert result is None
+
+    def test_returns_latest_session(self, tmp_data_dir):
+        import time
+
+        sid1 = "find-latest-alpha"
+        sid2 = "find-latest-beta"
+
+        session.mark_file_read(sid1, "/proj/a.py", offset=0, limit=10)
+        time.sleep(0.05)
+        session.mark_file_read(sid2, "/proj/b.py", offset=0, limit=10)
+
+        result = compact.find_latest_session_id()
+        assert result == sid2
+
+    def test_returns_only_session_when_one_exists(self, tmp_data_dir):
+        sid = "find-latest-only"
+        session.mark_file_read(sid, "/proj/c.py", offset=0, limit=10)
+
+        result = compact.find_latest_session_id()
+        assert result == sid
+
+    def test_returns_none_when_sessions_dir_missing(self, tmp_data_dir):
+        # Sessions dir doesn't exist yet (empty tmp dir)
+        result = compact.find_latest_session_id()
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# --session-id auto / --auto flag
+# ---------------------------------------------------------------------------
+
+class TestAutoSessionDetection:
+    def test_auto_flag_detects_session(self, tmp_data_dir, make_session):
+        sid = "auto-detect-session-xyz"
+        make_session(sid, files_read=2, edits=1)
+
+        result = _invoke(["compact-hint", "--auto"])
+        assert result.exit_code == 0
+        assert "auto-detected session" in result.output
+
+    def test_session_id_auto_keyword_detects_session(self, tmp_data_dir, make_session):
+        sid = "auto-keyword-session-xyz"
+        make_session(sid, files_read=2, edits=1)
+
+        result = _invoke(["compact-hint", "--session-id", "auto"])
+        assert result.exit_code == 0
+        assert "auto-detected session" in result.output
+
+    def test_auto_fails_gracefully_when_no_sessions(self, tmp_data_dir):
+        result = _invoke(["compact-hint", "--auto"])
+        assert result.exit_code == 1
+        assert "No session files found" in result.output
+
+    def test_explicit_session_id_still_works(self, tmp_data_dir, make_session):
+        sid = "explicit-session-id-xyz"
+        make_session(sid, files_read=2, edits=1)
+
+        result = _invoke(["compact-hint", "--session-id", sid])
+        assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# _parse_manifest_sections
+# ---------------------------------------------------------------------------
+
+class TestParseManifestSections:
+    def test_empty_manifest_returns_empty_list(self):
+        result = compact._parse_manifest_sections("")
+        assert result == []
+
+    def test_parses_hash_headings(self):
+        manifest = "### Files Edited\n- file.py\n\n### Commands\n- pytest\n"
+        sections = compact._parse_manifest_sections(manifest)
+        names = [s[0] for s in sections]
+        assert "Files Edited" in names
+        assert "Commands" in names
+
+    def test_non_empty_section_not_flagged_empty(self):
+        manifest = "### Files Edited\n- file.py\n"
+        sections = compact._parse_manifest_sections(manifest)
+        # Find "Files Edited"
+        for name, _tokens, is_empty in sections:
+            if "Files Edited" in name:
+                assert not is_empty
+                break
+
+    def test_empty_section_flagged(self):
+        manifest = "### Empty Section\n\n### Non Empty\n- content\n"
+        sections = compact._parse_manifest_sections(manifest)
+        for name, _tokens, is_empty in sections:
+            if "Empty Section" in name:
+                assert is_empty
+                break
+
+    def test_token_counts_are_positive(self):
+        manifest = "### Section One\n- a line with some content here\n"
+        sections = compact._parse_manifest_sections(manifest)
+        for _name, tokens, _is_empty in sections:
+            assert tokens >= 0
+
+
+# ---------------------------------------------------------------------------
+# _score_manifest_breakdown
+# ---------------------------------------------------------------------------
+
+class TestScoreManifestBreakdown:
+    def test_empty_returns_empty_dict(self):
+        result = compact._score_manifest_breakdown([])
+        assert result == {}
+
+    def test_edited_section_contributes_points(self):
+        section = "**Edited**:\n- file.py\n- other.py\n"
+        breakdown = compact._score_manifest_breakdown([section])
+        assert "**Edited**" in breakdown
+        assert breakdown["**Edited**"] > 0
+
+    def test_bash_section_contributes_points(self):
+        section = "**Bash**:\n- pytest tests/\n"
+        breakdown = compact._score_manifest_breakdown([section])
+        assert "**Bash**" in breakdown
+        assert breakdown["**Bash**"] > 0
+
+    def test_sum_matches_score_manifest(self):
+        sections = [
+            "**Edited**:\n- a.py\n- b.py\n",
+            "**Bash**:\n- pytest\n",
+            "**Symbols**:\n- MyClass\n",
+        ]
+        total_from_score = compact._score_manifest(sections)
+        breakdown = compact._score_manifest_breakdown(sections)
+        total_from_breakdown = sum(breakdown.values())
+        assert total_from_score == total_from_breakdown
+
+    def test_no_double_counting_across_sections(self):
+        # Symbols in edited section should score as edited (10), not also symbols (2)
+        section = "**Edited**:\n- file.py\n"
+        breakdown = compact._score_manifest_breakdown([section])
+        # Only "**Edited**" should appear, not both Edited and Symbols
+        assert "**Edited**" in breakdown
+        assert breakdown.get("**Symbols**", 0) == 0
+
+
+# ---------------------------------------------------------------------------
+# compact-hint --sections flag
+# ---------------------------------------------------------------------------
+
+class TestCompactHintSections:
+    def test_sections_flag_shows_section_names(self, tmp_data_dir, make_session):
+        sid = "sections-test-session-abc"
+        make_session(sid, files_read=3, edits=2, greps=1)
+
+        result = _invoke(["compact-hint", "--session-id", sid, "--sections"])
+        assert result.exit_code == 0
+        # Should show a token count summary line
+        assert "tokens" in result.output.lower()
+
+    def test_sections_flag_no_manifest(self, tmp_data_dir):
+        result = _invoke(["compact-hint", "--session-id", "no-activity-session-abc", "--sections"])
+        assert result.exit_code == 0
+        assert "no manifest" in result.output.lower()
+
+    def test_sections_includes_empty_flag_annotation(self, tmp_data_dir, make_session):
+        sid = "sections-empty-test-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        result = _invoke(["compact-hint", "--session-id", sid, "--sections"])
+        assert result.exit_code == 0
+        # The output should have section lines (with token counts)
+        lines = result.output.splitlines()
+        # At least some lines should mention "tokens"
+        token_lines = [ln for ln in lines if "token" in ln.lower()]
+        assert len(token_lines) >= 1
+
+
+# ---------------------------------------------------------------------------
+# compact-hint --score flag
+# ---------------------------------------------------------------------------
+
+class TestCompactHintScore:
+    def test_score_flag_shows_quality_score(self, tmp_data_dir, make_session):
+        sid = "score-test-session-abc"
+        make_session(sid, files_read=3, edits=2, greps=1)
+
+        result = _invoke(["compact-hint", "--session-id", sid, "--score"])
+        assert result.exit_code == 0
+        assert "Quality score" in result.output
+
+    def test_score_shows_noop_status(self, tmp_data_dir, make_session):
+        sid = "score-noop-test-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        result = _invoke(["compact-hint", "--session-id", sid, "--score"])
+        assert result.exit_code == 0
+        assert "Noop fast-path" in result.output
+
+    def test_score_shows_activity_floor(self, tmp_data_dir, make_session):
+        sid = "score-floor-test-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        result = _invoke(["compact-hint", "--session-id", sid, "--score"])
+        assert result.exit_code == 0
+        assert "floor=" in result.output
+
+    def test_score_empty_session_shows_zero(self, tmp_data_dir):
+        result = _invoke(["compact-hint", "--session-id", "no-activity-session-xyz", "--score"])
+        assert result.exit_code == 0
+        assert "0" in result.output
+
+
+# ---------------------------------------------------------------------------
+# compact-hint --diff flag
+# ---------------------------------------------------------------------------
+
+class TestCompactHintDiff:
+    def test_diff_no_prior_sidecar(self, tmp_data_dir, make_session):
+        sid = "diff-no-prior-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        result = _invoke(["compact-hint", "--session-id", sid, "--diff"])
+        assert result.exit_code == 0
+        assert "No previous manifest" in result.output
+
+    def test_diff_unchanged_shows_no_changes(self, tmp_data_dir, make_session):
+        sid = "diff-unchanged-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        # Write the text sidecar manually to simulate a prior emit
+        manifest_text = compact.build_manifest(sid)
+        if manifest_text:
+            text_sidecar = paths.manifest_text_sidecar_path(sid)
+            paths.ensure_dir(text_sidecar.parent)
+            paths.atomic_write_text(text_sidecar, manifest_text)
+
+            result = _invoke(["compact-hint", "--session-id", sid, "--diff"])
+            assert result.exit_code == 0
+            assert "unchanged" in result.output.lower() or "no diff" in result.output.lower()
+
+    def test_diff_shows_additions_with_plus_prefix(self, tmp_data_dir, make_session):
+        sid = "diff-additions-abc"
+        make_session(sid, files_read=3, edits=2)
+
+        # Write a short synthetic "prior" manifest so it differs from the current one
+        prior_text = "## Token-Goat Session Manifest\nSession: prior\n- prior line only\n"
+        text_sidecar = paths.manifest_text_sidecar_path(sid)
+        paths.ensure_dir(text_sidecar.parent)
+        paths.atomic_write_text(text_sidecar, prior_text)
+
+        result = _invoke(["compact-hint", "--session-id", sid, "--diff"])
+        assert result.exit_code == 0
+        # Unified diff must have at least one line prefixed "+" or "-"
+        output_lines = result.output.splitlines()
+        has_diff_lines = any(
+            ln.startswith("+") or ln.startswith("-")
+            for ln in output_lines
+        )
+        assert has_diff_lines, f"Expected diff markers but got:\n{result.output}"
+
+    def test_diff_text_sidecar_written_by_build_manifest(self, tmp_data_dir, make_session):
+        """build_manifest should write the text sidecar so --diff works on next call."""
+        sid = "diff-sidecar-written-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        # First call to build_manifest should write the text sidecar
+        manifest_text = compact.build_manifest(sid)
+
+        text_sidecar = paths.manifest_text_sidecar_path(sid)
+        if manifest_text:
+            assert text_sidecar.exists()
+            stored = text_sidecar.read_text(encoding="utf-8")
+            assert stored == manifest_text
+
+
+# ---------------------------------------------------------------------------
+# manifest_text_sidecar_path in paths.py
+# ---------------------------------------------------------------------------
+
+class TestManifestTextSidecarPath:
+    def test_path_is_under_sentinels(self, tmp_data_dir):
+        p = paths.manifest_text_sidecar_path("my-session-id")
+        assert "sentinels" in str(p)
+        assert "manifest_text_" in p.name
+
+    def test_path_ends_with_txt(self, tmp_data_dir):
+        p = paths.manifest_text_sidecar_path("my-session-id")
+        assert p.suffix == ".txt"
+
+    def test_different_sessions_get_different_paths(self, tmp_data_dir):
+        p1 = paths.manifest_text_sidecar_path("session-one")
+        p2 = paths.manifest_text_sidecar_path("session-two")
+        assert p1 != p2
+
+    def test_null_byte_rejected(self, tmp_data_dir):
+        """Null bytes in session_id should raise ValueError."""
+        with pytest.raises(ValueError, match="null byte"):
+            paths.manifest_text_sidecar_path("abc\x00def")

@@ -22,7 +22,10 @@ __all__ = [
     "_extract_dep_changes",
     "_format_session_stats",
     "_score_manifest",
+    "_score_manifest_breakdown",
+    "_parse_manifest_sections",
     "_MANIFEST_THIN_THRESHOLD",
+    "find_latest_session_id",
 ]
 
 import hashlib
@@ -1634,6 +1637,136 @@ def _score_manifest(sections: list[str]) -> int:
             if "✗" in stripped or "✗" in stripped:
                 score += 5
     return score
+
+
+def _score_manifest_breakdown(
+    sections: list[str],
+) -> dict[str, int]:
+    """Return per-section score contributions for ``compact-hint --score``.
+
+    Returns a dict of ``{label: points}`` showing what each section contributed
+    to the total quality score.  The label is the section header text (e.g.
+    ``"**Edited**"``) or ``"Test Failures"`` for ``✗`` lines.  The sum of all
+    values equals :func:`_score_manifest`.
+    """
+    result: dict[str, int] = {}
+    in_edited = False
+    in_bash = False
+    in_symbols = False
+    current_section = "(header)"
+    for section in sections:
+        in_edited = False
+        in_bash = False
+        in_symbols = False
+        for line in section.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("**Edited**"):
+                in_edited = True
+                in_bash = False
+                in_symbols = False
+                current_section = "**Edited**"
+                continue
+            if stripped.startswith("**Bash**"):
+                in_edited = False
+                in_bash = True
+                in_symbols = False
+                current_section = "**Bash**"
+                continue
+            if stripped.startswith("**Symbols**"):
+                in_edited = False
+                in_bash = False
+                in_symbols = True
+                current_section = "**Symbols**"
+                continue
+            if stripped.startswith("**") and stripped.endswith("**:"):
+                in_edited = False
+                in_bash = False
+                in_symbols = False
+                current_section = stripped.rstrip(":")
+                continue
+            if not stripped.startswith("- "):
+                continue
+            pts = 0
+            if in_edited:
+                pts += 10
+            elif in_bash:
+                pts += 3
+            elif in_symbols:
+                pts += 2
+            if "✗" in stripped or "✗" in stripped:
+                pts += 5
+            if pts > 0:
+                result[current_section] = result.get(current_section, 0) + pts
+    return result
+
+
+def _parse_manifest_sections(
+    manifest: str,
+) -> list[tuple[str, int, bool]]:
+    """Return a list of ``(section_name, token_count, is_empty)`` tuples.
+
+    Parses the rendered manifest into its structural sections (identified by
+    ``### Heading`` or ``**Bold**:`` markers) and estimates the token cost
+    of each section's content.  Used by ``compact-hint --sections``.
+
+    Empty sections (no content lines) are flagged with ``is_empty=True``.
+    """
+    if not manifest:
+        return []
+
+    sections: list[tuple[str, int, bool]] = []
+    current_name: str = "(header)"
+    current_lines: list[str] = []
+
+    def _flush(name: str, lines: list[str]) -> None:
+        text = "\n".join(lines)
+        tokens = estimate_tokens(text)
+        non_blank = [ln for ln in lines if ln.strip()]
+        empty = len(non_blank) == 0
+        sections.append((name, tokens, empty))
+
+    for line in manifest.splitlines():
+        stripped = line.strip()
+        # Detect section boundaries: ### headers or **Bold**: markers
+        if stripped.startswith("### "):
+            _flush(current_name, current_lines)
+            current_name = stripped[4:]
+            current_lines = []
+        elif stripped.startswith("**") and ("**:" in stripped or stripped.endswith("**")):
+            _flush(current_name, current_lines)
+            # Use the bold text as section name, strip trailing ":"
+            current_name = stripped.strip("*").rstrip(":")
+            current_lines = []
+        else:
+            current_lines.append(line)
+
+    _flush(current_name, current_lines)
+    return sections
+
+
+def find_latest_session_id() -> str | None:
+    """Return the session_id of the most-recently-modified session file.
+
+    Scans ``sessions/`` under the token-goat data directory and returns the
+    session_id (filename without ``.json``) of the file with the latest
+    modification time.  Returns ``None`` when the sessions directory does
+    not exist or contains no ``.json`` files.
+
+    Used by ``compact-hint --session-id auto`` to avoid forcing the developer
+    to look up their current session ID manually.
+    """
+    try:
+        sessions_dir = paths.data_dir() / "sessions"
+        if not sessions_dir.is_dir():
+            return None
+        candidates = list(sessions_dir.glob("*.json"))
+        if not candidates:
+            return None
+        # Most recently modified file — safe on all platforms.
+        latest = max(candidates, key=lambda p: p.stat().st_mtime)
+        return latest.stem
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # Cache for blocker error previews keyed by output_id.  A render of the manifest
@@ -3307,6 +3440,15 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     sha = _short_content_hash(full_manifest)
     _write_manifest_sidecar(session_id, sha, fingerprint, now, counts=current_counts)
     _manifest_sha_written_this_process.add(session_id)
+    # Also save the full manifest text so `compact-hint --diff` can produce a
+    # unified diff between the prior emit and the current one.  Silently skip on
+    # any error — this is a developer-tooling sidecar, never a critical path.
+    try:
+        text_sidecar = paths.manifest_text_sidecar_path(session_id)
+        paths.ensure_dir(text_sidecar.parent)
+        paths.atomic_write_text(text_sidecar, full_manifest)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Also update the session-JSON fields so legacy callers and stats remain consistent.
     from . import (

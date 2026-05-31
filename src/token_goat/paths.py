@@ -33,6 +33,7 @@ __all__ = [
     "open_log_file",
     "roll_log_if_oversized",
     "manifest_sha_sidecar_path",
+    "manifest_text_sidecar_path",
     "recovery_pending_path",
     "sentinels_dir",
     "safe_join",
@@ -670,6 +671,24 @@ def manifest_sha_sidecar_path(session_id: str) -> Path:
     """
     safe_id = _sanitize_session_id_for_filename(session_id)
     return _safe_child_path(sentinels_dir(), f"manifest_sha_{safe_id}", "", "session_id")
+
+
+def manifest_text_sidecar_path(session_id: str) -> Path:
+    """Path to the manifest-text sidecar for *session_id*.
+
+    Stores the full rendered manifest text from the last emit so that
+    ``token-goat compact-hint --diff`` can show a unified diff against the
+    current manifest without needing to reconstruct the prior text from its SHA.
+
+    Lives alongside :func:`manifest_sha_sidecar_path` under ``sentinels/``
+    with a ``manifest_text_`` prefix.  Written atomically after every full
+    manifest emit; read only by developer tooling (``compact-hint --diff``).
+
+    Raises ``ValueError`` if *session_id* contains a null byte or would produce
+    a path outside the ``sentinels/`` directory.
+    """
+    safe_id = _sanitize_session_id_for_filename(session_id)
+    return _safe_child_path(sentinels_dir(), f"manifest_text_{safe_id}", ".txt", "session_id")
 
 
 def claude_config_dir() -> Path:
