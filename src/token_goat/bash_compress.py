@@ -15009,6 +15009,368 @@ class SassFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# Pulumi infrastructure CLI
+# ---------------------------------------------------------------------------
+
+#: Pulumi per-resource progress lines during up/destroy/refresh:
+#:   "aws:s3:Bucket (my-bucket): creating..."
+#:   "aws:lambda:Function (fn): updating..."
+_PULUMI_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+[a-zA-Z0-9_.:/-]+\s+\([^)]+\):\s+(?:creating|updating|deleting|"
+    r"replacing|refreshing|reading|configuring|waiting)\b",
+    re.IGNORECASE,
+)
+#: Pulumi per-resource "still ..." heartbeat lines:
+#:   "aws:ec2:Instance (web): still creating... (30s elapsed)"
+_PULUMI_STILL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+[a-zA-Z0-9_.:/-]+\s+\([^)]+\):\s+still\s+",
+    re.IGNORECASE,
+)
+#: Pulumi resource completion lines (always keep):
+#:   "aws:s3:Bucket (my-bucket): created (2s)"
+_PULUMI_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+[a-zA-Z0-9_.:/-]+\s+\([^)]+\):\s+(?:created|updated|deleted|"
+    r"replaced|refreshed|read|configured)\b",
+    re.IGNORECASE,
+)
+#: Pulumi plan/summary line (always keep):
+#:   "Resources: 3 created, 1 updated, 12 unchanged"
+#:   "Duration: 45s"
+_PULUMI_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Resources:|Duration:|Outputs:|View\s+Live|Permalink:|"
+    r"The resources in the stack have been deleted|"
+    r"Your update was rejected|No changes\.|"
+    r"Previewing\s+(?:update|destroy|refresh)|"
+    r"Updating\s+\(|Destroying\s+\(|Refreshing\s+\(|"
+    r"\d+\s+resource[s]?\s+(?:created|updated|deleted|changed|unchanged|same))",
+    re.IGNORECASE,
+)
+#: Pulumi diagnostic lines — error/warning (always keep):
+#:   "error: preview failed"
+#:   "    diagnostic: ..."
+_PULUMI_DIAG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:error:|warning:|diagnostic:)\s*",
+    re.IGNORECASE,
+)
+#: Pulumi stack header lines (always keep):
+#:   "Updating (dev):"
+#:   "Stack 'my-stack' does not exist."
+_PULUMI_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Updating\s+\(|Previewing\s+\(|Destroying\s+\(|Refreshing\s+\(|"
+    r"Stack\s+|pulumi\s+version\s+|warning:\s+A\s+new\s+version)",
+    re.IGNORECASE,
+)
+
+
+class PulumiFilter(Filter):
+    """Compress ``pulumi up`` / ``preview`` / ``destroy`` / ``refresh`` output.
+
+    Pulumi emits a live-updating progress display: one line per resource per
+    state transition (creating → still creating (10s) → still creating (20s)
+    → created).  On a stack with dozens of resources this produces hundreds of
+    lines with almost no information density.
+
+    Compression model:
+
+    * **Progress / "still ..." heartbeat lines**: collapsed.  Only the final
+      completion event per resource (``created``, ``updated``, ``deleted``) is
+      kept.
+    * **Summary lines** (``Resources: N created``): always kept.
+    * **Diagnostic lines** (``error:``, ``warning:``): always kept.
+    * **Header lines** (``Updating (dev):``, ``Stack '...' does not exist``):
+      always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "pulumi"
+    binaries = frozenset(["pulumi"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_progress = 0
+        dropped_still = 0
+
+        for line in lines:
+            # Summary, diagnostic, header — always keep.
+            if (
+                _PULUMI_SUMMARY_RE.match(line)
+                or _PULUMI_DIAG_RE.match(line)
+                or _PULUMI_HEADER_RE.match(line)
+                or _ERROR_SIGNAL_RE.search(line)
+            ):
+                kept.append(line)
+                continue
+            # Completion events — always keep.
+            if _PULUMI_COMPLETE_RE.match(line):
+                kept.append(line)
+                continue
+            # "still ..." heartbeat lines — drop.
+            if _PULUMI_STILL_RE.match(line):
+                dropped_still += 1
+                continue
+            # Initial progress lines (creating / updating …) — drop.
+            if _PULUMI_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_progress:
+            notes.append(f"dropped {dropped_progress} resource progress lines")
+        if dropped_still:
+            notes.append(f"dropped {dropped_still} 'still ...' heartbeat lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# AWS CDK deploy / synth / diff
+# ---------------------------------------------------------------------------
+
+#: CDK asset upload/build progress lines (verbose, low-signal):
+#:   "[100%] success: Built image asset ..."
+#:   "[0%] start: Building ..."
+#:   "Asset ...  uploaded."
+_CDK_ASSET_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\[\s*\d+%\s*\]|\[asset\s|\[copy\s|\[zip\s|\bAsset\s+\S+\s+uploaded\b)",
+    re.IGNORECASE,
+)
+#: CDK stack event lines emitted during deploy — status columns:
+#:   "  CREATE_IN_PROGRESS  AWS::S3::Bucket  MyBucket"
+#:   "  UPDATE_ROLLBACK_IN_PROGRESS  ..."
+_CDK_STACK_IN_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\w+_IN_PROGRESS\s+",
+)
+#: CDK stack event completion lines (always keep):
+#:   "  CREATE_COMPLETE  AWS::S3::Bucket  MyBucket"
+#:   "  UPDATE_COMPLETE  ..."
+#:   "  DELETE_COMPLETE  ..."
+_CDK_STACK_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:CREATE|UPDATE|DELETE|REPLACE|ROLLBACK)_COMPLETE\s+",
+)
+#: CDK stack event failure lines (always keep):
+#:   "  CREATE_FAILED  ..."
+_CDK_STACK_FAILED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\w+_FAILED\s+",
+)
+#: CDK deploy summary / header (always keep):
+#:   "✅  MyStack"
+#:   "❌  MyStack failed: ..."
+#:   "MyStack: deploying... [1/3]"
+#:   "Outputs:"
+#:   "Stack ARN:"
+_CDK_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:✅|❌|Stack\s+ARN:|Outputs:|CDK Toolkit|cdk\s+version\s+|"
+    r"[A-Za-z0-9_-]+:\s+(?:deploying|destroying|synthesizing|deploy|diff)\b"
+    r"|Successfully\s+deployed|Deployment\s+(?:complete|failed)|"
+    r"There\s+were\s+no\s+differences|Resources:|This deployment\s+will|"
+    r"Bundling\s+asset|Found\s+\d+\s+stack)",
+    re.IGNORECASE,
+)
+#: CDK hotswap / lookup lines (informational noise):
+#:   " ⚠️  ...hotswap..."
+#:   " ✨  Synthesis time: 3.12s"
+_CDK_HOTSWAP_TIME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:✨\s+Synthesis time:|✨\s+Total time:|⏱\s+Total time:|"
+    r"⚠️.*hotswap|Hotswap\s+deployment)",
+    re.IGNORECASE,
+)
+
+
+class CdkFilter(Filter):
+    """Compress ``cdk deploy`` / ``destroy`` / ``synth`` / ``diff`` output.
+
+    CDK emits granular CloudFormation stack events (one line per resource per
+    status transition) plus verbose asset bundling progress.  On a stack with
+    30+ resources this easily produces 200+ lines.
+
+    Compression model:
+
+    * **Asset progress lines** (``[0%] start:`` / ``[100%] success:``): dropped.
+    * **IN_PROGRESS stack events**: dropped — the completion event carries the
+      same information.
+    * **COMPLETE / FAILED stack events**: always kept.
+    * **Summary / header lines** (✅/❌, ``Outputs:``, ``Stack ARN:``): always kept.
+    * **Error lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "cdk"
+    binaries = frozenset(["cdk"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_asset = 0
+        dropped_in_progress = 0
+
+        for line in lines:
+            # Error signal / failure events — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _CDK_STACK_FAILED_RE.match(line):
+                kept.append(line)
+                continue
+            # Summary / completion events — always keep.
+            if _CDK_SUMMARY_RE.match(line) or _CDK_STACK_COMPLETE_RE.match(line):
+                kept.append(line)
+                continue
+            # Timing / hotswap noise — drop (low signal).
+            if _CDK_HOTSWAP_TIME_RE.match(line):
+                dropped_in_progress += 1
+                continue
+            # Asset progress lines — drop.
+            if _CDK_ASSET_PROGRESS_RE.match(line):
+                dropped_asset += 1
+                continue
+            # IN_PROGRESS stack events — drop.
+            if _CDK_STACK_IN_PROGRESS_RE.match(line):
+                dropped_in_progress += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_asset:
+            notes.append(f"dropped {dropped_asset} asset build/upload progress lines")
+        if dropped_in_progress:
+            notes.append(f"dropped {dropped_in_progress} IN_PROGRESS / timing lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
+# wasm-pack (WebAssembly packaging for Rust crates)
+# ---------------------------------------------------------------------------
+
+#: wasm-pack compilation step lines:
+#:   "[INFO]: Checking for the Wasm target..."
+#:   "[INFO]: Compiling to Wasm..."
+#:   "[INFO]: Installing wasm-bindgen..."
+_WASMPACK_INFO_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[INFO\]:\s+",
+    re.IGNORECASE,
+)
+#: wasm-pack success summary (always keep via re.search, not re.match):
+#:   "Your wasm pkg is ready to publish at ./pkg."
+#:   "[INFO]: :-) Your wasm pkg is ready to publish at ./pkg."
+#:   "✨   Done in Xs."
+_WASMPACK_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:✨\s+Done|Your\s+wasm\s+pkg\s+is\s+ready|"
+    r"wasm-pack\s+\S+\s+succeeded|Successfully\s+ran)",
+    re.IGNORECASE,
+)
+#: wasm-pack warning lines (keep):
+#:   "[WARN]: ..."
+_WASMPACK_WARN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[WARN\]:\s+",
+    re.IGNORECASE,
+)
+#: Cargo compile progress lines that wasm-pack wraps (low-signal):
+#:   "   Compiling proc-macro2 v1.0.86"
+#:   "   Compiling syn v2.0.60"
+_WASMPACK_CARGO_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:Compiling|Downloading|Fetching|Unpacking|Checking)\s+\S+\s+v\d+\.",
+    re.IGNORECASE,
+)
+#: wasm-pack Cargo build summary (always keep):
+#:   "   Finished release [optimized + debuginfo] target(s) in 12.34s"
+_WASMPACK_CARGO_FINISHED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+Finished\s+",
+    re.IGNORECASE,
+)
+#: wasm-pack test output lines:
+#:   "running N tests"
+#:   "test result: ok. N passed; ..."
+_WASMPACK_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:running\s+\d+\s+test|test\s+result:\s+(?:ok|FAILED))",
+    re.IGNORECASE,
+)
+
+
+class WasmPackFilter(Filter):
+    """Compress ``wasm-pack build`` / ``test`` / ``pack`` / ``publish`` output.
+
+    ``wasm-pack`` orchestrates a Rust→WebAssembly build pipeline: it invokes
+    ``cargo build --target wasm32-unknown-unknown``, runs ``wasm-bindgen``, and
+    packages the output.  The verbose Cargo compilation output (one ``Compiling
+    crate v1.0`` line per dependency, often 100+) drowns out the actual build
+    summary.
+
+    Compression model:
+
+    * **[INFO] progress lines**: dropped (low-signal step announcements).
+    * **Cargo ``Compiling/Downloading`` dependency lines**: collapsed to a count.
+    * **Cargo ``Finished`` line**: always kept (carries timing and profile).
+    * **[WARN] lines**: always kept.
+    * **Error lines**: always kept.
+    * **Done / success summary**: always kept.
+    * **Test summary lines**: always kept.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "wasm-pack"
+    binaries = frozenset(["wasm-pack"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_info = 0
+        dropped_compiling = 0
+
+        for line in lines:
+            # Error signal / warnings / test summary / done — always keep.
+            # _WASMPACK_DONE_RE uses re.search (not re.match) because wasm-pack
+            # often embeds the done message inside an [INFO]: :-) prefix line.
+            if (
+                _ERROR_SIGNAL_RE.search(line)
+                or _WASMPACK_WARN_RE.match(line)
+                or _WASMPACK_DONE_RE.search(line)
+                or _WASMPACK_TEST_SUMMARY_RE.match(line)
+                or _WASMPACK_CARGO_FINISHED_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+            # [INFO] step announcements — drop (must come AFTER done check so
+            # [INFO]: :-) Your wasm pkg is ready… is preserved above).
+            if _WASMPACK_INFO_RE.match(line):
+                dropped_info += 1
+                continue
+            # Cargo compiling/downloading dependency lines — drop.
+            if _WASMPACK_CARGO_COMPILING_RE.match(line):
+                dropped_compiling += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_info:
+            notes.append(f"dropped {dropped_info} [INFO] step announcement lines")
+        if dropped_compiling:
+            notes.append(f"dropped {dropped_compiling} Cargo dependency compile lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
 
@@ -15129,6 +15491,16 @@ FILTERS: list[Filter] = [
     SbtFilter(),
     MakeFilter(),
     TerraformFilter(),
+    # PulumiFilter handles `pulumi up/preview/destroy/refresh`; disjoint
+    # binary from TerraformFilter.  Placed alongside other IaC tools.
+    PulumiFilter(),
+    # CdkFilter handles `cdk deploy/destroy/synth/diff`; disjoint binary
+    # from every other filter so position is cosmetic — placed alongside
+    # other IaC/cloud tooling.
+    CdkFilter(),
+    # WasmPackFilter handles `wasm-pack build/test/pack/publish`; disjoint
+    # binary from every other filter so position is cosmetic.
+    WasmPackFilter(),
     # AnsibleFilter and PreCommitFilter have disjoint binaries from every
     # other filter (``ansible*`` and ``pre-commit`` respectively), so their
     # position within the registry is purely cosmetic — placed alongside
