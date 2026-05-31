@@ -4,23 +4,6 @@ from __future__ import annotations
 from token_goat import bash_compress as bc
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _apply(filter_: bc.Filter, stdout: str = "", stderr: str = "", exit_code: int = 0) -> str:
-    """Run filter_.apply() with a synthetic argv and return the compressed text."""
-    argv = [filter_.name]
-    result = filter_.apply(stdout, stderr, exit_code, argv)
-    return result.text
-
-
-def _savings_ratio(filter_: bc.Filter, stdout: str, stderr: str = "") -> float:
-    result = filter_.apply(stdout, stderr, 0, [filter_.name])
-    return result.percent_saved / 100.0
-
-
-# ---------------------------------------------------------------------------
 # SwiftFilter — applies()
 # ---------------------------------------------------------------------------
 

@@ -11,26 +11,10 @@ Covers:
 from __future__ import annotations
 
 import pytest
+from filter_test_helpers import apply_filter as _apply
+from filter_test_helpers import savings_ratio as _savings_ratio
 
 from token_goat import bash_compress as bc
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _apply(filter_: bc.Filter, stdout: str = "", stderr: str = "", exit_code: int = 0) -> str:
-    """Run *filter_.apply()* with a synthetic argv and return the compressed text."""
-    argv = [filter_.name]
-    result = filter_.apply(stdout, stderr, exit_code, argv)
-    return result.text
-
-
-def _savings_ratio(filter_: bc.Filter, stdout: str, stderr: str = "") -> float:
-    """Return the byte-savings fraction (0.0–1.0) for the given input."""
-    result = filter_.apply(stdout, stderr, 0, [filter_.name])
-    return result.percent_saved / 100.0
-
 
 # ---------------------------------------------------------------------------
 # 1. Dispatch table: parametrized per-filter match assertions

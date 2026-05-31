@@ -1,18 +1,9 @@
 """Tests for MSBuildFilter, NuGetFilter, and PowerShellFilter."""
 from __future__ import annotations
 
+from filter_test_helpers import apply_filter as _apply
+
 from token_goat import bash_compress as bc
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _apply(filter_: bc.Filter, stdout: str = "", stderr: str = "", exit_code: int = 0) -> str:
-    """Run filter_.apply() and return the compressed text."""
-    result = filter_.apply(stdout, stderr, exit_code, [filter_.name])
-    return result.text
-
 
 # ---------------------------------------------------------------------------
 # MSBuildFilter

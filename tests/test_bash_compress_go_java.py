@@ -8,39 +8,10 @@ Covers:
 """
 from __future__ import annotations
 
+from filter_test_helpers import apply_filter as _apply
+from filter_test_helpers import savings_ratio as _savings_ratio
+
 from token_goat import bash_compress as bc
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _apply(
-    filter_: bc.Filter,
-    stdout: str = "",
-    stderr: str = "",
-    exit_code: int = 0,
-    argv: list[str] | None = None,
-) -> str:
-    """Run *filter_.apply()* and return the compressed text."""
-    if argv is None:
-        argv = [filter_.name]
-    result = filter_.apply(stdout, stderr, exit_code, argv)
-    return result.text
-
-
-def _savings_ratio(
-    filter_: bc.Filter,
-    stdout: str,
-    stderr: str = "",
-    argv: list[str] | None = None,
-) -> float:
-    """Return byte-savings fraction (0.0–1.0) for the given input."""
-    if argv is None:
-        argv = [filter_.name]
-    result = filter_.apply(stdout, stderr, 0, argv)
-    return result.percent_saved / 100.0
-
 
 # ===========================================================================
 # GoFilter
