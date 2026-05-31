@@ -788,7 +788,12 @@ class TestPixelCap:
         assert src.stat().st_size > image_shrink.SIZE_THRESHOLD_BYTES
 
         # Lower the cap to 100×100 = 10 000 pixels so our 200×200 image exceeds it.
+        # ALSO patch PIL's global directly so monkeypatch restores it after the test —
+        # shrink() sets Image.MAX_IMAGE_PIXELS = _MAX_PIXELS as a side-effect, and
+        # without this second patch the PIL global leaks into subsequent tests.
         monkeypatch.setattr(image_shrink, "_MAX_PIXELS", 10_000)
+        from PIL import Image as _PILImage
+        monkeypatch.setattr(_PILImage, "MAX_IMAGE_PIXELS", 10_000)
 
         import logging
         with caplog.at_level(logging.WARNING, logger="token_goat.image_shrink"):
