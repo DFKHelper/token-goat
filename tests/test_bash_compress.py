@@ -6564,4 +6564,362 @@ class TestBiomeFilter:
         f = bc.select_filter(["biome", "lint", "--apply"])
         assert f is not None
         assert f.name == "biome"
+
+
+# ---------------------------------------------------------------------------
+# ElmFilter
+# ---------------------------------------------------------------------------
+
+class TestElmFilter:
+    """Tests for ElmFilter (elm make / install compression)."""
+
+    def _f(self) -> bc.ElmFilter:
+        return bc.ElmFilter()
+
+    # --- dispatch ---
+
+    def test_dispatch_elm_make(self) -> None:
+        f = bc.select_filter(["elm", "make", "src/Main.elm"])
+        assert f is not None
+        assert f.name == "elm"
+
+    def test_dispatch_elm_install(self) -> None:
+        f = bc.select_filter(["elm", "install", "elm/json"])
+        assert f is not None
+        assert f.name == "elm"
+
+    def test_exported_in_all(self) -> None:
+        assert "ElmFilter" in bc.__all__
+
+    # --- downloading dependency lines collapsed ---
+
+    def test_collapses_downloading_lines(self) -> None:
+        """Multiple 'Downloading ...' lines are replaced with a count summary."""
+        f = self._f()
+        text = "\n".join([
+            "Downloading elm/json (1.1.3)",
+            "Downloading elm/http (2.0.0)",
+            "Downloading elm/core (1.0.5)",
+            "Success! Compiled 1 module.",
+        ]) + "\n"
+        result = f.apply(text, "", 0, ["elm", "make", "src/Main.elm"])
+        assert "3" in result.text
+        assert "Downloaded" in result.text
+        assert "Downloading elm/json" not in result.text
+
+    def test_keeps_success_line(self) -> None:
+        """Success! summary line is always preserved."""
+        f = self._f()
+        text = "Downloading elm/json (1.1.3)\nSuccess! Compiled 1 module.\n"
+        result = f.apply(text, "", 0, ["elm", "make", "src/Main.elm"])
+        assert "Success!" in result.text
+
+    def test_drops_dot_progress_lines(self) -> None:
+        """Lines consisting only of dots are dropped as spinner noise."""
+        f = self._f()
+        text = ".....\n......\nSuccess! Compiled 1 module.\n"
+        result = f.apply(text, "", 0, ["elm", "make", "src/Main.elm"])
+        assert "....." not in result.text
+        assert "Success!" in result.text
+
+    def test_drops_deps_progress_banners(self) -> None:
+        """'Building dependencies' / 'Solving dependencies' lines are dropped."""
+        f = self._f()
+        text = (
+            "Solving dependencies...\n"
+            "Building dependencies\n"
+            "Verifying dependencies\n"
+            "Success! Compiled 2 modules.\n"
+        )
+        result = f.apply(text, "", 0, ["elm", "make", "src/Main.elm"])
+        assert "Solving dependencies" not in result.text
+        assert "Building dependencies" not in result.text
+        assert "Success!" in result.text
+
+    def test_keeps_error_block_header(self) -> None:
+        """Elm error block headers (-- TYPE MISMATCH ---) are kept verbatim."""
+        f = self._f()
+        text = (
+            "-- TYPE MISMATCH -------------------------------- src/Main.elm\n"
+            "\n"
+            "The 1st argument to `text` is not what I expect:\n"
+            "\n"
+        )
+        result = f.apply(text, "", 1, ["elm", "make", "src/Main.elm"])
+        assert "TYPE MISMATCH" in result.text
+
+    def test_preserves_stderr_on_error(self) -> None:
+        """Non-zero exit code: stderr is returned unchanged."""
+        f = self._f()
+        stderr = "error: could not find elm.json\n"
+        result = f.apply("", stderr, 1, ["elm", "make", "src/Main.elm"])
+        assert "could not find elm.json" in result.text
+
+    def test_short_output_passthrough(self) -> None:
+        """Short output (≤ threshold) passes through unchanged."""
+        f = self._f()
+        text = "Success! Compiled 1 module.\n"
+        result = f.apply(text, "", 0, ["elm", "make", "src/Main.elm"])
+        assert "Success!" in result.text
+
+    # --- compiling lines collapsed ---
+
+    def test_collapses_compiling_lines(self) -> None:
+        """'Compiling file.elm' progress lines are folded into a count."""
+        f = self._f()
+        lines = [f"Compiling src/Module{i}.elm" for i in range(10)]
+        lines.append("Success! Compiled 10 modules.")
+        text = "\n".join(lines) + "\n"
+        result = f.apply(text, "", 0, ["elm", "make", "src/Main.elm"])
+        assert "Compiled 10 modules" in result.text
+        # The individual Compiling lines should be collapsed
+        assert "Compiling src/Module0.elm" not in result.text
+
+
+# ---------------------------------------------------------------------------
+# JuliaFilter
+# ---------------------------------------------------------------------------
+
+class TestJuliaFilter:
+    """Tests for JuliaFilter (Julia Pkg operations and test output)."""
+
+    def _f(self) -> bc.JuliaFilter:
+        return bc.JuliaFilter()
+
+    # --- dispatch ---
+
+    def test_dispatch_julia(self) -> None:
+        f = bc.select_filter(["julia", "--project", "-e", "using Pkg; Pkg.add(\"Example\")"])
+        assert f is not None
+        assert f.name == "julia"
+
+    def test_exported_in_all(self) -> None:
+        assert "JuliaFilter" in bc.__all__
+
+    # --- dep lines collapsed ---
+
+    def test_collapses_pkg_dep_lines(self) -> None:
+        """[uuid] +/-/↑ PkgName v1.0 lines are collapsed to a count summary."""
+        f = self._f()
+        lines = [
+            "   [7876af07] + Example v0.5.3",
+            "   [682c06a0] + JSON v0.21.4",
+            "   [2a0f44e3] + Base64 v0.1.0",
+            "   [56ddb016] ↑ Dates v1.0 ⇒ v1.1",
+        ]
+        text = "\n".join(lines) + "\n"
+        result = f.apply(text, "", 0, ["julia"])
+        assert "4" in result.text
+        assert "[7876af07]" not in result.text
+
+    def test_collapses_resolving_banners(self) -> None:
+        """'Resolving', 'Fetching', 'Updating' banners are collapsed."""
+        f = self._f()
+        text = (
+            "    Resolving package versions...\n"
+            "    Updating `~/Project.toml`\n"
+            "    Fetching package registry\n"
+            "Status `~/Project.toml`\n"
+        )
+        result = f.apply(text, "", 0, ["julia"])
+        assert "collapsed" in result.text or "Resolving" not in result.text
+        assert "Status" in result.text
+
+    def test_keeps_status_header(self) -> None:
+        """Status `Project.toml` line is always preserved."""
+        f = self._f()
+        text = "   [7876af07] + Example v0.5.3\nStatus `~/Project.toml`\n"
+        result = f.apply(text, "", 0, ["julia"])
+        assert "Status" in result.text
+
+    def test_keeps_test_summary(self) -> None:
+        """Test Summary: table header is always kept."""
+        f = self._f()
+        text = (
+            "   [7876af07] + Example v0.5.3\n" * 5
+            + "Test Summary: | Pass  Total\n"
+            + "    all tests |    3      3\n"
+        )
+        result = f.apply(text, "", 0, ["julia"])
+        assert "Test Summary:" in result.text
+
+    def test_collapses_passing_test_lines(self) -> None:
+        """Individual ✓ pass lines are folded into a note count."""
+        f = self._f()
+        lines = [f"  ✓ test case {i}" for i in range(20)]
+        lines.append("Test Summary: | Pass  Total")
+        lines.append("  all tests |   20     20")
+        text = "\n".join(lines) + "\n"
+        result = f.apply(text, "", 0, ["julia"])
+        assert "✓ test case 0" not in result.text
+        assert "Test Summary:" in result.text
+
+    def test_keeps_error_signals(self) -> None:
+        """Error signals are never collapsed."""
+        f = self._f()
+        text = "   [7876af07] + Example v0.5.3\nerror: package not found\n"
+        result = f.apply(text, "", 1, ["julia"])
+        assert "error: package not found" in result.text
+
+    def test_preserves_stderr_on_error(self) -> None:
+        """Non-zero exit code: stderr returned unchanged."""
+        f = self._f()
+        stderr = "ERROR: Package 'NonExistent' not found in registry\n"
+        result = f.apply("", stderr, 1, ["julia"])
+        assert "NonExistent" in result.text
+
+    def test_keeps_building_lines(self) -> None:
+        """Building PackageName lines carry signal and are kept verbatim."""
+        f = self._f()
+        text = (
+            "   [7876af07] + Example v0.5.3\n"
+            "    Building Example → `/path/build.log`\n"
+        )
+        result = f.apply(text, "", 0, ["julia"])
+        assert "Building Example" in result.text
+
+    def test_keeps_testing_header(self) -> None:
+        """'Testing PackageName' header is always kept."""
+        f = self._f()
+        text = (
+            "    Resolving package versions...\n"
+            "    Testing Example\n"
+            "Test Summary: | Pass  Total\n"
+        )
+        result = f.apply(text, "", 0, ["julia"])
+        assert "Testing Example" in result.text
+
+
+# ---------------------------------------------------------------------------
+# ToxFilter
+# ---------------------------------------------------------------------------
+
+class TestToxFilter:
+    """Tests for ToxFilter (Python tox multi-environment test runner)."""
+
+    def _f(self) -> bc.ToxFilter:
+        return bc.ToxFilter()
+
+    # --- dispatch ---
+
+    def test_dispatch_tox(self) -> None:
+        f = bc.select_filter(["tox"])
+        assert f is not None
+        assert f.name == "tox"
+
+    def test_dispatch_tox_run(self) -> None:
+        # `tox run` is dispatched to ToxFilter (no -e stripping involved).
+        f = bc.select_filter(["tox", "run"])
+        assert f is not None
+        assert f.name == "tox"
+
+    def test_exported_in_all(self) -> None:
+        assert "ToxFilter" in bc.__all__
+
+    # --- env create/install noise collapsed ---
+
+    def test_collapses_env_create_lines(self) -> None:
+        """py311: create / py311: install_deps lines are collapsed."""
+        f = self._f()
+        text = (
+            "py311: create virtualenv\n"
+            "py311: install_deps\n"
+            "py312: create virtualenv\n"
+            "py312: install_deps\n"
+            "py311: commands succeeded\n"
+            "py312: commands succeeded\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "create virtualenv" not in result.text
+        assert "commands succeeded" in result.text
+        assert "congratulations" in result.text
+
+    def test_keeps_commands_failed(self) -> None:
+        """'commands failed' lines are always kept."""
+        f = self._f()
+        text = (
+            "py311: create virtualenv\n"
+            "py311: commands failed\n"
+        )
+        result = f.apply(text, "", 1, ["tox"])
+        assert "commands failed" in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """ERROR: lines are always kept."""
+        f = self._f()
+        text = (
+            "py311: create virtualenv\n"
+            "ERROR: could not install dependencies\n"
+        )
+        result = f.apply(text, "", 1, ["tox"])
+        assert "ERROR: could not install dependencies" in result.text
+
+    def test_keeps_final_summary(self) -> None:
+        """'congratulations' / final test count lines are always kept."""
+        f = self._f()
+        text = (
+            "py311: create virtualenv\n"
+            "py311: install_deps\n"
+            "  py311: OK (5.20 seconds)\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "congratulations" in result.text
+
+    def test_keeps_env_result_lines(self) -> None:
+        """Per-env result lines (py311: OK (5s)) are kept."""
+        f = self._f()
+        text = (
+            "py311: create virtualenv\n"
+            "py311: install_deps\n"
+            "  py311: OK (5.20 seconds)\n"
+            "  py312: OK (4.98 seconds)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "py311: OK" in result.text
+        assert "py312: OK" in result.text
+
+    def test_keeps_env_execution_header(self) -> None:
+        """env execution header (py311 run-test: pytest tests/) is kept."""
+        f = self._f()
+        text = (
+            "py311: create virtualenv\n"
+            "py311 run-test: pytest tests/\n"
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "pytest tests/" in result.text
+
+    def test_collapses_pkg_install_noise(self) -> None:
+        """.pkg: install / .pkg: build-wheel lines are collapsed."""
+        f = self._f()
+        text = (
+            ".pkg create virtualenv\n"
+            ".pkg: install_package\n"
+            ".pkg: build-wheel\n"
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert ".pkg: install" not in result.text
+        assert "commands succeeded" in result.text
+
+    def test_preserves_stderr_on_error(self) -> None:
+        """Non-zero exit code: stderr returned unchanged."""
+        f = self._f()
+        stderr = "FATAL: tox could not find python3.11\n"
+        result = f.apply("", stderr, 1, ["tox"])
+        assert "FATAL" in result.text
+
+    def test_emits_note_on_compression(self) -> None:
+        """A [token-goat: ...] note is emitted when lines are collapsed."""
+        f = self._f()
+        text = (
+            "py311: create virtualenv\n"
+            "py311: install_deps\n"
+            "py311: commands succeeded\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "token-goat" in result.text
         assert f.name != "linter"

@@ -190,6 +190,12 @@ __all__ = [
     "DenoFilter",
     # Biome JS/TS linter/formatter
     "BiomeFilter",
+    # Elm compiler
+    "ElmFilter",
+    # Julia package manager / test runner
+    "JuliaFilter",
+    # Python tox multi-environment test runner
+    "ToxFilter",
 ]
 
 import math
@@ -15371,6 +15377,435 @@ class WasmPackFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# Elm compiler / reactor
+# ---------------------------------------------------------------------------
+
+#: Elm compilation progress: "Starting downloads..." / "Downloading ..." lines
+_ELM_DOWNLOADING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Starting downloads\.\.\.|Downloading\s+\S+\s+\(\d+\.\d+\.\d+\))",
+    re.IGNORECASE,
+)
+#: Elm dependency fetch counts: "Success! Fetched N packages."
+_ELM_FETCH_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Success!\s+Fetched\s+\d+\s+package|Packages\s+configured\s+successfully)",
+    re.IGNORECASE,
+)
+#: Elm compilation progress dot line: "....." (spinner/progress chars only)
+_ELM_DOT_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[\.]+\s*$"
+)
+#: Elm "Building dependencies" or "Verifying dependencies"
+_ELM_DEPS_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Building dependencies|Verifying\s+(?:dependencies|packages)|"
+    r"Updating\s+package\s+catalog|Solving\s+dependencies)",
+    re.IGNORECASE,
+)
+#: Elm "Compiling file.elm" progress line
+_ELM_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Compiling\s+\S+\.elm|Starting\s+compilation)",
+    re.IGNORECASE,
+)
+#: Elm success: "Successfully generated output.js" or "Success! Compiled N modules"
+_ELM_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Success!|Successfully\s+generated|Compilation\s+complete|"
+    r"Done!\s+Compiled\s+\d+)",
+    re.IGNORECASE,
+)
+#: Elm error block headers: "-- TYPE MISMATCH ----" or "-- MISSING PATTERNS --"
+_ELM_ERROR_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*--\s+[A-Z][A-Z0-9 _]+[A-Z0-9]\s*(?:-+|in\s+\S+)?\s*$"
+)
+#: Elm "Detected N errors" or final "I ran into N problems" summary
+_ELM_ERROR_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Detected\s+\d+\s+error|I\s+ran\s+into\s+\d+\s+problem|"
+    r"\d+\s+error[s]?\s+found)",
+    re.IGNORECASE,
+)
+
+
+class ElmFilter(Filter):
+    """Compress ``elm make`` / ``elm reactor`` / ``elm install`` output.
+
+    Elm emits verbose dependency-resolution and compilation lines that carry
+    little signal for the model.
+
+    Compression model:
+
+    * **Downloading/fetching dependency lines**: collapsed to a count.
+    * **``Building dependencies`` / ``Verifying packages``** progress lines:
+      dropped (noise before compilation starts).
+    * **Plain dot-only progress lines** (``......``): dropped.
+    * **``Compiling file.elm`` progress lines**: collapsed to a count.
+    * **Success summary lines** (``Success! Compiled N modules``): always kept.
+    * **Error block headers** (``-- TYPE MISMATCH ---``): always kept.
+    * **Error details** and diagnostic context: always kept verbatim.
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "elm"
+    binaries = frozenset(["elm"])
+    subcommands = frozenset(["make", "install", "reactor", "publish", "diff", "bump", "init"])
+
+    def matches(self, argv: list[str]) -> bool:
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem != "elm":
+            return False
+        positionals = _positional_args(argv[1:])
+        if not positionals:
+            return True
+        return positionals[0] in self.subcommands
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        downloading_count = 0
+        compiling_count = 0
+        dropped_noise = 0
+
+        for line in lines:
+            # Error signals and headers — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _ELM_ERROR_HEADER_RE.match(line):
+                kept.append(line)
+                continue
+            # Summary lines — always keep.
+            if _ELM_SUCCESS_RE.match(line) or _ELM_ERROR_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Downloading dependency lines — count.
+            if _ELM_DOWNLOADING_RE.match(line):
+                downloading_count += 1
+                continue
+            # Fetch success ("Fetched N packages") — keep.
+            if _ELM_FETCH_SUCCESS_RE.match(line):
+                kept.append(line)
+                continue
+            # Dep-resolution noise — drop.
+            if _ELM_DEPS_PROGRESS_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Dot-only progress — drop.
+            if _ELM_DOT_PROGRESS_RE.match(line):
+                dropped_noise += 1
+                continue
+            # "Compiling file.elm" lines — count.
+            if _ELM_COMPILING_RE.match(line):
+                compiling_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if downloading_count:
+            out.append(
+                f"[token-goat: Downloaded {downloading_count} Elm package(s); "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        if compiling_count:
+            out.append(
+                f"[token-goat: Compiled {compiling_count} Elm module(s)]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} Elm dependency-resolution progress lines")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# Julia package manager / test runner
+# ---------------------------------------------------------------------------
+
+#: Julia Pkg "Resolving package versions..." or "Updating registry"
+_JULIA_PKG_RESOLVING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\x1b\[[0-9;]*m)?\s*(?:Resolving|Updating|Fetching|Precompiling|"
+    r"Downgrading|Upgranding|Cloning|Archiving)\s+",
+    re.IGNORECASE,
+)
+#: Julia Pkg progress line with checkmark/arrow:
+#:   "  [38d3cb4b] + CairoMakie v0.10.0"  or
+#:   "  [7876af07] ↑ Example v0.5.0 ⇒ v0.5.1"
+_JULIA_PKG_DEP_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\x1b\[[0-9;]*m)?\s*\[[0-9a-f]{8}\]\s+(?:[+\-↑↓~→⇒✓]|\w)"
+)
+#: Julia Pkg "Installed PackageName ─────── v1.2.3"
+_JULIA_PKG_INSTALLED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\x1b\[[0-9;]*m)?\s*Installed\s+\S+\s+",
+    re.IGNORECASE,
+)
+#: Julia Pkg "Building PackageName → ..." build log line
+_JULIA_PKG_BUILDING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\x1b\[[0-9;]*m)?\s*Building\s+\S+\s*(?:→|->|─+)?\s*",
+    re.IGNORECASE,
+)
+#: Julia Pkg status summary: "Status `Project.toml`" or "Updating `Manifest.toml`"
+_JULIA_PKG_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\x1b\[[0-9;]*m)?\s*Status\s+`",
+    re.IGNORECASE,
+)
+#: Julia test pass lines: "Test Summary: | Pass  Fail  Error  Total"
+_JULIA_TEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Test\s+Summary:|Tests\s+run:|\d+\s+test[s]?\s+(?:passed|failed)|"
+    r"ALL_TESTS_PASS|Testing\s+\S+\s+done|No\s+tests\s+failed)",
+    re.IGNORECASE,
+)
+#: Julia test pass line (individual): "  ✓ test name" or "Test Passed: ..."
+_JULIA_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:✓|PASS:|Test\s+Passed)\s+",
+    re.IGNORECASE,
+)
+#: Julia "Testing PackageName" header — always keep.
+_JULIA_TESTING_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\x1b\[[0-9;]*m)?\s*Testing\s+\S+",
+    re.IGNORECASE,
+)
+#: Julia "Precompiling X packages..."  lines (noise)
+_JULIA_PRECOMPILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\x1b\[[0-9;]*m)?\s*\d+\s+(?:package[s]?\s+being\s+precompiled|"
+    r"dependency\s+precompil)",
+    re.IGNORECASE,
+)
+
+
+class JuliaFilter(Filter):
+    """Compress Julia ``Pkg`` operations and ``Pkg.test`` / ``julia --project test`` output.
+
+    Julia's package manager (Pkg) emits one line per dependency during
+    ``add``, ``update``, ``resolve``, and ``precompile`` — routinely 50-200
+    lines for a moderately-sized project.  The test runner outputs one pass
+    line per passing test.
+
+    Compression model:
+
+    * **Pkg dependency lines** (``[uuid] + PkgName v1.0``): collapsed to a count.
+    * **Pkg ``Installed`` lines**: collapsed into the dependency count.
+    * **Pkg ``Building`` lines**: kept (build logs carry signal on failure).
+    * **Pkg ``Resolving`` / ``Updating`` / ``Fetching`` / ``Precompiling``**
+      progress banners: collapsed to a count.
+    * **Pkg ``Status`` header** (``Status `Project.toml``): always kept.
+    * **Test summary lines** (``Test Summary:`` table): always kept.
+    * **Individual passing test lines** (``✓ test name``): collapsed to a count.
+    * **Failure / error lines**: always kept verbatim.
+    * **``Testing PackageName`` header**: always kept.
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "julia"
+    binaries = frozenset(["julia"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dep_count = 0
+        pass_count = 0
+        progress_count = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Test summary and testing header — always keep.
+            if _JULIA_TEST_SUMMARY_RE.match(line) or _JULIA_TESTING_HEADER_RE.match(line):
+                kept.append(line)
+                continue
+            # Pkg status header — always keep (documents env state).
+            if _JULIA_PKG_STATUS_RE.match(line):
+                kept.append(line)
+                continue
+            # Pkg building lines — always keep (build output has error signal).
+            if _JULIA_PKG_BUILDING_RE.match(line):
+                kept.append(line)
+                continue
+            # Pkg dependency change lines ([uuid] +/-/↑ PkgName v1.0) — count.
+            if _JULIA_PKG_DEP_LINE_RE.match(line):
+                dep_count += 1
+                continue
+            # Pkg installed lines — fold into dep count.
+            if _JULIA_PKG_INSTALLED_RE.match(line):
+                dep_count += 1
+                continue
+            # Pkg progress banners (Resolving/Updating/Fetching) — count.
+            if _JULIA_PKG_RESOLVING_RE.match(line) or _JULIA_PRECOMPILE_RE.match(line):
+                progress_count += 1
+                continue
+            # Individual passing test lines — count.
+            if _JULIA_TEST_PASS_RE.match(line):
+                pass_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if dep_count:
+            out.append(
+                f"[token-goat: {dep_count} Julia package operation(s) (add/update/install); "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        if progress_count:
+            out.append(
+                f"[token-goat: collapsed {progress_count} Pkg progress banner(s) "
+                f"(Resolving/Updating/Fetching/Precompiling)]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if pass_count:
+            notes.append(f"collapsed {pass_count} passing Julia test lines")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# Python tox multi-environment test runner
+# ---------------------------------------------------------------------------
+
+#: tox environment creation / recreation progress:
+#:   ".pkg create: ..." / "py311: create" / "py311: install_deps"
+_TOX_ENV_CREATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\S+:\s+create(?:virtualenv)?|"
+    r"\S+:\s+install(?:pkg|_deps|_package)?\s*$|"
+    r"\.pkg\s+(?:create|install|build-wheel|_check_passed))",
+    re.IGNORECASE,
+)
+#: tox session header: "tox run -e py311,py312" or "ROOT: ..." or "default environments"
+_TOX_SESSION_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:tox\s+run\b|ROOT:|default\s+environments:|configured\s+environments:|"
+    r"additional\s+environments:|run-test(?:-pre)?:\s|"
+    r"GLOB\s+sdist\s*[-–])",
+    re.IGNORECASE,
+)
+#: tox "PASSED" environment line:  "  py311: commands succeeded"
+_TOX_PASSED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\S+:\s+)?commands\s+succeeded\s*$",
+    re.IGNORECASE,
+)
+#: tox "FAILED" environment line: "  py311: commands failed" or "ERROR: ..."
+_TOX_FAILED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\S+:\s+)?commands\s+failed\s*$|"
+    r"^\s*ERROR:\s+",
+    re.IGNORECASE,
+)
+#: tox final summary: "congratulations :)" / "x passed, y skipped" / "N error(s)"
+_TOX_FINAL_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:congratulations\s*[:)]+|"
+    r"\d+\s+(?:passed|failed|error).*in\s+[\d.]+s|"
+    r"(?:all\s+)?\d+\s+test[s]?\s+(?:passed|failed)|"
+    r"={3,}\s+\d+\s+(?:passed|failed))",
+    re.IGNORECASE,
+)
+#: tox individual env result summary line: "  py311: OK (Ns)" or "  py311: FAIL"
+_TOX_ENV_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\S+\s+)+(?:OK|FAIL(?:ED)?|PASSED|skipped)\s*(?:\(\d+[\d.]*s\))?\s*$",
+    re.IGNORECASE,
+)
+#: tox package install progress inside an env: "  .pkg: install …"
+_TOX_PKG_INSTALL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\.pkg:\s+(?:inst|install|build-wheel|_check_passed)\b",
+    re.IGNORECASE,
+)
+#: tox "run-test-pre" / "run-test:" label line — transitional noise
+_TOX_RUN_LABEL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\S+:\s+(?:run-test-pre|run-test|create|recreate|inst(?:all(?:pkg|deps)?)?)\s*$",
+    re.IGNORECASE,
+)
+#: tox environment header when it starts executing:
+#:   "py311 run-test-pre: PYTHONHASHSEED='...'", "py311 run-test: pytest ..."
+_TOX_ENV_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\S+\s+(?:run-test(?:-pre)?|recreate|install(?:pkg|deps)?):\s+"
+)
+
+
+class ToxFilter(Filter):
+    """Compress Python ``tox`` multi-environment test-runner output.
+
+    ``tox`` orchestrates isolated virtualenv creation, package installation, and
+    test execution across multiple Python versions.  A typical ``tox -e
+    py311,py312,py313`` run emits dozens of virtualenv-creation and
+    package-installation lines that carry no failure signal.
+
+    Compression model:
+
+    * **Environment creation / installation progress lines** (``py311: create``,
+      ``py311: install_deps``, ``.pkg: install``): collapsed to a count per run.
+    * **tox session header** (``ROOT:``, ``tox run …``): always kept.
+    * **``commands succeeded`` / ``commands failed``**: always kept.
+    * **Error lines** (``ERROR:``): always kept.
+    * **Final summary** (``congratulations``, ``N passed in Xs``): always kept.
+    * **Per-env result lines** (``py311: OK (5.2s)``): always kept.
+    * **pytest output inside each env**: passed through as-is (PytestFilter
+      handles it in the same call chain when tox delegates to pytest).
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "tox"
+    binaries = frozenset(["tox"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        dropped_create = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _TOX_FAILED_RE.match(line):
+                kept.append(line)
+                continue
+            # Session-level headers and final summaries — always keep.
+            if (
+                _TOX_SESSION_HEADER_RE.match(line)
+                or _TOX_FINAL_SUMMARY_RE.match(line)
+                or _TOX_ENV_RESULT_RE.match(line)
+                or _TOX_PASSED_RE.match(line)
+            ):
+                kept.append(line)
+                continue
+            # Env execution header (e.g. "py311 run-test: pytest tests/") — keep.
+            if _TOX_ENV_HEADER_RE.match(line):
+                kept.append(line)
+                continue
+            # Env creation / install / pkg-build noise — count.
+            if (
+                _TOX_ENV_CREATE_RE.match(line)
+                or _TOX_PKG_INSTALL_RE.match(line)
+                or _TOX_RUN_LABEL_RE.match(line)
+            ):
+                dropped_create += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_create:
+            notes.append(
+                f"collapsed {dropped_create} tox env-create/install progress lines"
+            )
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
 
@@ -15600,6 +16035,15 @@ FILTERS: list[Filter] = [
     # SassFilter handles `sass`, `scss`, `lessc`, and `node-sass`; disjoint
     # binaries from every other filter so position is cosmetic.
     SassFilter(),
+    # ElmFilter handles `elm make/install/reactor`; disjoint binary from every
+    # other filter so position is cosmetic — placed alongside other language build tools.
+    ElmFilter(),
+    # JuliaFilter handles `julia` Pkg operations and test runs; disjoint binary
+    # from every other filter so position is cosmetic.
+    JuliaFilter(),
+    # ToxFilter handles `tox` multi-environment Python test-runner output;
+    # disjoint binary from every other filter so position is cosmetic.
+    ToxFilter(),
 ]
 
 
