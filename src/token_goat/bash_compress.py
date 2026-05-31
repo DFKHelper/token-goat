@@ -1422,6 +1422,26 @@ _PYTEST_COLLECT_RE: Final[re.Pattern[str]] = re.compile(r"^collected \d+ items?"
 _PYTEST_BANNER_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:platform\s|cachedir:\s|rootdir:\s|plugins:\s|configfile:\s)"
 )
+# pytest-xdist worker prefix: ``[gw0]``, ``[gw1]``, etc.
+# These appear on every line when running with ``-n auto`` / ``-n 4``.
+# The prefix is noise; the real content follows after a space.
+_PYTEST_XDIST_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[gw\d+\]\s*(?:\[\s*\d+%\]\s*)?"
+)
+# pytest-cov coverage report table lines (``module    100    0    100%`` etc.)
+# and the decorative dashes/equals separators.
+_PYTEST_COV_TABLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Name\s+Stmts|[-]+\s*$|TOTAL\s+\d|.+\s+\d+\s+\d+\s+\d+\s+\d+%\s*$)"
+)
+# Coverage summary line — preserve this so the agent sees the overall %.
+_PYTEST_COV_TOTAL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^TOTAL\s+\d"
+)
+# Slow-test duration lines inside the ``slowest N durations`` section.
+# Pattern: ``0.12s call tests/test_foo.py::test_bar``
+_PYTEST_SLOW_DURATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+\.\d+s\s+(?:call|setup|teardown)\s+\S"
+)
 
 
 class PytestFilter(Filter):
@@ -1438,6 +1458,13 @@ class PytestFilter(Filter):
       file names beyond the first few, and the constant banner lines
       (``platform``, ``cachedir:``, ``rootdir:``, ``plugins:``,
       ``configfile:``) that are the same for every invocation.
+    * **pytest-xdist**: Strip the ``[gw0]`` / ``[gw1]`` worker prefix from
+      every line so the compressed output reads like normal pytest output.
+    * **pytest-cov**: Collapse the per-file coverage table to a single
+      ``TOTAL`` line (the per-file rows are rarely needed; the total % is).
+    * **slowest N durations**: Keep the section header + first 5 entries;
+      collapse the rest to a count.  A full slow-test table for a large suite
+      is hundreds of lines the agent does not need.
 
     On a 5 KB pytest run with no failures the output shrinks to ~10 lines.
     With failures the failure tracebacks are preserved untouched so the agent
@@ -1456,7 +1483,17 @@ class PytestFilter(Filter):
         passed_count = 0
         in_failures = False
         in_errors = False
+        in_slow_section = False
+        slow_kept = 0
+        slow_dropped = 0
+        in_cov_table = False
+        cov_table_rows_dropped = 0
         for line in lines:
+            # Strip pytest-xdist worker prefix ([gw0], [gw1], ...) so downstream
+            # logic sees clean lines regardless of -n parallelism.
+            if _PYTEST_XDIST_PREFIX_RE.match(line):
+                line = _PYTEST_XDIST_PREFIX_RE.sub("", line, count=1)
+
             # Drop the dots/percent progress line entirely.
             if _PYTEST_DOTS_RE.match(line):
                 continue
@@ -1468,8 +1505,72 @@ class PytestFilter(Filter):
             if _PYTEST_HEADER_RE.match(line):
                 in_failures = "FAILURES" in line
                 in_errors = "ERRORS" in line or "short test summary" in line
+                in_slow_section = "slowest" in line and "durations" in line
+                in_cov_table = False
                 kept.append(line)
                 continue
+
+            # --- pytest-cov coverage table ---
+            # The coverage table header starts with "Name    Stmts   Miss".
+            # Collapse per-file rows; keep TOTAL and the separator lines.
+            if line.startswith("Name") and "Stmts" in line and "Miss" in line:
+                in_cov_table = True
+                kept.append(line)
+                continue
+            if in_cov_table:
+                if _PYTEST_COV_TOTAL_RE.match(line):
+                    if cov_table_rows_dropped:
+                        kept.append(
+                            f"[token-goat: collapsed {cov_table_rows_dropped}"
+                            f" coverage table rows]"
+                        )
+                        cov_table_rows_dropped = 0
+                    kept.append(line)
+                    in_cov_table = False
+                    continue
+                # Separator lines (--- or ===): keep
+                if re.match(r"^[-=]+\s*$", line):
+                    kept.append(line)
+                    continue
+                # Per-file coverage row: drop (covered by TOTAL)
+                if re.match(r"^\S.*\s+\d+\s+\d+\s+\d+%?\s*$", line):
+                    cov_table_rows_dropped += 1
+                    continue
+                # Anything else exits the table context
+                in_cov_table = False
+
+            # --- slowest durations section ---
+            # Keep the first 5 entries; collapse the rest.
+            if in_slow_section:
+                if _PYTEST_SLOW_DURATION_RE.match(line):
+                    if slow_kept < 5:
+                        kept.append(line)
+                        slow_kept += 1
+                    else:
+                        slow_dropped += 1
+                    continue
+                # Blank line or new section header exits the slow section.
+                if not line.strip() or _PYTEST_HEADER_RE.match(line):
+                    if slow_dropped:
+                        kept.append(
+                            f"[token-goat: collapsed {slow_dropped} slow-test duration lines]"
+                        )
+                        slow_dropped = 0
+                    in_slow_section = False
+                    if not line.strip():
+                        continue  # drop blank — it's padding
+                    # Fall through to process the new header line.
+                    if _PYTEST_HEADER_RE.match(line):
+                        in_failures = "FAILURES" in line
+                        in_errors = "ERRORS" in line or "short test summary" in line
+                        kept.append(line)
+                        continue
+                else:
+                    # Non-duration line inside slow section (e.g. blank,
+                    # setup/teardown with 0.00s) — keep as context.
+                    kept.append(line)
+                    continue
+
             # PASSED entries: count, do not keep.  Only when not inside a
             # failure traceback (PASSED can appear in tracebacks as part of
             # captured stderr, keep those).
@@ -1481,6 +1582,16 @@ class PytestFilter(Filter):
                 kept.append(line)
                 continue
             kept.append(line)
+        # Flush any trailing slow-section counter.
+        if slow_dropped:
+            kept.append(
+                f"[token-goat: collapsed {slow_dropped} slow-test duration lines]"
+            )
+        # Flush any trailing coverage table counter.
+        if cov_table_rows_dropped:
+            kept.append(
+                f"[token-goat: collapsed {cov_table_rows_dropped} coverage table rows]"
+            )
         # Trim collected-files spam to first three.
         kept = _trim_repeated_prefix(kept, _PYTEST_COLLECT_RE, keep=3)
         if passed_count:
@@ -2144,6 +2255,24 @@ _DOCKER_STEP_RE: Final[re.Pattern[str]] = re.compile(
 _DOCKER_STEP_BODY_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*#\d+\s+\d+(\.\d+)?\s+"
 )
+# BuildKit CACHED step lines: ``#5 CACHED`` — the layer was reused from cache.
+# These are noise on a warm build (dozens of identical lines); we count them.
+_DOCKER_CACHED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*#\d+\s+CACHED\s*$"
+)
+# docker push "Layer already exists" / "Mounted from" / "Pushing" progress —
+# appear for every layer on a warm push, no information beyond the count.
+_DOCKER_PUSH_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\S+:\s+)?(?:Layer already exists|Mounted from \S+|Pushing\s+\S+:\s+\d)",
+    re.IGNORECASE,
+)
+# docker pull / push intermediate digest lines:
+# ``latest: Pulling from library/ubuntu`` and the per-layer status lines
+# ``Status: Downloaded newer image for …`` is signal — keep it.
+_DOCKER_PULL_LAYER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[a-f0-9]{12}:\s+(?:Pull complete|Verifying Checksum|Download complete|Already exists|Waiting|Pulling fs layer)",
+    re.IGNORECASE,
+)
 
 
 class DockerFilter(Filter):
@@ -2179,12 +2308,28 @@ class DockerFilter(Filter):
         dropped_digest = 0
         dropped_progress = 0
         dropped_body = 0
+        dropped_cached = 0
+        dropped_push_noise = 0
+        dropped_pull_layers = 0
         for line in lines:
             if _DOCKER_DIGEST_RE.match(line):
                 dropped_digest += 1
                 continue
             if _DOCKER_PROGRESS_RE.match(line):
                 dropped_progress += 1
+                continue
+            # BuildKit CACHED lines: ``#5 CACHED`` — layer reused from cache.
+            # Dozens of these appear on warm builds with no new information.
+            if _DOCKER_CACHED_RE.match(line):
+                dropped_cached += 1
+                continue
+            # docker push: "Layer already exists" / "Mounted from" / "Pushing NNN"
+            if _DOCKER_PUSH_NOISE_RE.match(line):
+                dropped_push_noise += 1
+                continue
+            # docker pull per-layer status lines (Pull complete, Waiting, etc.)
+            if _DOCKER_PULL_LAYER_RE.match(line):
+                dropped_pull_layers += 1
                 continue
             # When the step succeeded, drop its body (the prefixed timestamps).
             if (
@@ -2196,11 +2341,21 @@ class DockerFilter(Filter):
                 dropped_body += 1
                 continue
             kept.append(line)
-        if dropped_digest + dropped_progress + dropped_body:
-            kept.append(
-                f"[token-goat: dropped {dropped_digest} digest, "
-                f"{dropped_progress} transfer, {dropped_body} body lines]"
-            )
+        parts: list[str] = []
+        if dropped_digest:
+            parts.append(f"{dropped_digest} digest")
+        if dropped_progress:
+            parts.append(f"{dropped_progress} transfer")
+        if dropped_body:
+            parts.append(f"{dropped_body} body")
+        if dropped_cached:
+            parts.append(f"{dropped_cached} CACHED")
+        if dropped_push_noise:
+            parts.append(f"{dropped_push_noise} push-layer")
+        if dropped_pull_layers:
+            parts.append(f"{dropped_pull_layers} pull-layer")
+        if parts:
+            kept.append(f"[token-goat: dropped {', '.join(parts)} lines]")
         return self._finalize(kept)
 
 
@@ -2611,15 +2766,29 @@ class KubectlLogsFilter(Filter):
 
     * **Repetitive lines** (same message, different timestamps): keep first 3,
       show ``N more similar lines`` for the rest.
+    * **Multi-pod / --prefix output** (``pod-name | message``): strip the pod
+      prefix before deduplication so that the same recurring message from
+      multiple pods is collapsed correctly.
     * **JSON log blobs**: compact single-line JSON passes through; JSON blobs
       spanning more than 5 lines are collapsed to a one-line summary.
     * **Stack traces**: keep first 5 frame lines + ``... N frames`` marker.
     * **HTTP access logs**: when more than 20 lines match the access-log
       pattern, collapse to ``N HTTP requests (2xx: N, 4xx: N, 5xx: N)``.
+    * **Head+tail cap**: if output is still > 200 lines after all the above,
+      cap to head=40, tail=40 to prevent unbounded context burn on ``--follow``
+      streams that were interrupted.
     """
 
     name = "kubectl-logs"
     binaries = frozenset(["kubectl", "k"])
+
+    # ``kubectl logs --prefix`` or ``kubectl logs -l selector`` emits lines
+    # like ``[pod/my-pod-abc123/container] 2024-01-01T… message``
+    # or the legacy ``pod-name | message`` from some log-tailing tools.
+    _POD_PREFIX_RE: re.Pattern[str] = re.compile(
+        r"^\[pod/[^/]+/[^\]]+\]\s+"  # --prefix format
+        r"|^[a-z0-9][a-z0-9\-\.]*\s+\|\s+"  # sidecar-style "podname | "
+    )
 
     def matches(self, argv: list[str]) -> bool:
         if not argv:
@@ -2631,6 +2800,19 @@ class KubectlLogsFilter(Filter):
             return False
         positionals = _positional_args(argv[1:])
         return bool(positionals) and positionals[0] == "logs"
+
+    @staticmethod
+    def _strip_pod_prefix(line: str) -> str:
+        """Return *line* with the pod/container prefix removed, if present."""
+        # ``[pod/name/container] `` prefix (--prefix flag)
+        m = re.match(r"^\[[^\]]+\]\s+", line)
+        if m:
+            return line[m.end():]
+        # ``pod-name | `` prefix (multi-container log tools)
+        m2 = re.match(r"^[a-z0-9][a-z0-9\-\.]*\s+\|\s+", line)
+        if m2:
+            return line[m2.end():]
+        return line
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -2651,11 +2833,22 @@ class KubectlLogsFilter(Filter):
         # Step 2: stack-trace collapsing
         non_empty = _collapse_stack_traces(non_empty)
 
-        # Step 3: repetitive-line dedup (timestamp-normalised)
-        non_empty = _dedup_log_lines(non_empty, keep_first_n=3)
+        # Step 3: repetitive-line dedup (timestamp- AND pod-prefix-normalised).
+        # For multi-pod output, strip the pod prefix before comparing so that
+        # "pod-abc | 2024-01-01 INFO health check ok" and
+        # "pod-xyz | 2024-01-01 INFO health check ok" are recognised as the
+        # same message and collapsed together.
+        non_empty = _dedup_log_lines_with_pod_prefix(non_empty, keep_first_n=3)
 
         # Step 4: JSON blob collapsing
         non_empty = _collapse_json_blobs(non_empty, max_json_lines=5)
+
+        # Step 5: hard head+tail cap for very long --follow captures.
+        if len(non_empty) > 200:
+            non_empty_str = _head_tail_compress(non_empty, head=40, tail=40, label="log lines")
+            if stderr.strip():
+                return (non_empty_str.rstrip() + "\n---\n" + stderr.rstrip()) if non_empty_str.strip() else stderr
+            return non_empty_str
 
         if stderr.strip():
             result = "\n".join(non_empty)
@@ -2697,6 +2890,63 @@ def _dedup_log_lines(lines: list[str], keep_first_n: int = 3) -> list[str]:
                 f"[token-goat: {len(run) - keep_first_n} more similar lines omitted]"
             )
         i = j
+    return out
+
+
+def _dedup_log_lines_with_pod_prefix(lines: list[str], keep_first_n: int = 3) -> list[str]:
+    """Deduplicate log lines that differ only in timestamps and/or pod prefixes.
+
+    Extends :func:`_dedup_log_lines` to handle ``kubectl logs --prefix`` and
+    ``kubectl logs -l <selector>`` output where each line is prefixed with a
+    pod/container identifier like ``[pod/my-pod-abc/main] `` or ``pod-xyz | ``.
+    Lines that share the same timestamp-stripped, pod-stripped content are
+    treated as a single repeated message even if they come from different pods.
+
+    The first *keep_first_n* occurrences of each normalised message are kept
+    verbatim (preserving the original line with its pod prefix and timestamp so
+    the reader can see which pods are affected).  The rest are collapsed.
+    """
+    _pod_prefix_re = re.compile(
+        r"^\[[^\]]+\]\s+"          # --prefix: [pod/name/container]
+        r"|^[a-z0-9][a-z0-9\-\.]*\s+\|\s+"  # legacy: "podname | "
+    )
+
+    def _normalise(line: str) -> str:
+        # Strip pod prefix then timestamp.
+        no_pod = _pod_prefix_re.sub("", line)
+        return _strip_timestamp(no_pod).strip()
+
+    out: list[str] = []
+    seen: dict[str, int] = {}
+    omit: dict[str, int] = {}
+    prev_key: str | None = None
+
+    for line in lines:
+        key = _normalise(line)
+        count = seen.get(key, 0)
+        seen[key] = count + 1
+
+        if count < keep_first_n:
+            # Flush any pending omit marker for the previous key when we move
+            # to a new message (non-consecutive run).
+            if prev_key is not None and prev_key != key and omit.get(prev_key, 0):
+                out.append(
+                    f"[token-goat: {omit[prev_key]} more similar lines omitted]"
+                )
+                omit[prev_key] = 0
+            out.append(line)
+        else:
+            omit[key] = omit.get(key, 0) + 1
+
+        prev_key = key
+
+    # Flush final omit counters in insertion order (Python 3.7+ dict).
+    flushed: set[str] = set()
+    for key, count in omit.items():
+        if count > 0 and key not in flushed:
+            out.append(f"[token-goat: {count} more similar lines omitted]")
+            flushed.add(key)
+
     return out
 
 
@@ -4683,7 +4933,7 @@ _GO_TEST_PASS_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*--- PASS:\s"
 )
 _GO_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*--- (FAIL|SKIP):\s"
+    r"^\s*--- FAIL:\s"
 )
 # Final per-package result lines: ``ok pkg 1.234s`` / ``FAIL pkg 0.5s`` /
 # ``?  pkg [no test files]``.  Preserved verbatim so the agent sees per-package
@@ -4723,9 +4973,14 @@ class GoTestFilter(Filter):
 
     * **Keep**: FAIL / ERROR blocks (entire stderr captured under the RUN line).
     * **Keep**: Final summary (ok, FAILED, coverage %).
-    * **Drop**: All ``=== RUN TestName`` lines that don't precede a FAIL.
-    * **Drop**: All ``--- PASS: TestName`` / ``--- SKIP: TestName`` lines (count them).
+    * **Drop**: All ``=== RUN / PAUSE / CONT / NAME`` lines outside FAIL blocks
+      (count them).
+    * **Drop**: All ``--- PASS: TestName`` lines (count them).
     * **Drop**: ``go: downloading ...`` lines (often hundreds when deps aren't cached).
+    * **Skip**: ``-json`` output — already machine-readable and compact; pass
+      through unchanged so the caller can parse it (compression would corrupt JSON).
+    * **SKIP lines**: Collapsed separately since they indicate intentionally
+      skipped tests (not failures); count reported in notes.
     """
 
     name = "go-test"
@@ -4744,10 +4999,18 @@ class GoTestFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
+        # ``go test -json`` emits JSON objects one per line.  These are already
+        # compact and machine-readable; compressing them would corrupt the JSON
+        # stream and break any downstream parser (e.g. gotestsum).  Pass through.
+        if "-json" in argv:
+            merged = self._combine_output(stdout, stderr)
+            return merged
+
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         kept: list[str] = []
         pass_count = 0
+        skip_count = 0
         in_fail_block = False
         dropped_run = 0
         dropped_download = 0
@@ -4755,7 +5018,7 @@ class GoTestFilter(Filter):
             if line.startswith("go: downloading"):
                 dropped_download += 1
                 continue
-            # FAIL / SKIP open a multi-line block preserved until next testcase.
+            # FAIL opens a multi-line block preserved until next testcase.
             if _GO_TEST_FAIL_RE.match(line):
                 in_fail_block = True
                 kept.append(line)
@@ -4764,10 +5027,13 @@ class GoTestFilter(Filter):
                 in_fail_block = False
                 pass_count += 1
                 continue
+            # SKIP lines — not failures, not passes; count separately.
+            if re.match(r"^\s*--- SKIP:\s", line):
+                skip_count += 1
+                continue
             if _GO_TEST_RUN_RE.match(line):
-                # === RUN inside a FAIL block is the next testcase header —
-                # close the block but keep the new RUN line for structure.
-                # Outside a FAIL block, drop the RUN entirely.
+                # === RUN / PAUSE / CONT inside a FAIL block: close block, keep line
+                # for structure.  Outside a FAIL block: drop entirely.
                 if in_fail_block:
                     in_fail_block = False
                 else:
@@ -4783,6 +5049,8 @@ class GoTestFilter(Filter):
         notes: list[str] = []
         if pass_count:
             notes.append(f"collapsed {pass_count} PASS testcases")
+        if skip_count:
+            notes.append(f"collapsed {skip_count} SKIP testcases")
         if dropped_run:
             notes.append(f"dropped {dropped_run} === RUN/PAUSE/CONT lines")
         if dropped_download:
@@ -5185,6 +5453,23 @@ _TF_RESOURCE_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
 _TF_ERROR_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:Error|Warning):|FAILED"
 )
+#: Terraform plan resource block header: ``# resource_type.name will be created``
+#: or ``# resource_type.name must be replaced``.
+_TF_PLAN_RESOURCE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+#\s+\S+\s+(?:will be|must be|has been)\s+"
+)
+#: Terraform plan attribute lines with ``(known after apply)`` — these are
+#: noise in large resource blocks; the resource header already tells the agent
+#: which resource will be created/changed.  Lines with real values (non-null,
+#: non-empty, non-``(known after apply)``) are kept.
+_TF_KNOWN_AFTER_APPLY_RE: Final[re.Pattern[str]] = re.compile(
+    r"\(known after apply\)"
+)
+#: Terraform plan ``~`` (in-place update) attribute diff lines:
+#: ``  ~ attribute = "old" -> "new"``  — keep these (they show what changes).
+_TF_PLAN_ATTR_DIFF_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+[~+\-]\s+\S"
+)
 
 
 class TerraformFilter(Filter):
@@ -5242,6 +5527,16 @@ class TerraformFilter(Filter):
                 text = _head_tail_compress(non_empty, head=20, tail=10, label="lines")
             else:
                 text = "\n".join(non_empty)
+        elif subcommand in ("output", "outputs"):
+            # ``terraform output`` / ``terraform outputs`` emit key = value pairs.
+            # Usually short; pass through.
+            pass
+        elif subcommand in ("workspace",):
+            # ``terraform workspace list/new/select/show/delete`` — short.
+            pass
+        elif subcommand in ("import",):
+            # ``terraform import`` — short resource lines, keep all.
+            pass
         else:
             # Unknown or missing subcommand: still strip terraform noise (Refreshing
             # state / Read complete lines) that appears in any terraform output.
@@ -5262,7 +5557,9 @@ class TerraformFilter(Filter):
         """Compress terraform plan output.
 
         Drops refresh/read lines, collapses ``No changes.`` blocks for
-        unchanged resources, keeps addition/deletion/modification blocks,
+        unchanged resources, compresses ``(known after apply)``-only attribute
+        sections in resource blocks (keeps up to 8 non-trivial attributes per
+        resource block), keeps diff attribute lines (``~``/``+``/``-``),
         keeps the ``Plan: N to add…`` summary line, and keeps the last 20
         lines of detailed plan diff.
         """
@@ -5270,71 +5567,110 @@ class TerraformFilter(Filter):
         kept: list[str] = []
         dropped_refresh = 0
         dropped_no_change_blocks = 0
-        plan_summary_idx = -1
+        dropped_kaa = 0  # (known after apply) attribute lines collapsed
 
-        # First pass: identify the plan summary line index in the raw list.
-        for i, line in enumerate(lines):
-            if _TF_PLAN_SUMMARY_RE.match(line):
-                plan_summary_idx = i
-                break
-
-        # Second pass: filter refresh lines and collapse "No changes." blocks.
-        # A "No changes." block is: ``# resource.name is unchanged`` header
-        # followed by lines until the next blank or ``#`` header.  We drop the
-        # whole block because the Plan summary line already communicates the
-        # count.
         i = 0
         while i < len(lines):
             line = lines[i]
+
             # Drop refresh/read progress lines.
             if _TF_REFRESH_RE.match(line):
                 dropped_refresh += 1
                 i += 1
                 continue
+
             # Detect "# resource will not be changed" / "No changes." blocks.
             if (
                 line.startswith("# ")
                 and ("will not be" in line or "is up-to-date" in line or "not be created" in line)
             ):
-                # Skip this comment block (indented body lines until the next blank line,
-                # ``#`` block header, or plan-summary line — whichever comes first).
+                # Skip this comment block.
                 i += 1
                 while i < len(lines):
                     body = lines[i]
                     if not body.strip():
-                        break  # blank line = block separator
+                        break
                     if body.startswith("# "):
-                        break  # next block comment
+                        break
                     if _TF_PLAN_SUMMARY_RE.match(body) or _TF_APPLY_COMPLETE_RE.match(body):
-                        break  # plan/apply summary — stop before consuming it
+                        break
                     i += 1
                 dropped_no_change_blocks += 1
                 continue
+
             if _TF_NO_CHANGES_RE.match(line):
-                # "No changes." — keep this single summary line (it's the plan result).
                 kept.append(line)
                 i += 1
                 continue
+
+            # Detect a resource block being created/modified (``resource_type.name {``).
+            # Within such blocks, attribute lines that only have ``(known after apply)``
+            # values add nothing useful.  Keep diff lines (``~``, ``+``, ``-``) and
+            # the first 8 non-kaa attribute lines; collapse the rest.
+            # A resource block starts with a bare ``resource "type" "name" {`` or
+            # ``  resource_type.name {`` line (the HCL block opener in plan output).
+            if (
+                re.match(r"^\s+resource\s+\"", line)
+                or re.match(r"^\s{2,6}[a-z][a-z0-9_]*\.[a-zA-Z0-9_.\[\]-]+\s+\{", line)
+            ) and i + 1 < len(lines):
+                kept.append(line)
+                i += 1
+                # Consume the body of this resource block until closing ``}``
+                # at the same indent level.
+                block_kaa = 0
+                block_non_kaa_kept = 0
+                NON_KAA_KEEP_MAX = 8
+                while i < len(lines):
+                    body = lines[i]
+                    # Closing brace at same / outer indent = end of block
+                    if re.match(r"^\s{0,6}\}\s*$", body):
+                        kept.append(body)
+                        i += 1
+                        break
+                    # Diff attribute lines (changed values) — always keep.
+                    if _TF_PLAN_ATTR_DIFF_RE.match(body):
+                        kept.append(body)
+                        i += 1
+                        continue
+                    # Attribute line with ``(known after apply)`` — collapse.
+                    if _TF_KNOWN_AFTER_APPLY_RE.search(body):
+                        block_kaa += 1
+                        i += 1
+                        continue
+                    # Other attribute lines: keep first NON_KAA_KEEP_MAX.
+                    if block_non_kaa_kept < NON_KAA_KEEP_MAX:
+                        kept.append(body)
+                        block_non_kaa_kept += 1
+                    else:
+                        block_kaa += 1  # count as collapsed
+                    i += 1
+                if block_kaa:
+                    kept.append(
+                        f"    [token-goat: collapsed {block_kaa}"
+                        f" (known after apply) / excess attribute lines]"
+                    )
+                    dropped_kaa += block_kaa
+                continue
+
             kept.append(line)
             i += 1
 
-        # If we have a plan summary, keep it and the last 20 lines.
-        if plan_summary_idx >= 0:
-            summary_line = None
-            tail_start = max(0, len(lines) - 20)
-            final_kept: list[str] = []
-            for line in kept:
-                if _TF_PLAN_SUMMARY_RE.match(line):
-                    summary_line = line
-                    break
-            if summary_line:
-                final_kept.append(summary_line)
-            # Append tail lines (excluding the summary if it's in the tail).
-            for j, line in enumerate(lines):
-                if j >= tail_start and j != plan_summary_idx:
-                    if _TF_REFRESH_RE.match(line):
-                        continue
-                    final_kept.append(line)
+        # Find the plan summary line and reorganise output around it.
+        summary_line: str | None = None
+        for ln in kept:
+            if _TF_PLAN_SUMMARY_RE.match(ln):
+                summary_line = ln
+                break
+
+        if summary_line is not None:
+            # Keep plan summary first + last 20 lines of non-refresh kept output
+            # so that the agent sees the resource names and the plan total.
+            tail_lines = [ln for ln in kept if not _TF_REFRESH_RE.match(ln)]
+            final_kept: list[str] = [summary_line]
+            tail_start = max(0, len(tail_lines) - 20)
+            for ln in tail_lines[tail_start:]:
+                if ln != summary_line:
+                    final_kept.append(ln)
             kept = final_kept
 
         notes: list[str] = []
@@ -5342,6 +5678,8 @@ class TerraformFilter(Filter):
             notes.append(f"dropped {dropped_refresh} terraform refresh/read lines")
         if dropped_no_change_blocks:
             notes.append(f"collapsed {dropped_no_change_blocks} unchanged-resource block(s)")
+        if dropped_kaa:
+            notes.append(f"collapsed {dropped_kaa} (known after apply) attribute lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 

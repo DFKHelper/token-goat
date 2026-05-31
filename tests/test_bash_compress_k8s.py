@@ -451,6 +451,57 @@ class TestKubectlLogsFilter:
         result = f.apply("", stderr, 1, ["kubectl", "logs", "missing-pod"])
         assert "NotFound" in result.text
 
+    # --- multi-pod / --prefix output dedup ---
+
+    def test_multi_pod_prefix_dedup(self) -> None:
+        """kubectl logs -l selector emits pod-name | message; same message collapses."""
+        # 60 lines from 2 pods, alternating, with the same health-check message
+        lines = []
+        for i in range(30):
+            ts = f"2026-05-30T12:{i // 60:02d}:{i % 60:02d}Z"
+            lines.append(f"pod-abc123 | {ts} INFO health check ok")
+            lines.append(f"pod-def456 | {ts} INFO health check ok")
+        text = "\n".join(lines)
+        f = self._filter()
+        result = f.apply(text, "", 0, ["kubectl", "logs", "-l", "app=myapp"])
+        # Should collapse: the two pods emit the same message; keep first 3 of any
+        assert "more similar lines omitted" in result.text
+        # At least the first instance from one pod should be preserved
+        assert "INFO health check ok" in result.text
+
+    def test_multi_pod_prefix_output_different_messages_kept(self) -> None:
+        """Different messages from multiple pods are not collapsed."""
+        lines = [f"pod-{i} | 2026-05-30T12:00:00Z INFO unique message {i}" for i in range(60)]
+        text = "\n".join(lines)
+        f = self._filter()
+        result = f.apply(text, "", 0, ["kubectl", "logs", "-l", "app=myapp"])
+        # All unique messages should survive (no collapsing of distinct messages)
+        assert "more similar lines omitted" not in result.text
+
+    def test_kubectl_prefix_flag_dedup(self) -> None:
+        """kubectl logs --prefix emits [pod/name/container] prefix; same message collapses."""
+        lines = []
+        for i in range(60):
+            ts = f"2026-05-30T12:00:{i:02d}Z"
+            pod = "pod-abc" if i % 2 == 0 else "pod-def"
+            lines.append(f"[pod/{pod}/main] {ts} INFO connected to cache")
+        text = "\n".join(lines)
+        f = self._filter()
+        result = f.apply(text, "", 0, ["kubectl", "logs", "--prefix", "-l", "app=svc"])
+        assert "more similar lines omitted" in result.text
+
+    def test_follow_cap_applied_to_very_long_output(self) -> None:
+        """Very long --follow output is capped at head=40, tail=40."""
+        lines = [f"2026-05-30T12:{i // 60:02d}:{i % 60:02d}Z INFO line {i}" for i in range(500)]
+        text = "\n".join(lines)
+        f = self._filter()
+        result = f.apply(text, "", 0, ["kubectl", "logs", "-f", "my-pod"])
+        # Should be significantly compressed — well under 500 lines
+        result_lines = [ln for ln in result.text.splitlines() if ln.strip()]
+        assert len(result_lines) < 200
+        # Marker should indicate elision
+        assert "elided" in result.text or "omitted" in result.text
+
     # --- integration: no filter for kubectl get ---
 
     def test_kubectl_get_not_routed_to_logs_filter(self) -> None:
