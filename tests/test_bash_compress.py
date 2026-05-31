@@ -6161,3 +6161,407 @@ class TestSwiftLintFilter:
 
     def test_exported_in_all(self) -> None:
         assert "SwiftLintFilter" in bc.__all__
+
+
+# ---------------------------------------------------------------------------
+# BunFilter
+# ---------------------------------------------------------------------------
+
+
+class TestBunFilter:
+    """Tests for BunFilter (Bun JS runtime compression)."""
+
+    def _f(self) -> bc.BunFilter:
+        return bc.BunFilter()
+
+    # --- dispatch ---
+
+    def test_dispatch_bun(self) -> None:
+        f = bc.select_filter(["bun", "install"])
+        assert f is not None
+        assert f.name == "bun"
+
+    def test_dispatch_bunx(self) -> None:
+        f = bc.select_filter(["bunx", "some-cli"])
+        assert f is not None
+        assert f.name == "bun"
+
+    def test_bun_precedes_node_package_filter(self) -> None:
+        """BunFilter must win over NodePackageFilter for bun commands."""
+        f = bc.select_filter(["bun", "add", "lodash"])
+        assert f is not None
+        assert f.name == "bun"
+
+    def test_exported_in_all(self) -> None:
+        assert "BunFilter" in bc.__all__
+
+    # --- bun install compression ---
+
+    def test_install_drops_download_progress(self) -> None:
+        """Per-package download progress lines are collapsed."""
+        f = self._f()
+        text = (
+            "bun install v1.1.0 (abc123)\n"
+            "  lodash@4.17.21 ↕ 200 kB\n"
+            "  react@18.0.0 ↑ 100 kB\n"
+            "  typescript@5.0.0 ↓ 300 kB\n"
+            "Saved lockfile\n"
+            "3 packages installed\n"
+        )
+        result = f.apply(text, "", 0, ["bun", "install"])
+        assert "↕" not in result.text
+        assert "↑" not in result.text
+        assert "↓" not in result.text
+        assert "3 packages installed" in result.text
+        assert "collapsed 3 per-package" in result.text
+
+    def test_install_keeps_error_lines(self) -> None:
+        """Error lines survive regardless of compression."""
+        f = self._f()
+        text = (
+            "  badpkg@1.0.0 ↕ 10 kB\n"
+            "error: failed to resolve badpkg\n"
+        )
+        result = f.apply(text, "", 1, ["bun", "install"])
+        assert "error: failed to resolve badpkg" in result.text
+
+    def test_install_keeps_lockfile_notice(self) -> None:
+        """Lockfile save notice is preserved."""
+        f = self._f()
+        text = "Saved lockfile\n10 packages installed\n"
+        result = f.apply(text, "", 0, ["bun", "install"])
+        assert "Saved lockfile" in result.text
+        assert "10 packages installed" in result.text
+
+    def test_install_short_output_passthrough(self) -> None:
+        """Short output (no progress lines) is passed through unchanged."""
+        f = self._f()
+        text = "3 packages installed\n"
+        result = f.apply(text, "", 0, ["bun", "i"])
+        assert "3 packages installed" in result.text
+
+    # --- bun test compression ---
+
+    def test_test_short_passthrough(self) -> None:
+        """Output ≤ 30 lines passes through unchanged."""
+        f = self._f()
+        text = "bun test v1.1.0\n✓ foo bar (2ms)\n✗ baz qux\n1 pass, 1 fail\n"
+        result = f.apply(text, "", 1, ["bun", "test"])
+        assert "✓ foo bar" in result.text
+
+    def test_test_drops_passing_lines(self) -> None:
+        """Passing (✓) test lines are collapsed when output is long."""
+        f = self._f()
+        passes = "\n".join(f"✓ test {i} (1ms)" for i in range(40))
+        text = "bun test v1.1.0 (abc)\n" + passes + "\n✗ test_bad (5ms)\n41 pass, 1 fail\n"
+        result = f.apply(text, "", 1, ["bun", "test"])
+        # Failing line kept
+        assert "✗ test_bad" in result.text
+        # Pass lines collapsed
+        assert "collapsed 40 passing test lines" in result.text
+        # Summary kept
+        assert "41 pass, 1 fail" in result.text
+
+    def test_test_keeps_fail_lines(self) -> None:
+        """Failing (✗) lines are always kept."""
+        f = self._f()
+        passes = "\n".join(f"✓ test {i} (1ms)" for i in range(35))
+        text = passes + "\n✗ the_bad_test (10ms)\n"
+        result = f.apply(text, "", 1, ["bun", "test"])
+        assert "✗ the_bad_test" in result.text
+
+    # --- bun build compression ---
+
+    def test_build_passthrough_few_assets(self) -> None:
+        """Output with ≤ 10 asset lines passes through unchanged."""
+        f = self._f()
+        assets = "\n".join(f"  dist/chunk{i}.js 10 kB" for i in range(5))
+        text = assets + "\nBuild succeeded\n"
+        result = f.apply(text, "", 0, ["bun", "build"])
+        # All 5 asset lines kept
+        assert result.text.count("dist/chunk") == 5
+
+    def test_build_collapses_many_assets(self) -> None:
+        """More than 10 asset lines are collapsed to 10 + note."""
+        f = self._f()
+        assets = "\n".join(f"  dist/chunk{i}.js 10 kB" for i in range(20))
+        text = "bun build v1.1.0\n" + assets + "\nBuild succeeded\n"
+        result = f.apply(text, "", 0, ["bun", "build"])
+        assert "10 more asset/chunk lines elided" in result.text
+        assert "Build succeeded" in result.text
+
+    def test_build_keeps_errors(self) -> None:
+        """Error lines are preserved even during asset collapse."""
+        f = self._f()
+        assets = "\n".join(f"  dist/chunk{i}.js 10 kB" for i in range(15))
+        text = assets + "\nerror: cannot resolve ./missing\n"
+        result = f.apply(text, "", 1, ["bun", "build"])
+        assert "error: cannot resolve" in result.text
+
+
+# ---------------------------------------------------------------------------
+# DenoFilter
+# ---------------------------------------------------------------------------
+
+
+class TestDenoFilter:
+    """Tests for DenoFilter (Deno JS/TS runtime compression)."""
+
+    def _f(self) -> bc.DenoFilter:
+        return bc.DenoFilter()
+
+    # --- dispatch ---
+
+    def test_dispatch_deno(self) -> None:
+        f = bc.select_filter(["deno", "test"])
+        assert f is not None
+        assert f.name == "deno"
+
+    def test_dispatch_deno_compile(self) -> None:
+        f = bc.select_filter(["deno", "compile", "main.ts"])
+        assert f is not None
+        assert f.name == "deno"
+
+    def test_exported_in_all(self) -> None:
+        assert "DenoFilter" in bc.__all__
+
+    # --- deno test ---
+
+    def test_test_short_passthrough(self) -> None:
+        """Short output passes through unchanged."""
+        f = self._f()
+        text = "running 3 tests from ./test.ts\nok | foo ... 2ms\ntest result: ok\n"
+        result = f.apply(text, "", 0, ["deno", "test"])
+        assert "ok | foo" in result.text
+
+    def test_test_drops_passing_lines(self) -> None:
+        """Passing test lines are collapsed when output is long."""
+        f = self._f()
+        passes = "\n".join(f"ok | test_{i} ... {i}ms" for i in range(40))
+        text = passes + "\nFAILED | bad_test\ntest result: FAILED\n"
+        result = f.apply(text, "", 1, ["deno", "test"])
+        assert "FAILED | bad_test" in result.text
+        assert "collapsed 40 passing test lines" in result.text
+
+    def test_test_drops_download_lines(self) -> None:
+        """Module download lines are dropped."""
+        f = self._f()
+        passes = "\n".join(f"ok | test_{i} ... {i}ms" for i in range(35))
+        text = (
+            "Download https://deno.land/std@0.200.0/fmt/colors.ts\n"
+            "Download https://deno.land/std@0.200.0/testing/asserts.ts\n"
+            + passes
+            + "\ntest result: ok\n"
+        )
+        result = f.apply(text, "", 0, ["deno", "test"])
+        assert "dropped 2 module download/cache lines" in result.text
+
+    def test_test_keeps_permission_warnings(self) -> None:
+        """Deno permission warnings are always preserved."""
+        f = self._f()
+        passes = "\n".join(f"ok | test_{i} ... {i}ms" for i in range(35))
+        text = (
+            "Deno requests network access to \"example.com\".\n"
+            + passes
+            + "\ntest result: ok\n"
+        )
+        result = f.apply(text, "", 0, ["deno", "test"])
+        assert "Deno requests network access" in result.text
+
+    def test_test_keeps_summary(self) -> None:
+        """test result: summary line is always kept."""
+        f = self._f()
+        passes = "\n".join(f"ok | test_{i} ... 1ms" for i in range(40))
+        text = passes + "\ntest result: ok. 40 passed; 0 failed\n"
+        result = f.apply(text, "", 0, ["deno", "test"])
+        assert "test result: ok. 40 passed" in result.text
+
+    # --- deno compile ---
+
+    def test_compile_drops_download_lines(self) -> None:
+        """Download lines are collapsed during deno compile."""
+        f = self._f()
+        text = (
+            "Download https://deno.land/std@0.200.0/fs/mod.ts\n"
+            "Download https://deno.land/std@0.200.0/path/mod.ts\n"
+            "Compile file:///app/main.ts -> ./app\n"
+        )
+        result = f.apply(text, "", 0, ["deno", "compile", "main.ts"])
+        assert "dropped 2 module download lines" in result.text
+        assert "Compile file:///app/main.ts" in result.text
+
+    def test_compile_keeps_errors(self) -> None:
+        """Error lines survive during compile."""
+        f = self._f()
+        text = (
+            "Download https://deno.land/x/foo/mod.ts\n"
+            "error TS2339: Property 'bar' does not exist\n"
+        )
+        result = f.apply(text, "", 1, ["deno", "compile", "main.ts"])
+        assert "error TS2339" in result.text
+
+    # --- deno check ---
+
+    def test_check_drops_check_progress(self) -> None:
+        """Check file:// progress lines are dropped when output is long."""
+        f = self._f()
+        check_lines = "\n".join(f"Check file:///src/mod{i}.ts" for i in range(35))
+        text = check_lines + "\nerror[TS2345]: argument of type\n"
+        result = f.apply(text, "", 1, ["deno", "check"])
+        assert "dropped 35 Check progress lines" in result.text
+        assert "error[TS2345]" in result.text
+
+    def test_check_short_passthrough(self) -> None:
+        """Short check output passes through unchanged."""
+        f = self._f()
+        text = "Check file:///src/main.ts\n"
+        result = f.apply(text, "", 0, ["deno", "check"])
+        assert "Check file:///src/main.ts" in result.text
+
+    # --- generic deno ---
+
+    def test_generic_drops_downloads(self) -> None:
+        """Generic deno commands (run, eval) still drop download lines."""
+        f = self._f()
+        text = (
+            "Download https://deno.land/x/cliffy@v0.25.7/mod.ts\n"
+            "Hello, world!\n"
+        )
+        result = f.apply(text, "", 0, ["deno", "run", "main.ts"])
+        assert "Hello, world!" in result.text
+        assert "dropped 1 module download lines" in result.text
+
+
+# ---------------------------------------------------------------------------
+# BiomeFilter
+# ---------------------------------------------------------------------------
+
+
+class TestBiomeFilter:
+    """Tests for BiomeFilter (Biome JS/TS linter/formatter compression)."""
+
+    def _f(self) -> bc.BiomeFilter:
+        return bc.BiomeFilter()
+
+    def _rule_stanza(self, rule: str, file: str = "src/foo.ts") -> str:
+        """Build a minimal Biome diagnostic stanza for a given rule."""
+        return (
+            f"  × {rule} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"\n"
+            f"  {file}\n"
+            f"   12 │   const x = 1;\n"
+            f"   13 │   const y = 2;\n"
+            f"  i Use const instead.\n"
+            f"\n"
+        )
+
+    # --- dispatch ---
+
+    def test_dispatch_biome(self) -> None:
+        f = bc.select_filter(["biome", "check"])
+        assert f is not None
+        assert f.name == "biome"
+
+    def test_dispatch_npx_biome(self) -> None:
+        f = bc.select_filter(["npx", "biome", "lint"])
+        assert f is not None
+        assert f.name == "biome"
+
+    def test_exported_in_all(self) -> None:
+        assert "BiomeFilter" in bc.__all__
+
+    # --- short output passthrough ---
+
+    def test_short_output_passthrough(self) -> None:
+        """Output ≤ 40 non-empty lines passes through unchanged."""
+        f = self._f()
+        text = self._rule_stanza("lint/a11y/noBlankTarget")
+        result = f.apply(text, "", 1, ["biome", "check"])
+        assert "noBlankTarget" in result.text
+
+    # --- stanza collapsing ---
+
+    def test_keeps_first_3_stanzas_per_rule(self) -> None:
+        """Up to 3 stanzas per rule are kept; extras are collapsed."""
+        f = self._f()
+        rule = "lint/suspicious/noDoubleEquals"
+        # 9 stanzas × 5 non-empty lines = 45 > 40 threshold.
+        text = "".join(self._rule_stanza(rule, f"src/file{i}.ts") for i in range(9))
+        text += "Found 9 diagnostics in 9 files in 10ms\n"
+        result = f.apply(text, "", 1, ["biome", "check"])
+        assert f"+6 more {rule} diagnostic(s) elided" in result.text
+        assert "Found 9 diagnostics" in result.text
+
+    def test_different_rules_each_get_3_stanzas(self) -> None:
+        """Each rule gets its own 3-stanza budget independently."""
+        f = self._f()
+        rule_a = "lint/suspicious/noDoubleEquals"
+        rule_b = "lint/style/useConst"
+        # 5+5 stanzas × 5 non-empty = 50 > 40 threshold.
+        text = "".join(self._rule_stanza(rule_a, f"src/a{i}.ts") for i in range(5))
+        text += "".join(self._rule_stanza(rule_b, f"src/b{i}.ts") for i in range(5))
+        text += "Found 10 diagnostics in 10 files\n"
+        result = f.apply(text, "", 1, ["biome", "check"])
+        assert f"+2 more {rule_a} diagnostic(s) elided" in result.text
+        assert f"+2 more {rule_b} diagnostic(s) elided" in result.text
+
+    def test_drops_action_hints(self) -> None:
+        """Action hint lines (i Use X instead.) are dropped."""
+        f = self._f()
+        rule = "lint/suspicious/noDoubleEquals"
+        # 9 stanzas × 5 non-empty = 45 > 40 threshold so compression fires.
+        text = "".join(self._rule_stanza(rule, f"src/file{i}.ts") for i in range(9))
+        result = f.apply(text, "", 1, ["biome", "check"])
+        assert "i Use const instead." not in result.text
+
+    def test_drops_excess_source_lines(self) -> None:
+        """Source excerpt lines beyond 2 per stanza are dropped."""
+        f = self._f()
+        rule = "lint/a11y/noBlankTarget"
+        # Build a stanza with 5 source excerpt lines.  Use 8 repetitions so the
+        # total non-empty line count exceeds the 40-line pass-through threshold
+        # (6 non-empty lines per stanza × 8 = 48 > 40).
+        stanza = (
+            f"  × {rule} ━━━\n"
+            f"  10 │ line one\n"
+            f"  11 │ line two\n"
+            f"  12 │ line three\n"
+            f"  13 │ line four\n"
+            f"  14 │ line five\n"
+            f"\n"
+        )
+        text = stanza * 8
+        result = f.apply(text, "", 1, ["biome", "check"])
+        # Each kept stanza may have at most 2 source lines; 3 stanzas kept → ≤ 6
+        source_lines = [
+            ln for ln in result.text.splitlines()
+            if "│" in ln
+        ]
+        assert len(source_lines) <= 6
+
+    def test_keeps_summary_line(self) -> None:
+        """Found N diagnostics summary line is always kept."""
+        f = self._f()
+        rule = "lint/suspicious/noDoubleEquals"
+        # 9 stanzas to exceed 40-line threshold.
+        text = "".join(self._rule_stanza(rule, f"src/file{i}.ts") for i in range(9))
+        text += "Found 9 diagnostics in 9 files in 10ms\n"
+        result = f.apply(text, "", 1, ["biome", "check"])
+        assert "Found 9 diagnostics" in result.text
+
+    def test_keeps_error_lines(self) -> None:
+        """Explicit error: lines are kept verbatim."""
+        f = self._f()
+        rule = "lint/suspicious/noDoubleEquals"
+        # 9 stanzas to exceed 40-line threshold.
+        text = "".join(self._rule_stanza(rule, f"src/file{i}.ts") for i in range(9))
+        text += "error: configuration file not found\n"
+        result = f.apply(text, "", 1, ["biome", "check"])
+        assert "error: configuration file not found" in result.text
+
+    def test_linter_filter_no_longer_claims_biome(self) -> None:
+        """select_filter should route `biome` to BiomeFilter, not LinterFilter."""
+        f = bc.select_filter(["biome", "lint", "--apply"])
+        assert f is not None
+        assert f.name == "biome"
+        assert f.name != "linter"
