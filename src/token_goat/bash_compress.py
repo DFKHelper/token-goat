@@ -18907,14 +18907,28 @@ class GhCopilotFilter(Filter):
         return self._finalize(kept)
 
 
+#: copilot workspace mode startup/loading noise lines
+_COPILOT_WORKSPACE_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Starting\s+Copilot\s+workspace|Loading\s+model:|Copilot\s+workspace\s+(?:starting|loaded|ready)|"
+    r"Streaming\.\.\.|▌\s*$|Turn\s+\d+\s*:)",
+    re.IGNORECASE,
+)
+#: copilot workspace mode completion/prompt token stats
+_COPILOT_COMPLETION_STATS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Completion\s+tokens:|Prompt\s+tokens:|Total\s+tokens:|Input\s+tokens:|Output\s+tokens:)\s*\d",
+    re.IGNORECASE,
+)
+
+
 class CopilotFilter(Filter):
     """Compress output from the standalone ``copilot`` binary.
 
     The standalone ``copilot`` binary (``npm i -g @githubnext/github-copilot-cli``)
     produces the same class of boilerplate as ``gh copilot`` but is invoked without
-    the ``gh`` wrapper — e.g. ``copilot explain "git stash"``.
+    the ``gh`` wrapper — e.g. ``copilot explain "git stash"`` or
+    ``copilot workspace start``.
 
-    Compression model (identical to :class:`GhCopilotFilter`):
+    Compression model (identical to :class:`GhCopilotFilter` plus workspace mode):
 
     * **Version/auth banners** (``GitHub Copilot v1.x.x``, ``Authenticated as …``):
       dropped.
@@ -18922,6 +18936,11 @@ class CopilotFilter(Filter):
       ``Asking GitHub Copilot…``): dropped.
     * **Disclaimer / review footers** (``Disclaimer:``, ``Always review``,
       ``Note:``, ``Tip:``): dropped.
+    * **Workspace startup noise** (``Starting Copilot workspace…``,
+      ``Loading model: gpt-4o-mini…``, ``Turn 1:``, ``Streaming…``, cursor ``▌``):
+      dropped.
+    * **Completion stats** (``Completion tokens: …``, ``Prompt tokens: …``, etc.):
+      kept as last-seen note (most recent value summarised).
     * **The actual explanation or suggestion body**: always kept verbatim.
     * **Errors** (exit_code != 0): preserve all output unchanged.
 
@@ -18949,12 +18968,21 @@ class CopilotFilter(Filter):
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
+        stat_lines: list[str] = []
         dropped_noise = 0
 
         for line in lines:
             # Error signals — always keep.
             if _ERROR_SIGNAL_RE.search(line):
                 kept.append(line)
+                continue
+            # Workspace startup/loading noise — drop.
+            if _COPILOT_WORKSPACE_NOISE_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Completion/prompt token stats — accumulate for summary note.
+            if _COPILOT_COMPLETION_STATS_RE.match(line):
+                stat_lines.append(line.strip())
                 continue
             # Spinner / progress lines — drop.
             if _GH_COPILOT_SPINNER_RE.match(line):
@@ -18971,6 +18999,8 @@ class CopilotFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
+        if stat_lines:
+            notes.append(f"stats: {stat_lines[-1]}")
         if dropped_noise:
             notes.append(f"dropped {dropped_noise} boilerplate/disclaimer line(s)")
         self._emit_notes(kept, notes)
