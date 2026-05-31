@@ -202,6 +202,12 @@ __all__ = [
     "VaultFilter",
     # HashiCorp Packer image builder
     "PackerFilter",
+    # Nix package manager / build tool
+    "NixFilter",
+    # Haskell cabal / stack build tool
+    "HaskellFilter",
+    # R CMD check / R package build tool
+    "RCmdFilter",
 ]
 
 import math
@@ -16245,6 +16251,488 @@ class PackerFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# Nix package manager / build tool
+# ---------------------------------------------------------------------------
+
+#: Nix "building '/nix/store/...' ..." lines — per-derivation build announcements
+_NIX_BUILDING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:building\s+['\"]?/nix/store/|building\s+path\(s\):)",
+    re.IGNORECASE,
+)
+#: Nix "fetching/downloading" lines from binary caches:
+#:   "fetching path '/nix/store/...'" or "downloading 'https://...'"
+_NIX_FETCHING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:fetching\s+path\s+['\"]?/nix/store/|downloading\s+['\"]?https?://|"
+    r"copying\s+path\s+['\"]?/nix/store/|"
+    r"querying\s+['\"]?https?://|substituting\s+['\"]?/nix/store/)",
+    re.IGNORECASE,
+)
+#: Nix "these X paths will be fetched" / "these X paths will be built" lines
+_NIX_PATHS_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:these\s+\d+\s+paths\s+will\s+be|this\s+path\s+will\s+be|"
+    r"these\s+derivations\s+will\s+be)",
+    re.IGNORECASE,
+)
+#: Nix binary cache substitution lines (from nix-daemon):
+#:   "[x/y (y MiB DL)]" progress lines
+_NIX_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\[\d+/\d+(?:\s+\(\d+(?:\.\d+)?\s+(?:MiB|KiB|GiB)\s+DL\))?\]"
+)
+#: Nix nix flake update / flake lock lines
+_NIX_FLAKE_UPDATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Updated\s+input\s+'|Resolving\s+flake\s+input\s+'|"
+    r"inputs\.\S+\.follows\s*=|warning:\s+Git\s+tree|"
+    r"trace:\s+|Added\s+input\s+'|Removed\s+input\s+'|"
+    r"Locked\s+input\s+'|writing\s+modified\s+lock\s+file|"
+    r"Updating\s+lock\s+file)",
+    re.IGNORECASE,
+)
+#: Nix "error:" and "note:" headers — always keep
+_NIX_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:error:|note:|warning:|nix\s+(?:error|warning):)",
+    re.IGNORECASE,
+)
+#: Nix success summary lines:
+#:   "nix-build: finished" or a store path echo (last line of nix-build success)
+_NIX_SUCCESS_STORE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*/nix/store/\S+$"
+)
+#: nix-shell shebang / sandbox boilerplate lines
+_NIX_SANDBOX_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:sandbox\s+path\s*:|sandboxed\s+build|"
+    r"setting\s+up\s+build\s+environment|"
+    r"running\s+phase\s+'[a-zA-Z]+'|"
+    r"source\s+\$stdenv/setup)",
+    re.IGNORECASE,
+)
+
+
+class NixFilter(Filter):
+    """Compress Nix build / nix-shell / nix flake output.
+
+    Nix is one of the most verbose build tools: even a small package build
+    produces hundreds of lines of per-derivation fetching, substituting,
+    sandbox setup, and build-phase announcements — most of which carry no
+    signal once the build succeeds.
+
+    Compression model:
+
+    * **Fetching/downloading/substituting store paths**: collapsed to a count.
+    * **Building derivations**: collapsed to a count.
+    * **Progress ``[x/y ...]`` lines**: dropped (internal scheduler noise).
+    * **Flake lock update verbosity** (``Updated input '...'``, lock-file
+      writes): collapsed to a count.
+    * **Sandbox boilerplate** (``running phase 'buildPhase'``,
+      ``source $stdenv/setup``): dropped.
+    * **``these N paths will be fetched / built``** summary preambles: kept
+      (useful orientation, low volume).
+    * **Final store path result lines** (``/nix/store/...`` on its own line):
+      always kept (this is the build output).
+    * **Error / warning lines**: always kept verbatim.
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "nix"
+    binaries = frozenset(["nix", "nix-build", "nix-shell", "nix-env", "nix-store", "nixos-rebuild"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        fetch_count = 0
+        build_count = 0
+        flake_update_count = 0
+        dropped_noise = 0
+
+        for line in lines:
+            # Error/warning signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _NIX_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            # Final result store paths — always keep.
+            if _NIX_SUCCESS_STORE_RE.match(line):
+                kept.append(line)
+                continue
+            # "these N paths will be ..." summary preambles — keep.
+            if _NIX_PATHS_SUMMARY_RE.match(line):
+                kept.append(line)
+                continue
+            # Progress [x/y ...] lines — drop.
+            if _NIX_PROGRESS_RE.match(line):
+                dropped_noise += 1
+                continue
+            # Fetching/downloading/substituting store paths — count.
+            if _NIX_FETCHING_RE.match(line):
+                fetch_count += 1
+                continue
+            # Building derivations — count.
+            if _NIX_BUILDING_RE.match(line):
+                build_count += 1
+                continue
+            # Flake update verbosity — count.
+            if _NIX_FLAKE_UPDATE_RE.match(line):
+                flake_update_count += 1
+                continue
+            # Sandbox boilerplate — drop.
+            if _NIX_SANDBOX_NOISE_RE.match(line):
+                dropped_noise += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if fetch_count:
+            out.append(
+                f"[token-goat: fetched/substituted {fetch_count} store path(s) from binary cache; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        if build_count:
+            out.append(
+                f"[token-goat: built {build_count} Nix derivation(s)]"
+            )
+        if flake_update_count:
+            out.append(
+                f"[token-goat: collapsed {flake_update_count} flake lock update line(s)]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if dropped_noise:
+            notes.append(f"dropped {dropped_noise} Nix scheduler/sandbox noise line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# Haskell: cabal / stack build tool
+# ---------------------------------------------------------------------------
+
+#: cabal/stack "Resolving dependencies..." / "Downloading ... from hackage"
+_HASKELL_RESOLVING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Resolving\s+dependencies|Downloading\s+\S+\s+from\s+Hackage|"
+    r"Downloading\s+\S+\s+\.\.\.|Fetching\s+package|"
+    r"Configuring\s+\S+\.\.\.|Preprocessing\s+\S+\s+for|"
+    r"Starting\s+to\s+install)",
+    re.IGNORECASE,
+)
+#: cabal/stack "Building" progress lines (per-module):
+#:   "[ 5 of 42] Compiling Foo.Bar ..." or "Compiling module ..."
+_HASKELL_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\[\s*\d+\s+of\s+\d+\]\s+Compiling\s+\S+|"
+    r"Compiling\s+\S+(?:\s+\(\s*\S+,\s*\S+\))?\.\.\.?)"
+)
+#: stack "Building all executables for ..." or "Linking ..." lines
+_HASKELL_LINKING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Linking\s+\S+|Building\s+all\s+executables|"
+    r"Building\s+library\s+for\s+|Building\s+executable|"
+    r"Installed\s+\S+(?:\s+\d+\.\d+)?)",
+    re.IGNORECASE,
+)
+#: cabal "Installing library/executable in ..."
+_HASKELL_INSTALLING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Installing\s+(?:library|executable)\s+in|"
+    r"Registering\s+library|"
+    r"Updating\s+package\s+list|"
+    r"Reading\s+available\s+packages)",
+    re.IGNORECASE,
+)
+#: stack build success: "Completed N action(s)." or cabal "Build completed"
+_HASKELL_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Completed\s+\d+\s+action|Build\s+completed|"
+    r"Finished\s+building\s+package|"
+    r"All\s+\d+\s+tests\s+passed|"
+    r"Test\s+suite\s+\S+:\s+PASS|"
+    r"\d+\s+out\s+of\s+\d+\s+test\s+suites\s+\(|"
+    r"Tests\s+complete\b)",
+    re.IGNORECASE,
+)
+#: cabal/stack test failure: "FAIL" or "failures:"
+_HASKELL_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Test\s+suite\s+\S+:\s+FAIL|FAILURES:|failures:|"
+    r"\d+\s+test\s+(?:case[s]?\s+)?(?:failed|FAILED))",
+    re.IGNORECASE,
+)
+#: cabal "Warning:" lines — deduplicated below
+_HASKELL_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Warning:\s+|Module\s+'?\S+'?\s+does\s+not\s+export|"
+    r"Defined\s+but\s+not\s+used:)"
+)
+#: cabal/stack "cabal: " error prefix lines
+_HASKELL_ERROR_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:cabal:|stack:|ghc:|error:|Error:)\s+",
+    re.IGNORECASE,
+)
+
+
+class HaskellFilter(Filter):
+    """Compress Haskell ``cabal build`` / ``stack build`` / ``cabal test`` output.
+
+    A Haskell build produces hundreds of ``[N of M] Compiling Module.Name``
+    progress lines plus dependency-resolution noise, even for small packages.
+    Signal lines are errors, warnings, test results, and the final summary.
+
+    Compression model:
+
+    * **``[N of M] Compiling ...``** per-module progress lines: collapsed to
+      a count.
+    * **Resolving / downloading / configuring / preprocessing** dependency
+      lines: collapsed to a count.
+    * **Linking / installing / registering** lines: collapsed to a count.
+    * **cabal/stack ``Warning:`` lines**: deduplicated to first 3 per category
+      (same rule as ``MypyFilter`` warnings).
+    * **Success summary lines** (``Completed N actions``, ``Build completed``,
+      ``Test suite ... PASS``): always kept.
+    * **Test failure lines** (``FAIL``, ``failures:``): always kept.
+    * **Error lines** (``cabal:``, ``error:``, GHC error output): always kept.
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "haskell"
+    binaries = frozenset(["cabal", "stack", "ghc", "runghc", "runhaskell"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        compiling_count = 0
+        resolving_count = 0
+        linking_count = 0
+        # Deduplicate warnings: keep at most 3 per unique warning category.
+        warning_seen: dict[str, int] = {}
+        dropped_warnings = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _HASKELL_ERROR_PREFIX_RE.match(line):
+                kept.append(line)
+                continue
+            # cabal/stack explicit error prefixes — keep.
+            if _HASKELL_TEST_FAIL_RE.match(line):
+                kept.append(line)
+                continue
+            # Success summary — always keep.
+            if _HASKELL_SUCCESS_RE.match(line):
+                kept.append(line)
+                continue
+            # Per-module compilation progress — count.
+            if _HASKELL_COMPILING_RE.match(line):
+                compiling_count += 1
+                continue
+            # Dependency resolution / download noise — count.
+            if _HASKELL_RESOLVING_RE.match(line):
+                resolving_count += 1
+                continue
+            # Linking / installing / registering lines — count.
+            if _HASKELL_LINKING_RE.match(line) or _HASKELL_INSTALLING_RE.match(line):
+                linking_count += 1
+                continue
+            # Warnings — keep at most 3 per category key (first word after "Warning:").
+            if _HASKELL_WARNING_RE.match(line):
+                # Use first 40 chars as a dedup key to group same-cause warnings.
+                key = line.strip()[:40]
+                count = warning_seen.get(key, 0)
+                if count < 3:
+                    warning_seen[key] = count + 1
+                    kept.append(line)
+                else:
+                    dropped_warnings += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if resolving_count:
+            out.append(
+                f"[token-goat: {resolving_count} dependency resolution/download line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+            )
+        if compiling_count:
+            out.append(
+                f"[token-goat: compiled {compiling_count} Haskell module(s)]"
+            )
+        if linking_count:
+            out.append(
+                f"[token-goat: {linking_count} linking/installing/registering step(s) collapsed]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if dropped_warnings:
+            notes.append(f"deduplicated {dropped_warnings} repeated warning(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
+# R CMD check / R package build
+# ---------------------------------------------------------------------------
+
+#: R CMD check section headers: "* checking ..." lines
+_R_CHECKING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\*\s+checking\s+\S",
+    re.IGNORECASE,
+)
+#: R CMD check passing check result: "* checking ... OK" or "... SKIPPED"
+_R_CHECKING_OK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\*\s+checking\s+.*\s+(?:OK|SKIPPED)\s*$",
+    re.IGNORECASE,
+)
+#: R CMD check "* DONE (PackageName)" — always keep
+_R_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\*\s+DONE\s*\(",
+    re.IGNORECASE,
+)
+#: R CMD check result summary lines: "Status: OK" / "Status: N ERRORs ..."
+_R_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Status:\s+|R\s+CMD\s+check\s+results?|"
+    r"0\s+errors\s+\||"
+    r"\d+\s+errors?\s+\||"
+    r"\d+\s+warning[s]?\s+\||"
+    r"\d+\s+note[s]?\s+\|)",
+    re.IGNORECASE,
+)
+#: R CMD check NOTE/WARNING/ERROR detail headers — always keep
+_R_ISSUE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\*\s+)?(?:ERROR|WARNING|NOTE)[\s:]",
+    re.IGNORECASE,
+)
+#: R CMD check loading namespace / installing package lines (noise)
+_R_LOADING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\*\s+(?:using\s+R|installing\s+the\s+package|"
+    r"loading\s+the\s+package|"
+    r"preparing\s+'|"
+    r"running\s+'DESCRIPTION'|"
+    r"running\s+'configure')|"
+    r"Loading\s+required\s+(?:package|namespace):\s+\S+|"
+    r"Attaching\s+package:\s+\S+)",
+    re.IGNORECASE,
+)
+#: R CMD check running examples / tests progress lines
+_R_RUNNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:\*\s+(?:running\s+(?:examples|tests|vignettes?|R\s+code|"
+    r"docstest)|"
+    r"checking\s+(?:examples?|test\s+files)))",
+    re.IGNORECASE,
+)
+#: R CMD check "** <section>" headers used in install output
+_R_SECTION_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\*{1,2}\s+(?:building\s+|preparing\s+|testing\s+|installing\s+|"
+    r"byte.compiling|creating\s+)\S",
+    re.IGNORECASE,
+)
+
+
+class RCmdFilter(Filter):
+    """Compress ``R CMD check`` / ``R CMD INSTALL`` / ``Rscript`` package output.
+
+    R CMD check produces a highly structured output with many ``* checking ...``
+    lines that all end in ``OK`` on a passing run.  The actual failures (ERROR /
+    WARNING / NOTE) are what matter; the OK lines are pure noise once you know
+    the overall result.
+
+    Compression model:
+
+    * **``* checking ... OK``** lines: collapsed to a count (the ``DONE`` and
+      ``Status:`` lines tell you the overall result).
+    * **``* checking ...``** headers without a result suffix: kept (they may
+      precede an error block).
+    * **Loading/attaching namespace** boilerplate: dropped.
+    * **``** building ...``** install section headers: collapsed to a count.
+    * **``* running examples/tests``** progress lines: kept (useful context for
+      failures).
+    * **``* DONE``** and **``Status:``** summary lines: always kept.
+    * **NOTE / WARNING / ERROR** lines: always kept verbatim.
+    * **Errors** (exit_code != 0): stderr preserved unchanged.
+    """
+
+    name = "r-cmd"
+    binaries = frozenset(["r", "rscript"])
+
+    def matches(self, argv: list[str]) -> bool:
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        # Match `R CMD check`, `R CMD INSTALL`, `Rscript -e 'devtools::check()'`
+        if stem == "r":
+            positionals = _positional_args(argv[1:])
+            return bool(positionals and positionals[0].upper() == "CMD")
+        return stem == "rscript"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        ok_count = 0
+        loading_count = 0
+        install_section_count = 0
+
+        for line in lines:
+            # Error signals — always keep.
+            if _ERROR_SIGNAL_RE.search(line) or _R_ISSUE_RE.match(line):
+                kept.append(line)
+                continue
+            # DONE / Status summary — always keep.
+            if _R_DONE_RE.match(line) or _R_STATUS_RE.match(line):
+                kept.append(line)
+                continue
+            # "* checking ... OK" or "... SKIPPED" — count (pure noise on passing runs).
+            if _R_CHECKING_OK_RE.match(line):
+                ok_count += 1
+                continue
+            # "* checking ..." without OK suffix — keep (may precede error block).
+            if _R_CHECKING_RE.match(line):
+                kept.append(line)
+                continue
+            # Running examples/tests progress — keep.
+            if _R_RUNNING_RE.match(line):
+                kept.append(line)
+                continue
+            # Loading/attaching namespace boilerplate — drop.
+            if _R_LOADING_RE.match(line):
+                loading_count += 1
+                continue
+            # "** building ..." install section headers — count.
+            if _R_SECTION_HEADER_RE.match(line):
+                install_section_count += 1
+                continue
+            kept.append(line)
+
+        out: list[str] = []
+        if ok_count:
+            out.append(
+                f"[token-goat: {ok_count} 'checking ... OK/SKIPPED' line(s) collapsed; "
+                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full check output]"
+            )
+        if install_section_count:
+            out.append(
+                f"[token-goat: {install_section_count} R installation section header(s) collapsed]"
+            )
+        out.extend(kept)
+
+        notes: list[str] = []
+        if loading_count:
+            notes.append(f"dropped {loading_count} namespace loading/attaching line(s)")
+        self._emit_notes(out, notes)
+        return self._finalize(out)
+
+
+# ---------------------------------------------------------------------------
 # Public registry & dispatch
 # ---------------------------------------------------------------------------
 
@@ -16492,6 +16980,15 @@ FILTERS: list[Filter] = [
     # PackerFilter handles HashiCorp Packer (`packer build/validate/init`);
     # disjoint binary from every other filter so position is cosmetic.
     PackerFilter(),
+    # NixFilter handles `nix`, `nix-build`, `nix-shell`, `nix-env`, `nix-store`,
+    # and `nixos-rebuild`; all disjoint from other filters.
+    NixFilter(),
+    # HaskellFilter handles `cabal`, `stack`, `ghc`, `runghc`, `runhaskell`;
+    # disjoint binaries from every other filter so position is cosmetic.
+    HaskellFilter(),
+    # RCmdFilter handles `R CMD check/INSTALL` and `Rscript` invocations;
+    # disjoint binaries from every other filter so position is cosmetic.
+    RCmdFilter(),
 ]
 
 
