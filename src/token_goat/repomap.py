@@ -1235,8 +1235,9 @@ def build_map_since(
         )
         out.append(unindexed_block)
 
-    if included < len(changed):
-        omitted = len(changed) - included
+    indexed_changed_count = len(changed & indexed_rels)
+    if included < indexed_changed_count:
+        omitted = indexed_changed_count - included
         out.append(f"+{omitted} more changed files (budget exhausted)\n")
 
     if cache_writes:

@@ -531,3 +531,67 @@ class TestIndexProjectHistory:
             f"{rec.executed.count('BEGIN')} BEGIN statement(s)"
         )
         assert "COMMIT" in rec.executed
+
+    def test_duplicate_commits_return_zero_stored_but_stamp_meta(
+        self, git_repo: Path, tmp_path: Path
+    ):
+        """Re-indexing an already-indexed project: stored == 0, last_indexed_at still stamped.
+
+        Regression: the original code used ``stored += 1`` unconditionally, so
+        ``INSERT OR IGNORE`` duplicates incorrectly incremented the counter.
+        The fixed code uses ``cur.rowcount`` (0 for ignored duplicates, 1 for new
+        inserts). Separately, last_indexed_at must still be written when all
+        commits are duplicates so the staleness guard prevents redundant re-indexes.
+        """
+        db_path = tmp_path / "project.db"
+        proj_hash = "a" * 40
+
+        with (
+            patch("token_goat.paths.project_db_path", return_value=db_path),
+            patch("token_goat.db.open_project") as mock_open_project,
+        ):
+            conn = sqlite3.connect(str(db_path))
+            from contextlib import contextmanager as cm
+
+            @cm
+            def _fake_open(_hash):
+                yield conn
+
+            mock_open_project.side_effect = _fake_open
+            # First run: indexes 2 commits and stamps last_indexed_at
+            count1 = index_project_history(git_repo, proj_hash)
+
+        assert count1 == 2
+
+        # Reset the staleness guard so the second run actually re-indexes.
+        conn.execute(
+            "INSERT OR REPLACE INTO git_history_meta(key, value) VALUES ('last_indexed_at', ?)",
+            (str(time.time() - _REINDEX_STALENESS_SECS - 1),),
+        )
+        conn.commit()
+
+        with (
+            patch("token_goat.paths.project_db_path", return_value=db_path),
+            patch("token_goat.db.open_project") as mock_open_project,
+        ):
+            @cm
+            def _fake_open2(_hash):
+                yield conn
+
+            mock_open_project.side_effect = _fake_open2
+            # Second run: all commits already present — stored must be 0.
+            count2 = index_project_history(git_repo, proj_hash)
+
+        assert count2 == 0, (
+            "Re-indexing a project with all-duplicate commits must return 0, "
+            f"not {count2}. The stored counter must use cursor.rowcount."
+        )
+        # last_indexed_at must still be refreshed so the staleness guard works.
+        row = conn.execute(
+            "SELECT value FROM git_history_meta WHERE key = 'last_indexed_at'"
+        ).fetchone()
+        assert row is not None
+        assert abs(time.time() - float(row[0])) < 10, (
+            "last_indexed_at must be updated even when all commits are duplicates "
+            "so the staleness guard suppresses redundant re-indexes."
+        )

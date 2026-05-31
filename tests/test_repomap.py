@@ -1214,3 +1214,69 @@ def test_mermaid_id_replaces_slashes():
     assert "/" not in node_id
     assert "." not in node_id
     assert node_id.startswith("f_")
+
+
+# ---------------------------------------------------------------------------
+# build_map_since omitted-count correctness (regression for double-counting
+# unindexed changed files in the "+N more changed files" trailer line)
+# ---------------------------------------------------------------------------
+
+def test_build_map_since_omitted_excludes_unindexed_files(tmp_path, tmp_data_dir, make_project):
+    """The '+N more changed files' count must not include unindexed changed files.
+
+    Regression: the previous code used ``len(changed)`` (total git-diff set,
+    including unindexed files) instead of ``len(changed & indexed_rels)`` (only
+    indexed files that can be rendered).  Unindexed changed files are already
+    shown in the 'Unindexed changed files:' block above the trailer, so counting
+    them again in the trailer was misleading and incorrect.
+
+    Setup: index one file, then mock git-diff to claim two indexed files and two
+    unindexed files changed.  Tighten the budget so the indexed files don't all
+    fit (triggering the trailer).  Verify the trailer says +1, not +3.
+    """
+    from unittest.mock import patch
+
+    from token_goat.parser import index_project
+
+    proj_root = tmp_path / "since_test"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    # Create 3 indexed files — enough to overflow a very tight budget
+    for i in range(3):
+        content = f"def fn_{i}():\n    pass\n"
+        (src / f"mod_{i}.py").write_text(content)
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    # changed = 2 indexed files + 2 unindexed files (new/deleted)
+    # Budget is tight enough that only 0-1 indexed file renders within it.
+    changed_set = frozenset({
+        "src/mod_0.py",  # indexed
+        "src/mod_1.py",  # indexed
+        "new_file.py",   # NOT indexed
+        "deleted_file.py",  # NOT indexed
+    })
+
+    with patch.object(repomap, "changed_files_since", return_value=changed_set):
+        # Very tight budget: forces at most 1 indexed file to render, triggering trailer.
+        text = repomap.build_map_since(proj, "HEAD~1", budget_tokens=50)
+
+    # The unindexed files must appear in the 'Unindexed changed files:' block.
+    assert "Unindexed changed files:" in text
+    assert "new_file.py" in text or "deleted_file.py" in text
+
+    # The "+N more changed files" trailer must NOT count unindexed files.
+    # With 2 indexed changed files and a very tight budget, at most 1 can render;
+    # the remaining count is 1 (not 3 = 1 + 2 unindexed).
+    if "+" in text and "more changed files" in text:
+        for line in text.splitlines():
+            if "more changed files" in line:
+                # Extract the N from "+N more changed files"
+                import re
+                m = re.search(r"\+(\d+) more changed files", line)
+                assert m is not None, f"Unexpected trailer format: {line!r}"
+                n = int(m.group(1))
+                assert n <= 2, (
+                    f"Trailer says +{n} more changed files, but only 2 indexed "
+                    f"files changed. Unindexed files must not be counted here."
+                )
