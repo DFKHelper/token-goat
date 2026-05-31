@@ -49,11 +49,7 @@ def _parse_use_target(source_line: str) -> str:
 
 
 def _extract_trait_methods(source: bytes) -> list[Symbol]:
-    try:
-        return _extract_trait_methods_inner(source)
-    except (re.error, ValueError, IndexError) as exc:
-        _LOG.debug("_extract_trait_methods: parse error: %s", exc, exc_info=True)
-        return []
+    return common.safe_regex_parse(_extract_trait_methods_inner, source, log=_LOG, label="_extract_trait_methods")  # type: ignore[return-value]
 
 
 def _extract_trait_methods_inner(source: bytes) -> list[Symbol]:
@@ -93,11 +89,7 @@ def _extract_trait_methods_inner(source: bytes) -> list[Symbol]:
 
 
 def _extract_statics(source: bytes) -> list[Symbol]:
-    try:
-        return _extract_statics_inner(source)
-    except (re.error, ValueError, IndexError) as exc:
-        _LOG.debug("_extract_statics: parse error: %s", exc, exc_info=True)
-        return []
+    return common.safe_regex_parse(_extract_statics_inner, source, log=_LOG, label="_extract_statics")  # type: ignore[return-value]
 
 
 def _extract_statics_inner(source: bytes) -> list[Symbol]:
@@ -134,18 +126,10 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     )
 
     # --- trait method signatures (tree-sitter doesn't surface these individually) ---
-    for trait_sym in _extract_trait_methods(source):
-        key = (trait_sym.name, trait_sym.line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(trait_sym)
+    common.merge_extra_symbols(symbols, seen_names, _extract_trait_methods(source))
 
     # --- static declarations (tree-sitter misses `static [mut] NAME: ...`) ---
-    for static_sym in _extract_statics(source):
-        key = (static_sym.name, static_sym.line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(static_sym)
+    common.merge_extra_symbols(symbols, seen_names, _extract_statics(source))
 
     _LOG.debug(
         "rust extract: %s → symbols=%d refs=%d imports=%d",

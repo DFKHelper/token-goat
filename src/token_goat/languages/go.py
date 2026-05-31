@@ -92,11 +92,7 @@ def _extract_const_var(source: bytes) -> list[Symbol]:
     The single-line and block forms for both ``const`` and ``var`` share the same
     scanning logic, delegated to ``_scan_decl_block`` for block bodies.
     """
-    try:
-        return _extract_const_var_inner(source)
-    except (re.error, ValueError, IndexError) as exc:
-        _LOG.debug("_extract_const_var: parse error: %s", exc, exc_info=True)
-        return []
+    return common.safe_regex_parse(_extract_const_var_inner, source, log=_LOG, label="_extract_const_var")  # type: ignore[return-value]
 
 
 def _extract_const_var_inner(source: bytes) -> list[Symbol]:
@@ -148,11 +144,7 @@ def _extract_interface_methods(source: bytes) -> list[Symbol]:
     Only callable method signatures (lines matching ``MethodName(``) are collected;
     embedded interface names (e.g. ``Reader`` inside ``ReadWriter``) are skipped.
     """
-    try:
-        return _extract_interface_methods_inner(source)
-    except (re.error, ValueError, IndexError) as exc:
-        _LOG.debug("_extract_interface_methods: parse error: %s", exc, exc_info=True)
-        return []
+    return common.safe_regex_parse(_extract_interface_methods_inner, source, log=_LOG, label="_extract_interface_methods")  # type: ignore[return-value]
 
 
 def _extract_interface_methods_inner(source: bytes) -> list[Symbol]:
@@ -229,11 +221,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     symbols, imp_exp, seen_names, refs, result = collected
 
     # --- const/var (not surfaced by tlp) ---
-    for cv_sym in _extract_const_var(source):
-        key = (cv_sym.name, cv_sym.line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(cv_sym)
+    common.merge_extra_symbols(symbols, seen_names, _extract_const_var(source))
 
     # --- imports ---
     def _extract_go_import_target(imp: object) -> str:
@@ -255,11 +243,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
     common.add_imports(imp_exp, result.imports, _extract_go_import_target)  # type: ignore[attr-defined]
 
     # --- interface methods (not surfaced by tlp structure/symbols walk) ---
-    for iface_sym in _extract_interface_methods(source):
-        key = (iface_sym.name, iface_sym.line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(iface_sym)
+    common.merge_extra_symbols(symbols, seen_names, _extract_interface_methods(source))
 
     # --- receiver method parent tracking ---
     _set_receiver_parents(symbols, source)

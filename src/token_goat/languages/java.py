@@ -39,11 +39,7 @@ _ANNOTATION_TYPE_RE = re.compile(r"^(?:public\s+)?@interface\s+([A-Za-z_][A-Za-z
 
 
 def _extract_java_extras(source: bytes, class_names: frozenset[str]) -> list[Symbol]:
-    try:
-        return _extract_java_extras_inner(source, class_names)
-    except (re.error, ValueError, IndexError) as exc:
-        _LOG.debug("_extract_java_extras: parse error: %s", exc, exc_info=True)
-        return []
+    return common.safe_regex_parse(_extract_java_extras_inner, source, class_names, log=_LOG, label="_extract_java_extras")  # type: ignore[return-value]
 
 
 def _extract_java_extras_inner(source: bytes, class_names: frozenset[str]) -> list[Symbol]:
@@ -124,11 +120,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
     class_names = frozenset(s.name for s in symbols if s.kind in ("class", "enum", "interface") and s.name)
 
-    for extra in _extract_java_extras(source, class_names):
-        key = (extra.name, extra.line)
-        if key not in seen_names:
-            seen_names.add(key)
-            symbols.append(extra)
+    common.merge_extra_symbols(symbols, seen_names, _extract_java_extras(source, class_names))
 
     common.add_imports(
         imp_exp,
