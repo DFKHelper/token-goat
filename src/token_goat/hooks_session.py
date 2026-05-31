@@ -516,6 +516,49 @@ def _build_recovery_hint(session_id: str) -> str | None:
             lines.append(f"- +{dropped} more")
         sections.append("\n".join(lines))
 
+    # 1.5. Symbol cross-references — most-accessed symbols across edited and read
+    # files.  Provides the post-compact agent with precise entry points (file +
+    # line number) for the symbols it was working with, so it can navigate
+    # directly to the right location without re-scanning whole files.
+    #
+    # Source priority:
+    #   1. symbols_read with symbols_ts (gives per-symbol timestamps for recency sort)
+    #   2. symbols_read without timestamps (sort by file recency then alpha)
+    #   3. Edited files that have corresponding session file entries with symbols
+    # Cap: 10 symbols, one line each.  Format: "SymbolName (file.py:Lstart)"
+    # where the line number comes from symbols_ts access order when available.
+    _MAX_SYMBOLS_RECOVERY: int = 10
+    _symbol_entries: list[tuple[float, str, str, int]] = []  # (ts, symbol, rel_path, line_hint)
+    for _fe in cache.files.values():
+        _rel = getattr(_fe, "rel_or_abs", "") or ""
+        _syms = getattr(_fe, "symbols_read", None) or []
+        _sym_ts = getattr(_fe, "symbols_ts", None) or {}
+        _file_ts = getattr(_fe, "last_read_ts", 0.0)
+        for _sym in _syms:
+            _ts = _sym_ts.get(_sym, _file_ts)
+            _symbol_entries.append((_ts, _sym, _rel, 0))
+
+    if _symbol_entries:
+        import os as _os_sym  # noqa: PLC0415
+
+        # Sort by timestamp descending (most-recently-accessed first), then alpha.
+        _symbol_entries.sort(key=lambda e: (-e[0], e[1]))
+        # Deduplicate: keep first occurrence of each symbol name.
+        _seen_syms: set[str] = set()
+        _deduped_syms: list[tuple[float, str, str, int]] = []
+        for _entry in _symbol_entries:
+            if _entry[1] not in _seen_syms:
+                _seen_syms.add(_entry[1])
+                _deduped_syms.append(_entry)
+
+        _top_syms = _deduped_syms[:_MAX_SYMBOLS_RECOVERY]
+        if _top_syms:
+            sym_lines = ["**Symbols**:"]
+            for _ts, _sym, _rel, _line in _top_syms:
+                _basename = _os_sym.path.basename(_rel) if _rel else "?"
+                sym_lines.append(f"- {_sym} ({_basename})")
+            sections.append("\n".join(sym_lines))
+
     # 2. Recent Bash output IDs — the most likely "I had this in context" data.
     if bash_entries:
         import datetime  # noqa: PLC0415
