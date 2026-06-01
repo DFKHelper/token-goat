@@ -35,6 +35,7 @@ __all__ = [
     "GlobEntry",
     "GrepEntry",
     "GREPS_HISTORY_MAX",
+    "HINTS_CONTENT_DEDUP_MAX",
     "HINTS_SEEN_MAX",
     "IMAGE_SHRINK_COUNT_MAX",
     "RESULT_CACHE_MAX",
@@ -392,6 +393,24 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         # (most recent/frequently seen hints are more relevant for future dedup).
         sorted_hints = sorted(merged_hints.items(), key=lambda x: x[1], reverse=True)
         merged.hints_seen = dict(sorted_hints[:HINTS_SEEN_MAX])
+
+    # hints_content_dedup: dict merge — take max count for each content hash, bounded by HINTS_CONTENT_DEDUP_MAX
+    # Preserves insertion order (FIFO eviction on cap) using dict + pop idiom for oldest.
+    merged_content_dedup = dict(remote.hints_content_dedup)
+    for ch, (summary, count) in local.hints_content_dedup.items():
+        if ch in merged_content_dedup:
+            # Update count to max; keep summary from whichever process has it first (remote)
+            old_summary, old_count = merged_content_dedup[ch]
+            merged_content_dedup[ch] = (old_summary, max(old_count, count))
+        else:
+            merged_content_dedup[ch] = (summary, count)
+    merged.hints_content_dedup = merged_content_dedup
+    if len(merged.hints_content_dedup) > HINTS_CONTENT_DEDUP_MAX:
+        # FIFO eviction: keep newest entries; discard oldest when over cap.
+        items_to_remove = len(merged.hints_content_dedup) - (HINTS_CONTENT_DEDUP_MAX - _HINTS_CONTENT_DEDUP_EVICT)
+        for _ in range(items_to_remove):
+            merged.hints_content_dedup.pop(next(iter(merged.hints_content_dedup)))
+
     # bash_dedup_emitted_ids: set union
     merged.bash_dedup_emitted_ids = local.bash_dedup_emitted_ids | remote.bash_dedup_emitted_ids
 
@@ -848,6 +867,13 @@ _READ_COUNT_FULL_FILE_THRESHOLD: Final[int] = 10
 # optimization, not a correctness requirement).
 HINTS_SEEN_MAX: Final[int] = 500
 
+# Maximum number of hint content-hash entries retained per session.  The
+# hints_content_dedup dict tracks emitted hint content to compress duplicate
+# hints (same text shown multiple times) into short stubs.  When the cap is
+# exceeded, FIFO eviction keeps the most recent entries (most likely to appear again).
+HINTS_CONTENT_DEDUP_MAX: Final[int] = 100
+_HINTS_CONTENT_DEDUP_EVICT: Final[int] = 10
+
 # Per-category hint history ring buffer size.  10 entries per category is
 # enough to detect a stable ignore streak without retaining stale signal.
 _HINT_CAT_HISTORY_MAX: Final[int] = 10
@@ -950,6 +976,14 @@ class SessionCache:
     # Cleared when session expires or approaches time-to-live limits to avoid false-positive
     # suppression on stale cached hints.
     hints_seen: dict[str, int] = field(default_factory=dict)
+    # Per-session content hash → summary mapping for hint dedup compression.
+    # When a hint has the same content as a previously-seen hint (by SHA256 hash of
+    # normalized text), emit a short stub "Same as previously shown hint for <context>"
+    # instead of the full repetition.  Maps content_hash (first 8 hex chars) → (summary_text, count).
+    # Kept separate from hints_seen (fingerprint dedup) to enable independent control:
+    # fingerprints suppress entirely, content_hash dedup compresses.  FIFO-evicted at
+    # HINTS_CONTENT_DEDUP_MAX entries to prevent unbounded growth.
+    hints_content_dedup: dict[str, tuple[str, int]] = field(default_factory=dict)
     # Tracks which bash output_ids have been surfaced in a dedup hint this session.
     # Serialized as a sorted list[str] in JSON for stability; parsed back to set[str].
     # Used by compact.py to skip manifest entries that the agent already saw via hint.
@@ -1073,6 +1107,10 @@ class SessionCache:
             decisions=[_serialize_decision_entry(d) for d in self.decisions],
             snapshot_shas=dict(self.snapshot_shas),
             hints_seen=self._get_hints_seen_sorted(),
+            hints_content_dedup={
+                k: [v, c]
+                for k, (v, c) in self.hints_content_dedup.items()
+            },
             bash_dedup_emitted_ids=self._get_bash_dedup_sorted(),
             hints_emitted=self.hints_emitted,
             hints_ignored=self.hints_ignored,
@@ -1175,6 +1213,50 @@ class SessionCache:
         if len(self.hints_seen) > HINTS_SEEN_MAX:
             sorted_hints = sorted(self.hints_seen.items(), key=lambda x: x[1], reverse=True)
             self.hints_seen = dict(sorted_hints[:HINTS_SEEN_MAX])
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+        self._pending_hint_save = True
+
+    def has_hint_content_hash(self, content_hash: str) -> bool:
+        """Check if a hint content hash was already seen this session.
+
+        Returns True if the content_hash is in hints_content_dedup, False otherwise.
+        Use get_hint_content_summary() to retrieve the cached summary text.
+        """
+        return content_hash in self.hints_content_dedup
+
+    def get_hint_content_summary(self, content_hash: str) -> str | None:
+        """Retrieve the cached summary text for a content hash, or None if not seen.
+
+        The summary is the first ~50 chars of the original hint text, used to
+        construct a "Same as previously shown hint for <summary>" stub on repeat.
+        """
+        if content_hash in self.hints_content_dedup:
+            summary, _count = self.hints_content_dedup[content_hash]
+            return summary
+        return None
+
+    def record_hint_content_seen(self, content_hash: str, summary: str) -> None:
+        """Record a hint's content hash and first ~50 chars of text for dedup compression.
+
+        Called when a hint is emitted; on next occurrence of the same content hash,
+        a stub "Same as previously shown hint for <summary>" is emitted instead.
+
+        Increments the count for this content_hash (or sets it to 1 if new).
+        Enforces HINTS_CONTENT_DEDUP_MAX via FIFO eviction when the cap is exceeded.
+        """
+        if content_hash in self.hints_content_dedup:
+            summary_text, count = self.hints_content_dedup[content_hash]
+            self.hints_content_dedup[content_hash] = (summary_text, count + 1)
+        else:
+            self.hints_content_dedup[content_hash] = (summary, 1)
+
+        # Enforce HINTS_CONTENT_DEDUP_MAX via FIFO eviction.
+        # Insertion order is preserved in Python 3.7+ dicts; evict oldest when over cap.
+        if len(self.hints_content_dedup) > HINTS_CONTENT_DEDUP_MAX:
+            items_to_remove = len(self.hints_content_dedup) - (HINTS_CONTENT_DEDUP_MAX - _HINTS_CONTENT_DEDUP_EVICT)
+            for _ in range(items_to_remove):
+                self.hints_content_dedup.pop(next(iter(self.hints_content_dedup)))
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
         self._pending_hint_save = True
@@ -1339,6 +1421,18 @@ class SessionCache:
                 if isinstance(h, str) and h:
                     hints_seen[h] = 1
 
+        # hints_content_dedup: dict[str, [summary, count]] (persisted) → dict[str, tuple[str, int]] (in-memory).
+        # Maps content_hash (first 8 hex chars) → (summary_text, count).
+        # Missing in older sessions → empty dict (backward compat). Malformed entries are skipped.
+        hints_content_dedup: dict[str, tuple[str, int]] = {}
+        raw_content_dedup = d.get("hints_content_dedup", {})
+        if isinstance(raw_content_dedup, dict):
+            for hash_key, val in raw_content_dedup.items():
+                if isinstance(hash_key, str) and isinstance(val, (list, tuple)) and len(val) == 2:
+                    summary, count = val
+                    if isinstance(summary, str) and isinstance(count, int):
+                        hints_content_dedup[hash_key] = (summary, max(1, count))
+
         # bash_dedup_emitted_ids: list[str] (persisted) → set[str] (in-memory).
         # Missing in older sessions → empty set (no ids were tracked).
         bash_dedup_emitted_ids: set[str] = set()
@@ -1423,6 +1517,7 @@ class SessionCache:
             decisions=decisions,
             snapshot_shas=snapshot_shas,
             hints_seen=hints_seen,
+            hints_content_dedup=hints_content_dedup,
             bash_dedup_emitted_ids=bash_dedup_emitted_ids,
             hints_emitted=hints_emitted,
             hints_ignored=hints_ignored,
@@ -1953,6 +2048,7 @@ class _SessionDict(TypedDict, total=False):
     decisions: list[_DecisionEntryDict]
     snapshot_shas: dict[str, str]
     hints_seen: dict[str, int] | list[str]
+    hints_content_dedup: dict[str, list[str | int]]
     bash_dedup_emitted_ids: list[str]
     hints_emitted: int
     hints_ignored: int

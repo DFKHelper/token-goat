@@ -385,7 +385,12 @@ class TestPreReadGitHint:
             patch("token_goat.hooks_read._build_git_hint", return_value="git hint text"),
             patch("token_goat.hooks_read._record_session_hint_impact"),
             patch("token_goat.session.load", return_value=MagicMock(
-                files={}, hints_seen=set(), has_hint_fingerprint=lambda fp: False,
+                files={},
+                hints_seen=set(),
+                hints_content_dedup={},
+                has_hint_fingerprint=lambda fp: False,
+                get_hint_content_summary=lambda ch: None,
+                record_hint_content_seen=MagicMock(),
             )),
         ):
             payload = {
@@ -409,7 +414,12 @@ class TestPreReadGitHint:
             patch("token_goat.hints.build_read_hint", return_value=None),
             patch("token_goat.hooks_read._build_git_hint", return_value="git only"),
             patch("token_goat.session.load", return_value=MagicMock(
-                files={}, edited_files={}, has_hint_fingerprint=lambda fp: False,
+                files={},
+                edited_files={},
+                hints_content_dedup={},
+                has_hint_fingerprint=lambda fp: False,
+                get_hint_content_summary=lambda ch: None,
+                record_hint_content_seen=MagicMock(),
             )),
         ):
             payload = {

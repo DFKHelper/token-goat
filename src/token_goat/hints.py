@@ -28,6 +28,7 @@ __all__ = [
     "HINT_MAX_PER_TOOL_CALL",
     "HintItem",
     "apply_hint_priority_limit",
+    "dedup_hints",
     "ReadHint",
     "build_bash_dedup_hint",
     "build_diff_hint",
@@ -128,6 +129,54 @@ def apply_hint_priority_limit(
     suppressed_count = len(sorted_hints) - max_hints
     result = [h.text for h in emitted]
     result[-1] = f"{result[-1]}\n(+{suppressed_count} more hints suppressed)"
+    return result
+
+
+def dedup_hints(
+    hint_items: list[HintItem],
+    session_cache: session.SessionCache | None,
+) -> list[HintItem]:
+    """Compress duplicate hints by content hash; replace repeats with short stubs.
+
+    For each HintItem, computes a stable content hash of the normalized hint text.
+    If the same content hash was seen before in this session, replaces the full hint
+    text with a short "Same as previously shown hint for <context>" stub instead of
+    full suppression.  This reduces token overhead while keeping the agent aware of
+    the duplication.
+
+    Args:
+        hint_items: List of HintItem objects to dedup.
+        session_cache: SessionCache for content-hash tracking, or None to skip dedup.
+
+    Returns:
+        Modified list of HintItem objects with duplicate content compressed.
+        If session_cache is None, returns hint_items unchanged.
+    """
+    if session_cache is None:
+        return hint_items
+
+    result: list[HintItem] = []
+    for item in hint_items:
+        # Normalize hint text: strip whitespace, convert to lowercase for comparison.
+        normalized = item.text.strip().lower()
+        # Compute content hash: first 8 hex chars of SHA256.
+        content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+
+        # Check if this content has been seen before.
+        prior_summary = session_cache.get_hint_content_summary(content_hash)
+        if prior_summary is not None:
+            # Duplicate content: increment count and replace with short stub.
+            summary = item.text.replace("\n", " ")[:50]
+            session_cache.record_hint_content_seen(content_hash, summary)
+            stub_text = f"Same as previously shown hint for '{prior_summary}...'"
+            result.append(HintItem(stub_text, item.hint_priority))
+        else:
+            # First occurrence: keep original, record for future dedup.
+            # Summary = first 50 chars of the hint text (without newlines).
+            summary = item.text.replace("\n", " ")[:50]
+            session_cache.record_hint_content_seen(content_hash, summary)
+            result.append(item)
+
     return result
 
 # ---------------------------------------------------------------------------

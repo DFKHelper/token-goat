@@ -1811,9 +1811,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
             _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
             return CONTINUE()
 
+        # Compress duplicate hints by content hash: replace repeats with short stubs.
+        from .hints import dedup_hints  # noqa: PLC0415
+        deduped_items = dedup_hints(hint_items, cache)
+
         # Apply priority ordering and cap: sort by priority, emit at most
         # HINT_MAX_PER_TOOL_CALL hints, append suppression footer when over cap.
-        ordered_texts = apply_hint_priority_limit(hint_items)
+        ordered_texts = apply_hint_priority_limit(deduped_items)
         return pre_tool_use_with_context("\n\n".join(ordered_texts))
     finally:
         _flush_pending_hint_save(cache)
