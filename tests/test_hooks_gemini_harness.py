@@ -234,8 +234,9 @@ def test_claude_normalize_no_transformation():
     assert result is payload
 
 
-def test_codex_normalize_no_transformation():
-    """Codex harness normalize_payload must return the payload unchanged."""
+def test_codex_normalize_bash_maps_to_pascal():
+    """Codex harness normalize_payload must remap 'bash' → 'Bash'."""
     payload = {"tool_name": "bash", "tool_input": {"command": "echo hi"}}
     result = normalize_payload(payload, harness="codex")
-    assert result is payload
+    assert result["tool_name"] == "Bash"
+    assert result["tool_input"] == {"command": "echo hi"}

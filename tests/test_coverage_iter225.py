@@ -157,14 +157,17 @@ def test_normalize_payload_claude_passthrough() -> None:
     assert result is payload or result == payload
 
 
-def test_normalize_payload_codex_passthrough() -> None:
+def test_normalize_payload_codex_remaps_tool_name() -> None:
     payload: dict[str, Any] = {
         "session_id": "xyz-789",
         "tool_name": "bash",
         "tool_input": {"command": "ls"},
     }
     result = normalize_payload(payload, harness="codex")
-    assert result == payload
+    # Codex 'bash' must be normalised to PascalCase 'Bash'; other fields preserved.
+    assert result["tool_name"] == "Bash"
+    assert result["session_id"] == "xyz-789"
+    assert result["tool_input"] == {"command": "ls"}
 
 
 def test_normalize_payload_empty_dict() -> None:

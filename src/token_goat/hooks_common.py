@@ -98,6 +98,11 @@ class HookPayload(TypedDict, total=False):
     line_number: int
     result_count: int
     trigger: str
+    # Harness-specific ID fields: Claude/Codex use toolUseId; Gemini uses
+    # functionCallId.  normalize_payload remaps the latter to the former so
+    # downstream handlers always see toolUseId when present.
+    toolUseId: str
+    functionCallId: str
 
 
 # ---------------------------------------------------------------------------

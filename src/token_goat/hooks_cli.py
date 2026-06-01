@@ -100,11 +100,18 @@ def _setup_logging() -> None:
 def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> HookPayload:
     """Translate harness-specific payloads to token-goat's internal format.
 
-    Codex sends snake_case keys for some fields and uses 'turn_id'; Claude uses
-    camelCase. token-goat handlers work with the Claude shape internally.
-    Most fields (session_id, cwd, tool_name, tool_input) are already identical
-    between the two harnesses — nothing needs remapping in the inbound direction.
-    Output normalization (camelCase → snake_case) is handled by denormalize_response.
+    Codex sends snake_case tool names (e.g. ``bash``, ``edit_file``, ``write_file``)
+    where Claude uses PascalCase (``Bash``, ``Edit``, ``Write``).  Codex also uses
+    ``turn_id`` instead of a message ID.  The inbound field names for ``session_id``,
+    ``cwd``, and ``tool_input`` are identical between the two harnesses, so only the
+    tool name needs remapping.
+
+    Gemini CLI uses snake_case tool names (e.g. ``run_shell_command``, ``replace``) and
+    may include a ``functionCallId`` field instead of ``toolUseId``.  Both fields are
+    normalised to ``toolUseId`` so downstream handlers see a consistent shape.
+
+    Output normalisation (camelCase → snake_case for Codex; ``continue``/``decision``
+    for Gemini) is handled by :func:`denormalize_response`.
 
     Validates that the payload has a non-empty tool_name (required by all handlers).
     On invalid payload, logs a warning and returns an empty dict so handlers degrade
@@ -127,6 +134,16 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
         )
         return cast("HookPayload", {})
 
+    if harness == "codex":
+        # Remap Codex snake_case tool names to token-goat PascalCase internal names.
+        mapped = _CODEX_TOOL_NAME_MAP.get(tool_name)
+        if mapped is None:
+            _LOG.debug("normalize_payload: unknown Codex tool %r — passing through", tool_name)
+        else:
+            payload = dict(payload)
+            payload["tool_name"] = mapped
+        return cast("HookPayload", payload)
+
     if harness == "gemini":
         # Remap Gemini tool names to token-goat internal names.
         mapped = _GEMINI_TOOL_NAME_MAP.get(tool_name)
@@ -144,9 +161,13 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
                     for k, v in raw_input.items():
                         new_input[key_map.get(k, k)] = v
                     payload["tool_input"] = new_input
+        # Gemini may send functionCallId instead of toolUseId — normalise to toolUseId.
+        if "functionCallId" in payload and "toolUseId" not in payload:
+            payload = dict(payload)
+            payload["toolUseId"] = payload.pop("functionCallId")
         return cast("HookPayload", payload)
 
-    # Both harnesses share the same inbound field names; no transformation needed.
+    # Claude harness: field names already match the internal shape; no transformation needed.
     return payload
 
 
@@ -160,6 +181,22 @@ _HSO_CAMEL_TO_SNAKE: dict[str, str] = {
     "hookEventName": "hook_event_name",
 }
 
+
+# Codex tool name → token-goat internal tool name.
+# Codex uses lowercase/snake_case names; token-goat handlers expect PascalCase.
+# Keys cover the canonical Codex names plus common short aliases that some
+# Codex versions emit (e.g. "edit" alongside "edit_file").
+_CODEX_TOOL_NAME_MAP: dict[str, str] = {
+    "bash": "Bash",
+    "edit_file": "Edit",
+    "edit": "Edit",
+    "write_file": "Write",
+    "search_files": "Grep",
+    "grep": "Grep",
+    "list_files": "Glob",
+    "glob": "Glob",
+    "web_search": "WebFetch",
+}
 
 # Gemini CLI tool name → token-goat internal tool name.
 # Gemini's tool names follow snake_case; token-goat uses PascalCase.

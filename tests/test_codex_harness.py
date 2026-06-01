@@ -258,3 +258,149 @@ def test_denormalize_nested_dict_non_mapped_keys_preserved():
     # Mapped key inside nested dict translated
     assert "additional_context" in inner
     assert "additionalContext" not in inner
+
+
+# ---------------------------------------------------------------------------
+# 10. normalize_payload: Codex tool name → PascalCase internal name
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_payload_codex_bash():
+    payload = {"tool_name": "bash", "tool_input": {"command": "echo hi"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Bash"
+    assert result["tool_input"] == {"command": "echo hi"}
+
+
+def test_normalize_payload_codex_edit_file():
+    payload = {"tool_name": "edit_file", "tool_input": {"file_path": "/src/a.py"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Edit"
+
+
+def test_normalize_payload_codex_edit_alias():
+    """Short alias 'edit' must also map to 'Edit'."""
+    payload = {"tool_name": "edit", "tool_input": {"file_path": "/src/a.py"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Edit"
+
+
+def test_normalize_payload_codex_write_file():
+    payload = {"tool_name": "write_file", "tool_input": {"file_path": "/out/b.py", "content": "x=1"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Write"
+    # tool_input keys are not remapped for Codex — preserved as-is.
+    assert result["tool_input"]["file_path"] == "/out/b.py"
+
+
+def test_normalize_payload_codex_search_files():
+    payload = {"tool_name": "search_files", "tool_input": {"pattern": "import os"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Grep"
+
+
+def test_normalize_payload_codex_grep_alias():
+    """Short alias 'grep' must also map to 'Grep'."""
+    payload = {"tool_name": "grep", "tool_input": {"pattern": "TODO"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Grep"
+
+
+def test_normalize_payload_codex_list_files():
+    payload = {"tool_name": "list_files", "tool_input": {"path": "/src"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Glob"
+
+
+def test_normalize_payload_codex_glob_alias():
+    """Short alias 'glob' must also map to 'Glob'."""
+    payload = {"tool_name": "glob", "tool_input": {"pattern": "**/*.ts"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Glob"
+
+
+def test_normalize_payload_codex_web_search():
+    payload = {"tool_name": "web_search", "tool_input": {"query": "python asyncio"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "WebFetch"
+
+
+def test_normalize_payload_codex_unknown_tool_passes_through():
+    """An unrecognised Codex tool name must pass through without crashing."""
+    payload = {"tool_name": "some_future_tool", "tool_input": {"x": 1}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "some_future_tool"
+    assert result["tool_input"] == {"x": 1}
+
+
+def test_normalize_payload_codex_already_pascal_read_passes_through():
+    """PascalCase tool names not in the Codex map pass through unchanged (e.g. 'Read')."""
+    payload = {"tool_name": "Read", "tool_input": {"file_path": "/x.py"}}
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Read"
+
+
+def test_normalize_payload_codex_preserves_other_fields():
+    """All non-tool_name fields must be preserved after remapping."""
+    payload = {
+        "tool_name": "bash",
+        "session_id": "sess-1",
+        "cwd": "/projects/foo",
+        "tool_input": {"command": "ls -la"},
+    }
+    result = hooks_cli.normalize_payload(payload, harness="codex")
+    assert result["tool_name"] == "Bash"
+    assert result["session_id"] == "sess-1"
+    assert result["cwd"] == "/projects/foo"
+    assert result["tool_input"] == {"command": "ls -la"}
+
+
+# ---------------------------------------------------------------------------
+# 11. normalize_payload: Gemini functionCallId → toolUseId normalisation
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_payload_gemini_function_call_id_remapped():
+    """Gemini's functionCallId must be remapped to toolUseId."""
+    payload = {
+        "tool_name": "run_shell_command",
+        "functionCallId": "fc-abc-123",
+        "tool_input": {"command": "ls"},
+    }
+    result = hooks_cli.normalize_payload(payload, harness="gemini")
+    assert "toolUseId" in result
+    assert result["toolUseId"] == "fc-abc-123"
+    assert "functionCallId" not in result
+
+
+def test_normalize_payload_gemini_tool_use_id_not_overwritten():
+    """If both functionCallId and toolUseId are present, toolUseId must be kept."""
+    payload = {
+        "tool_name": "run_shell_command",
+        "functionCallId": "fc-old",
+        "toolUseId": "tu-preferred",
+        "tool_input": {"command": "ls"},
+    }
+    result = hooks_cli.normalize_payload(payload, harness="gemini")
+    assert result["toolUseId"] == "tu-preferred"
+    # functionCallId may or may not be present — we only care that toolUseId was not changed.
+
+
+def test_normalize_payload_gemini_no_function_call_id_unchanged():
+    """Payloads without functionCallId must not gain a toolUseId key."""
+    payload = {"tool_name": "run_shell_command", "tool_input": {"command": "ls"}}
+    result = hooks_cli.normalize_payload(payload, harness="gemini")
+    assert "toolUseId" not in result
+    assert "functionCallId" not in result
+
+
+def test_normalize_payload_gemini_function_call_id_with_unknown_tool():
+    """functionCallId is remapped even when the tool name is not in the Gemini map."""
+    payload = {
+        "tool_name": "some_future_tool",
+        "functionCallId": "fc-xyz",
+        "tool_input": {},
+    }
+    result = hooks_cli.normalize_payload(payload, harness="gemini")
+    assert result["toolUseId"] == "fc-xyz"
+    assert "functionCallId" not in result
