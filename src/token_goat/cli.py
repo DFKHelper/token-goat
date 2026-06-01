@@ -3851,6 +3851,95 @@ def cmd_skill_diff(
             typer.echo(line)
 
 
+@app.command("skill-size", rich_help_panel="Core")
+def cmd_skill_size(
+    session_id: str | None = _OPT_SESSION_ID,
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Show size and estimated per-session overhead for all cached skills.
+
+    For each cached skill, displays:
+    - Name of the skill
+    - Total tokens (~body_bytes/4)
+    - Compact tokens (~compact_bytes/4)
+    - Per-100-turn overhead (compact_tokens * 100, worst-case if loaded in every turn)
+    - Flag: "⚠ restructure" if overhead > 50,000 tokens
+
+    When --session-id is provided, filters skills to that session.
+    When omitted, shows all cached skills across all sessions.
+
+    Results are sorted by overhead descending (highest overhead first).
+    Total line shows cumulative overhead across all skills.
+    """
+    from . import skill_cache  # noqa: PLC0415
+
+    skills = skill_cache.get_all_cached_skills(session_id)
+
+    if not skills:
+        if session_id:
+            typer.echo(f"No cached skills for session: {session_id}")
+        else:
+            typer.echo("No cached skills found")
+        raise typer.Exit(0)
+
+    # Calculate metrics for each skill.
+    items: list[dict[str, object]] = []
+    total_overhead = 0
+
+    for skill in skills:
+        name = str(skill["name"])
+        body_len = int(skill["body_len"])  # type: ignore[call-overload]
+        compact_len = int(skill["compact_len"])  # type: ignore[call-overload]
+
+        # Estimate tokens: 4 bytes per token.
+        body_tokens = body_len // 4
+        compact_tokens = compact_len // 4
+
+        # Worst-case overhead at 100 turns: loaded in every turn.
+        per_100_overhead = compact_tokens * 100
+
+        flag = "⚠ restructure" if per_100_overhead > 50_000 else ""
+
+        items.append({
+            "name": name,
+            "body_tokens": body_tokens,
+            "compact_tokens": compact_tokens,
+            "per_100_overhead": per_100_overhead,
+            "flag": flag,
+        })
+
+        total_overhead += per_100_overhead
+
+    # Sort by overhead descending.
+    items.sort(key=lambda x: int(x["per_100_overhead"]), reverse=True)  # type: ignore[call-overload]
+
+    if json_output:
+        output: dict[str, object] = {
+            "session_id": session_id,
+            "skills": items,
+            "total_overhead_at_100_turns": total_overhead,
+        }
+        _emit_json(output)
+
+    # Human-readable output.
+    for item in items:
+        name = str(item["name"])
+        body_tokens = int(item["body_tokens"])  # type: ignore[call-overload]
+        compact_tokens = int(item["compact_tokens"])  # type: ignore[call-overload]
+        per_100_overhead = int(item["per_100_overhead"])  # type: ignore[call-overload]
+        flag = str(item["flag"])
+
+        overhead_k = per_100_overhead / 1_000.0
+        line = f"{name:40} body:~{body_tokens:>6}  compact:~{compact_tokens:>5}  per-100:~{overhead_k:>6.0f}k"
+        if flag:
+            line += f"  {flag}"
+        typer.echo(line)
+
+    typer.echo()
+    total_k = total_overhead / 1_000.0
+    typer.echo(f"Total overhead at 100 turns: ~{total_k:.0f}k tokens")
+
+
 @app.command("decision", rich_help_panel="Core")
 def cmd_decision(
     text: str = typer.Argument(

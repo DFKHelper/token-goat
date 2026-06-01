@@ -37,6 +37,7 @@ __all__ = [
     "extract_h2_headings",
     "extract_named_section",
     "generate_compact_summary",
+    "get_all_cached_skills",
     "get_compact",
     "list_by_session",
     "list_outputs",
@@ -791,3 +792,83 @@ def get_compact(session_id: str, skill_name: str) -> str | None:
     except OSError as exc:
         _LOG.debug("skill_cache.get_compact: I/O error for %s: %s", skill_name, exc)
         return None
+
+
+def get_all_cached_skills(session_id: str | None = None) -> list[dict[str, object]]:
+    """Return metadata for all cached skills, optionally filtered by session_id.
+
+    For each skill, return a dict with keys:
+    - name (str): the skill name
+    - body_len (int): body size in bytes
+    - compact_len (int): compact size in bytes (0 if not cached)
+    - has_marker (bool): True if COMPACT_END_MARKER is present
+
+    When *session_id* is provided, only skills from that session are returned.
+    When *session_id* is None, all cached skills across all sessions are returned.
+
+    Used by ``token-goat skill-size`` to report per-skill token overhead.
+    Returns an empty list when no skills are cached.
+    """
+    results: list[dict[str, object]] = []
+
+    if session_id is not None:
+        # Filter by session
+        session_metas = list_by_session(session_id)
+    else:
+        # All skills across all sessions (newest version per skill name)
+        all_outputs = list_outputs()
+        seen: dict[str, str] = {}  # skill_name -> output_id (newest)
+        for entry in all_outputs:
+            oid = entry.get("output_id")
+            if not oid or oid.endswith("-compact"):
+                continue
+            meta = read_sidecar(oid)
+            if meta is not None and meta.skill_name not in seen:
+                seen[meta.skill_name] = oid
+        session_metas = []
+        for skill_name, oid in seen.items():
+            session_metas.append(SkillMeta(
+                output_id=oid,
+                skill_name=skill_name,
+                content_sha="",
+                body_bytes=0,
+                ts=0.0,
+                truncated=False,
+            ))
+
+    for meta in session_metas:
+        # Load the full body to calculate metrics.
+        body = load_output(meta.output_id)
+        if body is None:
+            continue
+
+        # Try to load the compact form if it exists.
+        compact_text: str | None = None
+        if session_id is not None:
+            compact_text = get_compact(session_id, meta.skill_name)
+        else:
+            # When no session specified, try to find any compact version
+            for entry in list_outputs():
+                oid = entry.get("output_id", "")
+                if oid.endswith("-compact"):
+                    # Compact file: {session}-{safe_name}-compact
+                    file_id = oid[:-8]  # strip "-compact"
+                    # Check if this compact matches our skill
+                    meta_check = read_sidecar(file_id)
+                    if meta_check and meta_check.skill_name == meta.skill_name:
+                        compact_text = load_output(oid)
+                        break
+
+        compact_len = len(compact_text.encode("utf-8", errors="replace")) if compact_text else 0
+
+        # Check for marker.
+        has_marker = extract_compact_from_marker(body) is not None
+
+        results.append({
+            "name": meta.skill_name,
+            "body_len": len(body.encode("utf-8", errors="replace")),
+            "compact_len": compact_len,
+            "has_marker": has_marker,
+        })
+
+    return results
