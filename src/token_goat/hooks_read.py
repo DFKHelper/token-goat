@@ -1565,8 +1565,20 @@ def pre_read(payload: HookPayload) -> HookResponse:
         if structured_response is not None:
             return structured_response
 
-        # Collect context parts from all hint sources; combine and return once.
-        context_parts: list[str] = []
+        # Collect context parts from all hint sources with priority levels.
+        # Each item is a (priority, text) tuple; lower priority value = higher importance.
+        # Priority constants: CRITICAL=1 (edited-file), HIGH=2 (diff), MEDIUM=3 (re-read),
+        # LOW=4 (grep/bash/glob dedup). At the end, hints are sorted by priority and
+        # capped at HINT_MAX_PER_TOOL_CALL with a suppression footer when over the cap.
+        from .hints import (  # noqa: PLC0415
+            HINT_PRIORITY_CRITICAL,
+            HINT_PRIORITY_HIGH,
+            HINT_PRIORITY_LOW,
+            HINT_PRIORITY_MEDIUM,
+            HintItem,
+            apply_hint_priority_limit,
+        )
+        hint_items: list[HintItem] = []
 
         # Content-unchanged short-circuit: file was edited in this session AND the
         # current on-disk SHA matches the snapshot taken after the last Read.  This
@@ -1637,13 +1649,14 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 entry_line_ranges=entry.line_ranges if entry is not None else None,
             )
             if diff_response is not None:
-                # Extract the text so we can combine with the git hint if present.
+                # Extract the text so we can combine with other hints via priority ordering.
                 hso = diff_response.get("hookSpecificOutput") or {}
                 diff_text = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
                 if diff_text:
-                    context_parts.append(diff_text)
+                    # Diff hints are HIGH priority: file changed since last read.
+                    hint_items.append(HintItem(diff_text, HINT_PRIORITY_HIGH))
 
-        if not context_parts:
+        if not hint_items:
             hint = build_read_hint(
                 session_id=session_id,
                 file_path=file_path,
@@ -1690,16 +1703,17 @@ def pre_read(payload: HookPayload) -> HookResponse:
                         )
                     # per-type counter: increment only when hint enters context.
                     cache.record_hint_emitted(_hint_kind)
-                    context_parts.append(hint_text)
+                    # Re-read hints are MEDIUM priority.
+                    hint_items.append(HintItem(hint_text, HINT_PRIORITY_MEDIUM))
                     cache.mark_hint_seen(fingerprint)
 
             # When the file was edited since the last read AND no diff hint or
             # session hint fired (diff too small, no snapshot, first-read-after-edit),
             # inject a lightweight "file changed since last read" note so the agent
             # knows the content it may remember from context is stale.  This fires
-            # only when context_parts is still empty to avoid duplicating a message
+            # only when hint_items is still empty to avoid duplicating a message
             # already present from the diff or session hint paths above.
-            if not context_parts and entry is not None and entry.last_edit_ts > entry.last_read_ts:
+            if not hint_items and entry is not None and entry.last_edit_ts > entry.last_read_ts:
                 _fname = sanitize_log_str(file_path, max_len=256)
                 from .hints import _hint_fingerprint as _hfp  # noqa: PLC0415
                 _changed_note = (
@@ -1711,7 +1725,8 @@ def pre_read(payload: HookPayload) -> HookResponse:
                     cache.mark_hint_seen(_changed_fp)
                     cache.record_hint_emitted("file_changed_since_read")
                     record_hint_stat_pair("file_changed_since_read", _changed_note, _fname)
-                    context_parts.append(_changed_note)
+                    # Edited-file notes are CRITICAL priority: highest importance.
+                    hint_items.append(HintItem(_changed_note, HINT_PRIORITY_CRITICAL))
                     _LOG.debug(
                         "pre-read: file-changed-since-read note for %s",
                         sanitize_log_str(file_path),
@@ -1721,18 +1736,20 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # wrote may still be in context from the Write/Edit tool result, making a
         # full re-read redundant.  Only fires when no other hint was emitted, so
         # it never shadows a more specific diff-hint or cache-overlap hint.
-        if not context_parts:
+        if not hint_items:
             _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
             _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
             _edit_count = _edited.get(_written_key, 0)
             if _edit_count >= 1 and _written_key not in cache.files:
                 _fname = sanitize_log_str(Path(file_path).name, max_len=256)
-                context_parts.append(
+                # Written-but-not-read hints are CRITICAL priority: edited-file context.
+                hint_items.append(HintItem(
                     f"Note: `{_fname}` was written {_edit_count}x this session and not yet read back. "
                     f"The content you wrote may still be in context from the tool result — "
                     f"verify there rather than re-reading. For a specific symbol use "
-                    f"`token-goat read \"{file_path}::SymbolName\"`."
-                )
+                    f"`token-goat read \"{file_path}::SymbolName\"`.",
+                    HINT_PRIORITY_CRITICAL,
+                ))
                 _LOG.debug(
                     "pre-read: written-not-read hint for %s (edit_count=%d)",
                     sanitize_log_str(file_path), _edit_count,
@@ -1763,7 +1780,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
             if _surg_hint:
                 from .hints import _hint_fingerprint  # noqa: PLC0415
                 _surg_fp = _hint_fingerprint(_surg_hint, path=file_path)
-                emit_if_new_hint(cache, _surg_fp, _surg_hint, "surgical_suggestion", context_parts)
+                # Surgical hints are LOW priority: informational, not urgent.
+                _surg_parts: list[str] = []
+                if emit_if_new_hint(cache, _surg_fp, _surg_hint, "surgical_suggestion", _surg_parts):
+                    hint_items.append(HintItem(_surg_parts[0], HINT_PRIORITY_LOW))
 
         # Append git commit history for the file (with dedup and session-age gate).
         # Skip git hint for files edited this session (agent already knows they changed).
@@ -1782,13 +1802,19 @@ def pre_read(payload: HookPayload) -> HookResponse:
             if git_ctx:
                 from .hints import _hint_fingerprint  # noqa: PLC0415
                 _git_fp = _hint_fingerprint(git_ctx, path=file_path)
-                emit_if_new_hint(cache, _git_fp, git_ctx, "git_history", context_parts)
+                # Git history hints are LOW priority: supplemental context.
+                _git_parts: list[str] = []
+                if emit_if_new_hint(cache, _git_fp, git_ctx, "git_history", _git_parts):
+                    hint_items.append(HintItem(_git_parts[0], HINT_PRIORITY_LOW))
 
-        if not context_parts:
+        if not hint_items:
             _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
             return CONTINUE()
 
-        return pre_tool_use_with_context("\n\n".join(context_parts))
+        # Apply priority ordering and cap: sort by priority, emit at most
+        # HINT_MAX_PER_TOOL_CALL hints, append suppression footer when over cap.
+        ordered_texts = apply_hint_priority_limit(hint_items)
+        return pre_tool_use_with_context("\n\n".join(ordered_texts))
     finally:
         _flush_pending_hint_save(cache)
 

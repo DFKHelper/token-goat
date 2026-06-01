@@ -21,6 +21,13 @@ _RECENT_HINTS_MAX: int = 3
 
 __all__ = [
     "DIFF_HINT_MAX_BYTES",
+    "HINT_PRIORITY_CRITICAL",
+    "HINT_PRIORITY_HIGH",
+    "HINT_PRIORITY_MEDIUM",
+    "HINT_PRIORITY_LOW",
+    "HINT_MAX_PER_TOOL_CALL",
+    "HintItem",
+    "apply_hint_priority_limit",
     "ReadHint",
     "build_bash_dedup_hint",
     "build_diff_hint",
@@ -43,6 +50,84 @@ __all__ = [
     "_HINT_KIND_INDEX_ONLY",
     "_PROXIMITY_SLOP_LINES",
 ]
+
+# ---------------------------------------------------------------------------
+# Hint priority ordering
+# ---------------------------------------------------------------------------
+# Priority levels assigned to each hint type. Lower number = higher priority.
+# CRITICAL (1): edited-file hints — file was edited this session (stale content warning)
+# HIGH (2):     diff hints — file changed since last read (diff available)
+# MEDIUM (3):   re-read hints — file already read this session (dedup/overlap)
+# LOW (4):      grep/bash/glob dedup hints — dedup for tool calls
+HINT_PRIORITY_CRITICAL: Final[int] = 1
+HINT_PRIORITY_HIGH: Final[int] = 2
+HINT_PRIORITY_MEDIUM: Final[int] = 3
+HINT_PRIORITY_LOW: Final[int] = 4
+
+# Maximum number of hints emitted per tool call.  When more hints would fire
+# than this cap, only the highest-priority ones are emitted and a footer
+# "(+N more hints suppressed)" is appended so the agent is aware.
+HINT_MAX_PER_TOOL_CALL: Final[int] = 3
+
+
+class HintItem:
+    """A hint with an attached priority level for ordering and filtering.
+
+    ``hint_priority`` determines ordering when multiple hints apply to the same
+    tool call: lower values are emitted first.  Use the ``HINT_PRIORITY_*``
+    constants (1=CRITICAL .. 4=LOW) so ordering is deterministic and testable.
+
+    ``text`` is the prose hint string injected into ``additionalContext``.
+    """
+
+    hint_priority: int
+    text: str
+
+    def __init__(self, text: str, hint_priority: int) -> None:
+        self.text = text
+        self.hint_priority = hint_priority
+
+    def __repr__(self) -> str:
+        return f"HintItem(priority={self.hint_priority}, text={self.text!r:.40})"
+
+
+def apply_hint_priority_limit(
+    hints: list[HintItem],
+    max_hints: int = HINT_MAX_PER_TOOL_CALL,
+) -> list[str]:
+    """Sort hints by priority and return at most *max_hints* hint texts.
+
+    Hints are sorted ascending by ``hint_priority`` (lower = more important),
+    then by insertion order within the same priority level (stable sort).
+    When ``len(hints) > max_hints``, the lowest-priority excess hints are
+    dropped and a ``(+N more hints suppressed)`` footer is appended to the
+    last emitted hint's text so the agent is aware that suppression occurred.
+
+    Returns a list of hint text strings ready to be joined with ``"\\n\\n"``
+    and injected as ``additionalContext``.
+
+    Examples:
+        >>> items = [
+        ...     HintItem("diff hint", HINT_PRIORITY_HIGH),
+        ...     HintItem("edited hint", HINT_PRIORITY_CRITICAL),
+        ...     HintItem("dedup hint", HINT_PRIORITY_LOW),
+        ...     HintItem("reread hint", HINT_PRIORITY_MEDIUM),
+        ... ]
+        >>> apply_hint_priority_limit(items, max_hints=3)
+        ['edited hint', 'diff hint', 'reread hint (+ 1 more hints suppressed)']
+    """
+    if not hints:
+        return []
+    # Stable sort by priority (lower value = higher priority = emitted first).
+    sorted_hints = sorted(hints, key=lambda h: h.hint_priority)
+    if len(sorted_hints) <= max_hints:
+        return [h.text for h in sorted_hints]
+    # Cap at max_hints; append suppression footer to the last emitted hint.
+    emitted = sorted_hints[:max_hints]
+    suppressed_count = len(sorted_hints) - max_hints
+    result = [h.text for h in emitted]
+    result[-1] = f"{result[-1]}\n(+{suppressed_count} more hints suppressed)"
+    return result
 
 # ---------------------------------------------------------------------------
 # Terse-mode substitution table

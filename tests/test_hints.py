@@ -3981,3 +3981,160 @@ class TestCoreadSuggestions:
 
         assert hint is None or "fmt" not in str(hint).lower(), \
             f"stdlib 'fmt' import should not trigger coread: {hint}"
+
+
+# ---------------------------------------------------------------------------
+# Hint priority ordering — apply_hint_priority_limit()
+# ---------------------------------------------------------------------------
+
+
+class TestHintPriorityOrdering:
+    """Tests for the hint priority/ordering system in hints.py."""
+
+    def test_priority_constants_ordered(self):
+        """CRITICAL < HIGH < MEDIUM < LOW (lower value = higher priority)."""
+        from token_goat.hints import (
+            HINT_PRIORITY_CRITICAL,
+            HINT_PRIORITY_HIGH,
+            HINT_PRIORITY_LOW,
+            HINT_PRIORITY_MEDIUM,
+        )
+        assert HINT_PRIORITY_CRITICAL < HINT_PRIORITY_HIGH
+        assert HINT_PRIORITY_HIGH < HINT_PRIORITY_MEDIUM
+        assert HINT_PRIORITY_MEDIUM < HINT_PRIORITY_LOW
+
+    def test_empty_list_returns_empty(self):
+        """apply_hint_priority_limit with no hints returns empty list."""
+        from token_goat.hints import apply_hint_priority_limit
+
+        assert apply_hint_priority_limit([]) == []
+
+    def test_single_hint_returned_as_is(self):
+        """A single hint is returned without modification."""
+        from token_goat.hints import HINT_PRIORITY_MEDIUM, HintItem, apply_hint_priority_limit
+
+        items = [HintItem("only hint", HINT_PRIORITY_MEDIUM)]
+        result = apply_hint_priority_limit(items)
+        assert result == ["only hint"]
+
+    def test_sorts_by_priority_ascending(self):
+        """Hints are ordered by priority: CRITICAL first, then HIGH, MEDIUM, LOW."""
+        from token_goat.hints import (
+            HINT_PRIORITY_CRITICAL,
+            HINT_PRIORITY_HIGH,
+            HINT_PRIORITY_LOW,
+            HINT_PRIORITY_MEDIUM,
+            HintItem,
+            apply_hint_priority_limit,
+        )
+        items = [
+            HintItem("low hint", HINT_PRIORITY_LOW),
+            HintItem("medium hint", HINT_PRIORITY_MEDIUM),
+            HintItem("critical hint", HINT_PRIORITY_CRITICAL),
+            HintItem("high hint", HINT_PRIORITY_HIGH),
+        ]
+        result = apply_hint_priority_limit(items, max_hints=10)
+        assert result[0] == "critical hint"
+        assert result[1] == "high hint"
+        assert result[2] == "medium hint"
+        assert result[3] == "low hint"
+
+    def test_max_hints_cap_drops_lowest_priority(self):
+        """When more hints than max_hints, lowest-priority ones are dropped."""
+        from token_goat.hints import (
+            HINT_PRIORITY_CRITICAL,
+            HINT_PRIORITY_HIGH,
+            HINT_PRIORITY_LOW,
+            HINT_PRIORITY_MEDIUM,
+            HintItem,
+            apply_hint_priority_limit,
+        )
+        items = [
+            HintItem("low hint", HINT_PRIORITY_LOW),
+            HintItem("critical hint", HINT_PRIORITY_CRITICAL),
+            HintItem("medium hint", HINT_PRIORITY_MEDIUM),
+            HintItem("high hint", HINT_PRIORITY_HIGH),
+        ]
+        result = apply_hint_priority_limit(items, max_hints=3)
+        # Should get the 3 highest-priority hints: CRITICAL, HIGH, MEDIUM
+        assert len(result) == 3
+        assert result[0] == "critical hint"
+        assert result[1] == "high hint"
+        # The last emitted hint gets the suppression footer.
+        assert "medium hint" in result[2]
+        assert "+1 more hints suppressed" in result[2]
+
+    def test_suppression_footer_appended_to_last_emitted(self):
+        """The (+N more hints suppressed) footer is appended to the last emitted hint."""
+        from token_goat.hints import (
+            HINT_PRIORITY_CRITICAL,
+            HINT_PRIORITY_LOW,
+            HINT_PRIORITY_MEDIUM,
+            HintItem,
+            apply_hint_priority_limit,
+        )
+        items = [
+            HintItem("hint A", HINT_PRIORITY_CRITICAL),
+            HintItem("hint B", HINT_PRIORITY_MEDIUM),
+            HintItem("hint C", HINT_PRIORITY_LOW),
+            HintItem("hint D", HINT_PRIORITY_LOW),
+        ]
+        result = apply_hint_priority_limit(items, max_hints=2)
+        assert len(result) == 2
+        assert result[0] == "hint A"
+        # Footer mentions 2 suppressed hints (C and D).
+        assert "+2 more hints suppressed" in result[1]
+
+    def test_no_footer_when_at_or_under_cap(self):
+        """No suppression footer when hint count equals max_hints."""
+        from token_goat.hints import (
+            HINT_PRIORITY_CRITICAL,
+            HINT_PRIORITY_HIGH,
+            HINT_PRIORITY_MEDIUM,
+            HintItem,
+            apply_hint_priority_limit,
+        )
+        items = [
+            HintItem("hint A", HINT_PRIORITY_CRITICAL),
+            HintItem("hint B", HINT_PRIORITY_HIGH),
+            HintItem("hint C", HINT_PRIORITY_MEDIUM),
+        ]
+        result = apply_hint_priority_limit(items, max_hints=3)
+        assert len(result) == 3
+        for text in result:
+            assert "suppressed" not in text
+
+    def test_stable_sort_within_same_priority(self):
+        """Hints with equal priority are emitted in insertion order (stable sort)."""
+        from token_goat.hints import HINT_PRIORITY_MEDIUM, HintItem, apply_hint_priority_limit
+
+        items = [
+            HintItem("first medium", HINT_PRIORITY_MEDIUM),
+            HintItem("second medium", HINT_PRIORITY_MEDIUM),
+            HintItem("third medium", HINT_PRIORITY_MEDIUM),
+        ]
+        result = apply_hint_priority_limit(items, max_hints=10)
+        assert result == ["first medium", "second medium", "third medium"]
+
+    def test_hint_item_has_priority_attribute(self):
+        """HintItem stores hint_priority for deterministic, testable ordering."""
+        from token_goat.hints import HINT_PRIORITY_HIGH, HintItem
+
+        item = HintItem("diff hint", HINT_PRIORITY_HIGH)
+        assert item.hint_priority == HINT_PRIORITY_HIGH
+        assert item.text == "diff hint"
+
+    def test_default_max_is_hint_max_per_tool_call(self):
+        """apply_hint_priority_limit defaults to HINT_MAX_PER_TOOL_CALL."""
+        from token_goat.hints import (
+            HINT_MAX_PER_TOOL_CALL,
+            HINT_PRIORITY_LOW,
+            HintItem,
+            apply_hint_priority_limit,
+        )
+        # Create more hints than the cap.
+        items = [HintItem(f"hint {i}", HINT_PRIORITY_LOW) for i in range(HINT_MAX_PER_TOOL_CALL + 2)]
+        result = apply_hint_priority_limit(items)
+        assert len(result) == HINT_MAX_PER_TOOL_CALL
+        # Last emitted hint should carry the suppression footer.
+        assert "suppressed" in result[-1]
