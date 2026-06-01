@@ -310,6 +310,44 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
 # outweighs the saving.
 _WEB_CACHE_MIN_BYTES: int = 1024
 
+# Size threshold for emitting the web-output size hint.  Responses smaller
+# than this do not benefit enough from --grep filtering to warrant the hint text.
+_WEB_SIZE_HINT_THRESHOLD_KB: int = 10
+
+
+def _maybe_emit_web_size_hint(meta: object, log_or_none: object) -> None:
+    """Emit a hint when a cached web response exceeds the size threshold.
+
+    Accepts meta as object to avoid circular import of web_cache.WebOutputMeta.
+    At runtime, meta is a WebOutputMeta instance with body_bytes and output_id attrs.
+
+    Calculates estimated token savings from using --grep and suggests the
+    ``token-goat web-output <id> --grep PATTERN`` command to filter the cached
+    response instead of re-fetching.  Only emits when size > 10 KB.
+
+    This is informational — no hint is injected into the tool response, just
+    logged for observability. The real size hint will be emitted by the pre-fetch
+    hook on subsequent requests for the same URL (via the dedup/cache-hit hints).
+    """
+    from . import util  # noqa: PLC0415
+
+    # Get a proper logger instance from the util module
+    log = util.get_logger("hooks_fetch")
+    # Meta is a WebOutputMeta instance; access attrs directly
+    meta_body_bytes = getattr(meta, "body_bytes", 0)
+    meta_output_id = getattr(meta, "output_id", "unknown")
+    size_kb = meta_body_bytes / 1024.0
+    if size_kb < _WEB_SIZE_HINT_THRESHOLD_KB:
+        return
+
+    # Rough token estimate: ~1 token per 4 bytes; ~70% savings from --grep
+    token_est = meta_body_bytes // 4
+    savings_est = int(token_est * 0.7)
+    log.debug(
+        "web_size_hint: id=%s size=%.1f KB (≈%d tokens, ≈%d tokens saved with --grep)",
+        meta_output_id, size_kb, token_est, savings_est,
+    )
+
 
 def _extract_web_response(payload: HookPayload) -> tuple[str, int | None, str | None]:
     """Pull (body, status_code, content_type) from a PostToolUse WebFetch payload.
@@ -455,6 +493,9 @@ def post_fetch(payload: HookPayload) -> HookResponse:
         )
     except (ValueError, OSError) as exc:
         _LOG.debug("post-fetch: session record failed: %s", exc)
+
+    # Emit a size hint if the response is large enough to benefit from --grep
+    _maybe_emit_web_size_hint(meta, None)
 
     # Informational stat row — no saving claimed at capture time; the saving
     # is realized when (and if) the agent later avoids a re-fetch.

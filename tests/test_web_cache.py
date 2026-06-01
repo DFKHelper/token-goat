@@ -321,3 +321,47 @@ class TestFindCachedConcurrentDeletion:
         # The lookup must still succeed using the surviving sidecar.
         assert result is not None
         assert result.url_sha == web_cache.url_hash(url)
+
+
+class TestGetOutputSize:
+    def test_size_from_sidecar(self, tmp_data_dir):
+        """get_output_size returns body_bytes from sidecar metadata."""
+        body = "X" * 15_000
+        meta = web_cache.store_output("sess-size-1", "https://example.com/doc", body, 200)
+        assert meta is not None
+        web_cache.write_sidecar(meta)
+
+        size = web_cache.get_output_size(meta.output_id)
+        assert size is not None
+        assert size == 15_000, f"Expected 15000 bytes, got {size}"
+
+    def test_size_fallback_to_disk(self, tmp_data_dir):
+        """get_output_size falls back to file size when sidecar is absent."""
+        body = "Y" * 12_000
+        meta = web_cache.store_output("sess-size-2", "https://example.com/api", body, 200)
+        assert meta is not None
+        # Deliberately do not write sidecar; should fall back to disk file size
+
+        size = web_cache.get_output_size(meta.output_id)
+        assert size is not None
+        # File size may be slightly different due to encoding; check it's in range
+        assert 11_900 < size < 12_100, f"Expected ~12000 bytes, got {size}"
+
+    def test_size_for_missing_output(self, tmp_data_dir):
+        """get_output_size returns None for non-existent output."""
+        size = web_cache.get_output_size("nonexistent-id-12345")
+        assert size is None
+
+    def test_size_for_truncated_output(self, tmp_data_dir):
+        """get_output_size returns original body_bytes even for truncated outputs."""
+        # Create a response larger than max_stored_bytes
+        big_body = "Z" * (3 * 1024 * 1024)  # 3 MB, will be truncated to ~2 MB on disk
+        meta = web_cache.store_output("sess-size-3", "https://example.com/large", big_body, 200)
+        assert meta is not None
+        assert meta.truncated is True
+        web_cache.write_sidecar(meta)
+
+        # get_output_size should return the original body_bytes, not the truncated size
+        size = web_cache.get_output_size(meta.output_id)
+        assert size is not None
+        assert size == 3 * 1024 * 1024, f"Expected original 3MB, got {size} bytes"

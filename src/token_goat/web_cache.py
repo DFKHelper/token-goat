@@ -41,6 +41,7 @@ __all__ = [
     "WebOutputMeta",
     "evict_old_entries",
     "find_cached_for_url",
+    "get_output_size",
     "list_outputs",
     "load_output",
     "load_output_meta",
@@ -268,6 +269,24 @@ def load_output(output_id: str) -> str | None:
 def load_output_meta(output_id: str) -> OutputStatDict | None:
     """Return stat-derived metadata for an output file (size, mtime), or None."""
     return load_output_meta_stat(output_id, _web_outputs_dir, "web_cache")
+
+
+def get_output_size(output_id: str) -> int | None:
+    """Return the byte size of the cached output, or None if not found.
+
+    Reads the size from the sidecar metadata when available, falling back
+    to the on-disk file size as a last resort.  Returns None on any I/O error.
+    """
+    with safe_cache_op("get_output_size", log=_LOG):
+        # Try sidecar first — it has the original body_bytes before truncation.
+        meta = read_sidecar(output_id)
+        if meta is not None:
+            return meta.body_bytes
+        # Fallback to stat-derived metadata (file size on disk).
+        stat_meta = load_output_meta_stat(output_id, _web_outputs_dir, "web_cache")
+        if stat_meta is not None:
+            return stat_meta.get("size_bytes")
+    return None
 
 
 def evict_old_entries(

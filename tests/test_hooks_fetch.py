@@ -189,3 +189,66 @@ class TestWebFetchAllowDeny:
             resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://example.com/badpath"))
         text = str(resp)
         assert "deny" in text.lower() or "blocked" in text.lower()
+
+
+class TestWebSizeHint:
+    """Tests for the WebFetch size hint emitted after caching large responses."""
+
+    def test_size_hint_emitted_for_large_response(self, tmp_data_dir, caplog):
+        """Size hint is logged for responses > 10 KB."""
+        import logging
+        caplog.set_level(logging.DEBUG)
+
+        body = "X" * (12 * 1024)  # 12 KB, above threshold
+        payload = {
+            "session_id": "size-hint-1",
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "https://example.com/large-doc"},
+            "tool_response": {"output": body, "status_code": 200},
+        }
+        hooks_fetch.post_fetch(payload)
+
+        # Check that the size hint was logged
+        assert any("web_size_hint" in record.message for record in caplog.records)
+
+    def test_no_size_hint_for_small_response(self, tmp_data_dir, caplog):
+        """Size hint is not emitted for responses < 10 KB."""
+        import logging
+        caplog.set_level(logging.DEBUG)
+
+        body = "X" * (8 * 1024)  # 8 KB, below threshold
+        payload = {
+            "session_id": "size-hint-2",
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "https://example.com/small-doc"},
+            "tool_response": {"output": body, "status_code": 200},
+        }
+        hooks_fetch.post_fetch(payload)
+
+        # Check that no size hint was logged
+        assert not any("web_size_hint" in record.message for record in caplog.records)
+
+    def test_size_hint_content_correctness(self, tmp_data_dir, caplog):
+        """Size hint includes correct byte and token estimates."""
+        import logging
+        caplog.set_level(logging.DEBUG)
+
+        body = "X" * (20 * 1024)  # 20 KB
+        payload = {
+            "session_id": "size-hint-3",
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "https://example.com/doc"},
+            "tool_response": {"output": body, "status_code": 200},
+        }
+        hooks_fetch.post_fetch(payload)
+
+        # Find the size hint log message
+        hint_records = [r for r in caplog.records if "web_size_hint" in r.message]
+        assert len(hint_records) > 0
+        msg = hint_records[0].message
+
+        # Check that size, token estimate, and savings are mentioned
+        assert "20.0 KB" in msg or "20 KB" in msg, f"Size not in hint: {msg}"
+        assert "tokens" in msg.lower(), f"Token estimate not in hint: {msg}"
+        # The logged hint mentions --grep as context for what the user can do
+        assert "--grep" in msg, f"--grep reference expected in hint: {msg}"
