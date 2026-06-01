@@ -4157,6 +4157,7 @@ def cmd_image_shrink(
 @app.command("worker", hidden=True)
 def cmd_worker(
     daemon: bool = typer.Option(False, "--daemon", help="Run as background daemon (otherwise interactive)"),
+    status: bool = typer.Option(False, "--status", help="Show worker status and exit"),
 ) -> None:
     """Internal: background worker daemon. Should be invoked by the SessionStart watchdog, not directly.
 
@@ -4169,6 +4170,22 @@ def cmd_worker(
     timeout fires.  Direct unit tests of ``worker_daemon.run_daemon``
     do not go through this entry point, so they remain unaffected.
     """
+    if status:
+        from . import worker_daemon  # noqa: PLC0415
+
+        info = worker_daemon.query_worker_status()
+        pid_str = f" (pid {info['pid']})" if info["pid"] is not None else ""
+        state = "running" if info["running"] else "stopped"
+        typer.echo(f"Worker: {state}{pid_str}")
+        if info["autostart"] is not None:
+            active_str = "enabled" if info["autostart_active"] else (
+                "disabled" if info["autostart_active"] is False else "unknown"
+            )
+            typer.echo(f"Autostart: {info['autostart']} ({active_str})")
+        if info["last_log_line"]:
+            typer.echo(f"Last log: {info['last_log_line']}")
+        return
+
     if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in (
         "1", "true", "yes", "on",
     ):

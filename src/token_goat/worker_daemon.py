@@ -561,3 +561,95 @@ def run_daemon(stop_event=None) -> None:
     if restart_for_upgrade:
         _LOG.info("respawning worker with updated code")
         _worker.spawn_detached()
+
+
+# ---------------------------------------------------------------------------
+# Worker status query (used by `token-goat worker --status`)
+# ---------------------------------------------------------------------------
+
+def query_worker_status() -> dict[str, object]:
+    """Return a dict describing current worker status.
+
+    Keys:
+        running (bool): True if the worker process appears to be alive.
+        pid (int | None): PID from the pid file, or None.
+        autostart (str | None): 'systemd', 'registry', 'xdg', or None.
+        autostart_active (bool | None): True/False/None (None = unknown).
+        last_log_line (str | None): Last non-empty line from today's log file.
+    """
+    from . import paths  # noqa: PLC0415
+
+    pid: int | None = None
+    running = False
+
+    raw_pid = _read_pid_from_file()
+    if raw_pid != _PID_UNKNOWN:
+        pid = raw_pid
+        running = _pid_is_alive(raw_pid)
+
+    autostart: str | None = None
+    autostart_active: bool | None = None
+
+    if sys.platform == "win32":
+        autostart = "registry"
+        try:
+            import winreg  # type: ignore[import]
+
+            from . import install  # noqa: PLC0415
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                install._HKCU_RUN_PATH,
+                0,
+                winreg.KEY_READ,
+            ) as key:
+                try:
+                    winreg.QueryValueEx(key, install.TASK_WORKER)
+                    autostart_active = True
+                except FileNotFoundError:
+                    autostart_active = False
+        except Exception:  # noqa: BLE001
+            autostart_active = None
+    elif sys.platform.startswith("linux") or sys.platform == "darwin":
+        from . import install  # noqa: PLC0415
+        if install._systemd_service_path().exists():
+            autostart = "systemd"
+            try:
+                import subprocess  # noqa: PLC0415
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", f"{install.SYSTEMD_SERVICE_NAME}.service"],
+                    capture_output=True,
+                    timeout=5,
+                )
+                autostart_active = result.returncode == 0
+            except Exception:  # noqa: BLE001
+                autostart_active = None
+        else:
+            from . import install as _inst  # noqa: PLC0415
+            xdg_path = _inst._xdg_desktop_path() if hasattr(_inst, "_xdg_desktop_path") else None
+            if xdg_path and xdg_path.exists():
+                autostart = "xdg"
+                autostart_active = True
+            else:
+                autostart = None
+                autostart_active = False
+
+    last_log_line: str | None = None
+    try:
+        import datetime  # noqa: PLC0415
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        log_file = paths.logs_dir() / f"{today}.log"
+        if log_file.exists():
+            text = log_file.read_text(encoding="utf-8", errors="replace")
+            lines = [ln for ln in text.splitlines() if ln.strip()]
+            if lines:
+                last_log_line = lines[-1]
+    except Exception:  # noqa: BLE001
+        pass
+
+    return {
+        "running": running,
+        "pid": pid,
+        "autostart": autostart,
+        "autostart_active": autostart_active,
+        "last_log_line": last_log_line,
+    }

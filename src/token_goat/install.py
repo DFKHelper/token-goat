@@ -418,12 +418,14 @@ def install_linux_autostart() -> tuple[bool, str]:
         svc_path.write_text(
             "[Unit]\n"
             "Description=token-goat background worker\n"
-            "After=default.target\n\n"
+            "After=default.target\n"
+            "StartLimitIntervalSec=60\n"
+            "StartLimitBurst=3\n\n"
             "[Service]\n"
             "Type=simple\n"
             f"ExecStart={exec_str}\n"
             "Restart=on-failure\n"
-            "RestartSec=10\n\n"  # 10 s back-off prevents a crash loop from burning CPU
+            "RestartSec=5\n\n"
             "[Install]\n"
             "WantedBy=default.target\n",
             encoding="utf-8",

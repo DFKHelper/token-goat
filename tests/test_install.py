@@ -556,6 +556,11 @@ def test_install_linux_autostart_systemd(tmp_path, monkeypatch):
     content = svc_path.read_text()
     assert "token_goat" in content or "token-goat" in content
     assert "WantedBy=default.target" in content
+    # Restart directives must be present
+    assert "Restart=on-failure" in content
+    assert "RestartSec=5" in content
+    assert "StartLimitIntervalSec=60" in content
+    assert "StartLimitBurst=3" in content
     # daemon-reload and enable must have been called
     cmds_flat = [" ".join(c) for c in calls]
     assert any("daemon-reload" in c for c in cmds_flat)
