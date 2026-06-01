@@ -22,23 +22,19 @@ def test_get_logger_name() -> None:
     log = get_logger("foo")
     assert log.name == "token_goat.foo"
 
-
 def test_get_logger_returns_logger_instance() -> None:
     """get_logger returns a stdlib Logger."""
     log = get_logger("bar")
     assert isinstance(log, logging.Logger)
 
-
 def test_get_logger_same_instance() -> None:
     """Repeated calls with the same name return the same Logger object."""
     assert get_logger("baz") is get_logger("baz")
-
 
 def test_get_logger_dotted_name() -> None:
     """Dotted sub-module names are preserved verbatim after the prefix."""
     log = get_logger("languages.html")
     assert log.name == "token_goat.languages.html"
-
 
 def test_no_bare_git_subprocess_calls_outside_util() -> None:
     """All git invocations must go through util.run_git for consistent kwargs + lock-avoidance."""
@@ -54,7 +50,6 @@ def test_no_bare_git_subprocess_calls_outside_util() -> None:
     assert not offenders, (
         f"Bare git subprocess.run found outside util.py: {offenders}. Use util.run_git instead."
     )
-
 
 class TestEllipsize:
     """ellipsize(s, max_chars) truncates with trailing … when over budget."""
@@ -92,7 +87,6 @@ class TestEllipsize:
         result = ellipsize("abc", 1)
         assert result == "…"
 
-
 class TestStripAnsiUtil:
     """strip_ansi is importable from util and removes ANSI escape sequences."""
 
@@ -128,6 +122,74 @@ class TestStripAnsiUtil:
         from token_goat.render.ansi import strip_ansi as render_strip
         assert strip_ansi is render_strip
 
+    def test_fast_path_no_escape_byte(self) -> None:
+        """Plain text with no ESC byte returns immediately without regex."""
+        # This test validates the performance optimization — plain text
+        # should return unchanged without running the regex engine.
+        text = "hello world 123 !@# $%^&*()"
+        result = strip_ansi(text)
+        assert result is text  # Same object (early return)
+
+    def test_hyperlink_osc_stripped(self) -> None:
+        """OSC hyperlink sequences are stripped, leaving only visible text."""
+        # Format: OSC 8 hyperlink is \x1b]8;;URL\x07text\x1b]8;;\x07
+        text = "\x1b]8;;https://example.com\x07click me\x1b]8;;\x07"
+        assert strip_ansi(text) == "click me"
+
+    def test_multiple_hyperlinks(self) -> None:
+        """Multiple hyperlinks in one string are all stripped."""
+        text = "\x1b]8;;http://a.com\x07link1\x1b]8;;\x07 and \x1b]8;;http://b.com\x07link2\x1b]8;;\x07"
+        assert strip_ansi(text) == "link1 and link2"
+
+    def test_hyperlink_with_bel_terminator(self) -> None:
+        """OSC sequences using BEL (\\x07) as terminator are handled."""
+        text = "prefix \x1b]8;;http://example.com\x07link\x1b]8;;\x07 suffix"
+        assert strip_ansi(text) == "prefix link suffix"
+
+    def test_hyperlink_with_st_terminator(self) -> None:
+        """OSC sequences using ST (ESC \\) as terminator are handled."""
+        text = "prefix \x1b]8;;http://example.com\x1b\\link\x1b]8;;\x1b\\ suffix"
+        assert strip_ansi(text) == "prefix link suffix"
+
+    def test_pua_characters_stripped_with_ansi(self) -> None:
+        """PUA characters are stripped when ANSI escapes are present."""
+        # PUA stripping is implemented alongside ANSI stripping, so
+        # PUA chars are only removed when there are also ANSI escapes.
+        # This is a design tradeoff: checking for PUA alone would negate the fast-path speedup.
+        text = "[32m" + chr(0xE000) + "green[0m"
+        result = strip_ansi(text)
+        assert result == "green"
+        assert chr(0xE000) not in result
+
+    def test_supplementary_pua_stripped_with_ansi(self) -> None:
+        """Supplementary PUA characters are stripped when ANSI escapes are present."""
+        # U+F0000 is at the boundary of supplementary PUA range (U+F0000-U+FFFDD)
+        text = "[31m" + chr(0xF0000) + "red[0m"
+        result = strip_ansi(text)
+        assert result == "red"
+        assert chr(0xF0000) not in result
+
+    def test_pua_in_ansi_rich_output(self) -> None:
+        """PUA characters mixed with ANSI codes are both stripped."""
+        text = "[32mgreen[0m" + chr(0xE500) + "[1micon[0m"
+        result = strip_ansi(text)
+        assert result == "greenicon"
+        assert "" not in result
+        assert chr(0xE500) not in result
+
+    def test_preserves_non_pua_unicode(self) -> None:
+        """Non-PUA Unicode characters like emoji are preserved."""
+        text = "test ✓ success 🎉"
+        assert strip_ansi(text) == text
+
+    def test_osc_with_semicolon_parameters(self) -> None:
+        """OSC sequences with parameters are stripped correctly."""
+        # OSC 9 (iTerm2 growl notifications) with parameters
+        text = "\x1b]9;4;1;Title\x07body text"
+        result = strip_ansi(text)
+        # The OSC sequence should be gone, only the body text remains
+        assert "Title" not in result
+        assert "body text" in result
 
 class TestSanitizeControlChars:
     """sanitize_control_chars removes non-printable control characters."""
@@ -208,7 +270,6 @@ class TestSanitizeControlChars:
         text = "hello 中文 world"
         assert sanitize_control_chars(text) == text
 
-
 class TestStripBom:
     """strip_bom removes UTF-8 BOM (U+FEFF) from string start."""
 
@@ -253,7 +314,6 @@ class TestStripBom:
         """Real-world example: JSON string starting with BOM."""
         json_text = '﻿{"key": "value"}'
         assert strip_bom(json_text) == '{"key": "value"}'
-
 
 class TestConfigureStdoutEncoding:
     """configure_stdout_encoding reconfigures stdout/stderr for UTF-8."""

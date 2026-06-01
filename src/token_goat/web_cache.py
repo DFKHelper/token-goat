@@ -77,7 +77,7 @@ from .cache_common import (
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
-from .util import get_logger
+from .util import get_logger, strip_ansi
 
 _LOG = get_logger("web_cache")
 
@@ -218,19 +218,22 @@ def store_output(
     silently.  Bodies larger than :data:`_MAX_STORED_BYTES` are
     tail-preserved (head truncated) because page footers, JSON response
     bodies, and error stack traces all tend to sit at the bottom of the
-    fetched content.  After the write the function opportunistically evicts
-    the oldest files until the total store size is back under
-    ``max_total_bytes`` AND the file count is at or under ``max_file_count``;
-    the eviction is best-effort and a failed pass simply leaves the
-    directory slightly over budget — the next call will try again.
+    fetched content.  ANSI escape sequences are stripped before storage
+    to save space and improve readability.  After the write the function
+    opportunistically evicts the oldest files until the total store size
+    is back under ``max_total_bytes`` AND the file count is at or under
+    ``max_file_count``; the eviction is best-effort and a failed pass simply
+    leaves the directory slightly over budget — the next call will try again.
     """
     meta: WebOutputMeta | None = None
     with safe_cache_op("store_output", log=_LOG):
         out_id = output_id_for(session_id, url)
 
+        # Strip ANSI sequences before storing to save space and improve readability.
+        cleaned_body = strip_ansi(body)
         body_bytes = len(body.encode("utf-8", errors="replace"))
         stored, truncated = truncate_tail_preserve(
-            body, _MAX_STORED_BYTES, marker_template=_TRUNC_MARKER,
+            cleaned_body, _MAX_STORED_BYTES, marker_template=_TRUNC_MARKER,
         )
 
         if store_blob(out_id, stored, _web_outputs_dir, "web_cache") is None:
