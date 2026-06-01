@@ -4,6 +4,7 @@ from __future__ import annotations
 __all__ = [
     "BashCompressConfig",
     "CompactAssistConfig",
+    "CompressionConfig",
     "Config",
     "CuratorConfig",
     "HintBudgetConfig",
@@ -63,6 +64,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_BASH_CACHE_MAX_BYTES",
     "TOKEN_GOAT_WORKER_WATCHDOG",
     "TOKEN_GOAT_HOOK_WATCHDOG_MS",
+    "TOKEN_GOAT_COMPRESS_PROFILE",
 )
 
 
@@ -102,6 +104,7 @@ _ENV_WEB_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_BYTES"  # integ
 _ENV_BASH_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_FILES"  # integer override (file count)
 _ENV_BASH_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES"  # integer override (bytes)
 _ENV_WORKER_WATCHDOG: Final[str] = "TOKEN_GOAT_WORKER_WATCHDOG"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_COMPRESS_PROFILE: Final[str] = "TOKEN_GOAT_COMPRESS_PROFILE"  # "auto"|"aggressive"|"balanced"|"minimal"
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -145,6 +148,7 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
     "webfetch",
     "worker",
     "indexing",
+    "compression",
 ])
 
 
@@ -315,6 +319,12 @@ class _IndexingToml(TypedDict, total=False):
     large_file_skip_kb: int
 
 
+class _CompressionToml(TypedDict, total=False):
+    """Expected shape of the [compression] TOML section."""
+
+    profile: str
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -333,6 +343,7 @@ class _ConfigToml(TypedDict, total=False):
     webfetch: _WebFetchToml
     worker: _WorkerToml
     indexing: _IndexingToml
+    compression: _CompressionToml
 
 
 @dataclass
@@ -848,6 +859,53 @@ class IndexingConfig:
     large_file_skip_kb: int = 2048
 
 
+#: Valid profile values for :attr:`CompressionConfig.profile`.
+_VALID_COMPRESSION_PROFILES: Final[frozenset[str]] = frozenset(
+    ["auto", "aggressive", "balanced", "minimal"]
+)
+
+#: Maximum output lines per profile when the profile is explicitly set.
+#: "auto" defers to harness detection at hook time.
+COMPRESSION_PROFILE_MAX_LINES: Final[dict[str, int]] = {
+    "aggressive": 50,
+    "balanced": 200,
+    "minimal": 500,
+}
+
+
+@dataclass
+class CompressionConfig:
+    """Harness-specific compression profiles for Bash output.
+
+    Different AI tools have different context window sizes.  Gemini (1 M token
+    window) can afford less aggressive compression; smaller-context tools benefit
+    from tighter caps.  This section controls the default profile and the
+    per-profile line caps applied before output reaches the model.
+
+    Profiles:
+
+    * ``"auto"`` (default) — detect the harness at hook time and choose
+      automatically: Gemini → ``"minimal"``; Claude Code and Codex → ``"balanced"``.
+    * ``"aggressive"`` — cap output at 50 lines, apply all filters including
+      dot-progress stripping.  Use for tools with very small context windows or
+      when token budget is critical.
+    * ``"balanced"`` — current default behaviour: apply all filters, cap at 200
+      lines.  Suitable for Claude Code's 200 k token window.
+    * ``"minimal"`` — skip dot-progress (``\\r``-overwrite) filtering; apply ANSI
+      strip and control-char sanitization only; cap at 500 lines.  Use for large-
+      context tools where progress output is tolerable noise.
+
+    The profile can also be overridden at runtime by setting the environment
+    variable ``TOKEN_GOAT_COMPRESS_PROFILE`` to one of the four values above.
+
+    Attributes:
+        profile: One of ``"auto"``, ``"aggressive"``, ``"balanced"``, ``"minimal"``.
+            Default ``"auto"``.
+    """
+
+    profile: str = "auto"
+
+
 @dataclass
 class Config:
     """Top-level token-goat configuration.
@@ -871,6 +929,7 @@ class Config:
     webfetch: WebFetchConfig = field(default_factory=WebFetchConfig)
     worker: WorkerConfig = field(default_factory=WorkerConfig)
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
+    compression: CompressionConfig = field(default_factory=CompressionConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -1318,6 +1377,33 @@ def load() -> Config:
         large_file_skip_kb=_idx_skip_kb,
     )
 
+    cmp_raw: _CompressionToml = cast("_CompressionToml", raw.get("compression", {}))
+    _cmp_profile_raw = str(cmp_raw.get("profile", "auto")).strip().lower()
+    if _cmp_profile_raw not in _VALID_COMPRESSION_PROFILES:
+        _LOG.warning(
+            "config: compression.profile=%r is not valid (expected %s); using 'auto'",
+            _cmp_profile_raw,
+            ", ".join(sorted(_VALID_COMPRESSION_PROFILES)),
+        )
+        _cmp_profile_raw = "auto"
+    # Env override: TOKEN_GOAT_COMPRESS_PROFILE takes precedence over config file.
+    _cmp_profile_env = os.environ.get(_ENV_COMPRESS_PROFILE, "").strip().lower()
+    if _cmp_profile_env:
+        if _cmp_profile_env in _VALID_COMPRESSION_PROFILES:
+            _LOG.info(
+                "compression.profile overridden by environment: %s=%s",
+                _ENV_COMPRESS_PROFILE,
+                _cmp_profile_env,
+            )
+            _cmp_profile_raw = _cmp_profile_env
+        else:
+            _LOG.warning(
+                "compression.profile env override %r not valid (expected %s); ignoring",
+                _cmp_profile_env,
+                ", ".join(sorted(_VALID_COMPRESSION_PROFILES)),
+            )
+    cmp_cfg = CompressionConfig(profile=_cmp_profile_raw)
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d cache_files=%d cache_bytes=%d; "
@@ -1370,6 +1456,7 @@ def load() -> Config:
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
         image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, stats=stats,
         hints=hints_cfg, hooks=hk, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
+        compression=cmp_cfg,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
     return result
@@ -1470,6 +1557,9 @@ def save(config: Config) -> None:
         "indexing": {
             "large_file_symbol_only_kb": config.indexing.large_file_symbol_only_kb,
             "large_file_skip_kb": config.indexing.large_file_skip_kb,
+        },
+        "compression": {
+            "profile": config.compression.profile,
         },
     }
     try:

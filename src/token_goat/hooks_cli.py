@@ -9,6 +9,7 @@ __all__ = [
     "_SkipResult",
     "_check_compact_skip_sentinel",
     "_check_compact_skip_sentinel_detail",
+    "_current_harness",
     "_current_session_counts",
     "_is_noop_session",
     "_read_sentinel_counts",
@@ -64,6 +65,14 @@ _log_date_cached: str = ""
 # None when not inside a hook, or when the hook has not been initialized yet.
 _hook_context: contextvars.ContextVar[tuple[float, int, str] | None] = contextvars.ContextVar(
     "tg_hook_context", default=None
+)
+
+# Context-local harness identifier set by safe_run before dispatching.
+# Allows inner handlers to read the active harness without threading it through
+# every function signature.  Defaults to "claude" so any call that bypasses
+# safe_run (e.g. direct dispatch() in tests) gets sensible behaviour.
+_current_harness: contextvars.ContextVar[Harness] = contextvars.ContextVar(
+    "tg_current_harness", default="claude"
 )
 
 
@@ -142,6 +151,8 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
         else:
             payload = dict(payload)
             payload["tool_name"] = mapped
+        payload = dict(payload)
+        payload["_tg_harness"] = harness
         return cast("HookPayload", payload)
 
     if harness == "gemini":
@@ -165,10 +176,15 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
         if "functionCallId" in payload and "toolUseId" not in payload:
             payload = dict(payload)
             payload["toolUseId"] = payload.pop("functionCallId")
+        payload = dict(payload)
+        payload["_tg_harness"] = harness
         return cast("HookPayload", payload)
 
     # Claude harness: field names already match the internal shape; no transformation needed.
-    return payload
+    # Still stamp the harness so downstream handlers can read it without needing the ContextVar.
+    payload = dict(payload)
+    payload["_tg_harness"] = harness
+    return cast("HookPayload", payload)
 
 
 #: Mapping of camelCase ``hookSpecificOutput`` keys to their Codex snake_case equivalents.
@@ -445,6 +461,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
     hook-error display has the cause if you go looking for it.
     """
     result: dict[str, object] = dict(CONTINUE())
+    _current_harness.set(harness)
     try:
         raw = read_payload(input_file)
         payload = normalize_payload(raw, harness)

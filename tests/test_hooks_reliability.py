@@ -66,7 +66,11 @@ class TestNormalizePayload:
         assert result == {}
 
     def test_valid_payload_passes_through_unchanged(self):
-        """A well-formed payload must be returned as-is."""
+        """A well-formed payload must have all original keys preserved.
+
+        normalize_payload now stamps ``_tg_harness`` on the result; the
+        original keys must all survive and the harness must be set.
+        """
         payload = {
             "tool_name": "Read",
             "session_id": "abc123",
@@ -74,19 +78,26 @@ class TestNormalizePayload:
             "tool_input": {"file_path": "/projects/foo/main.py"},
         }
         result = normalize_payload(payload)
-        assert result == payload
+        assert result.get("tool_name") == "Read"
+        assert result.get("session_id") == "abc123"
+        assert result.get("cwd") == "/projects/foo"
+        assert result.get("tool_input") == {"file_path": "/projects/foo/main.py"}
+        assert result.get("_tg_harness") == "claude"
 
     def test_valid_payload_with_minimal_keys(self):
         """tool_name alone (plus any extra keys) is sufficient for a valid payload."""
         payload = {"tool_name": "Bash"}
         result = normalize_payload(payload)
-        assert result == payload
+        assert result.get("tool_name") == "Bash"
+        assert result.get("_tg_harness") == "claude"
 
     def test_codex_harness_passes_through_unchanged(self):
-        """Codex harness currently shares inbound field names — no transformation applied."""
+        """Codex harness preserves all original keys and stamps _tg_harness=codex."""
         payload = {"tool_name": "Read", "session_id": "s2", "cwd": "/projects"}
         result = normalize_payload(payload, harness="codex")
-        assert result == payload
+        assert result.get("tool_name") == "Read"
+        assert result.get("session_id") == "s2"
+        assert result.get("_tg_harness") == "codex"
 
     def test_normalized_empty_payload_causes_dispatch_to_continue(self):
         """dispatch() must return continue:True even when normalize_payload returns {}."""

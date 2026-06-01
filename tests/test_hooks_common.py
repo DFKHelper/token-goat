@@ -680,12 +680,14 @@ class TestNormalizePayloadValidation:
     """Test that normalize_payload validates the payload schema."""
 
     def test_valid_payload_returns_unchanged(self) -> None:
-        """Valid payload with tool_name passes through."""
+        """Valid payload with tool_name passes through; _tg_harness is stamped."""
         from token_goat.hooks_cli import normalize_payload
 
         payload = {"session_id": "s1", "tool_name": "Read", "tool_input": "file.txt"}
         result = normalize_payload(payload)
-        assert result == payload
+        assert result.get("session_id") == "s1"
+        assert result.get("tool_name") == "Read"
+        assert result.get("_tg_harness") == "claude"
 
     def test_empty_dict_returns_empty(self) -> None:
         """Empty dict payload is rejected."""
@@ -735,12 +737,13 @@ class TestNormalizePayloadValidation:
         assert result == {}
 
     def test_valid_payload_with_minimal_fields(self) -> None:
-        """Valid payload needs only tool_name."""
+        """Valid payload needs only tool_name; _tg_harness is stamped."""
         from token_goat.hooks_cli import normalize_payload
 
         payload = {"tool_name": "Bash"}
         result = normalize_payload(payload)
-        assert result == payload
+        assert result.get("tool_name") == "Bash"
+        assert result.get("_tg_harness") == "claude"
 
 
 # ---------------------------------------------------------------------------

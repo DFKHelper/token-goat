@@ -215,6 +215,7 @@ def run(
     env: dict[str, str] | None = None,
     write_stdout: Callable[[str], object] = sys.stdout.write,
     write_stderr: Callable[[str], object] = sys.stderr.write,
+    compression_profile: str | None = None,
 ) -> int:
     """Run *command* through the system shell, compress its output, return exit code.
 
@@ -242,6 +243,10 @@ def run(
                      ``os.environ`` so PATH, VIRTUAL_ENV, … are preserved.
         write_stdout: Sink for the compressed output (mockable for tests).
         write_stderr: Sink for wrapper diagnostics (mockable for tests).
+        compression_profile: One of ``"aggressive"``, ``"balanced"``, or
+            ``"minimal"``.  When ``None`` (default), the value is read from the
+            token-goat config file (``config.compression.profile``); if that is
+            ``"auto"`` or absent it falls back to ``"balanced"``.
 
     Returns:
         The exit code of the wrapped subprocess.  124 on wrapper-induced
@@ -254,6 +259,19 @@ def run(
         # the subprocess and use os.execvp for zero overhead, but that loses
         # the timeout protection; the wrapper subprocess cost is ~5 ms.
         return _passthrough(command, timeout=timeout, cwd=cwd, env=env)
+
+    # Resolve effective compression profile: explicit argument wins; otherwise
+    # read from config (ignoring "auto" since harness detection is unavailable
+    # in the wrapper subprocess — the hook already resolved it before spawning).
+    effective_profile = compression_profile
+    if effective_profile is None:
+        try:
+            from . import config as _cfg_mod  # noqa: PLC0415
+            _cfg_profile = _cfg_mod.load().compression.profile
+            effective_profile = _cfg_profile if _cfg_profile != "auto" else "balanced"
+        except Exception:  # noqa: BLE001
+            effective_profile = "balanced"
+
     return _wrap_and_compress(
         command,
         filter_,
@@ -262,6 +280,7 @@ def run(
         env=env,
         write_stdout=write_stdout,
         write_stderr=write_stderr,
+        compression_profile=effective_profile,
     )
 
 
@@ -320,6 +339,7 @@ def _wrap_and_compress(
     env: dict[str, str] | None,
     write_stdout: Callable[[str], object],
     write_stderr: Callable[[str], object],
+    compression_profile: str = "balanced",
 ) -> int:
     """Run *command* with output capture, apply *filter_*, print result.
 
@@ -378,7 +398,10 @@ def _wrap_and_compress(
     except ValueError:
         argv = [command]
 
-    result = bash_compress.compress_output(filter_, stdout_text, stderr_text, exit_code, argv)
+    result = bash_compress.compress_output(
+        filter_, stdout_text, stderr_text, exit_code, argv,
+        compression_profile=compression_profile,
+    )
     body = result.with_marker()
     write_stdout(body + ("\n" if not body.endswith("\n") else ""))
 

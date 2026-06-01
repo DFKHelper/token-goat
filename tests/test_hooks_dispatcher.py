@@ -503,13 +503,18 @@ class TestNormalizePayload:
     def test_claude_harness_returns_payload_unchanged(self):
         payload = {"session_id": "s", "tool_name": "Read", "turn_id": "t1"}
         result = hooks_cli.normalize_payload(payload, harness="claude")
-        assert result == payload
+        # normalize_payload stamps _tg_harness; original keys must survive
+        assert result.get("session_id") == "s"
+        assert result.get("tool_name") == "Read"
+        assert result.get("_tg_harness") == "claude"
 
     def test_codex_harness_returns_payload_unchanged(self):
-        """Codex payload is structurally identical; normalize_payload is a pass-through."""
+        """Codex payload is structurally identical; normalize_payload stamps _tg_harness."""
         payload = {"session_id": "s", "tool_name": "Read", "turn_id": "t1"}
         result = hooks_cli.normalize_payload(payload, harness="codex")
-        assert result == payload
+        assert result.get("session_id") == "s"
+        assert result.get("tool_name") == "Read"
+        assert result.get("_tg_harness") == "codex"
 
 
 # ---------------------------------------------------------------------------

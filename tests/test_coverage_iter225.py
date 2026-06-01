@@ -154,7 +154,10 @@ def test_normalize_payload_claude_passthrough() -> None:
         "tool_input": {"file_path": "/tmp/foo.py"},
     }
     result = normalize_payload(payload, harness="claude")
-    assert result is payload or result == payload
+    # normalize_payload now stamps _tg_harness; verify original keys survive
+    assert result.get("session_id") == "abc-123"
+    assert result.get("tool_name") == "Read"
+    assert result.get("_tg_harness") == "claude"
 
 
 def test_normalize_payload_codex_remaps_tool_name() -> None:
@@ -181,10 +184,13 @@ def test_normalize_payload_default_harness() -> None:
     result = normalize_payload(payload)
     assert result == {}  # Invalid payload returns empty dict.
 
-    # Valid payload with tool_name passes through.
+    # Valid payload with tool_name: normalize_payload stamps _tg_harness and
+    # preserves all original keys.
     valid_payload: dict[str, Any] = {"key": "value", "tool_name": "Read"}
     result = normalize_payload(valid_payload)
-    assert result == valid_payload
+    assert result.get("key") == "value"
+    assert result.get("tool_name") == "Read"
+    assert result.get("_tg_harness") == "claude"
 
 
 # ---------------------------------------------------------------------------

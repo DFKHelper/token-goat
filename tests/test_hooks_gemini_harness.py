@@ -228,10 +228,12 @@ def test_codex_harness_no_hso_passthrough():
 
 
 def test_claude_normalize_no_transformation():
-    """Claude harness normalize_payload must return the payload unchanged."""
+    """Claude harness normalize_payload preserves all original keys and stamps _tg_harness."""
     payload = {"tool_name": "Read", "tool_input": {"file_path": "/src/x.py"}}
     result = normalize_payload(payload, harness="claude")
-    assert result is payload
+    assert result.get("tool_name") == "Read"
+    assert result.get("tool_input") == {"file_path": "/src/x.py"}
+    assert result.get("_tg_harness") == "claude"
 
 
 def test_codex_normalize_bash_maps_to_pascal():

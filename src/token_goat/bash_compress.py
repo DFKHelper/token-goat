@@ -757,18 +757,26 @@ def split_blocks(
     return blocks
 
 
-def normalise(text: str) -> str:
+def normalise(text: str, *, skip_progress: bool = False) -> str:
     """Run the universal pre-filter pipeline: progress + ANSI + control chars + line endings.
 
     Every filter should call this on its raw input before per-tool logic, it
     removes the noise that obscures structural patterns.  Idempotent.
+
+    Args:
+        text: Raw captured text to normalise.
+        skip_progress: When ``True``, skip the :func:`strip_progress` step that
+            collapses ``\\r``-overwrite progress lines.  Use for the ``"minimal"``
+            compression profile where progress output is acceptable noise on large-
+            context tools (e.g. Gemini with a 1 M token window).
     """
     if not text:
         return ""
     # CRLF → LF before progress collapsing so the rsplit('\r', ...) doesn't
     # spuriously eat the line-feed half of a Windows line ending.
     text = text.replace("\r\n", "\n")
-    text = strip_progress(text)
+    if not skip_progress:
+        text = strip_progress(text)
     text = strip_ansi(text)
     text = sanitize_control_chars(text)
     return text
@@ -1301,6 +1309,7 @@ class Filter(BaseFilter):
         *,
         max_lines: int = DEFAULT_MAX_LINES,
         max_bytes: int = DEFAULT_MAX_BYTES,
+        skip_progress: bool = False,
     ) -> CompressedOutput:
         """Top-level entry: normalise → compress → cap → wrap in CompressedOutput.
 
@@ -1318,6 +1327,8 @@ class Filter(BaseFilter):
            with empty strings, which is harmless but wasteful and can trigger
            off-by-one issues in filters that call ``"".split("\\n")``.
         5. Run :func:`normalise` over both streams (strip ANSI / progress).
+           When *skip_progress* is ``True``, the ``\\r``-overwrite collapsing
+           step is skipped (used by the ``"minimal"`` compression profile).
         6. Bail out early when post-normalisation input exceeds
            :data:`MAX_INSPECT_BYTES`, for runaway logs we head/tail truncate
            rather than risk a slow per-line filter pass.
@@ -1376,8 +1387,8 @@ class Filter(BaseFilter):
             )
 
         try:
-            norm_out = normalise(stdout)
-            norm_err = normalise(stderr)
+            norm_out = normalise(stdout, skip_progress=skip_progress)
+            norm_err = normalise(stderr, skip_progress=skip_progress)
             norm_bytes = (
                 len(norm_out.encode("utf-8", errors="replace"))
                 + len(norm_err.encode("utf-8", errors="replace"))
@@ -1414,7 +1425,9 @@ class Filter(BaseFilter):
             _LOG.exception("filter %s raised; falling back to truncation", self.name)
             notes.append(f"{self.name} filter raised {type(exc).__name__}; truncated raw")
             body = _fallback_truncate(
-                normalise(stdout), normalise(stderr), max_lines,
+                normalise(stdout, skip_progress=skip_progress),
+                normalise(stderr, skip_progress=skip_progress),
+                max_lines,
             )
 
         # Line cap — use smart truncation to preserve error-signal lines from
@@ -20728,15 +20741,42 @@ def compress_output(
     *,
     max_lines: int = DEFAULT_MAX_LINES,
     max_bytes: int = DEFAULT_MAX_BYTES,
+    compression_profile: str = "balanced",
 ) -> CompressedOutput:
     """Run *filter_* over the captured output and return a :class:`CompressedOutput`.
 
     This is the canonical entry point for the wrapper subprocess.  Always
     succeeds (the filter's own :meth:`apply` catches exceptions and falls back
     to a head/tail truncation).
+
+    Args:
+        filter_: The :class:`Filter` instance to apply.
+        stdout: Captured standard output from the command.
+        stderr: Captured standard error from the command.
+        exit_code: Exit code of the wrapped command.
+        argv: Parsed argv of the original command.
+        max_lines: Per-invocation line cap (overridden by *compression_profile*
+            when the profile provides a tighter or looser cap).
+        max_bytes: Per-invocation byte cap as a hard backstop.
+        compression_profile: One of ``"aggressive"`` (50 lines, all filters),
+            ``"balanced"`` (200 lines, all filters — the default),
+            ``"minimal"`` (500 lines, skip dot-progress filtering).  Any other
+            value is treated as ``"balanced"``.  The effective *max_lines* is
+            ``min(max_lines, profile_cap)`` so the caller-supplied cap is still
+            respected when it is tighter than the profile cap.
     """
+    # Map profile → effective max_lines and skip_progress flag.
+    _PROFILE_CAPS: dict[str, int] = {"aggressive": 50, "balanced": 200, "minimal": 500}
+    effective_max_lines = _PROFILE_CAPS.get(compression_profile, 200)
+    # Respect the explicit caller cap when it is tighter.
+    if max_lines < effective_max_lines:
+        effective_max_lines = max_lines
+    skip_progress = compression_profile == "minimal"
     return filter_.apply(
-        stdout, stderr, exit_code, argv, max_lines=max_lines, max_bytes=max_bytes,
+        stdout, stderr, exit_code, argv,
+        max_lines=effective_max_lines,
+        max_bytes=max_bytes,
+        skip_progress=skip_progress,
     )
 
 

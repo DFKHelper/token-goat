@@ -80,13 +80,19 @@ def test_denormalize_no_hso():
 def test_normalize_payload_codex():
     payload = {"session_id": "abc", "turn_id": "t1", "tool_name": "Bash"}
     result = hooks_cli.normalize_payload(payload, harness="codex")
-    assert result == payload
+    # normalize_payload stamps _tg_harness; check original keys are preserved
+    assert result.get("session_id") == "abc"
+    assert result.get("tool_name") == "Bash"
+    assert result.get("_tg_harness") == "codex"
 
 
 def test_normalize_payload_claude():
     payload = {"session_id": "abc", "tool_name": "Read"}
     result = hooks_cli.normalize_payload(payload, harness="claude")
-    assert result == payload
+    # normalize_payload stamps _tg_harness; check original keys are preserved
+    assert result.get("session_id") == "abc"
+    assert result.get("tool_name") == "Read"
+    assert result.get("_tg_harness") == "claude"
 
 
 # ---------------------------------------------------------------------------

@@ -103,6 +103,9 @@ class HookPayload(TypedDict, total=False):
     # downstream handlers always see toolUseId when present.
     toolUseId: str
     functionCallId: str
+    # Internal metadata stamped by normalize_payload — not present in the raw
+    # harness payload, only in the normalized form seen by hook handlers.
+    _tg_harness: str
 
 
 # ---------------------------------------------------------------------------

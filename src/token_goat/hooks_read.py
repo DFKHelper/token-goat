@@ -118,6 +118,28 @@ def _bash_compress_enabled() -> bool:
     return val not in ("0", "false", "no", "off")
 
 
+def _resolve_compression_profile(harness: str, config_profile: str) -> str:
+    """Resolve the effective compression profile for the given harness.
+
+    When *config_profile* is ``"auto"``, the harness drives the choice:
+    Gemini (large context window) → ``"minimal"``; Claude Code and Codex
+    → ``"balanced"``.  An explicit config profile always wins over auto-detection.
+
+    Args:
+        harness: Active harness identifier (``"claude"``, ``"codex"``, ``"gemini"``).
+        config_profile: Profile from config (``"auto"``, ``"aggressive"``,
+            ``"balanced"``, or ``"minimal"``).
+
+    Returns:
+        One of ``"aggressive"``, ``"balanced"``, or ``"minimal"``.
+    """
+    if config_profile != "auto":
+        return config_profile
+    # Auto mode: Gemini has a 1 M token context window and can tolerate less
+    # aggressive compression.  Claude Code and Codex stay on "balanced".
+    return "minimal" if harness == "gemini" else "balanced"
+
+
 def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     """Rewrite compressible Bash commands to flow through ``token-goat compress``.
 
@@ -126,7 +148,7 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     ``git log``, ``cargo build``, ``kubectl get``, ...), we intercept the
     command and rewrite it to::
 
-        token-goat compress --filter <name> --cmd '<original>'
+        token-goat compress --filter <name> --profile <profile> --cmd '<original>'
 
     The wrapper subprocess runs the original through the system shell,
     captures stdout + stderr, applies the per-tool filter, and prints a
@@ -151,7 +173,8 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     from . import config as config_mod  # noqa: PLC0415
     from . import paths as paths_mod  # noqa: PLC0415
 
-    cfg = config_mod.load().bash_compress
+    cfg_obj = config_mod.load()
+    cfg = cfg_obj.bash_compress
     if not cfg.enabled:
         return None
 
@@ -175,6 +198,11 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
         _LOG.debug("bash_compress: filter %s disabled by config; skipping", filter_.name)
         return None
 
+    # Resolve the compression profile based on active harness + config setting.
+    # Read harness from the payload (stamped by normalize_payload); fall back to "claude".
+    harness = str(payload.get("_tg_harness", "claude"))
+    effective_profile = _resolve_compression_profile(harness, cfg_obj.compression.profile)
+
     # Build the wrapper invocation.  paths.python_runner_command gives us the
     # exact ``pythonw -m token_goat.cli`` form already used by the hook
     # entries, so the rewritten command works in any environment where the
@@ -183,13 +211,15 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
         "compress",
         "--filter", filter_.name,
         "--timeout", str(cfg.timeout_seconds),
+        "--profile", effective_profile,
         "--cmd", cmd,
     )
     rewritten_input: dict[str, object] = dict(tool_input)
     rewritten_input["command"] = wrapper
     _LOG.info(
-        "bash_compress: wrapping command with %s filter (orig=%s)",
+        "bash_compress: wrapping command with %s filter profile=%s (orig=%s)",
         filter_.name,
+        effective_profile,
         sanitize_log_str(cmd, max_len=200),
     )
     return pre_tool_use_with_update(

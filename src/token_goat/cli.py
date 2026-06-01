@@ -4224,6 +4224,12 @@ def cmd_compress(
         "--no-compress",
         help="Skip compression and stream output raw (for debugging the wrapper).",
     ),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Compression profile: aggressive (50 lines), balanced (200 lines), minimal (500 lines, skip progress). "
+             "Overrides config and auto-detection.",
+    ),
 ) -> None:
     """Run a shell command and emit a compressed view of its output.
 
@@ -4255,6 +4261,7 @@ def cmd_compress(
         cmd,
         filter_name=filter_name,
         timeout=effective_timeout,
+        compression_profile=profile,
     )
     raise typer.Exit(exit_code)
 
