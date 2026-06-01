@@ -139,6 +139,8 @@ __all__ = [
     "GitDiffFilter",
     "GitStatusVerboseFilter",
     "GitBlameFilter",
+    "GitCommitFilter",
+    "GitPushFilter",
     # Docker Compose / Helm / kubectl-logs
     "DockerComposeFilter",
     "HelmFilter",
@@ -5242,6 +5244,252 @@ class GitBlameFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         return _compress_git_blame(stdout, stderr)
+
+
+# ---- GitCommitFilter ---------------------------------------------------------
+#
+# ``git commit`` with lefthook emits ~20 lines of hook-runner output followed
+# by the commit summary line.  Without lefthook the output is already 2–3 lines
+# and is passed through unchanged.
+#
+# Compressed target (all hooks pass):
+#   pre-commit ✔ lint ✔ wal-guard | [main d112339] feat: message | 2 files changed
+#
+# On failure the error block is preserved but dots/progress are stripped.
+
+_LEFTHOOK_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"lefthook", re.IGNORECASE
+)
+# "✔️ lint (0.11 seconds)" or "✔️ lint" from lefthook summary
+_LEFTHOOK_PASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"[✔✓](?:️)?\s+(\S+)"
+)
+# "✖ lint" from lefthook summary when a hook fails
+_LEFTHOOK_FAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"[✖✗✘]\s+(\S+)"
+)
+# "[main d112339] feat: message"
+_GIT_COMMIT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[(\S+)\s+([0-9a-f]+)\]\s+(.+)$"
+)
+# "2 files changed, 238 insertions(+), 1 deletion(-)"
+_GIT_COMMIT_STAT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(\d+\s+files?\s+changed.*)"
+)
+
+
+def _compress_git_commit(stdout: str, stderr: str) -> str:
+    """Compress ``git commit`` output.
+
+    When lefthook is present, collapse the hook-runner banner and per-hook
+    progress lines into a one-line summary.  The commit ref line and files-
+    changed stat are always preserved.  On hook failure the error block is
+    kept but stripped of pure-dot progress lines.
+    """
+    merged = (stdout.rstrip() + "\n" + stderr.rstrip()).strip() if stderr.strip() else stdout
+
+    lines = merged.split("\n")
+    has_lefthook = any(_LEFTHOOK_BANNER_RE.search(ln) for ln in lines)
+
+    # Extract always-useful commit summary lines (present regardless of lefthook).
+    commit_line: str = ""
+    stat_line: str = ""
+    for ln in lines:
+        if not commit_line:
+            m = _GIT_COMMIT_SUMMARY_RE.match(ln.strip())
+            if m:
+                commit_line = ln.strip()
+        if not stat_line:
+            m2 = _GIT_COMMIT_STAT_RE.match(ln)
+            if m2:
+                stat_line = m2.group(1).strip()
+
+    if not has_lefthook:
+        # No lefthook — output is already short; passthrough.
+        return merged
+
+    # Detect hook failures: any "✖/✗" result line in the summary section.
+    fail_hooks: list[str] = []
+    pass_hooks: list[str] = []
+    for ln in lines:
+        fm = _LEFTHOOK_FAIL_RE.search(ln)
+        if fm:
+            fail_hooks.append(fm.group(1))
+        pm = _LEFTHOOK_PASS_RE.search(ln)
+        if pm and not fm:
+            name = pm.group(1)
+            # Avoid duplicate (e.g. same hook listed twice in verbose output)
+            if name not in pass_hooks:
+                pass_hooks.append(name)
+
+    if fail_hooks:
+        # Keep the output but strip pure-dot progress lines (e.g. pytest dots).
+        _DOT_LINE_RE = re.compile(r"^[.\s]+(?:\[\s*\d+%\])?$")
+        kept = [ln for ln in lines if not _DOT_LINE_RE.match(ln)]
+        return "\n".join(kept)
+
+    # All hooks passed — build one-line summary.
+    hook_parts = " ".join(f"✔ {h}" for h in pass_hooks)
+    parts: list[str] = []
+    if hook_parts:
+        parts.append(f"pre-commit {hook_parts}")
+    if commit_line:
+        parts.append(commit_line)
+    if stat_line:
+        parts.append(stat_line)
+    return " | ".join(parts) if parts else merged
+
+
+class GitCommitFilter(Filter):
+    """Compress ``git commit`` output, especially when lefthook is configured.
+
+    Lefthook emits ~20 lines of hook-runner banner, per-hook progress dots,
+    and a final summary table.  This filter collapses all of that into a
+    single line:
+
+    .. code-block:: text
+
+        pre-commit ✔ lint ✔ wal-guard | [main d112339] feat: msg | 2 files changed
+
+    When hooks fail the full error block is preserved but pure-dot progress
+    lines are stripped.  When lefthook is not present the output is already
+    short and is passed through unchanged.
+
+    Registered before :class:`GitFilter` so it claims ``git commit`` exclusively.
+    """
+
+    name = "git-commit"
+    binaries = frozenset(["git"])
+    subcommands = frozenset(["commit"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        return _compress_git_commit(stdout, stderr)
+
+
+# ---- GitPushFilter -----------------------------------------------------------
+#
+# ``git push`` with a pre-push hook running pytest can produce 120+ lines of
+# dots.  This filter strips dot-progress and collapses the pytest summary and
+# push result to 1–2 lines.
+#
+# Compressed target (tests pass):
+#   pre-push ✔ 8333 passed (9:21) | pushed main -> main
+#
+# Compressed target (tests fail):
+#   pre-push FAILED: 3 failed, 8330 passed | [error block preserved]
+
+# Matches pure-dot/progress pytest output lines: only dots, s, F, spaces, and
+# optional "[NNN%]" column counter.
+_PYTEST_DOT_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[.sF ]+(?:\[\s*\d+%\])?$"
+)
+# Final pytest summary: "8333 passed in 5m 30s" or "3 failed, 8330 passed in ..."
+_PYTEST_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"(\d+\s+(?:failed|passed|error(?:ed)?|warning)[,\s].*?(?:in\s+[\d:]+[smh.]+)?)",
+    re.IGNORECASE,
+)
+# Git push ref-update lines: "   abc123..def456  main -> origin/main"
+_GIT_PUSH_REF_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:To\s|->|\+|\*|!|\s+[0-9a-f]+\.\.[0-9a-f]+)"
+)
+# Branch tracking line: "Branch 'main' set up to track remote branch 'main'"
+_GIT_PUSH_TRACK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Branch\s+'[^']+'\s+set\s+up\s+to\s+track"
+)
+
+
+def _compress_git_push(stdout: str, stderr: str) -> str:
+    """Compress ``git push`` output.
+
+    Strips pytest dot-progress lines; preserves pytest summary and git
+    push ref-update lines.  On pytest failure, keeps the first error block
+    but still strips dots.
+    """
+    merged = (stdout.rstrip() + "\n" + stderr.rstrip()).strip() if stderr.strip() else stdout
+    lines = merged.split("\n")
+
+    # Quick check: is there any dot-progress to compress?
+    dot_lines = [ln for ln in lines if _PYTEST_DOT_LINE_RE.match(ln)]
+    if not dot_lines:
+        # Nothing to compress; standard passthrough.
+        return merged
+
+    # Extract pytest summary line (last matching line wins — it's the total).
+    pytest_summary = ""
+    for ln in lines:
+        if _PYTEST_DOT_LINE_RE.match(ln):
+            continue
+        m = _PYTEST_SUMMARY_RE.search(ln)
+        if m and ("passed" in ln.lower() or "failed" in ln.lower()):
+            pytest_summary = ln.strip()
+
+    # Extract push result lines.
+    push_lines = [
+        ln.strip() for ln in lines
+        if _GIT_PUSH_REF_RE.match(ln) or _GIT_PUSH_TRACK_RE.match(ln)
+    ]
+
+    # Detect failures.
+    failed = "failed" in pytest_summary.lower() if pytest_summary else False
+
+    if failed:
+        # Keep dot-free output but preserve the error block (first FAILED test).
+        kept: list[str] = []
+        in_error = False
+        error_lines_kept = 0
+        _MAX_ERROR_LINES = 30
+        for ln in lines:
+            if _PYTEST_DOT_LINE_RE.match(ln):
+                continue
+            if "FAILED" in ln or "ERROR" in ln or _ERROR_SIGNAL_RE.search(ln):
+                in_error = True
+            if in_error and error_lines_kept < _MAX_ERROR_LINES:
+                kept.append(ln)
+                error_lines_kept += 1
+            elif not in_error:
+                kept.append(ln)
+        summary_prefix = f"pre-push FAILED: {pytest_summary}" if pytest_summary else "pre-push FAILED"
+        return summary_prefix + "\n" + "\n".join(kept)
+
+    # All tests passed — build 1-2 line summary.
+    parts: list[str] = []
+    if pytest_summary:
+        parts.append(f"pre-push ✔ {pytest_summary}")
+    if push_lines:
+        parts.append("pushed " + " | ".join(push_lines))
+    return "\n".join(parts) if parts else merged
+
+
+class GitPushFilter(Filter):
+    """Compress ``git push`` output when a pre-push hook runs pytest.
+
+    The pre-push hook can emit 120+ lines of dots.  This filter strips dot-
+    progress lines and collapses the pytest summary and push result to 1–2 lines:
+
+    .. code-block:: text
+
+        # tests pass:
+        pre-push ✔ 8333 passed in 9:21 | pushed main -> origin/main
+
+        # tests fail:
+        pre-push FAILED: 3 failed, 8330 passed
+        [first error block preserved]
+
+    When no dot-progress is detected, the output is passed through unchanged.
+
+    Registered before :class:`GitFilter` so it claims ``git push`` exclusively.
+    """
+
+    name = "git-push"
+    binaries = frozenset(["git"])
+    subcommands = frozenset(["push"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        return _compress_git_push(stdout, stderr)
 
 
 # --- Go ----------------------------------------------------------------
@@ -20066,12 +20314,16 @@ FILTERS: list[Filter] = [
     LinterFilter(),
     GrepFilter(),
     # Dedicated git sub-filters must precede GitFilter: each claims a specific
-    # subcommand (log / diff / show / status / blame) with richer compression.
-    # GitFilter remains the catch-all for every other git subcommand.
+    # subcommand (log / diff / show / status / blame / commit / push) with richer
+    # compression.  GitFilter remains the catch-all for every other git subcommand.
+    # GitCommitFilter and GitPushFilter must also precede GitFilter so that
+    # lefthook-heavy commit/push sessions are compressed to 1-2 lines.
     GitLogFilter(),
     GitDiffFilter(),
     GitStatusVerboseFilter(),
     GitBlameFilter(),
+    GitCommitFilter(),
+    GitPushFilter(),
     GitFilter(),
     # GoTestFilter must precede GoFilter: `go test` routes to the dedicated
     # test filter; other go subcommands (build/get/mod/…) route to GoFilter.

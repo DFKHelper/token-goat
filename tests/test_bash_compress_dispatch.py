@@ -87,13 +87,13 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["rg", "pattern", "src/"], "grep"),
     (["ag", "pattern"], "grep"),
     # ---- GitFilter and dedicated sub-filters ----
-    # git status / log / diff are now claimed by the dedicated sub-filters
-    # (GitStatusVerboseFilter, GitLogFilter, GitDiffFilter); git push still
-    # routes to the generic GitFilter.
+    # git status / log / diff / commit / push are claimed by dedicated sub-filters;
+    # GitFilter remains the catch-all for every other git subcommand.
     (["git", "status"], "git-status"),
     (["git", "log", "--oneline"], "git-log"),
     (["git", "diff", "HEAD"], "git-diff"),
-    (["git", "push", "origin", "main"], "git"),
+    (["git", "commit", "-m", "msg"], "git-commit"),
+    (["git", "push", "origin", "main"], "git-push"),
     # ---- MakeFilter ----
     (["make", "all"], "make"),
     (["ninja", "-C", "build/"], "make"),

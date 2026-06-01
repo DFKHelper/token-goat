@@ -472,10 +472,10 @@ class TestGitFilterFallback:
         assert f is not None
         assert f.name == "git"
 
-    def test_git_push_still_routes_to_git_filter(self) -> None:
+    def test_git_push_routes_to_git_push_filter(self) -> None:
         f = bc.select_filter(["git", "push"])
         assert f is not None
-        assert f.name == "git"
+        assert f.name == "git-push"
 
     def test_git_ls_files_still_routes_to_git_filter(self) -> None:
         f = bc.select_filter(["git", "ls-files"])
