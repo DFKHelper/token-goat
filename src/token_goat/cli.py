@@ -3775,6 +3775,96 @@ def post_skill(
     hooks_cli.safe_run("post-skill", input_file, _parse_harness(harness))
 
 
+def _compact_hint_watch(
+    session_id: str,
+    auto: bool,
+    max_tokens: int,
+    trigger: str,
+    interval: int = 60,
+) -> None:
+    """Poll manifest generation in a loop, printing a compact diff each cycle.
+
+    Separated from the main ``compact_hint`` command so it can be unit-tested
+    with mocked sleep and manifest generation without spinning up the full Typer
+    command tree.
+    """
+    import difflib  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    from datetime import datetime  # noqa: PLC0415
+
+    from . import compact as compact_mod  # noqa: PLC0415
+    from . import config as config_mod  # noqa: PLC0415
+
+    def _resolve_session() -> str:
+        sid = session_id.strip()
+        if auto or sid.lower() == "auto" or not sid:
+            detected = compact_mod.find_latest_session_id()
+            if not detected:
+                typer.echo(
+                    "No session files found under token-goat data directory.  "
+                    "Start a Claude Code session first, or pass --session-id explicitly.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            if not sid or sid.lower() == "auto":
+                typer.echo(f"(auto-detected session: {detected})")
+            return detected
+        return sid
+
+    def _build(sid: str) -> str:
+        cfg = config_mod.load().compact_assist
+        base_tokens = int(max_tokens) if max_tokens > 0 else int(cfg.max_manifest_tokens)
+        raw_multiplier = getattr(cfg, "auto_trigger_multiplier", 1.0)
+        multiplier = float(raw_multiplier) if isinstance(raw_multiplier, (int, float)) else 1.0
+        effective_tokens = (
+            int(base_tokens * multiplier)
+            if trigger == "auto" and multiplier > 1.0
+            else base_tokens
+        )
+        return compact_mod.build_manifest(sid, max_tokens=effective_tokens) or ""
+
+    def _show_diff(previous: str, current: str) -> None:
+        prev_lines = previous.splitlines(keepends=True)
+        curr_lines = current.splitlines(keepends=True)
+        diff = list(
+            difflib.unified_diff(prev_lines, curr_lines, lineterm="", n=1)
+        )
+        # Strip the @@ and --- / +++ header lines; emit compact +/- lines only.
+        changed = [ln for ln in diff if ln.startswith(("+", "-", " ")) and not ln.startswith(("---", "+++"))]
+        if not changed:
+            typer.echo("  (no changes)")
+            return
+        for ln in changed:
+            typer.echo(ln)
+
+    resolved_sid = _resolve_session()
+    previous_manifest: str | None = None
+
+    typer.echo(f"--- compact-hint watch [started, interval={interval}s] ---")
+    typer.echo("Press Ctrl+C to stop.")
+    typer.echo("")
+
+    try:
+        while True:
+            ts = datetime.now().strftime("%H:%M:%S")
+            typer.echo(f"--- compact-hint watch [{ts}] ---")
+            current_manifest = _build(resolved_sid)
+            if previous_manifest is None:
+                # First cycle: show full manifest.
+                if current_manifest:
+                    typer.echo(current_manifest)
+                else:
+                    typer.echo("  (no manifest generated)")
+            else:
+                _show_diff(previous_manifest, current_manifest)
+            previous_manifest = current_manifest
+            typer.echo("")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        typer.echo("")
+        typer.echo("Stopped watching.")
+
+
 @app.command("compact-hint", rich_help_panel="Advanced")
 def compact_hint(
     session_id: str = typer.Option(
@@ -3844,6 +3934,21 @@ def compact_hint(
             "trigger the noop fast-path."
         ),
     ),
+    watch: bool = typer.Option(
+        False,
+        "--watch",
+        "-w",
+        help=(
+            "Poll continuously: generate the manifest every 60 seconds and show a "
+            "compact +/- diff of what changed.  Press Ctrl+C to stop."
+        ),
+    ),
+    watch_interval: int = typer.Option(
+        60,
+        "--watch-interval",
+        help="Seconds between watch cycles (default: 60).",
+        hidden=True,
+    ),
 ) -> None:
     """Show the compaction manifest token-goat would inject for a session.
 
@@ -3878,6 +3983,11 @@ def compact_hint(
     Add ``--sections`` to list section names and token counts without full text.
 
     Add ``--score`` to see the manifest quality score with a section breakdown.
+
+    Add ``--watch`` (or ``-w``) to poll continuously: the manifest is generated
+    immediately, then re-generated every 60 seconds.  Each cycle prints a compact
+    ``+``/``-`` diff showing lines added or removed (with 1 line of context).
+    Press Ctrl+C to stop.  ``--watch-interval N`` overrides the 60-second default.
     """
     import difflib  # noqa: PLC0415
 
@@ -3885,6 +3995,19 @@ def compact_hint(
     from . import config as config_mod  # noqa: PLC0415
     from . import hooks_cli as hooks_cli_mod  # noqa: PLC0415
     from . import paths as paths_mod  # noqa: PLC0415
+
+    # --- --watch: continuous poll loop ----------------------------------------
+    # Dispatched early (before expensive setup) so --watch can control the loop
+    # and call back into the same resolution logic each cycle.
+    if watch:
+        _compact_hint_watch(
+            session_id=session_id,
+            auto=auto,
+            max_tokens=max_tokens,
+            trigger=trigger,
+            interval=watch_interval,
+        )
+        return
 
     # --- Resolve session ID --------------------------------------------------
     # Support --session-id auto, --auto flag, or a missing session_id.

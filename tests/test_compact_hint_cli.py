@@ -346,3 +346,295 @@ class TestManifestTextSidecarPath:
         """Null bytes in session_id should raise ValueError."""
         with pytest.raises(ValueError, match="null byte"):
             paths.manifest_text_sidecar_path("abc\x00def")
+
+
+# ---------------------------------------------------------------------------
+# --watch flag
+# ---------------------------------------------------------------------------
+
+class TestCompactHintWatch:
+    """Tests for the --watch flag on the compact-hint command.
+
+    All tests use unittest.mock to patch ``time.sleep`` and ``compact.build_manifest``
+    so they complete instantly without real I/O.
+    """
+
+    def test_watch_flag_exists(self, tmp_data_dir, make_session):
+        """--watch flag wires through to _compact_hint_watch (no unknown-option exit)."""
+        import unittest.mock as mock  # noqa: PLC0415
+
+        import token_goat.cli as cli_mod  # noqa: PLC0415
+
+        sid = "watch-flag-exists-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        call_count = [0]
+
+        def _fast_watch(**kwargs):
+            call_count[0] += 1
+
+        with mock.patch.object(cli_mod, "_compact_hint_watch", side_effect=_fast_watch):
+            result = runner.invoke(cli_mod.app, ["compact-hint", "--session-id", sid, "--watch"])
+
+        assert result.exit_code == 0, result.output
+        assert call_count[0] == 1
+
+    def test_watch_shows_full_manifest_on_first_cycle(
+        self, tmp_data_dir, make_session, capsys
+    ):
+        """First watch cycle prints the full manifest text."""
+        import unittest.mock as mock  # noqa: PLC0415
+
+        from token_goat import cli as cli_mod  # noqa: PLC0415
+        from token_goat import compact as compact_mod  # noqa: PLC0415
+
+        sid = "watch-first-cycle-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        manifests = ["## Token-Goat Manifest\n### Files Edited\n- edited0.py\n"]
+        call_index = [0]
+
+        def _fake_build(session_id, max_tokens=400):
+            idx = min(call_index[0], len(manifests) - 1)
+            call_index[0] += 1
+            return manifests[idx]
+
+        sleep_calls = []
+
+        def _fake_sleep(secs):
+            sleep_calls.append(secs)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(compact_mod, "build_manifest", side_effect=_fake_build), \
+             mock.patch("token_goat.cli.time.sleep", side_effect=_fake_sleep):
+            cli_mod._compact_hint_watch(
+                session_id=sid,
+                auto=False,
+                max_tokens=0,
+                trigger="manual",
+                interval=60,
+            )
+
+        # sleep must be called once (after the first manifest render) before KeyboardInterrupt.
+        assert len(sleep_calls) == 1
+
+    def test_watch_diff_shows_additions(self, tmp_data_dir, make_session, capsys):
+        """Second watch cycle shows + lines for content added in the new manifest."""
+        import unittest.mock as mock  # noqa: PLC0415
+
+        from token_goat import cli as cli_mod  # noqa: PLC0415
+        from token_goat import compact as compact_mod  # noqa: PLC0415
+
+        sid = "watch-diff-additions-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        manifests = [
+            "## Manifest\n### Files Edited\n- edited0.py\n",
+            "## Manifest\n### Files Edited\n- edited0.py\n- new_file.py\n",
+        ]
+        call_index = [0]
+
+        def _fake_build(session_id, max_tokens=400):
+            idx = min(call_index[0], len(manifests) - 1)
+            call_index[0] += 1
+            return manifests[idx]
+
+        sleep_count = [0]
+
+        def _fake_sleep(secs):
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                raise KeyboardInterrupt
+
+        with mock.patch.object(compact_mod, "build_manifest", side_effect=_fake_build), \
+             mock.patch("token_goat.cli.time.sleep", side_effect=_fake_sleep):
+            cli_mod._compact_hint_watch(
+                session_id=sid,
+                auto=False,
+                max_tokens=0,
+                trigger="manual",
+                interval=60,
+            )
+
+        out = capsys.readouterr().out
+        # The second cycle should show the added line with a '+' prefix.
+        assert any(ln.startswith("+") and "new_file.py" in ln for ln in out.splitlines()), (
+            f"Expected '+ new_file.py' in diff output but got:\n{out}"
+        )
+
+    def test_watch_diff_shows_removals(self, tmp_data_dir, make_session, capsys):
+        """Second watch cycle shows - lines for content removed in the new manifest."""
+        import unittest.mock as mock  # noqa: PLC0415
+
+        from token_goat import cli as cli_mod  # noqa: PLC0415
+        from token_goat import compact as compact_mod  # noqa: PLC0415
+
+        sid = "watch-diff-removals-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        manifests = [
+            "## Manifest\n### Files Edited\n- edited0.py\n- removed_file.py\n",
+            "## Manifest\n### Files Edited\n- edited0.py\n",
+        ]
+        call_index = [0]
+
+        def _fake_build(session_id, max_tokens=400):
+            idx = min(call_index[0], len(manifests) - 1)
+            call_index[0] += 1
+            return manifests[idx]
+
+        sleep_count = [0]
+
+        def _fake_sleep(secs):
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                raise KeyboardInterrupt
+
+        with mock.patch.object(compact_mod, "build_manifest", side_effect=_fake_build), \
+             mock.patch("token_goat.cli.time.sleep", side_effect=_fake_sleep):
+            cli_mod._compact_hint_watch(
+                session_id=sid,
+                auto=False,
+                max_tokens=0,
+                trigger="manual",
+                interval=60,
+            )
+
+        out = capsys.readouterr().out
+        assert any(ln.startswith("-") and "removed_file.py" in ln for ln in out.splitlines()), (
+            f"Expected '- removed_file.py' in diff output but got:\n{out}"
+        )
+
+    def test_watch_no_change_shows_no_changes_message(
+        self, tmp_data_dir, make_session, capsys
+    ):
+        """When consecutive manifests are identical, prints '(no changes)'."""
+        import unittest.mock as mock  # noqa: PLC0415
+
+        from token_goat import cli as cli_mod  # noqa: PLC0415
+        from token_goat import compact as compact_mod  # noqa: PLC0415
+
+        sid = "watch-no-change-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        same_manifest = "## Manifest\n### Files Edited\n- edited0.py\n"
+
+        def _fake_build(session_id, max_tokens=400):
+            return same_manifest
+
+        sleep_count = [0]
+
+        def _fake_sleep(secs):
+            sleep_count[0] += 1
+            if sleep_count[0] >= 2:
+                raise KeyboardInterrupt
+
+        with mock.patch.object(compact_mod, "build_manifest", side_effect=_fake_build), \
+             mock.patch("token_goat.cli.time.sleep", side_effect=_fake_sleep):
+            cli_mod._compact_hint_watch(
+                session_id=sid,
+                auto=False,
+                max_tokens=0,
+                trigger="manual",
+                interval=60,
+            )
+
+        out = capsys.readouterr().out
+        assert "(no changes)" in out, f"Expected '(no changes)' but got:\n{out}"
+
+    def test_watch_header_contains_timestamp(
+        self, tmp_data_dir, make_session, capsys
+    ):
+        """Each cycle header includes the HH:MM:SS timestamp pattern."""
+        import re  # noqa: PLC0415
+        import unittest.mock as mock  # noqa: PLC0415
+
+        from token_goat import cli as cli_mod  # noqa: PLC0415
+        from token_goat import compact as compact_mod  # noqa: PLC0415
+
+        sid = "watch-timestamp-header-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        def _fake_build(session_id, max_tokens=400):
+            return "## Manifest\n- content\n"
+
+        def _fake_sleep(secs):
+            raise KeyboardInterrupt
+
+        with mock.patch.object(compact_mod, "build_manifest", side_effect=_fake_build), \
+             mock.patch("token_goat.cli.time.sleep", side_effect=_fake_sleep):
+            cli_mod._compact_hint_watch(
+                session_id=sid,
+                auto=False,
+                max_tokens=0,
+                trigger="manual",
+                interval=60,
+            )
+
+        out = capsys.readouterr().out
+        # Expect a line like "--- compact-hint watch [HH:MM:SS] ---"
+        ts_pattern = re.compile(r"--- compact-hint watch \[\d{2}:\d{2}:\d{2}\] ---")
+        assert ts_pattern.search(out), f"Expected timestamp header but got:\n{out}"
+
+    def test_watch_stopped_watching_message_on_keyboard_interrupt(
+        self, tmp_data_dir, make_session, capsys
+    ):
+        """Ctrl+C prints 'Stopped watching.' and exits cleanly."""
+        import unittest.mock as mock  # noqa: PLC0415
+
+        from token_goat import cli as cli_mod  # noqa: PLC0415
+        from token_goat import compact as compact_mod  # noqa: PLC0415
+
+        sid = "watch-stopped-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        def _fake_build(session_id, max_tokens=400):
+            return "## Manifest\n- content\n"
+
+        def _fake_sleep(secs):
+            raise KeyboardInterrupt
+
+        with mock.patch.object(compact_mod, "build_manifest", side_effect=_fake_build), \
+             mock.patch("token_goat.cli.time.sleep", side_effect=_fake_sleep):
+            cli_mod._compact_hint_watch(
+                session_id=sid,
+                auto=False,
+                max_tokens=0,
+                trigger="manual",
+                interval=60,
+            )
+
+        assert "Stopped watching." in capsys.readouterr().out
+
+    def test_watch_custom_interval_passed_to_sleep(
+        self, tmp_data_dir, make_session, capsys
+    ):
+        """--watch-interval value is forwarded to time.sleep."""
+        import unittest.mock as mock  # noqa: PLC0415
+
+        from token_goat import cli as cli_mod  # noqa: PLC0415
+        from token_goat import compact as compact_mod  # noqa: PLC0415
+
+        sid = "watch-interval-abc"
+        make_session(sid, files_read=2, edits=1)
+
+        def _fake_build(session_id, max_tokens=400):
+            return "## Manifest\n- content\n"
+
+        sleep_args = []
+
+        def _fake_sleep(secs):
+            sleep_args.append(secs)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(compact_mod, "build_manifest", side_effect=_fake_build), \
+             mock.patch("token_goat.cli.time.sleep", side_effect=_fake_sleep):
+            cli_mod._compact_hint_watch(
+                session_id=sid,
+                auto=False,
+                max_tokens=0,
+                trigger="manual",
+                interval=30,
+            )
+
+        assert sleep_args == [30], f"Expected sleep(30) but got {sleep_args}"
