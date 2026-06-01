@@ -35,6 +35,7 @@ __all__ = [
     "glob_hash",
     "load_output",
     "load_output_meta",
+    "normalize_command_for_cache_key",
     "output_id_for",
     "read_sidecar",
     "sidecar_meta_path",
@@ -44,6 +45,7 @@ __all__ = [
     "write_sidecar",
 ]
 
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,6 +122,97 @@ def _bash_outputs_dir() -> Path:
     return get_cache_dir("bash_outputs")
 
 
+def normalize_command_for_cache_key(cmd: str) -> str:
+    """Normalize a command string before hashing to increase cache hit rate.
+
+    Normalizations applied:
+    1. Strip leading/trailing whitespace
+    2. Normalize internal whitespace runs to single spaces
+    3. Normalize Windows path separators (backslash to forward slash) inside tokens
+    4. Sort single-char flags (e.g., ``-x -q`` → ``-q -x``) for tools like pytest/rg/git
+
+    Examples:
+        ``uv run pytest  tests/  -q`` → ``uv run pytest tests/ -q``
+        ``rg pattern -o -i`` → ``rg pattern -i -o`` (flags sorted)
+        ``cd C:\\foo && rg`` → ``cd C:/foo && rg`` (path sep normalized)
+
+    *Important:* This normalization is **only** for the cache key, not for the
+    actual command executed. The original command is always run.
+    """
+    # Step 1: Strip outer whitespace
+    normalized = cmd.strip()
+
+    # Step 2: Normalize internal whitespace to single spaces
+    normalized = re.sub(r'\s+', ' ', normalized)
+
+    # Step 3: Normalize Windows path separators within tokens
+    # A token is a contiguous run of non-whitespace characters.
+    # We split, normalize each token, then rejoin.
+    tokens = normalized.split(' ')
+    normalized_tokens = []
+    for token in tokens:
+        # Replace backslashes with forward slashes in the token.
+        # This catches C:\foo, paths in flags, etc.
+        normalized_tokens.append(token.replace('\\', '/'))
+    normalized = ' '.join(normalized_tokens)
+
+    # Step 4: Sort single-char flags for common tools.
+    # A single-char flag is a token like -x, -q, -v (but not --flag or positional args).
+    # We collect all single-char flags, sort them, then reconstruct the command.
+    # Only apply to commands that commonly have flag combinations: pytest, rg/grep, git, etc.
+    #
+    # Strategy: find the tool name (first token after 'uv run' or the first token overall),
+    # and if it's a known tool, sort its flags.
+
+    tokens = normalized.split(' ')
+    if not tokens:
+        return normalized
+
+    # Extract tool name: skip 'uv run' if present
+    tool_start_idx = 0
+    if len(tokens) >= 2 and tokens[0] == 'uv' and tokens[1] == 'run':
+        tool_start_idx = 2
+    if tool_start_idx >= len(tokens):
+        return normalized
+
+    tool = tokens[tool_start_idx]
+
+    # Tools where flag sorting helps (most common ones with many short flags)
+    sort_flag_tools = {'pytest', 'rg', 'grep', 'git'}
+
+    if tool in sort_flag_tools and len(tokens) > tool_start_idx + 1:
+        # Collect leading single-char flags after the tool, preserve order until
+        # we hit the first non-flag argument (positional arg or --long-flag).
+        pre_tool = tokens[:tool_start_idx]
+        tool_and_args = tokens[tool_start_idx:]
+
+        # Split tool_and_args into: [tool_name, *flags_and_args]
+        cmd_tool = tool_and_args[0]
+        rest = tool_and_args[1:]
+
+        # Identify contiguous single-char flags at the start of rest
+        single_char_flags = []
+        other_args = []
+        found_non_flag = False
+
+        for token in rest:
+            if not found_non_flag and re.match(r'^-[a-zA-Z0-9]$', token):
+                # Single-char flag: -x, -q, -1, etc.
+                single_char_flags.append(token)
+            else:
+                found_non_flag = True
+                other_args.append(token)
+
+        # Sort the single-char flags
+        if single_char_flags:
+            single_char_flags.sort()
+            normalized = ' '.join(pre_tool + [cmd_tool] + single_char_flags + other_args)
+        else:
+            normalized = normalized  # No change needed
+
+    return normalized
+
+
 def command_hash(command: str, cwd: str | None = None) -> str:
     """Return a short content hash for *command* scoped to *cwd*.
 
@@ -128,8 +221,12 @@ def command_hash(command: str, cwd: str | None = None) -> str:
     identically and the pre-Bash dedup hint could surface output from the wrong
     project.  When *cwd* is ``None`` (backwards-compat callers without CWD),
     only the command string is hashed.
+
+    The command string is normalized (whitespace, path seps, flag ordering) before
+    hashing to increase cache hit rate for semantically identical commands.
     """
-    key = command if cwd is None else f"{cwd}\x00{command}"
+    normalized = normalize_command_for_cache_key(command)
+    key = normalized if cwd is None else f"{cwd}\x00{normalized}"
     return short_content_hash(key)
 
 

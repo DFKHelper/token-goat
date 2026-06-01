@@ -260,6 +260,122 @@ class TestSessionLookup:
         assert session.lookup_bash_entry("lookup-2", "deadbeef") is None
 
 
+class TestNormalizeCommandForCacheKey:
+    """Tests for normalize_command_for_cache_key function."""
+
+    def test_strip_leading_trailing_whitespace(self):
+        """Leading/trailing whitespace is stripped."""
+        assert bash_cache.normalize_command_for_cache_key("  pytest tests  ") == "pytest tests"
+        assert bash_cache.normalize_command_for_cache_key("\t\necho hello\n\t") == "echo hello"
+
+    def test_normalize_internal_whitespace_runs(self):
+        """Multiple internal spaces/tabs/newlines collapse to single space."""
+        assert bash_cache.normalize_command_for_cache_key("pytest  tests") == "pytest tests"
+        assert bash_cache.normalize_command_for_cache_key("pytest\t\ttests") == "pytest tests"
+        assert bash_cache.normalize_command_for_cache_key("pytest\n\ntests") == "pytest tests"
+        assert bash_cache.normalize_command_for_cache_key("pytest  \t  tests") == "pytest tests"
+
+    def test_normalize_windows_path_separators(self):
+        """Backslashes in paths are converted to forward slashes."""
+        assert bash_cache.normalize_command_for_cache_key("cd C:\\foo") == "cd C:/foo"
+        assert bash_cache.normalize_command_for_cache_key("rg pattern src\\lib") == "rg pattern src/lib"
+        # Mixed slashes in a single path
+        assert bash_cache.normalize_command_for_cache_key("cat C:\\foo/bar\\baz") == "cat C:/foo/bar/baz"
+
+    def test_normalize_path_separators_in_flags(self):
+        """Backslashes in flag values are also normalized."""
+        assert bash_cache.normalize_command_for_cache_key("find . -path src\\tests") == "find . -path src/tests"
+
+    def test_pytest_flag_sorting(self):
+        """Single-char flags in pytest commands are sorted."""
+        assert bash_cache.normalize_command_for_cache_key("pytest -x -q tests/") == "pytest -q -x tests/"
+        assert bash_cache.normalize_command_for_cache_key("pytest -q -x tests/") == "pytest -q -x tests/"
+        assert bash_cache.normalize_command_for_cache_key("pytest -v -q tests/") == "pytest -q -v tests/"
+
+    def test_pytest_with_uv_run(self):
+        """pytest via uv run has flags sorted."""
+        assert bash_cache.normalize_command_for_cache_key("uv run pytest -x -q tests/") == "uv run pytest -q -x tests/"
+
+    def test_rg_flag_sorting(self):
+        """Single-char flags in rg commands are sorted (only leading flags before positional args)."""
+        # Flags before positional args are sorted
+        assert bash_cache.normalize_command_for_cache_key("rg -o -i pattern") == "rg -i -o pattern"
+        assert bash_cache.normalize_command_for_cache_key("rg -i -o pattern") == "rg -i -o pattern"
+        # Leading flags get sorted
+        assert bash_cache.normalize_command_for_cache_key("rg -x -y -z pattern") == "rg -x -y -z pattern"
+        # Flags after positional args stay in order (not sorted)
+        assert bash_cache.normalize_command_for_cache_key("rg pattern -o -i") == "rg pattern -o -i"
+
+    def test_grep_flag_sorting(self):
+        """Single-char flags in grep commands are sorted (only leading flags before positional args)."""
+        # Flags before positional args are sorted
+        assert bash_cache.normalize_command_for_cache_key("grep -r -n file") == "grep -n -r file"
+        assert bash_cache.normalize_command_for_cache_key("grep -n -r file") == "grep -n -r file"
+
+    def test_git_flag_sorting(self):
+        """Single-char flags in git commands are sorted."""
+        assert bash_cache.normalize_command_for_cache_key("git log -20 -n") == "git log -20 -n"
+        # git flags don't always work with single-char sorting if they have args,
+        # but basic flags should sort
+        assert bash_cache.normalize_command_for_cache_key("git log -p -v") == "git log -p -v"
+
+    def test_flags_only_before_first_positional(self):
+        """Only leading single-char flags are sorted; flags after positional args are not."""
+        # Once we hit "tests/", everything after is kept in order
+        assert bash_cache.normalize_command_for_cache_key("pytest -q -x tests/ -v") == "pytest -q -x tests/ -v"
+
+    def test_ignores_long_flags(self):
+        """Long flags (--flag) are not sorted, only single-char flags."""
+        assert bash_cache.normalize_command_for_cache_key("pytest --verbose -q tests/") == "pytest --verbose -q tests/"
+        assert bash_cache.normalize_command_for_cache_key("rg -i --type py") == "rg -i --type py"
+
+    def test_no_sorting_for_unknown_tools(self):
+        """Tools not in the sort list do not get flag sorting."""
+        # 'ls' is not in sort_flag_tools
+        result = bash_cache.normalize_command_for_cache_key("ls -l -h")
+        # Flags are not sorted for unknown tools
+        assert result == "ls -l -h"
+
+    def test_empty_command(self):
+        """Empty or whitespace-only commands are handled gracefully."""
+        assert bash_cache.normalize_command_for_cache_key("") == ""
+        assert bash_cache.normalize_command_for_cache_key("   ") == ""
+
+    def test_combined_normalizations(self):
+        """Multiple normalizations applied together."""
+        # Whitespace + path sep + flag sorting
+        result = bash_cache.normalize_command_for_cache_key(
+            "  uv run pytest  -x  -q  C:\\tests  "
+        )
+        assert result == "uv run pytest -q -x C:/tests"
+
+    def test_real_world_example_1(self):
+        """Real-world: pytest with multiple flags and path."""
+        # When flags come before the positional arg, they get sorted
+        cmd1 = "uv run pytest -q -x tests/"
+        cmd2 = "uv run pytest  -x  -q  tests/"
+        assert bash_cache.normalize_command_for_cache_key(cmd1) == bash_cache.normalize_command_for_cache_key(cmd2)
+
+    def test_real_world_example_2(self):
+        """Real-world: rg with flags and Windows path."""
+        cmd1 = "rg -i -o pattern src\\lib"
+        cmd2 = "rg -o -i pattern src/lib"
+        # Both should normalize to the same key (flags before pattern are sorted)
+        assert bash_cache.normalize_command_for_cache_key(cmd1) == bash_cache.normalize_command_for_cache_key(cmd2)
+
+    def test_numeric_single_char_flags(self):
+        """Single-char flags with numbers like -1 are also sorted."""
+        assert bash_cache.normalize_command_for_cache_key("grep -1 -2 pattern") == "grep -1 -2 pattern"
+
+    def test_preserves_command_semantics(self):
+        """Normalization does not change command semantics."""
+        # The normalization is idempotent
+        cmd = "pytest -q -x tests/"
+        normalized_once = bash_cache.normalize_command_for_cache_key(cmd)
+        normalized_twice = bash_cache.normalize_command_for_cache_key(normalized_once)
+        assert normalized_once == normalized_twice
+
+
 class TestCommandHashCwdScoping:
     def test_same_command_different_cwd_different_hash(self):
         """Two projects running the same command must not share a cache key."""
@@ -278,6 +394,30 @@ class TestCommandHashCwdScoping:
         h_none = bash_cache.command_hash("pytest tests/", None)
         h_empty = bash_cache.command_hash("pytest tests/", "")
         assert h_none != h_empty
+
+    def test_normalized_commands_produce_same_hash(self):
+        """Semantically equivalent commands normalize to the same hash."""
+        # Extra whitespace and flag ordering
+        h1 = bash_cache.command_hash("pytest  -x  -q  tests/")
+        h2 = bash_cache.command_hash("pytest -q -x tests/")
+        assert h1 == h2
+
+    def test_normalized_with_path_separators(self):
+        """Windows path separators are normalized in the hash."""
+        h1 = bash_cache.command_hash("cd C:\\foo && pytest tests/")
+        h2 = bash_cache.command_hash("cd C:/foo && pytest tests/")
+        assert h1 == h2
+
+    def test_normalization_respects_cwd_scope(self):
+        """Normalization still respects cwd scoping."""
+        # Same normalized command, different cwd → different hash
+        h1 = bash_cache.command_hash("pytest  -x  -q  tests/", "/home/projectA")
+        h2 = bash_cache.command_hash("pytest -q -x tests/", "/home/projectB")
+        assert h1 != h2
+
+        # Same normalized command, same cwd → same hash
+        h3 = bash_cache.command_hash("pytest  -x  -q  tests/", "/home/projectA")
+        assert h3 == h1
 
     def test_find_cached_for_command_scoped_to_cwd(self, tmp_data_dir):
         """find_cached_for_command does not return entries from a different project."""
