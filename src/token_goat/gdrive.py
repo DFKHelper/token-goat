@@ -8,6 +8,7 @@ __all__ = [
     "fetch_file",
     "get_credentials",
     "is_text_path",
+    "list_drive_files",
     "run_oauth_oob_flow",
 ]
 
@@ -402,6 +403,71 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
         file_id, time.monotonic() - t_fetch_start, sanitize_log_str(result_path.name),
     )
     return result_path
+
+
+def list_drive_files(folder_id: str | None = None, max_results: int = 20) -> list[dict]:
+    """List accessible Google Drive files.
+
+    Returns a list of dicts with keys:
+    - ``id``: Drive file ID
+    - ``name``: Display name from Drive metadata
+    - ``mimeType``: MIME type (e.g. "application/pdf")
+    - ``size_bytes``: File size in bytes (0 if unavailable, e.g. for Workspace files)
+
+    Args:
+        folder_id: Optional parent folder ID to filter results.
+        max_results: Maximum files to return (default 20).
+
+    Returns:
+        Empty list if credentials unavailable or API error occurs (fail-soft).
+    """
+    try:
+        creds = get_credentials()
+    except GDriveCredsUnavailable:
+        return []
+
+    try:
+        from googleapiclient.discovery import build  # noqa: PLC0415
+
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+        # Build query filters for supported file types
+        type_filters = [
+            "mimeType='application/vnd.google-apps.document'",
+            "mimeType='application/vnd.google-apps.presentation'",
+            "mimeType='text/plain'",
+            "mimeType='application/pdf'",
+        ]
+        type_query = " or ".join(f"({f})" for f in type_filters)
+
+        # Add folder filter if specified
+        query = type_query
+        if folder_id:
+            _validate_file_id(folder_id)
+            query = f"'{folder_id}' in parents and ({type_query})"
+
+        meta_fields = "files(id,name,mimeType,size)"
+        results = service.files().list(
+            q=query,
+            spaces="drive",
+            fields=meta_fields,
+            pageSize=max_results,
+        ).execute()
+
+        files = results.get("files", [])
+        output = []
+        for f in files:
+            output.append({
+                "id": f.get("id", ""),
+                "name": f.get("name", ""),
+                "mimeType": f.get("mimeType", ""),
+                "size_bytes": int(f.get("size", 0)) if f.get("size") else 0,
+            })
+        return output
+
+    except Exception as e:  # noqa: BLE001
+        _LOG.debug("list_drive_files failed: %s", e)
+        return []
 
 
 def run_oauth_oob_flow(client_secrets_path: Path) -> Path:

@@ -470,3 +470,256 @@ class TestGdriveSectionsCli:
 
         assert result.exit_code == 0
         assert "no section index available" in result.output
+
+
+# ---------------------------------------------------------------------------
+# list_drive_files tests
+# ---------------------------------------------------------------------------
+
+class TestListDriveFiles:
+    def test_returns_empty_list_when_no_credentials(self, tmp_data_dir):
+        """list_drive_files returns [] when credentials unavailable (fail-soft)."""
+        with patch("google.auth.default", side_effect=Exception("no ADC")):
+            result = gdrive.list_drive_files()
+        assert result == []
+
+    def test_returns_files_list_with_metadata(self, tmp_data_dir):
+        """list_drive_files returns list of dicts with id, name, mimeType, size_bytes."""
+        fake_creds = MagicMock()
+        mock_service = MagicMock()
+        mock_files = MagicMock()
+        mock_list = MagicMock()
+
+        # Mock the service chain: service.files().list()
+        mock_service.files.return_value = mock_files
+        mock_files.list.return_value = mock_list
+        mock_list.execute.return_value = {
+            "files": [
+                {
+                    "id": "doc-id-1",
+                    "name": "My Doc",
+                    "mimeType": "application/vnd.google-apps.document",
+                    "size": "0",
+                },
+                {
+                    "id": "pdf-id-2",
+                    "name": "Report.pdf",
+                    "mimeType": "application/pdf",
+                    "size": "102400",
+                },
+            ]
+        }
+
+        with (
+            patch("google.auth.default", return_value=(fake_creds, "proj")),
+            patch("googleapiclient.discovery.build", return_value=mock_service),
+        ):
+            result = gdrive.list_drive_files()
+
+        assert len(result) == 2
+        assert result[0]["id"] == "doc-id-1"
+        assert result[0]["name"] == "My Doc"
+        assert result[0]["mimeType"] == "application/vnd.google-apps.document"
+        assert result[0]["size_bytes"] == 0
+        assert result[1]["id"] == "pdf-id-2"
+        assert result[1]["size_bytes"] == 102400
+
+    def test_filters_by_folder_id(self, tmp_data_dir):
+        """list_drive_files includes folder_id in query when provided."""
+        fake_creds = MagicMock()
+        mock_service = MagicMock()
+        mock_files = MagicMock()
+        mock_list = MagicMock()
+
+        mock_service.files.return_value = mock_files
+        mock_files.list.return_value = mock_list
+        mock_list.execute.return_value = {"files": []}
+
+        with (
+            patch("google.auth.default", return_value=(fake_creds, "proj")),
+            patch("googleapiclient.discovery.build", return_value=mock_service),
+        ):
+            gdrive.list_drive_files(folder_id="folder-123")
+
+        # Verify list() was called with query containing folder ID
+        call_args = mock_files.list.call_args
+        query = call_args.kwargs.get("q", "")
+        assert "folder-123" in query
+        assert "in parents" in query
+
+    def test_handles_missing_size_field(self, tmp_data_dir):
+        """list_drive_files treats missing size field as 0 (Workspace files)."""
+        fake_creds = MagicMock()
+        mock_service = MagicMock()
+        mock_files = MagicMock()
+        mock_list = MagicMock()
+
+        mock_service.files.return_value = mock_files
+        mock_files.list.return_value = mock_list
+        # Google Workspace files often omit the size field
+        mock_list.execute.return_value = {
+            "files": [
+                {
+                    "id": "sheets-id",
+                    "name": "Budget Sheet",
+                    "mimeType": "application/vnd.google-apps.spreadsheet",
+                    # note: no "size" field
+                }
+            ]
+        }
+
+        with (
+            patch("google.auth.default", return_value=(fake_creds, "proj")),
+            patch("googleapiclient.discovery.build", return_value=mock_service),
+        ):
+            result = gdrive.list_drive_files()
+
+        assert len(result) == 1
+        assert result[0]["size_bytes"] == 0
+
+    def test_returns_empty_on_api_error(self, tmp_data_dir):
+        """list_drive_files returns [] on any API error (fail-soft)."""
+        fake_creds = MagicMock()
+        mock_service = MagicMock()
+        mock_files = MagicMock()
+
+        mock_service.files.return_value = mock_files
+        mock_files.list.side_effect = RuntimeError("API error")
+
+        with (
+            patch("google.auth.default", return_value=(fake_creds, "proj")),
+            patch("googleapiclient.discovery.build", return_value=mock_service),
+        ):
+            result = gdrive.list_drive_files()
+
+        assert result == []
+
+    def test_respects_max_results_parameter(self, tmp_data_dir):
+        """list_drive_files passes max_results to pageSize."""
+        fake_creds = MagicMock()
+        mock_service = MagicMock()
+        mock_files = MagicMock()
+        mock_list = MagicMock()
+
+        mock_service.files.return_value = mock_files
+        mock_files.list.return_value = mock_list
+        mock_list.execute.return_value = {"files": []}
+
+        with (
+            patch("google.auth.default", return_value=(fake_creds, "proj")),
+            patch("googleapiclient.discovery.build", return_value=mock_service),
+        ):
+            gdrive.list_drive_files(max_results=50)
+
+        call_args = mock_files.list.call_args
+        assert call_args.kwargs.get("pageSize") == 50
+
+
+# ---------------------------------------------------------------------------
+# CLI tests for gdrive-list
+# ---------------------------------------------------------------------------
+
+class TestCliGdriveList:
+    def test_lists_files_in_human_readable_format(self, tmp_data_dir):
+        """token-goat gdrive-list displays files as 'id  name (type, size)'."""
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        runner = CliRunner()
+        files = [
+            {
+                "id": "doc-1",
+                "name": "Spec",
+                "mimeType": "application/vnd.google-apps.document",
+                "size_bytes": 0,
+            },
+            {
+                "id": "pdf-1",
+                "name": "Guide.pdf",
+                "mimeType": "application/pdf",
+                "size_bytes": 204800,
+            },
+        ]
+
+        with patch.object(gdrive, "list_drive_files", return_value=files):
+            result = runner.invoke(app, ["gdrive-list"])
+
+        assert result.exit_code == 0
+        assert "doc-1  Spec (Google Docs, 0 B)" in result.output
+        assert "pdf-1  Guide.pdf (PDF, 200 KB)" in result.output
+
+    def test_shows_helpful_message_when_no_files(self, tmp_data_dir):
+        """token-goat gdrive-list shows credential message when no files found."""
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        runner = CliRunner()
+
+        with patch.object(gdrive, "list_drive_files", return_value=[]):
+            result = runner.invoke(app, ["gdrive-list"])
+
+        assert result.exit_code == 0
+        assert "No files found" in result.output
+
+    def test_passes_folder_id_to_list_drive_files(self, tmp_data_dir):
+        """token-goat gdrive-list --folder passes folder ID to the function."""
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        runner = CliRunner()
+
+        with patch.object(gdrive, "list_drive_files", return_value=[]) as mock_list:
+            result = runner.invoke(app, ["gdrive-list", "--folder", "folder-abc"])
+
+        assert result.exit_code == 0
+        mock_list.assert_called_once()
+        call_args = mock_list.call_args
+        assert call_args.kwargs.get("folder_id") == "folder-abc"
+
+    def test_outputs_json_when_requested(self, tmp_data_dir):
+        """token-goat gdrive-list --json outputs JSON."""
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        runner = CliRunner()
+        files = [
+            {
+                "id": "id-1",
+                "name": "File 1",
+                "mimeType": "text/plain",
+                "size_bytes": 1024,
+            }
+        ]
+
+        with patch.object(gdrive, "list_drive_files", return_value=files):
+            result = runner.invoke(app, ["gdrive-list", "--json"])
+
+        assert result.exit_code == 0
+        output_json = json.loads(result.output)
+        assert len(output_json) == 1
+        assert output_json[0]["id"] == "id-1"
+
+    def test_formats_size_as_kb_mb(self, tmp_data_dir):
+        """token-goat gdrive-list formats sizes as KB/MB appropriately."""
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+
+        runner = CliRunner()
+        files = [
+            {"id": "a", "name": "small", "mimeType": "text/plain", "size_bytes": 512},
+            {"id": "b", "name": "med", "mimeType": "text/plain", "size_bytes": 1048576},
+            {"id": "c", "name": "big", "mimeType": "text/plain", "size_bytes": 5242880},
+        ]
+
+        with patch.object(gdrive, "list_drive_files", return_value=files):
+            result = runner.invoke(app, ["gdrive-list"])
+
+        assert result.exit_code == 0
+        assert "512 B" in result.output  # < 1 KB
+        assert "1 MB" in result.output  # 1 MB
+        assert "5 MB" in result.output  # 5 MB

@@ -2044,6 +2044,58 @@ def cmd_gdrive_sections(
         typer.echo(f"(... truncated at {max_sections} sections)")
 
 
+@app.command("gdrive-list")
+def cmd_gdrive_list(
+    folder: str | None = typer.Option(None, "--folder", help="Filter to files in a specific folder (by folder ID)"),  # noqa: B008
+    max_results: int = typer.Option(20, "--max", help="Maximum files to list"),  # noqa: B008
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """List accessible Google Drive files."""
+    from . import gdrive  # noqa: PLC0415
+
+    files = gdrive.list_drive_files(folder_id=folder, max_results=max_results)
+
+    if not files:
+        if json_output:
+            _emit_json([])
+        _warn("No files found. Run `token-goat gdrive-auth` to set up credentials.")
+        raise typer.Exit(0)
+
+    if json_output:
+        _emit_json(files)
+
+    # Human-readable output
+    for f in files:
+        file_id = f.get("id", "")
+        name = f.get("name", "")
+        mime = f.get("mimeType", "")
+        size_bytes = f.get("size_bytes", 0)
+
+        # Format size
+        if size_bytes == 0:
+            size_str = "0 B"
+        elif size_bytes < 1024:
+            size_str = f"{size_bytes} B"
+        elif size_bytes < 1024 * 1024:
+            size_str = f"{size_bytes // 1024} KB"
+        else:
+            size_str = f"{size_bytes // (1024 * 1024)} MB"
+
+        # Extract human-readable type from MIME type
+        if "google-apps.document" in mime:
+            type_str = "Google Docs"
+        elif "google-apps.presentation" in mime:
+            type_str = "Google Slides"
+        elif mime == "application/pdf":
+            type_str = "PDF"
+        elif mime == "text/plain":
+            type_str = "Text"
+        else:
+            type_str = mime
+
+        typer.echo(f"{file_id}  {name} ({type_str}, {size_str})")
+
+
 @app.command("gdrive-auth", hidden=True)
 def cmd_gdrive_auth(
     client_secrets: Path | None = typer.Option(None, "--client-secrets", help="Path to OAuth client_secrets.json"),  # noqa: B008
