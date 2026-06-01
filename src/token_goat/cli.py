@@ -1454,6 +1454,24 @@ def skeleton(
     read_commands.stub_view(file, json_output=json_output, include_private=include_private)
 
 
+@app.command("outline", rich_help_panel="Core")
+def outline(
+    file: str = typer.Argument(..., help="File to outline — e.g., 'src/token_goat/hints.py'"),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """List top-level symbols in <file> with line ranges and docstring hints.
+
+    Returns a compact structured list: kind, name, line range, and the first
+    line of each symbol's docstring.  Body text is omitted, so the output is
+    typically ~5% of the cost of reading the full file.
+
+    Use ``token-goat read <file>::<symbol>`` to retrieve any symbol body.
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.outline(file, json_output=json_output)
+
+
 @app.command("memory", rich_help_panel="Core")
 def memory_cmd(
     action: str = typer.Argument(..., help="show | set | unset | clear"),

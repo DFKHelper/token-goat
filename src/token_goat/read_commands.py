@@ -1,6 +1,7 @@
 """Command helpers for the read/section/deps CLI path."""
 from __future__ import annotations
 
+import contextlib
 import difflib
 import hashlib
 import json
@@ -1077,6 +1078,218 @@ def _format_stub_line(name: str, kind: str, line: int, signature: str | None) ->
     """Render one symbol entry for the skeleton view."""
     sig = f"  {signature}" if signature else ""
     return f"  {line:>5}  {kind:<12}  {name}{sig}"
+
+
+# ---------------------------------------------------------------------------
+# outline — top-level symbol list with docstring first-lines
+# ---------------------------------------------------------------------------
+
+# Maximum characters to show from a docstring first-line before truncating.
+_OUTLINE_DOCSTRING_MAX_CHARS: int = 80
+
+# How many lines past the symbol start line to scan for a docstring.
+_OUTLINE_DOCSTRING_SCAN_LINES: int = 5
+
+# Symbol kinds included in the outline view (same as skeleton but used
+# independently so the two commands can diverge independently in future).
+_OUTLINE_INCLUDE_KINDS: frozenset[str] = frozenset({
+    "function", "async_function", "class", "interface", "struct", "trait",
+    "enum", "type_alias", "constructor",
+})
+
+# Maximum top-level symbols to list; a single file rarely has more than this
+# in practice, but the cap prevents OOM on pathological auto-generated files.
+_OUTLINE_MAX_SYMBOLS: int = 200
+
+
+def _extract_docstring_first_line(
+    source_lines: list[str],
+    symbol_start: int,
+    symbol_end: int,
+) -> str | None:
+    """Return the first meaningful line of the symbol's docstring, or None.
+
+    *source_lines* is the full file content as a list (1-indexed via [line-1]).
+    *symbol_start* and *symbol_end* are 1-based line numbers.
+
+    Scans up to :data:`_OUTLINE_DOCSTRING_SCAN_LINES` lines starting from
+    ``symbol_start + 1`` (the line after the def/class header).  Recognises
+    Python triple-quote docstrings and single-line doc comments
+    (``//``, ``#``, ``/*``, ``*``).  Returns ``None`` when nothing
+    docstring-like is found within the scan window.
+    """
+    scan_end = min(symbol_start + _OUTLINE_DOCSTRING_SCAN_LINES, symbol_end, len(source_lines))
+    inside_triple_quote = False
+    for lineno in range(symbol_start + 1, scan_end + 1):
+        raw = source_lines[lineno - 1]
+        stripped = raw.strip()
+        if not stripped:
+            continue
+
+        # Python triple-quote: """..., '''...
+        for q in ('"""', "'''"):
+            if stripped.startswith(q):
+                # Could be one-liner: """text""" or opening of multi-line block.
+                inner = stripped[3:]
+                # Remove trailing closing quote if present (one-liner).
+                if inner.endswith(q):
+                    inner = inner[:-3]
+                content = inner.strip()
+                if content:
+                    return content[:_OUTLINE_DOCSTRING_MAX_CHARS]
+                # Empty opening line of multi-line triple-quote — mark that we
+                # are inside a block so subsequent lines are treated as body.
+                inside_triple_quote = True
+                break
+        else:
+            # No triple-quote match on this line.
+            if inside_triple_quote:
+                # We already entered a triple-quote block — this line is body text.
+                # Stop if it looks like a closing quote line (""" alone).
+                if stripped not in ('"""', "'''"):
+                    return stripped[:_OUTLINE_DOCSTRING_MAX_CHARS]
+                # Closing quote with no body text — no docstring.
+                return None
+
+            # Single-line doc comment styles: // #
+            for prefix in ("//", "#"):
+                if stripped.startswith(prefix):
+                    content = stripped[len(prefix):].strip()
+                    if content:
+                        return content[:_OUTLINE_DOCSTRING_MAX_CHARS]
+            # Block-comment styles: /** or /* or leading *
+            if stripped.startswith(("/**", "/*")):
+                inner = stripped[stripped.index("*") + 1:].strip().lstrip("*").strip()
+                if inner and not inner.startswith("/"):
+                    return inner[:_OUTLINE_DOCSTRING_MAX_CHARS]
+            if stripped.startswith("*") and not stripped.startswith("*/"):
+                inner = stripped[1:].strip()
+                if inner:
+                    return inner[:_OUTLINE_DOCSTRING_MAX_CHARS]
+            # First non-comment, non-empty line that doesn't match any doc pattern
+            # means there is no docstring — stop scanning.
+            break
+    return None
+
+
+def _format_outline_line(
+    name: str,
+    kind: str,
+    start_line: int,
+    end_line: int,
+    docstring_line: str | None,
+) -> str:
+    """Render one symbol entry for the outline view.
+
+    Format: ``  L1-L2  kind            name  # docstring first line``
+
+    The kind column is left-padded to 16 chars so names align regardless
+    of kind length (``async_function`` is the longest at 14 chars).
+    """
+    range_str = f"{start_line}-{end_line}"
+    doc_part = f"  # {docstring_line}" if docstring_line else ""
+    return f"  {range_str:<10}  {kind:<16}  {name}{doc_part}"
+
+
+def outline(
+    file: str,
+    json_output: bool = False,
+) -> None:
+    """List top-level symbols in <file> with line ranges and docstring hints.
+
+    Returns a compact structured list of every top-level (module-level) symbol
+    in the file — kind, name, line range, and the first line of its docstring
+    if one exists.  Body text is omitted, so the output is typically ~5% of
+    the cost of reading the full file.
+
+    Use ``token-goat read <file>::<symbol>`` to retrieve any symbol body.
+    """
+    target = _resolve_file_target(file)
+    if target.project is None or target.rel_path is None:
+        typer.echo(f"File not found in any indexed project: {file}", err=True)
+        hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
+        if hint:
+            typer.echo(hint, err=True)
+        raise typer.Exit(1)
+
+    proj = target.project
+    file_rel = target.rel_path
+
+    with db.open_project_readonly(proj.hash) as conn:
+        try:
+            rows = conn.execute(
+                "SELECT name, kind, line, end_line "
+                "FROM symbols "
+                "WHERE file_rel = ? AND parent_id IS NULL AND end_line IS NOT NULL "
+                "ORDER BY line",
+                (file_rel,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+
+    if not rows:
+        if json_output:
+            typer.echo(json.dumps({"file": file_rel, "symbols": []}, separators=(",", ":")))
+        else:
+            typer.echo(f"No indexed top-level symbols found for {file_rel}.")
+            typer.echo("(Run `token-goat index --full` if this file has not been indexed yet.)")
+        return
+
+    filtered = [
+        row for row in rows
+        if row["kind"] in _OUTLINE_INCLUDE_KINDS
+    ][:_OUTLINE_MAX_SYMBOLS]
+
+    if not filtered:
+        # All symbols exist but none are structural (e.g. file of constants only).
+        if json_output:
+            typer.echo(json.dumps({"file": file_rel, "symbols": []}, separators=(",", ":")))
+        else:
+            typer.echo(f"No structural top-level symbols found for {file_rel}.")
+        return
+
+    # Read source lines once to extract docstrings for all symbols.
+    source_lines: list[str] = []
+    abs_path = proj.root / file_rel
+    with contextlib.suppress(OSError):
+        source_lines = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    if json_output:
+        out = []
+        for row in filtered:
+            doc = _extract_docstring_first_line(
+                source_lines, int(row["line"]), int(row["end_line"]),
+            ) if source_lines else None
+            out.append({
+                "name": row["name"],
+                "kind": row["kind"],
+                "start_line": row["line"],
+                "end_line": row["end_line"],
+                "docstring": doc,
+            })
+        typer.echo(json.dumps({"file": file_rel, "symbols": out}, separators=(",", ":")))
+        return
+
+    typer.echo(f"# Outline: {file_rel}  ({len(filtered)} top-level symbols)")
+    for row in filtered:
+        doc = _extract_docstring_first_line(
+            source_lines, int(row["line"]), int(row["end_line"]),
+        ) if source_lines else None
+        typer.echo(_format_outline_line(row["name"], row["kind"], int(row["line"]), int(row["end_line"]), doc))
+
+    # Record token savings: outline costs ~5% of a full file read.
+    try:
+        src_bytes = abs_path.stat().st_size
+        outline_bytes = sum(
+            len(_format_outline_line(
+                r["name"], r["kind"], int(r["line"]), int(r["end_line"]), None,
+            ).encode())
+            for r in filtered
+        )
+        saved = max(0, src_bytes - outline_bytes)
+        db.record_stat(None, "outline", bytes_saved=saved, tokens_saved=saved // 4, detail=file_rel)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def stub_view(
