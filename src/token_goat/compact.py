@@ -1930,6 +1930,67 @@ def _rank_symbols_by_recency(entry: FileEntry, now: float) -> list[str]:
     return [item[0] for item in scored_symbols]
 
 
+def _collapse_class_methods(symbols: list[str]) -> list[str]:
+    """Collapse 3+ methods of the same class to "ClassName.* (N methods)".
+
+    When 3 or more methods of the same class are present, collapse them into
+    a single "ClassName.* (N methods)" entry to save manifest tokens. Classes
+    are detected using the ClassName.method_name pattern.
+
+    Examples:
+        ["Session.load", "Session.save", "Session.refresh"] → ["Session.* (3 methods)"]
+        ["Session.load", "Session.save"] → ["Session.load", "Session.save"]  # not collapsed
+        ["parse", "is_valid", "Session.refresh"] → ["parse", "is_valid", "Session.refresh"]
+
+    Args:
+        symbols: List of symbol names, potentially with ClassName.method patterns.
+
+    Returns:
+        A new list with 3+ methods of the same class collapsed into a single entry.
+    """
+    if not symbols:
+        return []
+
+    # Group symbols by class name
+    class_methods: dict[str, list[str]] = {}
+    non_methods: list[str] = []
+
+    for symbol in symbols:
+        if "." in symbol:
+            parts = symbol.rsplit(".", 1)
+            if len(parts) == 2:
+                class_name, method = parts
+                # Only treat as a method if class name looks like a class (starts with uppercase)
+                if class_name and class_name[0].isupper():
+                    if class_name not in class_methods:
+                        class_methods[class_name] = []
+                    class_methods[class_name].append(method)
+                else:
+                    non_methods.append(symbol)
+            else:
+                non_methods.append(symbol)
+        else:
+            non_methods.append(symbol)
+
+    # Build result: collapsed groups + individual non-methods
+    result: list[str] = []
+
+    # Add collapsed class methods
+    for class_name in sorted(class_methods.keys()):
+        methods = class_methods[class_name]
+        if len(methods) >= 3:
+            result.append(f"{class_name}.* ({len(methods)} methods)")
+        else:
+            # 1-2 methods: keep them individually
+            for method in methods:
+                result.append(f"{class_name}.{method}")
+
+    # Add non-methods
+    result.extend(non_methods)
+
+    return result
+
+
 def _dedup_symbols_across_files(
     entries: list,  # list[FileEntry]
     now: float,
@@ -4681,10 +4742,13 @@ def _render(
             else:
                 stale_removed = 0
 
+            # Task: Apply class method grouping when 3+ methods share the same class
+            grouped_symbols = _collapse_class_methods(filtered_symbols)
+
             dupes_removed = len(ranked_symbols) - len(deduped_symbols)
             cross_file_dupes = len(deduped_symbols) - len(filtered_symbols) - stale_removed
-            syms = [sanitize_log_str(s, max_len=80) for s in filtered_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
-            overflow = len(filtered_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
+            syms = [sanitize_log_str(s, max_len=80) for s in grouped_symbols[:_MAX_SYMBOLS_PER_FILE_ENTRY]]
+            overflow = len(grouped_symbols) - _MAX_SYMBOLS_PER_FILE_ENTRY
             dupe_note = f" (+{dupes_removed} dupes)" if dupes_removed >= 3 else ""
             xfile_note = f" (-{cross_file_dupes} xfile)" if cross_file_dupes >= 1 else ""
             stale_note = f" (-{stale_removed} stale)" if stale_removed >= 1 else ""
