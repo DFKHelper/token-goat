@@ -17,6 +17,7 @@ Dataclasses:
 from __future__ import annotations
 
 __all__ = [
+    "CommandStat",
     "DayStat",
     "KindStat",
     "ProjectStat",
@@ -113,6 +114,20 @@ class SourceStat:
 
 
 @dataclass
+class CommandStat:
+    """Statistics for one CLI command (symbol, read, section, semantic, outline, etc.).
+
+    CLI commands may record multiple underlying kinds (e.g., section_replacement +
+    section_read both map to the "section" command). This view shows which command
+    is most valuable for the user.
+    """
+    command: str
+    bytes: int
+    tokens: int
+    events: int
+
+
+@dataclass
 class StatsData:
     """Complete stats payload for a reporting period: totals, by-kind, by-day, and by-project breakdowns.
 
@@ -122,6 +137,8 @@ class StatsData:
     by_source: Sorted desc by bytes; collapses raw kinds into image/hint/read/compact/other.
         Defaults to empty so older callers that built StatsData before by_source
         shipped still construct without modification.
+    by_command: Sorted desc by bytes; breaks down savings by CLI command (symbol, read, section, etc.).
+        Defaults to empty so older callers / cached snapshots still load.
     version: Loaded token-goat package version string (e.g. "0.6.1"); "" when unknown.
     """
     period_start: date
@@ -137,6 +154,9 @@ class StatsData:
     # Sorted desc by bytes.  Optional and defaults to empty so older callers /
     # cached StatsData snapshots built before by_source shipped still load.
     by_source: list[SourceStat] = field(default_factory=list)
+    # Sorted desc by bytes. Optional and defaults to empty so older callers /
+    # cached StatsData snapshots built before by_command shipped still load.
+    by_command: list[CommandStat] = field(default_factory=list)
     # Loaded token-goat package version, e.g. "0.6.1".  Defaults to "" so older
     # callers / cached snapshots built before this field shipped still load; the
     # renderer omits the version suffix when it is empty.

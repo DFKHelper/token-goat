@@ -33,7 +33,7 @@ from typing import TypedDict, cast
 
 from ..util import get_logger
 from .ansi import RESET, RGB, C, fg, lerp_rgb, pad_l, pad_r, strip_ansi, vlen
-from .types import DayStat, KindStat, ProjectStat, SourceStat, StatsData
+from .types import CommandStat, DayStat, KindStat, ProjectStat, SourceStat, StatsData
 
 _LOG = get_logger("render.stats_renderer")
 
@@ -646,6 +646,40 @@ def _render_by_source_section(stats: StatsData) -> list[str]:
     return lines
 
 
+def _render_by_command_section(stats: StatsData) -> list[str]:
+    """Render the "By command" table: one row per CLI command.
+
+    CLI commands (symbol, read, section, semantic, outline, refs, exports, skeleton, map)
+    are aggregated by the commands that save the most tokens. Rows render bytes saved,
+    tokens saved, share of the period total, and an event count using the same column
+    layout as the by-kind / by-day / by-project sections.
+
+    Returns ``[]`` when ``stats.by_command`` is empty so older callers that construct
+    ``StatsData`` without a by_command rollup still render cleanly.
+    """
+    if not stats.by_command:
+        return []
+
+    lines: list[str] = [*_section_header("By command"), _table_header("command")]
+
+    # Bar scaling: positive-only gross so the widest positive bar reaches 100%.
+    gross_bytes, share_bytes_denom, share_tokens_denom = _compute_share_denominators(stats.by_command)
+
+    def _share(c: CommandStat) -> float:
+        """Fraction of the period total this command represents."""
+        return _abs_share(c.bytes, c.tokens, share_bytes_denom, share_tokens_denom)
+
+    # Rows are ordered by share of the period total, largest first.
+    for c in sorted(stats.by_command, key=_share, reverse=True):
+        share = _share(c)
+        lines.append(_table_row(
+            c.command, _bar_fraction(c.bytes, gross_bytes), c.bytes, c.tokens, c.events, share,
+            name_color=C.TEXT_PRIMARY,
+        ))
+
+    return lines
+
+
 # ── Shared: project bullet colours ─────────────────────────────────────────────────
 
 _PROJECT_COLORS: list[RGB] = [C.PURPLE, C.TEAL, C.BLUE, C.GREEN4, C.TEXT_MUTED]
@@ -800,6 +834,7 @@ def render_stats(stats: StatsData) -> str:
         _render_kpi_section(stats),
         _render_by_kind_section(stats),
         _render_by_source_section(stats),
+        _render_by_command_section(stats),
         _render_by_day_section(stats),
         _render_by_project_section(stats),
         _render_insights_section(stats),

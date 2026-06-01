@@ -58,6 +58,7 @@ def stats(
                     "by_kind": summary.by_kind,
                     "by_day": summary.by_day,
                     "by_project": summary.by_project,
+                    "by_command": summary.by_command,
                     "window_days": summary.window_days,
                 },
                 separators=(",", ":"),

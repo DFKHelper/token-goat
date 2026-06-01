@@ -1195,3 +1195,81 @@ class TestLookupStatRecording:
         assert bash_bucket["events"] >= 3
         # Sums should include all three rows even though the kind names differ.
         assert bash_bucket["bytes_saved"] >= 1700
+
+
+class TestByCommandAggregation:
+    """Test stats.summarize() aggregation of by_command breakdown."""
+
+    def test_by_command_empty_when_no_cli_commands(self, tmp_data_dir):
+        """by_command is empty when no CLI command kinds are recorded."""
+        db.record_stat(None, "image_shrink", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "session_hint", bytes_saved=500, tokens_saved=125)
+        summary = stats.summarize(window_days=30)
+        assert summary.by_command == []
+
+    def test_by_command_single_read_command(self, tmp_data_dir):
+        """Single read_replacement kind aggregates into read command."""
+        db.record_stat(None, "read_replacement", bytes_saved=1000, tokens_saved=250)
+        summary = stats.summarize(window_days=30)
+        assert len(summary.by_command) == 1
+        assert summary.by_command[0]["command"] == "read"
+        assert summary.by_command[0]["bytes_saved"] == 1000
+        assert summary.by_command[0]["tokens_saved"] == 250
+        assert summary.by_command[0]["events"] == 1
+
+    def test_by_command_multiple_commands(self, tmp_data_dir):
+        """Multiple CLI commands are aggregated separately."""
+        db.record_stat(None, "read_replacement", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "outline", bytes_saved=500, tokens_saved=125)
+        db.record_stat(None, "exports", bytes_saved=200, tokens_saved=50)
+        summary = stats.summarize(window_days=30)
+        assert len(summary.by_command) == 3
+        commands = {c["command"]: c for c in summary.by_command}
+        assert commands["read"]["bytes_saved"] == 1000
+        assert commands["outline"]["bytes_saved"] == 500
+        assert commands["exports"]["bytes_saved"] == 200
+
+    def test_by_command_section_combines_multiple_kinds(self, tmp_data_dir):
+        """section command aggregates both section_replacement and section_read kinds."""
+        db.record_stat(None, "section_replacement", bytes_saved=600, tokens_saved=150)
+        db.record_stat(None, "section_read", bytes_saved=400, tokens_saved=100)
+        summary = stats.summarize(window_days=30)
+        assert len(summary.by_command) == 1
+        assert summary.by_command[0]["command"] == "section"
+        assert summary.by_command[0]["bytes_saved"] == 1000
+        assert summary.by_command[0]["tokens_saved"] == 250
+        assert summary.by_command[0]["events"] == 2
+
+    def test_by_command_sorted_by_bytes_descending(self, tmp_data_dir):
+        """by_command list is sorted by bytes_saved descending."""
+        db.record_stat(None, "outline", bytes_saved=100, tokens_saved=25)
+        db.record_stat(None, "read_replacement", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "exports", bytes_saved=500, tokens_saved=125)
+        summary = stats.summarize(window_days=30)
+        commands = [c["command"] for c in summary.by_command]
+        assert commands == ["read", "exports", "outline"]
+
+    def test_by_command_in_render_data(self, tmp_data_dir):
+        """by_command is included in _to_stats_data output."""
+        db.record_stat(None, "read_replacement", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "outline", bytes_saved=500, tokens_saved=125)
+        summary = stats.summarize(window_days=30)
+        data = stats._to_stats_data(summary)
+        assert len(data.by_command) == 2
+        commands = {c.command: c for c in data.by_command}
+        assert commands["read"].bytes == 1000
+        assert commands["outline"].bytes == 500
+
+    def test_render_text_includes_by_command_section(self, tmp_data_dir):
+        """render_text includes 'By command' data when by_command is populated."""
+        db.record_stat(None, "read_replacement", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "outline", bytes_saved=500, tokens_saved=125)
+        summary = stats.summarize(window_days=30)
+        # Check that by_command was populated in the summary
+        assert len(summary.by_command) >= 2
+        commands = {c["command"]: c for c in summary.by_command}
+        assert "read" in commands
+        assert "outline" in commands
+        # Render should succeed without error
+        output = stats.render_text(summary)
+        assert output  # Non-empty output

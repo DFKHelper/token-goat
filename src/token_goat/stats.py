@@ -187,6 +187,21 @@ _KIND_PREFIX_TO_SOURCE: tuple[tuple[str, str], ...] = (
     ("bash_compress:", SOURCE_BASH),
 )
 
+# CLI commands that record their own stats with command-specific kinds.
+# Used to group by_kind entries into a by_command breakdown.
+# Maps command_name to the kind(s) it records (some commands may record multiple kinds).
+_COMMAND_KINDS: dict[str, set[str]] = {
+    "symbol": {"symbol_lookup"},
+    "read": {"read_replacement"},
+    "section": {"section_replacement", "section_read"},
+    "semantic": {"semantic_search"},
+    "outline": {"outline"},
+    "exports": {"exports"},
+    "skeleton": {"stub_view"},
+    "refs": {"symbol_read"},  # refs uses symbol_read internally
+    "map": {"map_lookup"},
+}
+
 
 _OVERHEAD_SUFFIX = "_overhead"
 
@@ -403,6 +418,15 @@ class _ProjectRow(TypedDict):
     tokens_saved: int
 
 
+class _CommandRow(TypedDict):
+    """A single by-command aggregation row returned in StatsSummary.by_command."""
+
+    command: str
+    events: int
+    bytes_saved: int
+    tokens_saved: int
+
+
 @dataclass
 class StatsSummary:
     """Aggregated statistics across projects and time.
@@ -413,6 +437,10 @@ class StatsSummary:
     callers can render either view without re-walking the DB.  The field is
     defaulted to an empty dict so callers that construct ``StatsSummary``
     directly (older tests, in-memory cached summaries) still work unmodified.
+
+    ``by_command`` breaks down savings by CLI command (symbol, read, section, etc.)
+    for users who want to see which command is most valuable. It is derived from
+    by_kind at summary time using the _COMMAND_KINDS mapping.
     """
 
     total_events: int
@@ -426,6 +454,9 @@ class StatsSummary:
     # Defaulted so older code paths that construct StatsSummary directly (tests,
     # in-memory cached summaries) still work without modification.
     by_source: dict[str, _StatsBucket] = dataclass_field(default_factory=dict)
+    # command -> {events, bytes_saved, tokens_saved}.  Populated by summarize().
+    # Defaulted so older code paths still work without modification.
+    by_command: list[_CommandRow] = dataclass_field(default_factory=list)
 
 
 def _read_stats(
@@ -579,6 +610,33 @@ def summarize(window_days: int = 30) -> StatsSummary:
         src_bucket["bytes_saved"] += bucket["bytes_saved"]
         src_bucket["tokens_saved"] += bucket["tokens_saved"]
 
+    # Roll up by_kind into CLI commands (symbol, read, section, etc.) so users
+    # can see which command is most valuable.  Commands may record multiple kinds
+    # (e.g., section_replacement + section_read both map to "section").
+    by_command_dict: dict[str, _StatsBucket] = defaultdict(_zero_bucket)
+    for cmd_name, cmd_kinds in _COMMAND_KINDS.items():
+        for kind_name in cmd_kinds:
+            if kind_name in by_kind:
+                bucket = by_kind[kind_name]
+                cmd_bucket = by_command_dict[cmd_name]
+                cmd_bucket["events"] += bucket["events"]
+                cmd_bucket["bytes_saved"] += bucket["bytes_saved"]
+                cmd_bucket["tokens_saved"] += bucket["tokens_saved"]
+
+    by_command_list: list[_CommandRow] = sorted(
+        [
+            _CommandRow(
+                command=cmd,
+                events=v["events"],
+                bytes_saved=v["bytes_saved"],
+                tokens_saved=v["tokens_saved"],
+            )
+            for cmd, v in by_command_dict.items()
+        ],
+        key=operator.itemgetter("bytes_saved"),
+        reverse=True,
+    )
+
     elapsed = time.time() - t0
     _LOG.info("summarize completed: events=%d bytes=%.0f tokens=%d projects_read=%d elapsed=%.3fs",
               total_events, total_bytes, total_tokens, projects_aggregated, elapsed)
@@ -592,6 +650,7 @@ def summarize(window_days: int = 30) -> StatsSummary:
         by_project=by_project_list,
         window_days=window_days,
         by_source=dict(by_source),
+        by_command=by_command_list,
     )
 
 
@@ -645,7 +704,15 @@ def _short_project(root: str) -> str:
 def _to_stats_data(summary: StatsSummary, top_projects: int = 5) -> StatsData:
     """Convert StatsSummary to the render layer's StatsData."""
     from . import __version__  # noqa: PLC0415
-    from .render.types import DayStat, KindStat, ProjectStat, SourceStat, StatsData, TotalStats
+    from .render.types import (
+        CommandStat,
+        DayStat,
+        KindStat,
+        ProjectStat,
+        SourceStat,
+        StatsData,
+        TotalStats,
+    )
 
     today = date.today()
     if summary.window_days > 0:
@@ -721,6 +788,19 @@ def _to_stats_data(summary: StatsSummary, top_projects: int = 5) -> StatsData:
         reverse=True,
     )
 
+    # Per-command breakdown: shows which CLI command (symbol, read, section, etc.)
+    # saved the most tokens. Empty when older summaries (pre by_command rollup)
+    # are passed in, backward-compatible.
+    by_command = [
+        CommandStat(
+            command=c["command"],
+            bytes=c["bytes_saved"],
+            tokens=c["tokens_saved"],
+            events=c["events"],
+        )
+        for c in (summary.by_command or [])
+    ]
+
     return StatsData(
         period_start=period_start,
         period_end=today,
@@ -733,6 +813,7 @@ def _to_stats_data(summary: StatsSummary, top_projects: int = 5) -> StatsData:
         by_day=by_day,
         by_project=by_project,
         by_source=by_source,
+        by_command=by_command,
         version=__version__,
         window_label="all time" if summary.window_days == 0 else f"last {summary.window_days} days",
     )
@@ -962,6 +1043,26 @@ def render_text(
                 _fmt_bytes(v["bytes_saved"]),
                 _fmt_tokens(v["tokens_saved"]),
                 f"{v['events']} ev",
+            )
+        console.print(tbl)
+
+    # ---- By command (symbol / read / section / semantic / etc.) ----
+    # This view shows which CLI command is most valuable to the user.
+    # Useful for understanding which surgical-read variants are being adopted.
+    if summary.by_command:
+        console.print()
+        console.print(Text("By command:", style="bold"))
+        cmds = summary.by_command
+        max_bytes = max((c["bytes_saved"] for c in cmds), default=0)
+        tbl = _make_stats_table("command")
+        for c in cmds:
+            bar, bar_style = _bar_text(c["bytes_saved"], max_bytes)
+            tbl.add_row(
+                c["command"],
+                Text(bar, style=bar_style),
+                _fmt_bytes(c["bytes_saved"]),
+                _fmt_tokens(c["tokens_saved"]),
+                f"{c['events']} ev",
             )
         console.print(tbl)
 
