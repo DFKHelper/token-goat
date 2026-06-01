@@ -46,6 +46,7 @@ __all__ = [
     "load_kind",
     "snapshot_path",
     "store",
+    "symbol_changed_since_read",
 ]
 
 import contextlib
@@ -402,6 +403,65 @@ def cleanup_session(session_id: str) -> int:
         d.rmdir()  # only succeeds when empty; ignore otherwise
     _LOG.debug("snapshots: cleanup_session %s removed=%d", sanitize_log_str(session_id), removed)
     return removed
+
+
+def symbol_changed_since_read(
+    session_id: str,
+    file_path: str,
+    symbol_name: str,
+    current_start_line: int,
+    current_end_line: int,
+    current_text: str,
+) -> bool:
+    """Return True when *symbol_name* in *file_path* differs from what the session last read.
+
+    Compares the symbol's body as it currently appears (``current_text``,
+    extracted from ``current_start_line``..``current_end_line`` of the live
+    file) against the same line range in the stored snapshot.
+
+    Returns False (no warning) when:
+
+    * no snapshot exists for this ``(session_id, file_path)`` pair — the agent
+      has not read the file this session, so there is nothing to compare
+    * the snapshot and current text are identical (symbol is unchanged)
+    * any I/O error occurs — fail-soft, never block the caller
+
+    Returns True only when a snapshot exists AND the symbol body extracted
+    from it differs from ``current_text``.
+    """
+    if not session_id or not file_path or not symbol_name:
+        return False
+    snapshot_bytes = load(session_id, file_path)
+    if snapshot_bytes is None:
+        return False
+    try:
+        snapshot_text = snapshot_bytes.decode("utf-8", errors="replace")
+        snapshot_lines = snapshot_text.splitlines(keepends=True)
+        # Extract the same line range from the snapshot.  current_start_line and
+        # current_end_line are 1-based inclusive positions from the DB.  The
+        # symbol's line numbers reflect the current file; if lines were inserted
+        # before the symbol they will be offset in the snapshot.  We use a
+        # content-search fallback: if the exact line slice matches, we short-
+        # circuit as unchanged; if not, we search for the current body verbatim
+        # to distinguish "lines moved" from "content actually changed".
+        n_lines = current_end_line - current_start_line + 1
+        snap_start = max(0, current_start_line - 1)
+        snap_end = snap_start + n_lines
+        snapshot_slice = "".join(snapshot_lines[snap_start:snap_end]).rstrip("\n")
+        current_stripped = current_text.rstrip("\n")
+        if snapshot_slice == current_stripped:
+            return False
+        # Line-offset check: the body may have moved without changing.  Search for
+        # the current text as a literal substring of the snapshot to handle the
+        # common case of lines inserted/removed *before* the symbol.
+        # Return True only when the body is absent from the snapshot — it changed.
+        return not (current_stripped and current_stripped in snapshot_text)
+    except Exception:  # noqa: BLE001 — fail-soft; never block the caller
+        _LOG.debug(
+            "symbol_changed_since_read: comparison failed for %s::%s",
+            sanitize_log_str(file_path), sanitize_log_str(symbol_name),
+        )
+        return False
 
 
 def cleanup_stale(max_age_hours: float = 24.0) -> int:

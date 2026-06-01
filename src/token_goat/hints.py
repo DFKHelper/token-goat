@@ -31,6 +31,7 @@ __all__ = [
     "ReadHint",
     "build_bash_dedup_hint",
     "build_diff_hint",
+    "build_symbol_stale_hint",
     "build_glob_dedup_hint",
     "build_grep_dedup_hint",
     "build_index_only_file_hint",
@@ -1762,6 +1763,65 @@ def _build_diff_hint_inner(
         added=added_count, removed=removed_count,
         wasted=tokens_saved,
     )
+
+
+# ---------------------------------------------------------------------------
+# Symbol-level stale-edit hint
+# ---------------------------------------------------------------------------
+
+
+def build_symbol_stale_hint(
+    *,
+    session_id: str,
+    file_path: str,
+    symbol_name: str,
+    current_start_line: int,
+    current_end_line: int,
+    current_text: str,
+) -> str | None:
+    """Return a warning string when *symbol_name* changed since the agent last read it.
+
+    Called by ``token-goat read`` and ``token-goat symbol`` just before emitting
+    the symbol body.  Checks whether the agent's prior snapshot of *file_path*
+    contains the same body as *current_text*; if not, returns a one-line warning
+    that the agent can prepend to the output.
+
+    Returns ``None`` when:
+
+    * the agent has not read the file this session (no snapshot)
+    * the symbol body is unchanged
+    * ``session_id`` is absent (CLI invocations without ``--session-id``)
+    * any error occurs (fail-soft)
+
+    The return value is intentionally a plain ``str`` (not ``ReadHint``) because
+    the caller emits it to stdout before the symbol body — it is not injected
+    into ``additionalContext`` and tokens_saved does not apply.
+    """
+    if not session_id or not file_path or not symbol_name:
+        return None
+    try:
+        changed = snapshots.symbol_changed_since_read(
+            session_id=session_id,
+            file_path=file_path,
+            symbol_name=symbol_name,
+            current_start_line=current_start_line,
+            current_end_line=current_end_line,
+            current_text=current_text,
+        )
+        if not changed:
+            return None
+        safe_file = _sanitize_hint_path(file_path)
+        safe_sym = _sanitize_hint_path(symbol_name)
+        return (
+            f"⚠ {safe_file}::{safe_sym} was modified since your last read. "
+            "The function body may have changed."
+        )
+    except Exception:  # noqa: BLE001 — fail-soft; never block the caller
+        _LOG.debug(
+            "build_symbol_stale_hint: unexpected error for %r::%r",
+            file_path, symbol_name,
+        )
+        return None
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ from typing import NamedTuple, TypedDict
 
 import typer
 
-from . import db, read_replacement, session
+from . import db, hints, read_replacement, session
 from .project import Project, find_project
 from .util import get_logger
 
@@ -742,6 +742,22 @@ def _run_read_like_command(
 
     # Apply smart truncation to the result text (no-op when full=True or body is short).
     display_text = read_replacement.truncate_symbol_body(result["text"], full=full)
+
+    # Symbol-level stale-edit hint: warn the agent when the symbol body has changed
+    # since the session's last snapshot of this file.  Only fires for symbol reads
+    # (not section/line-range reads) when a session_id is provided.  Emitted to
+    # stderr so it appears before the body without corrupting JSON or piped output.
+    if session_id and separator_label == "symbol":
+        stale_hint = hints.build_symbol_stale_hint(
+            session_id=session_id,
+            file_path=str(file_target.project.root / file_target.rel_path),
+            symbol_name=result.get("symbol", item_part),
+            current_start_line=result.get("start_line", 1),
+            current_end_line=result.get("end_line", 1),
+            current_text=result.get("text", ""),
+        )
+        if stale_hint:
+            typer.echo(stale_hint, err=True)
 
     # Emit a cross-project attribution note when the result came from a
     # different project than the shell's cwd.  The user needs to know the
