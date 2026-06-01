@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import signal
 import sys
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -549,3 +551,280 @@ def test_graceful_shutdown_clears_pid_before_exit() -> None:
 
     mock_clear.assert_called_once()
     mock_exit.assert_called_once_with(0)
+
+
+# ---------------------------------------------------------------------------
+# WatchdogThread tests
+# ---------------------------------------------------------------------------
+
+
+def test_watchdog_restarts_on_unexpected_exit(tmp_data_dir):
+    """WatchdogThread calls launch_fn when the watched PID disappears without a graceful stop."""
+    # Use a two-phase reader: first return our live PID so the watchdog latches,
+    # then return a dead PID to simulate unexpected worker exit.
+    _DEAD_PID = 999997
+    current_pid = [os.getpid()]  # start: alive
+    launched = threading.Event()
+
+    original_pid_alive = daemon._pid_is_alive
+
+    def _patched_pid_alive(pid: int) -> bool:
+        if pid == _DEAD_PID:
+            return False
+        return original_pid_alive(pid)
+
+    def _fake_pid_reader() -> int:
+        return current_pid[0]
+
+    def _fake_launch() -> int | None:
+        launched.set()
+        return os.getpid()  # return a new valid PID
+
+    with patch.object(daemon, "_pid_is_alive", _patched_pid_alive):
+        wd = daemon.WatchdogThread(
+            pid_file_reader=_fake_pid_reader,
+            launch_fn=_fake_launch,
+            retry_delay=0.05,
+            poll_interval=0.02,
+        )
+        wd.start()
+
+        # Let the watchdog latch onto our live PID.
+        time.sleep(0.1)
+
+        # Switch to the dead PID to simulate unexpected worker exit.
+        current_pid[0] = _DEAD_PID
+
+        # Watchdog should detect the vanished PID and call launch_fn.
+        assert launched.wait(timeout=2.0), "watchdog did not restart the worker after unexpected exit"
+
+        wd.stop()
+        wd.join(timeout=1.0)
+
+
+def test_watchdog_stops_after_max_retries(tmp_data_dir):
+    """WatchdogThread stops calling launch_fn once max_retries is exhausted in the window."""
+    launch_count = [0]
+    # Use a PID that is definitely dead (very large number unlikely to be a running process).
+    _DEAD_PID = 999999
+
+    # Patch _pid_is_alive so that _DEAD_PID always appears dead.
+    original_pid_alive = daemon._pid_is_alive
+
+    def _patched_pid_alive(pid: int) -> bool:
+        if pid == _DEAD_PID:
+            return False
+        return original_pid_alive(pid)
+
+    def _fake_pid_reader() -> int:
+        return _DEAD_PID  # always return the dead PID so the watchdog latches and retries
+
+    def _fake_launch() -> int | None:
+        launch_count[0] += 1
+        return None  # keep returning None — watchdog keeps the dead PID and retries
+
+    with patch.object(daemon, "_pid_is_alive", _patched_pid_alive):
+        wd = daemon.WatchdogThread(
+            pid_file_reader=_fake_pid_reader,
+            launch_fn=_fake_launch,
+            max_retries=3,
+            window_secs=60.0,
+            retry_delay=0.01,
+            poll_interval=0.02,
+        )
+        wd.start()
+
+        # Watchdog should stop on its own after max_retries.
+        wd.join(timeout=5.0)
+
+    # The watchdog should have stopped on its own (thread finished).
+    assert not wd.is_alive(), "watchdog thread should have stopped after exhausting max_retries"
+    assert launch_count[0] >= 3, f"expected at least 3 launch attempts, got {launch_count[0]}"
+
+
+def test_watchdog_graceful_stop_prevents_restart(tmp_data_dir):
+    """Calling watchdog.stop() before PID disappears prevents spurious restart."""
+    _DEAD_PID = 999996
+    current_pid = [os.getpid()]  # start: alive
+    launched = threading.Event()
+
+    original_pid_alive = daemon._pid_is_alive
+
+    def _patched_pid_alive(pid: int) -> bool:
+        if pid == _DEAD_PID:
+            return False
+        return original_pid_alive(pid)
+
+    def _fake_pid_reader() -> int:
+        return current_pid[0]
+
+    def _fake_launch() -> int | None:
+        launched.set()
+        return os.getpid()
+
+    with patch.object(daemon, "_pid_is_alive", _patched_pid_alive):
+        wd = daemon.WatchdogThread(
+            pid_file_reader=_fake_pid_reader,
+            launch_fn=_fake_launch,
+            retry_delay=0.05,
+            poll_interval=0.02,
+        )
+        wd.start()
+
+        # Let the watchdog latch onto our live PID.
+        time.sleep(0.1)
+
+        # Signal graceful stop BEFORE making the PID disappear.
+        wd.stop()
+
+        # Now simulate PID gone — watchdog must ignore it since stop() was called.
+        current_pid[0] = _DEAD_PID
+
+        wd.join(timeout=1.0)
+
+    assert not launched.is_set(), "watchdog must not restart after graceful stop() was called"
+
+
+def test_watchdog_disabled_by_config(tmp_data_dir):
+    """run_daemon does not start a watchdog when worker.watchdog_enabled=False."""
+    import token_goat.config as _config_mod
+
+    stop = threading.Event()
+    stop.set()
+
+    mock_wd_instances = []
+
+    class _TrackedWatchdog(daemon.WatchdogThread):
+        def __init__(self, **kwargs):
+            mock_wd_instances.append(self)
+            super().__init__(**kwargs)
+
+        def start(self):
+            pass  # prevent actual thread start
+
+        def stop(self):
+            pass
+
+    from token_goat.config import Config, WorkerConfig
+    fake_cfg = Config()
+    fake_cfg.worker = WorkerConfig(watchdog_enabled=False)
+
+    with (
+        patch("token_goat.worker_daemon.WatchdogThread", _TrackedWatchdog),
+        patch.object(_config_mod, "load", return_value=fake_cfg),
+        patch.object(worker, "cleanup_on_startup", return_value={}),
+        patch.object(worker, "drain_dirty_queue", return_value=[]),
+        patch.object(worker, "_heartbeat"),
+        patch.object(worker, "_try_claim_worker_slot", return_value=3),
+        patch.object(worker, "_clear_pid"),
+        patch.object(worker, "_write_pid"),
+        patch.object(worker, "_register_autostart"),
+        patch.object(daemon, "_install_signal_handlers"),
+        patch("os.close"),
+    ):
+        daemon.run_daemon(stop_event=stop)
+
+    assert len(mock_wd_instances) == 0, "WatchdogThread must not be instantiated when watchdog_enabled=False"
+
+
+def test_watchdog_stop_called_on_graceful_daemon_shutdown(tmp_data_dir):
+    """run_daemon calls watchdog.stop() in its finally block on graceful shutdown."""
+    import token_goat.config as _config_mod
+
+    stop = threading.Event()
+    stop.set()
+
+    stop_called = threading.Event()
+
+    class _FakeWatchdog:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def stop(self):
+            stop_called.set()
+
+    from token_goat.config import Config, WorkerConfig
+    fake_cfg = Config()
+    fake_cfg.worker = WorkerConfig(watchdog_enabled=True)
+
+    with (
+        patch("token_goat.worker_daemon.WatchdogThread", _FakeWatchdog),
+        patch.object(_config_mod, "load", return_value=fake_cfg),
+        patch.object(worker, "cleanup_on_startup", return_value={}),
+        patch.object(worker, "drain_dirty_queue", return_value=[]),
+        patch.object(worker, "_heartbeat"),
+        patch.object(worker, "_try_claim_worker_slot", return_value=3),
+        patch.object(worker, "_clear_pid"),
+        patch.object(worker, "_write_pid"),
+        patch.object(worker, "_register_autostart"),
+        patch.object(daemon, "_install_signal_handlers"),
+        patch("os.close"),
+    ):
+        daemon.run_daemon(stop_event=stop)
+
+    assert stop_called.is_set(), "run_daemon must call watchdog.stop() in finally block"
+
+
+def test_watchdog_pid_unknown_does_not_trigger_restart(tmp_data_dir):
+    """WatchdogThread does not call launch_fn when PID file reader always returns _PID_UNKNOWN."""
+    launched = threading.Event()
+
+    def _fake_pid_reader() -> int:
+        return daemon._PID_UNKNOWN
+
+    def _fake_launch() -> int | None:
+        launched.set()
+        return None
+
+    wd = daemon.WatchdogThread(
+        pid_file_reader=_fake_pid_reader,
+        launch_fn=_fake_launch,
+        retry_delay=0.01,
+        poll_interval=0.02,
+    )
+    wd.start()
+
+    time.sleep(0.2)
+    wd.stop()
+    wd.join(timeout=1.0)
+
+    assert not launched.is_set(), "watchdog must not restart when no PID has been latched"
+
+
+def test_watchdog_launch_fn_exception_does_not_crash_watchdog(tmp_data_dir):
+    """A crashing launch_fn is caught; the watchdog continues operating."""
+    call_count = [0]
+    _DEAD_PID = 999998
+
+    original_pid_alive = daemon._pid_is_alive
+
+    def _patched_pid_alive(pid: int) -> bool:
+        if pid == _DEAD_PID:
+            return False
+        return original_pid_alive(pid)
+
+    def _fake_pid_reader() -> int:
+        return _DEAD_PID  # always return the dead PID
+
+    def _bad_launch() -> int | None:
+        call_count[0] += 1
+        raise RuntimeError("launch exploded")
+
+    with patch.object(daemon, "_pid_is_alive", _patched_pid_alive):
+        wd = daemon.WatchdogThread(
+            pid_file_reader=_fake_pid_reader,
+            launch_fn=_bad_launch,
+            max_retries=2,
+            retry_delay=0.01,
+            poll_interval=0.02,
+        )
+        wd.start()
+
+        # Watchdog should call launch_fn, catch the exception, and eventually give up.
+        wd.join(timeout=3.0)
+
+    assert not wd.is_alive(), "watchdog should stop after max_retries even when launch_fn raises"
+    assert call_count[0] >= 1, "launch_fn should have been called at least once"

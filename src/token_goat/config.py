@@ -14,6 +14,7 @@ __all__ = [
     "SkillPreservationConfig",
     "StatsConfig",
     "WebFetchConfig",
+    "WorkerConfig",
     "CONFIG_SCHEMA_VERSION",
     "load",
     "save",
@@ -58,6 +59,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_WEB_CACHE_MAX_BYTES",
     "TOKEN_GOAT_BASH_CACHE_MAX_FILES",
     "TOKEN_GOAT_BASH_CACHE_MAX_BYTES",
+    "TOKEN_GOAT_WORKER_WATCHDOG",
 )
 
 
@@ -96,6 +98,7 @@ _ENV_WEB_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_FILES"  # integ
 _ENV_WEB_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_BYTES"  # integer override (bytes)
 _ENV_BASH_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_FILES"  # integer override (file count)
 _ENV_BASH_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES"  # integer override (bytes)
+_ENV_WORKER_WATCHDOG: Final[str] = "TOKEN_GOAT_WORKER_WATCHDOG"  # set to "0"/"false"/"no"/"off" to disable
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -136,6 +139,7 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
     "stats",
     "hints",
     "webfetch",
+    "worker",
 ])
 
 
@@ -287,6 +291,12 @@ class _WebFetchToml(TypedDict, total=False):
     max_bytes: int
 
 
+class _WorkerToml(TypedDict, total=False):
+    """Expected shape of the [worker] TOML section."""
+
+    watchdog_enabled: bool
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -302,6 +312,7 @@ class _ConfigToml(TypedDict, total=False):
     stats: _StatsToml
     hints: _HintsToml
     webfetch: _WebFetchToml
+    worker: _WorkerToml
 
 
 @dataclass
@@ -740,6 +751,24 @@ class WebFetchConfig:
 
 
 @dataclass
+class WorkerConfig:
+    """Configuration for the background worker daemon.
+
+    Controls behaviour of the long-running indexing worker process that drains
+    the dirty queue and runs periodic maintenance tasks.
+
+    Attributes:
+        watchdog_enabled: When True (default), a watchdog thread monitors the
+            worker process and restarts it automatically if it exits unexpectedly
+            (not via a graceful stop signal).  Set to False to disable auto-restart.
+            Can also be disabled at runtime by setting ``TOKEN_GOAT_WORKER_WATCHDOG=0``
+            (or ``false``/``no``/``off``).
+    """
+
+    watchdog_enabled: bool = True
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -759,6 +788,7 @@ class Config:
     stats: StatsConfig = field(default_factory=StatsConfig)
     hints: HintsConfig = field(default_factory=HintsConfig)
     webfetch: WebFetchConfig = field(default_factory=WebFetchConfig)
+    worker: WorkerConfig = field(default_factory=WorkerConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -1164,6 +1194,14 @@ def load() -> Config:
         _ENV_WEB_CACHE_MAX_BYTES, wf_cfg.max_bytes, 1024, 4 * 1024 * 1024 * 1024, "webfetch.max_bytes"
     )
 
+    wk_raw: _WorkerToml = cast("_WorkerToml", raw.get("worker", {}))
+    wk = WorkerConfig(
+        watchdog_enabled=_validated_bool(
+            wk_raw.get("watchdog_enabled", True), True, "worker.watchdog_enabled"
+        ),
+    )
+    _apply_env_disable(wk, "watchdog_enabled", _ENV_WORKER_WATCHDOG, "worker.watchdog_enabled")
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d cache_files=%d cache_bytes=%d; "
@@ -1175,7 +1213,8 @@ def load() -> Config:
         "repomap compact_file_threshold=%d; "
         "stats record_zero_savings=%s; "
         "hints suppress_after_ignored=%d quiet_hours=%r; "
-        "webfetch allow=%s deny=%s max_files=%d max_bytes=%d",
+        "webfetch allow=%s deny=%s max_files=%d max_bytes=%d; "
+        "worker watchdog_enabled=%s",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -1209,11 +1248,12 @@ def load() -> Config:
         wf_cfg.deny,
         wf_cfg.max_file_count,
         wf_cfg.max_bytes,
+        wk.watchdog_enabled,
     )
     result = Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
         image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, stats=stats,
-        hints=hints_cfg, webfetch=wf_cfg,
+        hints=hints_cfg, webfetch=wf_cfg, worker=wk,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
     return result
@@ -1307,6 +1347,9 @@ def save(config: Config) -> None:
             "deny": config.webfetch.deny,
             "max_file_count": config.webfetch.max_file_count,
             "max_bytes": config.webfetch.max_bytes,
+        },
+        "worker": {
+            "watchdog_enabled": config.worker.watchdog_enabled,
         },
     }
     try:

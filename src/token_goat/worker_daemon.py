@@ -32,6 +32,188 @@ from .util import get_logger
 if TYPE_CHECKING:
     from .worker import CleanupStats, DirtyQueueEntry
 
+# ---------------------------------------------------------------------------
+# Watchdog thread
+# ---------------------------------------------------------------------------
+
+# Sentinel returned by _read_pid_from_file when the PID file is absent or unreadable.
+_PID_UNKNOWN = -1
+
+
+def _read_pid_from_file() -> int:
+    """Return the PID written by the worker, or _PID_UNKNOWN if unavailable."""
+    from . import paths  # noqa: PLC0415
+
+    try:
+        return int(paths.worker_pid_path().read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return _PID_UNKNOWN
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Return True if *pid* is a running process.
+
+    Uses psutil when available (always the case since it is a hard dependency);
+    falls back to os.kill(pid, 0) on POSIX or OpenProcess on Windows.
+    PermissionError / AccessDenied means the process exists but we cannot
+    inspect it — treat as alive.
+    """
+    try:
+        import psutil  # noqa: PLC0415
+
+        return psutil.pid_exists(pid)
+    except ImportError:
+        pass
+    # Fallback: POSIX os.kill signal-0 probe
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True  # process exists but no permission
+    except (ProcessLookupError, OSError):
+        return False
+
+
+class WatchdogThread(threading.Thread):
+    """Background thread that monitors a worker process and restarts it on unexpected exit.
+
+    The watchdog polls every *poll_interval* seconds to check whether the worker
+    PID is still alive.  When the PID disappears and the watchdog has not been
+    signalled to stop (indicating a graceful shutdown), it waits *retry_delay*
+    seconds, then calls *launch_fn()* to start a fresh worker.  It tracks
+    restart attempts inside a sliding window of *window_secs* seconds and gives
+    up after *max_retries* restarts within that window to avoid a tight restart
+    loop on a broken worker.
+
+    Args:
+        pid_file_reader: Callable that returns the current worker PID (int), or
+            _PID_UNKNOWN (-1) when the PID file is absent or unreadable.
+        launch_fn: Callable that starts the worker and returns its PID (or None
+            on failure).  Called from the watchdog thread on each restart.
+        max_retries: Maximum number of restarts allowed within *window_secs*.
+            Default 5.
+        window_secs: Sliding window duration (seconds) for the retry counter.
+            Default 600 (10 minutes).
+        retry_delay: Seconds to wait after detecting an unexpected exit before
+            calling *launch_fn*.  Default 5.
+        poll_interval: Seconds between liveness checks.  Default 2.
+    """
+
+    def __init__(
+        self,
+        pid_file_reader: Callable[[], int],
+        launch_fn: Callable[[], int | None],
+        *,
+        max_retries: int = 5,
+        window_secs: float = 600.0,
+        retry_delay: float = 5.0,
+        poll_interval: float = 2.0,
+    ) -> None:
+        super().__init__(name="token-goat-watchdog", daemon=True)
+        self._pid_file_reader = pid_file_reader
+        self._launch_fn = launch_fn
+        self._max_retries = max_retries
+        self._window_secs = window_secs
+        self._retry_delay = retry_delay
+        self._poll_interval = poll_interval
+        self._stop_event = threading.Event()
+        # List of monotonic timestamps for each restart attempt (used for window eviction).
+        self._restart_times: list[float] = []
+
+    def stop(self) -> None:
+        """Signal the watchdog to exit cleanly.  Non-blocking."""
+        self._stop_event.set()
+
+    def _retries_in_window(self) -> int:
+        """Return the count of restart attempts within the current window."""
+        cutoff = time.monotonic() - self._window_secs
+        self._restart_times = [t for t in self._restart_times if t >= cutoff]
+        return len(self._restart_times)
+
+    def run(self) -> None:
+        """Main watchdog loop.  Runs in a background daemon thread."""
+        _LOG.debug("watchdog thread started")
+        watched_pid: int = _PID_UNKNOWN
+        try:
+            while not self._stop_event.is_set():
+                self._stop_event.wait(timeout=self._poll_interval)
+                if self._stop_event.is_set():
+                    break
+
+                current_pid = self._pid_file_reader()
+
+                # If we have a valid PID and the worker just came up (or we
+                # haven't tracked one yet), latch onto it.
+                if current_pid != _PID_UNKNOWN:
+                    watched_pid = current_pid
+
+                # If we don't have a PID to watch yet, nothing to do.
+                if watched_pid == _PID_UNKNOWN:
+                    continue
+
+                # Check liveness.
+                if _pid_is_alive(watched_pid):
+                    continue
+
+                # PID is gone.  If the stop event is set this is a graceful
+                # shutdown — do not restart.
+                if self._stop_event.is_set():
+                    break
+
+                # Unexpected exit detected.
+                _LOG.warning(
+                    "watchdog: worker pid=%d exited unexpectedly; considering restart",
+                    watched_pid,
+                )
+
+                retries = self._retries_in_window()
+                if retries >= self._max_retries:
+                    _LOG.error(
+                        "watchdog: %d restarts in %.0fs window; giving up to prevent restart loop",
+                        retries,
+                        self._window_secs,
+                    )
+                    break
+
+                # Wait before restarting to avoid a tight loop.
+                _LOG.info(
+                    "watchdog: waiting %.1fs before restart attempt %d/%d",
+                    self._retry_delay,
+                    retries + 1,
+                    self._max_retries,
+                )
+                self._stop_event.wait(timeout=self._retry_delay)
+                if self._stop_event.is_set():
+                    break
+
+                # Attempt restart.
+                _LOG.info(
+                    "watchdog: restarting worker (attempt %d/%d)",
+                    retries + 1,
+                    self._max_retries,
+                )
+                try:
+                    new_pid = self._launch_fn()
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("watchdog: launch_fn raised during restart attempt")
+                    new_pid = None
+
+                if new_pid is not None:
+                    _LOG.info("watchdog: worker restarted, new pid=%d", new_pid)
+                    watched_pid = new_pid
+                else:
+                    _LOG.warning("watchdog: restart attempt returned no PID; will retry")
+                    # Keep watched_pid as-is (the dead PID) so the next poll
+                    # re-enters the "PID gone" branch and can reach the max_retries
+                    # check rather than falling through to the _PID_UNKNOWN early exit.
+
+                self._restart_times.append(time.monotonic())
+
+        except Exception:  # noqa: BLE001
+            _LOG.exception("watchdog thread crashed — watchdog disabled for this session")
+        finally:
+            _LOG.debug("watchdog thread exiting")
+
 _LOG = get_logger("worker")
 
 # Module-level stop event used by signal handlers.  Set by _install_signal_handlers
@@ -256,11 +438,31 @@ def run_daemon(stop_event=None) -> None:
 
     # try/finally so the claim file is always released, even if startup raises before the main loop.
     restart_for_upgrade = False
+    watchdog: WatchdogThread | None = None
     try:
         _worker._clear_pid()
         _worker._write_pid()
         _worker._heartbeat()
         _worker._register_autostart()
+
+        # Start the auto-restart watchdog unless disabled in config.  The watchdog
+        # thread monitors the worker PID file and calls spawn_detached() if the
+        # PID disappears without a graceful-stop signal.  It is a daemon thread so
+        # it cannot block process exit; the finally block always calls watchdog.stop()
+        # to distinguish graceful shutdown from an unexpected exit.
+        try:
+            from . import config as _cfg  # noqa: PLC0415
+            _watchdog_enabled = _cfg.load().worker.watchdog_enabled
+        except Exception:  # noqa: BLE001
+            _watchdog_enabled = True  # fail-open: default to enabled
+
+        if _watchdog_enabled:
+            watchdog = WatchdogThread(
+                pid_file_reader=_read_pid_from_file,
+                launch_fn=_worker.spawn_detached,
+            )
+            watchdog.start()
+            _LOG.debug("watchdog thread started")
 
         stats = cleanup_on_startup()
         if any(stats.values()):
@@ -341,6 +543,10 @@ def run_daemon(stop_event=None) -> None:
                 time.sleep(sleep_for)
     finally:
         _LOG.info("worker shutting down, pid=%s", os.getpid())
+        # Signal the watchdog before clearing the PID file so it knows this is a
+        # graceful exit and does not attempt a spurious respawn.
+        if watchdog is not None:
+            watchdog.stop()
         _worker._clear_pid()
         with contextlib.suppress(OSError):
             os.close(claim_fd)
