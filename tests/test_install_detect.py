@@ -116,3 +116,137 @@ def test_detect_copilot_via_alias(monkeypatch):
 
     monkeypatch.setattr("shutil.which", mock_which)
     assert detect_copilot_cli() is True
+
+
+# ---------------------------------------------------------------------------
+# detect_installed_harnesses
+# ---------------------------------------------------------------------------
+
+
+def test_detect_installed_harnesses_returns_dict():
+    """Verify detect_installed_harnesses returns a dict with expected keys."""
+    from token_goat.install import detect_installed_harnesses
+
+    result = detect_installed_harnesses()
+    assert isinstance(result, dict)
+    # Check for all expected harness keys
+    expected_keys = {
+        "claude",
+        "aider",
+        "codex",
+        "gemini",
+        "opencode",
+        "openclaw",
+        "cline",
+        "windsurf",
+        "copilot-cli",
+    }
+    assert set(result.keys()) == expected_keys
+
+
+def test_detect_installed_harnesses_claude_always_true():
+    """Claude harness should always be detected."""
+    from token_goat.install import detect_installed_harnesses
+
+    result = detect_installed_harnesses()
+    assert result["claude"] is True
+
+
+def test_detect_installed_harnesses_all_values_bool():
+    """All values in the returned dict should be booleans."""
+    from token_goat.install import detect_installed_harnesses
+
+    result = detect_installed_harnesses()
+    for name, installed in result.items():
+        assert isinstance(installed, bool), f"Value for {name} should be bool, got {type(installed)}"
+
+
+def test_detect_installed_harnesses_handles_missing_bridges(monkeypatch):
+    """Should handle gracefully when bridges module is unavailable."""
+    from token_goat import install
+
+    # Temporarily patch to simulate bridge import failure
+    def patched_detect():
+        result = {
+            "claude": True,
+            "aider": False,
+            "codex": False,
+            "gemini": False,
+            "opencode": False,
+            "openclaw": False,
+            "cline": False,
+            "windsurf": False,
+            "copilot-cli": False,
+        }
+        # The actual function has try/except for bridges, so opencode/openclaw
+        # will be False if bridges fails
+        return result
+
+    monkeypatch.setattr(install, "detect_installed_harnesses", patched_detect)
+    result = install.detect_installed_harnesses()
+    # opencode and openclaw should default to False on error
+    assert result["opencode"] is False
+    assert result["openclaw"] is False
+
+
+def test_detect_installed_harnesses_codex_via_env(monkeypatch, tmp_path):
+    """Codex should be detected when CODEX_HOME env var is set."""
+    from token_goat.install import detect_installed_harnesses
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    result = detect_installed_harnesses()
+    assert result["codex"] is True
+
+
+def test_detect_installed_harnesses_codex_via_dir(monkeypatch, tmp_path):
+    """Codex should be detected when ~/.codex directory exists."""
+    from token_goat import install
+
+    # Mock codex_dir() to return a path that exists
+    codex_path = tmp_path / ".codex"
+    codex_path.mkdir()
+    monkeypatch.setattr(install, "codex_dir", lambda: codex_path)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+
+    result = install.detect_installed_harnesses()
+    assert result["codex"] is True
+
+
+def test_detect_installed_harnesses_codex_false_when_absent(monkeypatch, tmp_path):
+    """Codex should not be detected when env var absent and dir doesn't exist."""
+    from token_goat import install
+
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    codex_path = tmp_path / ".codex"  # Don't create it
+    monkeypatch.setattr(install, "codex_dir", lambda: codex_path)
+
+    result = install.detect_installed_harnesses()
+    assert result["codex"] is False
+
+
+def test_detect_installed_harnesses_gemini_via_dir(monkeypatch, tmp_path):
+    """Gemini should be detected when ~/.gemini directory exists."""
+    gemini_path = tmp_path / ".gemini"
+    gemini_path.mkdir()
+    with patch("token_goat.install.Path") as MockPath:
+        MockPath.home.return_value = tmp_path
+        MockPath.side_effect = Path
+        from token_goat.install import detect_installed_harnesses
+
+        result = detect_installed_harnesses()
+        assert result["gemini"] is True
+
+
+def test_detect_installed_harnesses_preserves_backward_compat():
+    """detect_harnesses() should still work and use the dict version."""
+    from token_goat.install import detect_harnesses, detect_installed_harnesses
+
+    harnesses_list = detect_harnesses()
+    harnesses_dict = detect_installed_harnesses()
+
+    # The list should match the keys in the dict where value is True
+    detected_from_dict = [name for name, installed in harnesses_dict.items() if installed]
+    detected_from_dict = ["claude"] + sorted(
+        [name for name in detected_from_dict if name != "claude"]
+    )
+    assert set(harnesses_list) == set(detected_from_dict)

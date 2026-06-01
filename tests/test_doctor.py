@@ -507,7 +507,11 @@ class TestDoctorInstallationStatus:
         monkeypatch.setattr(_install, "_check_settings_json", lambda: "not installed")
         monkeypatch.setattr(_install, "_check_claude_md", lambda: "not installed")
         monkeypatch.setattr(_install, "_check_skill", lambda: "not installed")
-        with patch.object(_install, "detect_harnesses", return_value=["claude"]):
+        with patch.object(
+            _install,
+            "detect_installed_harnesses",
+            return_value={"claude": True, "codex": False, "aider": False, "gemini": False, "opencode": False, "openclaw": False, "cline": False, "windsurf": False, "copilot-cli": False},
+        ):
             result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0, result.stdout
         assert "Installation" in result.stdout
@@ -521,7 +525,11 @@ class TestDoctorInstallationStatus:
         monkeypatch.setattr(_install, "_check_settings_json", lambda: "installed")
         monkeypatch.setattr(_install, "_check_claude_md", lambda: "installed")
         monkeypatch.setattr(_install, "_check_skill", lambda: "installed")
-        monkeypatch.setattr(_install, "detect_harnesses", lambda: [])
+        monkeypatch.setattr(
+            _install,
+            "detect_installed_harnesses",
+            lambda: {"claude": True, "codex": False, "aider": False, "gemini": False, "opencode": False, "openclaw": False, "cline": False, "windsurf": False, "copilot-cli": False},
+        )
         result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0, result.stdout
         # The Installation section's three core rows are present.
@@ -546,13 +554,21 @@ class TestDoctorInstallationStatus:
         monkeypatch.setattr(_install, "_check_codex_config", lambda: "not installed")
 
         # Case 1: Codex NOT detected → row absent.
-        with patch.object(_install, "detect_harnesses", return_value=["claude"]):
+        with patch.object(
+            _install,
+            "detect_installed_harnesses",
+            return_value={"claude": True, "codex": False, "aider": False, "gemini": False, "opencode": False, "openclaw": False, "cline": False, "windsurf": False, "copilot-cli": False},
+        ):
             result_no_codex = runner.invoke(cli.app, ["doctor"])
         assert result_no_codex.exit_code == 0
         assert "codex config.toml" not in result_no_codex.stdout
 
         # Case 2: Codex detected → row present.
-        with patch.object(_install, "detect_harnesses", return_value=["claude", "codex"]):
+        with patch.object(
+            _install,
+            "detect_installed_harnesses",
+            return_value={"claude": True, "codex": True, "aider": False, "gemini": False, "opencode": False, "openclaw": False, "cline": False, "windsurf": False, "copilot-cli": False},
+        ):
             result_with_codex = runner.invoke(cli.app, ["doctor"])
         assert result_with_codex.exit_code == 0
         assert "codex config.toml" in result_with_codex.stdout

@@ -247,8 +247,13 @@ def doctor(  # noqa: C901
     def _check_harnesses() -> str:
         from . import install as _install  # noqa: PLC0415
 
-        harnesses = _install.detect_harnesses()
-        return ", ".join(harnesses) if harnesses else "none"
+        harnesses_dict = _install.detect_installed_harnesses()
+        found = [name for name, installed in harnesses_dict.items() if installed]
+        # Return in deterministic order: claude first, then others alphabetically
+        if "claude" in found:
+            found.remove("claude")
+        found = ["claude"] + sorted(found)
+        return ", ".join(found) if found else "none"
 
     _check_step("harnesses detected", _check_harnesses, warn=True)
 
@@ -348,10 +353,10 @@ def doctor(  # noqa: C901
             ("skill", _install._check_skill()),
         ]
         try:
-            harnesses = _install.detect_harnesses()
-        except Exception:  # noqa: BLE001 — detect_harnesses is best-effort
-            harnesses = []
-        if "codex" in harnesses:
+            harnesses_dict = _install.detect_installed_harnesses()
+        except Exception:  # noqa: BLE001 — detect_installed_harnesses is best-effort
+            harnesses_dict = {}
+        if harnesses_dict.get("codex", False):
             installation_checks.append(("codex config.toml", _install._check_codex_config()))
         if sys.platform == "win32":
             installation_checks.append(("worker autostart", _install._check_worker_task()))

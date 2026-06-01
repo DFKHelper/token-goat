@@ -1843,13 +1843,11 @@ def detect_copilot_cli() -> bool:
     return bool(shutil.which("copilot") or shutil.which("github-copilot-cli"))
 
 
-def detect_harnesses() -> list[str]:
-    """Return a list of harness names that appear to be present on this machine.
+def detect_installed_harnesses() -> dict[str, bool]:
+    """Return a dict of harness name -> bool indicating presence on this machine.
 
     Detection is purely heuristic — a harness is "detected" when one of its
-    well-known environment variables or directories is present.  The list is
-    ordered for display: Claude Code first (always present when token-goat is
-    in use), then others alphabetically.
+    well-known environment variables or directories is present.
 
     Harnesses checked:
     - ``claude`` — always present (token-goat only makes sense inside Claude Code).
@@ -1859,40 +1857,62 @@ def detect_harnesses() -> list[str]:
     - ``gemini``  — detected when ``~/.gemini/`` exists (Gemini CLI stores its config there).
     - ``opencode`` — detected when the opencode plugins dir exists.
     - ``openclaw`` — detected when ``~/.openclaw/`` exists.
+    - ``cline``    — detected when the ``cline`` or ``claude-dev`` binary is on PATH or package is importable.
+    - ``windsurf`` — detected when ``windsurf`` binary is on PATH or config dir exists.
+    - ``copilot-cli`` — detected when ``copilot`` or ``github-copilot-cli`` binary is on PATH.
     """
-    found: list[str] = ["claude"]  # always present
+    result: dict[str, bool] = {}
 
-    if detect_aider():
-        found.append("aider")
+    # Claude Code: always present (token-goat only makes sense inside Claude Code).
+    result["claude"] = True
+
+    # Aider
+    result["aider"] = detect_aider()
 
     # Codex: env var takes precedence; fall back to directory probe.
     codex_home_env = os.environ.get("CODEX_HOME", "")
     codex_dir_exists = codex_dir().exists()
-    if codex_home_env or codex_dir_exists:
-        found.append("codex")
+    result["codex"] = bool(codex_home_env or codex_dir_exists)
 
     # Gemini CLI: stores config/settings in ~/.gemini/
-    if (Path.home() / ".gemini").exists():
-        found.append("gemini")
+    result["gemini"] = (Path.home() / ".gemini").exists()
 
-    # opencode: plugin directory presence
+    # opencode and openclaw: check with error handling
     try:
         from . import bridges as _br  # noqa: PLC0415
 
-        if _br.opencode_plugins_dir().parent.exists():
-            found.append("opencode")
-        if (Path.home() / ".openclaw").exists():
-            found.append("openclaw")
+        result["opencode"] = _br.opencode_plugins_dir().parent.exists()
+        result["openclaw"] = (Path.home() / ".openclaw").exists()
     except Exception:  # noqa: BLE001
-        pass
+        result["opencode"] = False
+        result["openclaw"] = False
 
-    if detect_cline():
-        found.append("cline")
-    if detect_windsurf():
-        found.append("windsurf")
-    if detect_copilot_cli():
-        found.append("copilot-cli")
+    # Other harnesses
+    result["cline"] = detect_cline()
+    result["windsurf"] = detect_windsurf()
+    result["copilot-cli"] = detect_copilot_cli()
 
+    return result
+
+
+def detect_harnesses() -> list[str]:
+    """Return a list of harness names that appear to be present on this machine.
+
+    Detection is purely heuristic — a harness is "detected" when one of its
+    well-known environment variables or directories is present.  The list is
+    ordered for display: Claude Code first (always present when token-goat is
+    in use), then others alphabetically.
+
+    This function is kept for backward compatibility; new code should prefer
+    :func:`detect_installed_harnesses` which returns a dict[str, bool].
+    """
+    harnesses_dict = detect_installed_harnesses()
+    # Return names of detected harnesses in deterministic order
+    found: list[str] = ["claude"]  # always first
+    # Append others in alphabetical order
+    for name in sorted(harnesses_dict.keys()):
+        if name != "claude" and harnesses_dict[name]:
+            found.append(name)
     return found
 
 
