@@ -1612,8 +1612,10 @@ _PYTEST_FAIL_LINE_RE: Final[re.Pattern[str]] = re.compile(
 _PYTEST_COLLECT_RE: Final[re.Pattern[str]] = re.compile(r"^collected \d+ items?")
 # Banner lines emitted before ``= test session starts =`` — constant per
 # project so the agent gains no new information from reading them.
+# Also matches xdist "bringing up nodes" and cacheprovider lines.
 _PYTEST_BANNER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(?:platform\s|cachedir:\s|rootdir:\s|plugins:\s|configfile:\s)"
+    r"^(?:platform\s|cachedir:\s|rootdir:\s|plugins:\s|configfile:\s|"
+    r"bringing up\s|cacheprovider-)"
 )
 # pytest-xdist worker prefix: ``[gw0]``, ``[gw1]``, etc.
 # These appear on every line when running with ``-n auto`` / ``-n 4``.
@@ -1634,6 +1636,12 @@ _PYTEST_COV_TOTAL_RE: Final[re.Pattern[str]] = re.compile(
 # Pattern: ``0.12s call tests/test_foo.py::test_bar``
 _PYTEST_SLOW_DURATION_RE: Final[re.Pattern[str]] = re.compile(
     r"^\d+\.\d+s\s+(?:call|setup|teardown)\s+\S"
+)
+# Preamble lines emitted at the start of pytest runs (before test session
+# starts): "collecting ..." is the only additional one not covered by
+# _PYTEST_BANNER_RE. These provide no signal to the agent and can be safely dropped.
+_PYTEST_PREAMBLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^collecting\s"
 )
 
 
@@ -1691,8 +1699,12 @@ class PytestFilter(Filter):
             if _PYTEST_DOTS_RE.match(line):
                 continue
             # Drop constant banner lines (platform, cachedir, rootdir, plugins,
-            # configfile) — same for every run, zero information for the agent.
+            # configfile, "bringing up nodes", "cacheprovider-", etc.) — same for
+            # every run, zero information for the agent.
             if _PYTEST_BANNER_RE.match(line):
+                continue
+            # Drop "collecting ..." preamble lines before the session starts.
+            if _PYTEST_PREAMBLE_RE.match(line):
                 continue
             # Section transitions, re-evaluate which block we're in.
             if _PYTEST_HEADER_RE.match(line):

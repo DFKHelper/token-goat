@@ -593,6 +593,68 @@ class TestPytestFilter:
         # The final summary should survive
         assert "0 failed, 20 passed" in result.text
 
+    def test_strips_preamble_lines(self):
+        """Preamble lines (collecting, bringing up nodes, cacheprovider) are stripped."""
+        text = (
+            "collecting ... collecting [100%]\n"
+            "platform linux -- Python 3.12.0\n"
+            "cachedir: /tmp/pytest-cache\n"
+            "bringing up 4 workers\n"
+            "cacheprovider-1234567890\n"
+            "= test session starts =\n"
+            "collected 5 items\n"
+            "FAILED tests/test_x.py::test_one\n"
+            "= 1 failed, 4 passed in 0.5s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 1, ["pytest"])
+        # Preamble lines should be stripped
+        assert "collecting ..." not in result.text
+        assert "bringing up" not in result.text
+        assert "cacheprovider-" not in result.text
+        # Banner lines should be stripped
+        assert "platform linux" not in result.text
+        assert "cachedir:" not in result.text
+        # Real signal must survive
+        assert "FAILED tests/test_x.py::test_one" in result.text
+        assert "1 failed, 4 passed" in result.text
+
+    def test_preamble_keeps_failure_details(self):
+        """Preamble stripping preserves full failure details."""
+        text = (
+            "collecting ... collecting [100%]\n"
+            "= test session starts =\n"
+            "tests/test_a.py::test_one FAILED\n"
+            "    def test_one():\n"
+            "        assert 1 == 2\n"
+            "E       AssertionError: assert 1 == 2\n"
+            "= 1 failed in 0.1s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 1, ["pytest"])
+        # Preamble lines stripped
+        assert "collecting ..." not in result.text
+        # Failure details preserved
+        assert "AssertionError" in result.text
+        assert "test_one" in result.text
+        # Summary line preserved
+        assert "1 failed" in result.text
+
+    def test_preamble_keeps_summary_line(self):
+        """Preamble stripping keeps the final summary line."""
+        text = (
+            "collecting [100%]\n"
+            "= test session starts =\n"
+            "PASSED test_one\n"
+            "= 1 passed in 0.1s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 0, ["pytest"])
+        # Preamble line stripped
+        assert "collecting" not in result.text
+        # Summary line kept
+        assert "1 passed" in result.text
+
 
 # ---------------------------------------------------------------------------
 # Jest filter
