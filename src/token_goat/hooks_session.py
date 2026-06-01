@@ -952,6 +952,19 @@ def _build_recovery_hint(session_id: str) -> str | None:
     sections.append(key_cmds_section)
 
     parts = ["## Post-Compact Recovery"]
+
+    # --- Session goal inference ---
+    # Infer what the session was trying to accomplish from edited files, symbols,
+    # and bash history. This gives the post-compact agent immediate context
+    # without requiring them to reconstruct intent from file names alone.
+    try:
+        from . import compact as _compact_mod  # noqa: PLC0415
+        session_goal = _compact_mod.infer_session_goal(cache)
+        if session_goal:
+            parts.append(f"**Session goal:** {session_goal}")
+    except Exception:  # noqa: BLE001
+        pass  # fail-soft: missing goal is not critical
+
     # RESUME pointer — same anchor format as compact.py's sealed block, so the
     # pre-compact manifest's 🎯 RESUME line carries straight through to the
     # post-compact recovery hint without translation.  Tells the agent in one

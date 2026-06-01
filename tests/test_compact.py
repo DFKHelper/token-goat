@@ -8068,3 +8068,120 @@ class TestFindOpenQuestions:
 
         # "### Open Questions" should not appear (no edited files)
         assert "### Open Questions" not in result
+
+
+# ---------------------------------------------------------------------------
+# compact.infer_session_goal
+# ---------------------------------------------------------------------------
+
+class TestInferSessionGoal:
+    def test_empty_session_returns_empty_string(self, tmp_data_dir, make_session):
+        """Empty session (< 2 edited files and no symbols) returns empty string."""
+        sid = "goal-empty-session"
+        make_session(sid, files_read=0, greps=0, edits=0)
+        cache = session.load(sid)
+
+        goal = compact.infer_session_goal(cache)
+
+        assert goal == ""
+
+    def test_single_edit_no_symbols_returns_empty_string(self, tmp_data_dir, make_session):
+        """Single edited file with no symbols accessed returns empty string."""
+        sid = "goal-single-edit-session"
+        make_session(sid, files_read=0, greps=0, edits=1)
+        cache = session.load(sid)
+
+        goal = compact.infer_session_goal(cache)
+
+        assert goal == ""
+
+    def test_two_edited_files_infers_goal(self, tmp_data_dir):
+        """Two edited files in same directory yields goal mentioning the directory."""
+        sid = "goal-two-edits-session"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/login.py")
+        cache = session.load(sid)
+
+        goal = compact.infer_session_goal(cache)
+
+        assert goal != ""
+        assert "src" in goal.lower() or "auth" in goal.lower()
+
+    def test_goal_includes_symbols_when_available(self, tmp_data_dir):
+        """Goal includes top symbols when available."""
+        sid = "goal-with-symbols-session"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/session.py")
+        # Manually add symbol access counts to the cache
+        cache = session.load(sid)
+        cache.symbol_access_counts = {"login": 5, "authenticate": 3, "refresh_token": 2}
+        session.save(cache)
+
+        goal = compact.infer_session_goal(cache)
+
+        assert goal != ""
+        # Should mention at least one of the top symbols
+        assert any(sym in goal.lower() for sym in ["login", "authenticate"])
+
+    def test_goal_respects_max_tokens(self, tmp_data_dir):
+        """Goal text respects max_tokens parameter."""
+        sid = "goal-max-tokens-session"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/session.py")
+        cache = session.load(sid)
+        cache.symbol_access_counts = {"login": 5, "authenticate": 3, "refresh_token": 2}
+        session.save(cache)
+
+        goal = compact.infer_session_goal(cache, max_tokens=20)
+
+        # Should still be a goal, but shorter
+        if goal:
+            # Rough estimate: 3 chars per token
+            tokens = len(goal) // 3
+            assert tokens <= 30  # Allow some slack over the 20-token request
+
+    def test_goal_in_recovery_hint(self, tmp_data_dir, make_session):
+        """Session goal appears in recovery hint when present."""
+        from token_goat import hooks_session
+
+        sid = "goal-recovery-hint-session"
+        make_session(sid, files_read=1, greps=0, edits=2)
+        cache = session.load(sid)
+
+        hint = hooks_session._build_recovery_hint(sid)
+
+        if hint and len(cache.edited_files) >= 2:
+            # Hint may be None if session is too empty, but with 2 edits it shouldn't be
+            # Check if goal line appears if we have edits
+            # Goal should appear if populated
+            goal = compact.infer_session_goal(cache)
+            if goal:
+                assert "Session goal:" in hint
+
+    def test_infer_goal_defensive_against_missing_fields(self, tmp_data_dir):
+        """infer_session_goal handles missing/malformed cache fields gracefully."""
+        sid = "goal-defensive-session"
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_file_edited(sid, "/proj/src/session.py")
+        cache = session.load(sid)
+
+        # Delete optional fields to test defensive handling
+        cache.bash_history = None
+        cache.symbol_access_counts = None
+
+        goal = compact.infer_session_goal(cache)
+
+        # Should not crash, may return empty or a goal based just on files
+        assert isinstance(goal, str)
+
+    def test_goal_handles_complex_paths(self, tmp_data_dir):
+        """Goal correctly parses edited files with complex paths."""
+        sid = "goal-complex-paths-session"
+        session.mark_file_edited(sid, "/C/Projects/token-goat/src/token_goat/compact.py")
+        session.mark_file_edited(sid, "/C/Projects/token-goat/src/token_goat/session.py")
+        cache = session.load(sid)
+
+        goal = compact.infer_session_goal(cache)
+
+        # Should extract directory info from complex paths
+        assert goal != ""

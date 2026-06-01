@@ -26,6 +26,7 @@ __all__ = [
     "_parse_manifest_sections",
     "_MANIFEST_THIN_THRESHOLD",
     "find_latest_session_id",
+    "infer_session_goal",
 ]
 
 import hashlib
@@ -86,6 +87,114 @@ def estimate_tokens(text: str) -> int:
     Python process on Windows with no shared module cache.
     """
     return max(1, len(text) // 3 + 1)
+
+
+def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
+    """Infer the session's goal from edited files, accessed symbols, and recent bash commands.
+
+    Returns a factual 1-2 sentence description of what the session was trying to accomplish,
+    or an empty string if insufficient data exists (fewer than 2 edited files and no symbols).
+
+    The inference combines three signals:
+    1. **Edited files**: area/component being modified (extracted from paths)
+    2. **Top symbols**: key functions/classes being accessed (top 3 by count)
+    3. **Recent git commits**: intent from latest commit messages in bash history
+
+    All analysis is mechanical string construction — no LLM call.  Returns "" when there
+    is insufficient context (< 2 edited files and no symbols accessed).
+
+    Args:
+        cache: A :class:`session.SessionCache` or cache-like object with ``edited_files``,
+               ``symbol_access_counts``, and ``bash_history`` attributes.
+        max_tokens: Target maximum token count for the goal text (default 80).
+                   Used to keep the goal concise and suitable for a one-liner context header.
+
+    Returns:
+        A single-sentence or two-sentence goal description, or "" if insufficient data.
+        Examples:
+          "Working on async refactoring in core/async, focusing on EventLoop and AsyncTask."
+          "Fixing authentication tests in tests/auth, improving login and session handling."
+    """
+    try:
+        import re as _re  # noqa: PLC0415
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        # Extract data from cache with defensive getattr.
+        edited_files_raw = getattr(cache, "edited_files", None) or {}
+        symbol_access_raw = getattr(cache, "symbol_access_counts", None) or {}
+        bash_hist = getattr(cache, "bash_history", None) or {}
+
+        # Gate: need at least 2 edited files OR symbols to infer a goal
+        if len(edited_files_raw) < 2 and len(symbol_access_raw) == 0:
+            return ""
+
+        # --- Signal 1: Extract area/component from edited file paths ---
+        # Group edited files by directory; count files per dir
+        dir_counts: dict[str, int] = {}
+        for fpath in edited_files_raw:
+            try:
+                parent = str(_Path(str(fpath)).parent)
+                # Normalize: strip leading ./
+                if parent.startswith("."):
+                    parent = parent[2:].lstrip("/\\") or "root"
+                if parent:
+                    dir_counts[parent] = dir_counts.get(parent, 0) + 1
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Pick the top directory (most edits there = likely focus area)
+        top_area = ""
+        if dir_counts:
+            top_area = max(dir_counts, key=dir_counts.get)
+
+        # --- Signal 2: Top 3 symbols by access count ---
+        top_symbols: list[str] = []
+        if symbol_access_raw:
+            sorted_syms = sorted(symbol_access_raw.items(), key=itemgetter(1), reverse=True)
+            top_symbols = [sym for sym, _ in sorted_syms[:3]]
+
+        # --- Signal 3: Recent git commit messages (from bash history) ---
+        recent_commits: list[str] = []
+        for entry in bash_hist.values():
+            cmd = getattr(entry, "cmd_preview", "").strip()
+            if cmd.lower().startswith("git commit"):
+                # Extract commit message via -m flag or similar
+                # Pattern: git commit -m "message" or git commit ... -m "message"
+                m = _re.search(r'-m\s+["\']([^"\']+)["\']', cmd)
+                if m:
+                    msg = m.group(1).strip()
+                    if msg:
+                        recent_commits.append(msg[:60])  # truncate long messages
+        recent_commits = recent_commits[:2]  # keep last 2 commits
+
+        # --- Build the goal sentence ---
+        parts: list[str] = []
+
+        # Base: "Working on {area}" or "Focusing on {symbols}"
+        if top_area and top_symbols:
+            parts.append(f"Working on {top_area}, focusing on {' and '.join(top_symbols[:2])}.")
+        elif top_area:
+            parts.append(f"Working on changes in {top_area}.")
+        elif top_symbols:
+            parts.append(f"Focusing on {' and '.join(top_symbols[:2])}.")
+
+        # Append commit intent if available (adds 10-20 tokens)
+        if recent_commits and len(" ".join(parts)) < max_tokens * 2:
+            intent = recent_commits[0]
+            parts.append(f"Recent work: {intent}.")
+
+        goal = " ".join(parts)
+
+        # Sanity trim: estimate token count (3 chars ≈ 1 token) and truncate if needed
+        estimated_tokens = estimate_tokens(goal)
+        if estimated_tokens > max_tokens and len(parts) > 1:
+            # Simple truncation: drop the second sentence
+            goal = parts[0]
+
+        return goal.strip()
+
+    except Exception:  # noqa: BLE001 — fail-soft: always return a safe default
+        return ""
 
 if TYPE_CHECKING:
     from .session import FileEntry, SessionCache
@@ -5234,6 +5343,15 @@ def _render(
         edited_paths=set(edited_clean) if edited_clean else None,
     )
 
+    # ── 6b.5. Session Goal — inferred from edited files, symbols, and commands ────
+    # Gives the compaction LLM immediate context about what the session was trying
+    # to accomplish without requiring reverse-engineering from file names alone.
+    # Low priority: trimmed first if under space pressure.
+    session_goal_lines: list[str] = []
+    _session_goal = infer_session_goal(cache)
+    if _session_goal:
+        session_goal_lines = [f"**Session goal:** {_session_goal}"]
+
     # ── 6c. Open Questions — TODO/FIXME/WHY comments in edited files ────────────
     # Scan edited files for open questions (TODO, FIXME, WHY, HACK, XXX markers
     # and inline '?' in comments).  Like TODOs, this uses no budget slice — the
@@ -5408,6 +5526,7 @@ def _render(
         ("edited",        edited_lines,          True),
         ("stale",         stale_lines,           False),
         ("most_accessed", most_accessed_lines,   False),
+        ("session_goal",  session_goal_lines,    False),
         ("bash",          bash_lines,            False),
         ("what_worked",   what_worked_lines,     False),
         ("syms",          sym_lines,             False),
