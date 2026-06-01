@@ -1566,6 +1566,27 @@ def cmd_test_for(
     read_commands.test_for(file, json_output=json_output)
 
 
+@app.command("types", rich_help_panel="Core")
+def cmd_types(
+    file: str | None = typer.Argument(None, help="File to inspect — e.g., 'src/token_goat/db.py'. Omit for project-wide search."),  # noqa: B008
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """List type definitions (TypedDict, Protocol, dataclass, namedtuple, Pydantic) in a file or project.
+
+    Detects Python type-like constructs by inspecting class base classes and
+    decorators.  For each type found, lists its annotated field names.
+
+    Examples::
+
+        token-goat types src/token_goat/db.py
+        token-goat types
+        token-goat types src/token_goat/read_commands.py --json
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.types(file, json_output=json_output)
+
+
 @app.command("memory", rich_help_panel="Core")
 def memory_cmd(
     action: str = typer.Argument(..., help="show | set | unset | clear"),

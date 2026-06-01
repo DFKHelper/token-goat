@@ -10,7 +10,7 @@ import sys
 from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import NamedTuple, TypedDict
+from typing import NamedTuple, TypedDict, cast
 
 import typer
 
@@ -1994,3 +1994,106 @@ def test_for(
         else:
             names_str = ", ".join(fns[:_TEST_FOR_INLINE_CAP]) + ", …"
         typer.echo(f"{test_rel} — {count} {noun}: {names_str}")
+
+
+# ---------------------------------------------------------------------------
+# types — list type definitions in a file or project
+# ---------------------------------------------------------------------------
+
+# Compact kind labels for display (keeps columns narrow)
+_TYPE_KIND_LABEL: dict[str, str] = {
+    "TypedDict": "TypedDict",
+    "Protocol": "Protocol",
+    "dataclass": "dataclass",
+    "namedtuple": "namedtuple",
+    "NamedTuple": "NamedTuple",
+    "pydantic": "pydantic",
+}
+
+# Maximum field names to inline before truncating with "…"
+_TYPES_FIELDS_INLINE_CAP: int = 6
+
+
+def types(
+    file_target: str | None = None,
+    json_output: bool = False,
+) -> None:
+    """List type definitions (TypedDict, Protocol, dataclass, namedtuple, Pydantic) in a file or project.
+
+    When *file_target* is provided, restricts the search to that file.
+    When omitted, searches the entire current project.
+
+    Output (text)::
+
+        TypedDict   MyDict          src/foo.py:10   fields: x, y, z
+        dataclass   Point           src/foo.py:25   fields: x, y
+        Protocol    Readable        src/bar.py:5    fields: (none)
+
+    Output (JSON)::
+
+        {"project": "...", "types": [
+          {"name": "MyDict", "type_kind": "TypedDict", "file": "src/foo.py",
+           "start_line": 10, "fields": ["x", "y", "z"]},
+          ...
+        ]}
+    """
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("Not inside an indexed project.", err=True)
+        raise typer.Exit(1)
+
+    # Resolve optional file target to a project-relative path (partial LIKE match filter).
+    file_rel: str | None = None
+    if file_target is not None:
+        ft = _resolve_file_target(file_target)
+        if ft.rel_path is None:
+            typer.echo(f"File not found in any indexed project: {file_target}", err=True)
+            hint = _not_indexed_hint(proj.hash)
+            if hint:
+                typer.echo(hint, err=True)
+            raise typer.Exit(1)
+        file_rel = ft.rel_path
+
+    type_defs = db.get_type_definitions(proj.hash, file_path=file_rel)
+
+    if json_output:
+        scope_label = file_rel if file_rel else str(proj.root)
+        typer.echo(json.dumps(
+            {"project": scope_label, "types": type_defs},
+            separators=(",", ":"),
+            default=list,
+        ))
+        return
+
+    if not type_defs:
+        if file_rel:
+            typer.echo(f"No type definitions found in {file_rel}.")
+        else:
+            typer.echo("No type definitions found in this project.")
+        return
+
+    # Header
+    scope_desc = file_rel if file_rel else "project"
+    typer.echo(f"# Type definitions: {scope_desc}  ({len(type_defs)} found)\n")
+
+    # Compute column widths for alignment
+    max_kind = max(len(_TYPE_KIND_LABEL.get(str(t["type_kind"]), str(t["type_kind"]))) for t in type_defs)
+    max_name = max(len(str(t["name"])) for t in type_defs)
+    max_loc = max(len(f"{t['file']}:{t['start_line']}") for t in type_defs)
+
+    for t in type_defs:
+        kind_label = _TYPE_KIND_LABEL.get(str(t["type_kind"]), str(t["type_kind"]))
+        name = str(t["name"])
+        loc = f"{t['file']}:{t['start_line']}"
+        fields: list[str] = cast(list[str], t["fields"])
+        if fields:
+            if len(fields) <= _TYPES_FIELDS_INLINE_CAP:
+                fields_str = ", ".join(fields)
+            else:
+                fields_str = ", ".join(fields[:_TYPES_FIELDS_INLINE_CAP]) + ", …"
+            fields_part = f"  fields: {fields_str}"
+        else:
+            fields_part = "  (no annotated fields)"
+        typer.echo(
+            f"  {kind_label:<{max_kind}}  {name:<{max_name}}  {loc:<{max_loc}}{fields_part}"
+        )

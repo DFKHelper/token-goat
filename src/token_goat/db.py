@@ -42,6 +42,7 @@ __all__ = [
     "VecExtensionUnavailable",
     "file_count",
     "get_file_exports",
+    "get_type_definitions",
     "index_health",
     "open_global",
     "open_global_readonly",
@@ -1502,3 +1503,180 @@ def get_symbol_refs(
         return []
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------------------
+# Type definitions query
+# ---------------------------------------------------------------------------
+
+# Regex patterns to detect Python type-like constructs from a class definition header
+# and body. These run on the first few lines of a class body to classify it.
+_RE_TYPED_DICT_BASE = re.compile(r"\bTypedDict\b")
+_RE_PROTOCOL_BASE = re.compile(r"\bProtocol\b")
+_RE_DATACLASS_DECO = re.compile(r"@\s*dataclass\b")
+_RE_NAMEDTUPLE_ASSIGN = re.compile(r"\bnamedtuple\s*\(")
+_RE_NAMEDTUPLE_TYPED = re.compile(r"\bNamedTuple\b")
+_RE_PYDANTIC_BASE = re.compile(
+    r"\b(?:BaseModel|RootModel|BaseSettings|SQLModel|GenericModel)\b"
+)
+# Matches a field annotation line inside a class body: `    field_name: SomeType`
+# (indented by at least one space, followed by an identifier, then a colon)
+_RE_FIELD_LINE = re.compile(r"^[ \t]+([A-Za-z_][A-Za-z0-9_]*)\s*:")
+
+# Maximum source lines to scan above a class definition to detect @dataclass
+_DECO_SCAN_LINES = 6
+# Maximum source lines to scan inside a class body to extract fields
+_FIELD_SCAN_LINES = 80
+
+
+def _classify_class(
+    source_lines: list[str],
+    start_line: int,
+    end_line: int,
+) -> tuple[str, list[str]]:
+    """Classify a class symbol and extract its field names.
+
+    *source_lines* is the full file as a list (0-indexed).
+    *start_line* and *end_line* are 1-based.
+
+    Returns ``(type_kind, fields)`` where *type_kind* is one of:
+    ``"TypedDict"``, ``"Protocol"``, ``"dataclass"``, ``"namedtuple"``,
+    ``"NamedTuple"``, ``"pydantic"``, or ``""`` (plain class, not a type def).
+
+    Fields are extracted from annotation lines inside the class body
+    (``field_name: SomeType`` pattern).
+    """
+    n = len(source_lines)
+    # 0-based index of the class header line
+    header_idx = max(0, start_line - 1)
+
+    # Scan decorator lines above the class header for @dataclass
+    scan_start = max(0, header_idx - _DECO_SCAN_LINES)
+    header_region = "\n".join(source_lines[scan_start : header_idx + 1])
+
+    # Collect body text from the lines following the header
+    body_end = min(n, end_line)
+    body_start = header_idx + 1
+    body_lines = source_lines[body_start : min(body_end, body_start + _FIELD_SCAN_LINES)]
+
+    # --- classify ---
+    type_kind = ""
+    if _RE_TYPED_DICT_BASE.search(header_region):
+        type_kind = "TypedDict"
+    elif _RE_NAMEDTUPLE_ASSIGN.search(header_region):
+        type_kind = "namedtuple"
+    elif _RE_NAMEDTUPLE_TYPED.search(header_region):
+        type_kind = "NamedTuple"
+    elif _RE_PROTOCOL_BASE.search(header_region):
+        type_kind = "Protocol"
+    elif _RE_DATACLASS_DECO.search(header_region):
+        type_kind = "dataclass"
+    elif _RE_PYDANTIC_BASE.search(header_region):
+        type_kind = "pydantic"
+
+    # --- extract fields from body annotation lines ---
+    fields: list[str] = []
+    if type_kind:
+        for line in body_lines:
+            m = _RE_FIELD_LINE.match(line)
+            if m:
+                name = m.group(1)
+                # Skip dunder names and private names
+                if not name.startswith("_"):
+                    fields.append(name)
+
+    return type_kind, fields
+
+
+def get_type_definitions(
+    project_hash: str,
+    file_path: str | None = None,
+) -> list[dict[str, object]]:
+    """Return type definition symbols (TypedDict, Protocol, dataclass, namedtuple, Pydantic)
+    from the indexed project.
+
+    When *file_path* is ``None``, searches across all files in the project.
+    When *file_path* is set, restricts results to that file (partial LIKE match).
+
+    Each returned dict has keys:
+    ``"name"`` (str), ``"type_kind"`` (str), ``"file"`` (str),
+    ``"start_line"`` (int), ``"fields"`` (list[str]).
+
+    Returns an empty list on any DB or I/O error (fail-soft).
+    """
+    try:
+        with open_project_readonly(project_hash) as conn:
+            if file_path is not None:
+                rows = conn.execute(
+                    "SELECT name, kind, file_rel, line, end_line "
+                    "FROM symbols "
+                    "WHERE kind = 'class' AND file_rel LIKE ? AND end_line IS NOT NULL "
+                    "ORDER BY file_rel, line",
+                    (f"%{file_path}%",),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT name, kind, file_rel, line, end_line "
+                    "FROM symbols "
+                    "WHERE kind = 'class' AND end_line IS NOT NULL "
+                    "ORDER BY file_rel, line",
+                ).fetchall()
+    except FileNotFoundError:
+        return []
+    except Exception:  # noqa: BLE001
+        return []
+
+    if not rows:
+        return []
+
+    # Get the project root so we can read source files.
+    try:
+        with open_global_readonly() as gconn:
+            proj_row = gconn.execute(
+                "SELECT root FROM projects WHERE hash = ?",
+                (project_hash,),
+            ).fetchone()
+        project_root = Path(str(proj_row["root"])) if proj_row else None
+    except Exception:  # noqa: BLE001
+        project_root = None
+
+    # Group rows by file_rel to minimise file reads.
+    from collections import defaultdict as _defaultdict  # noqa: PLC0415
+
+    rows_by_file: dict[str, list[object]] = _defaultdict(list)
+    for row in rows:
+        rows_by_file[str(row["file_rel"])].append(row)
+
+    results: list[dict[str, object]] = []
+    for file_rel, file_rows in rows_by_file.items():
+        # Read source lines for this file once.
+        source_lines: list[str] = []
+        if project_root is not None:
+            try:
+                abs_path = project_root / file_rel
+                source_lines = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                pass
+
+        for row in file_rows:
+            start = int(row["line"])  # type: ignore[index]
+            end = int(row["end_line"])  # type: ignore[index]
+            name = str(row["name"])  # type: ignore[index]
+
+            if source_lines:
+                type_kind, fields = _classify_class(source_lines, start, end)
+            else:
+                type_kind, fields = "", []
+
+            if not type_kind:
+                continue  # plain class — skip
+
+            results.append({
+                "name": name,
+                "type_kind": type_kind,
+                "file": file_rel,
+                "start_line": start,
+                "fields": fields,
+            })
+
+    return results
