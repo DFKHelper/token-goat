@@ -7784,3 +7784,128 @@ class TestManifestFingerprintStability:
         assert (
             fp1 != fp2
         ), "Fingerprint should change when symbols_read list changes."
+
+
+class TestRenderMostAccessedSection:
+    """Test _render_most_accessed_section helper function."""
+
+    def test_empty_symbol_access_returns_empty_list(self):
+        """Empty symbol_access_counts dict returns empty list."""
+        result = compact._render_most_accessed_section({})
+        assert result == []
+
+    def test_single_read_symbol_excluded(self):
+        """Symbols with count == 1 are excluded (threshold is 2)."""
+        symbol_counts = {
+            "session.py::SessionCache": 1,
+            "compact.py::build_manifest": 2,
+        }
+        result = compact._render_most_accessed_section(symbol_counts)
+        # Only build_manifest should be included (count >= 2)
+        assert len(result) == 2  # header + 1 entry
+        assert "build_manifest" in result[1]
+
+    def test_all_single_reads_returns_empty(self):
+        """All symbols with count == 1 returns empty list."""
+        symbol_counts = {
+            "file1.py::symbol1": 1,
+            "file2.py::symbol2": 1,
+        }
+        result = compact._render_most_accessed_section(symbol_counts)
+        assert result == []
+
+    def test_top_5_symbols_shown(self):
+        """Top 5 symbols by access count are shown."""
+        symbol_counts = {
+            f"file{i}.py::symbol{i}": (10 - i) for i in range(10)
+        }
+        result = compact._render_most_accessed_section(symbol_counts, max_entries=5)
+        # Should have header + 5 entries
+        assert len(result) == 6
+        assert result[0] == "### Most Accessed"
+        # Most accessed should be symbol0 (count 10)
+        assert "symbol0" in result[1]
+        assert "10 reads" in result[1]
+
+    def test_caps_at_max_entries(self):
+        """Only shows up to max_entries symbols."""
+        symbol_counts = {
+            f"file{i}.py::symbol{i}": (20 - i) for i in range(15)
+        }
+        result = compact._render_most_accessed_section(symbol_counts, max_entries=3)
+        # header + 3 entries
+        assert len(result) == 4
+
+    def test_format_with_file_and_symbol_name(self):
+        """Format is: symbol_name (filename) — N reads."""
+        symbol_counts = {
+            "src/auth.py::Session.refresh": 7,
+            "src/compact.py::build_manifest": 5,
+        }
+        result = compact._render_most_accessed_section(symbol_counts)
+        assert len(result) == 3  # header + 2 entries
+        assert "### Most Accessed" in result[0]
+        # Check the most accessed one (count 7)
+        assert "Session.refresh" in result[1]
+        assert "(auth.py)" in result[1]
+        assert "7 reads" in result[1]
+
+    def test_sorts_by_count_descending(self):
+        """Symbols are sorted by count descending."""
+        symbol_counts = {
+            "file1.py::third": 3,
+            "file2.py::first": 10,
+            "file3.py::second": 7,
+        }
+        result = compact._render_most_accessed_section(symbol_counts)
+        # Should be in order: first (10), second (7), third (3)
+        assert "first" in result[1]
+        assert "second" in result[2]
+        assert "third" in result[3]
+
+
+class TestMostAccessedInManifest:
+    """Test that 'Most Accessed' section appears in the full manifest."""
+
+    def test_most_accessed_appears_in_manifest_with_high_count_symbols(self, tmp_data_dir):
+        """Most Accessed section appears when symbols have count >= 2."""
+        sid = "manifest-most-accessed-session"
+        # Create a session with multiple symbol accesses
+        session.mark_file_read(sid, "/proj/src/auth.py", symbol="Session.refresh")
+        session.mark_file_read(sid, "/proj/src/auth.py", symbol="Session.refresh")
+        session.mark_file_read(sid, "/proj/src/compact.py", symbol="build_manifest")
+        session.mark_file_read(sid, "/proj/src/compact.py", symbol="build_manifest")
+        session.mark_file_read(sid, "/proj/src/compact.py", symbol="build_manifest")
+        # Also add an edit so manifest is non-empty
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+
+        result = compact.build_manifest(sid)
+
+        # Check that "Most Accessed" header is present
+        assert "### Most Accessed" in result
+        # Check that the symbols are listed
+        assert "Session.refresh" in result or "build_manifest" in result
+
+    def test_most_accessed_excluded_when_no_high_count_symbols(self, tmp_data_dir):
+        """Most Accessed section is absent when all symbols have count < 2."""
+        sid = "manifest-no-most-accessed-session"
+        # Create a session with single-access symbols
+        session.mark_file_read(sid, "/proj/src/auth.py", symbol="login")
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+
+        result = compact.build_manifest(sid)
+
+        # "Most Accessed" header should not appear (only single reads)
+        assert "### Most Accessed" not in result
+
+    def test_most_accessed_section_excluded_when_no_symbols(self, tmp_data_dir):
+        """Most Accessed section is absent when session has no symbol accesses."""
+        sid = "manifest-no-symbols-session"
+        # Create a session with file reads but no symbols
+        session.mark_file_read(sid, "/proj/src/auth.py", offset=0, limit=100)
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+
+        result = compact.build_manifest(sid)
+
+        # "Most Accessed" section should not appear (no symbol accesses)
+        assert "### Most Accessed" not in result

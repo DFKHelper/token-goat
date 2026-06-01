@@ -4146,6 +4146,56 @@ def _apply_noise_floor(
     return filtered
 
 
+def _render_most_accessed_section(
+    symbol_access_counts: dict[str, int],
+    max_entries: int = 5,
+) -> list[str]:
+    """Render the "Most Accessed Symbols" section from session.symbol_access_counts.
+
+    Args:
+        symbol_access_counts: dict[str, int] mapping "{file}::{symbol}" → access count.
+        max_entries: Maximum number of symbols to show (default 5).
+
+    Returns:
+        List of formatted lines, or empty list if no symbols meet the threshold.
+
+    Format:
+        ### Most Accessed
+        - Session.refresh (session.py) — 7 reads
+        - build_manifest (compact.py) — 5 reads
+    """
+    if not symbol_access_counts:
+        return []
+
+    # Filter symbols with count >= 2 (single reads aren't interesting)
+    # Sort by count descending
+    candidates = [
+        (key, count) for key, count in symbol_access_counts.items()
+        if count >= 2
+    ]
+    if not candidates:
+        return []
+
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    top_symbols = candidates[:max_entries]
+
+    lines: list[str] = ["### Most Accessed"]
+    for key, count in top_symbols:
+        # Parse "file::symbol" format
+        if "::" in key:
+            filepath, symbol = key.rsplit("::", 1)
+            # Extract basename from filepath
+            basename = Path(filepath).name
+            symbol_safe = sanitize_log_str(symbol, max_len=60)
+            lines.append(f"- {symbol_safe} ({basename}) — {count} reads")
+        else:
+            # Fallback: should not happen with well-formed keys
+            key_safe = sanitize_log_str(key, max_len=80)
+            lines.append(f"- {key_safe} — {count} reads")
+
+    return lines
+
+
 def _render(
     cache: SessionCache,
     session_id: str,
@@ -4624,6 +4674,12 @@ def _render(
         stale_read_files[:6],
         lambda path: f"- ⚠ {_short_path(path, project_root=cwd)}",
     )
+
+    # ── 1e. Most accessed symbols — top 5 by access count ──────────────────────
+    # Render symbols that were accessed via surgical reads (token-goat read).
+    # Only include symbols with count >= 2; single reads aren't interesting.
+    raw_symbol_access = getattr(cache, "symbol_access_counts", None) or {}
+    most_accessed_lines = _render_most_accessed_section(raw_symbol_access, max_entries=5)
 
     # Measure the "fixed" cost (header + blockers + uncommitted + edited + stale)
     # to derive per-section budgets.  Blocker lines are small (≤3 lines) so they
@@ -5187,6 +5243,7 @@ def _render(
         ("uncommitted",   uncommitted_lines,     True),
         ("edited",        edited_lines,          True),
         ("stale",         stale_lines,           False),
+        ("most_accessed", most_accessed_lines,   False),
         ("bash",          bash_lines,            False),
         ("what_worked",   what_worked_lines,     False),
         ("syms",          sym_lines,             False),
