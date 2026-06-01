@@ -3613,6 +3613,105 @@ def _load_task_list(session_id: str) -> list[dict[str, str]]:
     return results
 
 
+def _find_open_questions(edited_file_paths: list[str], max_questions: int = 5) -> list[str]:
+    """Extract TODO/FIXME/WHY/HACK/XXX comments from edited files.
+
+    Reads each edited file (up to first 500 lines) and searches for lines containing
+    common open-question markers in comments. Returns up to max_questions items
+    formatted as "filename:line — TODO: description".
+
+    Args:
+        edited_file_paths: List of file paths to scan.
+        max_questions: Maximum number of questions to return (default 5).
+
+    Returns:
+        List of formatted strings like "auth.py:42 — TODO: handle token refresh".
+        Empty list on any error or if no questions found.
+    """
+    if not edited_file_paths:
+        return []
+
+    # Pattern: # TODO/FIXME/WHY/HACK/XXX marker
+    # Matches: "# TODO description" or "# TODO: description"
+    marker_pattern = re.compile(
+        r"#\s*(TODO|FIXME|WHY|HACK|XXX)\b[:\s]*(.*?)(?:\s*$|\s*[#?])",
+        re.IGNORECASE
+    )
+    question_pattern = re.compile(r"#[^#]*\?(?:\s|$)")
+
+    questions: list[tuple[str, int, str]] = []  # (filepath, line_num, description)
+
+    for filepath in edited_file_paths:
+        try:
+            path = Path(filepath)
+
+            # Skip non-existent, binary, and very large files
+            if not path.exists():
+                continue
+            try:
+                size = path.stat().st_size
+                if size > 500_000:  # 500 KB
+                    continue
+            except OSError:
+                continue
+
+            # Try to read as text
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                continue
+
+            # Scan first 500 lines for markers
+            lines = text.splitlines()[:500]
+            for line_num, line in enumerate(lines, start=1):
+                # Skip pure comment lines without useful content
+                if line.strip().startswith("#") and len(line.strip()) < 5:
+                    continue
+
+                # Check for TODO/FIXME/WHY/HACK/XXX markers
+                m = marker_pattern.search(line)
+                if m:
+                    marker, description = m.groups()
+                    description = description.strip()
+                    # If no description after marker, use marker itself
+                    if not description:
+                        description = marker
+                    # Truncate to 80 chars
+                    description = description[:80]
+                    rel_path = path.name  # basename only
+                    # Format with marker included
+                    formatted = f"{marker}: {description}" if description and description != marker else marker
+                    questions.append((rel_path, line_num, formatted))
+                    continue
+
+                # Check for inline ? in comments (e.g., "# should this be here?")
+                if question_pattern.search(line) and "#" in line:
+                    # Extract just the comment part
+                    comment_start = line.index("#")
+                    comment = line[comment_start:].strip()[:80]
+                    rel_path = path.name
+                    questions.append((rel_path, line_num, comment))
+
+        except Exception:  # noqa: BLE001
+            # Fail-soft: skip any file that causes issues
+            continue
+
+    # Deduplicate by (filepath, line_num) and cap at max_questions
+    seen: set[tuple[str, int]] = set()
+    deduped: list[tuple[str, int, str]] = []
+    for filepath, line_num, desc in questions:
+        key = (filepath, line_num)
+        if key not in seen:
+            seen.add(key)
+            deduped.append((filepath, line_num, desc))
+            if len(deduped) >= max_questions:
+                break
+
+    # Format as "filename:line — description"
+    result = [f"{fp}:{ln} — {desc}" for fp, ln, desc in deduped]
+    return result
+
+
 def _render_tasks_section(
     tasks: list[dict[str, str]],
     *,
@@ -5091,6 +5190,19 @@ def _render(
         edited_paths=set(edited_clean) if edited_clean else None,
     )
 
+    # ── 6c. Open Questions — TODO/FIXME/WHY comments in edited files ────────────
+    # Scan edited files for open questions (TODO, FIXME, WHY, HACK, XXX markers
+    # and inline '?' in comments).  Like TODOs, this uses no budget slice — the
+    # section is small and comes out of overall headroom.  Helps the compaction
+    # LLM preserve awareness of pending issues and questions embedded in code.
+    open_questions_lines: list[str] = []
+    if edited_clean:
+        questions = _find_open_questions(list(edited_clean.keys()), max_questions=5)
+        if questions:
+            open_questions_lines.append("### Open Questions")
+            for q in questions:
+                open_questions_lines.append(f"- {q}")
+
     # ── Item #16 — Merge Files Edited + Key Files Read when overlap >= 50% ──────
     # When many of the same paths appear in both the Edited and Files sections,
     # collapsing them into one "**Files:**" section saves one section header plus
@@ -5219,17 +5331,18 @@ def _render(
     # with no entries) and silently strip the legend line before any content.
     #
     # Drop order (lowest signal → highest):
-    #   1. todos       — TaskList entries (usually fresh from disk; cheap to recover)
-    #   2. files       — Key Files Read (read-only context, already implied by syms)
-    #   3. grep        — Investigation history (least load-bearing)
-    #   4. glob        — Directory scan history
-    #   5. web         — Reference material URLs
-    #   6. syms        — Symbol detail per file
-    #   7. what_worked — Curated "tests were green" pointer
-    #   8. dep_changes — Dependency changes (recoverable from git diff)
-    #   9. bash        — Command history (current work context — only drop under extreme pressure)
-    #  10. stale       — Outdated snapshot warnings (small, useful — kept above bash)
-    #  11. test_failures — Recent test failures (high value for active fix cycles)
+    #   1. open_questions — TODO/FIXME/WHY comments in edited files (cheap to recover)
+    #   2. todos       — TaskList entries (usually fresh from disk; cheap to recover)
+    #   3. files       — Key Files Read (read-only context, already implied by syms)
+    #   4. grep        — Investigation history (least load-bearing)
+    #   5. glob        — Directory scan history
+    #   6. web         — Reference material URLs
+    #   7. syms        — Symbol detail per file
+    #   8. what_worked — Curated "tests were green" pointer
+    #   9. dep_changes — Dependency changes (recoverable from git diff)
+    #  10. bash        — Command history (current work context — only drop under extreme pressure)
+    #  11. stale       — Outdated snapshot warnings (small, useful — kept above bash)
+    #  12. test_failures — Recent test failures (high value for active fix cycles)
     # Protected (never wholesale-dropped):
     #   sealed, header, blockers, decisions, skills, uncommitted, edited, legend.
     _section_groups: list[tuple[str, list[str], bool]] = [
@@ -5253,6 +5366,7 @@ def _render(
         ("grep",          grep_lines,            False),
         ("files",         files_lines,           False),
         ("todos",         todo_lines,            False),
+        ("open_questions", open_questions_lines, False),
     ]
     # ── Apply noise floor: drop small unprotected sections ───────────────────
     _section_groups = _apply_noise_floor(_section_groups, noise_floor_tokens)
