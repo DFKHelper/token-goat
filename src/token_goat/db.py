@@ -41,6 +41,7 @@ __all__ = [
     "DBReadOnlyError",
     "VecExtensionUnavailable",
     "file_count",
+    "get_file_exports",
     "index_health",
     "open_global",
     "open_global_readonly",
@@ -1354,6 +1355,108 @@ def get_symbol_callers(
         return []
     except Exception:
         return []
+
+
+def get_file_exports(
+    project_hash: str,
+    file_rel: str,
+) -> list[dict[str, object]]:
+    """Return public symbols exported from *file_rel* in the given project.
+
+    A symbol is considered public when:
+    - its name does **not** start with ``_``, and
+    - its kind is not ``"method"`` (methods are class-nested, even when
+      ``parent_id IS NULL`` in older index builds).
+
+    If the source file defines an ``__all__`` list, only the names present
+    in that list are returned.  ``__all__`` is parsed directly from the
+    source (via ``ast``) rather than the index, because it is a module-level
+    variable assignment and is not always indexed as a symbol.
+
+    Each returned dict has keys:
+    ``"name"`` (str), ``"kind"`` (str), ``"start_line"`` (int),
+    ``"end_line"`` (int | None), ``"docstring"`` (str | None).
+
+    Returns an empty list on any DB or I/O error (fail-soft).
+    """
+    import ast as _ast  # noqa: PLC0415
+
+    # Kinds that count as "top-level structural symbols" — excludes "method"
+    # which the Python extractor promotes with parent_id=NULL in some builds.
+    _TOP_LEVEL_KINDS = frozenset({
+        "function", "async_function", "class", "interface", "struct", "trait",
+        "enum", "type_alias", "constructor",
+    })
+
+    try:
+        with open_project_readonly(project_hash) as conn:
+            rows = conn.execute(
+                "SELECT name, kind, line AS start_line, end_line "
+                "FROM symbols "
+                "WHERE file_rel = ? AND end_line IS NOT NULL "
+                "ORDER BY line",
+                (file_rel,),
+            ).fetchall()
+    except FileNotFoundError:
+        return []
+    except Exception:  # noqa: BLE001
+        return []
+
+    # Build lookup of public top-level symbol rows by name.
+    symbol_map: dict[str, dict[str, object]] = {}
+    for r in rows:
+        name = str(r["name"])
+        kind = str(r["kind"])
+        if name.startswith("_"):
+            continue
+        if kind not in _TOP_LEVEL_KINDS:
+            continue
+        symbol_map[name] = {
+            "name": name,
+            "kind": kind,
+            "start_line": int(r["start_line"]),
+            "end_line": int(r["end_line"]) if r["end_line"] is not None else None,
+            "docstring": None,
+        }
+
+    # Try to find the source file and detect __all__ via AST.
+    exported_names: set[str] | None = None
+    try:
+        with open_global_readonly() as gconn:
+            proj_row = gconn.execute(
+                "SELECT root FROM projects WHERE hash = ?",
+                (project_hash,),
+            ).fetchone()
+        if proj_row is not None:
+            abs_path = Path(str(proj_row["root"])) / file_rel
+            source_text = abs_path.read_text(encoding="utf-8", errors="replace")
+            tree = _ast.parse(source_text, mode="exec")
+            for node in _ast.walk(tree):
+                if (
+                    isinstance(node, _ast.Assign)
+                    and any(
+                        isinstance(t, _ast.Name) and t.id == "__all__"
+                        for t in node.targets
+                    )
+                    and isinstance(node.value, (_ast.List, _ast.Tuple))
+                ):
+                    exported_names = {
+                        elt.value
+                        for elt in node.value.elts
+                        if isinstance(elt, _ast.Constant) and isinstance(elt.value, str)
+                    }
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+
+    if exported_names is not None:
+        # Return only symbols that appear in __all__ AND are indexed.
+        result = [symbol_map[n] for n in exported_names if n in symbol_map]
+        result.sort(key=lambda d: int(d["start_line"]))  # type: ignore[call-overload]
+        return result
+
+    # No __all__: return all public top-level symbols sorted by line.
+    return list(symbol_map.values())
 
 
 def get_symbol_refs(

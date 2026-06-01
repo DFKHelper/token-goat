@@ -1568,6 +1568,86 @@ def stub_view(
 
 
 # ---------------------------------------------------------------------------
+# exports — list public/exported symbols in a file
+# ---------------------------------------------------------------------------
+
+
+def exports(
+    file: str,
+    json_output: bool = False,
+) -> None:
+    """List public (exported) symbols from <file> with types and docstring hints.
+
+    Returns every top-level symbol whose name does not start with ``_``.
+    If the file defines ``__all__``, only names present in that list are shown.
+
+    Output is similar to ``outline`` but filtered to the public API surface,
+    labelled ``Exports:`` in the header.  Supports ``--json`` for structured
+    output with the same schema as ``outline --json``.
+    """
+    target = _resolve_file_target(file)
+    if target.project is None or target.rel_path is None:
+        typer.echo(f"File not found in any indexed project: {file}", err=True)
+        hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
+        if hint:
+            typer.echo(hint, err=True)
+        raise typer.Exit(1)
+
+    proj = target.project
+    file_rel = target.rel_path
+
+    export_rows = db.get_file_exports(proj.hash, file_rel)
+
+    # Read source lines once to extract docstrings.
+    source_lines: list[str] = []
+    abs_path = proj.root / file_rel
+    with contextlib.suppress(OSError):
+        source_lines = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    if json_output:
+        out = []
+        for row in export_rows:
+            start = int(row["start_line"])  # type: ignore[call-overload]
+            end = int(row["end_line"]) if row["end_line"] is not None else start  # type: ignore[call-overload]
+            doc = _extract_docstring_first_line(source_lines, start, end) if source_lines else None
+            out.append({
+                "name": row["name"],
+                "kind": row["kind"],
+                "start_line": start,
+                "end_line": row["end_line"],
+                "docstring": doc,
+            })
+        typer.echo(json.dumps({"file": file_rel, "symbols": out}, separators=(",", ":")))
+        return
+
+    count = len(export_rows)
+    if count == 0:
+        typer.echo(f"No public symbols found for {file_rel}.")
+        typer.echo("(Run `token-goat index --full` if this file has not been indexed yet.)")
+        return
+
+    typer.echo(f"# Exports: {file_rel}  ({count} public symbol{'s' if count != 1 else ''})")
+    for row in export_rows:
+        start = int(row["start_line"])  # type: ignore[call-overload]
+        end = int(row["end_line"]) if row["end_line"] is not None else start  # type: ignore[call-overload]
+        doc = _extract_docstring_first_line(source_lines, start, end) if source_lines else None
+        typer.echo(_format_outline_line(str(row["name"]), str(row["kind"]), start, end, doc))
+
+    # Record token savings: exports costs ~5% of a full file read.
+    try:
+        src_bytes = abs_path.stat().st_size
+        export_bytes = 0
+        for r in export_rows:
+            sl = int(r["start_line"])  # type: ignore[call-overload]
+            el = int(r["end_line"]) if r["end_line"] is not None else sl  # type: ignore[call-overload]
+            export_bytes += len(_format_outline_line(str(r["name"]), str(r["kind"]), sl, el, None).encode())
+        saved = max(0, src_bytes - export_bytes)
+        db.record_stat(None, "exports", bytes_saved=saved, tokens_saved=saved // 4, detail=file_rel)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------------------------------------------------------------------------
 # refs — find all callers of a symbol defined in a specific file
 # ---------------------------------------------------------------------------
 

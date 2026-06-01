@@ -1484,6 +1484,23 @@ def outline(
     read_commands.outline(file, json_output=json_output)
 
 
+@app.command("exports", rich_help_panel="Core")
+def cmd_exports(
+    file: str = typer.Argument(..., help="File to inspect — e.g., 'src/token_goat/hints.py'"),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """List public (exported) symbols from <file> with types and docstring hints.
+
+    Shows every top-level symbol whose name does not start with ``_``.
+    If the file defines ``__all__``, only names listed there are shown.
+
+    Use ``token-goat read <file>::<symbol>`` to retrieve any symbol body.
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.exports(file, json_output=json_output)
+
+
 @app.command("scope", rich_help_panel="Core")
 def scope(
     target: str = typer.Argument(
