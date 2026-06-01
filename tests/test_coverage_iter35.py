@@ -8,6 +8,7 @@ Targets previously untested code paths in:
 - hooks_common.py: pre_tool_use_with_context, pre_tool_use_with_update, deny_redirect
 - languages/go.py: _extract_const_var edge cases
 - languages/python.py: _parse_import_source edge cases
+- worker.py: _cleanup_orphaned_state_files, _cleanup_old_sentinels
 """
 from __future__ import annotations
 
@@ -789,3 +790,172 @@ class TestParseImportSource:
         result = _parse_import_source("import numpy as np")
         assert "numpy" in result
         assert "np" not in result
+
+
+# ---------------------------------------------------------------------------
+# worker.py: cleanup helpers
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupOrphanedStateFiles:
+    """Tests for worker._cleanup_orphaned_state_files."""
+
+    def test_removes_old_state_file(self, tmp_data_dir, monkeypatch):
+        """Orphaned state files older than 7 days are deleted."""
+        import time
+
+        from token_goat import worker
+
+        # Create a project
+        project_root = tmp_data_dir / "projects" / "test_proj"
+        project_root.mkdir(parents=True, exist_ok=True)
+
+        # Mock projects table to return our test project
+        def mock_open():
+            from unittest.mock import MagicMock
+
+            conn = MagicMock()
+            conn.__enter__ = lambda s: conn
+            conn.__exit__ = MagicMock(return_value=False)
+            conn.execute.return_value.fetchall.return_value = [
+                {"root": str(project_root)}
+            ]
+            return conn
+
+        monkeypatch.setattr("token_goat.worker.db.open_global", mock_open)
+
+        # Create an old state file
+        old_state = project_root / ".improve-state-old.json"
+        old_state.write_text("{}")
+        old_mtime = time.time() - 8 * 86400  # 8 days old
+        import os
+        os.utime(str(old_state), (old_mtime, old_mtime))
+
+        # Run cleanup
+        deleted = worker._cleanup_orphaned_state_files()
+
+        # Verify the old file was deleted
+        assert deleted == 1
+        assert not old_state.exists()
+
+    def test_spares_new_state_file(self, tmp_data_dir, monkeypatch):
+        """State files younger than 7 days are preserved."""
+        import time
+
+        from token_goat import worker
+
+        # Create a project
+        project_root = tmp_data_dir / "projects" / "test_proj"
+        project_root.mkdir(parents=True, exist_ok=True)
+
+        # Mock projects table to return our test project
+        def mock_open():
+            from unittest.mock import MagicMock
+
+            conn = MagicMock()
+            conn.__enter__ = lambda s: conn
+            conn.__exit__ = MagicMock(return_value=False)
+            conn.execute.return_value.fetchall.return_value = [
+                {"root": str(project_root)}
+            ]
+            return conn
+
+        monkeypatch.setattr("token_goat.worker.db.open_global", mock_open)
+
+        # Create a new state file
+        new_state = project_root / ".improve-state-new.json"
+        new_state.write_text("{}")
+        new_mtime = time.time() - 1 * 86400  # 1 day old
+        import os
+        os.utime(str(new_state), (new_mtime, new_mtime))
+
+        # Run cleanup
+        deleted = worker._cleanup_orphaned_state_files()
+
+        # Verify the new file was preserved
+        assert deleted == 0
+        assert new_state.exists()
+
+    def test_returns_zero_when_no_projects(self, tmp_data_dir, monkeypatch):
+        """Returns 0 when projects table is empty."""
+        from token_goat import worker
+
+        def mock_open():
+            from unittest.mock import MagicMock
+
+            conn = MagicMock()
+            conn.__enter__ = lambda s: conn
+            conn.__exit__ = MagicMock(return_value=False)
+            conn.execute.return_value.fetchall.return_value = []
+            return conn
+
+        monkeypatch.setattr("token_goat.worker.db.open_global", mock_open)
+
+        deleted = worker._cleanup_orphaned_state_files()
+        assert deleted == 0
+
+
+class TestCleanupOldSentinels:
+    """Tests for worker._cleanup_old_sentinels."""
+
+    def test_removes_old_sentinel(self, tmp_data_dir, monkeypatch):
+        """Sentinel files older than 30 days are deleted."""
+        import time
+
+        from token_goat import worker
+
+        # Patch sentinels_dir to use tmp_data_dir
+        sentinels = tmp_data_dir / "sentinels"
+        sentinels.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr("token_goat.worker.paths.sentinels_dir", lambda: sentinels)
+
+        # Create an old sentinel file
+        old_sentinel = sentinels / "manifest_sha_old_session"
+        old_sentinel.write_text("oldsha")
+        old_mtime = time.time() - 31 * 86400  # 31 days old
+        import os
+        os.utime(str(old_sentinel), (old_mtime, old_mtime))
+
+        # Run cleanup
+        deleted = worker._cleanup_old_sentinels()
+
+        # Verify the old sentinel was deleted
+        assert deleted == 1
+        assert not old_sentinel.exists()
+
+    def test_spares_new_sentinel(self, tmp_data_dir, monkeypatch):
+        """Sentinel files younger than 30 days are preserved."""
+        import time
+
+        from token_goat import worker
+
+        # Patch sentinels_dir to use tmp_data_dir
+        sentinels = tmp_data_dir / "sentinels"
+        sentinels.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr("token_goat.worker.paths.sentinels_dir", lambda: sentinels)
+
+        # Create a new sentinel file
+        new_sentinel = sentinels / "recovery_pending_new_session"
+        new_sentinel.write_text("newdata")
+        new_mtime = time.time() - 5 * 86400  # 5 days old
+        import os
+        os.utime(str(new_sentinel), (new_mtime, new_mtime))
+
+        # Run cleanup
+        deleted = worker._cleanup_old_sentinels()
+
+        # Verify the new sentinel was preserved
+        assert deleted == 0
+        assert new_sentinel.exists()
+
+    def test_returns_zero_when_dir_missing(self, tmp_data_dir, monkeypatch):
+        """Returns 0 when sentinels directory does not exist."""
+        from token_goat import worker
+
+        missing_dir = tmp_data_dir / "missing_sentinels"
+        monkeypatch.setattr("token_goat.worker.paths.sentinels_dir", lambda: missing_dir)
+
+        deleted = worker._cleanup_old_sentinels()
+        assert deleted == 0

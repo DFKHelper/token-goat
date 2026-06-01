@@ -80,6 +80,8 @@ class CleanupStats(TypedDict, total=False):
     project_wal_bytes_reclaimed: int
     orphaned_projects_removed: int
     old_sessions_removed: int
+    orphaned_state_files_deleted: int
+    old_sentinels_deleted: int
     failures: list[str]  # task names that raised during cleanup
 
 
@@ -1221,6 +1223,103 @@ def _gc_orphaned_projects() -> int:
 
 
 _SESSION_RETENTION_DAYS = 7
+# How many days to retain orphaned improve-state files.
+_IMPROVE_STATE_RETENTION_DAYS = 7
+# How many days to retain sentinel files (manifest_sha, recovery_pending, etc.).
+_SENTINEL_RETENTION_DAYS = 30
+
+
+def _cleanup_orphaned_state_files() -> int:
+    """Delete orphaned .improve-state-*.json files older than 7 days.
+
+    The /improve skill creates .improve-state-{slug}.json files to track loop state
+    across compactions. When loops complete successfully, they delete the file. When
+    loops are interrupted (e.g., user stops the session), the file persists. This
+    cleanup task removes files older than _IMPROVE_STATE_RETENTION_DAYS to avoid
+    accumulating stale state files.
+
+    Returns:
+        Count of deleted files.
+    """
+    deleted = 0
+    now = time.time()
+    cutoff = now - _IMPROVE_STATE_RETENTION_DAYS * _SECS_PER_DAY
+
+    # Load project roots from global.db projects table
+    try:
+        with db.open_global() as gconn:
+            rows = gconn.execute("SELECT root FROM projects").fetchall()
+    except (db.DBError, sqlite3.DatabaseError, OSError) as exc:
+        _LOG.debug("_cleanup_orphaned_state_files: could not read projects table: %s", exc)
+        return 0
+
+    for row in rows:
+        project_root = row["root"]
+        try:
+            project_path = Path(project_root)
+            if not project_path.is_dir():
+                continue
+            # Glob for .improve-state-*.json files in the project root
+            for state_file in project_path.glob(".improve-state-*.json"):
+                try:
+                    if state_file.stat().st_mtime < cutoff:
+                        state_file.unlink()
+                        deleted += 1
+                        _LOG.debug("_cleanup_orphaned_state_files: removed %s", state_file.name)
+                except OSError as e:
+                    _LOG.warning(
+                        "failed to remove orphaned state file %s: %s",
+                        state_file.name,
+                        e,
+                    )
+        except (OSError, ValueError) as e:
+            _LOG.warning("error scanning project root %s for improve-state files: %s", project_root, e)
+            # Continue to the next project root; don't fail the whole cleanup
+            continue
+
+    if deleted > 0:
+        _LOG.info("_cleanup_orphaned_state_files: removed %d orphaned state file(s)", deleted)
+    return deleted
+
+
+def _cleanup_old_sentinels() -> int:
+    """Delete sentinel files older than _SENTINEL_RETENTION_DAYS (30 days).
+
+    Sentinel files (manifest_sha_*, recovery_pending_*, etc.) accumulate in the
+    sentinels/ directory under the token-goat data directory. Each one is small,
+    but long-lived installations can accumulate thousands. This cleanup task
+    removes files older than _SENTINEL_RETENTION_DAYS to keep the directory bounded.
+
+    Returns:
+        Count of deleted files.
+    """
+    from . import paths as _paths  # noqa: PLC0415
+
+    sentinels_dir = _paths.sentinels_dir()
+    if not sentinels_dir.is_dir():
+        _LOG.debug("sentinels directory does not exist, skipping cleanup")
+        return 0
+
+    deleted = 0
+    now = time.time()
+    cutoff = now - _SENTINEL_RETENTION_DAYS * _SECS_PER_DAY
+
+    try:
+        for sentinel_file in sentinels_dir.iterdir():
+            try:
+                if sentinel_file.stat().st_mtime < cutoff:
+                    sentinel_file.unlink()
+                    deleted += 1
+                    _LOG.debug("_cleanup_old_sentinels: removed %s", sentinel_file.name)
+            except OSError as e:
+                _LOG.warning("failed to remove sentinel file %s: %s", sentinel_file.name, e)
+    except OSError as exc:
+        _LOG.debug("_cleanup_old_sentinels: directory scan failed: %s", exc)
+        return deleted
+
+    if deleted > 0:
+        _LOG.info("_cleanup_old_sentinels: removed %d sentinel file(s)", deleted)
+    return deleted
 
 
 def _cleanup_old_sessions() -> int:
@@ -1265,14 +1364,16 @@ def cleanup_on_startup() -> CleanupStats:
     Each task is run independently: a failure in one task is caught, recorded in
     the ``"failures"`` list, and does not prevent remaining tasks from running.
     Tasks run:
-    * ``_cleanup_stale_locks``     — remove lock files for dead PIDs or old ages.
-    * ``_cleanup_old_logs``        — delete daily log files older than LOG_RETENTION_DAYS.
-    * ``_prune_stats_table``       — drop stats rows beyond STATS_RETENTION_DAYS.
-    * ``reap_stale_index_markers`` — clear ``*.indexing`` markers for finished/crashed spawns.
+    * ``_cleanup_stale_locks``            — remove lock files for dead PIDs or old ages.
+    * ``_cleanup_old_logs``               — delete daily log files older than LOG_RETENTION_DAYS.
+    * ``_prune_stats_table``              — drop stats rows beyond STATS_RETENTION_DAYS.
+    * ``reap_stale_index_markers``        — clear ``*.indexing`` markers for finished/crashed spawns.
     * ``evict_image_cache_if_over_limit`` — LRU-evict images when cache exceeds 500 MB.
-    * ``_checkpoint_global_wal``   — TRUNCATE-checkpoint global.db's WAL so it cannot grow unbounded.
-    * ``_gc_orphaned_projects``    — delete rows/DBs for projects whose root dirs no longer exist.
-    * ``_cleanup_old_sessions``    — delete session JSON files older than SESSION_RETENTION_DAYS days.
+    * ``_checkpoint_global_wal``          — TRUNCATE-checkpoint global.db's WAL so it cannot grow unbounded.
+    * ``_gc_orphaned_projects``           — delete rows/DBs for projects whose root dirs no longer exist.
+    * ``_cleanup_old_sessions``           — delete session JSON files older than SESSION_RETENTION_DAYS days.
+    * ``_cleanup_orphaned_state_files``   — delete .improve-state-*.json files older than 7 days.
+    * ``_cleanup_old_sentinels``          — delete sentinel files older than 30 days.
     """
     stats: CleanupStats = {
         "stale_locks_cleared": 0,
@@ -1283,6 +1384,8 @@ def cleanup_on_startup() -> CleanupStats:
         "stats_rows_pruned": 0,
         "orphaned_projects_removed": 0,
         "old_sessions_removed": 0,
+        "orphaned_state_files_deleted": 0,
+        "old_sentinels_deleted": 0,
     }
     failures: list[str] = []
 
@@ -1301,6 +1404,8 @@ def cleanup_on_startup() -> CleanupStats:
         ("project_wal_checkpoint", _checkpoint_project_wals, "project_wal_bytes_reclaimed"),
         ("gc_orphaned_projects", _gc_orphaned_projects, "orphaned_projects_removed"),
         ("old_sessions", _cleanup_old_sessions, "old_sessions_removed"),
+        ("orphaned_state_files", _cleanup_orphaned_state_files, "orphaned_state_files_deleted"),
+        ("old_sentinels", _cleanup_old_sentinels, "old_sentinels_deleted"),
     ]
     for task_name, task_fn, stat_key in _int_tasks:
         try:
@@ -1339,7 +1444,8 @@ def cleanup_on_startup() -> CleanupStats:
         "startup cleanup complete: locks_cleared=%d index_markers_cleared=%d logs_deleted=%d "
         "stats_rows_pruned=%d image_bytes_evicted=%d image_files_evicted=%d "
         "snapshots_cleared=%d bash_outputs_evicted=%d web_outputs_evicted=%d wal_bytes_reclaimed=%d "
-        "orphaned_projects_removed=%d old_sessions_removed=%d%s",
+        "orphaned_projects_removed=%d old_sessions_removed=%d orphaned_state_files_deleted=%d "
+        "old_sentinels_deleted=%d%s",
         stats.get("stale_locks_cleared", 0),
         stats.get("stale_index_markers_cleared", 0),
         stats.get("logs_deleted", 0),
@@ -1352,6 +1458,8 @@ def cleanup_on_startup() -> CleanupStats:
         stats.get("wal_bytes_reclaimed", 0),
         stats.get("orphaned_projects_removed", 0),
         stats.get("old_sessions_removed", 0),
+        stats.get("orphaned_state_files_deleted", 0),
+        stats.get("old_sentinels_deleted", 0),
         f" failures={failures}" if failures else "",
     )
     return stats
