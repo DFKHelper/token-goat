@@ -1807,6 +1807,27 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 if emit_if_new_hint(cache, _git_fp, git_ctx, "git_history", _git_parts):
                     hint_items.append(HintItem(_git_parts[0], HINT_PRIORITY_LOW))
 
+        # High-frequency access hint: when this file has been read 3+ times in
+        # the session, emit a MEDIUM-priority nudge toward surgical reads so the
+        # agent is aware of cheaper alternatives.  Uses fingerprint dedup so it
+        # fires at most once per file per session (the read count in the text
+        # is intentionally omitted from the fingerprint to keep the dedup stable
+        # as count increases past the threshold).
+        from .hints import _hint_fingerprint as _hfp2
+        from .hints import build_high_frequency_hint  # noqa: PLC0415
+        _freq_item = build_high_frequency_hint(cache, file_path)
+        if _freq_item is not None:
+            _freq_fp = _hfp2(_freq_item.text, path=file_path)
+            if not cache.has_hint_fingerprint(_freq_fp):
+                cache.mark_hint_seen(_freq_fp)
+                cache.record_hint_emitted("high_frequency_read")
+                hint_items.append(_freq_item)
+                _LOG.debug(
+                    "pre-read: high-frequency hint for %s (access count=%d)",
+                    sanitize_log_str(file_path),
+                    cache.get_file_access_count(file_path),
+                )
+
         if not hint_items:
             _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
             return CONTINUE()

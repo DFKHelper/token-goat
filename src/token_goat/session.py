@@ -565,6 +565,19 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     if local.cwd is not None:
         merged.cwd = local.cwd
 
+    # file_access_counts / symbol_access_counts: max per key (conservative, same
+    # rationale as other hint counters — never overcounts, may undercount by ~1 in
+    # a CAS window but these are display-only nudge counters, not correctness gates).
+    merged_fac: dict[str, int] = dict(remote.file_access_counts)
+    for fpath, count in local.file_access_counts.items():
+        merged_fac[fpath] = max(merged_fac.get(fpath, 0), count)
+    merged.file_access_counts = merged_fac
+
+    merged_sac: dict[str, int] = dict(remote.symbol_access_counts)
+    for sym_key, count in local.symbol_access_counts.items():
+        merged_sac[sym_key] = max(merged_sac.get(sym_key, 0), count)
+    merged.symbol_access_counts = merged_sac
+
     merged._invalidate_json_cache()
     return merged
 
@@ -1044,6 +1057,18 @@ class SessionCache:
     # reads via token-goat read/section instead of repeated shrinking.
     # Missing in older sessions → empty dict. Persisted via to_dict/from_dict.
     image_shrink_count: dict[str, int] = field(default_factory=dict)
+    # Per-session file access frequency tracking: maps normalized file path → total
+    # number of Read/Grep/Glob accesses for that file this session.  Incremented
+    # whenever mark_file_read() adds or updates a file entry.  Used by
+    # build_high_frequency_hint() to nudge toward surgical reads when a file has
+    # been accessed multiple times.  Missing in older sessions → empty dict.
+    # Persisted via to_dict/from_dict.
+    file_access_counts: dict[str, int] = field(default_factory=dict)
+    # Per-session symbol access frequency tracking: maps "{normalized_file}::{symbol}"
+    # → count of surgical (token-goat read) accesses for that symbol this session.
+    # Incremented by mark_file_read() when called with a symbol argument.
+    # Missing in older sessions → empty dict. Persisted via to_dict/from_dict.
+    symbol_access_counts: dict[str, int] = field(default_factory=dict)
     # Monotonically-incrementing version counter for optimistic CAS in save().
     # Starts at 0 for a new session; each successful save() increments by 1.
     # When two concurrent processes both load version N, the second to save
@@ -1124,6 +1149,8 @@ class SessionCache:
             version=self.version,
             hint_category_history={k: [1 if v else 0 for v in lst] for k, lst in self.hint_category_history.items()},
             image_shrink_count=self.image_shrink_count,
+            file_access_counts=self.file_access_counts,
+            symbol_access_counts=self.symbol_access_counts,
             cwd=self.cwd,
         )
 
@@ -1276,6 +1303,16 @@ class SessionCache:
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
         self._pending_hint_save = True
+
+    def get_file_access_count(self, file_path: str) -> int:
+        """Return the number of times *file_path* has been accessed this session.
+
+        Uses the normalized path key so callers can pass either the raw path
+        (as returned by the Read tool) or the already-normalized form.  Returns
+        0 when the file has never been accessed or when the session is unavailable.
+        """
+        key = paths.normalize_key(file_path)
+        return self.file_access_counts.get(key, 0)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionCache:
@@ -1501,6 +1538,26 @@ class SessionCache:
                     with contextlib.suppress(TypeError, ValueError):
                         image_shrink_count[img_path] = max(0, int(count))
 
+        # file_access_counts: dict[str, int] — per-file Read access frequency this session.
+        # Maps normalized path → access count. Missing in older sessions → empty dict.
+        file_access_counts: dict[str, int] = {}
+        raw_file_access = d.get("file_access_counts", {})
+        if isinstance(raw_file_access, dict):
+            for fpath, count in raw_file_access.items():
+                if isinstance(fpath, str) and fpath:
+                    with contextlib.suppress(TypeError, ValueError):
+                        file_access_counts[fpath] = max(0, int(count))
+
+        # symbol_access_counts: dict[str, int] — per-symbol surgical access frequency this session.
+        # Maps "{normalized_file}::{symbol}" → access count. Missing in older sessions → empty dict.
+        symbol_access_counts: dict[str, int] = {}
+        raw_sym_access = d.get("symbol_access_counts", {})
+        if isinstance(raw_sym_access, dict):
+            for sym_key, count in raw_sym_access.items():
+                if isinstance(sym_key, str) and sym_key:
+                    with contextlib.suppress(TypeError, ValueError):
+                        symbol_access_counts[sym_key] = max(0, int(count))
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -1531,6 +1588,8 @@ class SessionCache:
             version=_coerce_nonneg_int(d.get("version", 0)) if isinstance(d.get("version"), (int, float)) else 0,
             hint_category_history=hint_category_history,
             image_shrink_count=image_shrink_count,
+            file_access_counts=file_access_counts,
+            symbol_access_counts=symbol_access_counts,
             cwd=str(d["cwd"]) if isinstance(d.get("cwd"), str) else None,
         )
 
@@ -2062,6 +2121,8 @@ class _SessionDict(TypedDict, total=False):
     version: int
     hint_category_history: dict[str, list[int]]
     image_shrink_count: dict[str, int]
+    file_access_counts: dict[str, int]
+    symbol_access_counts: dict[str, int]
     cwd: str | None
 
 
@@ -2930,6 +2991,13 @@ def mark_file_read(
         cache.files[key] = entry
     entry.read_count += 1
     entry.last_read_ts = now
+    # Increment per-file access frequency counter.  Capped at FILES_MAX to
+    # match the cap on the files dict itself so one cannot grow without bound
+    # while the other is evicted.  The count is incremented regardless of
+    # whether the access is a full-file Read or a symbol-level surgical read.
+    cache.file_access_counts[key] = cache.file_access_counts.get(key, 0) + 1
+    if len(cache.file_access_counts) > FILES_MAX:
+        _evict_oldest(cache.file_access_counts, FILES_MAX, _FILES_EVICT, "file_access_counts", session_id)
     if symbol:
         # Sanitize the symbol name before storing: it comes from harness tool_input
         # which is attacker-controlled.  Embedded newlines would split hint lines into
@@ -2972,6 +3040,12 @@ def mark_file_read(
             now,
             key,
         )
+        # Increment per-symbol access frequency counter.
+        sym_key = f"{key}::{symbol}"
+        cache.symbol_access_counts[sym_key] = cache.symbol_access_counts.get(sym_key, 0) + 1
+        # Cap the dict at FILES_MAX to prevent unbounded growth in pathological sessions.
+        if len(cache.symbol_access_counts) > FILES_MAX:
+            _evict_oldest(cache.symbol_access_counts, FILES_MAX, _FILES_EVICT, "symbol_access_counts", session_id)
     else:
         line_offset = min(max(0, int(offset)), _MAX_LINE_NUMBER) if offset is not None else 0
         line_limit = min(max(0, int(limit)), _MAX_LINE_NUMBER) if limit is not None else 0

@@ -32,6 +32,7 @@ __all__ = [
     "ReadHint",
     "build_bash_dedup_hint",
     "build_diff_hint",
+    "build_high_frequency_hint",
     "build_symbol_stale_hint",
     "build_glob_dedup_hint",
     "build_grep_dedup_hint",
@@ -1601,6 +1602,52 @@ def _build_coread_suggestion_hint(
         ),
         0,
     )
+
+
+# ---------------------------------------------------------------------------
+# High-frequency file access hint
+# ---------------------------------------------------------------------------
+
+# Minimum number of times a file must be accessed in one session before the
+# high-frequency hint fires.  Below this threshold the hint cost (~25 tokens)
+# exceeds the value of the nudge.
+_HIGH_FREQ_THRESHOLD: Final[int] = 3
+
+
+def build_high_frequency_hint(
+    session_cache: session.SessionCache,
+    file_path: str,
+    *,
+    threshold: int = _HIGH_FREQ_THRESHOLD,
+) -> HintItem | None:
+    """Return a HintItem nudging toward surgical reads when a file is accessed often.
+
+    Fires at MEDIUM priority when *file_path* has been accessed at least
+    *threshold* times in the current session.  The hint text names the access
+    count, the file basename, and two surgical-read alternatives so the agent
+    has an immediately actionable command.
+
+    Returns ``None`` when:
+    - The access count is below *threshold*.
+    - *file_path* is empty.
+    - Any unexpected error occurs (fail-soft).
+    """
+    try:
+        if not file_path:
+            return None
+        count = session_cache.get_file_access_count(file_path)
+        if count < threshold:
+            return None
+        fname = _sanitize_hint_path(Path(file_path).name)
+        safe_path = _sanitize_hint_path(file_path)
+        text = _apply_terse(
+            f"`{fname}` read {count}x this session — consider "
+            f"`token-goat outline {safe_path}` or "
+            f"`token-goat symbol {safe_path}` for a narrower read."
+        )
+        return HintItem(text, HINT_PRIORITY_MEDIUM)
+    except Exception:  # noqa: BLE001 — fail-soft; hint errors must never block the agent
+        return None
 
 
 # ---------------------------------------------------------------------------
