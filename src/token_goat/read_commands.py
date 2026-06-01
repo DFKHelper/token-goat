@@ -2325,3 +2325,210 @@ def grep(
         if not updated_cache.unavailable:
             updated_cache.record_grep_result_hash(result_hash, pattern)
             session.save(updated_cache)
+
+
+# ---------------------------------------------------------------------------
+# recent — show N most recently edited files (session + git) with symbols
+# ---------------------------------------------------------------------------
+
+
+def _get_recent_git_files(project_hash: str, limit: int) -> list[tuple[str, str]]:
+    """Return up to *limit* (file_rel, commit_label) pairs from recent git history.
+
+    Reads the ``git_commits`` table ordered by recency and flattens the
+    ``changed_files`` JSON array.  Returns an empty list on any failure
+    (missing DB, table not yet created, etc.).  ``commit_label`` is a short
+    human-readable string like "1 commit ago" or "3 commits ago".
+
+    Each file is returned at most once (first commit wins, i.e. most recent).
+    """
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    from . import db as _db  # noqa: PLC0415
+
+    try:
+        with _db.open_project_readonly(project_hash) as conn:
+            try:
+                rows = conn.execute(
+                    "SELECT commit_short, summary, author_ts, changed_files "
+                    "FROM git_commits "
+                    "ORDER BY author_ts DESC "
+                    "LIMIT 50",
+                ).fetchall()
+            except _sqlite3.OperationalError:
+                # Table not yet created (history never indexed).
+                return []
+    except (FileNotFoundError, _sqlite3.Error, OSError):
+        return []
+
+    seen: dict[str, str] = {}  # file_rel -> label
+    commit_idx = 1
+    for row in rows:
+        if len(seen) >= limit:
+            break
+        try:
+            files: list[str] = json.loads(row["changed_files"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            files = []
+        label = f"{commit_idx} commit{'s' if commit_idx > 1 else ''} ago"
+        for f in files:
+            if f not in seen:
+                seen[f] = label
+        commit_idx += 1
+
+    return list(seen.items())[:limit]
+
+
+def _symbols_for_file(project_hash: str, file_rel: str, session_cache: session.SessionCache | None) -> list[str]:
+    """Return changed/accessed symbol names for *file_rel*.
+
+    Priority: session ``symbol_access_counts`` keys matching this file first,
+    then fall through to the DB symbol list as a fallback.  Only structural
+    symbol kinds are included.  Returns an empty list on any failure.
+    """
+    symbols: list[str] = []
+
+    # Session surgical reads: symbol_access_counts keys are "file_rel::symbol_name".
+    if session_cache is not None and not session_cache.unavailable:
+        prefix = f"{file_rel}::"
+        for key in session_cache.symbol_access_counts:
+            if key.startswith(prefix):
+                sym_name = key[len(prefix):]
+                if sym_name and sym_name not in symbols:
+                    symbols.append(sym_name)
+
+    if symbols:
+        return symbols
+
+    # Fallback: list indexed symbols for the file (structural kinds only).
+
+    from . import db as _db  # noqa: PLC0415
+
+    _STRUCT_KINDS = frozenset({
+        "function", "async_function", "method", "class", "interface",
+        "struct", "trait", "enum", "type_alias",
+    })
+    try:
+        with _db.open_project_readonly(project_hash) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT name FROM symbols "
+                "WHERE file_rel = ? AND kind IN ({}) "
+                "ORDER BY line LIMIT 10".format(
+                    ",".join("?" * len(_STRUCT_KINDS))
+                ),
+                (file_rel, *_STRUCT_KINDS),
+            ).fetchall()
+        return [str(r["name"]) for r in rows]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def recent(
+    n: int = 10,
+    session_id: str | None = None,
+    json_output: bool = False,
+) -> None:
+    """Show the N most recently edited/accessed files from this session and recent git commits.
+
+    Merges two sources:
+    - Session edited files (files modified by Write/Edit/MultiEdit this session)
+    - Recent git commits' changed files (from the indexed git history)
+
+    Session edits are listed first; git-history files fill the remainder up to *n*.
+    Files are deduplicated by path (session edit wins when both sources mention the same file).
+
+    For each file, shows the symbol names that were surgically accessed this session
+    (from ``symbol_access_counts``) or, as a fallback, the structural symbols indexed
+    for that file.
+
+    Output format (text)::
+
+        src/token_goat/hints.py  (edited this session)
+          build_high_frequency_hint, dedup_hints
+        src/token_goat/compact.py  (1 commit ago)
+          _render, build_manifest
+
+    Output format (JSON)::
+
+        {"files": [
+          {"path": "src/token_goat/hints.py", "source": "session",
+           "symbols": ["build_high_frequency_hint", "dedup_hints"]},
+          ...
+        ]}
+    """
+    import os as _os  # noqa: PLC0415
+
+    from . import project as _project  # noqa: PLC0415
+
+    cwd = _os.getcwd()
+    proj = _project.find_project(Path(cwd))
+
+    # Load session cache for edited_files and symbol_access_counts.
+    sess: session.SessionCache | None = None
+    if session_id:
+        sess = session.load(session_id)
+        if sess is not None and sess.unavailable:
+            sess = None
+
+    # --- Source 1: session edited files (most relevant, highest priority) ---
+    # edited_files keys are normalized paths (may be absolute or rel).
+    # Convert to project-relative where possible.
+    session_entries: list[tuple[str, str]] = []  # (rel_path, source_label)
+    if sess is not None:
+        for raw_path in sess.edited_files:
+            if proj is not None:
+                try:
+                    rel = Path(raw_path).relative_to(proj.root).as_posix()
+                except ValueError:
+                    rel = raw_path
+            else:
+                rel = raw_path
+            session_entries.append((rel, "edited this session"))
+
+    # --- Source 2: recent git commits ---
+    git_entries: list[tuple[str, str]] = []
+    if proj is not None:
+        git_entries = _get_recent_git_files(proj.hash, n * 2)
+
+    # --- Merge: session first, then git, deduplicate by path, cap at n ---
+    seen: set[str] = set()
+    merged: list[tuple[str, str]] = []  # (file_rel, source_label)
+
+    for rel, label in session_entries:
+        if rel not in seen:
+            seen.add(rel)
+            merged.append((rel, label))
+        if len(merged) >= n:
+            break
+
+    for rel, label in git_entries:
+        if rel not in seen and len(merged) < n:
+            seen.add(rel)
+            merged.append((rel, label))
+
+    # --- Resolve symbols for each file ---
+    project_hash = proj.hash if proj is not None else ""
+    results: list[dict[str, object]] = []
+    for file_rel, source_label in merged:
+        syms = _symbols_for_file(project_hash, file_rel, sess) if project_hash else []
+        results.append({
+            "path": file_rel,
+            "source": source_label,
+            "symbols": syms,
+        })
+
+    if json_output:
+        typer.echo(json.dumps({"files": results}, separators=(",", ":")))
+        return
+
+    if not results:
+        typer.echo("No recently edited or committed files found.")
+        return
+
+    for entry in results:
+        path_str = str(entry["path"])
+        label = str(entry["source"])
+        typer.echo(f"{path_str}  ({label})")
+        syms = cast(list[str], entry["symbols"])
+        if syms:
+            typer.echo(f"  {', '.join(syms)}")

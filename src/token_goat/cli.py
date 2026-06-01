@@ -1545,6 +1545,28 @@ def cmd_changed(
     read_commands.changed(since_ref=since, json_output=json_output, limit=limit)
 
 
+@app.command("recent", rich_help_panel="Core")
+def cmd_recent(
+    n: int = typer.Option(10, "--n", help="Number of files to show."),  # noqa: B008
+    session_id: str | None = _OPT_SESSION_ID,
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Show the N most recently edited/accessed files (session + git commits) with their symbols.
+
+    Merges session-edited files (highest priority) with files from recent git
+    commits, deduplicates by path, and shows the symbol names touched in each file.
+
+    Examples::
+
+        token-goat recent
+        token-goat recent --n 5
+        token-goat recent --session-id <id> --json
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.recent(n=n, session_id=session_id, json_output=json_output)
+
+
 @app.command("test-for", rich_help_panel="Core")
 def cmd_test_for(
     file: str = typer.Argument(..., help="Implementation file — e.g., 'src/token_goat/read_commands.py'"),
