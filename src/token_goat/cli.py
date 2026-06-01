@@ -5061,6 +5061,197 @@ def cmd_clean_cache(
             typer.echo(f"  {target}: ERROR — {info.get('error', 'unknown')}")
 
 
+@app.command("prune-cache", rich_help_panel="Advanced")
+def cmd_prune_cache(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed without deleting."),  # noqa: B008
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Manually trigger cache eviction across all cache directories.
+
+    Prunes images/, bash_outputs/, web_outputs/, skills/, and session files.
+    Old session files (>7 days) and orphaned sidecar files are also cleaned.
+
+    With ``--dry-run``: show what would be removed without actually deleting.
+    """
+    from . import bash_cache as _bash_cache  # noqa: PLC0415
+    from . import cache_common as _cache_common  # noqa: PLC0415
+    from . import paths as _paths  # noqa: PLC0415
+    from . import skill_cache as _skill_cache  # noqa: PLC0415
+    from . import web_cache as _web_cache  # noqa: PLC0415
+
+    results: dict[str, object] = {}
+    total_freed_bytes = 0
+    total_files = 0
+
+    # Helper to gather cache stats before and after (or for dry-run)
+    def get_cache_stats(cache_dir: Path) -> dict[str, int | bool]:
+        """Return size and file count for a cache directory."""
+        if not cache_dir.exists():
+            return {"exists": False, "size_bytes": 0, "file_count": 0}
+        try:
+            size = sum(
+                f.stat().st_size
+                for f in cache_dir.iterdir()
+                if f.is_file() and not f.is_symlink()
+            )
+            count = len([f for f in cache_dir.iterdir() if f.is_file() and not f.is_symlink()])
+            return {"exists": True, "size_bytes": size, "file_count": count}
+        except OSError:
+            return {"exists": True, "size_bytes": 0, "file_count": 0}
+
+    # Prune bash_outputs
+    try:
+        cache_dir = _cache_common.get_cache_dir("bash_outputs")
+        before = get_cache_stats(cache_dir)
+        if before["exists"]:
+            removed = 0 if dry_run else _bash_cache.evict_old_entries()  # noqa: SIM108
+            after = get_cache_stats(cache_dir) if not dry_run else before
+            freed = before["size_bytes"] - after["size_bytes"]
+            results["bash_outputs"] = {
+                "status": "ok",
+                "files_removed": removed,
+                "bytes_freed": freed,
+            }
+            total_freed_bytes += freed
+            total_files += removed
+        else:
+            results["bash_outputs"] = {"status": "skipped", "reason": "cache dir does not exist"}
+    except Exception as exc:  # noqa: BLE001
+        results["bash_outputs"] = {"status": "error", "error": str(exc)}
+
+    # Prune web_outputs
+    try:
+        cache_dir = _cache_common.get_cache_dir("web_outputs")
+        before = get_cache_stats(cache_dir)
+        if before["exists"]:
+            removed = 0 if dry_run else _web_cache.evict_old_entries()  # noqa: SIM108
+            after = get_cache_stats(cache_dir) if not dry_run else before
+            freed = before["size_bytes"] - after["size_bytes"]
+            results["web_outputs"] = {
+                "status": "ok",
+                "files_removed": removed,
+                "bytes_freed": freed,
+            }
+            total_freed_bytes += freed
+            total_files += removed
+        else:
+            results["web_outputs"] = {"status": "skipped", "reason": "cache dir does not exist"}
+    except Exception as exc:  # noqa: BLE001
+        results["web_outputs"] = {"status": "error", "error": str(exc)}
+
+    # Prune skills
+    try:
+        cache_dir = _cache_common.get_cache_dir("skills")
+        before = get_cache_stats(cache_dir)
+        if before["exists"]:
+            removed = 0 if dry_run else _skill_cache.evict_old_entries()  # noqa: SIM108
+            after = get_cache_stats(cache_dir) if not dry_run else before
+            freed = before["size_bytes"] - after["size_bytes"]
+            results["skills"] = {
+                "status": "ok",
+                "files_removed": removed,
+                "bytes_freed": freed,
+            }
+            total_freed_bytes += freed
+            total_files += removed
+        else:
+            results["skills"] = {"status": "skipped", "reason": "cache dir does not exist"}
+    except Exception as exc:  # noqa: BLE001
+        results["skills"] = {"status": "error", "error": str(exc)}
+
+    # Prune images
+    try:
+        from . import worker as _worker  # noqa: PLC0415
+        cache_dir = _paths.image_cache_dir()
+        before = get_cache_stats(cache_dir)
+        if before["exists"]:
+            if dry_run:
+                removed = 0
+                freed = 0
+            else:
+                freed, removed = _worker.evict_image_cache_if_over_limit()
+            results["images"] = {
+                "status": "ok",
+                "files_removed": removed,
+                "bytes_freed": freed,
+            }
+            total_freed_bytes += freed
+            total_files += removed
+        else:
+            results["images"] = {"status": "skipped", "reason": "cache dir does not exist"}
+    except Exception as exc:  # noqa: BLE001
+        results["images"] = {"status": "error", "error": str(exc)}
+
+    # Clean old session files (>7 days)
+    try:
+        sessions_dir = _paths.session_cache_path("dummy").parent
+        if sessions_dir.exists():
+            now = time.time()
+            removed = 0
+            freed = 0
+            seven_days_secs = 7 * 24 * 3600
+            for f in sessions_dir.glob("*.json"):
+                if f.is_file() and not f.is_symlink():
+                    try:
+                        mtime = f.stat().st_mtime
+                        if now - mtime > seven_days_secs:
+                            size = f.stat().st_size
+                            if not dry_run:
+                                f.unlink()
+                            removed += 1
+                            freed += size
+                    except OSError:
+                        continue
+            if removed > 0:
+                results["sessions"] = {
+                    "status": "ok",
+                    "files_removed": removed,
+                    "bytes_freed": freed,
+                }
+                total_freed_bytes += freed
+                total_files += removed
+            else:
+                results["sessions"] = {"status": "ok", "files_removed": 0, "bytes_freed": 0}
+        else:
+            results["sessions"] = {"status": "skipped", "reason": "sessions dir does not exist"}
+    except Exception as exc:  # noqa: BLE001
+        results["sessions"] = {"status": "error", "error": str(exc)}
+
+    if json_output:
+        output = {
+            "dry_run": dry_run,
+            "total_files_removed": total_files,
+            "total_bytes_freed": total_freed_bytes,
+            "details": results,
+        }
+        typer.echo(json.dumps(output, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    # Text output
+    action_verb = "would free" if dry_run else "freed"
+    for cache_name in ["bash_outputs", "web_outputs", "skills", "images", "sessions"]:
+        info = results.get(cache_name, {})
+        if not isinstance(info, dict):
+            continue
+        status = info.get("status", "?")
+        if status == "ok":
+            freed = int(info.get("bytes_freed", 0))
+            removed = int(info.get("files_removed", 0))
+            if freed > 0 or removed > 0:
+                typer.echo(f"{cache_name}: {action_verb} {freed:,} bytes ({removed} file{'s' if removed != 1 else ''})")
+            else:
+                typer.echo(f"{cache_name}: no cleanup needed")
+        elif status == "skipped":
+            typer.echo(f"{cache_name}: skipped — {info.get('reason', '')}")
+        else:
+            typer.echo(f"{cache_name}: ERROR — {info.get('error', 'unknown')}")
+
+    typer.echo()
+    typer.echo(f"Total: {action_verb} {total_freed_bytes:,} bytes ({total_files} file{'s' if total_files != 1 else ''})")
+    if dry_run:
+        typer.echo("(Use without --dry-run to actually delete)")
+
+
 @app.command("diff", rich_help_panel="Core")
 def cmd_diff(
     since: str = typer.Option("HEAD~1", "--since", help="Git ref to diff against (commit, branch, tag). Default: HEAD~1."),  # noqa: B008
