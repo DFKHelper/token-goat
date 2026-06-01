@@ -1648,6 +1648,70 @@ def exports(
 
 
 # ---------------------------------------------------------------------------
+# imports — show import graph for a file (one level deep)
+# ---------------------------------------------------------------------------
+
+
+def imports(
+    file_target: str,
+    json_output: bool = False,
+) -> None:
+    """Show the import graph for *file_target* one level deep.
+
+    Two sections are emitted:
+
+    - **Imports from** — project-internal files that this file imports.
+    - **Imported by** — project-internal files that import this file.
+
+    Only relative and intra-package imports are included; stdlib / third-party
+    imports are excluded because they have no indexed ``file_rel``.
+
+    Examples::
+
+        token-goat imports src/token_goat/db.py
+        token-goat imports read_commands.py --json
+    """
+    target = _resolve_file_target(file_target)
+    if target.project is None or target.rel_path is None:
+        typer.echo(f"File not found in any indexed project: {file_target}", err=True)
+        hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
+        if hint:
+            typer.echo(hint, err=True)
+        raise typer.Exit(1)
+
+    proj = target.project
+    file_rel = target.rel_path
+
+    imports_from = db.get_file_imports(proj.hash, file_rel)
+    imported_by = db.get_file_importers(proj.hash, file_rel)
+
+    if json_output:
+        typer.echo(json.dumps(
+            {
+                "file": file_rel,
+                "imports_from": imports_from,
+                "imported_by": imported_by,
+            },
+            separators=(",", ":"),
+        ))
+        return
+
+    typer.echo(f"Imports from ({len(imports_from)}):")
+    if imports_from:
+        for path in imports_from:
+            typer.echo(f"  {path}")
+    else:
+        typer.echo("  (none)")
+
+    typer.echo(f"Imported by ({len(imported_by)}):")
+    if imported_by:
+        for path in imported_by:
+            typer.echo(f"  {path}")
+    else:
+        typer.echo("  (none)")
+
+
+# ---------------------------------------------------------------------------
 # refs — find all callers of a symbol defined in a specific file
 # ---------------------------------------------------------------------------
 

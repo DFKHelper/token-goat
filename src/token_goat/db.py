@@ -42,6 +42,8 @@ __all__ = [
     "VecExtensionUnavailable",
     "file_count",
     "get_file_exports",
+    "get_file_importers",
+    "get_file_imports",
     "get_type_definitions",
     "index_health",
     "open_global",
@@ -1680,3 +1682,150 @@ def get_type_definitions(
             })
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Import graph queries
+# ---------------------------------------------------------------------------
+
+def _import_stem(target: str) -> str | None:
+    """Extract the module stem from a relative import target string.
+
+    A relative import target starts with one or more leading dots.  The stem is
+    the first identifier component after the dots, which names the module file.
+
+    Examples::
+
+        ``..db``              → ``"db"``
+        ``..db.SomeClass``    → ``"db"``
+        ``.project.Project``  → ``"project"``
+        ``.util``             → ``"util"``
+        ``typer``             → ``None``  (absolute import — no stem)
+
+    Returns ``None`` for absolute imports (no leading dot) or empty targets.
+    """
+    stripped = target.lstrip(".")
+    if not stripped or stripped == target:
+        # No leading dot → absolute import; stem does not map to a project file.
+        return None
+    return stripped.split(".")[0]
+
+
+def get_file_imports(
+    project_hash: str,
+    file_rel: str,
+) -> list[str]:
+    """Return project-internal files that *file_rel* imports from (outgoing, one level).
+
+    Queries the ``imports_exports`` table for relative import targets recorded
+    for *file_rel*, resolves each to a concrete ``file_rel`` path by matching the
+    module stem against known project files, and returns the sorted, deduplicated
+    list of resolved paths.
+
+    Only relative imports (targets starting with ``.``) are considered; stdlib /
+    third-party absolute imports are excluded because they have no ``file_rel`` in
+    the project DB.
+
+    Returns an empty list on any DB error (fail-soft) or when the project DB
+    does not exist (not yet indexed).
+    """
+    try:
+        with open_project_readonly(project_hash) as conn:
+            # Collect all relative import targets for this file.
+            target_rows = conn.execute(
+                "SELECT DISTINCT target FROM imports_exports "
+                "WHERE file_rel = ? AND kind = 'import' AND target LIKE '.%' "
+                "ORDER BY target",
+                (file_rel,),
+            ).fetchall()
+            if not target_rows:
+                return []
+
+            # Build a set of all .py file paths in the project for fast lookup.
+            all_files: set[str] = {
+                str(r["rel_path"])
+                for r in conn.execute(
+                    "SELECT rel_path FROM files WHERE rel_path LIKE '%.py'",
+                ).fetchall()
+            }
+
+        resolved: set[str] = set()
+        for row in target_rows:
+            stem = _import_stem(str(row["target"]))
+            if stem is None:
+                continue
+            # Match files whose last path component equals <stem>.py.
+            suffix = f"/{stem}.py"
+            for candidate in all_files:
+                if candidate.endswith(suffix) or candidate == f"{stem}.py":
+                    if candidate != file_rel:
+                        resolved.add(candidate)
+                    break
+        return sorted(resolved)
+    except FileNotFoundError:
+        return []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def get_file_importers(
+    project_hash: str,
+    file_rel: str,
+) -> list[str]:
+    """Return project-internal files that import *file_rel* (incoming, one level).
+
+    Queries ``imports_exports`` for rows whose ``target`` resolves to *file_rel*,
+    covering both relative imports (e.g. ``..db``, ``.db.Symbol``) and absolute
+    package imports (e.g. ``token_goat.db``, ``token_goat.db.Symbol``).
+
+    The match is stem-based: the stem of *file_rel* (e.g. ``"db"`` from
+    ``src/token_goat/db.py``) is matched against the first identifier component of
+    each import target.  Both ``..db`` and ``token_goat.db`` produce stem ``"db"``.
+
+    Returns a sorted, deduplicated list of ``file_rel`` paths that import this
+    file.  Returns an empty list on any DB error (fail-soft) or when the project
+    DB does not exist (not yet indexed).
+    """
+    # Extract the stem of the queried file.
+    # ``src/token_goat/db.py`` → ``"db"``
+    # ``db.py`` → ``"db"``
+    raw_stem = file_rel.rsplit("/", 1)[-1]
+    if raw_stem.endswith(".py"):
+        raw_stem = raw_stem[:-3]
+    if not raw_stem:
+        return []
+    stem = raw_stem
+
+    try:
+        with open_project_readonly(project_hash) as conn:
+            rows = conn.execute(
+                # Match relative imports: .stem  ..stem  ...stem  (with optional .Symbol suffix)
+                # Match absolute imports: ends with .<stem>  or .<stem>.<Symbol>
+                "SELECT DISTINCT file_rel FROM imports_exports "
+                "WHERE kind = 'import' AND file_rel != ? AND ("
+                "  target = '.' || ? "
+                "  OR target LIKE '.' || ? || '.%' "
+                "  OR target = '..' || ? "
+                "  OR target LIKE '..' || ? || '.%' "
+                "  OR target = '...' || ? "
+                "  OR target LIKE '...' || ? || '.%' "
+                "  OR target = ? "
+                "  OR target LIKE '%.' || ? "
+                "  OR target LIKE '%.' || ? || '.%' "
+                ") "
+                "ORDER BY file_rel",
+                (
+                    file_rel,
+                    stem, stem,           # .stem  .stem.X
+                    stem, stem,           # ..stem  ..stem.X
+                    stem, stem,           # ...stem  ...stem.X
+                    stem,                 # bare absolute: stem (unlikely but safe)
+                    stem,                 # ends with .stem
+                    stem,                 # ends with .stem.X
+                ),
+            ).fetchall()
+        return [str(r["file_rel"]) for r in rows]
+    except FileNotFoundError:
+        return []
+    except Exception:  # noqa: BLE001
+        return []

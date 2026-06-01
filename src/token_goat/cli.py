@@ -1587,6 +1587,31 @@ def cmd_types(
     read_commands.types(file, json_output=json_output)
 
 
+@app.command("imports", rich_help_panel="Core")
+def cmd_imports(
+    file: str = typer.Argument(..., help="File to inspect — e.g., 'src/token_goat/db.py'"),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Show the import graph for <file> one level deep.
+
+    Two sections are emitted:
+
+    - **Imports from** — project-internal files that this file imports.
+    - **Imported by** — project-internal files that import this file.
+
+    Only relative and intra-package imports are included; stdlib / third-party
+    imports are excluded because they have no indexed ``file_rel``.
+
+    Examples::
+
+        token-goat imports src/token_goat/db.py
+        token-goat imports read_commands.py --json
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.imports(file, json_output=json_output)
+
+
 @app.command("memory", rich_help_panel="Core")
 def memory_cmd(
     action: str = typer.Argument(..., help="show | set | unset | clear"),
