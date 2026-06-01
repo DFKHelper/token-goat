@@ -70,7 +70,7 @@ from .cache_common import (
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
-from .util import get_logger
+from .util import get_logger, strip_ansi
 
 _LOG = get_logger("bash_cache")
 
@@ -345,6 +345,12 @@ def store_output(
     *cwd* is included in the cache key so commands from different projects do
     not share entries.
     """
+    # Strip ANSI/VT100 escape sequences before storing so cached content is
+    # always clean text.  Tools like lefthook, delta, eza, and pytest emit
+    # heavy colour codes that inflate token counts without adding information.
+    stdout = strip_ansi(stdout)
+    stderr = strip_ansi(stderr)
+
     meta: BashOutputMeta | None = None
     with safe_cache_op("store_output", log=_LOG):
         out_id = output_id_for(session_id, command, cwd=cwd)

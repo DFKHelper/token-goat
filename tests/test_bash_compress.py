@@ -6923,3 +6923,41 @@ class TestToxFilter:
         result = f.apply(text, "", 0, ["tox"])
         assert "token-goat" in result.text
         assert f.name != "linter"
+
+
+# ---------------------------------------------------------------------------
+# compress pipeline: ANSI-free output guarantee
+# ---------------------------------------------------------------------------
+
+
+class TestCompressPipelineAnsiClean:
+    """compress_output and Filter.apply must produce ANSI-free text."""
+
+    def test_generic_filter_strips_ansi_from_stdout(self) -> None:
+        """GenericFilter.apply removes ANSI codes that the tool emitted."""
+        ansi_out = (
+            "\x1b[38;2;56;56;56m╭─────────────────────\x1b[m\n"
+            "\x1b[38;2;56;56;56m│\x1b[m 🥊 lefthook  v2.1.8  hook:  \x1b[1mpre-commit\x1b[m\n"
+            "\x1b[38;2;56;56;56m╰─────────────────────\x1b[m\n"
+            "All checks passed\n"
+        )
+        f = bc.GenericFilter()
+        result = f.apply(ansi_out, "", 0, ["lefthook", "run"])
+        assert "\x1b" not in result.text, "compressed output must not contain ANSI escapes"
+        assert "lefthook" in result.text or "All checks passed" in result.text
+
+    def test_generic_filter_strips_ansi_from_stderr(self) -> None:
+        """GenericFilter.apply removes ANSI codes from stderr."""
+        ansi_err = "\x1b[31mERROR:\x1b[0m build failed\n"
+        f = bc.GenericFilter()
+        result = f.apply("", ansi_err, 1, ["make"])
+        assert "\x1b" not in result.text, "compressed stderr must not contain ANSI escapes"
+        assert "ERROR:" in result.text
+        assert "build failed" in result.text
+
+    def test_compress_output_produces_ansi_free_result(self) -> None:
+        """compress_output top-level function returns ANSI-free text."""
+        ansi_stdout = "\x1b[32m✓ test passed\x1b[0m\n" * 20
+        result = bc.compress_output(bc.GenericFilter(), ansi_stdout, "", 0, ["pytest"])
+        assert "\x1b" not in result.text, "compress_output result must be ANSI-free"
+        assert "test passed" in result.text

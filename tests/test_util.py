@@ -5,7 +5,7 @@ import logging
 import pathlib
 import re
 
-from token_goat.util import ellipsize, get_logger
+from token_goat.util import ellipsize, get_logger, strip_ansi
 
 
 def test_get_logger_name() -> None:
@@ -82,3 +82,39 @@ class TestEllipsize:
     def test_max_chars_one(self) -> None:
         result = ellipsize("abc", 1)
         assert result == "…"
+
+
+class TestStripAnsiUtil:
+    """strip_ansi is importable from util and removes ANSI escape sequences."""
+
+    def test_removes_sgr_codes(self) -> None:
+        """Basic SGR colour codes are stripped."""
+        assert strip_ansi("\x1b[31mred\x1b[0m") == "red"
+
+    def test_removes_truecolor_codes(self) -> None:
+        """24-bit truecolor codes (lefthook/delta style) are stripped."""
+        text = "\x1b[38;2;56;56;56m╭─────────────\x1b[m"
+        assert strip_ansi(text) == "╭─────────────"
+
+    def test_removes_osc_sequences(self) -> None:
+        """OSC title/hyperlink sequences are stripped."""
+        assert strip_ansi("\x1b]0;window title\x07after") == "after"
+
+    def test_idempotent(self) -> None:
+        """Applying strip_ansi twice produces the same result as once."""
+        text = "\x1b[1mbold\x1b[0m plain"
+        once = strip_ansi(text)
+        assert strip_ansi(once) == once
+
+    def test_empty_string(self) -> None:
+        """strip_ansi of an empty string returns an empty string."""
+        assert strip_ansi("") == ""
+
+    def test_plain_text_unchanged(self) -> None:
+        """Plain text without escape sequences is returned unchanged."""
+        assert strip_ansi("hello world") == "hello world"
+
+    def test_is_same_object_as_render_ansi(self) -> None:
+        """util.strip_ansi must re-export the same function as render.ansi.strip_ansi."""
+        from token_goat.render.ansi import strip_ansi as render_strip
+        assert strip_ansi is render_strip

@@ -162,6 +162,38 @@ class TestStoreAndLoad:
         default = sig.parameters["max_file_count"].default
         assert default == bash_cache.DEFAULT_MAX_FILE_COUNT
 
+    def test_store_output_strips_ansi_from_stdout(self, tmp_data_dir):
+        """store_output strips ANSI escape sequences from stdout before caching."""
+        ansi_stdout = "\x1b[38;2;56;56;56m╭─────────────╮\x1b[m\n\x1b[1mbold text\x1b[0m\n"
+        meta = bash_cache.store_output("sess-ansi-1", "lefthook run", ansi_stdout, "", 0)
+        assert meta is not None
+        body = bash_cache.load_output(meta.output_id)
+        assert body is not None
+        assert "\x1b" not in body, "cached body must not contain ANSI escape sequences"
+        assert "╭─────────────╮" in body
+        assert "bold text" in body
+
+    def test_store_output_strips_ansi_from_stderr(self, tmp_data_dir):
+        """store_output strips ANSI escape sequences from stderr before caching."""
+        ansi_stderr = "\x1b[31mERROR:\x1b[0m something went wrong\n"
+        meta = bash_cache.store_output("sess-ansi-2", "make build", "", ansi_stderr, 1)
+        assert meta is not None
+        body = bash_cache.load_output(meta.output_id)
+        assert body is not None
+        assert "\x1b" not in body, "cached stderr must not contain ANSI escape sequences"
+        assert "ERROR:" in body
+        assert "something went wrong" in body
+
+    def test_store_output_ansi_strip_is_idempotent(self, tmp_data_dir):
+        """Storing already-clean output is unaffected by the ANSI strip pass."""
+        clean = "plain output line 1\nplain output line 2\n"
+        meta = bash_cache.store_output("sess-ansi-3", "echo plain", clean, "", 0)
+        assert meta is not None
+        body = bash_cache.load_output(meta.output_id)
+        assert body is not None
+        assert "plain output line 1" in body
+        assert "plain output line 2" in body
+
     def test_store_output_eviction_oserror_does_not_discard_write(self, tmp_data_dir, monkeypatch):
         """A confirmed write must return metadata even if eviction raises OSError.
 
