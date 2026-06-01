@@ -2067,3 +2067,232 @@ def test_read_line_range_strips_utf8_bom(tmp_path, tmp_data_dir, make_project):
     assert first_line == "def greet():", (
         f"First line content wrong after BOM strip: {first_line!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# truncate_symbol_body tests (smart truncation feature)
+# ---------------------------------------------------------------------------
+
+def _make_long_python_function(n_body_lines: int = 70) -> str:
+    """Build a Python function with the given number of body lines for testing."""
+    lines = ["def long_function(x, y):"]
+    lines.append('    """A long function docstring."""')
+    for i in range(n_body_lines):
+        lines.append(f"    x = x + {i}  # body line {i}")
+    lines.append("    return x")
+    return "\n".join(lines)
+
+
+class TestTruncateSymbolBody:
+    """Tests for read_replacement.truncate_symbol_body."""
+
+    def test_short_body_unchanged(self):
+        """Bodies at or below the threshold are returned unchanged."""
+        short = "\n".join([f"line {i}" for i in range(60)])
+        result = read_replacement.truncate_symbol_body(short)
+        assert result == short
+
+    def test_exactly_threshold_unchanged(self):
+        """A body of exactly TRUNCATE_THRESHOLD lines is not truncated."""
+        text = "\n".join([f"line {i}" for i in range(read_replacement.TRUNCATE_THRESHOLD)])
+        result = read_replacement.truncate_symbol_body(text)
+        assert result == text
+
+    def test_one_over_threshold_may_truncate(self):
+        """A body with one more line than the threshold gets the truncation treatment."""
+        n = read_replacement.TRUNCATE_THRESHOLD + 1
+        text = "\n".join([f"line {i}" for i in range(n)])
+        result = read_replacement.truncate_symbol_body(text)
+        # Result is <= original (truncation happened or small body-after-sig skips it)
+        assert len(result) <= len(text)
+
+    def test_long_body_contains_ellipsis(self):
+        """Long function bodies include the truncation ellipsis comment."""
+        text = _make_long_python_function(70)
+        result = read_replacement.truncate_symbol_body(text)
+        assert "lines truncated" in result
+
+    def test_long_body_truncated_line_count(self):
+        """Truncated output is significantly shorter than the original."""
+        text = _make_long_python_function(80)
+        result = read_replacement.truncate_symbol_body(text)
+        original_lines = text.count("\n") + 1
+        result_lines = result.count("\n") + 1
+        # Should be substantially shorter: sig + docstring + head + ellipsis + tail
+        assert result_lines < original_lines - 20
+
+    def test_full_flag_bypasses_truncation(self):
+        """--full flag returns the original body without truncation."""
+        text = _make_long_python_function(80)
+        result = read_replacement.truncate_symbol_body(text, full=True)
+        assert result == text
+
+    def test_full_flag_on_short_body(self):
+        """--full on a short body is a no-op (already not truncated)."""
+        text = "def f():\n    return 1\n"
+        assert read_replacement.truncate_symbol_body(text, full=True) == text
+
+    def test_signature_preserved_in_truncated_output(self):
+        """The function signature line appears at the start of truncated output."""
+        text = _make_long_python_function(70)
+        result = read_replacement.truncate_symbol_body(text)
+        assert result.startswith("def long_function(x, y):")
+
+    def test_tail_preserved_in_truncated_output(self):
+        """The last few lines (return statement) appear at the end of truncated output."""
+        text = _make_long_python_function(70)
+        result = read_replacement.truncate_symbol_body(text)
+        assert result.rstrip().endswith("return x")
+
+    def test_docstring_included(self):
+        """Docstring lines appear in the truncated output."""
+        text = _make_long_python_function(70)
+        result = read_replacement.truncate_symbol_body(text)
+        assert "A long function docstring." in result
+
+    def test_ellipsis_count_correct(self):
+        """The ellipsis comment reports a positive truncated line count."""
+        import re
+        text = _make_long_python_function(80)
+        result = read_replacement.truncate_symbol_body(text)
+        m = re.search(r"\((\d+) lines truncated\)", result)
+        assert m is not None, f"No truncation count found in: {result!r}"
+        count = int(m.group(1))
+        assert count > 0
+
+    def test_empty_string_unchanged(self):
+        """Empty string does not cause errors."""
+        assert read_replacement.truncate_symbol_body("") == ""
+
+    def test_single_line_unchanged(self):
+        """Single-line symbol is returned as-is."""
+        text = "SOME_CONST = 42"
+        assert read_replacement.truncate_symbol_body(text) == text
+
+
+class TestTokenEstimateHeader:
+    """Tests for read_replacement.token_estimate_header."""
+
+    def test_format(self):
+        """Header format is '# N lines (M tokens est.)'."""
+        import re
+        text = "line1\nline2\nline3"
+        header = read_replacement.token_estimate_header(text)
+        assert re.match(r"^# \d+ lines \(\d+ tokens est\.\)$", header), (
+            f"Unexpected header format: {header!r}"
+        )
+
+    def test_line_count(self):
+        """Line count in header matches actual lines."""
+        text = "a\nb\nc\nd"
+        header = read_replacement.token_estimate_header(text)
+        assert header.startswith("# 4 lines")
+
+    def test_token_estimate_approx(self):
+        """Token estimate is len(text) // 4."""
+        text = "x" * 400
+        header = read_replacement.token_estimate_header(text)
+        assert "(100 tokens est.)" in header
+
+    def test_empty_string(self):
+        """Empty string produces a header with 0 tokens."""
+        header = read_replacement.token_estimate_header("")
+        assert "0 tokens" in header
+
+    def test_single_line(self):
+        """Single-line text counts as 1 line."""
+        header = read_replacement.token_estimate_header("hello world")
+        assert header.startswith("# 1 lines")
+
+
+class TestReadCommandFullFlag:
+    """Integration tests for --full flag and token estimate in CLI output."""
+
+    def _make_long_function_project(self, tmp_path, make_project):
+        """Create a project with a long Python function and index it."""
+        from token_goat.parser import index_project as _index_project
+        proj_root = tmp_path / "long_func_proj"
+        proj_root.mkdir()
+        (proj_root / ".git").mkdir()
+        func_lines = ["def big_function(a, b, c):"]
+        func_lines.append('    """This function is deliberately long."""')
+        for i in range(70):
+            func_lines.append(f"    result_{i} = a + b + c + {i}")
+        func_lines.append("    return result_0")
+        (proj_root / "bigfile.py").write_text("\n".join(func_lines) + "\n", encoding="utf-8")
+        proj = make_project(proj_root)
+        _index_project(proj, full=True)
+        return proj_root, proj
+
+    def test_read_includes_token_estimate_in_output(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """token-goat read output includes the token estimate header line."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_long_function_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "bigfile.py::big_function"])
+        assert result.exit_code == 0, result.output
+        assert "tokens est." in result.output
+
+    def test_read_truncates_long_body_by_default(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """Without --full, long symbol bodies are truncated."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_long_function_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "bigfile.py::big_function"])
+        assert result.exit_code == 0, result.output
+        assert "lines truncated" in result.output
+
+    def test_read_full_flag_bypasses_truncation(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """With --full, long symbol bodies are returned without truncation."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_long_function_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "--full", "bigfile.py::big_function"])
+        assert result.exit_code == 0, result.output
+        assert "lines truncated" not in result.output
+        assert "result_69" in result.output
+
+    def test_read_short_flag_f_bypasses_truncation(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """-f (short form) is equivalent to --full."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_long_function_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "-f", "bigfile.py::big_function"])
+        assert result.exit_code == 0, result.output
+        assert "lines truncated" not in result.output
+        assert "result_69" in result.output
+
+    def test_read_full_flag_in_json_output(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """JSON output with --full includes the complete body text."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_long_function_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "--full", "--json", "bigfile.py::big_function"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output.strip())
+        assert "result_69" in data.get("text", "")

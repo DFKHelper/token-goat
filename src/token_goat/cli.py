@@ -637,6 +637,16 @@ def symbol(
             "Repeat to allow multiple kinds: --type fn --type method"
         ),
     ),
+    full: bool = typer.Option(  # noqa: B008
+        False,
+        "--full",
+        "-f",
+        help=(
+            "When combined with token-goat read, bypass smart truncation. "
+            "For the symbol search command itself this flag is accepted but has no effect "
+            "(symbol lists file locations, not bodies)."
+        ),
+    ),
 ) -> None:
     """Find a symbol definition by name (function, class, method, type, constant, etc.).
 
@@ -1390,8 +1400,13 @@ def read(
     session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = _OPT_JSON,
     context_lines: int = _OPT_CONTEXT_LINES,
+    full: bool = typer.Option(False, "--full", "-f", help="Return the complete symbol body without smart truncation (bypasses the 60-line threshold)."),  # noqa: B008
 ) -> None:
-    """Read just <symbol> from <file>, not the whole file."""
+    """Read just <symbol> from <file>, not the whole file.
+
+    Long symbol bodies (> 60 lines) are smart-truncated by default.  Pass
+    ``--full`` (``-f``) to bypass truncation and return the complete body.
+    """
     from . import read_commands  # noqa: PLC0415
 
     if session_id:
@@ -1402,6 +1417,7 @@ def read(
         session_id=session_id,
         json_output=json_output,
         context_lines=context_lines,
+        full=full,
     )
 
 

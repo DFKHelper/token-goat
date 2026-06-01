@@ -15,6 +15,8 @@ __all__ = [
     "read_section",
     "read_symbol",
     "resolve_file_rel",
+    "truncate_symbol_body",
+    "token_estimate_header",
 ]
 
 import operator
@@ -736,6 +738,184 @@ def _pct_saved(snippet_bytes: int, full_bytes: int) -> float:
     if not full_bytes:
         return 0.0
     return 100.0 * max(0, full_bytes - snippet_bytes) / full_bytes
+
+
+# ---------------------------------------------------------------------------
+# Smart truncation for long symbol bodies (item: context savings)
+# ---------------------------------------------------------------------------
+
+#: Number of body lines above which smart truncation is applied.
+TRUNCATE_THRESHOLD: int = 60
+#: Number of lines to show from the start of the body (after signature + docstring).
+TRUNCATE_HEAD_LINES: int = 15
+#: Number of lines to show from the end of the body.
+TRUNCATE_TAIL_LINES: int = 5
+#: Maximum number of docstring lines to include after the signature.
+TRUNCATE_DOCSTRING_LINES: int = 10
+
+
+def _is_docstring_delimiter(line: str) -> bool:
+    """Return True when *line* starts a triple-quoted string literal (Python docstring).
+
+    Detects both ``\"\"\"`` and ``'''`` forms, with optional leading whitespace and
+    an optional ``r``/``u``/``b`` string prefix.  This is intentionally conservative:
+    a false negative (missed delimiter) means the truncation point falls inside a
+    docstring, which the caller already treats as best-effort.
+    """
+    stripped = line.lstrip()
+    # Strip optional string prefix (r, u, b, rb, br, etc.) before the quotes.
+    prefix_end = 0
+    while prefix_end < len(stripped) and stripped[prefix_end] in "rRuUbB":
+        prefix_end += 1
+    rest = stripped[prefix_end:]
+    return rest.startswith('"""') or rest.startswith("'''")
+
+
+def _find_docstring_end(lines: list[str], start_idx: int) -> int:
+    """Return the index (inclusive) of the line that closes the docstring.
+
+    *start_idx* is the index of the line that opens the triple-quoted string.
+    Returns *start_idx* itself when the opening delimiter also closes on the same
+    line (one-liner docstring), or when no closing delimiter is found within the
+    body (open-ended — caller should treat docstring as extending to end of slice).
+
+    Only the first 3 characters after optional leading whitespace + prefix are
+    checked so multi-line opener like ``\"\"\" text`` is handled correctly.
+    """
+    stripped = lines[start_idx].lstrip()
+    prefix_end = 0
+    while prefix_end < len(stripped) and stripped[prefix_end] in "rRuUbB":
+        prefix_end += 1
+    rest = stripped[prefix_end:]
+    delimiter = '"""' if rest.startswith('"""') else "'''"
+    # One-liner: the closing quotes appear after the opening on the same line.
+    after_open = rest[3:]
+    if delimiter in after_open:
+        return start_idx
+    # Search subsequent lines for the closing delimiter.
+    for i in range(start_idx + 1, len(lines)):
+        if delimiter in lines[i]:
+            return i
+    # Closing delimiter not found — treat as unbounded docstring.
+    return len(lines) - 1
+
+
+def truncate_symbol_body(text: str, *, full: bool = False) -> str:
+    """Return a smart-truncated view of a symbol body when it exceeds the threshold.
+
+    When the body is at most :data:`TRUNCATE_THRESHOLD` lines, or when *full* is
+    ``True``, the original text is returned unchanged.
+
+    The truncation strategy:
+    1. Signature line(s): all lines before the first non-blank, non-decorator body line.
+       For Python functions/classes that is everything up to and including the ``def``/
+       ``class`` line.
+    2. Docstring (best-effort, up to :data:`TRUNCATE_DOCSTRING_LINES` lines): if the
+       first non-blank body line opens a triple-quoted string, include lines through
+       the closing delimiter (or up to the cap, whichever comes first).
+    3. First :data:`TRUNCATE_HEAD_LINES` lines of the actual body.
+    4. ``    # ... ({N} lines truncated) ...`` ellipsis comment.
+    5. Last :data:`TRUNCATE_TAIL_LINES` lines (closing brace / return statement / etc.).
+
+    String-literal / comment-block awareness is best-effort: the function avoids
+    splitting *inside* a detected docstring by including the whole docstring (up to
+    the cap) rather than cutting mid-string.  It does not track arbitrary inline
+    string literals or multi-line comments in the body — those are uncommon at the
+    truncation boundary and the savings outweigh the risk of a mid-string cut.
+    """
+    if full:
+        return text
+
+    lines = text.splitlines()
+    if len(lines) <= TRUNCATE_THRESHOLD:
+        return text
+
+    # ------------------------------------------------------------------
+    # Phase 1: identify the signature boundary.
+    # We treat the signature as everything up to (and including) the first
+    # line that ends a function/class header: i.e. the first line that ends
+    # with ``:`` (Python def/class) or ``{`` (C-like), or if neither is found,
+    # just the first line.
+    # ------------------------------------------------------------------
+    sig_end_idx = 0  # index of the last signature line (0-based)
+    for i, line in enumerate(lines):
+        stripped = line.rstrip()
+        if stripped.endswith(":") or stripped.endswith("{"):
+            sig_end_idx = i
+            break
+        # If first line doesn't look like a header, treat it as the sole sig line.
+        if i == 0 and not stripped.endswith((":""{", ",")):
+            sig_end_idx = 0
+            break
+
+    sig_lines = lines[: sig_end_idx + 1]
+    body_lines = lines[sig_end_idx + 1 :]
+
+    # ------------------------------------------------------------------
+    # Phase 2: detect and extract docstring (Python-style triple quotes).
+    # ------------------------------------------------------------------
+    docstring_lines: list[str] = []
+    body_start_offset = 0  # index into body_lines where the real body begins
+
+    # Find first non-blank body line.
+    first_body_idx = 0
+    for i, line in enumerate(body_lines):
+        if line.strip():
+            first_body_idx = i
+            break
+
+    if body_lines and _is_docstring_delimiter(body_lines[first_body_idx]):
+        doc_end_idx = _find_docstring_end(body_lines, first_body_idx)
+        raw_doc = body_lines[first_body_idx : doc_end_idx + 1]
+        if len(raw_doc) <= TRUNCATE_DOCSTRING_LINES:
+            docstring_lines = raw_doc
+        else:
+            # Cap at TRUNCATE_DOCSTRING_LINES and add a note.
+            docstring_lines = raw_doc[:TRUNCATE_DOCSTRING_LINES] + [
+                f"{raw_doc[0][:len(raw_doc[0]) - len(raw_doc[0].lstrip())]}    # ... (docstring truncated)"
+            ]
+        body_start_offset = doc_end_idx + 1
+
+    real_body = body_lines[body_start_offset:]
+
+    # ------------------------------------------------------------------
+    # Phase 3: apply head + tail truncation to the real body.
+    # ------------------------------------------------------------------
+    total_real = len(real_body)
+    # Guard: if the real body after sig + docstring is within threshold, emit in full.
+    if total_real <= TRUNCATE_HEAD_LINES + TRUNCATE_TAIL_LINES:
+        return text
+
+    head = real_body[:TRUNCATE_HEAD_LINES]
+    tail = real_body[total_real - TRUNCATE_TAIL_LINES :]
+    truncated_count = total_real - TRUNCATE_HEAD_LINES - TRUNCATE_TAIL_LINES
+
+    # Infer indentation from the first head line for the ellipsis comment.
+    indent = ""
+    if head:
+        stripped_head = head[0].lstrip()
+        if stripped_head:
+            indent = head[0][: len(head[0]) - len(stripped_head)]
+
+    ellipsis_line = f"{indent}# ... ({truncated_count} lines truncated) ..."
+
+    result_lines = sig_lines + docstring_lines + head + [ellipsis_line] + tail
+    return "\n".join(result_lines)
+
+
+def token_estimate_header(text: str) -> str:
+    """Return a one-line header estimating the token count of *text*.
+
+    Format: ``# {N} lines ({approx_tokens} tokens est.)``
+
+    ``approx_tokens`` is computed as ``len(text) // 4``, which is the standard
+    rough approximation for GPT-family and Claude tokenizers (4 chars ≈ 1 token).
+    The estimate is intentionally rough — it gives the reader a useful order-of-
+    magnitude budget signal without the overhead of running a real tokenizer.
+    """
+    n_lines = text.count("\n") + (1 if text else 0)
+    approx_tokens = len(text) // 4
+    return f"# {n_lines} lines ({approx_tokens} tokens est.)"
 
 
 def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:

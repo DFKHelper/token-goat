@@ -534,9 +534,15 @@ def _emit_text_result(
     When *context_before* or *context_after* is non-zero and stdout is a TTY
     (and ``no_color`` is False), context lines are rendered with a dim ``│ ``
     gutter prefix so the core symbol body stands out visually.
+
+    A token estimate comment (``# {N} lines ({approx_tokens} tokens est.)``) is
+    always prepended to the output so the agent can budget its context before
+    reading.
     """
+    token_header = read_replacement.token_estimate_header(text)
     if not no_header and sys.stdout.isatty():
         typer.echo(f"## {rel_path} — {separator_label}: {item}")
+    typer.echo(token_header)
     is_tty = sys.stdout.isatty()
     apply_color = is_tty and not no_color
     display_text = _apply_context_gutter(text, context_before, context_after, no_color=not apply_color)
@@ -574,6 +580,7 @@ def _run_read_like_command(
     reader: _ReaderCallable,
     no_header: bool = False,
     no_color: bool = False,
+    full: bool = False,
 ) -> None:
     """Unified handler for read/section/deps CLI commands.
 
@@ -595,6 +602,8 @@ def _run_read_like_command(
         no_header: When True, suppress the ``## path — label: item`` header line.
             Defaults to False; auto-suppressed in non-TTY contexts (Item 15).
         no_color: When True, suppress ANSI color/dim escapes even on TTY output.
+        full: When True, bypass smart truncation for long symbol bodies and return the
+            complete text.  Defaults to False (truncation active for bodies > 60 lines).
     """
     if "::" not in target:
         _emit_read_error(
@@ -656,11 +665,15 @@ def _run_read_like_command(
         session.mark_file_read(session_id, file_target.rel_path, symbol=item_part)
         if json_output:
             out = {k: v for k, v in cached_result.items() if k not in _INTERNAL_RESULT_FIELDS}
+            display_text = read_replacement.truncate_symbol_body(out.get("text", ""), full=full)
+            out = dict(out)
+            out["text"] = display_text
             typer.echo(json.dumps(out, separators=(",", ":")))
         else:
             cb, ca = _context_bounds(cached_result)
+            display_text = read_replacement.truncate_symbol_body(cached_result["text"], full=full)
             _emit_text_result(
-                cached_result["text"], file_target.rel_path, item_part, separator_label, no_header,
+                display_text, file_target.rel_path, item_part, separator_label, no_header,
                 context_before=cb, context_after=ca, no_color=no_color,
             )
         return
@@ -727,6 +740,9 @@ def _run_read_like_command(
         detail=f"{file_target.rel_path}::{item_part}",
     )
 
+    # Apply smart truncation to the result text (no-op when full=True or body is short).
+    display_text = read_replacement.truncate_symbol_body(result["text"], full=full)
+
     # Emit a cross-project attribution note when the result came from a
     # different project than the shell's cwd.  The user needs to know the
     # result is from a foreign repo so they can verify path accuracy.
@@ -738,12 +754,13 @@ def _run_read_like_command(
         if json_output:
             out = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
             out["_project_root"] = str(file_target.project.root)
+            out["text"] = display_text
             typer.echo(json.dumps(out, separators=(",", ":")))
             return
         cb, ca = _context_bounds(result)
         typer.echo(note, err=True)
         _emit_text_result(
-            result["text"], file_target.rel_path, item_part, separator_label, no_header,
+            display_text, file_target.rel_path, item_part, separator_label, no_header,
             context_before=cb, context_after=ca, no_color=no_color,
         )
         return
@@ -751,11 +768,12 @@ def _run_read_like_command(
     if json_output:
         # Strip internal stat fields — model never acts on them; stats are recorded above.
         out = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
+        out["text"] = display_text
         typer.echo(json.dumps(out, separators=(",", ":")))
         return
     cb, ca = _context_bounds(result)
     _emit_text_result(
-        result["text"], file_target.rel_path, item_part, separator_label, no_header,
+        display_text, file_target.rel_path, item_part, separator_label, no_header,
         context_before=cb, context_after=ca, no_color=no_color,
     )
 
@@ -946,6 +964,7 @@ def read(
     no_header: bool = typer.Option(False, "--no-header", help="Suppress the '## path — symbol: name' header line (auto-suppressed in non-TTY contexts)"),
     header: bool = typer.Option(False, "--header", help="Force the '## path — symbol: name' header even in non-TTY contexts"),
     no_color: bool = typer.Option(False, "--no-color", help="Suppress ANSI color/dim escapes (useful when piping output)"),
+    full: bool = typer.Option(False, "--full", "-f", help="Return the complete symbol body without smart truncation (bypasses the 60-line threshold)."),
 ) -> None:
     """Read just <symbol> from <file>, not the whole file.
 
@@ -956,6 +975,10 @@ def read(
     by default to avoid paying ~10 tokens per call for information the agent
     already has.  Pass ``--header`` to force it on, or ``--no-header`` to
     force it off regardless of TTY state.
+
+    Long symbol bodies (> 60 lines) are smart-truncated by default: the
+    signature, optional docstring, first 15 body lines, an ellipsis comment,
+    and last 5 lines are shown.  Pass ``--full`` (``-f``) to bypass truncation.
     """
     _no_header = no_header or not header and not sys.stdout.isatty()
 
@@ -983,6 +1006,7 @@ def read(
         reader=read_replacement.read_symbol,
         no_header=_no_header,
         no_color=no_color,
+        full=full,
     )
 
 
