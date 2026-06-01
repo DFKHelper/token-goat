@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 from logging import Logger
+from pathlib import Path
 from subprocess import CompletedProcess
 
 from .render.ansi import strip_ansi as strip_ansi  # noqa: PLC0414  re-export
@@ -19,6 +20,7 @@ from .render.ansi import strip_ansi as strip_ansi  # noqa: PLC0414  re-export
 __all__ = [
     "strip_ansi",
     "get_logger",
+    "normalize_path",
     "run_git",
     "sanitize_surrogates",
     "sanitize_control_chars",
@@ -42,6 +44,65 @@ def get_logger(name: str) -> Logger:
         _LOG = get_logger("module_name")
     """
     return logging.getLogger(f"token_goat.{name}")
+
+
+# Compiled once at import time — avoids recompiling on every normalize_path call.
+_WSL_PATH_RE = re.compile(r"^/mnt/([a-z])/(.*)$", re.DOTALL)
+
+
+def normalize_path(path: str | Path) -> str:
+    """Normalize a file path to a canonical string form for cross-platform key lookups.
+
+    Transformations applied in order:
+
+    1. Convert a ``pathlib.Path`` (or any ``os.PathLike``) to ``str`` first so
+       the function accepts both forms uniformly.
+    2. Detect WSL paths of the form ``/mnt/<drive>/rest`` and convert them to
+       the Windows canonical form ``<drive>:/rest``.  For example,
+       ``/mnt/c/Users/zelys/foo`` becomes ``c:/Users/zelys/foo``.  Only
+       single-letter drive components are converted; other ``/mnt/...`` paths
+       (e.g. ``/mnt/data``) are left unchanged.
+    3. Replace all backslashes with forward slashes.
+    4. Lowercase the Windows drive letter prefix (``C:`` → ``c:``).
+
+    The result is a consistent canonical string suitable for use as a dict key
+    or SQLite lookup value regardless of whether the path arrived from a Windows
+    process (``C:\\foo``), a WSL process (``/mnt/c/foo``), or was already in
+    forward-slash form (``c:/foo``).
+
+    Note: this is a *string* canonicalizer, not a *filesystem* canonicalizer.
+    Symlinks, junctions, and case-insensitive NTFS paths are not resolved.
+    Paths that do not match any of the recognized patterns are returned with only
+    backslashes replaced and the leading drive letter lowercased.
+
+    Examples::
+
+        >>> normalize_path("/mnt/c/foo/bar")
+        'c:/foo/bar'
+        >>> normalize_path("C:\\\\foo\\\\bar")
+        'c:/foo/bar'
+        >>> normalize_path("c:/foo/bar")
+        'c:/foo/bar'
+        >>> normalize_path("/home/user/project")
+        '/home/user/project'
+    """
+    s = str(path)
+
+    # Step 2: convert WSL /mnt/<single-letter-drive>/rest → <drive>:/rest
+    m = _WSL_PATH_RE.match(s)
+    if m:
+        drive_letter = m.group(1)  # already lowercase due to [a-z] in regex
+        rest = m.group(2)
+        s = f"{drive_letter}:/{rest}"
+    else:
+        # Step 3: replace backslashes with forward slashes
+        if "\\" in s:
+            s = s.replace("\\", "/")
+        # Step 4: lowercase the drive letter prefix (C: → c:)
+        if len(s) >= 2 and s[1] == ":" and s[0].isalpha() and s[0].isupper():
+            s = s[0].lower() + s[1:]
+
+    return s
 
 
 def run_git(

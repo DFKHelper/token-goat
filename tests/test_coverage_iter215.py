@@ -144,15 +144,15 @@ class TestNormalizePathPlatformPatched:
             result = sess._normalize_path("C:/foo/bar.py")
         assert result == "c:/foo/bar.py"
 
-    def test_uppercase_drive_no_backslash_unchanged_on_linux(self):
-        """Fast path: uppercase drive-like string is NOT modified on Linux."""
-        import token_goat.paths as tg_paths
+    def test_uppercase_drive_lowercased_on_all_platforms(self):
+        """Drive letter is lowercased on all platforms (WSL fix: normalize_path is platform-agnostic)."""
         import token_goat.session as sess
 
-        with patch.object(tg_paths.sys, "platform", "linux"):
-            result = sess._normalize_path("C:/foo/bar.py")
-        # On Linux, 'C:/foo/bar.py' has no backslash, platform != win32 → unchanged
-        assert result == "C:/foo/bar.py"
+        # normalize_path no longer gates drive-letter lowercasing on sys.platform.
+        # Under WSL (Linux), a Windows-format path like C:/foo/bar.py must also
+        # be lowercased so it matches a /mnt/c/foo/bar.py key after WSL conversion.
+        result = sess._normalize_path("C:/foo/bar.py")
+        assert result == "c:/foo/bar.py"
 
     def test_backslash_path_uppercase_drive_lowercased_on_win32(self):
         """Backslash path: separators converted AND drive lowercased on win32."""
@@ -163,16 +163,15 @@ class TestNormalizePathPlatformPatched:
             result = sess._normalize_path("D:\\projects\\file.py")
         assert result == "d:/projects/file.py"
 
-    def test_backslash_path_separators_converted_on_linux(self):
-        """Backslash path: separators converted to forward slash even on Linux."""
-        import token_goat.paths as tg_paths
+    def test_backslash_path_separators_and_drive_converted_on_linux(self):
+        """Backslash path: separators converted AND drive lowercased on all platforms."""
         import token_goat.session as sess
 
-        with patch.object(tg_paths.sys, "platform", "linux"):
-            result = sess._normalize_path("C:\\projects\\file.py")
-        # Backslashes become forward slashes; drive NOT lowercased on Linux
+        # normalize_path is platform-agnostic: backslashes and drive letters
+        # are always normalized, enabling WSL /mnt/c/... ↔ C:\... equivalence.
+        result = sess._normalize_path(r"C:\projects\file.py")
         assert "\\" not in result
-        assert "projects" in result
+        assert result == "c:/projects/file.py"
 
     def test_already_lowercase_drive_unchanged_on_win32(self):
         """Lowercase drive letter is not double-lowercased."""

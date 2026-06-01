@@ -746,17 +746,15 @@ class TestNormalizeKeyCrossPlatformAudit:
 
     # ---- (a) Symlinks / WSL bind mount — known string-only limitation ----
 
-    def test_wsl_bind_mount_distinct_from_windows_form(self) -> None:
+    def test_wsl_bind_mount_same_as_windows_form(self) -> None:
         # /mnt/c/Projects/X (WSL bind-mount form) and C:\Projects\X
-        # (Windows form) point to the same physical file under WSL but
-        # normalize_key is a string canonicalizer and emits distinct keys.
-        # Callers that need filesystem identity must resolve via
-        # Path.resolve() *before* calling normalize_key.
+        # (Windows form) resolve to the same physical file under WSL.
+        # normalize_key now converts WSL /mnt/<drive>/... → <drive>:/...
+        # so both forms produce the same canonical key.
         wsl = "/mnt/c/Projects/X"
         win = "C:\\Projects\\X"
-        # If this assertion ever fails, the function gained symlink
-        # resolution — update both the docstring and this test deliberately.
-        assert paths.normalize_key(wsl) != paths.normalize_key(win)
+        assert paths.normalize_key(wsl) == paths.normalize_key(win)
+        assert paths.normalize_key(wsl) == "c:/Projects/X"
 
     # ---- (c) NTFS case folding — known string-only limitation ------------
 

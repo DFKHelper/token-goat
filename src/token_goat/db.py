@@ -69,7 +69,7 @@ from pathlib import Path
 from typing import Final
 
 from . import paths
-from .util import get_logger
+from .util import get_logger, normalize_path
 
 SCHEMA_VERSION: Final[int] = 2
 EMBED_DIM: Final[int] = 384  # BAAI/bge-small-en-v1.5
@@ -1431,7 +1431,7 @@ def get_file_exports(
                 (project_hash,),
             ).fetchone()
         if proj_row is not None:
-            abs_path = Path(str(proj_row["root"])) / file_rel
+            abs_path = Path(normalize_path(str(proj_row["root"]))) / file_rel
             source_text = abs_path.read_text(encoding="utf-8", errors="replace")
             tree = _ast.parse(source_text, mode="exec")
             for node in _ast.walk(tree):
@@ -1638,7 +1638,7 @@ def get_type_definitions(
                 "SELECT root FROM projects WHERE hash = ?",
                 (project_hash,),
             ).fetchone()
-        project_root = Path(str(proj_row["root"])) if proj_row else None
+        project_root = Path(normalize_path(str(proj_row["root"]))) if proj_row else None
     except Exception:  # noqa: BLE001
         project_root = None
 

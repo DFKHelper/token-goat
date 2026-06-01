@@ -348,54 +348,33 @@ def _has_windows_drive_prefix(s: str) -> bool:
 def normalize_key(p: str) -> str:
     """Canonical path-key normalizer for session/hint/compact/stats lookups.
 
-    Transformations:
+    Delegates to :func:`token_goat.util.normalize_path` for the actual
+    transformations:
 
-    * Backslashes -> forward slashes (always, on every platform).
-    * Windows only: an uppercase ASCII drive letter (``C:`` style) at the
-      start of the string is lowercased to ``c:``. Lowercasing is restricted
-      to the leading drive-letter byte; all other path-component case is
-      preserved verbatim.
+    * WSL paths ``/mnt/<drive>/rest`` are converted to ``<drive>:/rest``.
+    * Backslashes are replaced with forward slashes.
+    * An uppercase drive letter prefix (``C:``) is lowercased to ``c:``.
 
-    This is the public canonical form used across token-goat for cache keys,
-    dedup fingerprints, and dict lookups that must agree between hook
-    processes that can observe the same file with different casings (e.g.
-    ``C:\\foo`` vs ``c:\\foo``) when spawned independently by the harness.
+    All callers benefit automatically: session dict keys, hint fingerprints,
+    compact manifest lookups, and stats queries all produce the same canonical
+    form regardless of whether the path arrived from a Windows process
+    (``C:\\foo``), a WSL process (``/mnt/c/foo``), or an already-normalized
+    form (``c:/foo``).
 
-    Fast path: paths with no backslashes skip the allocation entirely.
+    Scope and known limitations (by design):
 
-    Scope and known limitations (by design — this is a *string* canonicalizer,
-    not a *filesystem* canonicalizer; resolving any of the following would
-    require ``os.stat`` / ``readlink`` I/O on every hook call):
-
-    * **Symlinks, junctions, WSL bind mounts.** ``C:\\Projects\\X`` and
-      ``/mnt/c/Projects/X`` resolve to the same underlying file under WSL,
-      but ``normalize_key`` operates on the input string only and will emit
-      different keys for the two forms. Callers that need filesystem identity
-      must resolve via ``Path.resolve()`` *before* calling ``normalize_key``.
-    * **Case-insensitive path components on NTFS.** NTFS treats
-      ``C:\\foo\\Bar.py`` and ``C:\\foo\\bar.py`` as the same file, but
-      ``normalize_key`` preserves component case and will emit different keys
-      for the two forms. Lowercasing every component would clobber genuine
-      case-sensitive paths on case-sensitive filesystems (POSIX, WSL native),
-      so this is intentional. Same workaround: resolve first if filesystem
-      identity is required.
-    * **UNC paths** (``\\\\server\\share\\path``) and the long-path prefix
-      ``\\\\?\\C:\\...`` are converted purely via the backslash->slash rule;
-      the leading double separator is preserved as ``//`` in the canonical
-      form. Two callers observing the same UNC share via different but
-      string-equivalent forms will agree.
-    * **Trailing whitespace and trailing separators** are preserved
-      (no ``rstrip``).
+    * **Symlinks, junctions, WSL bind mounts.** ``normalize_key`` converts
+      the string form of WSL paths (``/mnt/<single-letter-drive>/...``) but
+      does not follow arbitrary symlinks or other WSL mount points.
+    * **Case-insensitive path components on NTFS.** Component case is
+      preserved verbatim; only the leading drive letter is lowercased.
+    * **UNC paths** and the long-path prefix ``\\\\?\\...`` are
+      converted via the backslash-to-slash rule only.
+    * **Trailing whitespace and trailing separators** are preserved.
     """
-    # Fast path: no backslashes — skip the str.replace allocation.
-    if "\\" not in p:
-        if sys.platform == "win32" and _has_windows_drive_prefix(p) and p[0].isupper():
-            return p[0].lower() + p[1:]
-        return p
-    s = p.replace("\\", "/")
-    if sys.platform == "win32" and _has_windows_drive_prefix(s) and s[0].isupper():
-        s = s[0].lower() + s[1:]
-    return s
+    from .util import normalize_path  # noqa: PLC0415
+
+    return normalize_path(p)
 
 
 def is_safe_rel_path(rel_path: str) -> bool:
