@@ -1565,3 +1565,84 @@ def stub_view(
         db.record_stat(None, "stub_view", bytes_saved=saved, tokens_saved=saved // 4, detail=file_rel)
     except Exception:  # noqa: BLE001
         pass
+
+
+# ---------------------------------------------------------------------------
+# refs — find all callers of a symbol defined in a specific file
+# ---------------------------------------------------------------------------
+
+
+def refs(
+    target: str,
+    limit: int = 50,
+    json_output: bool = False,
+) -> None:
+    """Show all call-sites that reference a symbol defined in <file>.
+
+    *target* must be in ``<file>::<symbol>`` format, for example::
+
+        token-goat refs src/token_goat/hints.py::build_hint
+        token-goat refs hints.py::build_hint --json
+
+    The file part is matched as a substring (``LIKE %file%``), so short
+    partial paths work.  Results are printed as ``path:line: context``
+    (one per line), which replaces a multi-file ``rg`` search for callers.
+    """
+    if "::" not in target:
+        typer.echo(
+            f"Invalid format {target!r} — expected <file>::<symbol>  "
+            "(e.g. 'src/auth.py::login')",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    file_part, _, symbol_name = target.partition("::")
+    symbol_name = symbol_name.strip()
+    file_part = file_part.strip()
+
+    if not file_part or not symbol_name:
+        typer.echo(
+            "Both <file> and <symbol> must be non-empty in <file>::<symbol>",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    file_target = _resolve_file_target(file_part)
+    if file_target.project is None or file_target.rel_path is None:
+        typer.echo(f"File not found in any indexed project: {file_part}", err=True)
+        hint = _not_indexed_hint(file_target.current_project.hash) if file_target.current_project else None
+        if hint:
+            typer.echo(hint, err=True)
+        raise typer.Exit(1)
+
+    proj = file_target.project
+    file_rel = file_target.rel_path
+
+    rows = db.get_symbol_refs(proj.hash, file_rel, symbol_name, limit=limit)
+
+    if json_output:
+        typer.echo(json.dumps(
+            {"file": file_rel, "symbol": symbol_name, "refs": rows},
+            separators=(",", ":"),
+        ))
+        return
+
+    count = len(rows)
+    if count == 0:
+        typer.echo(f"No references found for {file_rel}::{symbol_name}")
+        return
+
+    typer.echo(f"{count} reference{'s' if count != 1 else ''} to {file_rel}::{symbol_name}")
+    use_tty_color = sys.stdout.isatty()
+    for row in rows:
+        path = row["path"]
+        line = row["line"]
+        ctx = str(row["context"] or "").strip()
+        loc = f"{path}:{line}"
+        if ctx:
+            if use_tty_color:
+                typer.echo(f"{loc}: \033[2m{ctx}\033[0m")
+            else:
+                typer.echo(f"{loc}: {ctx}")
+        else:
+            typer.echo(loc)

@@ -1354,3 +1354,48 @@ def get_symbol_callers(
         return []
     except Exception:
         return []
+
+
+def get_symbol_refs(
+    project_hash: str,
+    file_path: str,
+    symbol_name: str,
+    limit: int = 50,
+) -> list[dict[str, object]]:
+    """Return call-site rows for *symbol_name* defined in *file_path*.
+
+    Looks up all refs where the symbol name matches *symbol_name* and the
+    symbol is defined in a file whose path matches *file_path* (partial
+    ``LIKE`` match).  Each row is a dict with keys ``"path"`` (str),
+    ``"line"`` (int), and ``"context"`` (str | None).
+
+    Returns an empty list on any DB error (fail-soft).  Also returns ``[]``
+    when the project DB does not exist (not yet indexed).
+    """
+    try:
+        with open_project_readonly(project_hash) as conn:
+            rows = conn.execute(
+                "SELECT r.file_rel AS path, r.line, r.context "
+                "FROM refs r "
+                "WHERE r.symbol_name = ? "
+                "  AND EXISTS ("
+                "      SELECT 1 FROM symbols s "
+                "      WHERE s.name = r.symbol_name "
+                "        AND s.file_rel LIKE ?"
+                "  ) "
+                "ORDER BY r.file_rel, r.line "
+                "LIMIT ?",
+                (symbol_name, f"%{file_path}%", limit),
+            ).fetchall()
+        return [
+            {
+                "path": str(r["path"]),
+                "line": int(r["line"]),
+                "context": r["context"],
+            }
+            for r in rows
+        ]
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []

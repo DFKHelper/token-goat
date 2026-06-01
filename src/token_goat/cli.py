@@ -992,12 +992,24 @@ def refs(
     source code.  Use ``--file`` to restrict output to a single file.  Use
     ``--limit`` to cap results (default 50).
 
+    When SYMBOL contains ``::`` (e.g. ``src/auth.py::login``), the file part
+    is used to narrow results to callers of a symbol defined in that specific
+    file.  This replaces a multi-file ``rg`` search for callers.
+
     Example usage::
 
         token-goat refs login
         token-goat refs login --file src/auth.py
+        token-goat refs src/auth.py::login
         token-goat refs login --json
     """
+    # <file>::<symbol> format: delegate to targeted refs lookup.
+    if "::" in symbol:
+        from . import read_commands  # noqa: PLC0415
+
+        read_commands.refs(symbol, limit=limit, json_output=as_json)
+        return
+
     proj = _require_project()
 
     if file is not None:
