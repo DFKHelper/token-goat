@@ -602,3 +602,85 @@ class TestDoctorInstallationStatus:
         # ok line shows the file count and the humanized size.
         assert "fastembed model" in result.stdout
         assert "1 onnx file" in result.stdout
+
+    def test_session_health_no_sessions(self, tmp_data_dir):
+        """When sessions/ dir is empty, doctor shows 0 files."""
+        paths.ensure_dirs()
+        # ensure_dirs() creates sessions_dir; just verify it's empty
+        sessions = paths.sessions_dir()
+        assert sessions.exists()
+        assert len(list(sessions.glob("*.json"))) == 0
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "Session health" in result.stdout
+        assert "session files" in result.stdout
+        assert "0" in result.stdout
+
+    def test_session_health_with_sessions(self, tmp_data_dir):
+        """When sessions exist, doctor reports count, oldest age, and total size."""
+        paths.ensure_dirs()
+        sessions = paths.sessions_dir()
+        sessions.mkdir(parents=True, exist_ok=True)
+        # Create two session files with different ages
+        (sessions / "session1.json").write_bytes(b"x" * 100)
+        (sessions / "session2.json").write_bytes(b"y" * 200)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "Session health" in result.stdout
+        assert "2" in result.stdout  # file count
+        assert "sessions/ size" in result.stdout
+
+    def test_cache_sizes_section_present(self, tmp_data_dir):
+        """Cache sizes section appears in doctor output."""
+        paths.ensure_dirs()
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "Cache sizes" in result.stdout
+
+    def test_cache_sizes_with_bash_outputs(self, tmp_data_dir):
+        """When bash_outputs/ exists, doctor reports its count and size."""
+        paths.ensure_dirs()
+        bash_out = paths.data_dir() / "bash_outputs"
+        bash_out.mkdir(parents=True, exist_ok=True)
+        # Create a cache file
+        (bash_out / "output1.txt").write_bytes(b"x" * 500)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "bash_outputs" in result.stdout
+        assert "1" in result.stdout  # at least one file
+        assert "Cache sizes" in result.stdout
+
+    def test_index_health_per_project_no_projects(self, tmp_data_dir):
+        """When no projects are indexed, doctor shows '(none)'."""
+        paths.ensure_dirs()
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "Index health per project" in result.stdout
+        assert "no projects indexed yet" in result.stdout
+
+    def test_index_health_per_project_with_project(self, tmp_data_dir):
+        """When a project is indexed, doctor reports file and symbol counts."""
+        from token_goat import db as _db
+
+        paths.ensure_dirs()
+        now = int(time.time())
+        # Use a real SHA-1 hex hash (40 lowercase hex chars)
+        test_hash = "a" * 40
+        # Create a project entry in global.db
+        with _db.open_global() as conn:
+            conn.execute(
+                "INSERT INTO projects (hash, root, marker, first_seen, last_seen, file_count) VALUES (?, ?, ?, ?, ?, ?)",
+                (test_hash, "/test/project", "git", now, now, 2),
+            )
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        # Verify the section header appears
+        assert "Index health per project" in result.stdout
+        # Verify at least something about the project shows up
+        assert "test/project" in result.stdout or "aaaaaaa" in result.stdout

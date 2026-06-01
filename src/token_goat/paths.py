@@ -38,6 +38,7 @@ __all__ = [
     "sentinels_dir",
     "safe_join",
     "session_cache_path",
+    "sessions_dir",
     "web_cache_dir",
     "worker_heartbeat_path",
     "worker_pid_path",
@@ -417,6 +418,16 @@ def is_safe_rel_path(rel_path: str) -> bool:
         return False
 
     return all(part != ".." for part in normalized.split("/"))
+
+
+def sessions_dir() -> Path:
+    """Path to the sessions/ directory where per-session cache files are stored.
+
+    Each session is tracked in a JSON file: ``sessions/{session_id}.json``.
+    This directory is used by the doctor to report session count, oldest age,
+    and total size.
+    """
+    return data_dir() / "sessions"
 
 
 def session_cache_path(session_id: str) -> Path:

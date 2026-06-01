@@ -927,12 +927,148 @@ def doctor(  # noqa: C901
         ok("(none)", "no log for today")
 
     # ------------------------------------------------------------------
-    # 13. New-cache stores (bash outputs, web outputs, session snapshots)
+    # 12a. Session health
+    # ------------------------------------------------------------------
+    # Session files track per-session read history for hint generation.  Surfacing
+    # the count, oldest age, and total size helps spot stale sessions that could
+    # be cleaned up and verifies the session cache is being populated.
+    typer.echo("\nSession health")
+    try:
+        sessions_dir = paths.sessions_dir()
+        if not sessions_dir.exists():
+            ok("session files", "0 (directory not yet created)")
+        else:
+            session_files = list(sessions_dir.glob("*.json"))
+            if not session_files:
+                ok("session files", "0 (empty)")
+            else:
+                now = time.time()
+                total_size = 0
+                oldest_mtime = None
+                for sf in session_files:
+                    try:
+                        st = sf.stat()
+                        total_size += st.st_size
+                        if oldest_mtime is None or st.st_mtime < oldest_mtime:
+                            oldest_mtime = st.st_mtime
+                    except OSError:
+                        continue
+                oldest_age_sec = int(now - oldest_mtime) if oldest_mtime is not None else None
+                ok("session files", f"{len(session_files)} file(s)")
+                if oldest_age_sec is not None:
+                    oldest_age_days = oldest_age_sec / 86400
+                    if oldest_age_days > 7:
+                        flag(
+                            "oldest session",
+                            f"{oldest_age_days:.1f}d ago (7+ days; consider `token-goat clean --sessions`)",
+                            warn=True,
+                        )
+                    else:
+                        ok("oldest session", f"{oldest_age_sec // 3600}h ago")
+                ok("sessions/ size", _humanize_bytes_doctor(total_size))
+    except Exception as e:  # noqa: BLE001
+        flag("session health", str(e), warn=True)
+
+    # ------------------------------------------------------------------
+    # 13. Cache sizes
+    # ------------------------------------------------------------------
+    # In addition to the per-cache section below, surface an aggregated cache
+    # directory size breakdown so the user can see the total footprint and identify
+    # which cache (images, bash_outputs, web_outputs, skills) is dominating.
+    typer.echo("\nCache sizes")
+    cache_dirs = [
+        ("bash_outputs", "bash_outputs"),
+        ("web_outputs", "web_outputs"),
+        ("images", "images"),
+        ("skills", "skills"),
+    ]
+    cache_total_bytes = 0
+    cache_details: list[tuple[str, int, int]] = []  # (label, bytes, files)
+    for label, dir_name in cache_dirs:
+        d = paths.data_dir() / dir_name
+        if not d.exists():
+            continue
+        try:
+            total_bytes, file_count, _ = _cache_dir_stats(d)
+            cache_total_bytes += total_bytes
+            cache_details.append((label, total_bytes, file_count))
+        except OSError:
+            continue
+    if cache_details:
+        for label, total_bytes, file_count in cache_details:
+            ok(f"{label}", f"{file_count} files, {_humanize_bytes_doctor(total_bytes)}")
+        ok("total cache size", _humanize_bytes_doctor(cache_total_bytes))
+    else:
+        ok("(none)", "cache directories not yet created")
+
+    # ------------------------------------------------------------------
+    # 13a. Index health per project
+    # ------------------------------------------------------------------
+    # For each indexed project, report file count, symbol count, and last-indexed
+    # timestamp so the user can verify indexing is up-to-date and understand
+    # the index footprint per project.
+    typer.echo("\nIndex health per project")
+    try:
+        with _db.open_global_readonly() as gconn:
+            gconn.row_factory = __import__("sqlite3").Row
+            all_projs = gconn.execute("SELECT hash, root FROM projects").fetchall()
+        if not all_projs:
+            ok("(none)", "no projects indexed yet")
+        else:
+            for proj in all_projs:
+                proj_hash = proj["hash"]
+                proj_root = proj["root"]
+                proj_db_path = paths.project_db_path(proj_hash)
+                if not proj_db_path.exists():
+                    flag(
+                        f"project {proj_root[:40]}",
+                        f"DB missing ({proj_db_path})",
+                        warn=True,
+                    )
+                    continue
+                try:
+                    with _db.open_project_readonly(proj_hash) as pconn:
+                        # File count
+                        fc_row = pconn.execute("SELECT COUNT(*) FROM files").fetchone()
+                        file_count = fc_row[0] if fc_row else 0
+                        # Symbol count
+                        sym_row = pconn.execute("SELECT COUNT(*) FROM symbols").fetchone()
+                        symbol_count = sym_row[0] if sym_row else 0
+                        # Last-indexed timestamp (max(mtime) from files table)
+                        ts_row = pconn.execute("SELECT MAX(mtime) FROM files").fetchone()
+                        last_mtime = ts_row[0] if ts_row and ts_row[0] else None
+                    now = time.time()
+                    timestamp_str = "never"
+                    if last_mtime is not None:
+                        age_sec = int(now - last_mtime)
+                        if age_sec < 3600:
+                            timestamp_str = f"{age_sec // 60}m ago"
+                        elif age_sec < 86400:
+                            timestamp_str = f"{age_sec // 3600}h ago"
+                        else:
+                            timestamp_str = f"{age_sec // 86400}d ago"
+                    ok(
+                        f"project {proj_root[:40]}",
+                        f"{file_count} files, {symbol_count} symbols, last indexed {timestamp_str}",
+                    )
+                except Exception as pe:  # noqa: BLE001
+                    flag(
+                        f"project {proj_root[:40]}",
+                        str(pe),
+                        warn=True,
+                    )
+    except FileNotFoundError:
+        ok("(none)", "no global.db yet")
+    except Exception as e:  # noqa: BLE001
+        flag("index health per project", str(e), warn=True)
+
+    # ------------------------------------------------------------------
+    # 14. New-cache stores (bash outputs, web outputs, session snapshots)
     # ------------------------------------------------------------------
     # Surfaces the disk-store stats added by the bash-output / WebFetch /
     # diff-aware-re-read features so a long-lived install can be inspected
     # for runaway growth without grep-ing the data directory by hand.
-    typer.echo("\nCaches")
+    typer.echo("\nCache details")
     # cap_file_count is the max number of .txt body files (each may also have a
     # .json sidecar, so the physical directory-entry count can be up to 2× this).
     # None means no file-count cap applies (e.g. session_snapshots).
