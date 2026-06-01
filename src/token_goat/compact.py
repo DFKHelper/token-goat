@@ -4694,20 +4694,16 @@ def _render(
         _budget_tight = sym_budget < 80
         _stale_threshold_secs = 3600 if _budget_tight else float("inf")
 
-        # Pre-compact hint prioritization: partition files_with_symbols into edited and
-        # read-only groups, then iterate edited files first. This ensures symbols from
-        # edited files (actively modified) appear before symbols from read-only files
-        # in the manifest, giving the compaction LLM higher signal about changed code.
-        _edited_symbol_files: list[FileEntry] = []  # type: ignore[name-defined]
+        # Item #36: cross-section symbol deduplication. When a file is in the Edited
+        # section, its symbols are already covered by the edited-file listing.
+        # Drop all symbols from edited files to avoid redundant listings in the
+        # symbols-accessed section. Keep only read-only files (not in edited_keys).
         _readonly_symbol_files: list[FileEntry] = []  # type: ignore[name-defined]
         for entry in files_with_symbols:
             entry_norm = _norm_key(entry.rel_or_abs)
-            if entry_norm in edited_keys:
-                _edited_symbol_files.append(entry)  # type: ignore[arg-type]
-            else:
+            if entry_norm not in edited_keys:
                 _readonly_symbol_files.append(entry)  # type: ignore[arg-type]
-        # Process edited files first, then read-only files, preserving order within each group
-        _prioritized_symbol_files = _edited_symbol_files + _readonly_symbol_files
+        _prioritized_symbol_files = _readonly_symbol_files
 
         sym_formatted: list[str] = []
         _suppressed_sym_files = 0
