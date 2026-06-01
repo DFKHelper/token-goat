@@ -15,6 +15,13 @@ Centralises the five most-repeated patterns across the hook layer:
   "permissionDecision": "deny", ...}}`` shape that every interception response
   uses.  Callers supply only the two strings that differ between them.
 
+Adaptive Hook Timeout
+---------------------
+When a hook subprocess hits the watchdog timeout, an adaptive mechanism doubles
+the timeout for the remainder of the session (capped at 30000 ms) to recover on
+slow CI machines or during cold-cache scenarios.  This per-session state is
+stored in module-level variables and reset on successful hook completion.
+
 TypedDicts
 ----------
 This module defines the typed shapes for the three ``hookSpecificOutput``
@@ -39,6 +46,7 @@ __all__ = [
     "deny_redirect",
     "emit_if_new_hint",
     "extract_tool_response_text",
+    "get_effective_watchdog_ms",
     "get_session_context",
     "get_tool_input",
     "is_real_int",
@@ -47,6 +55,7 @@ __all__ = [
     "pre_tool_use_with_update",
     "record_cached_stat",
     "record_hint_stat_pair",
+    "record_watchdog_timeout",
     "run_dedup_hint",
     "update_session",
     "_is_quiet_hours",
@@ -150,6 +159,82 @@ HookResponse = TypedDict(
 
 # All hook modules share one logger so their output appears together in the log.
 LOG = get_logger("hooks")
+
+# ---------------------------------------------------------------------------
+# Adaptive hook watchdog timeout state
+# ---------------------------------------------------------------------------
+
+# Module-level state for adaptive timeout: when a hook subprocess times out,
+# the effective timeout is doubled (capped at 30 s) for subsequent calls in
+# the same session. This adapts to slow CI machines or cold-cache environments.
+_effective_watchdog_ms: int = 5000  # Will be overridden by config on first call to get_effective_watchdog_ms()
+_consecutive_timeouts: int = 0
+_timeout_configured: bool = False
+
+
+def get_effective_watchdog_ms() -> int:
+    """Return the current effective hook watchdog timeout in milliseconds.
+
+    On first invocation, loads the [hooks].watchdog_ms value from config (or the
+    default 5000 ms), with env-var TOKEN_GOAT_HOOK_WATCHDOG_MS taking precedence.
+    The value is clamped to [100, 30000].
+
+    On subsequent invocations within the same process, returns the adapted value
+    (which may have been doubled due to timeouts).
+    """
+    global _effective_watchdog_ms, _timeout_configured  # noqa: PLW0603
+
+    if not _timeout_configured:
+        try:
+            from . import config  # noqa: PLC0415
+            cfg = config.load()
+            _effective_watchdog_ms = cfg.hooks.watchdog_ms
+            _timeout_configured = True
+            LOG.debug("hook watchdog initialized: %d ms", _effective_watchdog_ms)
+        except Exception:  # noqa: BLE001 — fail-soft: use hardcoded default if config load fails
+            _effective_watchdog_ms = 5000
+            _timeout_configured = True
+            LOG.debug("hook watchdog config load failed, using default 5000 ms")
+
+    return _effective_watchdog_ms
+
+
+def record_watchdog_timeout() -> None:
+    """Record a hook subprocess timeout and adapt the effective timeout upward.
+
+    When called, doubles the effective timeout (up to the 30 s cap) and logs
+    the adjustment. This per-session adaptation helps recovery on slow CI
+    machines or during cold-cache scenarios.
+
+    The adaptive state is in-process memory — each fresh Python process starts
+    fresh with the configured baseline.
+    """
+    global _effective_watchdog_ms, _consecutive_timeouts  # noqa: PLW0603
+
+    _consecutive_timeouts += 1
+    old_ms = _effective_watchdog_ms
+    _effective_watchdog_ms = min(_effective_watchdog_ms * 2, 30_000)
+
+    LOG.warning(
+        "hook subprocess timeout (attempt %d); doubling watchdog: %d ms → %d ms",
+        _consecutive_timeouts,
+        old_ms,
+        _effective_watchdog_ms,
+    )
+
+
+def _reset_watchdog_state() -> None:
+    """Reset the adaptive timeout state on successful hook completion.
+
+    Called internally when a hook subprocess completes successfully; resets the
+    consecutive timeout counter to zero so the next timeout (if any) starts the
+    doubling sequence fresh.
+    """
+    global _consecutive_timeouts  # noqa: PLW0603
+    if _consecutive_timeouts > 0:
+        LOG.debug("hook subprocess completed successfully; resetting timeout counter")
+        _consecutive_timeouts = 0
+
 
 # The most common hook response: let the harness proceed unchanged.
 # Using a function (not a bare dict) keeps each call site independent — callers

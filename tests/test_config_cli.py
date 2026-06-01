@@ -352,6 +352,7 @@ class TestConfigValidate:
             "curator": config_mod.CuratorConfig,
             "hint_budget": config_mod.HintBudgetConfig,
             "hints": config_mod.HintsConfig,
+            "hooks": config_mod.HooksConfig,
             "repomap": config_mod.RepomapConfig,
             "stats": config_mod.StatsConfig,
             "webfetch": config_mod.WebFetchConfig,

@@ -8,6 +8,7 @@ __all__ = [
     "CuratorConfig",
     "HintBudgetConfig",
     "HintsConfig",
+    "HooksConfig",
     "ImageShrinkConfig",
     "IndexingConfig",
     "RepomapConfig",
@@ -61,6 +62,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_BASH_CACHE_MAX_FILES",
     "TOKEN_GOAT_BASH_CACHE_MAX_BYTES",
     "TOKEN_GOAT_WORKER_WATCHDOG",
+    "TOKEN_GOAT_HOOK_WATCHDOG_MS",
 )
 
 
@@ -139,6 +141,7 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
     "repomap",
     "stats",
     "hints",
+    "hooks",
     "webfetch",
     "worker",
     "indexing",
@@ -271,6 +274,12 @@ class _StatsToml(TypedDict, total=False):
     record_zero_savings: bool
 
 
+class _HooksToml(TypedDict, total=False):
+    """Expected shape of the [hooks] TOML section."""
+
+    watchdog_ms: int
+
+
 class _HintsToml(TypedDict, total=False):
     """Expected shape of the [hints] TOML section."""
 
@@ -320,6 +329,7 @@ class _ConfigToml(TypedDict, total=False):
     repomap: _RepomapToml
     stats: _StatsToml
     hints: _HintsToml
+    hooks: _HooksToml
     webfetch: _WebFetchToml
     worker: _WorkerToml
     indexing: _IndexingToml
@@ -734,6 +744,31 @@ class HintsConfig:
 
 
 @dataclass
+class HooksConfig:
+    """Configuration for hook subprocess timeout and adaptive timeouts.
+
+    Controls the default watchdog budget (wall-clock timeout) for hook subprocess
+    invocations. When a hook subprocess exceeds the timeout, it is killed and the
+    hook payload is passed through unchanged (fail-soft).
+
+    The effective timeout is determined by three layers (in precedence):
+    1. Environment variable ``TOKEN_GOAT_HOOK_WATCHDOG_MS`` (per-invocation override)
+    2. Configuration value from [hooks].watchdog_ms (per-project baseline)
+    3. Default hardcoded value (currently 5000 ms)
+
+    When a hook subprocess hits the timeout, an adaptive mechanism doubles the
+    timeout for the remainder of the session (capped at 30000 ms) to allow
+    recovery on slow CI machines or during cold-cache scenarios.
+
+    Attributes:
+        watchdog_ms: Hook subprocess wall-clock timeout in milliseconds.
+            Default 5000. Clamped to [100, 30000].
+    """
+
+    watchdog_ms: int = 5000
+
+
+@dataclass
 class WebFetchConfig:
     """Configuration for pre-WebFetch URL allowlist, denylist, and output cache.
 
@@ -832,6 +867,7 @@ class Config:
     repomap: RepomapConfig = field(default_factory=RepomapConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
     hints: HintsConfig = field(default_factory=HintsConfig)
+    hooks: HooksConfig = field(default_factory=HooksConfig)
     webfetch: WebFetchConfig = field(default_factory=WebFetchConfig)
     worker: WorkerConfig = field(default_factory=WorkerConfig)
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
@@ -1248,6 +1284,17 @@ def load() -> Config:
     )
     _apply_env_disable(wk, "watchdog_enabled", _ENV_WORKER_WATCHDOG, "worker.watchdog_enabled")
 
+    hk_raw: _HooksToml = cast("_HooksToml", raw.get("hooks", {}))
+    hk = HooksConfig(
+        watchdog_ms=_validated_int(
+            hk_raw.get("watchdog_ms", 5000), 5000, 100, 30_000, "hooks.watchdog_ms"
+        ),
+    )
+    # Apply env override for hook watchdog (if set, takes precedence)
+    hk.watchdog_ms = _env_int(
+        "TOKEN_GOAT_HOOK_WATCHDOG_MS", hk.watchdog_ms, 100, 30_000, "hooks.watchdog_ms"
+    )
+
     idx_raw: _IndexingToml = cast("_IndexingToml", raw.get("indexing", {}))
     _idx_symbol_only_kb = _validated_int(
         idx_raw.get("large_file_symbol_only_kb", 500),
@@ -1322,7 +1369,7 @@ def load() -> Config:
     result = Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
         image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, stats=stats,
-        hints=hints_cfg, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
+        hints=hints_cfg, hooks=hk, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
     return result
