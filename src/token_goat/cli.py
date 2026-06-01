@@ -2874,6 +2874,161 @@ def cmd_bash_history(
     )
 
 
+@app.command("history", rich_help_panel="Core")
+def cmd_history(
+    session_id: str | None = _OPT_SESSION_ID,
+    bash: bool = typer.Option(False, "--bash", help="Show bash command history only"),
+    web: bool = typer.Option(False, "--web", help="Show URL fetch history only"),
+    grep: bool = typer.Option(False, "--grep", help="Show grep pattern history only"),
+    limit: int = typer.Option(10, "--limit", "-n", help="Maximum entries per section (default 10)"),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Show current session access history: bash commands, URLs, and grep patterns.
+
+    Displays recent bash commands run, URLs fetched, and grep patterns used in
+    the current session, most recent first. Each entry shows relevant metadata:
+    - Bash: command, exit code, cache status, and size
+    - Web: URL, cache status, and size
+    - Grep: pattern, file scope, and match counts
+
+    By default (no flags), shows all three sections with up to --limit entries
+    per section. Pass ``--bash``, ``--web``, or ``--grep`` to show only one section.
+
+    Use ``--limit`` to control how many entries appear per section.
+    """
+    import json as json_lib  # noqa: PLC0415
+    import time as time_lib  # noqa: PLC0415
+
+    from . import session as session_module  # noqa: PLC0415
+
+    # Validate and resolve session ID
+    if session_id:
+        _validate_session_id(session_id)
+    else:
+        _error("--session-id is required")
+        raise typer.Exit(1)
+
+    # Load session cache
+    cache = session_module.safe_load(session_id)
+    if cache is None or cache.unavailable:
+        _error(f"Session cache unavailable: {session_id}")
+        raise typer.Exit(1)
+
+    # Determine what to show (default: all)
+    show_bash = bash or (not bash and not web and not grep)
+    show_web = web or (not bash and not web and not grep)
+    show_grep = grep or (not bash and not web and not grep)
+
+    current_time = time_lib.time()
+
+    if json_output:
+        output = {}
+
+        if show_bash and not cache.is_bash_history_empty():
+            entries = []
+            for _cmd_sha, entry in list(cache.bash_history.items())[-limit:]:  # type: ignore[assignment]  # mypy overly conservative
+                age_secs = int(current_time - entry.ts)
+                cached = "yes" if entry.output_id else "no"
+                entries.append({
+                    "command": entry.cmd_preview,
+                    "exit_code": entry.exit_code,
+                    "cached": cached,
+                    "size_bytes": entry.stdout_bytes + entry.stderr_bytes,
+                    "age_seconds": age_secs,
+                    "run_count": entry.run_count,
+                })
+            output["bash"] = entries
+
+        if show_web and not cache.is_web_history_empty():
+            entries = []
+            for _url_sha, entry in list(cache.web_history.items())[-limit:]:  # type: ignore[assignment]  # mypy overly conservative
+                age_secs = int(current_time - entry.ts)
+                cached = "yes" if entry.output_id else "no"
+                entries.append({
+                    "url": entry.url_preview,  # type: ignore[attr-defined]  # mypy overly conservative
+                    "cached": cached,
+                    "size_kb": entry.body_bytes // 1024,  # type: ignore[attr-defined]  # mypy overly conservative
+                    "status_code": entry.status_code,  # type: ignore[attr-defined]  # mypy overly conservative
+                    "age_seconds": age_secs,
+                })
+            output["web"] = entries
+
+        if show_grep and not cache.is_greps_empty():
+            entries = []
+            for grep_entry in cache.greps[-limit:]:  # type: ignore[index]  # mypy overly conservative
+                age_secs = int(current_time - grep_entry.ts)
+                entries.append({
+                    "pattern": grep_entry.pattern,
+                    "path": grep_entry.path,
+                    "result_count": grep_entry.result_count,
+                    "age_seconds": age_secs,
+                })
+            output["grep"] = entries
+
+        typer.echo(json_lib.dumps(output, ensure_ascii=False, indent=2))
+    else:
+        # Text output
+        had_output = False
+
+        if show_bash:
+            if not cache.is_bash_history_empty():
+                typer.echo("## Bash History (most recent first)")
+                for _cmd_sha, entry in list(cache.bash_history.items())[-limit:]:  # type: ignore[assignment]  # mypy overly conservative
+                    age_secs = int(current_time - entry.ts)
+                    exit_str = f" exit={entry.exit_code}" if entry.exit_code is not None else ""
+                    cached_str = "cached" if entry.output_id else "not cached"
+                    size_mb = (entry.stdout_bytes + entry.stderr_bytes) / (1024 * 1024)
+                    if size_mb >= 1:
+                        size_str = f"{size_mb:.1f} MB"
+                    else:
+                        size_bytes = entry.stdout_bytes + entry.stderr_bytes
+                        size_str = f"{size_bytes:,} B"
+                    typer.echo(
+                        f"  {age_secs:6,}s ago {exit_str:>8} [{cached_str:>12}] {size_str:>12}  {entry.cmd_preview}"
+                    )
+                had_output = True
+            else:
+                typer.echo("## Bash History")
+                typer.echo("  (no entries)")
+                had_output = True
+
+        if show_web:
+            if had_output:
+                typer.echo()
+            if not cache.is_web_history_empty():
+                typer.echo("## Web History (most recent first)")
+                for _url_sha, entry in list(cache.web_history.items())[-limit:]:  # type: ignore[assignment]  # mypy overly conservative
+                    age_secs = int(current_time - entry.ts)
+                    cached_str = "cached" if entry.output_id else "not cached"
+                    size_kb = entry.body_bytes // 1024  # type: ignore[attr-defined]  # mypy overly conservative
+                    status_str = f" status={entry.status_code}" if entry.status_code is not None else ""  # type: ignore[attr-defined]  # mypy overly conservative
+                    typer.echo(
+                        f"  {age_secs:6,}s ago {status_str:>9} [{cached_str:>12}] {size_kb:>8} KB  {entry.url_preview}"  # type: ignore[attr-defined]  # mypy overly conservative
+                    )
+                had_output = True
+            else:
+                typer.echo("## Web History")
+                typer.echo("  (no entries)")
+                had_output = True
+
+        if show_grep:
+            if had_output:
+                typer.echo()
+            if not cache.is_greps_empty():
+                typer.echo("## Grep History (most recent first)")
+                for grep_entry in cache.greps[-limit:]:  # type: ignore[index]  # mypy overly conservative
+                    age_secs = int(current_time - grep_entry.ts)
+                    path_str = f" in {grep_entry.path}" if grep_entry.path else " (global)"
+                    result_str = f" → {grep_entry.result_count} matches" if grep_entry.result_count is not None else ""
+                    typer.echo(
+                        f"  {age_secs:6,}s ago  {grep_entry.pattern}{path_str}{result_str}"
+                    )
+                had_output = True
+            else:
+                typer.echo("## Grep History")
+                typer.echo("  (no entries)")
+
+
 @app.command("skill-body", rich_help_panel="Core")
 def cmd_skill_body(
     name: str = typer.Argument(..., help="Skill name (e.g. 'ralph', 'plugin:improve')."),
