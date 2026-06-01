@@ -1567,6 +1567,28 @@ def cmd_recent(
     read_commands.recent(n=n, session_id=session_id, json_output=json_output)
 
 
+@app.command("find", rich_help_panel="Core")
+def cmd_find(
+    query: str = typer.Argument(..., help="Search term — name, keyword, or natural-language phrase."),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Unified search: symbol (exact/fuzzy) + semantic, merged and ranked.
+
+    Runs both search strategies in the current project and presents results
+    in two sections: exact/fuzzy name matches first, then semantically
+    similar code that did not already appear above.
+
+    Examples::
+
+        token-goat find login
+        token-goat find "rate limit retry"
+        token-goat find build_manifest --json
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.find(query=query, json_output=json_output)
+
+
 @app.command("test-for", rich_help_panel="Core")
 def cmd_test_for(
     file: str = typer.Argument(..., help="Implementation file — e.g., 'src/token_goat/read_commands.py'"),

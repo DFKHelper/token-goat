@@ -2532,3 +2532,170 @@ def recent(
         syms = cast(list[str], entry["symbols"])
         if syms:
             typer.echo(f"  {', '.join(syms)}")
+
+
+def find(
+    query: str,
+    json_output: bool = False,
+) -> None:
+    """Unified search: runs symbol (exact/fuzzy) and semantic search in parallel, merges results.
+
+    Results are presented in two sections:
+    - ``Exact/fuzzy matches:`` — symbols whose name matches exactly or closely (up to 5)
+    - ``Semantic matches:`` — embedding-based nearest-neighbour hits not already shown above (up to 5)
+
+    Deduplication is by ``(file_rel, name/kind)``: a hit that appears in the symbol section
+    is suppressed from the semantic section so the same location is never shown twice.
+
+    JSON output shape::
+
+        {
+          "query": "<query>",
+          "symbol_matches": [
+            {"file": "...", "line": N, "kind": "...", "name": "...", "signature": "..."},
+            ...
+          ],
+          "semantic_matches": [
+            {"file": "...", "start": N, "end": N, "kind": "...", "distance": F, "preview": "..."},
+            ...
+          ]
+        }
+    """
+    import os as _os  # noqa: PLC0415
+
+    from . import project as _project  # noqa: PLC0415
+
+    cwd = _os.getcwd()
+    proj = _project.find_project(Path(cwd))
+    if proj is None:
+        typer.echo("Not inside an indexed project.  Run `token-goat index` first.")
+        return
+
+    _SECTION_LIMIT = 5
+
+    # ------------------------------------------------------------------
+    # Branch 1 — symbol (exact + fuzzy) search
+    # ------------------------------------------------------------------
+    sym_sql = (
+        "SELECT name, kind, file_rel, line, signature "
+        "FROM symbols WHERE name = ? LIMIT ?"
+    )
+
+    exact_rows = []
+    fuzzy_rows: list[dict] = []
+    try:
+        with db.open_project(proj.hash) as conn:
+            exact_rows = conn.execute(sym_sql, (query, _SECTION_LIMIT * 2)).fetchall()
+
+            if len(exact_rows) < _SECTION_LIMIT:
+                # Also grab fuzzy (LIKE) matches — e.g. partial name
+                like_sql = (
+                    "SELECT name, kind, file_rel, line, signature "
+                    "FROM symbols WHERE name LIKE ? AND name != ? LIMIT ?"
+                )
+                like_param = f"%{query}%"
+                fuzzy_rows_raw = conn.execute(
+                    like_sql, (like_param, query, _SECTION_LIMIT * 2)
+                ).fetchall()
+                # Convert to dicts
+                fuzzy_rows = [
+                    {
+                        "file": r["file_rel"],
+                        "line": r["line"],
+                        "kind": r["kind"],
+                        "name": r["name"],
+                        "signature": r["signature"],
+                    }
+                    for r in fuzzy_rows_raw
+                ]
+    except db.DBError:
+        pass
+
+    # Combine: exact first, then fuzzy, deduplicate by (file_rel, name), limit to 5
+    sym_results: list[dict] = []
+    seen_sym: set[tuple[str, str]] = set()
+    for r in exact_rows:
+        key = (r["file_rel"], r["name"])
+        if key not in seen_sym:
+            seen_sym.add(key)
+            sym_results.append({
+                "file": r["file_rel"],
+                "line": r["line"],
+                "kind": r["kind"],
+                "name": r["name"],
+                "signature": r["signature"],
+            })
+    for rd in fuzzy_rows:
+        key = (rd["file"], rd["name"])
+        if key not in seen_sym and len(sym_results) < _SECTION_LIMIT:
+            seen_sym.add(key)
+            sym_results.append(rd)
+
+    sym_results = sym_results[:_SECTION_LIMIT]
+
+    # ------------------------------------------------------------------
+    # Branch 2 — semantic search
+    # ------------------------------------------------------------------
+    sem_results: list[dict] = []
+    try:
+        from . import embeddings as _embeddings  # noqa: PLC0415
+
+        hits = _embeddings.semantic_search(
+            proj,
+            query,
+            k=_SECTION_LIMIT * 2,
+            max_distance=_embeddings.DEFAULT_DISTANCE_THRESHOLD,
+        )
+        # Build dedup key set from symbol results: (file, line)
+        sym_locations: set[tuple[str, int]] = {
+            (r["file"], r["line"]) for r in sym_results
+        }
+        for h in hits:
+            if len(sem_results) >= _SECTION_LIMIT:
+                break
+            # Suppress if the same file+line already appeared in symbol section
+            if (h.file_rel, h.start_line) in sym_locations:
+                continue
+            sem_results.append({
+                "file": h.file_rel,
+                "start": h.start_line,
+                "end": h.end_line,
+                "kind": h.kind,
+                "distance": h.distance,
+                "preview": h.text[:200],
+            })
+    except Exception:  # noqa: BLE001
+        pass  # Embeddings not available — semantic section stays empty
+
+    # ------------------------------------------------------------------
+    # Output
+    # ------------------------------------------------------------------
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "query": query,
+                    "symbol_matches": sym_results,
+                    "semantic_matches": sem_results,
+                },
+                separators=(",", ":"),
+            )
+        )
+        return
+
+    # Plain text output
+    if sym_results:
+        typer.echo("Exact/fuzzy matches:")
+        for r in sym_results:
+            sig = f"  {r['signature']}" if r.get("signature") else ""
+            typer.echo(f"  {r['file']}:{r['line']}: {r['kind']} {r['name']}{sig}")
+    else:
+        typer.echo("Exact/fuzzy matches: (none)")
+
+    if sem_results:
+        typer.echo("Semantic matches:")
+        for r in sem_results:
+            snippet = str(r.get("preview", "")).replace("\n", " ")[:100]
+            typer.echo(f"  {r['file']}:{r['start']}  {snippet}")
+    else:
+        typer.echo("Semantic matches: (none)")
