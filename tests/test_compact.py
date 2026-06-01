@@ -8196,3 +8196,250 @@ class TestInferSessionGoal:
 
         # Should extract directory info from complex paths
         assert goal != ""
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator mode
+# ---------------------------------------------------------------------------
+
+
+class TestDetectOrchestratorMode:
+    """Unit tests for _detect_orchestrator_mode()."""
+
+    def test_returns_false_when_no_repo_root(self, tmp_data_dir):
+        """Returns False when repo_root is None (no cwd available)."""
+        sid = "orch-no-root"
+        session.mark_file_edited(sid, "/proj/a.py")
+        cache = session.load(sid)
+        result = compact._detect_orchestrator_mode(cache, None, threshold=5)
+        assert result is False
+
+    def test_returns_false_when_edited_files_ge_10(self, tmp_data_dir, tmp_path):
+        """Returns False when edited_files count >= 10 (not an orchestrator pattern)."""
+        repo = make_git_repo(
+            tmp_path,
+            commits=[
+                ({"f1.py": "x"}, "c1"),
+                ({"f2.py": "x"}, "c2"),
+                ({"f3.py": "x"}, "c3"),
+                ({"f4.py": "x"}, "c4"),
+                ({"f5.py": "x"}, "c5"),
+            ],
+        )
+        sid = "orch-many-edits"
+        cache = session.load(sid)
+        cache.created_ts = __import__("time").time() - 600
+        # Add 10 edited files
+        for i in range(10):
+            session.mark_file_edited(sid, f"/proj/src/file{i}.py")
+        cache = session.load(sid)
+        result = compact._detect_orchestrator_mode(cache, str(repo), threshold=5)
+        assert result is False
+
+    @pytest.mark.slow
+    def test_returns_false_when_commit_count_below_threshold(self, tmp_data_dir, tmp_path):
+        """Returns False when commits since session start < threshold."""
+        repo = make_git_repo(
+            tmp_path,
+            commits=[
+                ({"a.py": "1"}, "commit 1"),
+                ({"b.py": "2"}, "commit 2"),
+                ({"c.py": "3"}, "commit 3"),
+            ],
+        )
+        sid = "orch-few-commits"
+        session.mark_file_edited(sid, "/proj/a.py")
+        cache = session.load(sid)
+        cache.created_ts = __import__("time").time() - 600
+        __import__("token_goat.session", fromlist=["save"]).save(cache)
+        cache = session.load(sid)
+        result = compact._detect_orchestrator_mode(cache, str(repo), threshold=5)
+        # Only 3 commits, threshold=5 → False
+        assert result is False
+
+    @pytest.mark.slow
+    def test_returns_true_when_commit_count_meets_threshold(self, tmp_data_dir, tmp_path):
+        """Returns True when commits since session start >= threshold and edited_files < 10."""
+        commits_payload = [
+            ({f"f{i}.py": str(i)}, f"commit {i}")
+            for i in range(6)
+        ]
+        repo = make_git_repo(tmp_path, commits=commits_payload)
+        sid = "orch-many-commits"
+        session.mark_file_edited(sid, "/proj/a.py")
+        cache = session.load(sid)
+        cache.created_ts = __import__("time").time() - 3600
+        __import__("token_goat.session", fromlist=["save"]).save(cache)
+        cache = session.load(sid)
+        result = compact._detect_orchestrator_mode(cache, str(repo), threshold=5)
+        assert result is True
+
+    def test_returns_false_on_error(self, tmp_data_dir, tmp_path):
+        """Returns False on any error (e.g. invalid repo path)."""
+        sid = "orch-error"
+        session.mark_file_edited(sid, "/proj/a.py")
+        cache = session.load(sid)
+        cache.created_ts = __import__("time").time() - 600
+        # Pass a non-existent path — git will fail
+        result = compact._detect_orchestrator_mode(cache, str(tmp_path / "nonexistent"), threshold=5)
+        assert result is False
+
+
+class TestOrchestratorModeManifest:
+    """Integration tests for the orchestrator mode manifest output."""
+
+    @pytest.mark.slow
+    def test_orchestrator_mode_shows_recent_commits_section(self, tmp_data_dir, tmp_path):
+        """In orchestrator mode the manifest includes ### Recent Commits."""
+        import dataclasses as _dc
+        import time as _time
+
+        import token_goat.config as _cfg_mod
+
+        commits_payload = [
+            ({f"f{i}.py": str(i)}, f"iter commit {i}")
+            for i in range(6)
+        ]
+        repo = make_git_repo(tmp_path, commits=commits_payload)
+
+        sid = "orch-manifest-session"
+        session.mark_file_edited(sid, "/proj/a.py")
+        cache = session.load(sid)
+        cache.created_ts = _time.time() - 3600
+        cache.cwd = str(repo)
+        __import__("token_goat.session", fromlist=["save"]).save(cache)
+
+        # Patch config so orchestrator_commit_threshold=5 and wide_session_threshold is large
+        monkeypatch_cfg = _dc.replace(
+            _cfg_mod.load(),
+            compact_assist=_dc.replace(
+                _cfg_mod.load().compact_assist,
+                orchestrator_commit_threshold=5,
+                wide_session_threshold=200,
+            ),
+        )
+        with unittest.mock.patch.object(compact, "_load_config", return_value=monkeypatch_cfg):
+            result = compact.build_manifest(sid)
+
+        assert "### Recent Commits" in result
+        assert "iter commit" in result
+
+    @pytest.mark.slow
+    def test_orchestrator_mode_shows_header_line(self, tmp_data_dir, tmp_path):
+        """In orchestrator mode the manifest includes the orchestrator header line."""
+        import dataclasses as _dc
+        import time as _time
+
+        import token_goat.config as _cfg_mod
+
+        commits_payload = [
+            ({f"g{i}.py": str(i)}, f"loop commit {i}")
+            for i in range(6)
+        ]
+        repo = make_git_repo(tmp_path, commits=commits_payload)
+
+        sid = "orch-header-session"
+        session.mark_file_edited(sid, "/proj/b.py")
+        cache = session.load(sid)
+        cache.created_ts = _time.time() - 3600
+        cache.cwd = str(repo)
+        __import__("token_goat.session", fromlist=["save"]).save(cache)
+
+        monkeypatch_cfg = _dc.replace(
+            _cfg_mod.load(),
+            compact_assist=_dc.replace(
+                _cfg_mod.load().compact_assist,
+                orchestrator_commit_threshold=5,
+                wide_session_threshold=200,
+            ),
+        )
+        with unittest.mock.patch.object(compact, "_load_config", return_value=monkeypatch_cfg):
+            result = compact.build_manifest(sid)
+
+        assert "Orchestrator session detected" in result
+
+    @pytest.mark.slow
+    def test_orchestrator_mode_no_symbols_section(self, tmp_data_dir, tmp_path):
+        """In orchestrator mode **Symbols Accessed:** section is absent."""
+        import dataclasses as _dc
+        import time as _time
+
+        import token_goat.config as _cfg_mod
+
+        commits_payload = [
+            ({f"h{i}.py": str(i)}, f"sym commit {i}")
+            for i in range(6)
+        ]
+        repo = make_git_repo(tmp_path, commits=commits_payload)
+
+        sid = "orch-no-symbols-session"
+        session.mark_file_edited(sid, "/proj/c.py")
+        session.mark_file_read(sid, "/proj/c.py", symbol="some_function")
+        cache = session.load(sid)
+        cache.created_ts = _time.time() - 3600
+        cache.cwd = str(repo)
+        __import__("token_goat.session", fromlist=["save"]).save(cache)
+
+        monkeypatch_cfg = _dc.replace(
+            _cfg_mod.load(),
+            compact_assist=_dc.replace(
+                _cfg_mod.load().compact_assist,
+                orchestrator_commit_threshold=5,
+                wide_session_threshold=200,
+            ),
+        )
+        with unittest.mock.patch.object(compact, "_load_config", return_value=monkeypatch_cfg):
+            result = compact.build_manifest(sid)
+
+        assert "**Symbols Accessed:**" not in result
+
+    def test_normal_mode_when_below_threshold(self, tmp_data_dir, tmp_path):
+        """When commits < threshold, orchestrator mode is not activated (normal manifest)."""
+        import dataclasses as _dc
+        import time as _time
+
+        import token_goat.config as _cfg_mod
+
+        commits_payload = [
+            ({f"n{i}.py": str(i)}, f"normal commit {i}")
+            for i in range(2)
+        ]
+        repo = make_git_repo(tmp_path, commits=commits_payload)
+
+        sid = "normal-mode-session"
+        session.mark_file_edited(sid, "/proj/d.py")
+        session.mark_file_read(sid, "/proj/d.py", symbol="normal_func")
+        cache = session.load(sid)
+        cache.created_ts = _time.time() - 3600
+        cache.cwd = str(repo)
+        __import__("token_goat.session", fromlist=["save"]).save(cache)
+
+        # Use threshold=10 so 2 commits never triggers orchestrator mode
+        monkeypatch_cfg = _dc.replace(
+            _cfg_mod.load(),
+            compact_assist=_dc.replace(
+                _cfg_mod.load().compact_assist,
+                orchestrator_commit_threshold=10,
+                wide_session_threshold=200,
+            ),
+        )
+        with unittest.mock.patch.object(compact, "_load_config", return_value=monkeypatch_cfg):
+            result = compact.build_manifest(sid)
+
+        # Normal mode: no orchestrator header
+        assert "Orchestrator session detected" not in result
+        assert "### Recent Commits" not in result
+
+
+class TestOrchestratorConfig:
+    """Tests for CompactAssistConfig.orchestrator_commit_threshold."""
+
+    def test_default_value(self):
+        """Default orchestrator_commit_threshold is 5."""
+        cfg = config.CompactAssistConfig()
+        assert cfg.orchestrator_commit_threshold == 5
+
+    def test_load_default(self, tmp_data_dir):
+        """load() returns default orchestrator_commit_threshold=5."""
+        cfg = config.load()
+        assert cfg.compact_assist.orchestrator_commit_threshold == 5

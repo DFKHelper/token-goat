@@ -208,6 +208,7 @@ class _CompactAssistToml(TypedDict, total=False):
     edited_dir_group_threshold: int
     max_section_lines: int
     wide_session_threshold: int
+    orchestrator_commit_threshold: int
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -432,6 +433,14 @@ class CompactAssistConfig:
     # symbol listing consumes 200–300 tokens the compaction LLM cannot usefully
     # retain. Clamped to [1, 10000]. Default 15.
     wide_session_threshold: int = 15
+    # Orchestrator-mode threshold: when a session has >= this many git commits
+    # since session start AND fewer than 10 edited files (characteristic of
+    # /improve orchestrator loops), the manifest switches to orchestrator mode.
+    # In orchestrator mode the symbols-accessed section is replaced by a
+    # ``### Recent Commits`` section (git log --oneline -10) and the bash
+    # history section is suppressed (too noisy across long loop iterations).
+    # Clamped to [1, 10000]. Default 5.
+    orchestrator_commit_threshold: int = 5
 
 
 @dataclass
@@ -1141,6 +1150,9 @@ def load() -> Config:
         wide_session_threshold=_validated_int(
             ca_raw.get("wide_session_threshold", 15), 15, 1, 10000, "compact_assist.wide_session_threshold"
         ),
+        orchestrator_commit_threshold=_validated_int(
+            ca_raw.get("orchestrator_commit_threshold", 5), 5, 1, 10000, "compact_assist.orchestrator_commit_threshold"
+        ),
     )
 
     # Environment override: TOKEN_GOAT_COMPACT_ASSIST=0 / false / no / off disables
@@ -1490,6 +1502,7 @@ def save(config: Config) -> None:
             "edited_dir_group_threshold": ca.edited_dir_group_threshold,
             "max_section_lines": ca.max_section_lines,
             "wide_session_threshold": ca.wide_session_threshold,
+            "orchestrator_commit_threshold": ca.orchestrator_commit_threshold,
         },
         "bash_compress": {
             "enabled": bc.enabled,

@@ -1208,6 +1208,59 @@ def _get_session_commits(cwd: str | None, session_start_ts: float) -> list[str]:
     return [sanitize_log_str(line, max_len=100) for line in out.splitlines()[:5]]
 
 
+def _detect_orchestrator_mode(
+    session_cache: object,
+    repo_root: str | None,
+    threshold: int = 5,
+) -> bool:
+    """Return True when the session looks like a /improve orchestrator loop.
+
+    Detection criteria:
+    - ``git log --oneline --since=<session_start_ts>`` returns >= *threshold* commits
+    - The session has fewer than 10 edited files
+
+    Both conditions together distinguish the orchestrator (many commits, small
+    per-iteration file set) from a broad refactor session (many commits AND many
+    edited files).
+
+    Fail-soft: returns False on any error (git unavailable, no cwd, etc.).
+    """
+    try:
+        if not repo_root:
+            return False
+        # Gate on edited_files count first — cheap dict-len check before subprocess.
+        edited_count = len(getattr(session_cache, "edited_files", None) or {})
+        if edited_count >= 10:
+            return False
+        created_ts = float(getattr(session_cache, "created_ts", 0.0) or 0.0)
+        if created_ts <= 0:
+            return False
+        out = _run_git(
+            ["log", "--oneline", f"--since={int(created_ts)}"],
+            repo_root,
+            timeout=3,
+        )
+        if not out:
+            return False
+        commit_count = sum(1 for line in out.splitlines() if line.strip())
+        return commit_count >= threshold
+    except Exception:  # noqa: BLE001 — fail-soft per hook contract
+        return False
+
+
+def _get_recent_commits_for_orchestrator(repo_root: str | None, n: int = 10) -> list[str]:
+    """Return the last *n* git commits as oneline strings for the orchestrator manifest.
+
+    Returns an empty list on any failure (git unavailable, not a repo, etc.).
+    """
+    if not repo_root:
+        return []
+    out = _run_git(["log", "--oneline", f"-{n}"], repo_root, timeout=3)
+    if not out:
+        return []
+    return [sanitize_log_str(line, max_len=100) for line in out.splitlines() if line.strip()]
+
+
 def _count_suffix(n: int) -> str:
     """Return '  ×N' when *n* > 1, or '' when the count is unremarkable.
 
@@ -3451,6 +3504,7 @@ def _compact_render_kwargs(cfg: _Config) -> dict[str, int]:
         "max_section_lines": ca.max_section_lines,
         "noise_floor_tokens": ca.noise_floor_tokens,
         "wide_session_threshold": ca.wide_session_threshold,
+        "orchestrator_commit_threshold": ca.orchestrator_commit_threshold,
     }
 
 
@@ -3462,6 +3516,7 @@ def _build_manifest_from_cache(
     max_section_lines: int = 0,
     noise_floor_tokens: int = 0,
     wide_session_threshold: int = 15,
+    orchestrator_commit_threshold: int = 5,
 ) -> str:
     """Render the manifest from an already-loaded *cache*.
 
@@ -3489,6 +3544,7 @@ def _build_manifest_from_cache(
         max_section_lines=max_section_lines,
         noise_floor_tokens=noise_floor_tokens,
         wide_session_threshold=wide_session_threshold,
+        orchestrator_commit_threshold=orchestrator_commit_threshold,
     )
     elapsed = time.monotonic() - start
 
@@ -4456,6 +4512,7 @@ def _render(
     max_section_lines: int = 0,
     noise_floor_tokens: int = 0,
     wide_session_threshold: int = 15,
+    orchestrator_commit_threshold: int = 5,
 ) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
@@ -5136,6 +5193,35 @@ def _render(
     _what_worked_entries = _select_what_worked(raw_bash, _what_worked_exclude)
     now_ts_for_worked = time.time()
     what_worked_lines = _render_what_worked_section(_what_worked_entries, now_ts_for_worked)
+
+    # ── Orchestrator mode override ────────────────────────────────────────────
+    # When the session looks like a /improve orchestrator loop (many commits,
+    # few edited files), replace sym_lines with a recent-commits section and
+    # suppress bash history (too noisy across long loop iterations).
+    _orchestrator_mode = _detect_orchestrator_mode(
+        cache, cwd, threshold=orchestrator_commit_threshold
+    )
+    if _orchestrator_mode:
+        # Count all session commits for the header line.
+        _orch_total_raw = _run_git(
+            ["log", "--oneline", f"--since={int(created_ts)}"],
+            cwd,
+            timeout=3,
+        ) if cwd and created_ts and created_ts > 0 else None
+        _orch_total_count = sum(1 for ln in (_orch_total_raw or "").splitlines() if ln.strip())
+        _orch_header_line = f"⚙ Orchestrator session detected ({_orch_total_count} commits)"
+        _orch_commits = _get_recent_commits_for_orchestrator(cwd, n=10)
+        sym_lines = [_orch_header_line, "### Recent Commits"]
+        sym_lines.extend(_orch_commits)
+        sym_used = _token_count("\n".join(sym_lines))
+        # Suppress bash history and what_worked — too noisy in orchestrator loops.
+        bash_lines = []
+        bash_used = 0
+        what_worked_lines = []
+        _LOG.info(
+            "_render: orchestrator mode active session=%s commits=%d edited=%d",
+            session_id[:8], _orch_total_count, len(edited_clean),
+        )
 
     # Cold outputs are grouped with bash history (same budget slice).
     # Skip for young and active sessions — only emit for mature sessions (>60 min).
