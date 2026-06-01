@@ -5,11 +5,14 @@ Covers:
 - Session file size cap (_trim_session_for_size / _get_session_max_bytes)
 - Stale session cleanup at SessionStart (hooks_session calling cleanup_stale)
 - Config corrupt TOML fallback (already handled; regression test)
+- _session_file_lock context manager (fcntl on POSIX, sidecar on Windows)
 """
 from __future__ import annotations
 
 import json
 import os
+import sys
+import threading
 import time
 
 import pytest
@@ -399,3 +402,143 @@ class TestSessionAtomicWrite:
         raw = p.read_text(encoding="utf-8")
         data = json.loads(raw)
         assert data["session_id"] == s_id
+
+
+# ---------------------------------------------------------------------------
+# _session_file_lock context manager
+# ---------------------------------------------------------------------------
+
+
+class TestSessionFileLock:
+    """Tests for _session_file_lock: fcntl (POSIX) / sidecar (Windows)."""
+
+    def test_lock_acquired_and_released(self, tmp_path):
+        """_session_file_lock enters and exits without error."""
+        target = tmp_path / "test_session.json"
+        # Lock should be acquired; context exits cleanly.
+        with session._session_file_lock(target):
+            pass  # body executes without exception
+
+    def test_lock_creates_parent_dir_if_missing(self, tmp_path):
+        """_session_file_lock creates missing parent directories (fail-soft)."""
+        target = tmp_path / "deep" / "nested" / "session.json"
+        with session._session_file_lock(target):
+            assert target.parent.exists()
+
+    def test_body_executes_with_lock_held(self, tmp_path):
+        """The context body runs; side effects inside the with-block are visible."""
+        target = tmp_path / "side_effect.json"
+        result: list[int] = []
+        with session._session_file_lock(target):
+            result.append(1)
+        assert result == [1]
+
+    def test_windows_sidecar_created_and_removed(self, tmp_path, monkeypatch):
+        """On Windows the .flock sidecar is present while held, gone after release."""
+        # Force Windows path regardless of actual platform.
+        monkeypatch.setattr(session, "_IS_WINDOWS", True)
+
+        target = tmp_path / "sidecar_test.json"
+        sidecar = target.with_suffix(target.suffix + ".flock")
+
+        sidecar_existed_during: list[bool] = []
+        with session._session_file_lock(target):
+            sidecar_existed_during.append(sidecar.exists())
+
+        assert sidecar_existed_during == [True], "sidecar must exist while lock is held"
+        assert not sidecar.exists(), "sidecar must be removed after lock is released"
+
+    def test_posix_path_does_not_create_sidecar(self, tmp_path, monkeypatch):
+        """On POSIX the .flock sidecar file is NOT created (fcntl locks the file itself)."""
+        if sys.platform == "win32":
+            pytest.skip("POSIX lock path is not active on Windows")
+
+        monkeypatch.setattr(session, "_IS_WINDOWS", False)
+        target = tmp_path / "posix_test.json"
+        sidecar = target.with_suffix(target.suffix + ".flock")
+
+        with session._session_file_lock(target):
+            pass
+
+        assert not sidecar.exists(), "POSIX path must not create a .flock sidecar"
+
+    def test_timeout_falls_back_gracefully(self, tmp_path, monkeypatch, caplog):
+        """When the lock cannot be acquired within the timeout the body still runs."""
+        import logging
+
+        # Force Windows path so we control the sidecar.
+        monkeypatch.setattr(session, "_IS_WINDOWS", True)
+        # Reduce timeout to almost nothing so the test is fast.
+        monkeypatch.setattr(session, "_SESSION_FILE_LOCK_TIMEOUT_MS", 30)
+        monkeypatch.setattr(session, "_SESSION_FILE_LOCK_POLL_MS", 10)
+
+        target = tmp_path / "timeout_test.json"
+        sidecar = target.with_suffix(target.suffix + ".flock")
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        # Pre-create the sidecar to simulate a competing lock holder.
+        sidecar.write_text("taken", encoding="utf-8")
+
+        body_ran: list[bool] = []
+        with caplog.at_level(logging.WARNING, logger="token_goat.session"), session._session_file_lock(target):
+            body_ran.append(True)
+
+        # Body must have run (fail-soft: body always executes even without lock).
+        assert body_ran == [True], "body must execute even when lock times out"
+        # A warning must have been logged.
+        assert any("timeout" in r.message.lower() for r in caplog.records), (
+            f"expected timeout warning; got: {[r.message for r in caplog.records]}"
+        )
+
+        # Cleanup: we held the fake sidecar so our code did NOT take it.
+        sidecar.unlink(missing_ok=True)
+
+    def test_lock_released_on_exception(self, tmp_path, monkeypatch):
+        """Lock is released even when the body raises an exception (Windows path)."""
+        monkeypatch.setattr(session, "_IS_WINDOWS", True)
+
+        target = tmp_path / "exc_test.json"
+        sidecar = target.with_suffix(target.suffix + ".flock")
+
+        with pytest.raises(ValueError, match="expected"), session._session_file_lock(target):
+            assert sidecar.exists(), "sidecar must exist during body"
+            raise ValueError("expected")
+
+        assert not sidecar.exists(), "sidecar must be released after exception"
+
+    def test_concurrent_writes_no_data_corruption(self, tmp_path, monkeypatch):
+        """Concurrent threads using _session_file_lock produce consistent writes.
+
+        Simulates 8 threads each appending a number to a JSON array inside
+        the lock.  The final array must contain exactly one entry per thread
+        with no duplicates or lost writes.
+        """
+        # Use Windows sidecar path so the test is identical on all platforms.
+        monkeypatch.setattr(session, "_IS_WINDOWS", True)
+
+        target = tmp_path / "concurrent.json"
+        target.write_text("[]", encoding="utf-8")
+
+        n_threads = 8
+        errors: list[Exception] = []
+
+        def worker(thread_id: int) -> None:
+            try:
+                with session._session_file_lock(target):
+                    # Read-modify-write inside the lock.
+                    current = json.loads(target.read_text(encoding="utf-8"))
+                    current.append(thread_id)
+                    target.write_text(json.dumps(current), encoding="utf-8")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"threads raised exceptions: {errors}"
+        final = json.loads(target.read_text(encoding="utf-8"))
+        assert sorted(final) == list(range(n_threads)), (
+            f"expected {list(range(n_threads))}, got {sorted(final)}"
+        )

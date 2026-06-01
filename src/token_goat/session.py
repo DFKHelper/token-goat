@@ -74,6 +74,8 @@ __all__ = [
     "set_snapshot_sha",
     "safe_load",
     "validate_session_id",
+    # File-level lock context manager (exposed for testing)
+    "_session_file_lock",
     # Internal helpers exposed for testing
     "_coerce_nonneg_int",
     "_coerce_ts",
@@ -109,6 +111,7 @@ import os
 import random
 import re
 import stat as _stat_module
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -123,6 +126,11 @@ from .hooks_common import is_real_int, sanitize_log_str
 from .util import env_int, get_logger
 
 _LOG = get_logger("session")
+
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+_IS_WINDOWS: bool = sys.platform == "win32"
 
 _T = TypeVar("_T")
 
@@ -358,6 +366,143 @@ def _release_session_lock(session_id: str, fd: int | None) -> None:
             os.close(fd)
     with contextlib.suppress(OSError):
         lock_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# File-level lock context manager (fcntl on POSIX, sidecar on Windows)
+# ---------------------------------------------------------------------------
+# _SESSION_FILE_LOCK_TIMEOUT_MS:  Maximum milliseconds to spin waiting for the
+#   lock before giving up and proceeding without it.  200 ms is short enough
+#   to keep hook latency imperceptible while long enough to outlast most
+#   transient write bursts.
+_SESSION_FILE_LOCK_TIMEOUT_MS: Final[int] = 200
+# _SESSION_FILE_LOCK_POLL_MS: Interval between retry attempts (ms).
+_SESSION_FILE_LOCK_POLL_MS: Final[int] = 10
+
+
+@contextlib.contextmanager  # type: ignore[arg-type]
+def _session_file_lock(path: Path):
+    """Cross-process file-level lock for a session JSON path.
+
+    On POSIX (Linux / macOS / WSL) uses ``fcntl.flock(LOCK_EX | LOCK_NB)``
+    with a retry loop bounded to :data:`_SESSION_FILE_LOCK_TIMEOUT_MS`.
+    On Windows uses an exclusive-create sidecar ``.flock`` file with the
+    same timeout semantics.
+
+    The lock is always released on context exit, even if the body raises.
+    If the lock cannot be acquired within the timeout, a warning is logged
+    and the body executes without the lock (fail-soft: never blocks the hook).
+
+    Usage::
+
+        with _session_file_lock(session_path):
+            data = session_path.read_text()
+            # ... mutate ...
+            session_path.write_text(data)
+    """
+    if _IS_WINDOWS:
+        yield from _session_file_lock_windows(path)
+    else:
+        yield from _session_file_lock_posix(path)
+
+
+def _session_file_lock_posix(path: Path):  # type: ignore[return]
+    """POSIX implementation of :func:`_session_file_lock` using ``fcntl.flock``."""
+    lock_fd: int | None = None
+    acquired = False
+    try:
+        try:
+            import fcntl  # noqa: PLC0415
+        except ImportError:
+            # fcntl is not available (e.g. running under a non-POSIX interpreter).
+            # Proceed without lock — fail-soft contract.
+            _LOG.debug("_session_file_lock: fcntl unavailable; skipping lock for %s", path.name)
+            yield
+            return
+
+        deadline_ms = _SESSION_FILE_LOCK_TIMEOUT_MS
+        elapsed_ms = 0
+        # Open (or create) the file for locking; we use the session JSON path
+        # itself so the flock is tied to the actual data file.
+        try:
+            paths.ensure_dir(path.parent)
+            lock_fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:
+            _LOG.debug("_session_file_lock: open failed (%s); skipping lock", exc)
+            yield
+            return
+
+        while elapsed_ms < deadline_ms:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+                acquired = True
+                break
+            except OSError:
+                time.sleep(_SESSION_FILE_LOCK_POLL_MS / 1000.0)
+                elapsed_ms += _SESSION_FILE_LOCK_POLL_MS
+
+        if not acquired:
+            _LOG.warning(
+                "_session_file_lock: POSIX flock timeout (%dms) for %s; proceeding without lock",
+                _SESSION_FILE_LOCK_TIMEOUT_MS,
+                path.name,
+            )
+
+        yield
+
+    except BaseException:
+        raise
+    finally:
+        if acquired and lock_fd is not None:
+            try:
+                import fcntl as _fcntl  # noqa: PLC0415
+                _fcntl.flock(lock_fd, _fcntl.LOCK_UN)  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+        if lock_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(lock_fd)
+
+
+def _session_file_lock_windows(path: Path):  # type: ignore[return]
+    """Windows implementation of :func:`_session_file_lock` using a sidecar file.
+
+    Creates a ``.flock`` sidecar file with ``O_CREAT | O_EXCL`` (atomic on
+    NTFS) as the mutual-exclusion token.  On timeout, logs a warning and
+    yields without the lock (fail-soft).
+    """
+    sidecar = path.with_suffix(path.suffix + ".flock")
+    acquired = False
+    try:
+        paths.ensure_dir(path.parent)
+        deadline_ms = _SESSION_FILE_LOCK_TIMEOUT_MS
+        elapsed_ms = 0
+
+        while elapsed_ms < deadline_ms:
+            try:
+                fd = os.open(str(sidecar), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.close(fd)
+                acquired = True
+                break
+            except (FileExistsError, OSError):
+                time.sleep(_SESSION_FILE_LOCK_POLL_MS / 1000.0)
+                elapsed_ms += _SESSION_FILE_LOCK_POLL_MS
+
+        if not acquired:
+            _LOG.warning(
+                "_session_file_lock: Windows sidecar timeout (%dms) for %s; proceeding without lock",
+                _SESSION_FILE_LOCK_TIMEOUT_MS,
+                path.name,
+            )
+
+        yield
+
+    except BaseException:
+        raise
+    finally:
+        if acquired:
+            with contextlib.suppress(OSError):
+                sidecar.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
