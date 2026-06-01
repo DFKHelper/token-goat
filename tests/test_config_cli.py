@@ -356,6 +356,7 @@ class TestConfigValidate:
             "stats": config_mod.StatsConfig,
             "webfetch": config_mod.WebFetchConfig,
             "worker": config_mod.WorkerConfig,
+            "indexing": config_mod.IndexingConfig,
         }
         # Verify that section_to_cls covers exactly _KNOWN_SECTIONS minus schema_version.
         expected = config_mod._KNOWN_SECTIONS - {"schema_version"}

@@ -113,13 +113,13 @@ def test_index_registers_project_before_file_walk(ts_project, monkeypatch):
     real_iter = parser.iter_source_files
     registered_during_walk: dict[str, bool] = {}
 
-    def spy_iter(project):
+    def spy_iter(project, **kwargs):
         with db.open_global() as gconn:
             row = gconn.execute(
                 "SELECT 1 FROM projects WHERE hash=?", (project.hash,)
             ).fetchone()
         registered_during_walk["seen"] = row is not None
-        return real_iter(project)
+        return real_iter(project, **kwargs)
 
     monkeypatch.setattr(parser, "iter_source_files", spy_iter)
     index_project(ts_project, full=True)

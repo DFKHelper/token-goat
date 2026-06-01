@@ -630,6 +630,68 @@ def doctor(  # noqa: C901
         flag("index health", str(_e_idx), warn=True)
 
     # ------------------------------------------------------------------
+    # 8a-large. Large file summary across all indexed projects
+    # ------------------------------------------------------------------
+    # Surfaces how many files across all projects are currently in the skip or
+    # symbol-only tiers.  Useful to confirm the thresholds are actually doing
+    # something and to spot unexpectedly large files that might need attention.
+    typer.echo("\nLarge files (current thresholds)")
+    try:
+        from . import config as _config_lf  # noqa: PLC0415
+
+        _lf_cfg = _config_lf.load().indexing
+        _lf_skip_bytes = _lf_cfg.large_file_skip_kb * 1024
+        _lf_symbol_only_bytes = _lf_cfg.large_file_symbol_only_kb * 1024
+        _lf_total_skipped = 0
+        _lf_total_symbol_only = 0
+        _lf_project_count = 0
+        try:
+            with _db.open_global_readonly() as _lf_gconn:
+                _lf_all_projs = _lf_gconn.execute("SELECT hash, root FROM projects").fetchall()
+            for _lf_pr in _lf_all_projs:
+                _lf_ph = _lf_pr["hash"]
+                _lf_db_path = paths.project_db_path(_lf_ph)
+                if not _lf_db_path.exists():
+                    continue
+                try:
+                    with _db.open_project_readonly(_lf_ph) as _lf_pc:
+                        # Count files over skip threshold
+                        _s = _lf_pc.execute(
+                            "SELECT COUNT(*) FROM files WHERE size > ?", (_lf_skip_bytes,)
+                        ).fetchone()
+                        _lf_total_skipped += int(_s[0] if _s else 0)
+                        # Count files in the symbol-only tier (> symbol_only but <= skip)
+                        _so = _lf_pc.execute(
+                            "SELECT COUNT(*) FROM files WHERE size > ? AND size <= ?",
+                            (_lf_symbol_only_bytes, _lf_skip_bytes),
+                        ).fetchone()
+                        _lf_total_symbol_only += int(_so[0] if _so else 0)
+                    _lf_project_count += 1
+                except Exception:  # noqa: BLE001
+                    continue
+        except FileNotFoundError:
+            pass  # no global.db yet
+        if _lf_project_count == 0:
+            ok("summary", "no projects indexed yet")
+        else:
+            ok(
+                "symbol-only files",
+                f"{_lf_total_symbol_only} (>{_lf_cfg.large_file_symbol_only_kb} KB, "
+                f"≤{_lf_cfg.large_file_skip_kb} KB, symbols indexed but not embedded)",
+            )
+            if _lf_total_skipped > 0:
+                flag(
+                    "oversized files in index",
+                    f"{_lf_total_skipped} files >{_lf_cfg.large_file_skip_kb} KB found in DB "
+                    f"(indexed before threshold was applied; re-run `token-goat index --full` to enforce)",
+                    warn=True,
+                )
+            else:
+                ok("oversized files in index", "0 (none exceed the skip threshold)")
+    except Exception as _e_lf:  # noqa: BLE001
+        flag("large files", f"check failed — {_e_lf}", warn=True)
+
+    # ------------------------------------------------------------------
     # 8b. Hook wrapper
     # Checked before the Worker section: a missing or stale wrapper causes
     # hooks to silently fail, which then manifests as worker symptoms.
@@ -1042,6 +1104,17 @@ def doctor(  # noqa: C901
         # a bug report.
         ok("webfetch.allow", f"{len(cfg.webfetch.allow)} pattern(s)")
         ok("webfetch.deny", f"{len(cfg.webfetch.deny)} pattern(s)")
+        # indexing: large-file thresholds added in iter 18.
+        ok(
+            "indexing.large_file_symbol_only_kb",
+            f"{cfg.indexing.large_file_symbol_only_kb} KB "
+            f"(files larger than this get symbol-only indexing, no embeddings)",
+        )
+        ok(
+            "indexing.large_file_skip_kb",
+            f"{cfg.indexing.large_file_skip_kb} KB "
+            f"(files larger than this are skipped entirely)",
+        )
         # decision log: always-on opt-in CLI feature; surface the per-session
         # cap so the user knows the implicit ceiling.
         try:

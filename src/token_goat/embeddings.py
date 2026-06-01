@@ -827,14 +827,24 @@ def index_project_embeddings(
 
         existing = _load_existing_chunk_hashes(conn, file_rels)
         if file_rels is None:
-            file_rows = conn.execute("SELECT rel_path FROM files").fetchall()
+            file_rows = conn.execute("SELECT rel_path, size FROM files").fetchall()
         else:
             placeholders = ",".join("?" for _ in file_rels)
             file_rows = conn.execute(
-                f"SELECT rel_path FROM files WHERE rel_path IN ({placeholders})",  # noqa: S608
+                f"SELECT rel_path, size FROM files WHERE rel_path IN ({placeholders})",  # noqa: S608
                 file_rels,
             ).fetchall() if file_rels else []
         n_files = len(file_rows)
+
+        # Determine the symbol-only size threshold from config.  Files larger than
+        # this were indexed for symbols only and must not receive an embedding pass —
+        # their content is too large to chunk meaningfully and would skew the index.
+        # Fail soft: if config is unavailable, embed all files (no threshold).
+        try:
+            from . import config as _embed_config  # noqa: PLC0415
+            _embed_symbol_only_threshold = _embed_config.load().indexing.large_file_symbol_only_kb * 1024
+        except Exception:  # noqa: BLE001
+            _embed_symbol_only_threshold = 0
 
         # Build full list of chunks that need (re)embedding.
         # Bind sha256_fn locally to avoid a module-level attribute lookup + dict
@@ -842,8 +852,23 @@ def index_project_embeddings(
         # at scale when processing thousands of chunks per project.
         sha256_fn = hashlib.sha256
         new_chunks: list[tuple[Chunk, str]] = []  # (chunk, content_sha256)
+        n_symbol_only_skipped = 0
         for fi_row in file_rows:
             rel = fi_row["rel_path"]
+            # Skip files that exceeded the symbol-only threshold — they were indexed
+            # for symbols only during the parse pass; embedding them would be expensive
+            # and their large size produces low-quality chunks.
+            if _embed_symbol_only_threshold > 0:
+                try:
+                    _file_size = int(fi_row["size"] or 0)
+                except (TypeError, ValueError):
+                    _file_size = 0
+                if _file_size > _embed_symbol_only_threshold:
+                    n_symbol_only_skipped += 1
+                    _LOG.debug(
+                        "embeddings: skipping symbol-only file %s (%d bytes)", rel, _file_size
+                    )
+                    continue
             for ch in extract_chunks_for_file(project, conn, rel):
                 sha = sha256_fn(ch.text.encode("utf-8", errors="replace")).hexdigest()
                 key = (ch.file_rel, ch.start_line, ch.end_line)
@@ -854,11 +879,16 @@ def index_project_embeddings(
 
         # Embed + persist in batches
         n_pending_embed = len(new_chunks)
+        if n_symbol_only_skipped > 0:
+            _LOG.info(
+                "embeddings: skipped %d symbol-only file(s) (size > %d bytes)",
+                n_symbol_only_skipped, _embed_symbol_only_threshold,
+            )
         if n_pending_embed == 0:
             duration = time.time() - t0
             _LOG.info(
-                "embeddings up-to-date: project=%s files=%d chunks_skipped=%d duration=%.2fs",
-                project.hash[:8], n_files, n_chunks_skipped, duration,
+                "embeddings up-to-date: project=%s files=%d chunks_skipped=%d symbol_only_skipped=%d duration=%.2fs",
+                project.hash[:8], n_files, n_chunks_skipped, n_symbol_only_skipped, duration,
             )
             return EmbeddingsResult(
                 files_visited=n_files,

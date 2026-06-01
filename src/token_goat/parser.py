@@ -8,6 +8,7 @@ __all__ = [
     "FileIndex",
     "ImpExp",
     "IndexProjectResult",
+    "LargeFileInfo",
     "Ref",
     "Section",
     "Symbol",
@@ -32,7 +33,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TypedDict
+from typing import TYPE_CHECKING, Final, NamedTuple, TypedDict
 
 from . import db
 from .util import get_logger
@@ -136,8 +137,11 @@ SKIP_FILE_SUFFIXES: Final[tuple[str, ...]] = (
     "-lock.json",  # catches package-lock.json variants and similar
 )
 
-# Skip files larger than this (bytes) — usually generated artifacts
-MAX_FILE_SIZE: Final[int] = 2_000_000  # 2 MB
+# Default skip threshold (bytes) for oversized files — overridden at runtime by
+# config.indexing.large_file_skip_kb so users can tune it without code changes.
+# This constant is the hard-coded fallback used when config is unavailable (e.g.
+# when iter_source_files is called from tests that patch the config module).
+MAX_FILE_SIZE: Final[int] = 2_000_000  # 2 MB (matches default large_file_skip_kb=2048)
 
 
 def _is_generated_filename(name: str) -> bool:
@@ -235,6 +239,21 @@ class Section:
     end_line: int | None = None
 
 
+class LargeFileInfo(NamedTuple):
+    """Describes a file that was skipped or received reduced indexing due to its size.
+
+    Attributes:
+        rel_path: Path relative to the project root (POSIX-style).
+        size_bytes: File size in bytes at index time.
+        reason: Either ``"skipped"`` (file too large to index at all) or
+            ``"symbol_only"`` (file was indexed for symbols but not embedded).
+    """
+
+    rel_path: str
+    size_bytes: int
+    reason: str  # "skipped" | "symbol_only"
+
+
 @dataclass
 class FileIndex:
     """Complete analysis of a single file: symbols, references, imports/exports, and sections.
@@ -264,6 +283,9 @@ class FileIndex:
     refs: list[Ref] = field(default_factory=list)
     imports_exports: list[ImpExp] = field(default_factory=list)
     sections: list[Section] = field(default_factory=list)
+    # When True, this file exceeded the large_file_symbol_only_kb threshold and
+    # was indexed for symbols only — the embedding/chunking pass is skipped for it.
+    symbol_only: bool = False
 
 
 # Each language module exposes: extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]
@@ -280,6 +302,7 @@ class IndexProjectResult(TypedDict):
     languages: list[str]
     duration_sec: float
     total_symbols: int
+    large_files: list[LargeFileInfo]
 
 
 def _language_importer(module_name: str, attr: str = "extract") -> Callable[[], Extractor]:
@@ -470,7 +493,11 @@ def register_extractor(language: str, factory: Callable[[], Extractor]) -> None:
     _EXTRACTOR_CACHE.pop(language, None)
 
 
-def iter_source_files(project: Project) -> Iterable[Path]:
+def iter_source_files(
+    project: Project,
+    *,
+    skip_threshold: int = MAX_FILE_SIZE,
+) -> Iterable[Path]:
     """Yield absolute paths of indexable source files under the project root.
 
     Symlinks are not followed during the directory walk (``os.walk`` default).
@@ -478,6 +505,12 @@ def iter_source_files(project: Project) -> Iterable[Path]:
     resolves outside the project root would silently index content from an
     unrelated part of the filesystem, which is both a data-leak risk and a
     correctness problem (the cached path won't match the real location).
+
+    Args:
+        project: Project whose root to walk.
+        skip_threshold: Files larger than this many bytes are skipped entirely.
+            Defaults to ``MAX_FILE_SIZE``.  Pass ``config.indexing.large_file_skip_kb * 1024``
+            to use the user-configured threshold.
     """
     root = project.root
     resolved_root = root.resolve()
@@ -527,10 +560,10 @@ def iter_source_files(project: Project) -> Iterable[Path]:
                     continue
             try:
                 file_size = path.stat().st_size
-                if file_size > MAX_FILE_SIZE:
+                if file_size > skip_threshold:
                     _LOG.debug(
                         "iter_source_files: skipping oversized file %s (%d bytes > %d limit)",
-                        path.name, file_size, MAX_FILE_SIZE,
+                        path.name, file_size, skip_threshold,
                     )
                     skipped_oversized += 1
                     continue
@@ -542,7 +575,7 @@ def iter_source_files(project: Project) -> Iterable[Path]:
     if skipped_symlinks > 0:
         _LOG.debug("file walk skipped %d symlinks pointing outside project root", skipped_symlinks)
     if skipped_oversized > 0:
-        _LOG.info("file walk skipped %d oversized files (> %d bytes)", skipped_oversized, MAX_FILE_SIZE)
+        _LOG.info("file walk skipped %d oversized files (> %d bytes)", skipped_oversized, skip_threshold)
     if skipped_generated > 0:
         _LOG.debug("file walk skipped %d generated/lockfile artifacts", skipped_generated)
 
@@ -554,11 +587,24 @@ def _line_count_from_bytes(raw: bytes) -> int:
     return raw.count(b"\n") + (0 if raw.endswith(b"\n") else 1)
 
 
-def index_file(project: Project, file_path: Path) -> FileIndex | None:
+def index_file(
+    project: Project,
+    file_path: Path,
+    *,
+    symbol_only_threshold: int = 0,
+) -> FileIndex | None:
     """Index a single file: read, detect language, dispatch to language extractor, return FileIndex.
 
     Extracts symbols, references, imports/exports, and sections. Returns None if file cannot
     be read, language is unsupported, or the extractor crashes. Does not write to DB.
+
+    Args:
+        project: Project containing the file.
+        file_path: Absolute path to the file.
+        symbol_only_threshold: When > 0 and the file is larger than this many bytes,
+            the returned ``FileIndex.symbol_only`` is set to ``True``.  Callers use
+            this flag to skip the embedding/chunking pass for large files.  Default 0
+            disables the threshold (all files get full indexing).
     """
     t0 = time.time()
     try:
@@ -636,6 +682,13 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         rel, len(symbols), len(refs), len(imp_exp), len(sections), stat.st_size, elapsed
     )
 
+    is_symbol_only = symbol_only_threshold > 0 and stat.st_size > symbol_only_threshold
+    if is_symbol_only:
+        _LOG.debug(
+            "index_file: symbol-only mode for %s (%d bytes > %d symbol_only_threshold)",
+            rel, stat.st_size, symbol_only_threshold,
+        )
+
     return FileIndex(
         rel_path=rel,
         language=language,
@@ -649,6 +702,7 @@ def index_file(project: Project, file_path: Path) -> FileIndex | None:
         refs=refs,
         imports_exports=imp_exp,
         sections=sections,
+        symbol_only=is_symbol_only,
     )
 
 
@@ -788,10 +842,23 @@ def index_project(
     race conditions where the worker reindexes a file before project registration completes).
     Acquires an exclusive writer lock to prevent concurrent indexing on the same project.
 
-    Returns IndexProjectResult with total_files, indexed, skipped_unchanged, errors, languages, duration_sec.
+    Returns IndexProjectResult with total_files, indexed, skipped_unchanged, errors, languages, duration_sec,
+    and large_files (a list of LargeFileInfo for files that were skipped or got symbol-only treatment).
     Calls progress(indexed_so_far, total) every 100 files if progress is supplied.
     """
     _LOG.info("index_project started: mode=%s path=%s", "full" if full else "incremental", project.root)
+
+    # Load configurable large-file thresholds.  Fail soft: if config is
+    # unavailable (e.g. during tests that don't want any TOML on disk), fall
+    # back to the hardcoded defaults defined in this module.
+    try:
+        from . import config as _config  # noqa: PLC0415
+        _idx_cfg = _config.load().indexing
+        _skip_threshold = _idx_cfg.large_file_skip_kb * 1024
+        _symbol_only_threshold = _idx_cfg.large_file_symbol_only_kb * 1024
+    except Exception:  # noqa: BLE001
+        _skip_threshold = MAX_FILE_SIZE
+        _symbol_only_threshold = 0
 
     # Register the project in the global registry up front, before the
     # potentially slow (or hang-prone) file walk. The final registry update
@@ -809,7 +876,37 @@ def index_project(
             (project.hash, project.root.as_posix(), project.marker, now, now),
         )
 
-    files = list(iter_source_files(project))
+    # Collect files that exceed the skip threshold so they appear in the large-file
+    # report even though iter_source_files dropped them.  We use a separate walk with
+    # a much higher threshold (no skip) so we can capture their sizes.
+    # We reuse iter_source_files with a very large threshold to avoid duplicating
+    # the extension-filter, symlink-guard, and generated-file logic.
+    _skipped_large: list[LargeFileInfo] = []
+    if _skip_threshold < MAX_FILE_SIZE * 100:  # only scan when threshold is meaningful
+        try:
+            for _lp in iter_source_files(project, skip_threshold=MAX_FILE_SIZE * 100):
+                try:
+                    _lp_size = _lp.stat().st_size
+                except OSError:
+                    continue
+                if _lp_size > _skip_threshold:
+                    try:
+                        _lp_rel = _lp.relative_to(project.root).as_posix()
+                    except ValueError:
+                        continue
+                    _skipped_large.append(LargeFileInfo(
+                        rel_path=_lp_rel,
+                        size_bytes=_lp_size,
+                        reason="skipped",
+                    ))
+                    _LOG.warning(
+                        "index_project: skipping large file %s (%d bytes > %d skip threshold)",
+                        _lp_rel, _lp_size, _skip_threshold,
+                    )
+        except Exception:  # noqa: BLE001
+            pass  # fail-soft: large-file scanning must never abort indexing
+
+    files = list(iter_source_files(project, skip_threshold=_skip_threshold))
     n_total = len(files)
     if n_total == 0:
         _LOG.debug(
@@ -825,6 +922,8 @@ def index_project(
     # Collect rel_paths seen in this walk so the end-of-loop stale-file prune
     # can reuse them without a second O(n) relative_to() pass over all files.
     on_disk: set[str] = set()
+    # Track files that were skipped entirely or received symbol-only treatment.
+    large_files: list[LargeFileInfo] = []
     t0 = time.time()
 
     with db.project_writer_lock(project.hash, timeout_sec=30.0):
@@ -863,7 +962,7 @@ def index_project(
                     except OSError as e:
                         _LOG.debug("mtime check failed for %s (will reindex): %s", rel, e)
 
-                fi = index_file(project, fp)
+                fi = index_file(project, fp, symbol_only_threshold=_symbol_only_threshold)
                 if fi is None:
                     n_errors += 1
                 else:
@@ -879,6 +978,13 @@ def index_project(
                         languages.add(fi.language)
                         if existing_sha is not None:
                             _LOG.debug("updated changed file: %s", fi.rel_path)
+                    # Track symbol-only files regardless of whether they changed.
+                    if fi.symbol_only:
+                        large_files.append(LargeFileInfo(
+                            rel_path=fi.rel_path,
+                            size_bytes=fi.size,
+                            reason="symbol_only",
+                        ))
                 if progress and (i + 1) % 100 == 0:
                     progress(i + 1, n_total)
 
@@ -952,6 +1058,8 @@ def index_project(
             )
 
     elapsed = time.time() - t0
+    # Merge skipped-large (from pre-scan) with symbol-only (collected during indexing).
+    all_large_files = _skipped_large + large_files
     result: IndexProjectResult = {
         "total_files": n_total,
         "indexed": n_indexed,
@@ -960,17 +1068,21 @@ def index_project(
         "languages": sorted(languages),
         "duration_sec": round(elapsed, 2),
         "total_symbols": n_symbols,
+        "large_files": all_large_files,
     }
 
     files_per_sec = n_total / elapsed if elapsed > 0 else 0.0
     _LOG.info(
         "index_project completed: project=%s total_files=%d indexed=%d skipped=%d errors=%d "
+        "large_skipped=%d large_symbol_only=%d "
         "languages=%s duration=%.2fs throughput=%.1f files/s",
         project.hash[:8],
         n_total,
         n_indexed,
         n_skipped_unchanged,
         n_errors,
+        sum(1 for lf in all_large_files if lf.reason == "skipped"),
+        sum(1 for lf in all_large_files if lf.reason == "symbol_only"),
         ",".join(sorted(languages)),
         elapsed,
         files_per_sec,

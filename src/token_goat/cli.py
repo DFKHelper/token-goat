@@ -1914,6 +1914,7 @@ def index(
     skills: bool = typer.Option(False, "--skills", help="Index ~/.claude/skills/"),
     plugins: bool = typer.Option(False, "--plugins", help="Index ~/.claude/plugins/"),
     watch: bool = typer.Option(False, "--watch", help="Watch for file changes and reindex automatically (polling, Ctrl+C to stop)."),
+    report_large: bool = typer.Option(False, "--report-large", help="After indexing, print a table of files that were skipped or received symbol-only treatment due to their size."),
 ) -> None:
     """Rebuild project/global indices."""
     from . import paths as _paths  # noqa: PLC0415
@@ -1990,6 +1991,28 @@ def index(
         f"— {langs} "
         f"— in {summary['duration_sec']}s"
     )
+
+    # --report-large: print a table of files that were skipped or symbol-only.
+    large_files = summary.get("large_files", [])
+    if large_files:
+        n_skipped = sum(1 for lf in large_files if lf.reason == "skipped")
+        n_symbol_only = sum(1 for lf in large_files if lf.reason == "symbol_only")
+        _large_parts = []
+        if n_skipped:
+            _large_parts.append(f"{n_skipped} skipped")
+        if n_symbol_only:
+            _large_parts.append(f"{n_symbol_only} symbol-only")
+        typer.echo(f"Large files: {', '.join(_large_parts)} — use --report-large for details")
+    if report_large:
+        if not large_files:
+            typer.echo("Large files: none (all files within configured thresholds)")
+        else:
+            typer.echo("\nLarge file report:")
+            typer.echo(f"  {'Reason':<12} {'Size':>10}  Path")
+            typer.echo(f"  {'-'*12} {'-'*10}  {'-'*40}")
+            for lf in sorted(large_files, key=lambda x: (-x.size_bytes, x.rel_path)):
+                size_str = f"{lf.size_bytes / 1024:.0f} KB" if lf.size_bytes < 1024 * 1024 else f"{lf.size_bytes / (1024*1024):.1f} MB"
+                typer.echo(f"  {lf.reason:<12} {size_str:>10}  {lf.rel_path}")
 
     if embeddings:
         from . import embeddings as emb  # noqa: PLC0415

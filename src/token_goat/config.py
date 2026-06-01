@@ -9,6 +9,7 @@ __all__ = [
     "HintBudgetConfig",
     "HintsConfig",
     "ImageShrinkConfig",
+    "IndexingConfig",
     "RepomapConfig",
     "SessionBriefConfig",
     "SkillPreservationConfig",
@@ -140,6 +141,7 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
     "hints",
     "webfetch",
     "worker",
+    "indexing",
 ])
 
 
@@ -297,6 +299,13 @@ class _WorkerToml(TypedDict, total=False):
     watchdog_enabled: bool
 
 
+class _IndexingToml(TypedDict, total=False):
+    """Expected shape of the [indexing] TOML section."""
+
+    large_file_symbol_only_kb: int
+    large_file_skip_kb: int
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -313,6 +322,7 @@ class _ConfigToml(TypedDict, total=False):
     hints: _HintsToml
     webfetch: _WebFetchToml
     worker: _WorkerToml
+    indexing: _IndexingToml
 
 
 @dataclass
@@ -769,6 +779,41 @@ class WorkerConfig:
 
 
 @dataclass
+class IndexingConfig:
+    """Configuration for file-size thresholds during project indexing.
+
+    Controls how the indexer handles large files to avoid spending time and
+    memory on content that contributes little signal relative to its cost.
+
+    Two tiers apply:
+
+    * Files larger than ``large_file_symbol_only_kb`` KB but smaller than
+      ``large_file_skip_kb`` KB are indexed for symbols only — the expensive
+      embedding/chunking pass is skipped.  Symbol search and ``token-goat read``
+      still work for these files; semantic search does not.
+    * Files larger than ``large_file_skip_kb`` KB are skipped entirely with a
+      logged warning.  They do not appear in the symbol index or the embedding
+      store.
+
+    Both thresholds are configurable in ``config.toml`` under ``[indexing]``
+    and can be tuned upward for projects that legitimately contain large
+    generated files that are still worth partial indexing, or downward for
+    memory-constrained environments.
+
+    Attributes:
+        large_file_symbol_only_kb: Files larger than this many KB get
+            symbol-only indexing (no embeddings/chunking). Default 500 KB.
+            Valid range: 1 KB to 1 GB (1048576 KB).
+        large_file_skip_kb: Files larger than this many KB are skipped entirely
+            with a warning. Must be >= large_file_symbol_only_kb. Default 2048 KB.
+            Valid range: 1 KB to 1 GB (1048576 KB).
+    """
+
+    large_file_symbol_only_kb: int = 500
+    large_file_skip_kb: int = 2048
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -789,6 +834,7 @@ class Config:
     hints: HintsConfig = field(default_factory=HintsConfig)
     webfetch: WebFetchConfig = field(default_factory=WebFetchConfig)
     worker: WorkerConfig = field(default_factory=WorkerConfig)
+    indexing: IndexingConfig = field(default_factory=IndexingConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -1202,6 +1248,29 @@ def load() -> Config:
     )
     _apply_env_disable(wk, "watchdog_enabled", _ENV_WORKER_WATCHDOG, "worker.watchdog_enabled")
 
+    idx_raw: _IndexingToml = cast("_IndexingToml", raw.get("indexing", {}))
+    _idx_symbol_only_kb = _validated_int(
+        idx_raw.get("large_file_symbol_only_kb", 500),
+        500, 1, 1_048_576, "indexing.large_file_symbol_only_kb",
+    )
+    _idx_skip_kb = _validated_int(
+        idx_raw.get("large_file_skip_kb", 2048),
+        2048, 1, 1_048_576, "indexing.large_file_skip_kb",
+    )
+    # Ensure skip >= symbol_only: if someone sets skip < symbol_only in TOML,
+    # clamp skip up to symbol_only so the tiers don't overlap in a confusing way.
+    if _idx_skip_kb < _idx_symbol_only_kb:
+        _LOG.warning(
+            "config: indexing.large_file_skip_kb (%d) < large_file_symbol_only_kb (%d); "
+            "clamping skip_kb to symbol_only_kb",
+            _idx_skip_kb, _idx_symbol_only_kb,
+        )
+        _idx_skip_kb = _idx_symbol_only_kb
+    idx_cfg = IndexingConfig(
+        large_file_symbol_only_kb=_idx_symbol_only_kb,
+        large_file_skip_kb=_idx_skip_kb,
+    )
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d cache_files=%d cache_bytes=%d; "
@@ -1253,7 +1322,7 @@ def load() -> Config:
     result = Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
         image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, stats=stats,
-        hints=hints_cfg, webfetch=wf_cfg, worker=wk,
+        hints=hints_cfg, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
     return result
@@ -1350,6 +1419,10 @@ def save(config: Config) -> None:
         },
         "worker": {
             "watchdog_enabled": config.worker.watchdog_enabled,
+        },
+        "indexing": {
+            "large_file_symbol_only_kb": config.indexing.large_file_symbol_only_kb,
+            "large_file_skip_kb": config.indexing.large_file_skip_kb,
         },
     }
     try:
