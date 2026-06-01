@@ -32,6 +32,7 @@ __all__ = [
     "command_hash",
     "evict_old_entries",
     "find_cached_for_command",
+    "get_recent_error_outputs",
     "glob_hash",
     "load_output",
     "load_output_meta",
@@ -538,6 +539,90 @@ def read_sidecar(output_id: str) -> BashOutputMeta | None:
         )
     except (TypeError, ValueError):
         return None
+
+
+def get_recent_error_outputs(session_id: str, max_entries: int = 5) -> list[dict[str, str]]:
+    """Return up to *max_entries* recent bash outputs with errors, for manifest assist.
+
+    Scans the bash_outputs cache for entries matching session_id that contain
+    error indicators (error patterns) or non-zero exit codes. Returns a list of
+    {command: str, error_summary: str} dicts where error_summary is the first
+    error line truncated to 120 chars. Returns an empty list on any error
+    (fail-soft contract).
+
+    Error detection looks for:
+    - exit_code != 0 (from sidecar metadata)
+    - Output lines containing: "Error:", "FAILED", "Traceback", "error:" (exact case-sensitive matches)
+    """
+    result: list[dict[str, str]] = []
+    with safe_cache_op("get_recent_error_outputs", log=_LOG):
+        try:
+            cache_dir = _bash_outputs_dir()
+            if not cache_dir.is_dir():
+                return []
+
+            # Collect entries with non-zero exit codes from sidecars
+            def _mtime_key(p: Path) -> float:
+                try:
+                    return p.stat().st_mtime
+                except OSError:
+                    return 0.0
+
+            for sidecar_path in sorted(
+                cache_dir.glob("*.json"), key=_mtime_key, reverse=True
+            ):
+                if len(result) >= max_entries:
+                    break
+                candidate_id = sidecar_path.stem
+                # Skip glob-result entries
+                if candidate_id.startswith("glob_"):
+                    continue
+                meta = read_sidecar(candidate_id)
+                if meta is None:
+                    continue
+                # Filter by session_id: the candidate_id (sidecar filename) should match session pattern
+                # Format: session_id + underscore + hash + optional timestamp
+                # We need to check if this entry belongs to the requested session
+                # The output_id in the meta should match the sidecar filename (candidate_id)
+                # Simple check: does the sidecar filename/output_id contain the session_id?
+                if session_id and not (session_id in candidate_id or session_id in str(meta.output_id)):
+                    continue
+
+                # Check for error indicators
+                has_error = False
+                error_summary = ""
+
+                # First try to extract error pattern from output
+                if (meta.stdout_bytes + meta.stderr_bytes) > 0:
+                    try:
+                        raw_output = load_output(candidate_id)
+                        if raw_output:
+                            for line in raw_output.splitlines():
+                                stripped = line.strip()
+                                if any(
+                                    pattern in stripped
+                                    for pattern in ("Error:", "FAILED", "Traceback", "error:")
+                                ):
+                                    error_summary = sanitize_log_str(stripped, max_len=120)
+                                    has_error = True
+                                    break
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                # If no pattern match, check for non-zero exit code
+                if not has_error and isinstance(meta.exit_code, int) and meta.exit_code != 0:
+                    has_error = True
+
+                if has_error:
+                    cmd = sanitize_log_str(meta.cmd_preview, max_len=80)
+                    if not error_summary:
+                        error_summary = f"exit {meta.exit_code}" if meta.exit_code else "unknown error"
+                    result.append({"command": cmd, "error_summary": error_summary})
+
+        except Exception:  # noqa: BLE001
+            pass
+
+    return result
 
 
 def find_cached_for_command(command: str, cwd: str | None = None) -> BashOutputMeta | None:

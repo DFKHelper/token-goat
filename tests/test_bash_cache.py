@@ -507,3 +507,118 @@ class TestCommandHashCwdScoping:
         # The lookup must still succeed using the surviving sidecar.
         assert result is not None
         assert result.cmd_sha == bash_cache.command_hash(cmd, cwd)
+
+
+class TestGetRecentErrorOutputs:
+    """Tests for get_recent_error_outputs function."""
+
+    def test_empty_cache_returns_empty_list(self, tmp_data_dir):
+        """When the cache is empty, get_recent_error_outputs returns an empty list."""
+        result = bash_cache.get_recent_error_outputs("sess-empty")
+        assert result == []
+
+    def test_non_zero_exit_code_detected(self, tmp_data_dir):
+        """A command with non-zero exit code is returned as an error."""
+        meta = bash_cache.store_output("sess-error-1", "pytest tests/", "output\n", "", 1)
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+
+        result = bash_cache.get_recent_error_outputs("sess-error-1", max_entries=5)
+        assert len(result) == 1
+        assert result[0]["command"] == "pytest tests/"
+        assert "exit 1" in result[0]["error_summary"]
+
+    def test_error_pattern_in_output_detected(self, tmp_data_dir):
+        """Error patterns in output are detected and extracted."""
+        output = "running tests...\nError: assertion failed on line 42\ndone\n"
+        meta = bash_cache.store_output(
+            "sess-error-2", "pytest tests/", output, "", 0  # exit 0 but has error pattern
+        )
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+
+        result = bash_cache.get_recent_error_outputs("sess-error-2", max_entries=5)
+        assert len(result) == 1
+        assert "assertion failed on line 42" in result[0]["error_summary"]
+
+    def test_traceback_pattern_detected(self, tmp_data_dir):
+        """Traceback patterns are detected."""
+        output = "Traceback (most recent call last):\n  File 'test.py', line 5\nerror\n"
+        meta = bash_cache.store_output(
+            "sess-error-3", "python test.py", output, "", 1
+        )
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+
+        result = bash_cache.get_recent_error_outputs("sess-error-3", max_entries=5)
+        assert len(result) == 1
+        assert "Traceback" in result[0]["error_summary"]
+
+    def test_failed_pattern_detected(self, tmp_data_dir):
+        """FAILED pattern in pytest output is detected."""
+        output = "test_foo.py::test_bar FAILED - AssertionError\n"
+        meta = bash_cache.store_output(
+            "sess-error-4", "pytest test_foo.py", output, "", 1
+        )
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+
+        result = bash_cache.get_recent_error_outputs("sess-error-4", max_entries=5)
+        assert len(result) == 1
+        assert "FAILED" in result[0]["error_summary"] or "AssertionError" in result[0]["error_summary"]
+
+    def test_lowercase_error_pattern_detected(self, tmp_data_dir):
+        """Lowercase 'error:' pattern is detected (case-sensitive)."""
+        output = "Processing complete with error: file not found\n"
+        meta = bash_cache.store_output(
+            "sess-error-5", "tool process", output, "", 0
+        )
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+
+        result = bash_cache.get_recent_error_outputs("sess-error-5", max_entries=5)
+        assert len(result) == 1
+        assert "error:" in result[0]["error_summary"]
+
+    def test_max_entries_limit(self, tmp_data_dir):
+        """Only up to max_entries errors are returned."""
+        for i in range(5):
+            meta = bash_cache.store_output(
+                "sess-error-limit", f"cmd{i}", f"Error: code {i}\n", "", i % 2 + 1
+            )
+            assert meta is not None
+            bash_cache.write_sidecar(meta)
+
+        # Request only 2, should get 2
+        result = bash_cache.get_recent_error_outputs("sess-error-limit", max_entries=2)
+        assert len(result) <= 2
+
+    def test_successful_commands_ignored(self, tmp_data_dir):
+        """Commands with exit_code 0 and no error patterns are ignored."""
+        meta = bash_cache.store_output(
+            "sess-success", "ls -la /tmp", "file1\nfile2\n", "", 0
+        )
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+
+        result = bash_cache.get_recent_error_outputs("sess-success", max_entries=5)
+        assert result == []
+
+
+    def test_wrong_session_id_ignored(self, tmp_data_dir):
+        """Errors from a different session are not returned."""
+        meta = bash_cache.store_output("sess-error-a", "pytest", "Error: failed\n", "", 1)
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+
+        # Query with different session_id
+        result = bash_cache.get_recent_error_outputs("sess-error-b", max_entries=5)
+        assert result == []
+
+    def test_fail_soft_on_missing_cache_dir(self, tmp_data_dir, monkeypatch):
+        """Missing cache dir is handled gracefully (fail-soft)."""
+        def bad_dir():
+            raise OSError("no permission")
+        monkeypatch.setattr(bash_cache, "_bash_outputs_dir", bad_dir)
+        result = bash_cache.get_recent_error_outputs("sess-error-fail", max_entries=5)
+        assert result == []  # Fail-soft returns empty list

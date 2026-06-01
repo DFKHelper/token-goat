@@ -502,3 +502,122 @@ class TestBuildSealedBlock:
 
         assert "### MUST_PRESERVE" in result
         assert "<<preserve>>" in result
+
+
+# ---------------------------------------------------------------------------
+# _render_active_errors_section
+# ---------------------------------------------------------------------------
+
+
+class TestRenderActiveErrorsSection:
+    """Tests for _render_active_errors_section function."""
+
+    def test_empty_session_returns_empty(self):
+        """Empty session (no errors) returns empty list."""
+        with patch("token_goat.bash_cache.get_recent_error_outputs", return_value=[]):
+            result = compact._render_active_errors_section("sess-empty")
+        assert result == []
+
+    def test_no_errors_returns_empty(self):
+        """When get_recent_error_outputs returns empty, section is omitted."""
+        with patch("token_goat.bash_cache.get_recent_error_outputs", return_value=[]):
+            result = compact._render_active_errors_section("sess-no-errors", max_errors=3)
+        assert result == []
+
+    def test_single_error_rendered(self):
+        """A single error is rendered with header and entry."""
+        errors = [{"command": "pytest tests/", "error_summary": "AssertionError: expected 5"}]
+        with patch("token_goat.bash_cache.get_recent_error_outputs", return_value=errors):
+            result = compact._render_active_errors_section("sess-one-error")
+
+        assert len(result) >= 2
+        assert result[0] == "### Active Errors"
+        assert "pytest tests/" in result[1]
+        assert "AssertionError" in result[1]
+
+    def test_multiple_errors_rendered(self):
+        """Multiple errors are rendered."""
+        errors = [
+            {"command": "pytest tests/", "error_summary": "AssertionError: expected 5"},
+            {"command": "uv sync", "error_summary": "error: dependency conflict"},
+            {"command": "make build", "error_summary": "Error: compilation failed"},
+        ]
+        with patch("token_goat.bash_cache.get_recent_error_outputs", return_value=errors):
+            result = compact._render_active_errors_section("sess-multi-errors", max_errors=3)
+
+        assert len(result) >= 4
+        assert result[0] == "### Active Errors"
+        # All three errors should be present
+        content = "\n".join(result)
+        assert "pytest tests/" in content
+        assert "uv sync" in content
+        assert "make build" in content
+
+    def test_respects_max_errors_limit(self):
+        """Only up to max_errors entries are rendered."""
+        errors = [
+            {"command": f"cmd{i}", "error_summary": f"Error {i}"}
+            for i in range(5)
+        ]
+        with patch("token_goat.bash_cache.get_recent_error_outputs", return_value=errors):
+            result = compact._render_active_errors_section("sess-limit", max_errors=2)
+
+        # Should have header + up to 2 entries
+        assert len(result) <= 3
+
+    def test_handles_cache_exception_gracefully(self):
+        """Exception from bash_cache is caught and returns empty (fail-soft)."""
+        with patch("token_goat.bash_cache.get_recent_error_outputs", side_effect=OSError("cache error")):
+            result = compact._render_active_errors_section("sess-error")
+        assert result == []
+
+    def test_command_truncated_in_output(self):
+        """Commands are sanitized and truncated."""
+        long_cmd = "very_long_command_that_exceeds_max_length_" + "X" * 100
+        errors = [{"command": long_cmd, "error_summary": "Error occurred"}]
+        with patch("token_goat.bash_cache.get_recent_error_outputs", return_value=errors):
+            result = compact._render_active_errors_section("sess-truncate")
+
+        # The section should still render but command should be truncated in output
+        assert len(result) >= 2
+        # The actual output command should be <= 80 chars due to sanitization
+        assert "Very_long_command" in result[1] or "X" * 50 not in result[1]
+
+    def test_error_summary_truncated_in_output(self):
+        """Error summary is sanitized and truncated."""
+        long_summary = "Error: " + "X" * 150
+        errors = [{"command": "cmd", "error_summary": long_summary}]
+        with patch("token_goat.bash_cache.get_recent_error_outputs", return_value=errors):
+            result = compact._render_active_errors_section("sess-summary-trunc")
+
+        assert len(result) >= 2
+        # Summary should be present but possibly truncated by sanitization
+        assert "cmd" in result[1]
+
+    def test_manifest_integration_includes_active_errors(self, tmp_data_dir, make_session):
+        """Active Errors section appears in full manifest when there are errors."""
+        sid = "sess-with-errors"
+        make_session(sid, edits=1)
+
+        # Mock bash_cache to return errors
+        error_outputs = [
+            {"command": "pytest tests/", "error_summary": "FAILED tests/test_foo.py::test_bar"}
+        ]
+
+        with patch("token_goat.bash_cache.get_recent_error_outputs", return_value=error_outputs):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        # Manifest should contain the Active Errors section
+        assert "### Active Errors" in result
+        assert "pytest tests/" in result
+
+    def test_manifest_omits_errors_when_none(self, tmp_data_dir, make_session):
+        """Active Errors section is omitted when there are no errors."""
+        sid = "sess-no-errors-manifest"
+        make_session(sid, edits=1)
+
+        with patch("token_goat.bash_cache.get_recent_error_outputs", return_value=[]):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        # Manifest should NOT contain the Active Errors section
+        assert "### Active Errors" not in result

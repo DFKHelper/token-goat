@@ -2120,6 +2120,50 @@ def _select_what_worked(bash_history: object, blocker_ids: set[object]) -> list[
     return heapq.nlargest(2, candidates, key=_BY_BASH_TS)
 
 
+def _render_active_errors_section(session_id: str, max_errors: int = 3) -> list[str]:
+    """Render recent error outputs from bash cache as an "Active Errors" section.
+
+    Queries the bash_outputs cache for entries with error indicators (non-zero
+    exit codes or error-pattern matches in output) and formats up to *max_errors*
+    recent ones as a compact manifest section.
+
+    Returns an empty list when no errors are found (section is omitted entirely).
+    All errors are swallowed (fail-soft contract); manifest construction must never
+    block on cache reads.
+
+    Format::
+
+        ### Active Errors
+        - `pytest tests/` — AssertionError: expected 5, got 4
+        - `uv sync` — error: some dependency conflict
+
+    This section surfaces unresolved errors so the compaction LLM knows what is
+    actively blocking and must be preserved in context across compaction.
+    """
+    if not session_id:
+        return []
+
+    try:
+        from . import bash_cache as _bash_cache_mod  # noqa: PLC0415
+        error_outputs = _bash_cache_mod.get_recent_error_outputs(session_id, max_entries=max_errors)
+    except Exception:  # noqa: BLE001
+        return []
+
+    if not error_outputs:
+        return []
+
+    lines: list[str] = ["### Active Errors"]
+    for error_entry in error_outputs[:max_errors]:
+        cmd = sanitize_log_str(error_entry.get("command", ""), max_len=80)
+        summary = sanitize_log_str(error_entry.get("error_summary", ""), max_len=100)
+        if cmd and summary:
+            lines.append(f"- `{cmd}` — {summary}")
+        elif cmd:
+            lines.append(f"- `{cmd}`")
+
+    return lines if len(lines) > 1 else []  # Only return if we have at least the header + 1 entry
+
+
 def _render_what_worked_section(entries: list[object], now_ts: float) -> list[str]:
     """Render a ``**Passed:**`` section listing at most 2 recent green test runs.
 
@@ -5203,6 +5247,13 @@ def _render(
             for q in questions:
                 open_questions_lines.append(f"- {q}")
 
+    # ── 6d. Active Errors — unresolved bash errors from cache ──────────────────
+    # Surfaces recent bash outputs with error indicators (non-zero exit codes or
+    # error patterns in output) so the compaction LLM knows what is actively
+    # blocking the agent.  Like TODOs and Open Questions, uses no budget slice —
+    # the section is small and comes out of overall headroom.
+    active_errors_lines = _render_active_errors_section(session_id, max_errors=3)
+
     # ── Item #16 — Merge Files Edited + Key Files Read when overlap >= 50% ──────
     # When many of the same paths appear in both the Edited and Files sections,
     # collapsing them into one "**Files:**" section saves one section header plus
@@ -5367,6 +5418,7 @@ def _render(
         ("files",         files_lines,           False),
         ("todos",         todo_lines,            False),
         ("open_questions", open_questions_lines, False),
+        ("active_errors", active_errors_lines,  False),
     ]
     # ── Apply noise floor: drop small unprotected sections ───────────────────
     _section_groups = _apply_noise_floor(_section_groups, noise_floor_tokens)
