@@ -1504,6 +1504,30 @@ def scope(
     read_commands.scope(target, json_output=json_output)
 
 
+@app.command("changed", rich_help_panel="Core")
+def cmd_changed(
+    since: str = typer.Option("HEAD~5", "--since", help="Git ref to compare against (commit, branch, tag). Default: HEAD~5."),  # noqa: B008
+    json_output: bool = _OPT_JSON,
+    limit: int = typer.Option(50, "--limit", help="Maximum number of symbol entries to return."),  # noqa: B008
+) -> None:
+    """List symbols that changed since a git ref — replaces full diff reads.
+
+    Parses ``git diff --unified=0 <since>..HEAD`` hunk headers to extract the
+    function or class name git associates with each changed hunk.  Results are
+    deduplicated by (file, symbol) and line counts are summed across multiple
+    hunks touching the same symbol.
+
+    Examples::
+
+        token-goat changed
+        token-goat changed --since HEAD~10
+        token-goat changed --since main --json
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.changed(since_ref=since, json_output=json_output, limit=limit)
+
+
 @app.command("memory", rich_help_panel="Core")
 def memory_cmd(
     action: str = typer.Argument(..., help="show | set | unset | clear"),

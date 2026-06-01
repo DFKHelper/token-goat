@@ -1646,3 +1646,69 @@ def refs(
                 typer.echo(f"{loc}: {ctx}")
         else:
             typer.echo(loc)
+
+
+# ---------------------------------------------------------------------------
+# changed — list symbols that changed since a git ref
+# ---------------------------------------------------------------------------
+
+
+def changed(
+    since_ref: str = "HEAD~5",
+    json_output: bool = False,
+    limit: int = 50,
+) -> None:
+    """List symbols that changed since *since_ref* (default ``HEAD~5``).
+
+    Runs ``git diff --unified=0 <since_ref>..HEAD`` on Python files and
+    parses each hunk header for the surrounding function or class name.
+    Results are deduplicated by (file, symbol) and line counts are summed
+    across multiple hunks touching the same symbol.
+
+    Output format (text)::
+
+        3 symbol changes since HEAD~5
+
+        src/token_goat/hints.py      build_hint           +12 -3
+        src/token_goat/cli.py        _extract_diff_symbols  +5 -1
+
+    Output format (JSON)::
+
+        {"since": "HEAD~5", "count": 2, "symbols": [...]}
+    """
+    import os as _os  # noqa: PLC0415
+
+    from .git_history import get_changed_symbols  # noqa: PLC0415
+
+    cwd = _os.getcwd()
+    entries = get_changed_symbols(cwd, since_ref=since_ref, limit=limit)
+
+    if json_output:
+        typer.echo(json.dumps(
+            {"since": since_ref, "count": len(entries), "symbols": entries},
+            separators=(",", ":"),
+        ))
+        return
+
+    if not entries:
+        typer.echo(f"No symbol changes since {since_ref}")
+        return
+
+    count = len(entries)
+    noun = "symbol change" if count == 1 else "symbol changes"
+    typer.echo(f"{count} {noun} since {since_ref}")
+    typer.echo("")
+
+    # Compute column widths for aligned output.
+    file_w = max(len(str(e["file"])) for e in entries)
+    sym_w = max(len(str(e["symbol"])) for e in entries)
+    # Cap widths to keep lines readable on narrow terminals.
+    file_w = min(file_w, 50)
+    sym_w = min(sym_w, 40)
+
+    for entry in entries:
+        file_col = str(entry["file"])[:file_w].ljust(file_w)
+        sym_col = str(entry["symbol"])[:sym_w].ljust(sym_w)
+        added = entry["lines_added"]
+        removed = entry["lines_removed"]
+        typer.echo(f"  {file_col}  {sym_col}  +{added} -{removed}")

@@ -41,10 +41,12 @@ __all__ = [
     "index_project_history",
     "find_commits_for_file",
     "build_hint",
+    "get_changed_symbols",
 ]
 
 import contextlib
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -345,3 +347,145 @@ def build_hint(project_hash: str, rel_path: str) -> str | None:
         short = str(c["commit_short"])[:8]
         lines.append(f"  {short} {summary} ({age_str})")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Changed symbols — diff-based symbol extraction
+# ---------------------------------------------------------------------------
+
+# Regex matching a unified-diff hunk header line:
+#   @@ -old_start[,old_count] +new_start[,new_count] @@ [optional context]
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@ ?(.*)$")
+
+# Regex matching a +++ b/<file> line (new-file side of a diff header).
+_FILE_RE = re.compile(r"^\+\+\+ b/(.+)$")
+
+# Leading language keywords to strip when extracting a bare symbol name.
+_SYMBOL_STRIP_PREFIXES = (
+    "async def ",
+    "def ",
+    "func ",
+    "function ",
+    "class ",
+    "fn ",
+    "pub fn ",
+    "pub async fn ",
+)
+
+
+def _parse_symbol_from_hunk_context(context: str) -> str | None:
+    """Extract a bare symbol name from the hunk context text (after the fourth @@).
+
+    Returns None when the context is empty or produces only noise.
+    """
+    raw = context.strip()
+    if not raw:
+        return None
+    # Drop parameter list and brace noise: "def foo(a, b):" → "def foo"
+    name_part = raw.split("(")[0].split("{")[0].strip()
+    # Strip leading language keywords.
+    for kw in _SYMBOL_STRIP_PREFIXES:
+        if name_part.startswith(kw):
+            name_part = name_part[len(kw):]
+            break
+    # Strip trailing colon (Python class/def) and surrounding whitespace.
+    name_part = name_part.strip().rstrip(":")
+    return name_part if name_part else None
+
+
+def get_changed_symbols(
+    repo_root: str | Path,
+    since_ref: str = "HEAD~5",
+    limit: int = 50,
+) -> list[dict[str, object]]:
+    """Return symbols that changed between *since_ref* and HEAD.
+
+    Runs ``git diff --unified=0 <since_ref>..HEAD -- "*.py"`` and parses
+    each hunk header for the optional context text (the name git infers for
+    the surrounding function or class).
+
+    Returns a list of dicts, one per unique (file, symbol) pair::
+
+        [
+            {
+                "file": "src/token_goat/hints.py",
+                "symbol": "build_hint",
+                "lines_added": 12,
+                "lines_removed": 3,
+            },
+            ...
+        ]
+
+    *lines_added* and *lines_removed* are summed across all hunks that name
+    the same symbol in the same file.  Results are ordered by (file, symbol).
+    The list is capped at *limit* entries (default 50).
+
+    Fail-soft: returns ``[]`` on git error, missing repo, invalid ref, or
+    any other exception.  Never raises.
+    """
+    try:
+        return _get_changed_symbols_inner(str(repo_root), since_ref, limit)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("get_changed_symbols failed", exc_info=True)
+        return []
+
+
+def _get_changed_symbols_inner(
+    repo_root: str,
+    since_ref: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    raw = _run_git(
+        ["diff", "--unified=0", f"{since_ref}..HEAD", "--", "*.py"],
+        cwd=Path(repo_root),
+        timeout=30,
+    )
+    if not raw:
+        return []
+
+    # Accumulate counts per (file, symbol) — use a list of keys to preserve
+    # insertion order for stable output.
+    counts: dict[tuple[str, str], dict[str, int]] = {}
+    key_order: list[tuple[str, str]] = []
+
+    current_file: str | None = None
+
+    for line in raw.splitlines():
+        m_file = _FILE_RE.match(line)
+        if m_file:
+            current_file = m_file.group(1)
+            continue
+        if current_file is None:
+            continue
+        m_hunk = _HUNK_RE.match(line)
+        if not m_hunk:
+            continue
+        removed_str, added_str, context = m_hunk.group(1), m_hunk.group(2), m_hunk.group(3)
+        # group(1) is None when the count is absent (meaning 1 line).
+        lines_removed = int(removed_str) if removed_str is not None else 1
+        lines_added = int(added_str) if added_str is not None else 1
+        symbol = _parse_symbol_from_hunk_context(context)
+        if not symbol:
+            continue
+        key = (current_file, symbol)
+        if key not in counts:
+            counts[key] = {"lines_added": 0, "lines_removed": 0}
+            key_order.append(key)
+        counts[key]["lines_added"] += lines_added
+        counts[key]["lines_removed"] += lines_removed
+
+    result: list[dict[str, object]] = []
+    for key in key_order:
+        if len(result) >= limit:
+            break
+        file_path, symbol = key
+        result.append({
+            "file": file_path,
+            "symbol": symbol,
+            "lines_added": counts[key]["lines_added"],
+            "lines_removed": counts[key]["lines_removed"],
+        })
+
+    # Sort by file then symbol for stable, scannable output.
+    result.sort(key=lambda r: (str(r["file"]), str(r["symbol"])))
+    return result
