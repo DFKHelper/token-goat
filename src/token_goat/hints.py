@@ -39,6 +39,7 @@ __all__ = [
     "build_index_only_file_hint",
     "build_read_hint",
     "build_structured_file_hint",
+    "build_test_file_hint",
     "build_unchanged_file_hint",
     "build_web_cache_hit_hint",
     "build_web_dedup_hint",
@@ -3972,4 +3973,114 @@ def _build_structured_file_hint_inner(
         ),
         0,
     )
+
+
+# ---------------------------------------------------------------------------
+# Test-file implementation-hint
+# ---------------------------------------------------------------------------
+# When reading a test file, check if the corresponding implementation file
+# has been read in this session. If not, suggest reading it first.
+
+
+def _resolve_impl_file_from_test(test_file_path: str, project_root: Path) -> Path | None:
+    """Resolve the likely implementation file path from a test file path.
+
+    Heuristic:
+    - ``tests/test_foo.py`` → ``src/token_goat/foo.py``
+    - ``tests/test_foo_bar.py`` → ``src/token_goat/foo_bar.py``
+
+    Only returns the path if the file actually exists. Returns None if:
+    - The path cannot be resolved
+    - The resolved file does not exist on disk
+    """
+    try:
+        test_path = Path(test_file_path)
+        basename = test_path.name
+
+        # Only handle test_* files
+        if not basename.startswith("test_"):
+            return None
+
+        # Strip test_ prefix
+        impl_basename = basename[5:]  # Remove 'test_' prefix
+        if not impl_basename:
+            return None
+
+        # Try src/token_goat/impl_basename path
+        impl_rel = project_root / "src" / "token_goat" / impl_basename
+        if impl_rel.is_file():
+            return impl_rel
+
+        return None
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+def build_test_file_hint(
+    test_file_path: str,
+    session_cache: session.SessionCache | None,
+    project_root: Path,
+) -> HintItem | None:
+    """Return a HintItem when reading a test file with unread implementation.
+
+    When the agent reads a test file (path contains "tests/" or filename starts with "test_"),
+    checks if the corresponding implementation file has been read this session.
+    If not, returns a LOW-priority hint suggesting to read the implementation first.
+
+    Args:
+        test_file_path: Absolute or relative path to the file being read.
+        session_cache: SessionCache with read_files dict, or None to skip hint.
+        project_root: Project root path for resolving impl file location.
+
+    Returns:
+        A HintItem with HINT_PRIORITY_LOW, or None when:
+        - The file is not a test file
+        - The implementation file doesn't exist
+        - The implementation file has already been read this session
+        - session_cache is None
+    """
+    if session_cache is None:
+        return None
+
+    # Check if this looks like a test file by checking the filename
+    basename = Path(test_file_path).name
+    test_path_lower = test_file_path.lower()
+    is_test_file = (
+        basename.lower().startswith("test_") or
+        "tests/" in test_path_lower or
+        "tests\\" in test_path_lower
+    )
+
+    if not is_test_file:
+        return None
+
+    # Try to resolve the implementation file
+    impl_file = _resolve_impl_file_from_test(test_file_path, project_root)
+    if impl_file is None:
+        return None
+
+    # Check if the impl file has been read this session
+    # Import paths module to use the same normalization as the session cache
+    from . import paths as _paths  # noqa: PLC0415
+
+    # Normalize the path the same way the session cache does
+    impl_file_str = str(impl_file)
+    normalized_impl_path = _paths.normalize_key(impl_file_str)
+
+    files_dict = getattr(session_cache, "files", {})
+    if isinstance(files_dict, dict) and normalized_impl_path in files_dict:
+        # Already read; no hint needed
+        return None
+
+    # Build the hint
+    fname = _sanitize_hint_path(Path(test_file_path).name)
+    impl_name = _sanitize_hint_path(impl_file.name)
+    impl_rel = _sanitize_hint_path(str(impl_file))
+
+    text = (
+        f"Reading test file `{fname}`. Implementation `{impl_name}` not yet read this session. "
+        f"Consider reading `{impl_rel}` first for context."
+    )
+
+    return HintItem(text, HINT_PRIORITY_LOW)
 

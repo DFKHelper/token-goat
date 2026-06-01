@@ -1828,6 +1828,35 @@ def pre_read(payload: HookPayload) -> HookResponse:
                     cache.get_file_access_count(file_path),
                 )
 
+        # Test-file hint: when reading a test file, check if the corresponding
+        # implementation file has been read this session. If not, suggest reading it first.
+        try:
+            from .hints import build_test_file_hint  # noqa: PLC0415
+            from .hooks_common import validate_cwd as _validate_cwd  # noqa: PLC0415
+            from .project import find_project as _find_project_for_test  # noqa: PLC0415
+
+            _cwd_path = _validate_cwd(cwd, caller="test-file-hint")
+            if _cwd_path is not None:
+                _proj = _find_project_for_test(_cwd_path)
+                if _proj is not None:
+                    _test_hint = build_test_file_hint(file_path, cache, _proj.root)
+                    if _test_hint is not None:
+                        _test_fp = _hfp2(_test_hint.text, path=file_path)
+                        if not cache.has_hint_fingerprint(_test_fp):
+                            cache.mark_hint_seen(_test_fp)
+                            hint_items.append(_test_hint)
+                            _LOG.debug(
+                                "pre-read: test-file hint for %s",
+                                sanitize_log_str(file_path),
+                            )
+        except (AttributeError, ValueError, OSError):
+            # OSError: path validation or project lookup failed
+            # AttributeError: missing project attributes
+            # ValueError: path resolution failed
+            pass
+        except Exception:  # noqa: BLE001 — fail-soft
+            _LOG.debug("test-file-hint: unexpected exception", exc_info=True)
+
         if not hint_items:
             _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))
             return CONTINUE()

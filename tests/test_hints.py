@@ -4138,3 +4138,148 @@ class TestHintPriorityOrdering:
         assert len(result) == HINT_MAX_PER_TOOL_CALL
         # Last emitted hint should carry the suppression footer.
         assert "suppressed" in result[-1]
+
+
+# ---------------------------------------------------------------------------
+# Test-file hint (pre-read hint for test files)
+# ---------------------------------------------------------------------------
+
+
+class TestTestFileHint:
+    """Tests for build_test_file_hint() — suggesting impl files when reading tests."""
+
+    def test_impl_file_found_not_read_returns_hint(self, tmp_data_dir, tmp_path):
+        """Test file with unread impl file → hint returned."""
+
+        from token_goat.hints import HINT_PRIORITY_LOW, build_test_file_hint
+
+        # Create directories and files
+        (tmp_path / "src" / "token_goat").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "tests").mkdir(parents=True, exist_ok=True)
+
+        # Create implementation file
+        impl_file = tmp_path / "src" / "token_goat" / "worker.py"
+        impl_file.write_text("# implementation", encoding="utf-8")
+
+        # Create test file
+        test_file = tmp_path / "tests" / "test_worker.py"
+        test_file.write_text("# test", encoding="utf-8")
+
+        # Create session cache (empty, no reads yet)
+        sid = "test-session-1"
+        cache = session.load(sid)
+
+        # Call build_test_file_hint
+        hint = build_test_file_hint(str(test_file), cache, tmp_path)
+
+        assert hint is not None
+        assert hint.hint_priority == HINT_PRIORITY_LOW
+        assert "worker.py" in hint.text
+        assert "Implementation" in hint.text or "implementation" in hint.text
+
+    def test_impl_file_already_read_returns_none(self, tmp_data_dir, tmp_path):
+        """Test file with already-read impl file → no hint."""
+        from token_goat.hints import build_test_file_hint
+
+        # Create directories and files
+        (tmp_path / "src" / "token_goat").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "tests").mkdir(parents=True, exist_ok=True)
+
+        impl_file = tmp_path / "src" / "token_goat" / "worker.py"
+        impl_file.write_text("# implementation", encoding="utf-8")
+
+        test_file = tmp_path / "tests" / "test_worker.py"
+        test_file.write_text("# test", encoding="utf-8")
+
+        # Create session cache and mark impl file as read
+        sid = "test-session-2"
+        session.mark_file_read(sid, str(impl_file), offset=0, limit=100)
+        cache = session.load(sid)
+
+        # Call build_test_file_hint
+        hint = build_test_file_hint(str(test_file), cache, tmp_path)
+
+        # Should return None because impl file was already read
+        assert hint is None
+
+    def test_impl_file_not_found_returns_none(self, tmp_data_dir, tmp_path):
+        """Test file with no impl file → no hint."""
+        from token_goat.hints import build_test_file_hint
+
+        # Create test file but no implementation file
+        (tmp_path / "tests").mkdir(parents=True, exist_ok=True)
+        test_file = tmp_path / "tests" / "test_nonexistent.py"
+        test_file.write_text("# test", encoding="utf-8")
+
+        # Create empty session cache
+        sid = "test-session-3"
+        cache = session.load(sid)
+
+        # Call build_test_file_hint
+        hint = build_test_file_hint(str(test_file), cache, tmp_path)
+
+        # Should return None because impl file doesn't exist
+        assert hint is None
+
+    def test_non_test_file_returns_none(self, tmp_data_dir, tmp_path):
+        """Non-test file → no hint."""
+        from token_goat.hints import build_test_file_hint
+
+        # Create a non-test file
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        regular_file = tmp_path / "src" / "worker.py"
+        regular_file.write_text("# regular file", encoding="utf-8")
+
+        # Create session cache
+        sid = "test-session-4"
+        cache = session.load(sid)
+
+        # Call build_test_file_hint
+        hint = build_test_file_hint(str(regular_file), cache, tmp_path)
+
+        # Should return None because it's not a test file
+        assert hint is None
+
+    def test_no_session_cache_returns_none(self, tmp_data_dir, tmp_path):
+        """None session cache → no hint."""
+        from token_goat.hints import build_test_file_hint
+
+        # Create directories and files
+        (tmp_path / "src" / "token_goat").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "tests").mkdir(parents=True, exist_ok=True)
+
+        impl_file = tmp_path / "src" / "token_goat" / "worker.py"
+        impl_file.write_text("# implementation", encoding="utf-8")
+
+        test_file = tmp_path / "tests" / "test_worker.py"
+        test_file.write_text("# test", encoding="utf-8")
+
+        # Call with None cache
+        hint = build_test_file_hint(str(test_file), None, tmp_path)
+
+        # Should return None when cache is None
+        assert hint is None
+
+    def test_resolve_impl_file_underscore_handling(self, tmp_data_dir, tmp_path):
+        """Test file name with underscores → impl file resolved correctly."""
+        from token_goat.hints import build_test_file_hint
+
+        # Create directories and files with underscores
+        (tmp_path / "src" / "token_goat").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "tests").mkdir(parents=True, exist_ok=True)
+
+        impl_file = tmp_path / "src" / "token_goat" / "cache_common.py"
+        impl_file.write_text("# implementation", encoding="utf-8")
+
+        test_file = tmp_path / "tests" / "test_cache_common.py"
+        test_file.write_text("# test", encoding="utf-8")
+
+        # Create session cache
+        sid = "test-session-5"
+        cache = session.load(sid)
+
+        # Call build_test_file_hint
+        hint = build_test_file_hint(str(test_file), cache, tmp_path)
+
+        assert hint is not None
+        assert "cache_common.py" in hint.text
