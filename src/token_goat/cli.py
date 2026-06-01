@@ -1937,6 +1937,156 @@ def session_touched(
         typer.echo(f"{e.rel_or_abs}  reads={e.read_count}  lines={ranges}{symbols}")
 
 
+@app.command("session-summary", rich_help_panel="Advanced")
+def cmd_session_summary(
+    session_id: str | None = _OPT_SESSION_ID,
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Compact one-liner about current session state for orchestrators.
+
+    Detects the current session ID from CLAUDE_SESSION_ID env var, or uses the
+    most recently modified session file.  Reports: files read, files edited,
+    commits made since session start, and token savings estimate.
+
+    Examples::
+
+        token-goat session-summary
+        token-goat session-summary --json
+        token-goat session-summary --session-id abc123
+    """
+    from . import paths as _paths  # noqa: PLC0415
+    from . import session as session_mod  # noqa: PLC0415
+    from . import stats as _stats  # noqa: PLC0415
+    from .util import run_git  # noqa: PLC0415
+
+    # Detect session ID
+    if session_id is None:
+        # Try env var first
+        session_id = os.environ.get("CLAUDE_SESSION_ID")
+        if not session_id:
+            # Find most recently modified session file
+            sessions_dir = _paths.sessions_dir()
+            if not sessions_dir.exists():
+                result_text = "No active session"
+                if json_output:
+                    _emit_json({
+                        "session_id": None,
+                        "files_read": 0,
+                        "files_edited": 0,
+                        "commits_this_session": 0,
+                        "tokens_saved_estimate": 0,
+                        "message": "No active session",
+                    })
+                else:
+                    typer.echo(result_text)
+                return
+
+            session_files = [f for f in sessions_dir.iterdir() if f.suffix == ".json"]
+            if not session_files:
+                result_text = "No active session"
+                if json_output:
+                    _emit_json({
+                        "session_id": None,
+                        "files_read": 0,
+                        "files_edited": 0,
+                        "commits_this_session": 0,
+                        "tokens_saved_estimate": 0,
+                        "message": "No active session",
+                    })
+                else:
+                    typer.echo(result_text)
+                return
+
+            # Get most recently modified
+            most_recent = max(session_files, key=lambda f: f.stat().st_mtime)
+            session_id = most_recent.stem
+
+    _validate_session_id(session_id)
+
+    # Check if session file actually exists before trying to load
+    sess_path = _paths.session_cache_path(session_id)
+    if not sess_path.exists():
+        result_text = "No active session"
+        if json_output:
+            _emit_json({
+                "session_id": session_id,
+                "files_read": 0,
+                "files_edited": 0,
+                "commits_this_session": 0,
+                "tokens_saved_estimate": 0,
+                "message": "Session not found",
+            })
+        else:
+            typer.echo(result_text)
+        return
+
+    # Load session cache
+    try:
+        sess = session_mod.load(session_id)
+    except Exception:  # noqa: BLE001
+        result_text = "No active session"
+        if json_output:
+            _emit_json({
+                "session_id": session_id,
+                "files_read": 0,
+                "files_edited": 0,
+                "commits_this_session": 0,
+                "tokens_saved_estimate": 0,
+                "message": "Session not found or corrupted",
+            })
+        else:
+            typer.echo(result_text)
+        return
+
+    # Count files read and edited
+    files_read = len(sess.files)
+    files_edited = len(sess.edited_files)
+
+    # Count commits since session started
+    commits_count = 0
+    try:
+        # Get git log since session started; count lines
+        session_start_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(sess.started_ts))
+        result = run_git(
+            ["log", "--oneline", f"--since={session_start_iso}"],
+            cwd=sess.cwd or None,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            # Count non-empty lines
+            commits_count = len([line for line in result.stdout.strip().split("\n") if line.strip()])
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Estimate token savings from stats or formula
+    tokens_saved_estimate = 0
+    try:
+        # Try to get actual tokens saved from stats for this session
+        summary = _stats.summarize(window_days=30)
+        total_tokens = summary.total_tokens_saved
+        tokens_saved_estimate = max(0, total_tokens)
+    except Exception:  # noqa: BLE001
+        # Fallback: rough estimate = (files_read * 1000) + (files_edited * 200)
+        tokens_saved_estimate = (files_read * 1000) + (files_edited * 200)
+
+    # Format output
+    short_id = session_id[:12] if len(session_id) > 12 else session_id
+    if json_output:
+        _emit_json({
+            "session_id": session_id,
+            "files_read": files_read,
+            "files_edited": files_edited,
+            "commits_this_session": commits_count,
+            "tokens_saved_estimate": tokens_saved_estimate,
+        })
+    else:
+        result_text = (
+            f"Session {short_id}: {files_read} files read, "
+            f"{files_edited} edited, {commits_count} commits, ~{tokens_saved_estimate // 1000}k tokens saved"
+        )
+        typer.echo(result_text)
+
+
 @app.command("session-mark", rich_help_panel="Advanced", hidden=True)
 def session_mark(
     file_path: str = typer.Argument(...),
