@@ -1792,3 +1792,205 @@ def changed(
         added = entry["lines_added"]
         removed = entry["lines_removed"]
         typer.echo(f"  {file_col}  {sym_col}  +{added} -{removed}")
+
+
+# ---------------------------------------------------------------------------
+# test_for — find test files for an implementation file
+# ---------------------------------------------------------------------------
+
+# Maximum number of test function names shown inline in the text summary line.
+# Showing all names for a 40-test file would make the line unreadable; cap at
+# 10 and append "…" so the reader knows more exist.
+_TEST_FOR_INLINE_CAP = 10
+
+
+def _get_test_functions(project_hash: str, test_rel: str) -> list[str]:
+    """Return test function names (kind='function', name starts with 'test_')
+    from *test_rel* in the given project, ordered by line number.
+
+    Returns an empty list on any DB or I/O error (fail-soft).
+    """
+    try:
+        with db.open_project_readonly(project_hash) as conn:
+            rows = conn.execute(
+                "SELECT name FROM symbols "
+                "WHERE file_rel = ? AND kind IN ('function', 'async_function') "
+                "AND name LIKE 'test_%' "
+                "ORDER BY line",
+                (test_rel,),
+            ).fetchall()
+        return [str(r["name"]) for r in rows]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _find_test_files_for(
+    proj: Project,
+    module: str,
+) -> list[tuple[str, str]]:
+    """Return a list of ``(rel_path, source)`` pairs for test files that
+    correspond to *module* (the stem of the implementation file, e.g.
+    ``"read_commands"`` for ``src/token_goat/read_commands.py``).
+
+    Heuristic search order:
+    a. ``tests/test_{module}.py`` — canonical pytest layout.
+    b. ``test_{module}.py`` in any indexed directory (sibling-test layout).
+    c. Any indexed ``.py`` file whose path begins with ``test`` and whose DB
+       symbol or refs table mentions *module* as an import target.
+
+    ``source`` is a short label explaining which heuristic matched, e.g.
+    ``"heuristic-a"`` / ``"heuristic-b"`` / ``"heuristic-c"``.
+
+    Returns an empty list when no test files are found.
+    """
+    import sqlite3 as _sqlite3  # noqa: PLC0415
+
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    # Helper: add a candidate if its file actually exists and is indexed.
+    def _add(rel: str, source: str) -> None:
+        if rel in seen:
+            return
+        try:
+            with db.open_project_readonly(proj.hash) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM files WHERE rel_path = ? LIMIT 1",
+                    (rel,),
+                ).fetchone()
+        except (_sqlite3.Error, FileNotFoundError):
+            row = None
+        if row is not None:
+            seen.add(rel)
+            found.append((rel, source))
+        else:
+            # File not indexed — fall back to filesystem check so freshly
+            # created test files (not yet re-indexed) are still discovered.
+            abs_path = proj.root / rel
+            if abs_path.is_file():
+                seen.add(rel)
+                found.append((rel, source))
+
+    # Heuristic a: tests/test_{module}.py
+    _add(f"tests/test_{module}.py", "heuristic-a")
+
+    # Heuristic b: any indexed .py file at path **/test_{module}.py (excluding
+    # the canonical tests/ path already tried above).
+    if len(found) == 0:
+        try:
+            with db.open_project_readonly(proj.hash) as conn:
+                rows = conn.execute(
+                    "SELECT rel_path FROM files "
+                    "WHERE rel_path LIKE ? AND rel_path LIKE '%.py' "
+                    "ORDER BY rel_path",
+                    (f"%test_{module}.py",),
+                ).fetchall()
+            for r in rows:
+                rel = str(r["rel_path"])
+                if rel not in seen:
+                    seen.add(rel)
+                    found.append((rel, "heuristic-b"))
+        except (_sqlite3.Error, FileNotFoundError):
+            pass
+
+    # Heuristic c: any test_*.py file in the DB that imports the module.
+    # We query the refs table for any symbol where caller_file matches test_*.py
+    # and target_module contains the module stem.  This covers cases like
+    # ``from token_goat.read_commands import foo`` in an otherwise-named test.
+    if len(found) == 0:
+        try:
+            with db.open_project_readonly(proj.hash) as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT caller_file FROM refs "
+                    "WHERE caller_file LIKE '%test%.py' "
+                    "AND (target_module LIKE ? OR target_module LIKE ?) "
+                    "ORDER BY caller_file",
+                    (f"%.{module}", f"%{module}"),
+                ).fetchall()
+            for r in rows:
+                rel = str(r["caller_file"])
+                if rel not in seen:
+                    seen.add(rel)
+                    found.append((rel, "heuristic-c"))
+        except (_sqlite3.Error, FileNotFoundError):
+            pass
+
+    return found
+
+
+def test_for(
+    file_target: str,
+    json_output: bool = False,
+) -> None:
+    """Given an implementation file, find the corresponding test file(s).
+
+    Searches for test files using the following heuristics (in order):
+
+    a. ``tests/test_{module}.py`` where module = stem of the input file.
+    b. ``test_{module}.py`` in any indexed directory (sibling layout).
+    c. Any ``test_*.py`` in the project whose imports reference the module.
+
+    For each test file found, lists its top-level test function names
+    (functions whose names start with ``test_``).
+
+    Output format (text)::
+
+        tests/test_read_commands.py — 12 tests: test_symbol_cmd, test_read_cmd, …
+
+    Output format (JSON)::
+
+        {"impl": "src/token_goat/read_commands.py", "test_files": [
+          {"path": "tests/test_read_commands.py", "test_count": 12,
+           "tests": ["test_symbol_cmd", ...]}
+        ]}
+    """
+    target = _resolve_file_target(file_target)
+    if target.project is None or target.rel_path is None:
+        typer.echo(f"File not found in any indexed project: {file_target}", err=True)
+        hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
+        if hint:
+            typer.echo(hint, err=True)
+        raise typer.Exit(1)
+
+    proj = target.project
+    impl_rel = target.rel_path
+
+    # Derive module stem: basename without extension.
+    module = Path(impl_rel).stem
+
+    test_entries = _find_test_files_for(proj, module)
+
+    if json_output:
+        result_list = []
+        for test_rel, _source in test_entries:
+            fns = _get_test_functions(proj.hash, test_rel)
+            result_list.append({
+                "path": test_rel,
+                "test_count": len(fns),
+                "tests": fns,
+            })
+        typer.echo(json.dumps(
+            {"impl": impl_rel, "test_files": result_list},
+            separators=(",", ":"),
+        ))
+        return
+
+    if not test_entries:
+        typer.echo(
+            f"No test file found for {impl_rel}.\n"
+            f"Expected: tests/test_{module}.py or test_{module}.py"
+        )
+        return
+
+    for test_rel, _source in test_entries:
+        fns = _get_test_functions(proj.hash, test_rel)
+        count = len(fns)
+        if count == 0:
+            typer.echo(f"{test_rel} — 0 tests")
+            continue
+        noun = "test" if count == 1 else "tests"
+        if count <= _TEST_FOR_INLINE_CAP:
+            names_str = ", ".join(fns)
+        else:
+            names_str = ", ".join(fns[:_TEST_FOR_INLINE_CAP]) + ", …"
+        typer.echo(f"{test_rel} — {count} {noun}: {names_str}")

@@ -1545,6 +1545,27 @@ def cmd_changed(
     read_commands.changed(since_ref=since, json_output=json_output, limit=limit)
 
 
+@app.command("test-for", rich_help_panel="Core")
+def cmd_test_for(
+    file: str = typer.Argument(..., help="Implementation file — e.g., 'src/token_goat/read_commands.py'"),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Find test file(s) for an implementation file and list their test functions.
+
+    Searches by convention (``tests/test_{module}.py``), sibling layout, and
+    import references.  For each test file found, lists top-level ``test_*``
+    functions.
+
+    Examples::
+
+        token-goat test-for src/token_goat/read_commands.py
+        token-goat test-for hints.py --json
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.test_for(file, json_output=json_output)
+
+
 @app.command("memory", rich_help_panel="Core")
 def memory_cmd(
     action: str = typer.Argument(..., help="show | set | unset | clear"),
