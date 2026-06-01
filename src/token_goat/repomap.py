@@ -920,11 +920,11 @@ def _build_compact_file_summary(
     files for orientation without dropping into the full per-file detail
     rendering — adding 5 extra basenames costs roughly 10 additional tokens.
     """
-    import os  # noqa: PLC0415
+    from pathlib import Path as _Path  # noqa: PLC0415
 
     if top_n < 1:
         top_n = 1
-    top = [os.path.basename(rel) for rel, _ in ranked[:top_n]]
+    top = [_Path(rel).name for rel, _ in ranked[:top_n]]
     rest = total - len(top)
     modules_str = ", ".join(top)
     if rest > 0:
@@ -1345,7 +1345,7 @@ def build_map_mermaid(
     if data is None:
         return "graph TD\n    empty[\"No files indexed — run `token-goat index --full`\"]\n"
 
-    import os  # noqa: PLC0415
+    from pathlib import Path as _Path  # noqa: PLC0415
 
     top_files = {rel for rel, _ in data.ranked[:top_n]}
 
@@ -1354,7 +1354,7 @@ def build_map_mermaid(
     # Node definitions — use the basename as the label to keep nodes compact.
     for rel, info in data.ranked[:top_n]:
         node_id = _mermaid_id(rel)
-        basename = os.path.basename(rel)
+        basename = _Path(rel).name
         approx_lines = max(1, info["size"] // _BYTES_PER_APPROX_LINE)
         lang = info["language"] or "?"
         lines.append(f'    {node_id}["{basename}<br/>{lang}, ~{approx_lines}L"]')

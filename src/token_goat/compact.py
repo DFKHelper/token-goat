@@ -33,13 +33,13 @@ import heapq
 import io
 import json
 import math
-import os
 import re
 import time
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlparse
 
@@ -903,8 +903,7 @@ def _is_git_repo(cwd: str) -> bool:
     cached = _is_git_repo_cache.get(cwd)
     if cached is not None:
         return cached
-    import os as _os  # noqa: PLC0415
-    result = _os.path.exists(_os.path.join(cwd, ".git"))
+    result = (Path(cwd) / ".git").exists()
     _is_git_repo_cache[cwd] = result
     return result
 
@@ -1146,8 +1145,9 @@ def _group_edited_by_dir(
     # Group by directory
     dir_groups: dict[str, list[tuple[str, int]]] = defaultdict(list)
     for path, count in entries:
-        dirname = os.path.dirname(path) or "."
-        basename = os.path.basename(path)
+        _p = Path(path)
+        dirname = str(_p.parent)  # Path("file.txt").parent == Path(".") → "."
+        basename = _p.name
         dir_groups[dirname].append((basename, count))
 
     result: list[str] = []
@@ -1157,7 +1157,7 @@ def _group_edited_by_dir(
         if len(group) < threshold:
             # Below threshold: list each file on its own line
             for basename, count in group:
-                full_path = os.path.join(dirname, basename) if dirname != "." else basename
+                full_path = str(Path(dirname) / basename) if dirname != "." else basename
                 result.append(f"- ✎ {_short_path(full_path, project_root=project_root)}{_count_suffix(count)}")
         else:
             # 3+ files: use grouped format
@@ -1229,8 +1229,7 @@ def _short_path(p: str, max_len: int = 70, project_root: str | None = None) -> s
     # above stripping starts with "token-goat/" becomes just the remainder.
     # Only applies to the *current* project — other projects keep their name.
     if project_root:
-        import os as _os
-        proj_name = _os.path.basename(project_root.rstrip("/\\"))
+        proj_name = Path(project_root.rstrip("/\\")).name
         if proj_name:
             prefix_check = proj_name + "/"
             if p.startswith(prefix_check):
@@ -3644,10 +3643,9 @@ def _render_tasks_section(
     # so a substring match against the task subject is fast and predictable.
     _suppress_tokens: set[str] = set()
     if edited_paths:
-        import os as _os
         for p in edited_paths:
             norm = _norm_key(p)
-            basename = _os.path.basename(norm)
+            basename = Path(norm).name
             if basename:
                 _suppress_tokens.add(basename)
             # Last two path segments (e.g. "src/auth.py") catch
@@ -3965,13 +3963,13 @@ def _build_sealed_block(
         top_edits = sorted(edited_clean.items(), key=_BY_EDIT_COUNT, reverse=True)[:3]
         parts = []
         for path, count in top_edits:
-            basename = sanitize_log_str(os.path.basename(path) or path, max_len=40)
+            basename = sanitize_log_str(Path(path).name or path, max_len=40)
             parts.append(f"{basename}×{count}" if count > 1 else basename)
         edit_slot = "✎ " + "  ".join(parts)
         # First (most-edited) basename anchors the RESUME pointer.
         if top_edits:
             top_edited_basename = sanitize_log_str(
-                os.path.basename(top_edits[0][0]) or top_edits[0][0], max_len=40
+                Path(top_edits[0][0]).name or top_edits[0][0], max_len=40
             )
 
     # Slot (b): most-recent blocker (truncated to 80 chars).
@@ -4030,7 +4028,7 @@ def _build_sealed_block(
         for _fn in test_failure_names:
             _parts = _fn.split("::")
             if _parts:
-                _fpath = os.path.basename(_parts[0])
+                _fpath = Path(_parts[0]).name
                 if _fpath and _fpath not in _seen_fail_files:
                     _seen_fail_files.add(_fpath)
                     _fail_file_names.append(sanitize_log_str(_fpath, max_len=40))

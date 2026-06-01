@@ -217,7 +217,7 @@ def _resume_anchor_for_recovery(
     symmetry with compact.py::_build_sealed_block so future signal
     sources (e.g. WIP commit titles) can join without a signature change.
     """
-    import os  # noqa: PLC0415
+    from pathlib import Path as _Path  # noqa: PLC0415
 
     from .util import sanitize_surrogates as _san  # noqa: PLC0415
 
@@ -227,7 +227,7 @@ def _resume_anchor_for_recovery(
         # Reuse _BY_EDIT_COUNT semantics: sort by count desc, then by path
         # so the choice is deterministic on ties.
         top = max(raw_edited.items(), key=lambda kv: (kv[1], kv[0]))
-        basename = os.path.basename(top[0]) or top[0]
+        basename = _Path(top[0]).name or top[0]
         if basename:
             return _san(basename)[:40]
     except Exception:  # noqa: BLE001 — fail-soft
@@ -662,12 +662,12 @@ def _build_recovery_hint(session_id: str) -> str | None:
     edit_count_by_norm: dict[str, int] = {}
     edit_count_by_basename: dict[str, int] = {}
     import contextlib as _contextlib  # noqa: PLC0415
-    import os as _os  # noqa: PLC0415
+    from pathlib import Path as _Path  # noqa: PLC0415
     for _ep, _ec in raw_edited.items():
         with _contextlib.suppress(Exception):
             edit_count_by_norm[_paths_mod.normalize_key(_ep).lower()] = _ec
         with _contextlib.suppress(Exception):
-            _bn = _os.path.basename(_ep).lower()
+            _bn = _Path(_ep).name.lower()
             if _bn:
                 # Keep the max edit count when multiple paths share a basename.
                 edit_count_by_basename[_bn] = max(
@@ -685,8 +685,8 @@ def _build_recovery_hint(session_id: str) -> str | None:
             # Fallback: basename match catches absolute-vs-relative mismatches.
             rel = getattr(entry, "rel_or_abs", "")
             if rel:
-                import os as _os  # noqa: PLC0415
-                bn = _os.path.basename(rel).lower()
+                from pathlib import Path as _Path  # noqa: PLC0415
+                bn = _Path(rel).name.lower()
                 if bn and bn in edit_count_by_basename:
                     return edit_count_by_basename[bn]
         except Exception:  # noqa: BLE001

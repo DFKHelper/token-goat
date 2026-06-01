@@ -20,7 +20,6 @@ from __future__ import annotations
 
 __all__ = ["post_edit", "_edit_succeeded"]
 
-import os as _os
 import threading
 import time as _time
 
@@ -102,7 +101,7 @@ def _edit_succeeded(payload: HookPayload, file_path: str) -> bool:
             # deletion (MultiEdit of a non-existent file); be conservative and
             # allow the record so the manifest doesn't miss the intent.
             return True
-        mtime = _os.path.getmtime(file_path)
+        mtime = p.stat().st_mtime
         age = _time.time() - mtime
         if age > _EDIT_FRESHNESS_SECS:
             _LOG.debug(
