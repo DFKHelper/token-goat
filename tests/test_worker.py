@@ -308,19 +308,20 @@ def test_process_dirty_entries_indexes_unregistered_project(tmp_data_dir, tmp_pa
 # 9. run_daemon smoke test — stop_event shuts it down, PID file is cleaned up
 # ---------------------------------------------------------------------------
 
-def test_run_daemon_stop_event(tmp_data_dir):
+def test_run_daemon_stop_event(tmp_data_dir, monkeypatch):
     stop = threading.Event()
 
-    # Set the stop event after a short delay from a background thread
-    def _stopper():
-        time.sleep(0.3)
+    # Patch _register_autostart to set the stop event immediately after the
+    # daemon starts up — no sleep needed to wait for the loop to initialise.
+    original_register = worker._register_autostart
+
+    def _register_and_stop():
+        original_register()
         stop.set()
 
-    t = threading.Thread(target=_stopper, daemon=True)
-    t.start()
+    monkeypatch.setattr(worker, "_register_autostart", _register_and_stop)
 
     worker.run_daemon(stop_event=stop)
-    t.join(timeout=5.0)
 
     # PID file must be cleaned up after exit
     assert not paths.worker_pid_path().exists()
@@ -335,12 +336,14 @@ def test_run_daemon_self_registers_autostart(tmp_data_dir, monkeypatch):
     respawning it. run_daemon re-asserts the registration every startup.
     """
     called = threading.Event()
-    monkeypatch.setattr(worker, "_register_autostart", called.set)
-
     stop = threading.Event()
-    threading.Thread(
-        target=lambda: (time.sleep(0.3), stop.set()), daemon=True
-    ).start()
+
+    def _register_and_stop():
+        called.set()
+        stop.set()
+
+    monkeypatch.setattr(worker, "_register_autostart", _register_and_stop)
+
     worker.run_daemon(stop_event=stop)
 
     assert called.is_set(), "run_daemon did not call _register_autostart()"
@@ -1506,6 +1509,8 @@ def test_run_daemon_restarts_on_code_change(tmp_data_dir, monkeypatch):
 
 def test_run_daemon_no_restart_when_version_unchanged(tmp_data_dir, monkeypatch):
     """A matching on-disk version *and* code fingerprint must not trigger a respawn."""
+    import token_goat.worker_daemon as _daemon_mod
+
     monkeypatch.setattr(worker, "VERSION_CHECK_INTERVAL", 0.0)
     monkeypatch.setattr(worker, "_BOOTED_VERSION", "1.2.3")
     monkeypatch.setattr(worker, "_installed_version", lambda: "1.2.3")
@@ -1518,16 +1523,21 @@ def test_run_daemon_no_restart_when_version_unchanged(tmp_data_dir, monkeypatch)
     )
 
     stop = threading.Event()
+    version_checked = threading.Event()
 
-    def _stopper():
-        time.sleep(0.3)
+    original_detect = _daemon_mod._detect_upgrade
+
+    def _detect_and_stop():
+        result = original_detect()
+        version_checked.set()
         stop.set()
+        return result
 
-    t = threading.Thread(target=_stopper, daemon=True)
-    t.start()
+    monkeypatch.setattr(_daemon_mod, "_detect_upgrade", _detect_and_stop)
+
     worker.run_daemon(stop_event=stop)
-    t.join(timeout=5.0)
 
+    assert version_checked.is_set(), "version check was never executed"
     assert spawned["count"] == 0, "worker respawned despite an unchanged version"
 
 

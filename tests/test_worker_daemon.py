@@ -6,7 +6,6 @@ import os
 import signal
 import sys
 import threading
-import time
 from unittest.mock import patch
 
 import pytest
@@ -580,17 +579,20 @@ def test_watchdog_restarts_on_unexpected_exit(tmp_data_dir):
         launched.set()
         return os.getpid()  # return a new valid PID
 
+    latched = threading.Event()
+
     with patch.object(daemon, "_pid_is_alive", _patched_pid_alive):
         wd = daemon.WatchdogThread(
             pid_file_reader=_fake_pid_reader,
             launch_fn=_fake_launch,
             retry_delay=0.05,
             poll_interval=0.02,
+            on_latch=latched.set,
         )
         wd.start()
 
-        # Let the watchdog latch onto our live PID.
-        time.sleep(0.1)
+        # Wait for the watchdog to latch onto our live PID (replaces sleep(0.1)).
+        assert latched.wait(timeout=2.0), "watchdog did not latch onto live PID"
 
         # Switch to the dead PID to simulate unexpected worker exit.
         current_pid[0] = _DEAD_PID
@@ -662,17 +664,20 @@ def test_watchdog_graceful_stop_prevents_restart(tmp_data_dir):
         launched.set()
         return os.getpid()
 
+    latched = threading.Event()
+
     with patch.object(daemon, "_pid_is_alive", _patched_pid_alive):
         wd = daemon.WatchdogThread(
             pid_file_reader=_fake_pid_reader,
             launch_fn=_fake_launch,
             retry_delay=0.05,
             poll_interval=0.02,
+            on_latch=latched.set,
         )
         wd.start()
 
-        # Let the watchdog latch onto our live PID.
-        time.sleep(0.1)
+        # Wait for the watchdog to latch onto our live PID (replaces sleep(0.1)).
+        assert latched.wait(timeout=2.0), "watchdog did not latch onto live PID"
 
         # Signal graceful stop BEFORE making the PID disappear.
         wd.stop()
@@ -771,8 +776,13 @@ def test_watchdog_stop_called_on_graceful_daemon_shutdown(tmp_data_dir):
 def test_watchdog_pid_unknown_does_not_trigger_restart(tmp_data_dir):
     """WatchdogThread does not call launch_fn when PID file reader always returns _PID_UNKNOWN."""
     launched = threading.Event()
+    polled = threading.Event()
+    poll_count = [0]
 
     def _fake_pid_reader() -> int:
+        poll_count[0] += 1
+        if poll_count[0] >= 5:
+            polled.set()
         return daemon._PID_UNKNOWN
 
     def _fake_launch() -> int | None:
@@ -787,7 +797,8 @@ def test_watchdog_pid_unknown_does_not_trigger_restart(tmp_data_dir):
     )
     wd.start()
 
-    time.sleep(0.2)
+    # Wait for at least 5 poll cycles to confirm no restart was triggered.
+    polled.wait(timeout=2.0)
     wd.stop()
     wd.join(timeout=1.0)
 

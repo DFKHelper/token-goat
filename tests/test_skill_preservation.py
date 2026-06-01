@@ -98,11 +98,22 @@ class TestSkillCacheStoreAndLoad:
         assert loaded.content_sha == meta.content_sha
         assert loaded.source_path == "/some/path.md"
 
-    def test_lookup_by_name_returns_latest(self, tmp_data_dir):
+    def test_lookup_by_name_returns_latest(self, tmp_data_dir, monkeypatch):
+        import token_goat.skill_cache as _sc_mod  # noqa: PLC0415
+
+        # Use monotonically increasing fake timestamps to guarantee ordering
+        # without sleeping.  Each store_output call gets a distinct ts.
+        _ts = [1000.0]
+
+        def _fake_time():
+            _ts[0] += 1.0
+            return _ts[0]
+
+        monkeypatch.setattr(_sc_mod.time, "time", _fake_time)
+
         meta_old = skill_cache.store_output("sess8", "ralph", "old body " * 100)
         assert meta_old is not None
         skill_cache.write_sidecar(meta_old)
-        time.sleep(0.05)  # ensure ts ordering
         meta_new = skill_cache.store_output("sess8", "ralph", "new body " * 100)
         assert meta_new is not None
         skill_cache.write_sidecar(meta_new)

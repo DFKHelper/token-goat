@@ -952,14 +952,23 @@ class TestGrepSection:
     # Dedup / staleness / composite-rank improvements
     # ------------------------------------------------------------------
 
-    def test_grep_dedup_by_pattern_keeps_most_recent(self, tmp_data_dir):
+    def test_grep_dedup_by_pattern_keeps_most_recent(self, tmp_data_dir, monkeypatch):
         """Duplicate pattern entries: only the most-recent occurrence survives."""
-        import time as _time
+        import token_goat.session as _session_mod
+
+        # Use monotonically increasing fake timestamps to guarantee ordering
+        # without sleeping.  Each mark_grep call gets a distinct ts.
+        _ts = [1000.0]
+
+        def _fake_time():
+            _ts[0] += 1.0
+            return _ts[0]
+
+        monkeypatch.setattr(_session_mod.time, "time", _fake_time)
 
         sid = "grep-dedup-most-recent-abc"
         # Search the same pattern twice in different scopes; the second (newer) wins.
         session.mark_grep(sid, "target_fn", "/proj/src", result_count=3)
-        _time.sleep(0.02)
         session.mark_grep(sid, "target_fn", "/proj/tests", result_count=7)
 
         result = compact.build_manifest(sid)
@@ -4832,7 +4841,8 @@ class TestBuildManifestTimeout:
         original_func = compact._get_git_diff_stat_summary
 
         def slow_git(*args, **kwargs):
-            time.sleep(0.05)  # Exceed the shrunk 10ms timeout; well under 300ms
+            import threading as _threading
+            _threading.Event().wait(0.05)  # Exceed the shrunk 10ms timeout; well under 300ms
             return original_func(*args, **kwargs)
 
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", slow_git)
@@ -4854,7 +4864,8 @@ class TestBuildManifestTimeout:
         original_func = compact._get_git_diff_stat_summary
 
         def slow_git(*args, **kwargs):
-            time.sleep(0.05)  # Exceed the shrunk 10ms timeout; well under 300ms
+            import threading as _threading
+            _threading.Event().wait(0.05)  # Exceed the shrunk 10ms timeout; well under 300ms
             return original_func(*args, **kwargs)
 
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", slow_git)

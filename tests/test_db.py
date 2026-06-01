@@ -287,7 +287,7 @@ def test_writer_lock_is_mutually_exclusive_under_concurrency(tmp_data_dir):
                     if state["current"] > 1:
                         violations.append(state["current"])
                     successes += 1
-                time.sleep(0.05)
+                threading.Event().wait(0.05)  # hold the lock briefly to force contention
                 with guard:
                     state["current"] -= 1
         except TimeoutError:

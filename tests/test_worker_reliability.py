@@ -244,11 +244,14 @@ class TestGracefulShutdown:
         """Sending SIGTERM to the current process via run_daemon's stop_event pathway stops the loop."""
         stop = threading.Event()
         daemon_exited = threading.Event()
+        daemon_started = threading.Event()
 
         def _run():
             # Patch autostart so it doesn't touch the registry / systemd.
+            # The patched _register_autostart fires daemon_started so the main
+            # thread knows the loop is initialised before it sends the stop.
             with (
-                patch.object(worker, "_register_autostart", lambda: None),
+                patch.object(worker, "_register_autostart", daemon_started.set),
                 patch.object(worker, "_try_claim_worker_slot", return_value=42),
                 patch.object(worker, "cleanup_on_startup", return_value={}),
             ):
@@ -260,8 +263,8 @@ class TestGracefulShutdown:
         t = threading.Thread(target=_run, daemon=True)
         t.start()
 
-        # Give the loop time to start.
-        time.sleep(0.3)
+        # Wait until the daemon has completed startup (replaces sleep(0.3)).
+        assert daemon_started.wait(timeout=5.0), "daemon did not start within 5s"
 
         # Set the stop event — simulates what SIGTERM now does.
         stop.set()
@@ -366,7 +369,7 @@ class TestIndexTimeout:
         """A slow index call that exceeds the timeout returns None."""
 
         def _slow_index(project, full):
-            time.sleep(10)  # much longer than the test timeout
+            threading.Event().wait(10)  # blocks until thread is killed; much longer than the test timeout
             return {"indexed": 0, "total_files": 0, "errors": 0, "skipped_unchanged": 0, "duration_sec": 10.0}
 
         from token_goat import parser as _parser
@@ -400,7 +403,7 @@ class TestIndexTimeout:
         ph = "ccddaabb"
 
         def _slow_index(project, full):
-            time.sleep(10)
+            threading.Event().wait(10)  # blocks until thread is killed; well beyond test timeout
 
         from token_goat import parser as _parser
         from token_goat.project import Project

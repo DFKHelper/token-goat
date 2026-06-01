@@ -316,7 +316,7 @@ class TestSessionCasOrdering:
 
         def add_file(path: str, delay: float = 0.0) -> None:
             if delay:
-                time.sleep(delay)
+                threading.Event().wait(delay)
 
             def mutate(cache: session.SessionCache) -> None:
                 cache.edited_files[path] = 1

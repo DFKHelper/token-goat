@@ -1,5 +1,6 @@
 """Tests for the hook dispatcher's fail-soft and dispatch behavior."""
 import json
+import threading
 
 import pytest
 from hook_helpers import assert_continue as _assert_continue
@@ -1296,7 +1297,7 @@ def test_dispatch_watchdog_returns_within_budget_on_hung_handler(monkeypatch):
     sleep_s = budget_s * 5
 
     def slow_handler(_payload):
-        _time.sleep(sleep_s)
+        threading.Event().wait(sleep_s)
         return {"continue": True}
 
     monkeypatch.setitem(hooks_cli.EVENTS, "session-start", slow_handler)
@@ -1334,12 +1335,11 @@ def test_dispatch_watchdog_does_not_trip_on_fast_handler(monkeypatch):
 def test_dispatch_watchdog_logs_warning_on_trip(monkeypatch, caplog):
     """When the watchdog trips, the dispatcher must log a WARNING."""
     import logging as _logging
-    import time as _time
 
     monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 50)
 
     def hung(_payload):
-        _time.sleep(0.5)
+        threading.Event().wait(0.5)
         return {"continue": True}
 
     monkeypatch.setitem(hooks_cli.EVENTS, "session-start", hung)
@@ -1423,13 +1423,11 @@ def test_dispatch_respects_env_watchdog_budget(monkeypatch):
     normally trip the watchdog.  Setting the env var to 1000ms must let it
     finish normally — proves the env override is wired into dispatch.
     """
-    import time as _time
-
     monkeypatch.setattr(hooks_cli, "_HOOK_WATCHDOG_MS", 50)
     monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "1000")
 
     def slowish(_payload):
-        _time.sleep(0.2)
+        threading.Event().wait(0.2)
         return {"continue": True, "_marker": "completed"}
 
     monkeypatch.setitem(hooks_cli.EVENTS, "session-start", slowish)
@@ -1447,12 +1445,10 @@ def test_dispatch_watchdog_records_budget_on_trip(monkeypatch):
     distinguish a 2s default trip from a 500ms env-tightened trip without
     having to read the daily log file.
     """
-    import time as _time
-
     monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "120")
 
     def hung(_payload):
-        _time.sleep(0.6)
+        threading.Event().wait(0.6)
         return {"continue": True}
 
     monkeypatch.setitem(hooks_cli.EVENTS, "session-start", hung)

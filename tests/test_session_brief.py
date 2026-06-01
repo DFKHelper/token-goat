@@ -554,6 +554,7 @@ class TestBriefLatencyBudget:
         pre-fix this took ~4 s (status 2 s + log 2 s), the fixed code stays
         near the shared budget and skips the call it no longer has time for.
         """
+        import threading as _threading
         import time
 
         def _slow_run(cmd, **kwargs):
@@ -564,7 +565,7 @@ class TestBriefLatencyBudget:
                 result.stdout = "main\n"
                 return result
             # status and log hang until their deadline, then time out (worst case).
-            time.sleep(timeout)
+            _threading.Event().wait(timeout)
             raise subprocess.TimeoutExpired(cmd, timeout)
 
         start = time.monotonic()

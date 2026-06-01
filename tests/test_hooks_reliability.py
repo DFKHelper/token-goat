@@ -196,7 +196,7 @@ class TestWatchdogMetadata:
 
         # Install a handler that blocks longer than the budget.
         def _hang(payload):
-            time.sleep(5)
+            threading.Event().wait(5)
             return CONTINUE()
 
         with patch.dict(_cli.EVENTS, {"session-start": _hang}):
@@ -215,7 +215,7 @@ class TestWatchdogMetadata:
         monkeypatch.setattr(_cli, "_HOOK_WATCHDOG_MS", 60)
 
         def _hang(payload):
-            time.sleep(5)
+            threading.Event().wait(5)
             return CONTINUE()
 
         with patch.dict(_cli.EVENTS, {"session-start": _hang}):
@@ -231,7 +231,7 @@ class TestWatchdogMetadata:
         monkeypatch.setattr(_cli, "_HOOK_WATCHDOG_MS", budget_ms)
 
         def _hang(payload):
-            time.sleep(10)
+            threading.Event().wait(10)
             return CONTINUE()
 
         with patch.dict(_cli.EVENTS, {"session-start": _hang}):

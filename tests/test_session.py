@@ -3186,8 +3186,7 @@ class TestSessionLockfile:
         proc = _subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(0)"])
         dead_pid = proc.pid
         proc.wait(timeout=5)
-        # Give the OS a moment to release the PID entry.
-        time.sleep(0.05)
+        # proc.wait() guarantees the process has exited; no sleep needed.
 
         lp.write_text(str(dead_pid), encoding="utf-8")
 
@@ -3821,10 +3820,13 @@ class TestProcLoadCache:
         loaded1 = session.load(sid)
 
         # Mutate the session on disk by writing an extra file entry.
-        # Windows mtime resolution is 100 ns; sleeping briefly ensures
-        # the new write has a distinguishably different mtime.
-        import time as _time
-        _time.sleep(0.02)
+        # Backdate the existing session file to ensure the next write has a
+        # distinguishably newer mtime without sleeping.
+        import os as _os
+        _sess_path = session.paths.session_cache_path(sid)
+        if _sess_path.exists():
+            _old_mtime = _sess_path.stat().st_mtime
+            _os.utime(_sess_path, (_old_mtime - 2.0, _old_mtime - 2.0))
         # Write using mark_file_read which internally saves to disk.
         session.mark_file_read(sid, "c.py", offset=0, limit=3)
         # Evict the stale proc-cache entry so the next load() sees the updated
@@ -4927,11 +4929,21 @@ class TestGrepResultHashes:
         assert not cache.has_grep_result_hash("hash000"), "Oldest should be evicted"
         assert cache.has_grep_result_hash("hash_overflow"), "New entry should exist"
 
-    def test_grep_result_hashes_updates_last_activity_ts(self, tmp_data_dir):
+    def test_grep_result_hashes_updates_last_activity_ts(self, tmp_data_dir, monkeypatch):
         """record_grep_result_hash updates last_activity_ts."""
+        import token_goat.session as _sess_mod
+
+        # Patch time.time so the second call returns a reliably larger value
+        # without sleeping.
+        _ts = [1_700_000_000.0]
+
+        def _fake_time():
+            _ts[0] += 1.0
+            return _ts[0]
+
+        monkeypatch.setattr(_sess_mod.time, "time", _fake_time)
         cache = session.load("test_activity_ts")
         old_ts = cache.last_activity_ts
-        time.sleep(0.01)  # Small delay to ensure ts changes
 
         cache.record_grep_result_hash("test_hash", "test_pattern")
         assert cache.last_activity_ts > old_ts
