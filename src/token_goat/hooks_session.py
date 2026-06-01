@@ -1588,24 +1588,18 @@ def subagent_stop(payload: HookPayload) -> HookResponse:
 
     # Only flag when the session cache records edited files — a subagent that
     # didn't claim edits doesn't need scrutiny.
-    try:
-        from . import session as _session  # noqa: PLC0415
+    from . import session as _session  # noqa: PLC0415
 
-        cache = _session.safe_load(session_id, caller="subagent-stop")
-        if cache is None:
-            return CONTINUE()
-        edited: dict[str, int] = getattr(cache, "edited_files", {})
-        if not edited:
-            return CONTINUE()
-    except Exception:  # noqa: BLE001
+    cache = _session.safe_load(session_id, caller="subagent-stop")
+    if cache is None:
+        return CONTINUE()
+    edited: dict[str, int] = getattr(cache, "edited_files", {})
+    if not edited:
         return CONTINUE()
 
     # Run git status --porcelain to check for actual disk changes.
-    try:
-        r = _run_git(["-C", cwd, "status", "--porcelain"], timeout=5)
-        git_output = r.stdout.strip()
-    except Exception:  # noqa: BLE001
-        return CONTINUE()
+    r = _run_git(["-C", cwd, "status", "--porcelain"], timeout=5)
+    git_output = r.stdout.strip()
 
     if git_output:
         # Disk changes present — subagent did real work, no flag needed.

@@ -246,15 +246,8 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
 
         # Validate file_id before embedding in hook message to prevent injection.
         # Malicious IDs with shell metacharacters could be acted on by Claude.
-        try:
-            gdrive._validate_file_id(file_id)
-        except ValueError:
-            return CONTINUE()
-
-        try:
-            gdrive.get_credentials()
-        except gdrive.GDriveCredsUnavailable:
-            return CONTINUE()
+        gdrive._validate_file_id(file_id)
+        gdrive.get_credentials()
 
         # The Drive MCP sometimes includes a `name` / `filename` hint in the tool
         # input. When present, use it to pick the right shim (sections vs fetch).

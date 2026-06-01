@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from token_goat import hooks_fetch
+from token_goat import hooks_cli
 
 
 def _make_payload(file_id: str, name: str | None = None) -> dict:
@@ -26,7 +26,7 @@ class TestDriveInterceptMarkdownHint:
         with (
             patch("google.auth.default", return_value=(MagicMock(), "proj")),
         ):
-            resp = hooks_fetch.pre_fetch(_make_payload("file_abc", name="spec.md"))
+            resp = hooks_cli.pre_fetch(_make_payload("file_abc", name="spec.md"))
 
         # deny_redirect returns a structured response — drill into its context to
         # verify the sections hint is present.
@@ -38,7 +38,7 @@ class TestDriveInterceptMarkdownHint:
         with (
             patch("google.auth.default", return_value=(MagicMock(), "proj")),
         ):
-            resp = hooks_fetch.pre_fetch(_make_payload("file_abc", name="photo.jpg"))
+            resp = hooks_cli.pre_fetch(_make_payload("file_abc", name="photo.jpg"))
 
         text = str(resp)
         assert "gdrive-sections" not in text
@@ -48,7 +48,7 @@ class TestDriveInterceptMarkdownHint:
         with (
             patch("google.auth.default", return_value=(MagicMock(), "proj")),
         ):
-            resp = hooks_fetch.pre_fetch(_make_payload("file_abc"))
+            resp = hooks_cli.pre_fetch(_make_payload("file_abc"))
 
         text = str(resp)
         assert "gdrive-sections" not in text
@@ -58,7 +58,7 @@ class TestDriveInterceptMarkdownHint:
         # When credentials are unavailable the hook returns CONTINUE so Drive
         # MCP can handle the call directly (token-goat is a no-op fall-through).
         with patch("google.auth.default", side_effect=Exception("no ADC")):
-            resp = hooks_fetch.pre_fetch(_make_payload("file_abc", name="spec.md"))
+            resp = hooks_cli.pre_fetch(_make_payload("file_abc", name="spec.md"))
 
         text = str(resp)
         # CONTINUE response: no denial / redirect text — just a continue payload.
@@ -69,7 +69,7 @@ class TestDriveInterceptMarkdownHint:
         # A 1000-char name must not be embedded; sections hint should be omitted.
         long_name = ("a" * 999) + ".md"
         with patch("google.auth.default", return_value=(MagicMock(), "proj")):
-            resp = hooks_fetch.pre_fetch(_make_payload("file_abc", name=long_name))
+            resp = hooks_cli.pre_fetch(_make_payload("file_abc", name=long_name))
 
         text = str(resp)
         # Hint suppressed because filename was too long to safely embed.
@@ -80,7 +80,7 @@ class TestDriveInterceptMarkdownHint:
         payload = _make_payload("file_abc")
         payload["tool_input"]["name"] = 42  # type: ignore[index]
         with patch("google.auth.default", return_value=(MagicMock(), "proj")):
-            resp = hooks_fetch.pre_fetch(payload)
+            resp = hooks_cli.pre_fetch(payload)
 
         text = str(resp)
         assert "gdrive-sections" not in text
@@ -92,7 +92,7 @@ class TestDriveInterceptFileId:
         # File id with path separators must be rejected (validation guard) and the
         # hook falls through with CONTINUE so the Drive MCP errors normally.
         with patch("google.auth.default", return_value=(MagicMock(), "proj")):
-            resp = hooks_fetch.pre_fetch(_make_payload("../etc/passwd"))
+            resp = hooks_cli.pre_fetch(_make_payload("../etc/passwd"))
 
         text = str(resp)
         assert "gdrive-fetch" not in text
@@ -103,7 +103,7 @@ class TestDriveInterceptFileId:
             "tool_input": {},
         }
         with patch("google.auth.default", return_value=(MagicMock(), "proj")):
-            resp = hooks_fetch.pre_fetch(payload)
+            resp = hooks_cli.pre_fetch(payload)
 
         text = str(resp)
         assert "gdrive-fetch" not in text
@@ -123,7 +123,7 @@ class TestWebFetchAllowDeny:
 
         cfg = Config()  # defaults: empty allow/deny
         with patch("token_goat.config.load", return_value=cfg):
-            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://example.com/page"))
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/page"))
         # CONTINUE or dedup hint — not a deny
         assert resp.get("continue", True) is True or "allow" not in str(resp).lower()
 
@@ -135,7 +135,7 @@ class TestWebFetchAllowDeny:
 
         cfg = Config(webfetch=WebFetchConfig(deny=["https://evil.com/*"]))
         with patch("token_goat.config.load", return_value=cfg):
-            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://evil.com/malware"))
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://evil.com/malware"))
         text = str(resp)
         assert "deny" in text.lower() or "blocked" in text.lower() or "deny list" in text.lower()
 
@@ -147,7 +147,7 @@ class TestWebFetchAllowDeny:
 
         cfg = Config(webfetch=WebFetchConfig(deny=["https://evil.com/*"]))
         with patch("token_goat.config.load", return_value=cfg):
-            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://good.com/page"))
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://good.com/page"))
         # Should be CONTINUE (not blocked by deny)
         assert resp.get("continue", True) is True
 
@@ -159,7 +159,7 @@ class TestWebFetchAllowDeny:
 
         cfg = Config(webfetch=WebFetchConfig(allow=["https://trusted.org/*"]))
         with patch("token_goat.config.load", return_value=cfg):
-            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://untrusted.io/page"))
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://untrusted.io/page"))
         text = str(resp)
         assert "allow" in text.lower() or "blocked" in text.lower()
 
@@ -171,7 +171,7 @@ class TestWebFetchAllowDeny:
 
         cfg = Config(webfetch=WebFetchConfig(allow=["https://trusted.org/*"]))
         with patch("token_goat.config.load", return_value=cfg):
-            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://trusted.org/docs"))
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://trusted.org/docs"))
         # Should be CONTINUE (allowed)
         assert resp.get("continue", True) is True
 
@@ -186,7 +186,7 @@ class TestWebFetchAllowDeny:
             deny=["https://example.com/bad*"],
         ))
         with patch("token_goat.config.load", return_value=cfg):
-            resp = hooks_fetch.pre_fetch(self._webfetch_payload("https://example.com/badpath"))
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/badpath"))
         text = str(resp)
         assert "deny" in text.lower() or "blocked" in text.lower()
 
@@ -206,7 +206,7 @@ class TestWebSizeHint:
             "tool_input": {"url": "https://example.com/large-doc"},
             "tool_response": {"output": body, "status_code": 200},
         }
-        hooks_fetch.post_fetch(payload)
+        hooks_cli.post_fetch(payload)
 
         # Check that the size hint was logged
         assert any("web_size_hint" in record.message for record in caplog.records)
@@ -223,7 +223,7 @@ class TestWebSizeHint:
             "tool_input": {"url": "https://example.com/small-doc"},
             "tool_response": {"output": body, "status_code": 200},
         }
-        hooks_fetch.post_fetch(payload)
+        hooks_cli.post_fetch(payload)
 
         # Check that no size hint was logged
         assert not any("web_size_hint" in record.message for record in caplog.records)
@@ -240,7 +240,7 @@ class TestWebSizeHint:
             "tool_input": {"url": "https://example.com/doc"},
             "tool_response": {"output": body, "status_code": 200},
         }
-        hooks_fetch.post_fetch(payload)
+        hooks_cli.post_fetch(payload)
 
         # Find the size hint log message
         hint_records = [r for r in caplog.records if "web_size_hint" in r.message]

@@ -5,7 +5,6 @@ import json
 from unittest.mock import MagicMock, patch
 
 from token_goat import hooks_cli
-from token_goat.hooks_session import subagent_stop, user_prompt_submit
 
 # ---------------------------------------------------------------------------
 # UserPromptSubmit — no session_id
@@ -14,7 +13,7 @@ from token_goat.hooks_session import subagent_stop, user_prompt_submit
 
 def test_user_prompt_submit_no_session_id():
     """Without a session_id, handler returns continue:True with no additionalContext."""
-    result = user_prompt_submit({})
+    result = hooks_cli.user_prompt_submit({})
     assert result.get("continue") is True
     hso = result.get("hookSpecificOutput")
     assert hso is None
@@ -42,7 +41,7 @@ def test_user_prompt_submit_additionalContext_format(tmp_path):
         patch.object(real_session, "safe_load", return_value=mock_cache),
     ):
         mock_run.return_value = MagicMock(stdout="feature-branch\n", returncode=0)
-        result = user_prompt_submit({
+        result = hooks_cli.user_prompt_submit({
             "session_id": "test-sess-456",
             "cwd": str(tmp_path),
         })
@@ -69,7 +68,7 @@ def test_user_prompt_submit_git_failure_still_returns_continue(tmp_path):
         patch("subprocess.run", side_effect=OSError("git not found")),
         patch.object(real_session, "safe_load", return_value=mock_cache),
     ):
-        result = user_prompt_submit({
+        result = hooks_cli.user_prompt_submit({
             "session_id": "test-sess-789",
             "cwd": str(tmp_path),
         })
@@ -85,7 +84,7 @@ def test_user_prompt_submit_no_session_cache_returns_continue(tmp_path):
         patch("subprocess.run", side_effect=OSError("git not found")),
         patch.object(real_session, "safe_load", return_value=None),
     ):
-        result = user_prompt_submit({
+        result = hooks_cli.user_prompt_submit({
             "session_id": "test-sess-000",
             "cwd": str(tmp_path),
         })
@@ -103,7 +102,7 @@ def test_user_prompt_submit_no_session_cache_returns_continue(tmp_path):
 def test_user_prompt_submit_short_prompt_early_returns(tmp_path):
     """Prompts shorter than 8 chars must early-return CONTINUE with no context."""
     for short_prompt in ["k", "yes", "no", "/help", "ok", "y", "       "]:
-        result = user_prompt_submit({
+        result = hooks_cli.user_prompt_submit({
             "session_id": "short-prompt-sess",
             "cwd": str(tmp_path),
             "prompt": short_prompt,
@@ -131,7 +130,7 @@ def test_user_prompt_submit_long_enough_prompt_proceeds(tmp_path):
         patch.object(real_session, "safe_load", return_value=mock_cache),
     ):
         mock_run.return_value = MagicMock(stdout="main\n", returncode=0)
-        result = user_prompt_submit({
+        result = hooks_cli.user_prompt_submit({
             "session_id": "long-prompt-sess",
             "cwd": str(tmp_path),
             "prompt": "Please fix the login bug",  # 24 chars
@@ -151,7 +150,7 @@ def test_user_prompt_submit_long_enough_prompt_proceeds(tmp_path):
 
 def test_subagent_stop_no_session_id():
     """Without session_id, handler returns continue:True immediately."""
-    result = subagent_stop({})
+    result = hooks_cli.subagent_stop({})
     assert result.get("continue") is True
 
 
@@ -163,7 +162,7 @@ def test_subagent_stop_no_edited_files_skips_flag(tmp_path):
     import token_goat.session as real_session
 
     with patch.object(real_session, "safe_load", return_value=mock_cache):
-        result = subagent_stop({
+        result = hooks_cli.subagent_stop({
             "session_id": "sub-sess-001",
             "cwd": str(tmp_path),
         })
@@ -184,7 +183,7 @@ def test_subagent_stop_disk_changes_no_flag(tmp_path):
     ):
         # git status --porcelain returns non-empty output → real changes present
         mock_run.return_value = MagicMock(stdout=" M some_file.py\n", returncode=0)
-        result = subagent_stop({
+        result = hooks_cli.subagent_stop({
             "session_id": "sub-sess-002",
             "cwd": str(tmp_path),
         })
@@ -209,7 +208,7 @@ def test_subagent_stop_no_disk_changes_writes_sidecar(tmp_path, monkeypatch):
     ):
         # git status --porcelain returns empty → no changes on disk
         mock_run.return_value = MagicMock(stdout="", returncode=0)
-        result = subagent_stop({
+        result = hooks_cli.subagent_stop({
             "session_id": "sub-sess-003",
             "cwd": str(tmp_path),
         })
@@ -238,7 +237,7 @@ def test_subagent_stop_git_failure_returns_continue(tmp_path):
         patch.object(real_session, "safe_load", return_value=mock_cache),
         patch("subprocess.run", side_effect=OSError("git timeout")),
     ):
-        result = subagent_stop({
+        result = hooks_cli.subagent_stop({
             "session_id": "sub-sess-004",
             "cwd": str(tmp_path),
         })
