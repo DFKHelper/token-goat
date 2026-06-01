@@ -53,11 +53,14 @@ subprocess wrapper that runs the user's command lives in :mod:`bash_runner`.
 """
 from __future__ import annotations
 
+import abc
+
 __all__ = [
     "DEFAULT_MAX_BYTES",
     "DEFAULT_MAX_INPUT_BYTES",
     "DEFAULT_MAX_LINES",
     "CompressedOutput",
+    "BaseFilter",
     "Filter",
     "FILTERS",
     "_safe_decode",
@@ -1076,7 +1079,104 @@ class CompressedOutput:
 # Filter base class + registry
 # ---------------------------------------------------------------------------
 
-class Filter:
+class BaseFilter(abc.ABC):
+    """Abstract base class for per-tool output compressors.
+
+    Defines the minimal interface that all filter implementations must provide,
+    with helper methods for common compression patterns.
+    """
+
+    #: Display name used in stats and the compression marker.  Should be a short
+    #: identifier ([a-z-]+) without whitespace so it survives in log lines.
+    name: str = "base"
+
+    #: Set of accepted binary stems (lower-case, no extension).  ``pytest``
+    #: matches both ``/usr/bin/pytest`` and ``pytest.exe``.
+    binaries: frozenset[str] = frozenset()
+
+    #: When non-empty, only fire when one of these tokens appears as a
+    #: positional argument after the binary.  Used to scope a filter to a
+    #: subcommand (``git status`` but not ``git rev-parse``).  Empty means
+    #: "match any subcommand".
+    subcommands: frozenset[str] = frozenset()
+
+    @abc.abstractmethod
+    def detect_from_command(self, cmd: str) -> bool:
+        """Return True if this filter can handle the given command string.
+
+        Override in subclasses to implement filter-specific command detection.
+        This method should return False rather than raise exceptions; the
+        :meth:`can_handle` wrapper provides exception safety.
+
+        :param cmd: Raw shell command string (may contain multiple commands,
+            pipes, redirects; the implementation must handle or reject these)
+        :return: True if this filter applies to the command, False otherwise
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        """Return the compressed body (no marker; no byte cap).
+
+        Subclasses override this.  *stdout* and *stderr* have already been run
+        through :func:`normalise` (ANSI / progress stripped, CRLF → LF) by
+        :meth:`apply`.  *argv* is the parsed command tokens (after prefix
+        stripping) so filters can dispatch on subcommands.  *exit_code* lets
+        filters preserve failure context.
+
+        :param stdout: Normalised stdout
+        :param stderr: Normalised stderr
+        :param exit_code: Process exit code
+        :param argv: Parsed command tokens (after prefix stripping)
+        :return: Compressed text
+        """
+        raise NotImplementedError
+
+    def can_handle(self, cmd: str) -> bool:
+        """Check if this filter can handle the command (fail-soft wrapper).
+
+        Calls :meth:`detect_from_command` and catches all exceptions,
+        returning False on error. This ensures a broken filter never breaks
+        command dispatch.
+
+        :param cmd: Raw shell command string
+        :return: True if this filter applies (and no exception occurred),
+            False otherwise
+        """
+        try:
+            return self.detect_from_command(cmd)
+        except Exception:  # noqa: BLE001, fail-soft is the contract
+            return False
+
+    @property
+    def savings_ratio(self) -> float:
+        """Estimated compression ratio (0.0 to 1.0) for this filter.
+
+        Computed by running compress on a sample of typical tool output.
+        Returns 0.0 if the filter raises an exception or if no compression
+        savings are achieved.
+
+        :return: Ratio of (original_size - compressed_size) / original_size,
+            clamped to [0.0, 1.0]
+        """
+        try:
+            # Use a sample that's typical for the tool.  Most tools output
+            # progress lines, ANSI codes, repeated warnings, etc.  A 10 KB
+            # sample is representative and fast to compress.
+            sample = "progress line\n" * 100 + "error: test\n" * 10
+            compressed = self.compress(sample, "", 0, [])
+            orig_len = len(sample)
+            if orig_len == 0:
+                return 0.0
+            saved = 1.0 - (len(compressed) / orig_len)
+            return max(0.0, min(1.0, saved))  # Clamp to [0.0, 1.0]
+        except Exception:  # noqa: BLE001, fail-soft
+            return 0.0
+
+
+class Filter(BaseFilter):
     """Per-tool output compressor.
 
     Subclasses declare which command binaries they accept via :attr:`binaries`
@@ -1087,20 +1187,25 @@ class Filter:
     tool-specific structural compression.
     """
 
-    #: Display name used in stats and the compression marker.  Should be a short
-    #: identifier ([a-z-]+) without whitespace so it survives in log lines.
-    name: str = "base"
+    def detect_from_command(self, cmd: str) -> bool:
+        """Detect if this filter applies to the raw command string.
 
-    #: Set of accepted binary stems (lower-case, no extension).  ``pytest``
-    #: matches both ``/usr/bin/pytest`` and ``pytest.exe``.  See
-    #: :func:`_resolve_binary` for the matching rule.
-    binaries: frozenset[str] = frozenset()
+        Default implementation parses the command string to argv, then calls
+        :meth:`matches` on the result. Subclasses can override for custom logic.
 
-    #: When non-empty, only fire when one of these tokens appears as a
-    #: positional argument after the binary.  Used to scope a filter to a
-    #: subcommand (``git status`` but not ``git rev-parse``).  Empty means
-    #: "match any subcommand".
-    subcommands: frozenset[str] = frozenset()
+        :param cmd: Raw shell command string
+        :return: True if this filter applies, False otherwise
+        """
+        try:
+            # Strip out command prefixes and parse
+            if not cmd or len(cmd) > 65_536:
+                return False
+            resolved = _strip_prefixes(shlex.split(cmd))
+            if not resolved:
+                return False
+            return self.matches(resolved)
+        except Exception:  # noqa: BLE001, fail-soft
+            return False
 
     def matches(self, argv: list[str]) -> bool:
         """Return True when this filter should run for the given argv.
