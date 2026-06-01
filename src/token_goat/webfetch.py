@@ -704,11 +704,11 @@ def _make_pinned_transport(pinned_ip: str) -> httpx.HTTPTransport:
 
         def handle_request(self, request: httpx.Request) -> httpx.Response:
             _prev = socket.getaddrinfo
-            socket.getaddrinfo = _pinned_getaddrinfo  # type: ignore[assignment]
+            socket.getaddrinfo = _pinned_getaddrinfo  # type: ignore[assignment]  # monkey-patching socket.getaddrinfo to pin DNS resolution; typeshed expects exact overloaded signature
             try:
                 return super().handle_request(request)
             finally:
-                socket.getaddrinfo = _prev  # type: ignore[assignment]
+                socket.getaddrinfo = _prev  # type: ignore[assignment]  # restoring original; same monkey-patch constraint
 
     return _PinnedTransport()
 

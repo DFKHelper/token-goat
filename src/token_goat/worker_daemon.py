@@ -338,7 +338,7 @@ def _install_windows_console_handler(stop_event=None) -> None:
             # Keep the callback object alive for the process lifetime to prevent
             # the GC from collecting the ctypes function pointer while it is still
             # registered with the OS.
-            _install_windows_console_handler._keepalive = _cb  # type: ignore[attr-defined]
+            _install_windows_console_handler._keepalive = _cb  # type: ignore[attr-defined]  # storing keepalive as function attribute; functions accept arbitrary attrs at runtime
             _LOG.debug("Windows console-control handler registered")
         else:
             _LOG.debug(

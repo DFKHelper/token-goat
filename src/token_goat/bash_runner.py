@@ -144,7 +144,7 @@ def _spawn(
         extra["start_new_session"] = True
     else:
         # On Windows, CREATE_NEW_PROCESS_GROUP lets us send CTRL_BREAK_EVENT.
-        extra["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+        extra["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]  # CREATE_NEW_PROCESS_GROUP is Windows-only; not in typeshed for POSIX targets
     return subprocess.Popen(  # type: ignore[call-overload]  # noqa: S602, shell=True is intentional; **extra confuses mypy overload resolution
         cmd,
         shell=True,

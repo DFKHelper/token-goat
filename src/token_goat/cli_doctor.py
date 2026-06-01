@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -1254,9 +1255,9 @@ def doctor(  # noqa: C901
     # PRAGMA integrity_check on connect, which is multi-second on a large
     # global.db; a diagnostic must not pay that cost or create the DB.
     typer.echo("\nStats")
-    _row: object = None
-    _cache_row: object = None
-    _proj_row: object = None
+    _row: tuple[Any, ...] | None = None
+    _cache_row: tuple[Any, ...] | None = None
+    _proj_row: tuple[Any, ...] | None = None
     _top_kinds: list[tuple[str, int]] = []
     _unknown_kinds: list[tuple[str, int]] = []
     _last_write_ts: float | None = None
@@ -1321,17 +1322,17 @@ def doctor(  # noqa: C901
     except Exception as e:  # noqa: BLE001
         flag("stats", str(e), warn=True)
 
-    if _row and _row[0]:  # type: ignore[index]
-        ok("events", str(_row[0]))  # type: ignore[index]
-        ok("tokens saved", str(_row[1] or 0))  # type: ignore[index]
-        ok("bytes saved", str(_row[2] or 0))  # type: ignore[index]
+    if _row and _row[0]:
+        ok("events", str(_row[0]))
+        ok("tokens saved", str(_row[1] or 0))
+        ok("bytes saved", str(_row[2] or 0))
     elif _row is not None:
         ok("(none)", "no recorded savings yet")
 
     # Last-write recency — a stats DB with no fresh rows in the last 24 h on a
     # supposedly-active install is a leading indicator of broken hook wiring.
-    if _proj_row and _proj_row[2]:  # type: ignore[index]
-        _last_write_ts = float(_proj_row[2])  # type: ignore[index]
+    if _proj_row and _proj_row[2]:
+        _last_write_ts = float(_proj_row[2])
         _age_s = max(0.0, time.time() - _last_write_ts)
         if _age_s < 3600:
             ok("last write", f"{_age_s/60:.0f}m ago")
@@ -1360,15 +1361,15 @@ def doctor(  # noqa: C901
             f"`_overhead` suffix routes via the parent kind automatically)",
             warn=True,
         )
-    elif _row and _row[0]:  # type: ignore[index]
+    elif _row and _row[0]:
         # Only show the all-clear line when there ARE rows; otherwise the
         # absence is just an empty DB, not a successful mapping audit.
         ok("kind coverage", "all kinds mapped to a source bucket")
 
-    if _cache_row and _cache_row[0]:  # type: ignore[index]
+    if _cache_row and _cache_row[0]:
         flag(
             "session-cache",
-            f"{_cache_row[0]} contention event(s) in the last hour",  # type: ignore[index]
+            f"{_cache_row[0]} contention event(s) in the last hour",
             warn=True,
         )
     elif _cache_row is not None:
@@ -1382,10 +1383,10 @@ def doctor(  # noqa: C901
     # This is intentionally a rough projection — the point is a ballpark
     # "are you getting value?" number, not an invoice.
     _COST_PER_1M_TOKENS: float = 3.0  # USD, conservative Claude input price
-    if _proj_row and _proj_row[0] and _proj_row[1] and _proj_row[2]:  # type: ignore[index]
-        _total_tokens = int(_proj_row[0])  # type: ignore[index]
-        _oldest_ts = float(_proj_row[1])  # type: ignore[index]
-        _newest_ts = float(_proj_row[2])  # type: ignore[index]
+    if _proj_row and _proj_row[0] and _proj_row[1] and _proj_row[2]:
+        _total_tokens = int(_proj_row[0])
+        _oldest_ts = float(_proj_row[1])
+        _newest_ts = float(_proj_row[2])
         _elapsed_days = (_newest_ts - _oldest_ts) / 86400.0
         if _elapsed_days >= 1.0:
             _tokens_per_day = _total_tokens / _elapsed_days

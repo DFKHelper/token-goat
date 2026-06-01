@@ -114,12 +114,12 @@ import stat as _stat_module
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from itertools import islice
 from operator import attrgetter
 from pathlib import Path
-from typing import Any, Final, TypedDict, TypeVar
+from typing import Any, Final, TypedDict, TypeVar, cast
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
@@ -380,8 +380,8 @@ _SESSION_FILE_LOCK_TIMEOUT_MS: Final[int] = 200
 _SESSION_FILE_LOCK_POLL_MS: Final[int] = 10
 
 
-@contextlib.contextmanager  # type: ignore[arg-type]
-def _session_file_lock(path: Path):
+@contextlib.contextmanager
+def _session_file_lock(path: Path) -> Generator[None, None, None]:
     """Cross-process file-level lock for a session JSON path.
 
     On POSIX (Linux / macOS / WSL) uses ``fcntl.flock(LOCK_EX | LOCK_NB)``
@@ -406,7 +406,7 @@ def _session_file_lock(path: Path):
         yield from _session_file_lock_posix(path)
 
 
-def _session_file_lock_posix(path: Path):  # type: ignore[return]
+def _session_file_lock_posix(path: Path) -> Generator[None, None, None]:
     """POSIX implementation of :func:`_session_file_lock` using ``fcntl.flock``."""
     lock_fd: int | None = None
     acquired = False
@@ -434,7 +434,7 @@ def _session_file_lock_posix(path: Path):  # type: ignore[return]
 
         while elapsed_ms < deadline_ms:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]  # fcntl is POSIX-only; not in typeshed on Windows
                 acquired = True
                 break
             except OSError:
@@ -456,7 +456,7 @@ def _session_file_lock_posix(path: Path):  # type: ignore[return]
         if acquired and lock_fd is not None:
             try:
                 import fcntl as _fcntl  # noqa: PLC0415
-                _fcntl.flock(lock_fd, _fcntl.LOCK_UN)  # type: ignore[attr-defined]
+                _fcntl.flock(lock_fd, _fcntl.LOCK_UN)  # type: ignore[attr-defined]  # fcntl is POSIX-only; not in typeshed on Windows
             except Exception:  # noqa: BLE001
                 pass
         if lock_fd is not None:
@@ -464,7 +464,7 @@ def _session_file_lock_posix(path: Path):  # type: ignore[return]
                 os.close(lock_fd)
 
 
-def _session_file_lock_windows(path: Path):  # type: ignore[return]
+def _session_file_lock_windows(path: Path) -> Generator[None, None, None]:
     """Windows implementation of :func:`_session_file_lock` using a sidecar file.
 
     Creates a ``.flock`` sidecar file with ``O_CREAT | O_EXCL`` (atomic on
@@ -1927,12 +1927,12 @@ def _serialize_pattern_entry(entry: GrepEntry | GlobEntry) -> dict[str, Any]:
 
 def _serialize_grep_entry(entry: GrepEntry) -> _GrepEntryDict:
     """Serialize a GrepEntry to its wire dict with rounded timestamp."""
-    return _serialize_pattern_entry(entry)  # type: ignore[return-value]
+    return cast("_GrepEntryDict", _serialize_pattern_entry(entry))
 
 
 def _serialize_glob_entry(entry: GlobEntry) -> _GlobEntryDict:
     """Serialize a GlobEntry to its wire dict with rounded timestamp."""
-    return _serialize_pattern_entry(entry)  # type: ignore[return-value]
+    return cast("_GlobEntryDict", _serialize_pattern_entry(entry))
 
 
 def _parse_pattern_entry_fields(

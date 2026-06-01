@@ -49,7 +49,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Literal
+from typing import IO, Any, Literal
 
 from .util import get_logger
 
@@ -816,7 +816,7 @@ class _OwnerOnlyFileHandler(logging.FileHandler):
     callers and tests rely on to distinguish file vs console handlers.
     """
 
-    def _open(self):  # type: ignore[override]
+    def _open(self) -> IO[Any]:  # type: ignore[override]  # parent returns IO[Any]; os.fdopen() returns IO[Any] but mypy cannot verify the subtype from the overloaded fdopen signature
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         fd = os.open(self.baseFilename, flags, 0o600)
         return os.fdopen(fd, self.mode, encoding=self.encoding or "utf-8")

@@ -21,9 +21,9 @@ if TYPE_CHECKING:
 # `.reconfigure` exists on TextIOWrapper but not on the generic TextIO base.
 # contextlib.suppress(AttributeError) handles environments where it isn't there.
 with contextlib.suppress(AttributeError, OSError):
-    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]  # TextIOWrapper.reconfigure() exists at runtime but not on TextIO base; contextlib.suppress above handles AttributeError
 with contextlib.suppress(AttributeError, OSError):
-    sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[union-attr]  # same
 
 import typer
 
@@ -2214,9 +2214,9 @@ def _run_output_recall_command(
     """
     from . import db as _db  # noqa: PLC0415
 
-    load_output = cache_module.load_output  # type: ignore[attr-defined]
-    load_output_meta = cache_module.load_output_meta  # type: ignore[attr-defined]
-    read_sidecar = cache_module.read_sidecar  # type: ignore[attr-defined]
+    load_output = cache_module.load_output  # type: ignore[attr-defined]  # cache_module typed as object to accept both bash_cache and web_cache modules at call sites
+    load_output_meta = cache_module.load_output_meta  # type: ignore[attr-defined]  # same — both modules expose this function
+    read_sidecar = cache_module.read_sidecar  # type: ignore[attr-defined]  # same
 
     body = load_output(output_id)
     if body is None:
@@ -2471,8 +2471,8 @@ def cmd_web_output(
         now = time.time()
         for e in entries:
             oid = str(e["output_id"])
-            size = int(e.get("size_bytes", 0))  # type: ignore[arg-type]
-            age = int(now - float(e.get("mtime", now)))  # type: ignore[arg-type]
+            size = int(e.get("size_bytes", 0))  # type: ignore[arg-type]  # list_outputs() returns Mapping[str, object]; object is not accepted by int() even though the values are ints
+            age = int(now - float(e.get("mtime", now)))  # type: ignore[arg-type]  # same — Mapping[str, object] causes arg-type error for float()
             sidecar = web_cache.read_sidecar(oid)
             url_str = sidecar.url_preview if sidecar is not None else "(no sidecar)"
             status_str = f" status={sidecar.status_code}" if sidecar is not None and sidecar.status_code is not None else ""
@@ -2524,8 +2524,8 @@ def _run_history_listing_command(
     ``since_secs``: when set, only entries whose ``mtime`` is within the last
     ``since_secs`` seconds are returned (applied before the ``limit`` cap).
     """
-    list_outputs = cache_module.list_outputs  # type: ignore[attr-defined]
-    read_sidecar = cache_module.read_sidecar  # type: ignore[attr-defined]
+    list_outputs = cache_module.list_outputs  # type: ignore[attr-defined]  # cache_module typed as object; both bash_cache and web_cache expose this function
+    read_sidecar = cache_module.read_sidecar  # type: ignore[attr-defined]  # same
 
     entries = list_outputs()
     if since_secs is not None:
@@ -2572,11 +2572,11 @@ def cmd_web_history(
     from . import web_cache  # noqa: PLC0415
 
     def _json_fields(s: object) -> dict[str, object]:
-        return {"url_preview": s.url_preview, "status_code": s.status_code, "truncated": s.truncated}  # type: ignore[attr-defined]
+        return {"url_preview": s.url_preview, "status_code": s.status_code, "truncated": s.truncated}  # type: ignore[attr-defined]  # s typed as object; web_cache sidecar dataclass at runtime
 
     def _fmt(oid: str, size: int, age: int, s: object) -> str:
-        url_str = s.url_preview if s is not None else "(no sidecar)"  # type: ignore[attr-defined]
-        status_str = f" status={s.status_code}" if s is not None and s.status_code is not None else ""  # type: ignore[attr-defined]
+        url_str = s.url_preview if s is not None else "(no sidecar)"  # type: ignore[attr-defined]  # s typed as object; web sidecar dataclass at runtime
+        status_str = f" status={s.status_code}" if s is not None and s.status_code is not None else ""  # type: ignore[attr-defined]  # same
         return f"{oid}  {size:>10,}B  {age:>6}s ago{status_str}  {url_str}"
 
     _run_history_listing_command(
@@ -2650,11 +2650,11 @@ def cmd_bash_history(
             raise typer.Exit(2)
 
     def _json_fields(s: object) -> dict[str, object]:
-        return {"cmd_preview": s.cmd_preview, "exit_code": s.exit_code, "truncated": s.truncated}  # type: ignore[attr-defined]
+        return {"cmd_preview": s.cmd_preview, "exit_code": s.exit_code, "truncated": s.truncated}  # type: ignore[attr-defined]  # s typed as object; bash_cache sidecar dataclass at runtime
 
     def _fmt(oid: str, size: int, age: int, s: object) -> str:
-        cmd_str = s.cmd_preview if s is not None else "(no sidecar)"  # type: ignore[attr-defined]
-        exit_str = f" exit={s.exit_code}" if s is not None and s.exit_code is not None else ""  # type: ignore[attr-defined]
+        cmd_str = s.cmd_preview if s is not None else "(no sidecar)"  # type: ignore[attr-defined]  # same — bash sidecar dataclass
+        exit_str = f" exit={s.exit_code}" if s is not None and s.exit_code is not None else ""  # type: ignore[attr-defined]  # same
         return f"{oid}  {size:>10,}B  {age:>6}s ago{exit_str}  {cmd_str}"
 
     _run_history_listing_command(
@@ -2862,11 +2862,11 @@ def cmd_skill_history(
     from . import skill_cache  # noqa: PLC0415
 
     def _json_fields(s: object) -> dict[str, object]:
-        return {"skill_name": s.skill_name, "body_bytes": s.body_bytes, "truncated": s.truncated, "source_path": s.source_path}  # type: ignore[attr-defined]
+        return {"skill_name": s.skill_name, "body_bytes": s.body_bytes, "truncated": s.truncated, "source_path": s.source_path}  # type: ignore[attr-defined]  # s typed as object; skill_cache sidecar dataclass at runtime
 
     def _fmt(oid: str, size: int, age: int, s: object) -> str:
-        name_str = s.skill_name if s is not None else "(no sidecar)"  # type: ignore[attr-defined]
-        trunc_str = " (truncated)" if s is not None and s.truncated else ""  # type: ignore[attr-defined]
+        name_str = s.skill_name if s is not None else "(no sidecar)"  # type: ignore[attr-defined]  # same — skill sidecar dataclass
+        trunc_str = " (truncated)" if s is not None and s.truncated else ""  # type: ignore[attr-defined]  # same
         return f"{oid}  {size:>10,}B  {age:>6}s ago  {name_str}{trunc_str}"
 
     _run_history_listing_command(
@@ -4140,7 +4140,7 @@ def compact_hint(
     # --- --score: quality score breakdown ------------------------------------
     if show_score:
         score_breakdown = compact_mod._score_manifest_breakdown([manifest]) if manifest else {}
-        activity_score = compact_mod._session_activity_score(_sc) if not _is_noop and "_sc" in dir() and _sc is not None else 0  # type: ignore[possibly-undefined]
+        activity_score = compact_mod._session_activity_score(_sc) if not _is_noop and "_sc" in dir() and _sc is not None else 0  # type: ignore[possibly-undefined]  # _sc defined in try block above; runtime guard "_sc" in dir() prevents NameError
         typer.echo(f"Quality score: {quality_score}")
         typer.echo(f"Noop fast-path would fire: {_is_noop}")
         typer.echo(f"Session activity score: {activity_score}  (floor={compact_mod._ACTIVITY_FLOOR})")
@@ -4157,7 +4157,7 @@ def compact_hint(
     if show_diff:
         # _prior_manifest_text was captured BEFORE build_manifest ran above, so
         # it reflects the previous emit, not the one we just rendered.
-        if _prior_manifest_text is None:  # type: ignore[possibly-undefined]
+        if _prior_manifest_text is None:  # type: ignore[possibly-undefined]  # defined in 'if show_diff' block above; show_diff is True here by condition
             typer.echo("No previous manifest to compare against.")
             typer.echo(
                 "(The text sidecar is written the first time compact-hint or the "
@@ -4597,7 +4597,7 @@ def reset(
                 typer.echo("Aborted.")
                 raise typer.Exit(0)
         cfg_path.unlink()
-        config_mod._config_mtime_cache = None  # type: ignore[attr-defined]
+        config_mod._config_mtime_cache = None  # type: ignore[attr-defined]  # resetting the module-level cache sentinel; accessing private module variable by design
         typer.echo(f"Deleted {cfg_path} — all settings restored to defaults.")
         return
 
@@ -4971,7 +4971,7 @@ def _load_session_summaries(
                 "web_count": web_count,
             })
 
-    rows.sort(key=lambda r: float(r["last_activity_ts"]), reverse=True)  # type: ignore[arg-type]
+    rows.sort(key=lambda r: float(r["last_activity_ts"]), reverse=True)  # type: ignore[arg-type]  # r["last_activity_ts"] is float at runtime; dict typed as dict[str,object] so mypy sees object here
     if limit > 0:
         rows = rows[:limit]
     return rows
@@ -5069,9 +5069,9 @@ def cmd_sessions_show(
     sid = str(raw.get("session_id", session_file.stem))
     cwd = str(raw.get("cwd") or "(unknown)")
     _raw_last = raw.get("last_activity_ts")
-    last_ts = float(_raw_last) if _raw_last is not None else session_file.stat().st_mtime  # type: ignore[arg-type]
+    last_ts = float(_raw_last) if _raw_last is not None else session_file.stat().st_mtime  # type: ignore[arg-type]  # raw is dict[str, Any]; Any not accepted by float() without suppression
     _raw_started = raw.get("started_ts")
-    started_ts = float(_raw_started) if _raw_started is not None else last_ts  # type: ignore[arg-type]
+    started_ts = float(_raw_started) if _raw_started is not None else last_ts  # type: ignore[arg-type]  # same
     age = _format_relative_time(now - last_ts)
     duration_secs = last_ts - started_ts
     duration = _format_relative_time(duration_secs) if duration_secs > 0 else "0s"
@@ -5080,8 +5080,8 @@ def cmd_sessions_show(
     typer.echo(f"project:     {cwd}")
     typer.echo(f"last active: {age} ago")
     typer.echo(f"duration:    {duration}")
-    _hints_e = int(raw.get("hints_emitted") or 0)  # type: ignore[call-overload]
-    _hints_i = int(raw.get("hints_ignored") or 0)  # type: ignore[call-overload]
+    _hints_e = int(raw.get("hints_emitted") or 0)  # type: ignore[call-overload]  # raw is dict[str, Any]; int(Any | int) hits a mypy overload mismatch
+    _hints_i = int(raw.get("hints_ignored") or 0)  # type: ignore[call-overload]  # same
     typer.echo(f"hints:       {_hints_e} emitted, {_hints_i} ignored")
 
     edited: dict[str, int] = {}
@@ -5103,11 +5103,11 @@ def cmd_sessions_show(
         typer.echo(f"\nRead files ({len(files)}):")
         file_list = sorted(
             ((k, v) for k, v in files.items() if isinstance(v, dict)),
-            key=lambda x: float(x[1].get("last_read_ts") or 0),  # type: ignore[union-attr]
+            key=lambda x: float(x[1].get("last_read_ts") or 0),  # type: ignore[union-attr]  # x[1] is object (dict[str,object] value); isinstance(v, dict) filter above guarantees .get() exists
             reverse=True,
         )
         for path, entry in file_list[:20]:
-            rc = int(entry.get("read_count") or 0)  # type: ignore[union-attr]
+            rc = int(entry.get("read_count") or 0)  # type: ignore[union-attr]  # entry is object; isinstance(v, dict) filter above guarantees .get() exists
             typer.echo(f"  {rc:>3}x  {path}")
         if len(files) > 20:
             typer.echo(f"  ... and {len(files) - 20} more")
@@ -5120,12 +5120,12 @@ def cmd_sessions_show(
         typer.echo(f"\nBash history ({len(bash_hist)}):")
         bash_entries = sorted(
             ((k, v) for k, v in bash_hist.items() if isinstance(v, dict)),
-            key=lambda x: float(x[1].get("ts") or 0),  # type: ignore[union-attr]
+            key=lambda x: float(x[1].get("ts") or 0),  # type: ignore[union-attr]  # x[1] is object; isinstance(v, dict) filter guarantees .get() exists
             reverse=True,
         )
         for _key, entry in bash_entries[:15]:
-            preview = str(entry.get("cmd_preview") or "(no preview)")[:80]  # type: ignore[union-attr]
-            rc = int(entry.get("run_count") or 1)  # type: ignore[union-attr]
+            preview = str(entry.get("cmd_preview") or "(no preview)")[:80]  # type: ignore[union-attr]  # entry is object; isinstance(v, dict) filter guarantees .get() exists
+            rc = int(entry.get("run_count") or 1)  # type: ignore[union-attr]  # same
             typer.echo(f"  {'x'+str(rc):>4}  {preview}")
         if len(bash_hist) > 15:
             typer.echo(f"  ... and {len(bash_hist) - 15} more")
@@ -5138,11 +5138,11 @@ def cmd_sessions_show(
         typer.echo(f"\nWeb history ({len(web_hist)}):")
         web_entries = sorted(
             ((k, v) for k, v in web_hist.items() if isinstance(v, dict)),
-            key=lambda x: float(x[1].get("ts") or 0),  # type: ignore[union-attr]
+            key=lambda x: float(x[1].get("ts") or 0),  # type: ignore[union-attr]  # x[1] is object; isinstance(v, dict) filter guarantees .get() exists
             reverse=True,
         )
         for _key, entry in web_entries[:15]:
-            preview = str(entry.get("url_preview") or "(no preview)")[:80]  # type: ignore[union-attr]
+            preview = str(entry.get("url_preview") or "(no preview)")[:80]  # type: ignore[union-attr]  # entry is object; isinstance(v, dict) filter guarantees .get() exists
             typer.echo(f"  {preview}")
         if len(web_hist) > 15:
             typer.echo(f"  ... and {len(web_hist) - 15} more")

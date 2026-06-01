@@ -254,7 +254,7 @@ def install_worker_task() -> tuple[bool, str]:
         return True, "non-Windows: skipped"
 
     try:
-        import winreg  # type: ignore[import]
+        import winreg  # type: ignore[import]  # winreg is Windows-only; not in typeshed for cross-platform targets
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             _HKCU_RUN_PATH,
@@ -332,7 +332,7 @@ def uninstall_tasks() -> list[str]:
     # Worker: HKCU Run registry key
     if sys.platform == "win32":
         try:
-            import winreg  # type: ignore[import]
+            import winreg  # type: ignore[import]  # winreg is Windows-only; not in typeshed for cross-platform targets
             with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 _HKCU_RUN_PATH,
@@ -1747,7 +1747,7 @@ def _winreg_run_value_exists(value_name: str) -> bool | None:
     from "unreadable".
     """
     try:
-        import winreg  # type: ignore[import]
+        import winreg  # type: ignore[import]  # winreg is Windows-only; not in typeshed for cross-platform targets
         with winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             _HKCU_RUN_PATH,
@@ -2284,7 +2284,7 @@ def plan_install(
                 action="error",
                 detail=str(e),
             ))
-            bridges = None  # type: ignore[assignment]
+            bridges = None  # type: ignore[assignment]  # bridges typed as the bridges module above; reset to None on import failure
         if install_opencode and bridges is not None:
             plan.append(_PlanEntry(
                 component="opencode: plugin",

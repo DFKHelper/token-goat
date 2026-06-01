@@ -358,8 +358,8 @@ def _compute_share_denominators(items: Iterable[object]) -> tuple[int, int, int]
     share_bytes_sum = 0
     share_tokens_sum = 0
     for item in items:
-        b = item.bytes  # type: ignore[attr-defined]
-        t = item.tokens  # type: ignore[attr-defined]
+        b = item.bytes  # type: ignore[attr-defined]  # items typed as Iterable[object]; callers pass KindStat/SourceStat/DayStat which all expose .bytes
+        t = item.tokens  # type: ignore[attr-defined]  # same — all stat row types expose .tokens
         if b > 0:
             gross_bytes_sum += b
         share_bytes_sum += abs(b)

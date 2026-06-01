@@ -131,7 +131,7 @@ def _try_stored_oauth() -> _GoogleCredentials | None:
         from google.auth.transport.requests import Request  # noqa: PLC0415
         from google.oauth2.credentials import Credentials  # noqa: PLC0415
 
-        creds: _GoogleCredentials = Credentials.from_authorized_user_file(str(creds_path), scopes=_DRIVE_SCOPES)  # type: ignore[assignment]
+        creds: _GoogleCredentials = Credentials.from_authorized_user_file(str(creds_path), scopes=_DRIVE_SCOPES)  # type: ignore[assignment]  # google-auth stubs declare classmethod return type as Self; our alias _GoogleCredentials is the same class
         if creds.expired and creds.refresh_token:
             t_refresh = time.monotonic()
             try:
@@ -270,7 +270,7 @@ def _download_to_cache(
     local_path: Path,
     service: object,
     max_size_bytes: int,
-    MediaIoBaseDownload: type,  # type: ignore[valid-type]
+    MediaIoBaseDownload: type,  # type: ignore[valid-type]  # google-api-python-client class passed as a callable; 'type' annotation is imprecise but captures the intent
 ) -> Path:
     """Download a Drive file into the local cache and return the final local path.
 
@@ -287,11 +287,11 @@ def _download_to_cache(
     mime = _validate_mime_type(mime, file_id)
     # Google Workspace formats can't be downloaded directly — export as PDF.
     if mime.startswith("application/vnd.google-apps"):
-        request = service.files().export_media(fileId=file_id, mimeType="application/pdf")  # type: ignore[attr-defined]
+        request = service.files().export_media(fileId=file_id, mimeType="application/pdf")  # type: ignore[attr-defined]  # service typed as object; google-api-client resource has .files() at runtime
         if not local_path.suffix:
             local_path = local_path.with_suffix(".pdf")
     else:
-        request = service.files().get_media(fileId=file_id)  # type: ignore[attr-defined]
+        request = service.files().get_media(fileId=file_id)  # type: ignore[attr-defined]  # same — google-api-client resource not in typeshed
 
     buf = io.BytesIO()
     downloader = MediaIoBaseDownload(buf, request)

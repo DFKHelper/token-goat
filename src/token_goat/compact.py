@@ -369,7 +369,7 @@ _manifest_sha_written_this_process: set[str] = set()
 # full manifest render, so the fast-path saves meaningful wall time as well as
 # ~300–600 tokens per redundant compaction.
 
-def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[name-defined]
+def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[name-defined]  # SessionCache imported under TYPE_CHECKING; used only as annotation so safe at runtime with 'from __future__ import annotations'
     """Return a hex fingerprint that changes when manifest-driving state changes.
 
     The sidecar cache must invalidate when the session state that feeds the
@@ -380,7 +380,7 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
 
     def _entry_payload(entry: object) -> object:
         if hasattr(entry, "__dataclass_fields__"):
-            entry_dict = asdict(entry)  # type: ignore[call-overload]
+            entry_dict = asdict(entry)  # type: ignore[call-overload]  # entry typed as object; dataclass check above (hasattr __dataclass_fields__) guarantees asdict() works
             # Exclude symbols_ts from FileEntry — it changes on every symbol access
             # but doesn't affect the manifest output (only symbols_read matters).
             # This prevents unnecessary fingerprint cache invalidation.
@@ -533,7 +533,7 @@ def _compute_section_counts(cache: object) -> dict[str, int]:
     """
     def _len(obj: object) -> int:
         try:
-            return len(obj)  # type: ignore[arg-type]
+            return len(obj)  # type: ignore[arg-type]  # obj typed as object; len() accepts Sized but mypy cannot narrow object to Sized without isinstance
         except (TypeError, AttributeError):
             return 0
 
@@ -548,7 +548,7 @@ def _compute_section_counts(cache: object) -> dict[str, int]:
         "skill": _len(getattr(cache, "skill_history", None) or {}),
         "decision": _len(getattr(cache, "decisions", None) or []),
         "symbols": sum(
-            1 for e in (files.values() if hasattr(files, "values") else [])  # type: ignore[union-attr]
+            1 for e in (files.values() if hasattr(files, "values") else [])  # type: ignore[union-attr]  # files is object; hasattr check above guarantees .values() is callable
             if getattr(e, "symbols_read", None)
         ),
     }
@@ -1630,7 +1630,7 @@ def _select_failed_bash_entries(bash_history: object, now_ts: float) -> list[obj
     candidates = [
         e for e in bash_history.values()
         if isinstance(getattr(e, "exit_code", None), int)
-        and e.exit_code != 0  # type: ignore[union-attr]
+        and e.exit_code != 0  # type: ignore[union-attr]  # e is object from bash_history.values(); isinstance(getattr(...), int) check above guarantees exit_code exists
         and getattr(e, "ts", 0.0) >= cutoff
     ]
     if not candidates:
@@ -2119,11 +2119,11 @@ def _dedup_symbols_across_files(
     """
     symbol_map: dict[str, tuple[str, float]] = {}
 
-    for entry in entries:  # type: ignore[var-annotated]
+    for entry in entries:  # type: ignore[var-annotated]  # entries is list without element type annotation; mypy cannot infer the item type for the loop variable
         if not getattr(entry, "symbols_read", None):
             continue
-        ranked = _rank_symbols_by_recency(entry, now)  # type: ignore[arg-type]
-        symbols_ts = getattr(entry, "symbols_ts", None) or {}  # type: ignore[union-attr]
+        ranked = _rank_symbols_by_recency(entry, now)  # type: ignore[arg-type]  # entry inferred as object from the untyped list; _rank_symbols_by_recency expects FileEntry
+        symbols_ts = getattr(entry, "symbols_ts", None) or {}  # type: ignore[union-attr]  # entry is object; getattr returns object, but the or {} produces dict at runtime
         for symbol in ranked:
             ts = symbols_ts.get(symbol, 0.0)
             rel_or_abs = getattr(entry, "rel_or_abs", "")
@@ -3325,7 +3325,7 @@ def compute_adaptive_budget(
 
 
 def _compute_budget_multiplier(
-    cache: SessionCache,  # type: ignore[name-defined]
+    cache: SessionCache,  # type: ignore[name-defined]  # SessionCache imported under TYPE_CHECKING; annotation is safe at runtime with 'from __future__ import annotations'
     base_multiplier: float,
 ) -> float:
     """Return an adaptive multiplier for the manifest token budget.
@@ -5018,11 +5018,11 @@ def _render(
         # section, its symbols are already covered by the edited-file listing.
         # Drop all symbols from edited files to avoid redundant listings in the
         # symbols-accessed section. Keep only read-only files (not in edited_keys).
-        _readonly_symbol_files: list[FileEntry] = []  # type: ignore[name-defined]
+        _readonly_symbol_files: list[FileEntry] = []  # type: ignore[name-defined]  # FileEntry imported under TYPE_CHECKING; annotation safe at runtime with 'from __future__ import annotations'
         for entry in files_with_symbols:
             entry_norm = _norm_key(entry.rel_or_abs)
             if entry_norm not in edited_keys:
-                _readonly_symbol_files.append(entry)  # type: ignore[arg-type]
+                _readonly_symbol_files.append(entry)  # type: ignore[arg-type]  # entry is from files_with_symbols (list[FileEntry]) but typed as object in the loop
         _prioritized_symbol_files = _readonly_symbol_files
 
         sym_formatted: list[str] = []
@@ -5037,7 +5037,7 @@ def _render(
             ranked_symbols = _rank_symbols_by_recency(entry, now_for_scoring)
             # Item #11: dedup consecutive/repeated symbols before rendering (order-preserving).
             _seen_syms: set[str] = set()
-            deduped_symbols = [s for s in ranked_symbols if not (_seen_syms.__contains__(s) or _seen_syms.add(s))]  # type: ignore[func-returns-value]
+            deduped_symbols = [s for s in ranked_symbols if not (_seen_syms.__contains__(s) or _seen_syms.add(s))]  # type: ignore[func-returns-value]  # set.add() returns None which is falsy; this is an order-preserving dedup idiom
 
             # Item #33: filter out symbols that are duplicated in other files
             # (keep only if this file is the most-recent reference).

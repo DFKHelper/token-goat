@@ -38,12 +38,13 @@ import hashlib
 import re as _re
 import shlex as _shlex
 import time
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    pass
+    from . import session as _session_module_type  # noqa: F401 — used in annotation only
 
 from .hooks_common import (
     CONTINUE,
@@ -581,7 +582,7 @@ def _emit_dedup_budgeted_hint(
 
     # Dedup: check if identical hint already seen this session for this path.
     fingerprint = _hint_fingerprint(str(hint), path=file_path)
-    hints_seen_dict = getattr(cache, "hints_seen", {})  # type: ignore[arg-type]
+    hints_seen_dict = getattr(cache, "hints_seen", {})  # type: ignore[arg-type]  # getattr returns object; dict literal default keeps this safe at runtime
     seen_count = hints_seen_dict.get(fingerprint, 0) if isinstance(hints_seen_dict, dict) else 0
 
     if seen_count > 0:
@@ -1037,7 +1038,7 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
     _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
 
     # --- single-file path ---------------------------------------------------
-    _written_key = session._normalize_path(path)  # type: ignore[attr-defined]
+    _written_key = session._normalize_path(path)  # type: ignore[attr-defined]  # private function on lazy-loaded session module (types.ModuleType has no typed attrs)
     _edit_count = _edited.get(_written_key, 0)
     if _edit_count >= 1 and _written_key not in cache.files:
         fname = sanitize_log_str(Path(path).name, max_len=256)
@@ -1057,7 +1058,7 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
     # Collect edited-but-not-yet-read files whose normalised key starts with
     # the normalised directory prefix.  Cap the list at _GREP_WRITTEN_NOT_READ_MAX_PATHS
     # to avoid injecting a 30–50 path blob when a large refactor touched many files.
-    _dir_key = session._normalize_path(path)  # type: ignore[attr-defined]
+    _dir_key = session._normalize_path(path)  # type: ignore[attr-defined]  # private function on lazy-loaded session module (types.ModuleType has no typed attrs)
     # Normalised paths use forward slashes; ensure the prefix ends with one so
     # "src/foo" doesn't match "src/foobar".
     _dir_prefix = _dir_key if _dir_key.endswith("/") else _dir_key + "/"
@@ -1459,7 +1460,7 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
         sidecar.unlink(missing_ok=True)
         # Mark in-process so we don't re-check on subsequent calls.
         try:  # noqa: SIM105
-            cache.recovery_injected = True  # type: ignore[attr-defined]
+            cache.recovery_injected = True  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this attribute at runtime
         except Exception:  # noqa: BLE001
             pass
         _LOG.info(
@@ -1490,9 +1491,9 @@ def _flush_pending_hint_save(cache: object) -> None:
     """
     try:
         if getattr(cache, "_pending_hint_save", False):
-            cache._pending_hint_save = False  # type: ignore[attr-defined]
+            cache._pending_hint_save = False  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this private attribute at runtime
             _sess = _get_session()
-            _sess.save(cache)  # type: ignore[arg-type]
+            _sess.save(cache)  # type: ignore[arg-type]  # types.ModuleType; save() accepts SessionCache which cache is at runtime
     except Exception:  # noqa: BLE001
         pass
 
@@ -1671,7 +1672,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # build_diff_hint returns None (its size + min-saving thresholds remain
         # the only emission gate).  Without this branch, every predictive
         # snapshot is pure overhead with no payoff path.
-        entry = cache.files.get(session._normalize_path(file_path))  # type: ignore[attr-defined]
+        entry = cache.files.get(session._normalize_path(file_path))  # type: ignore[attr-defined]  # private function on lazy-loaded session module (types.ModuleType has no typed attrs)
         _predictive_unlock = False
         if entry is None or entry.last_edit_ts <= entry.last_read_ts:
             try:
@@ -1756,7 +1757,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
                         # Curator: record emission keyed by path — only after confirming the
                         # hint passes fingerprint dedup and will actually enter context.
                         from .hints import _record_hint_emitted as _rhe  # noqa: PLC0415
-                        _rhe(cache, session._normalize_path(file_path))  # type: ignore[attr-defined]
+                        _rhe(cache, session._normalize_path(file_path))  # type: ignore[attr-defined]  # private function on lazy-loaded session module
                     else:
                         _LOG.debug(
                             "pre-read: hint built for %s but tokens_saved=0; no stat recorded",
@@ -1798,7 +1799,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # full re-read redundant.  Only fires when no other hint was emitted, so
         # it never shadows a more specific diff-hint or cache-overlap hint.
         if not hint_items:
-            _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
+            _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]  # private function on lazy-loaded session module
             _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
             _edit_count = _edited.get(_written_key, 0)
             if _edit_count >= 1 and _written_key not in cache.files:
@@ -1849,7 +1850,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # Append git commit history for the file (with dedup and session-age gate).
         # Skip git hint for files edited this session (agent already knows they changed).
         # Skip for new sessions (<120s) where git history is not yet relevant.
-        _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
+        _written_key = session._normalize_path(file_path)  # type: ignore[attr-defined]  # private function on lazy-loaded session module
         _git_edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
         _created_ts = getattr(cache, 'created_ts', time.time())
         _is_edited = _written_key in _git_edited
@@ -1953,16 +1954,16 @@ def _check_ignored_hint_by_key(cache: object, key: str, label: str) -> None:
             return
         for hint_key, _ts in recent_hints:
             if hint_key == key:
-                cache.hints_ignored += 1  # type: ignore[union-attr, attr-defined]
-                cache._invalidate_json_cache()  # type: ignore[union-attr, attr-defined]
+                cache.hints_ignored += 1  # type: ignore[union-attr, attr-defined]  # cache typed as object; SessionCache has this attr at runtime
+                cache._invalidate_json_cache()  # type: ignore[union-attr, attr-defined]  # private method on SessionCache; guarded by try/except
                 # Remove from ring buffer so a second Read/Bash doesn't double-count.
-                cache.recent_hints = [  # type: ignore[union-attr, attr-defined]
-                    (k, t) for k, t in cache.recent_hints  # type: ignore[union-attr, attr-defined]
+                cache.recent_hints = [  # type: ignore[union-attr, attr-defined]  # SessionCache attr; object typing from load_session_safe()
+                    (k, t) for k, t in cache.recent_hints  # type: ignore[union-attr, attr-defined]  # same
                     if k != key
                 ]
                 _LOG.debug(
                     "curator: hints_ignored++ for %s (total=%d)",
-                    label, cache.hints_ignored,  # type: ignore[union-attr, attr-defined]
+                    label, cache.hints_ignored,  # type: ignore[union-attr, attr-defined]  # same
                 )
                 break
     except Exception:  # noqa: BLE001 — fail-soft
@@ -1986,7 +1987,7 @@ def _check_ignored_hint(cache: object, file_path: str) -> None:
     """
     try:
         _sess = _get_session()
-        norm = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
+        norm = _sess._normalize_path(file_path)  # type: ignore[attr-defined]  # private function on lazy-loaded session module
     except Exception:  # noqa: BLE001 — fail-soft
         return
     _check_ignored_hint_by_key(cache, norm, sanitize_log_str(file_path))
@@ -2163,12 +2164,12 @@ _GLOB_RESULT_CACHE_MAX_PATHS: int = 20
 _session_module = None  # cached on first access for lazy-load
 
 
-def _get_session():  # type: ignore[return]
+def _get_session() -> types.ModuleType:
     global _session_module
     if _session_module is None:
         from . import session as _s  # noqa: PLC0415
         _session_module = _s
-    return _session_module
+    return _session_module  # type: ignore[return-value]  # _session_module starts as None but is set above before returning
 
 
 def _coerce_text(value: object) -> str:
@@ -2201,7 +2202,7 @@ def _coerce_text(value: object) -> str:
                 # Older harnesses omit the type key entirely; accept those.
                 # Explicitly non-text types (image, resource, …) are skipped.
                 if item.get("type") in ("text", None):
-                    txt: str | None = item.get("text")  # type: ignore[assignment]
+                    txt: str | None = item.get("text")  # type: ignore[assignment]  # dict.get() returns Any; annotated narrower than Any requires this suppression
                 else:
                     txt = None
                 if isinstance(txt, str):

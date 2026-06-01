@@ -714,7 +714,7 @@ def _open_with_retry(
             )
             time.sleep(delay)
     # All retries exhausted — raise the last lock error.
-    raise last_exc  # type: ignore[misc]
+    raise last_exc  # type: ignore[misc]  # mypy cannot prove last_exc is non-None; loop runs >= 1 iteration so it always is
 
 
 def _open_with_rebuild(path: Path, *, load_vec: bool = True) -> sqlite3.Connection:

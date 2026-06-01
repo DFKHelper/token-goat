@@ -36,7 +36,7 @@ _LOG = get_logger("config")
 # The cache is keyed by (config_file_mtime, env_fingerprint) so it invalidates on
 # file edits AND on env-var changes (common in tests that monkeypatch TOKEN_GOAT_*).
 # Type annotation uses Any to avoid forward-referencing Config before it is defined.
-_config_mtime_cache: tuple[Any, float, str, float] | None = None
+_config_mtime_cache: tuple[Config, float, str, float] | None = None
 
 
 # Env vars that affect the parsed Config result.  Changes to any of these bust
@@ -978,7 +978,7 @@ def load() -> Config:
     if _config_mtime_cache is not None:
         cached_cfg, cached_mtime, cached_env_fp, _ = _config_mtime_cache
         if current_mtime == cached_mtime and current_env_fp == cached_env_fp:
-            return cached_cfg  # type: ignore[return-value]
+            return cached_cfg
 
     raw: _ConfigToml = cast("_ConfigToml", {})
     if p.exists():

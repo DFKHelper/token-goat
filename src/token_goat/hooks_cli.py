@@ -442,7 +442,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
             # Prepend a structured JSON header so entries are machine-parseable.
             # Use locals() to recover raw/session_id regardless of which
             # statement inside the try block raised.
-            _raw: dict = locals().get("raw") or {}  # type: ignore[assignment]
+            _raw: dict = locals().get("raw") or {}  # type: ignore[assignment]  # locals().get() returns object; we know "raw" is always dict or absent here
             _sid = str(_raw.get("session_id", ""))[:16]
             header = json.dumps(
                 {"ts": time.time(), "event": event, "sid": _sid, "err": f"{type(exc).__name__}: {exc}"},
@@ -679,7 +679,7 @@ def _read_sentinel_counts(sentinel_path: object) -> tuple[int | None, int | None
     """
     import json as _json  # noqa: PLC0415
     try:
-        raw = sentinel_path.read_text(encoding="utf-8").strip()  # type: ignore[union-attr,attr-defined]
+        raw = sentinel_path.read_text(encoding="utf-8").strip()  # type: ignore[union-attr,attr-defined]  # sentinel_path typed as Path | None; caller guarantees it exists here
         if not raw:
             return None, None
         data = _json.loads(raw)

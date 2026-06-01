@@ -363,7 +363,7 @@ def _build_pending_work_section(
             latest_edit_ts = 0.0
             try:
                 for _ep in raw_edited:
-                    fe = cache.files.get(_ep)  # type: ignore[union-attr,attr-defined]
+                    fe = cache.files.get(_ep)  # type: ignore[union-attr,attr-defined]  # cache typed as object; SessionCache.files dict at runtime
                     if fe is None:
                         continue
                     let = getattr(fe, "last_edit_ts", 0.0)
@@ -719,9 +719,9 @@ def _build_recovery_hint(session_id: str) -> str | None:
             # FileEntry if present), then fall back to the normalized key.
             _snap_path = _ep
             with _contextlib2.suppress(Exception):
-                _fe = cache.files.get(_ep)  # type: ignore[union-attr,attr-defined]
-                if _fe is not None and getattr(_fe, "rel_or_abs", ""):  # type: ignore[arg-type]
-                    _snap_path = _fe.rel_or_abs  # type: ignore[attr-defined]
+                _fe = cache.files.get(_ep)  # type: ignore[union-attr,attr-defined]  # cache typed as object; SessionCache.files dict at runtime
+                if _fe is not None and getattr(_fe, "rel_or_abs", ""):  # type: ignore[arg-type]  # getattr returns object; non-empty string is truthy
+                    _snap_path = _fe.rel_or_abs  # type: ignore[attr-defined]  # FileEntry.rel_or_abs; _fe is object-typed by dict.get()
             _diff = _diff_stats_for_file(session_id, _snap_path)
             if _diff is None and _snap_path != _ep:
                 # Fallback: try the normalized key form

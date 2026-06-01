@@ -689,7 +689,7 @@ def _coerce_content_array(items: list[object]) -> str:
     for item in items:
         if isinstance(item, dict):
             if item.get("type") in ("text", None):
-                txt: str | None = item.get("text")  # type: ignore[assignment]
+                txt: str | None = item.get("text")  # type: ignore[assignment]  # dict.get() returns Any; annotating narrower than Any requires this suppression
             else:
                 txt = None
             if isinstance(txt, str):
@@ -799,7 +799,7 @@ def emit_if_new_hint(
     if cache is None:
         return False
     try:
-        has_hint_fp = cache.has_hint_fingerprint(fingerprint)  # type: ignore[attr-defined]
+        has_hint_fp = cache.has_hint_fingerprint(fingerprint)  # type: ignore[attr-defined]  # cache typed as object by load_session_safe(); SessionCache has this method at runtime
     except (AttributeError, TypeError):
         return False
 
@@ -808,8 +808,8 @@ def emit_if_new_hint(
 
     context_parts.append(hint_text)
     try:
-        cache.mark_hint_seen(fingerprint)  # type: ignore[attr-defined]
-        cache.record_hint_emitted(stat_key)  # type: ignore[attr-defined]
+        cache.mark_hint_seen(fingerprint)  # type: ignore[attr-defined]  # cache typed as object; SessionCache method, guarded by try/except
+        cache.record_hint_emitted(stat_key)  # type: ignore[attr-defined]  # same
     except (AttributeError, TypeError):
         pass
     return True

@@ -67,7 +67,7 @@ def _load_raw(path: Path) -> dict[str, str]:
         try:
             import tomllib  # Python 3.11+
         except ImportError:
-            import tomli as tomllib  # type: ignore[no-redef,import-not-found]
+            import tomli as tomllib  # type: ignore[no-redef,import-not-found]  # tomli fallback for Python <3.11; no-redef because name reused from the try branch
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         return {k: str(v) for k, v in data.items() if isinstance(v, (str, int, float, bool))}
     except Exception as exc:  # noqa: BLE001

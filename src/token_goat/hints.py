@@ -2324,7 +2324,7 @@ def _check_entry_staleness(
         is too old to use; age is the entry's age in seconds either way.
     """
     now = time.time()
-    age = now - entry.ts  # type: ignore[attr-defined]
+    age = now - entry.ts  # type: ignore[attr-defined]  # entry typed as object; callers pass BashEntry/WebEntry/GrepEntry/GlobEntry which all have .ts
     stale_threshold = _session_stale_threshold(cache, now)
     if age > stale_threshold:
         _LOG.debug(

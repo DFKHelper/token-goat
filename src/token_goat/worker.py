@@ -57,7 +57,7 @@ except ModuleNotFoundError:
             """Raise NoSuchProcess — psutil is unavailable, so no process info can be obtained."""
             raise _PsutilNoSuchProcess(pid)
 
-    psutil = _PsutilShim()  # type: ignore[assignment]
+    psutil = _PsutilShim()  # type: ignore[assignment]  # _PsutilShim is a structural stand-in for psutil module; assigned to same name for uniform call sites
 
 from . import db, parser, paths
 from .hooks_common import sanitize_log_str
@@ -2034,7 +2034,7 @@ def _reindex_active_projects() -> None:
                 _record_index_failure(ph, "<project>")
                 continue
             _record_index_success(ph, "<project>")
-            if summary["indexed"] > 0 or summary["errors"] > 0:  # type: ignore[operator]
+            if summary["indexed"] > 0 or summary["errors"] > 0:  # type: ignore[operator]  # summary is IndexStats TypedDict; mypy cannot prove keys are always present when typed total=False
                 _LOG.info(
                     "periodic reindex: root=%s indexed=%d skipped=%d errors=%d dur=%.2fs",
                     row["root"],
@@ -2212,7 +2212,7 @@ def _run_index_with_timeout(
     try:
         future = executor.submit(parser.index_project, project, full=full)
         try:
-            return future.result(timeout=timeout)  # type: ignore[return-value]
+            return future.result(timeout=timeout)  # type: ignore[return-value]  # Future[IndexStats | None] but Future.result() returns the generic param; mypy loses the None from the timeout path
         except concurrent.futures.TimeoutError:
             _LOG.warning(
                 "index_project timed out after %.0fs for project %s (root=%s); skipping",
@@ -2300,7 +2300,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
 
             _record_index_success(ph, "<project>")
             projects_processed += 1
-            if result["errors"] > 0:  # type: ignore[operator]
+            if result["errors"] > 0:  # type: ignore[operator]  # IndexStats TypedDict total=False; key always set by index_project but mypy cannot prove it
                 _LOG.warning(
                     "reindexed %d/%d files in project %s after dirty queue drain"
                     " (errors=%d dur=%.2fs)",

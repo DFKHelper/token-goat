@@ -439,7 +439,7 @@ def embed_texts(
     vecs: list[list[float]] = []
     t0 = time.monotonic()
     try:
-        for arr in model.embed(list(texts)):  # type: ignore[union-attr]
+        for arr in model.embed(list(texts)):  # type: ignore[union-attr]  # fastembed TextEmbedding.embed() is not in typeshed; duck-typed Iterable[ndarray]
             try:
                 vec = arr.tolist()
             except AttributeError as e:
