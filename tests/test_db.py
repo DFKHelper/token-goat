@@ -166,6 +166,98 @@ def test_stale_lock_auto_cleared(tmp_data_dir):
     assert not lock_path.exists()
 
 
+def test_pid_alive_returns_false_for_dead_process(tmp_data_dir):
+    """_pid_alive should return False for a PID that does not exist."""
+    # Use a very large PID that is almost certainly not running
+    dead_pid = 99999999
+    assert not db._pid_alive(dead_pid)
+
+
+def test_pid_alive_returns_true_for_current_process(tmp_data_dir):
+    """_pid_alive should return True for the current process."""
+    current_pid = os.getpid()
+    assert db._pid_alive(current_pid)
+
+
+def test_pid_alive_handles_permission_error_as_alive_on_windows(tmp_data_dir):
+    """_pid_alive should treat PermissionError from os.kill as 'process alive'.
+
+    On Windows, os.kill(pid, 0) raises PermissionError for living processes
+    because we lack ACL permission to signal them. This test mocks os.kill
+    to raise PermissionError and verifies _pid_alive returns True.
+    """
+    test_pid = 12345
+    # Mock psutil to be unavailable (ImportError) so the fallback to os.kill is used
+    with patch.dict("sys.modules", {"psutil": None}), patch(
+        "token_goat.db.os.kill", side_effect=PermissionError("Access denied")
+    ):
+        assert db._pid_alive(test_pid) is True
+
+
+def test_pid_alive_handles_process_lookup_error_as_dead(tmp_data_dir):
+    """_pid_alive should treat ProcessLookupError from os.kill as 'process dead'."""
+    test_pid = 12345
+    # Mock psutil to be unavailable (ImportError) so the fallback to os.kill is used
+    with patch.dict("sys.modules", {"psutil": None}), patch(
+        "token_goat.db.os.kill", side_effect=ProcessLookupError("No such process")
+    ):
+        assert db._pid_alive(test_pid) is False
+
+
+def test_lock_with_cross_platform_marker_stales_after_60s(tmp_data_dir):
+    """A lock file written on a different platform should be stale after 60s.
+
+    This simulates a WSL process writing a lock with platform='linux',
+    then a Windows process trying to acquire it after 61 seconds.
+    """
+    h = "a0c000a0c000a0c000a0c000a0c000a0c0000004"
+    lock_path = paths.locks_dir() / f"{h}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Simulate a lock written 61 seconds ago on a different platform
+    cross_platform_ts = time.time() - 61
+    # Use "linux" as the lock platform, regardless of current OS
+    lock_path.write_text(f"99999\n{cross_platform_ts}\nlinux", encoding="utf-8")
+
+    # Should succeed — cross-platform lock older than 60s should be cleared
+    with db.project_writer_lock(h, timeout_sec=1.0):
+        assert lock_path.exists()
+    assert not lock_path.exists()
+
+
+def test_lock_with_same_platform_marker_uses_10_min_timeout(tmp_data_dir):
+    """A lock file written on the same platform should use the 10-minute timeout.
+
+    This ensures that same-platform locks don't prematurely age out.
+    """
+    h = "a0c000a0c000a0c000a0c000a0c000a0c0000005"
+    lock_path = paths.locks_dir() / f"{h}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create a lock 61 seconds old with current process PID and platform
+    # (so it's not treated as dead by PID check, and stays within 10-min timeout)
+    import sys
+    recent_ts = time.time() - 61
+    lock_path.write_text(f"{os.getpid()}\n{recent_ts}\n{sys.platform}", encoding="utf-8")
+
+    # Should timeout — same-platform lock uses 10-minute timeout, not 60s
+    with pytest.raises(TimeoutError), db.project_writer_lock(h, timeout_sec=0.3):
+        pass
+
+
+def test_lock_file_format_includes_platform(tmp_data_dir):
+    """A newly acquired lock file should contain pid, timestamp, and platform."""
+    h = "a0c000a0c000a0c000a0c000a0c000a0c0000006"
+    lock_path = paths.locks_dir() / f"{h}.lock"
+
+    with db.project_writer_lock(h, timeout_sec=1.0):
+        content = lock_path.read_text(encoding="utf-8")
+        lines = content.strip().split("\n")
+        assert len(lines) >= 3, f"lock file should have at least 3 lines, got: {content!r}"
+        assert lines[0] == str(os.getpid()), "first line should be current PID"
+        assert lines[2] in ("win32", "linux", "darwin"), f"platform should be valid, got: {lines[2]}"
+
+
 def test_writer_lock_is_mutually_exclusive_under_concurrency(tmp_data_dir):
     """Concurrent acquirers must never both hold the writer lock.
 

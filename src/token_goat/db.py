@@ -32,6 +32,7 @@ from __future__ import annotations
 
 __all__ = [
     "EMBED_DIM",
+    "LOCK_CROSS_PLATFORM_STALE_SECONDS",
     "LOCK_STALE_SECONDS",
     "SCHEMA_VERSION",
     "DBBusyError",
@@ -57,6 +58,7 @@ import contextlib
 import os
 import re
 import sqlite3
+import sys
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -804,6 +806,11 @@ def open_global() -> Iterator[sqlite3.Connection]:
 # embeddings), so a legitimately running worker is never falsely evicted.
 LOCK_STALE_SECONDS: Final[int] = 600  # 10 minutes
 
+# Cross-platform lock timeout: if a lock was written on a different platform
+# (e.g. WSL wrote "linux", Windows is reading), PID validation is unreliable.
+# Treat such locks as stale after 60 seconds instead of 10 minutes.
+LOCK_CROSS_PLATFORM_STALE_SECONDS: Final[int] = 60
+
 # Project hashes are SHA-1 hex digests (40 lowercase hex chars).  The previous
 # pattern accepted uppercase letters and underscores which can never appear in a
 # real SHA-1 output and widened the allowlist unnecessarily.  Tightening to
@@ -952,27 +959,62 @@ def open_project_readonly(project_hash: str) -> Iterator[sqlite3.Connection]:
 # Writer lockfile
 # ---------------------------------------------------------------------------
 
+
+def _pid_alive(pid: int) -> bool:
+    """Check if a process with the given PID is still alive.
+
+    On Windows, os.kill(pid, 0) raises PermissionError for living processes
+    because Windows doesn't allow signal 0 to processes without the right ACL.
+    This function handles that correctly:
+
+    - First, tries psutil.pid_exists() if available (recommended).
+    - Falls back to os.kill(pid, 0) with proper Windows PermissionError handling:
+      - ProcessLookupError: PID is dead.
+      - PermissionError: Windows says process exists (we lack permission to signal it).
+      - Other OSError: Assume dead to avoid false positives.
+    """
+    try:
+        import psutil  # noqa: PLC0415
+        return psutil.pid_exists(pid)
+    except ImportError:
+        pass
+
+    # Fallback: use os.kill(pid, 0) to check if PID is alive.
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Windows: PermissionError means the process exists but we lack ACL permission.
+        return True
+    except OSError:
+        return False
+
+
 @contextlib.contextmanager
 def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator[None]:
     """File-based writer lock for a project DB.
 
-    Writes <locks_dir>/<hash>.lock containing ``<pid>\\n<timestamp>``.
+    Writes <locks_dir>/<hash>.lock containing ``<pid>\\n<timestamp>\\n<platform>``.
     Stale locks (>10 min old, or owning PID not alive) are auto-cleared.
+    Cross-platform locks (written on different OS) are stale after 60s.
     Raises TimeoutError if the lock cannot be acquired within *timeout_sec*.
     """
-    import psutil
-
     _validate_project_hash(project_hash)
     lock_path = paths.locks_dir() / f"{project_hash}.lock"
     paths.ensure_dir(lock_path.parent)
     deadline = time.monotonic() + timeout_sec
     pid = os.getpid()
+    current_platform = sys.platform
 
     def _stale(lock_text: str) -> bool:
         """Return True if the lock file content represents a stale (dead) lock.
 
-        A lock is stale if the owning PID no longer exists or the timestamp is
-        older than 10 minutes (crash recovery).
+        A lock is stale if:
+        - The owning PID no longer exists, OR
+        - The timestamp is older than 10 minutes (crash recovery), OR
+        - The lock was written on a different platform AND is older than 60 seconds.
 
         Empty/malformed content is the microsecond window between the O_EXCL
         create and the owner's ``os.write`` — it is NOT treated as stale, so a
@@ -981,12 +1023,21 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
         leaves an empty file whose mtime ages out, so the lock still self-heals.
         """
         try:
-            parts = lock_text.strip().split("\n", 1)
-            owner_pid = int(parts[0])
-            owner_ts = float(parts[1]) if len(parts) > 1 else 0.0
+            lines = lock_text.strip().split("\n")
+            owner_pid = int(lines[0])
+            owner_ts = float(lines[1]) if len(lines) > 1 else 0.0
+            owner_platform = lines[2] if len(lines) > 2 else None
+
+            # Check if lock is older than normal timeout.
             if time.time() - owner_ts > LOCK_STALE_SECONDS:
                 return True
-            return not psutil.pid_exists(owner_pid)
+
+            # If lock was written on a different platform, use shorter timeout.
+            if owner_platform and owner_platform != current_platform:
+                return time.time() - owner_ts > LOCK_CROSS_PLATFORM_STALE_SECONDS
+
+            # Check if owning process is still alive.
+            return not _pid_alive(owner_pid)
         except (ValueError, IndexError):
             try:
                 age = time.time() - lock_path.stat().st_mtime
@@ -1025,9 +1076,9 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
             except OSError as e:
                 _LOG.debug("lock create failed for %s: %s", lock_path.name, e)
                 return False
-            # We hold the lock — record owner pid + timestamp, then release the fd.
+            # We hold the lock — record owner pid + timestamp + platform, then release the fd.
             try:
-                os.write(fd, f"{pid}\n{time.time()}".encode())
+                os.write(fd, f"{pid}\n{time.time()}\n{current_platform}".encode())
             finally:
                 os.close(fd)
             return True
