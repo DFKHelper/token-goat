@@ -145,7 +145,7 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
         # Pick the top directory (most edits there = likely focus area)
         top_area = ""
         if dir_counts:
-            top_area = max(dir_counts, key=dir_counts.get)
+            top_area = max(dir_counts, key=lambda k: dir_counts[k])
 
         # --- Signal 2: Top 3 symbols by access count ---
         top_symbols: list[str] = []

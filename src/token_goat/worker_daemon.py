@@ -108,6 +108,7 @@ class WatchdogThread(threading.Thread):
         window_secs: float = 600.0,
         retry_delay: float = 5.0,
         poll_interval: float = 2.0,
+        on_latch: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(name="token-goat-watchdog", daemon=True)
         self._pid_file_reader = pid_file_reader
@@ -116,6 +117,7 @@ class WatchdogThread(threading.Thread):
         self._window_secs = window_secs
         self._retry_delay = retry_delay
         self._poll_interval = poll_interval
+        self._on_latch = on_latch
         self._stop_event = threading.Event()
         # List of monotonic timestamps for each restart attempt (used for window eviction).
         self._restart_times: list[float] = []
@@ -144,8 +146,11 @@ class WatchdogThread(threading.Thread):
 
                 # If we have a valid PID and the worker just came up (or we
                 # haven't tracked one yet), latch onto it.
-                if current_pid != _PID_UNKNOWN:
+                if current_pid != _PID_UNKNOWN and current_pid != watched_pid:
                     watched_pid = current_pid
+                    if self._on_latch is not None:
+                        with contextlib.suppress(Exception):
+                            self._on_latch()
 
                 # If we don't have a PID to watch yet, nothing to do.
                 if watched_pid == _PID_UNKNOWN:
