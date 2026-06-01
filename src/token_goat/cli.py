@@ -1483,6 +1483,40 @@ def section(
     )
 
 
+@app.command("skill-section", rich_help_panel="Core")
+def cmd_skill_section(
+    skill_name: str = typer.Argument(..., help="Skill name (e.g. 'ralph', 'plugin:improve')."),
+    heading: str = typer.Argument(..., help="Section heading to extract (case-insensitive prefix match)."),
+    session_id: str | None = _OPT_SESSION_ID,
+    json_output: bool = _OPT_JSON,
+    context_lines: int = _OPT_CONTEXT_LINES,
+) -> None:
+    """Extract a named section from an installed skill file without reading the whole thing.
+
+    Resolves *skill_name* to its on-disk SKILL.md (checking the skill body
+    cache first, then ``~/.claude/skills/<name>/SKILL.md`` and plugin install
+    locations).  Then extracts the heading section exactly like
+    ``token-goat section``.
+
+    Enables skills to self-reference by short name without hardcoded paths::
+
+        token-goat skill-section ralph "Definition of Done"
+        token-goat skill-section plugin:improve "Step 4"
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    if session_id:
+        _validate_session_id(session_id)
+
+    read_commands.skill_section(
+        skill_name=skill_name,
+        heading=heading,
+        session_id=session_id,
+        json_output=json_output,
+        context_lines=context_lines,
+    )
+
+
 @app.command("skeleton", rich_help_panel="Core")
 def skeleton(
     file: str = typer.Argument(..., help="File to show signatures for"),

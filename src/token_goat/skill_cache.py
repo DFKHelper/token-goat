@@ -39,6 +39,7 @@ __all__ = [
     "generate_compact_summary",
     "get_all_cached_skills",
     "get_compact",
+    "get_skill_file_path",
     "list_by_session",
     "list_outputs",
     "load_output",
@@ -506,6 +507,48 @@ def lookup_by_name(skill_name: str) -> SkillMeta | None:
     """
     matches = lookup_all_by_name(skill_name)
     return matches[0] if matches else None
+
+
+def get_skill_file_path(skill_name: str) -> Path | None:
+    """Resolve *skill_name* to an on-disk file path, or return ``None``.
+
+    Resolution order:
+
+    1. Check the in-memory/on-disk skill cache for any session's stored entry
+       that recorded a ``source_path``.  Use the most-recent such entry whose
+       path still exists on disk.
+    2. Delegate to the same filesystem probe that the PostToolUse(Skill) hook
+       uses at capture time: ``~/.claude/skills/<name>/SKILL.md``, plugin
+       layouts, etc.  This covers the case where no PostToolUse hook has fired
+       yet (e.g. the user queries a skill they have installed but never loaded
+       in this session).
+
+    Returns ``None`` when the skill cannot be located by either strategy.
+    Never raises — callers treat ``None`` as "not found".
+    """
+    # Strategy 1: use the source_path recorded by the PostToolUse(Skill) hook.
+    for candidate in lookup_all_by_name(skill_name):
+        sp = candidate.source_path
+        if sp:
+            try:
+                p = Path(sp)
+                if p.is_file():
+                    return p
+            except (OSError, ValueError):
+                continue
+
+    # Strategy 2: probe the filesystem using the same logic as the hook.
+    from . import hooks_skill  # noqa: PLC0415
+    resolved = hooks_skill._resolve_skill_body_path(skill_name)
+    if resolved:
+        try:
+            p = Path(resolved)
+            if p.is_file():
+                return p
+        except (OSError, ValueError):
+            pass
+
+    return None
 
 
 def lookup_all_by_name(skill_name: str) -> list[SkillMeta]:

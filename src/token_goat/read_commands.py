@@ -1078,6 +1078,111 @@ def section(
     )
 
 
+def skill_section(
+    skill_name: str,
+    heading: str,
+    session_id: str | None = None,
+    json_output: bool = False,
+    context_lines: int = 0,
+    no_header: bool = False,
+    no_color: bool = False,
+) -> None:
+    """Extract a named heading section from an installed or cached skill file.
+
+    Resolves *skill_name* to its on-disk path (checking the skill body cache
+    first, then the standard install locations under ``~/.claude/skills/``),
+    reads the file, then extracts the named H2 section using the same
+    case-insensitive prefix match as ``token-goat skill-body --section``.
+
+    Does not require the skill file to be indexed in the token-goat DB —
+    the file is read directly from disk.
+
+    When the skill cannot be located, emits a human-readable error and exits
+    with code 1, including a hint to index via
+    ``token-goat index --root ~/.claude/skills/``.
+    """
+    import typer  # noqa: PLC0415
+
+    from . import db as _db  # noqa: PLC0415
+    from . import skill_cache  # noqa: PLC0415
+
+    skill_path = skill_cache.get_skill_file_path(skill_name)
+    if skill_path is None:
+        _emit_read_error(
+            code="skill_not_found",
+            message=(
+                f"Skill '{skill_name}' not found. "
+                "Index with: token-goat index --root ~/.claude/skills/"
+            ),
+            json_output=json_output,
+        )
+        raise typer.Exit(1)
+
+    try:
+        body = skill_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _emit_read_error(
+            code="skill_read_error",
+            message=f"Could not read skill file '{skill_path}': {exc}",
+            json_output=json_output,
+        )
+        raise typer.Exit(1) from None
+
+    section_text = skill_cache.extract_named_section(body, heading)
+    if section_text is None:
+        headings = skill_cache.extract_h2_headings(body)
+        if headings:
+            msg = (
+                f"Section {heading!r} not found in skill {skill_name!r}. "
+                f"Available: {', '.join(headings)}"
+            )
+        else:
+            msg = f"Section {heading!r} not found in skill {skill_name!r} (no H2 sections detected)"
+        _emit_read_error(
+            code="section_not_found",
+            message=msg,
+            json_output=json_output,
+        )
+        raise typer.Exit(1)
+
+    body_bytes = len(body.encode())
+    returned_bytes = len(section_text.encode())
+    saved_bytes = max(0, body_bytes - returned_bytes)
+    _db.record_stat(
+        None,
+        "section_replacement",
+        bytes_saved=saved_bytes,
+        tokens_saved=saved_bytes // 4,
+        detail=f"{skill_name[:40]}::{heading[:16]}",
+    )
+
+    if json_output:
+        import json as _json  # noqa: PLC0415
+
+        payload: dict[str, object] = {
+            "ok": True,
+            "skill_name": skill_name,
+            "heading": heading,
+            "source": str(skill_path),
+            "text": section_text,
+            "body_bytes": body_bytes,
+        }
+        typer.echo(_json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    rel_label = f"skills/{skill_name}"
+    _emit_text_result(
+        section_text,
+        rel_label,
+        heading,
+        "heading",
+        no_header or not sys.stdout.isatty(),
+        context_before=0,
+        context_after=0,
+        no_color=no_color,
+    )
+
+
 # Symbol kinds worth including in a skeleton view.  Excludes variables, imports,
 # and other non-structural items that add noise without aiding navigation.
 _STUB_VIEW_INCLUDE_KINDS: frozenset[str] = frozenset({
