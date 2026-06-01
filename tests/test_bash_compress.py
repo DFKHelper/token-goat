@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from token_goat import bash_compress as bc
 
 # ---------------------------------------------------------------------------
@@ -333,93 +335,41 @@ class TestNormalise:
 
 
 class TestSelectFilter:
-    def test_pytest_argv(self):
-        f = bc.select_filter(["pytest", "tests/"])
-        assert f is not None and f.name == "pytest"
-
-    def test_pytest_via_python_m(self):
-        f = bc.select_filter(["python", "-m", "pytest", "tests/"])
-        assert f is not None and f.name == "pytest"
-
-    def test_pytest_via_uv_run(self):
-        f = bc.select_filter(["uv", "run", "pytest"])
-        assert f is not None and f.name == "pytest"
-
-    def test_jest_direct(self):
-        f = bc.select_filter(["jest"])
-        assert f is not None and f.name == "jest"
-
-    def test_jest_via_npx(self):
-        f = bc.select_filter(["npx", "jest"])
-        assert f is not None and f.name == "jest"
-
-    def test_npm_install(self):
-        f = bc.select_filter(["npm", "install"])
-        assert f is not None and f.name == "npm"
-
-    def test_pnpm_install(self):
-        f = bc.select_filter(["pnpm", "install"])
-        assert f is not None and f.name == "pnpm"
-
-    def test_docker_build(self):
-        f = bc.select_filter(["docker", "build", "-t", "x", "."])
-        assert f is not None and f.name == "docker"
-
-    def test_kubectl_get(self):
-        f = bc.select_filter(["kubectl", "get", "pods"])
-        assert f is not None and f.name == "kubectl"
+    @pytest.mark.parametrize("argv,expected_name", [
+        (["pytest", "tests/"], "pytest"),
+        (["python", "-m", "pytest", "tests/"], "pytest"),
+        (["uv", "run", "pytest"], "pytest"),
+        (["jest"], "jest"),
+        (["npx", "jest"], "jest"),
+        (["npm", "install"], "npm"),
+        (["pnpm", "install"], "pnpm"),
+        (["docker", "build", "-t", "x", "."], "docker"),
+        (["kubectl", "get", "pods"], "kubectl"),
+        (["cargo", "build"], "cargo"),
+        (["ruff", "check", "src/"], "ruff"),
+        (["mypy", "src/"], "mypy"),
+        (["make", "all"], "make"),
+        (["terraform", "plan"], "terraform"),
+        (["aws", "s3", "ls"], "aws-cli"),  # AwsCliFilter registered before AwsFilter
+        (["pip", "install", "foo"], "pip"),
+        (["sudo", "docker", "build", "."], "docker"),  # sudo prefix stripped
+        (["NODE_ENV=test", "jest"], "jest"),  # env assignment prefix stripped
+        (["PYTHONPATH=src", "python", "-m", "pytest"], "pytest"),  # PYTHONPATH stripped
+    ])
+    def test_dispatch(self, argv, expected_name):
+        f = bc.select_filter(argv)
+        assert f is not None and f.name == expected_name
 
     def test_git(self):
         # git status is now handled by GitStatusVerboseFilter (higher-fidelity)
         f = bc.select_filter(["git", "status"])
         assert f is not None and f.name in ("git", "git-status")
 
-    def test_cargo(self):
-        f = bc.select_filter(["cargo", "build"])
-        assert f is not None and f.name == "cargo"
-
-    def test_ruff(self):
-        f = bc.select_filter(["ruff", "check", "src/"])
-        assert f is not None and f.name == "ruff"
-
-    def test_mypy(self):
-        f = bc.select_filter(["mypy", "src/"])
-        assert f is not None and f.name == "mypy"
-
-    def test_make(self):
-        f = bc.select_filter(["make", "all"])
-        assert f is not None and f.name == "make"
-
-    def test_terraform(self):
-        f = bc.select_filter(["terraform", "plan"])
-        assert f is not None and f.name == "terraform"
-
-    def test_aws(self):
-        # AwsCliFilter is registered before AwsFilter, so it wins dispatch.
-        f = bc.select_filter(["aws", "s3", "ls"])
-        assert f is not None and f.name == "aws-cli"
-
-    def test_pip(self):
-        f = bc.select_filter(["pip", "install", "foo"])
-        assert f is not None and f.name == "pip"
-
     def test_unknown_command_returns_none(self):
         assert bc.select_filter(["totally-unknown-binary"]) is None
 
     def test_empty_argv_returns_none(self):
         assert bc.select_filter([]) is None
-
-    def test_sudo_prefix_stripped(self):
-        f = bc.select_filter(["sudo", "docker", "build", "."])
-        assert f is not None and f.name == "docker"
-
-    def test_env_assignment_prefix_stripped(self):
-        f = bc.select_filter(["NODE_ENV=test", "jest"])
-        assert f is not None and f.name == "jest"
-
-    def test_pythonpath_assignment_stripped(self):
-        f = bc.select_filter(["PYTHONPATH=src", "python", "-m", "pytest"])
-        assert f is not None and f.name == "pytest"
 
 
 # ---------------------------------------------------------------------------
@@ -1195,13 +1145,17 @@ class TestTerraformFilter:
         assert len(text.split("\n")) <= 35
         assert "Resource state" in text or "resource.line_" in text
 
-    def test_matches_terraform_binaries(self) -> None:
-        """TerraformFilter matches terraform, tofu, terragrunt."""
-        f = bc.TerraformFilter()
-        assert f.matches(["terraform", "plan"])
-        assert f.matches(["tofu", "apply"])
-        assert f.matches(["terragrunt", "run-all", "plan"])
-        assert not f.matches(["ansible", "playbook.yml"])
+    @pytest.mark.parametrize("argv", [
+        ["terraform", "plan"],
+        ["tofu", "apply"],
+        ["terragrunt", "run-all", "plan"],
+    ])
+    def test_matches_terraform_binaries(self, argv) -> None:
+        """TerraformFilter matches terraform/tofu/terragrunt."""
+        assert bc.TerraformFilter().matches(argv)
+
+    def test_terraform_does_not_match_ansible(self) -> None:
+        assert not bc.TerraformFilter().matches(["ansible", "playbook.yml"])
 
     def test_select_filter_returns_terraform_filter(self) -> None:
         """select_filter dispatches terraform to TerraformFilter."""
@@ -1328,14 +1282,18 @@ class TestAnsibleFilter:
         assert "elided" in text
         assert "more occurrence" in text  # matches "more occurrence" and "more occurrences"
 
-    def test_matches_ansible_binaries(self) -> None:
-        """AnsibleFilter matches ansible, ansible-playbook, ansible-galaxy, ansible-lint."""
-        f = bc.AnsibleFilter()
-        assert f.matches(["ansible", "all", "-m", "ping"])
-        assert f.matches(["ansible-playbook", "site.yml"])
-        assert f.matches(["ansible-galaxy", "install", "-r", "requirements.yml"])
-        assert f.matches(["ansible-lint", "playbooks/"])
-        assert not f.matches(["terraform", "plan"])
+    @pytest.mark.parametrize("argv", [
+        ["ansible", "all", "-m", "ping"],
+        ["ansible-playbook", "site.yml"],
+        ["ansible-galaxy", "install", "-r", "requirements.yml"],
+        ["ansible-lint", "playbooks/"],
+    ])
+    def test_matches_ansible_binaries(self, argv) -> None:
+        """AnsibleFilter matches ansible family binaries."""
+        assert bc.AnsibleFilter().matches(argv)
+
+    def test_ansible_does_not_match_terraform(self) -> None:
+        assert not bc.AnsibleFilter().matches(["terraform", "plan"])
 
     def test_select_filter_returns_ansible_filter(self) -> None:
         """select_filter dispatches ansible to AnsibleFilter."""
@@ -1467,10 +1425,16 @@ class TestGrepFilter:
         rare_pos = result.text.find("src/rare.py")
         assert common_pos < rare_pos
 
-    def test_git_grep_matched(self):
-        """GrepFilter matches 'git grep' argv."""
-        f = bc.GrepFilter()
-        assert f.matches(["git", "grep", "pattern"])
+    @pytest.mark.parametrize("argv", [
+        ["git", "grep", "pattern"],
+        ["rg", "pattern", "src/"],
+        ["grep", "-r", "pattern", "."],
+        ["ag", "pattern"],
+        ["ack", "pattern"],
+    ])
+    def test_grep_binaries_matched(self, argv):
+        """GrepFilter matches various grep-family binaries."""
+        assert bc.GrepFilter().matches(argv)
 
     def test_git_grep_not_matched_other_subcommand(self):
         """GrepFilter does NOT match other git subcommands (those go to GitFilter)."""
@@ -1478,26 +1442,6 @@ class TestGrepFilter:
         assert not f.matches(["git", "log"])
         assert not f.matches(["git", "status"])
         assert not f.matches(["git", "diff"])
-
-    def test_rg_matched(self):
-        """GrepFilter matches 'rg' argv."""
-        f = bc.GrepFilter()
-        assert f.matches(["rg", "pattern", "src/"])
-
-    def test_plain_grep_r_matched(self):
-        """GrepFilter matches 'grep -r' argv."""
-        f = bc.GrepFilter()
-        assert f.matches(["grep", "-r", "pattern", "."])
-
-    def test_ag_matched(self):
-        """GrepFilter matches 'ag' argv."""
-        f = bc.GrepFilter()
-        assert f.matches(["ag", "pattern"])
-
-    def test_ack_matched(self):
-        """GrepFilter matches 'ack' argv."""
-        f = bc.GrepFilter()
-        assert f.matches(["ack", "pattern"])
 
     def test_top_20_files_limit(self):
         """When >20 files match, only top 20 are shown with an elision note."""
@@ -1520,15 +1464,13 @@ class TestGrepFilter:
         assert "grep:" in result.text
         assert "matches across" in result.text
 
-    def test_select_filter_returns_grep_for_rg(self):
-        """select_filter dispatches 'rg' to GrepFilter."""
-        f = bc.select_filter(["rg", "pattern", "src/"])
-        assert f is not None
-        assert f.name == "grep"
-
-    def test_select_filter_returns_grep_for_grep(self):
-        """select_filter dispatches 'grep' to GrepFilter."""
-        f = bc.select_filter(["grep", "-r", "pattern", "."])
+    @pytest.mark.parametrize("argv", [
+        ["rg", "pattern", "src/"],
+        ["grep", "-r", "pattern", "."],
+    ])
+    def test_select_filter_returns_grep(self, argv):
+        """select_filter dispatches grep-family commands to GrepFilter."""
+        f = bc.select_filter(argv)
         assert f is not None
         assert f.name == "grep"
 
@@ -1650,12 +1592,12 @@ class TestMypyFilter:
             lines.append(f"Found {n_errors} errors in 1 file (checked 3 source files)")
         return "\n".join(lines)
 
-    def test_select_filter_dispatches_mypy(self):
-        f = bc.select_filter(["mypy", "src/"])
-        assert f is not None and f.name == "mypy"
-
-    def test_dmypy_dispatches_to_mypy_filter(self):
-        f = bc.select_filter(["dmypy", "run", "--", "src/"])
+    @pytest.mark.parametrize("argv", [
+        ["mypy", "src/"],
+        ["dmypy", "run", "--", "src/"],
+    ])
+    def test_select_filter_dispatches_mypy(self, argv):
+        f = bc.select_filter(argv)
         assert f is not None and f.name == "mypy"
 
     def test_summary_line_always_kept(self):
@@ -1807,18 +1749,15 @@ class TestPythonFilter:
 
     def test_pytest_not_matched(self):
         """Command 'python -m pytest' should NOT be matched by PythonFilter."""
-        f = bc.PythonFilter()
-        assert not f.matches(["python", "-m", "pytest"])
+        assert not bc.PythonFilter().matches(["python", "-m", "pytest"])
 
-    def test_plain_python_matched(self):
-        """Command 'python script.py' IS matched by PythonFilter."""
-        f = bc.PythonFilter()
-        assert f.matches(["python", "script.py"])
-
-    def test_python3_matched(self):
-        """Command 'python3' with any args IS matched."""
-        f = bc.PythonFilter()
-        assert f.matches(["python3", "-c", "print('hello')"])
+    @pytest.mark.parametrize("argv", [
+        ["python", "script.py"],
+        ["python3", "-c", "print('hello')"],
+    ])
+    def test_python_matched(self, argv):
+        """python/python3 script commands are matched by PythonFilter."""
+        assert bc.PythonFilter().matches(argv)
 
     def test_clean_output_passthrough(self):
         """Non-traceback output passes through unchanged."""
@@ -1829,15 +1768,13 @@ class TestPythonFilter:
         assert "Hello" in result.text
         assert "World" in result.text
 
-    def test_select_filter_dispatches_python(self):
-        """select_filter returns PythonFilter for 'python script.py'."""
-        f = bc.select_filter(["python", "script.py"])
-        assert f is not None
-        assert f.name == "python"
-
-    def test_select_filter_python3_dispatches(self):
-        """select_filter returns PythonFilter for 'python3' commands."""
-        f = bc.select_filter(["python3", "myscript.py"])
+    @pytest.mark.parametrize("argv", [
+        ["python", "script.py"],
+        ["python3", "myscript.py"],
+    ])
+    def test_select_filter_dispatches_python(self, argv):
+        """select_filter returns PythonFilter for python/python3 script commands."""
+        f = bc.select_filter(argv)
         assert f is not None
         assert f.name == "python"
 
@@ -1849,45 +1786,25 @@ class TestPythonFilter:
 
 
 class TestUvFilter:
-    def test_matches_uv_sync(self):
-        """UvFilter matches 'uv sync' argv."""
-        f = bc.UvFilter()
-        assert f.matches(["uv", "sync"])
+    @pytest.mark.parametrize("argv", [
+        ["uv", "sync"],
+        ["uv", "add", "requests"],
+        ["uv", "remove", "requests"],
+        ["uv", "pip", "install", "numpy"],
+        ["uv", "lock"],
+    ])
+    def test_matches_uv_package_commands(self, argv):
+        """UvFilter matches uv package-management subcommands."""
+        assert bc.UvFilter().matches(argv)
 
-    def test_matches_uv_add(self):
-        """UvFilter matches 'uv add <pkg>' argv."""
-        f = bc.UvFilter()
-        assert f.matches(["uv", "add", "requests"])
-
-    def test_matches_uv_remove(self):
-        """UvFilter matches 'uv remove <pkg>' argv."""
-        f = bc.UvFilter()
-        assert f.matches(["uv", "remove", "requests"])
-
-    def test_matches_uv_pip_install(self):
-        """UvFilter matches 'uv pip install <pkg>' argv."""
-        f = bc.UvFilter()
-        assert f.matches(["uv", "pip", "install", "numpy"])
-
-    def test_matches_uv_lock(self):
-        """UvFilter matches 'uv lock' argv."""
-        f = bc.UvFilter()
-        assert f.matches(["uv", "lock"])
-
-    def test_does_not_match_uv_run(self):
-        """UvFilter does not match 'uv run' — not a package management command."""
-        f = bc.UvFilter()
-        assert not f.matches(["uv", "run", "pytest"])
-
-    def test_does_not_match_uv_tool(self):
-        """UvFilter does not match 'uv tool run' — not a package management command."""
-        f = bc.UvFilter()
-        assert not f.matches(["uv", "tool", "run", "ruff"])
-
-    def test_does_not_match_pip(self):
-        """UvFilter does not match plain 'pip' — that goes to PipFilter."""
-        f = bc.UvFilter()
-        assert not f.matches(["pip", "install", "numpy"])
+    @pytest.mark.parametrize("argv", [
+        ["uv", "run", "pytest"],       # run is not a package management command
+        ["uv", "tool", "run", "ruff"], # tool run is not a package management command
+        ["pip", "install", "numpy"],   # plain pip goes to PipFilter
+    ])
+    def test_does_not_match_non_pkg_commands(self, argv):
+        """UvFilter does not match non-package-management commands."""
+        assert not bc.UvFilter().matches(argv)
 
     def test_drops_downloading_lines(self):
         """Downloading progress lines are dropped from output; only the elision note remains."""
@@ -1968,15 +1885,13 @@ class TestUvFilter:
         assert "error: Failed to fetch" in result.text
         assert "Connection refused" in result.text
 
-    def test_select_filter_dispatches_uv_sync(self):
-        """select_filter returns UvFilter for 'uv sync'."""
-        f = bc.select_filter(["uv", "sync"])
-        assert f is not None
-        assert f.name == "uv"
-
-    def test_select_filter_dispatches_uv_add(self):
-        """select_filter returns UvFilter for 'uv add numpy'."""
-        f = bc.select_filter(["uv", "add", "numpy"])
+    @pytest.mark.parametrize("argv", [
+        ["uv", "sync"],
+        ["uv", "add", "numpy"],
+    ])
+    def test_select_filter_dispatches_uv(self, argv):
+        """select_filter routes uv package commands to UvFilter."""
+        f = bc.select_filter(argv)
         assert f is not None
         assert f.name == "uv"
 
@@ -2002,26 +1917,16 @@ class TestUvFilter:
 
 
 class TestBytesToTokens:
-    def test_converts_350_bytes_to_100_tokens(self):
-        """350 bytes / 3.5 = 100 tokens."""
-        assert bc.bytes_to_tokens(350) == 100
-
-    def test_rounds_up(self):
-        """Rounding up: 355 bytes / 3.5 = 101.43... -> 102 tokens."""
-        assert bc.bytes_to_tokens(355) == 102
-
-    def test_zero_converts_to_one(self):
-        """Even 0 bytes is at least 1 token (fail-safe)."""
-        assert bc.bytes_to_tokens(0) == 1
-
-    def test_small_values(self):
-        """1-3 bytes → 1 token."""
-        assert bc.bytes_to_tokens(1) == 1
-        assert bc.bytes_to_tokens(3) == 1
-
-    def test_large_values(self):
-        """Large byte counts scale proportionally."""
-        assert bc.bytes_to_tokens(7000) == 2000
+    @pytest.mark.parametrize("n_bytes,expected_tokens", [
+        (350, 100),   # 350 / 3.5 = 100 tokens
+        (355, 102),   # rounds up: 355 / 3.5 = 101.43... → 102
+        (0, 1),       # 0 bytes is at least 1 token (fail-safe)
+        (1, 1),       # 1-3 bytes → 1 token
+        (3, 1),
+        (7000, 2000), # large values scale proportionally
+    ])
+    def test_conversion(self, n_bytes, expected_tokens):
+        assert bc.bytes_to_tokens(n_bytes) == expected_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -2493,25 +2398,15 @@ class TestEarlyExitOnNormalisationReduction:
 # ---------------------------------------------------------------------------
 
 class TestEzaFilter:
-    def test_matches_eza_binary(self) -> None:
-        """EzaFilter matches 'eza' binary."""
-        f = bc.EzaFilter()
-        assert f.matches(["eza", "--git", "--long"])
-
-    def test_matches_exa_binary(self) -> None:
-        """EzaFilter matches 'exa' (older name for eza)."""
-        f = bc.EzaFilter()
-        assert f.matches(["exa", "--long"])
-
-    def test_matches_ls_binary(self) -> None:
-        """EzaFilter matches 'ls' binary."""
-        f = bc.EzaFilter()
-        assert f.matches(["ls", "-la"])
-
-    def test_matches_ls_with_exe_extension(self) -> None:
-        """EzaFilter matches 'ls.exe' on Windows."""
-        f = bc.EzaFilter()
-        assert f.matches(["ls.exe", "-l"])
+    @pytest.mark.parametrize("argv", [
+        ["eza", "--git", "--long"],
+        ["exa", "--long"],    # older name for eza
+        ["ls", "-la"],
+        ["ls.exe", "-l"],     # Windows .exe form
+    ])
+    def test_matches_eza_binaries(self, argv) -> None:
+        """EzaFilter matches eza/exa/ls binaries."""
+        assert bc.EzaFilter().matches(argv)
 
     def test_passthrough_short_output(self) -> None:
         """EzaFilter passes through output with ≤30 lines unchanged."""
@@ -2568,20 +2463,14 @@ class TestEzaFilter:
 class TestFdFilter:
     """Test FdFilter compression for fd / fdfind output."""
 
-    def test_matches_fd_binary(self) -> None:
-        """FdFilter matches 'fd' binary."""
-        f = bc.FdFilter()
-        assert f.matches(["fd", "pattern"])
-
-    def test_matches_fdfind_binary(self) -> None:
-        """FdFilter matches 'fdfind' binary (Ubuntu package name)."""
-        f = bc.FdFilter()
-        assert f.matches(["fdfind", "pattern"])
-
-    def test_matches_fd_with_exe_extension(self) -> None:
-        """FdFilter matches 'fd.exe' on Windows."""
-        f = bc.FdFilter()
-        assert f.matches(["fd.exe", "pattern"])
+    @pytest.mark.parametrize("argv", [
+        ["fd", "pattern"],
+        ["fdfind", "pattern"],   # Ubuntu package name
+        ["fd.exe", "pattern"],   # Windows .exe form
+    ])
+    def test_matches_fd_binaries(self, argv) -> None:
+        """FdFilter matches fd/fdfind binaries."""
+        assert bc.FdFilter().matches(argv)
 
     def test_small_output_passes_through(self) -> None:
         """Output with ≤40 lines passes through unchanged."""
@@ -3175,55 +3064,27 @@ class TestHeadTailCompress:
 class TestWindowsExeMatching:
     """Verify that .exe suffix is stripped correctly for all new filter classes."""
 
-    def test_bat_exe_matches(self) -> None:
-        """BatFilter matches 'bat.exe' on Windows."""
-        f = bc.BatFilter()
-        assert f.matches(["bat.exe"])
+    @pytest.mark.parametrize("filter_cls,argv", [
+        (bc.BatFilter, ["bat.exe"]),
+        (bc.BatFilter, ["batcat.exe"]),
+        (bc.DeltaFilter, ["delta.exe"]),
+        (bc.FzfFilter, ["fzf.exe"]),
+        (bc.JqFilter, ["jq.exe"]),
+        (bc.YqFilter, ["yq.exe"]),
+    ])
+    def test_exe_suffix_matches(self, filter_cls, argv) -> None:
+        """Filter matches the .exe-suffixed binary on Windows."""
+        assert filter_cls().matches(argv)
 
-    def test_batcat_exe_matches(self) -> None:
-        """BatFilter matches 'batcat.exe' on Windows."""
-        f = bc.BatFilter()
-        assert f.matches(["batcat.exe"])
-
-    def test_bat_exe_does_not_match_cat(self) -> None:
-        """BatFilter does not match 'cat.exe'."""
-        f = bc.BatFilter()
-        assert not f.matches(["cat.exe"])
-
-    def test_delta_exe_matches(self) -> None:
-        """DeltaFilter matches 'delta.exe' on Windows."""
-        f = bc.DeltaFilter()
-        assert f.matches(["delta.exe"])
-
-    def test_delta_exe_does_not_match_diff(self) -> None:
-        """DeltaFilter does not match 'diff.exe'."""
-        f = bc.DeltaFilter()
-        assert not f.matches(["diff.exe"])
-
-    def test_fzf_exe_matches(self) -> None:
-        """FzfFilter matches 'fzf.exe' on Windows."""
-        f = bc.FzfFilter()
-        assert f.matches(["fzf.exe"])
-
-    def test_jq_exe_matches(self) -> None:
-        """JqFilter matches 'jq.exe' on Windows."""
-        f = bc.JqFilter()
-        assert f.matches(["jq.exe"])
-
-    def test_jq_exe_does_not_match_unrelated(self) -> None:
-        """JqFilter does not match 'xq.exe'."""
-        f = bc.JqFilter()
-        assert not f.matches(["xq.exe"])
-
-    def test_yq_exe_matches(self) -> None:
-        """YqFilter matches 'yq.exe' on Windows."""
-        f = bc.YqFilter()
-        assert f.matches(["yq.exe"])
-
-    def test_yq_exe_does_not_match_jq(self) -> None:
-        """YqFilter does not match 'jq.exe'."""
-        f = bc.YqFilter()
-        assert not f.matches(["jq.exe"])
+    @pytest.mark.parametrize("filter_cls,argv", [
+        (bc.BatFilter, ["cat.exe"]),
+        (bc.DeltaFilter, ["diff.exe"]),
+        (bc.JqFilter, ["xq.exe"]),
+        (bc.YqFilter, ["jq.exe"]),
+    ])
+    def test_exe_suffix_no_false_match(self, filter_cls, argv) -> None:
+        """Filter does not match unrelated .exe binaries."""
+        assert not filter_cls().matches(argv)
 
 
 # ---------------------------------------------------------------------------
@@ -3445,12 +3306,14 @@ class TestGradleFilter:
         assert "BUILD SUCCESSFUL" in result.text
         assert "elided" not in result.text
 
-    def test_matches_gradle_binaries(self) -> None:
-        """GradleFilter matches gradle, gradlew, ./gradlew."""
-        f = bc.GradleFilter()
-        assert f.matches(["gradle", "build"])
-        assert f.matches(["gradlew", "build"])
-        assert f.matches(["./gradlew", "build"])
+    @pytest.mark.parametrize("argv", [
+        ["gradle", "build"],
+        ["gradlew", "build"],
+        ["./gradlew", "build"],
+    ])
+    def test_matches_gradle_binaries(self, argv) -> None:
+        """GradleFilter matches gradle/gradlew/./gradlew."""
+        assert bc.GradleFilter().matches(argv)
 
 
 # ---------------------------------------------------------------------------
@@ -3530,12 +3393,14 @@ class TestMavenFilter:
         assert "Downloading" not in result.text
         assert "BUILD SUCCESS" in result.text
 
-    def test_matches_maven_binaries(self) -> None:
-        """MavenFilter matches mvn, mvnw, ./mvnw."""
-        f = bc.MavenFilter()
-        assert f.matches(["mvn", "test"])
-        assert f.matches(["mvnw", "test"])
-        assert f.matches(["./mvnw", "test"])
+    @pytest.mark.parametrize("argv", [
+        ["mvn", "test"],
+        ["mvnw", "test"],
+        ["./mvnw", "test"],
+    ])
+    def test_matches_maven_binaries(self, argv) -> None:
+        """MavenFilter matches mvn/mvnw/./mvnw."""
+        assert bc.MavenFilter().matches(argv)
 
     def test_unknown_subcommand_uses_default(self) -> None:
         """Unknown Maven subcommands use default head/tail compression."""
@@ -3655,15 +3520,13 @@ class TestDotnetFilter:
         # The note should mention the collapsed count.
         assert "collapsed" in result.text
 
-    def test_select_filter_dispatches_dotnet_build(self) -> None:
-        """select_filter routes 'dotnet build' to DotnetFilter."""
-        f = bc.select_filter(["dotnet", "build"])
-        assert f is not None
-        assert f.name == "dotnet"
-
-    def test_select_filter_dispatches_dotnet_test(self) -> None:
-        """select_filter routes 'dotnet test' to DotnetFilter."""
-        f = bc.select_filter(["dotnet", "test"])
+    @pytest.mark.parametrize("argv", [
+        ["dotnet", "build"],
+        ["dotnet", "test"],
+    ])
+    def test_select_filter_dispatches_dotnet(self, argv) -> None:
+        """select_filter routes dotnet subcommands to DotnetFilter."""
+        f = bc.select_filter(argv)
         assert f is not None
         assert f.name == "dotnet"
 
@@ -3763,31 +3626,22 @@ class TestPipFilterVerbose:
 
 
 class TestSafeDecode:
-    def test_strips_null_bytes_from_str(self) -> None:
-        assert bc._safe_decode("hello\x00world") == "helloworld"
-
-    def test_strips_null_bytes_from_bytes(self) -> None:
-        assert bc._safe_decode(b"foo\x00bar") == "foobar"
-
-    def test_decodes_utf8_bytes(self) -> None:
-        assert bc._safe_decode(b"hello") == "hello"
+    @pytest.mark.parametrize("value,expected", [
+        ("hello\x00world", "helloworld"),     # null bytes in str
+        (b"foo\x00bar", "foobar"),            # null bytes in bytes
+        (b"hello", "hello"),                  # clean utf-8 bytes
+        ("plain text", "plain text"),         # clean str passthrough
+        (b"", ""),                            # empty bytes
+        ("", ""),                             # empty str
+        ("a\x00b\x00c\x00", "abc"),           # multiple null bytes
+    ])
+    def test_safe_decode(self, value, expected) -> None:
+        assert bc._safe_decode(value) == expected
 
     def test_replaces_invalid_utf8(self) -> None:
         # 0xFF is invalid UTF-8; must not raise, must produce replacement char.
         result = bc._safe_decode(b"\xff\xfe")
         assert "�" in result or result == ""  # replacement char or empty
-
-    def test_passthrough_clean_str(self) -> None:
-        assert bc._safe_decode("plain text") == "plain text"
-
-    def test_empty_bytes(self) -> None:
-        assert bc._safe_decode(b"") == ""
-
-    def test_empty_str(self) -> None:
-        assert bc._safe_decode("") == ""
-
-    def test_multiple_null_bytes(self) -> None:
-        assert bc._safe_decode("a\x00b\x00c\x00") == "abc"
 
     def test_null_bytes_in_bytes(self) -> None:
         data = b"line1\x00\nline2\x00"
@@ -4085,15 +3939,13 @@ class TestSysPackageFilterApt:
         result = f.apply(text, "", 100, ["apt-get", "install", "curl"])
         assert "E: Could not get lock" in result.text
 
-    def test_select_filter_dispatches_apt_get(self) -> None:
-        """select_filter routes 'apt-get install' to SysPackageFilter."""
-        f = bc.select_filter(["apt-get", "install", "curl"])
-        assert f is not None
-        assert f.name == "sys-pkg"
-
-    def test_select_filter_dispatches_apt(self) -> None:
-        """select_filter routes 'apt install' to SysPackageFilter."""
-        f = bc.select_filter(["apt", "install", "curl"])
+    @pytest.mark.parametrize("argv", [
+        ["apt-get", "install", "curl"],
+        ["apt", "install", "curl"],
+    ])
+    def test_select_filter_dispatches_apt(self, argv) -> None:
+        """select_filter routes apt/apt-get to SysPackageFilter."""
+        f = bc.select_filter(argv)
         assert f is not None
         assert f.name == "sys-pkg"
 
@@ -4507,21 +4359,14 @@ class TestCargoFilterSubcommands:
         assert "Hello, world!" in result.text
         assert "Server listening" in result.text
 
-    def test_select_filter_dispatches_cargo_clippy(self) -> None:
-        """select_filter routes 'cargo clippy' to CargoFilter."""
-        f = bc.select_filter(["cargo", "clippy"])
-        assert f is not None
-        assert f.name == "cargo"
-
-    def test_select_filter_dispatches_cargo_test(self) -> None:
-        """select_filter routes 'cargo test' to CargoFilter."""
-        f = bc.select_filter(["cargo", "test"])
-        assert f is not None
-        assert f.name == "cargo"
-
-    def test_select_filter_dispatches_cargo_check(self) -> None:
-        """select_filter routes 'cargo check' to CargoFilter."""
-        f = bc.select_filter(["cargo", "check"])
+    @pytest.mark.parametrize("argv", [
+        ["cargo", "clippy"],
+        ["cargo", "test"],
+        ["cargo", "check"],
+    ])
+    def test_select_filter_dispatches_cargo_subcommands(self, argv) -> None:
+        """select_filter routes cargo subcommands to CargoFilter."""
+        f = bc.select_filter(argv)
         assert f is not None
         assert f.name == "cargo"
 
@@ -4682,15 +4527,13 @@ class TestSwiftFilter:
         assert "testPassing" not in result.text
         assert "Executed 2 tests" in result.text
 
-    def test_select_filter_dispatches_swift_build(self) -> None:
-        """select_filter routes 'swift build' to SwiftFilter."""
-        f = bc.select_filter(["swift", "build"])
-        assert f is not None
-        assert f.name == "swift"
-
-    def test_select_filter_dispatches_swift_test(self) -> None:
-        """select_filter routes 'swift test' to SwiftFilter."""
-        f = bc.select_filter(["swift", "test"])
+    @pytest.mark.parametrize("argv", [
+        ["swift", "build"],
+        ["swift", "test"],
+    ])
+    def test_select_filter_dispatches_swift(self, argv) -> None:
+        """select_filter routes swift subcommands to SwiftFilter."""
+        f = bc.select_filter(argv)
         assert f is not None
         assert f.name == "swift"
 
@@ -4915,25 +4758,15 @@ class TestRubyFilter:
 class TestMakeFilterConfigure:
     """MakeFilter correctly compresses autotools ./configure output."""
 
-    def test_matches_dot_slash_configure(self) -> None:
-        """MakeFilter.matches() accepts ./configure."""
-        f = bc.MakeFilter()
-        assert f.matches(["./configure"])
-
-    def test_matches_relative_path_configure(self) -> None:
-        """MakeFilter.matches() accepts ../configure."""
-        f = bc.MakeFilter()
-        assert f.matches(["../configure"])
-
-    def test_matches_absolute_path_configure(self) -> None:
-        """MakeFilter.matches() accepts absolute configure paths."""
-        f = bc.MakeFilter()
-        assert f.matches(["/usr/src/mylib/configure"])
-
-    def test_matches_config_script(self) -> None:
-        """MakeFilter.matches() accepts ./config (alternate autotools stem)."""
-        f = bc.MakeFilter()
-        assert f.matches(["./config"])
+    @pytest.mark.parametrize("argv", [
+        ["./configure"],
+        ["../configure"],
+        ["/usr/src/mylib/configure"],
+        ["./config"],   # alternate autotools stem
+    ])
+    def test_matches_configure_scripts(self, argv) -> None:
+        """MakeFilter.matches() accepts configure/config script paths."""
+        assert bc.MakeFilter().matches(argv)
 
     def test_select_filter_dispatches_configure(self) -> None:
         """select_filter routes './configure' to MakeFilter."""
