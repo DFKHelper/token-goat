@@ -474,6 +474,18 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
             remote.greps.append(grep)
     merged.greps = remote.greps[-GREPS_HISTORY_MAX:]
 
+    # grep_result_hashes: dict merge — take max count per hash, similar to hints_content_dedup.
+    # Preserves insertion order (FIFO eviction on cap) using dict + pop idiom for oldest.
+    merged_grep_hashes = dict(remote.grep_result_hashes)
+    for hash_key, pattern in local.grep_result_hashes.items():
+        if hash_key not in merged_grep_hashes:
+            merged_grep_hashes[hash_key] = pattern
+    merged.grep_result_hashes = merged_grep_hashes
+    if len(merged.grep_result_hashes) > GREP_RESULT_HASHES_MAX:
+        items_to_remove = len(merged.grep_result_hashes) - (GREP_RESULT_HASHES_MAX - _GREP_RESULT_HASHES_EVICT)
+        for _ in range(items_to_remove):
+            merged.grep_result_hashes.pop(next(iter(merged.grep_result_hashes)))
+
     remote_glob_keys = {(glob.pattern, glob.path) for glob in remote.glob_history}
     for glob in local.glob_history:
         if (glob.pattern, glob.path) not in remote_glob_keys:
@@ -835,6 +847,14 @@ _MAX_SKILL_NAME_LEN: Final[int] = 128
 GREPS_HISTORY_MAX: Final[int] = 75
 _GREPS_HISTORY_EVICT: Final[int] = 15
 
+# Maximum number of grep result-content hashes retained per session.  The
+# grep_result_hashes dict tracks actual grep result content (by hash) to detect
+# when two different grep patterns return the same results, enabling a "same
+# results as pattern X" dedup hint.  When the cap is exceeded, FIFO eviction
+# keeps the most recent hashes (most likely to be repeated).
+GREP_RESULT_HASHES_MAX: Final[int] = 50
+_GREP_RESULT_HASHES_EVICT: Final[int] = 5
+
 # Maximum number of decision-log entries retained per session.  Decisions are
 # opt-in (the agent calls ``token-goat decision "<text>"``), so the volume is
 # self-limited — but a misbehaving loop could pin one entry per iteration; the
@@ -940,6 +960,11 @@ class SessionCache:
     last_activity_ts: float
     files: dict[str, FileEntry] = field(default_factory=dict)  # key = normalized path
     greps: list[GrepEntry] = field(default_factory=list)
+    # Grep result content dedup: maps result_content_hash (first 8 hex chars) → pattern
+    # that produced it.  Used to detect when two different grep patterns return the
+    # same results, enabling a "Same results as pattern X" dedup hint.  FIFO-evicted
+    # at GREP_RESULT_HASHES_MAX to prevent unbounded growth in long sessions.
+    grep_result_hashes: dict[str, str] = field(default_factory=dict)
     # Tracks files edited this session: normalized_path → edit count
     edited_files: dict[str, int] = field(default_factory=dict)
     # In-session cache of read_symbol/read_section results.  Keyed by a string
@@ -1111,6 +1136,7 @@ class SessionCache:
             created_ts=_round_ts(self.created_ts),
             files={k: _serialize_file_entry(v) for k, v in self.files.items()},
             greps=[_serialize_grep_entry(g) for g in self.greps],
+            grep_result_hashes=dict(self.grep_result_hashes),
             edited_files=self.edited_files,
             result_cache={
                 k: _serialize_result_cache_entry(v)
@@ -1314,6 +1340,42 @@ class SessionCache:
         key = paths.normalize_key(file_path)
         return self.file_access_counts.get(key, 0)
 
+    def has_grep_result_hash(self, result_hash: str) -> bool:
+        """Check if a grep result content hash was already seen this session.
+
+        Returns True if the result_hash is in grep_result_hashes, False otherwise.
+        Use get_grep_result_pattern() to retrieve the pattern that produced it.
+        """
+        return result_hash in self.grep_result_hashes
+
+    def get_grep_result_pattern(self, result_hash: str) -> str | None:
+        """Retrieve the pattern that produced a grep result content hash, or None.
+
+        Returns the grep pattern that previously generated result content with
+        this hash, for use in a "Same results as pattern X" dedup hint.
+        """
+        return self.grep_result_hashes.get(result_hash)
+
+    def record_grep_result_hash(self, result_hash: str, pattern: str) -> None:
+        """Record a grep result's content hash and the pattern that produced it.
+
+        Called after grep executes; on next occurrence of the same result content,
+        a "Same results as pattern X" dedup hint can be emitted.
+
+        Stores the result_hash → pattern mapping. Enforces GREP_RESULT_HASHES_MAX
+        via FIFO eviction when the cap is exceeded.
+        """
+        self.grep_result_hashes[result_hash] = pattern
+
+        # Enforce GREP_RESULT_HASHES_MAX via FIFO eviction.
+        # Insertion order is preserved in Python 3.7+ dicts; evict oldest when over cap.
+        if len(self.grep_result_hashes) > GREP_RESULT_HASHES_MAX:
+            items_to_remove = len(self.grep_result_hashes) - (GREP_RESULT_HASHES_MAX - _GREP_RESULT_HASHES_EVICT)
+            for _ in range(items_to_remove):
+                self.grep_result_hashes.pop(next(iter(self.grep_result_hashes)))
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionCache:
         """Deserialize from dict (JSON). Tolerates missing or corrupted fields."""
@@ -1365,6 +1427,15 @@ class SessionCache:
                 skipped_file_entries,
                 skipped_grep_entries,
             )
+
+        # grep_result_hashes: dict[str, str] — content_hash → pattern.
+        # Missing in older sessions → empty dict (backward compat). Malformed entries are skipped.
+        grep_result_hashes: dict[str, str] = {}
+        raw_grep_hashes = d.get("grep_result_hashes", {})
+        if isinstance(raw_grep_hashes, dict):
+            for hash_key, pattern in raw_grep_hashes.items():
+                if isinstance(hash_key, str) and isinstance(pattern, str) and hash_key and pattern:
+                    grep_result_hashes[hash_key] = pattern
 
         edited_files: dict[str, int] = {}
         for k, v in d.get("edited_files", {}).items():
@@ -1565,6 +1636,7 @@ class SessionCache:
             created_ts=float(d.get("created_ts", now)),
             files=files,
             greps=greps,
+            grep_result_hashes=grep_result_hashes,
             edited_files=edited_files,
             result_cache=result_cache,
             bash_history=bash_history,
@@ -2098,6 +2170,7 @@ class _SessionDict(TypedDict, total=False):
     created_ts: float
     files: dict[str, _FileEntryDict]
     greps: list[_GrepEntryDict]
+    grep_result_hashes: dict[str, str]
     edited_files: dict[str, int]
     result_cache: dict[str, _ResultCacheEntryDict]
     bash_history: dict[str, _BashEntryDict]

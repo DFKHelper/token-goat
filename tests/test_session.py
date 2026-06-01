@@ -4882,3 +4882,173 @@ class TestSessionReliability:
         session.save(recovered)
         assert cache_path.exists(), "New cache file should be created"
         assert "recovered.py" in recovered.files
+
+
+class TestGrepResultHashes:
+    """Tests for grep result content dedup hashing."""
+
+    def test_grep_result_hashes_basic_roundtrip(self, tmp_data_dir):
+        """record_grep_result_hash stores and persists content-hash → pattern."""
+        session_id = "test_grep_hashes"
+        cache = session.load(session_id)
+
+        # Record a hash
+        cache.record_grep_result_hash("abc12345", "def foo")
+        assert cache.has_grep_result_hash("abc12345")
+        assert cache.get_grep_result_pattern("abc12345") == "def foo"
+
+        # Save and reload
+        session.save(cache)
+        loaded = session.load(session_id)
+        assert loaded.has_grep_result_hash("abc12345")
+        assert loaded.get_grep_result_pattern("abc12345") == "def foo"
+
+    def test_grep_result_hashes_missing_hash(self, tmp_data_dir):
+        """has_grep_result_hash returns False for unseen hash."""
+        cache = session.load("test_missing_hash")
+        assert not cache.has_grep_result_hash("nonexistent")
+        assert cache.get_grep_result_pattern("nonexistent") is None
+
+    def test_grep_result_hashes_fifo_eviction(self, tmp_data_dir):
+        """record_grep_result_hash evicts oldest when cap exceeded."""
+        cache = session.load("test_fifo_eviction")
+        max_cap = session.GREP_RESULT_HASHES_MAX
+
+        # Fill up to cap
+        for i in range(max_cap):
+            cache.record_grep_result_hash(f"hash{i:03d}", f"pattern{i}")
+        assert len(cache.grep_result_hashes) == max_cap
+
+        # Add one more to trigger eviction
+        cache.record_grep_result_hash("hash_overflow", "pattern_overflow")
+
+        # Should have evicted oldest (hash000)
+        assert len(cache.grep_result_hashes) <= max_cap
+        assert not cache.has_grep_result_hash("hash000"), "Oldest should be evicted"
+        assert cache.has_grep_result_hash("hash_overflow"), "New entry should exist"
+
+    def test_grep_result_hashes_updates_last_activity_ts(self, tmp_data_dir):
+        """record_grep_result_hash updates last_activity_ts."""
+        cache = session.load("test_activity_ts")
+        old_ts = cache.last_activity_ts
+        time.sleep(0.01)  # Small delay to ensure ts changes
+
+        cache.record_grep_result_hash("test_hash", "test_pattern")
+        assert cache.last_activity_ts > old_ts
+
+    def test_grep_result_hashes_same_pattern_overwrite(self, tmp_data_dir):
+        """Recording same hash again updates to latest pattern."""
+        cache = session.load("test_same_pattern")
+
+        cache.record_grep_result_hash("hash1", "pattern_a")
+        assert cache.get_grep_result_pattern("hash1") == "pattern_a"
+
+        # Record same hash with different pattern — updates to latest
+        cache.record_grep_result_hash("hash1", "pattern_b")
+        assert cache.get_grep_result_pattern("hash1") == "pattern_b"
+
+    def test_grep_result_hashes_multiple_patterns(self, tmp_data_dir):
+        """Multiple different patterns can be recorded."""
+        cache = session.load("test_multiple")
+
+        cache.record_grep_result_hash("hash1", "pattern1")
+        cache.record_grep_result_hash("hash2", "pattern2")
+        cache.record_grep_result_hash("hash3", "pattern3")
+
+        assert cache.get_grep_result_pattern("hash1") == "pattern1"
+        assert cache.get_grep_result_pattern("hash2") == "pattern2"
+        assert cache.get_grep_result_pattern("hash3") == "pattern3"
+
+    def test_grep_result_hashes_from_dict_missing_field(self, tmp_data_dir):
+        """from_dict handles missing grep_result_hashes gracefully."""
+        session_id = "test_from_dict_missing"
+        cache_path = session.paths.session_cache_path(session_id)
+        session.paths.ensure_dir(cache_path.parent)
+
+        # Write cache without grep_result_hashes (old schema)
+        import json
+        old_cache = {
+            "schema_version": session.SESSION_SCHEMA_VERSION,
+            "session_id": session_id,
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "created_ts": time.time(),
+            "created_by": "test",
+            "files": {},
+            "greps": [],
+            "edited_files": {},
+            "result_cache": {},
+            "bash_history": {},
+            "glob_history": [],
+            "web_history": {},
+            "skill_history": {},
+            "decisions": [],
+            "snapshot_shas": {},
+            "hints_seen": {},
+            "bash_dedup_emitted_ids": [],
+            "hints_emitted": 0,
+            "hints_ignored": 0,
+            "structured_hints_emitted": 0,
+            "index_only_hints_emitted": 0,
+            "hints_emitted_by_type": {},
+            "hints_suppressed_by_type": {},
+            "recent_hints": [],
+            "last_manifest_sha": "",
+            "last_manifest_ts": 0.0,
+            "version": 0,
+            "hint_category_history": {},
+            "image_shrink_count": {},
+            "file_access_counts": {},
+            "symbol_access_counts": {},
+            "cwd": None,
+            # grep_result_hashes deliberately omitted
+        }
+        cache_path.write_text(json.dumps(old_cache))
+
+        # Load should create empty grep_result_hashes
+        loaded = session.load(session_id)
+        assert loaded.grep_result_hashes == {}
+        assert not loaded.has_grep_result_hash("anything")
+
+    def test_grep_result_hashes_merge_cas(self, tmp_data_dir):
+        """CAS merge combines grep_result_hashes from both versions."""
+        session_id = "test_merge_cas"
+
+        # Create and save local version
+        local = session.load(session_id)
+        local.grep_result_hashes["hash_local"] = "pattern_local"
+
+        # Simulate remote version with different hashes
+        remote = session.SessionCache(
+            session_id=session_id,
+            started_ts=time.time(),
+            last_activity_ts=time.time(),
+        )
+        remote.grep_result_hashes["hash_remote"] = "pattern_remote"
+        remote.version = 2
+
+        # Merge local into remote
+        merged = session._merge_session_caches(local, remote)
+
+        # Both hashes should exist after merge
+        assert merged.has_grep_result_hash("hash_local")
+        assert merged.has_grep_result_hash("hash_remote")
+        assert merged.get_grep_result_pattern("hash_local") == "pattern_local"
+        assert merged.get_grep_result_pattern("hash_remote") == "pattern_remote"
+
+    def test_grep_result_hashes_invalidates_json_cache(self, tmp_data_dir):
+        """record_grep_result_hash invalidates _json_cache."""
+        cache = session.load("test_json_cache")
+
+        # Prime the json cache
+        json_before = cache.to_json()
+        assert cache._json_cache is not None
+
+        # Record a hash should invalidate cache
+        cache.record_grep_result_hash("hash1", "pattern1")
+        assert cache._json_cache is None
+
+        # Next to_json should be different
+        json_after = cache.to_json()
+        assert json_before != json_after
+        assert '"grep_result_hashes"' in json_after
