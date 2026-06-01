@@ -4364,6 +4364,20 @@ def _render(
     if _hint_telemetry:
         header_lines.append(_hint_telemetry)
 
+    # ── Pinned symbols — always-top, zero-budget-impact ──────────────────────
+    # Pinned symbols are added by the user via ``token-goat pinned add`` and
+    # must survive compaction because they represent load-bearing anchor points
+    # for the session (e.g. the class the agent is refactoring, the function
+    # under test).  They are rendered at the top of the manifest, before all
+    # other sections, so truncation never removes them.
+    _raw_pinned = getattr(cache, "pinned_symbols", None)
+    pinned_symbols_list: list[str] = list(_raw_pinned) if isinstance(_raw_pinned, list) else []
+    pinned_lines: list[str] = []
+    if pinned_symbols_list:
+        pinned_lines.append("## Pinned")
+        for _ps in pinned_symbols_list:
+            pinned_lines.append(f"- {_ps}")
+
     # Session stats: edited count, bash count, hints suppressed — 1 compact line.
     _session_stats = _format_session_stats(cache)
     if _session_stats:
@@ -4631,7 +4645,7 @@ def _render(
     sealed_tokens = _token_count("\n".join(sealed_block)) if sealed_block else 0
 
     fixed_text = "\n".join(
-        header_lines + blocker_lines + decision_lines + skill_lines
+        header_lines + pinned_lines + blocker_lines + decision_lines + skill_lines
         + test_failure_lines + dep_change_lines
         + uncommitted_lines + edited_lines + stale_lines
     )
@@ -5167,6 +5181,7 @@ def _render(
     _section_groups: list[tuple[str, list[str], bool]] = [
         ("sealed",        sealed_block,          True),
         ("header",        header_lines,          True),
+        ("pinned",        pinned_lines,          True),
         ("blockers",      blocker_lines,         True),
         ("decisions",     decision_lines,        True),
         ("skills",        skill_lines,           True),

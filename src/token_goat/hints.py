@@ -33,6 +33,7 @@ __all__ = [
     "build_bash_dedup_hint",
     "build_diff_hint",
     "build_high_frequency_hint",
+    "build_pinned_hint",
     "build_symbol_stale_hint",
     "build_glob_dedup_hint",
     "build_grep_dedup_hint",
@@ -4083,4 +4084,50 @@ def build_test_file_hint(
     )
 
     return HintItem(text, HINT_PRIORITY_LOW)
+
+
+def build_pinned_hint(
+    session_cache: Any,
+    file_path: str,
+    symbol_name: str,
+) -> HintItem | None:
+    """Return a CRITICAL hint when *symbol_name* in *file_path* matches a pinned spec.
+
+    Called by the pre-Read hook when a symbol read is in progress.  When the
+    ``<file>::<symbol>`` spec is in :attr:`SessionCache.pinned_symbols`, the
+    hint fires at :data:`HINT_PRIORITY_CRITICAL` (1) so it always leads all
+    other hints for that tool call.
+
+    Returns ``None`` when there are no pinned symbols or the current read does
+    not match any pin.
+
+    Args:
+        session_cache: A :class:`SessionCache` instance (or any object with a
+            ``pinned_symbols`` attribute).  Accepts ``None`` gracefully.
+        file_path: The path of the file being read (raw, as supplied to the tool).
+        symbol_name: The symbol name extracted from the read request.  May be
+            empty when the read is not symbol-targeted, in which case the
+            function returns ``None`` immediately.
+    """
+    if session_cache is None or not symbol_name:
+        return None
+
+    pinned: list = getattr(session_cache, "pinned_symbols", [])
+    if not pinned:
+        return None
+
+    from . import paths as _paths  # noqa: PLC0415
+
+    # Normalise the file path so comparisons are drive-letter and separator safe.
+    norm_file = _paths.normalize_key(file_path)
+
+    for spec in pinned:
+        if "::" not in spec:
+            continue
+        spec_file, spec_sym = spec.split("::", 1)
+        if _paths.normalize_key(spec_file) == norm_file and spec_sym == symbol_name:
+            text = f"Pinned: `{spec}` — always prioritized."
+            return HintItem(text, HINT_PRIORITY_CRITICAL)
+
+    return None
 

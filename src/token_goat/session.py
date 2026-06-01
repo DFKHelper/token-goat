@@ -38,6 +38,7 @@ __all__ = [
     "HINTS_CONTENT_DEDUP_MAX",
     "HINTS_SEEN_MAX",
     "IMAGE_SHRINK_COUNT_MAX",
+    "PINNED_SYMBOLS_MAX",
     "RESULT_CACHE_MAX",
     "SKILL_HISTORY_MAX",
     "SNAPSHOT_SHAS_MAX",
@@ -590,6 +591,15 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         merged_sac[sym_key] = max(merged_sac.get(sym_key, 0), count)
     merged.symbol_access_counts = merged_sac
 
+    # pinned_symbols: union-with-cap, preserving insertion order from remote base.
+    # A pin set by the user in any concurrent process is authoritative; take the
+    # union of both lists, capped at PINNED_SYMBOLS_MAX, remote-order first.
+    merged_pinned: list[str] = list(remote.pinned_symbols)
+    for spec in local.pinned_symbols:
+        if spec not in merged_pinned:
+            merged_pinned.append(spec)
+    merged.pinned_symbols = merged_pinned[:PINNED_SYMBOLS_MAX]
+
     merged._invalidate_json_cache()
     return merged
 
@@ -936,6 +946,12 @@ _SNAPSHOT_SHAS_EVICT: Final[int] = 50
 IMAGE_SHRINK_COUNT_MAX: Final[int] = 200
 _IMAGE_SHRINK_COUNT_EVICT: Final[int] = 40
 
+# Maximum number of pinned symbols per session.  Pinned symbols always appear at
+# the top of session hints and at the top of the compaction manifest.  Stored as
+# a list of "<file>::<symbol>" spec strings.  20 is enough to cover any realistic
+# pinned-symbol workflow; a hard cap prevents abuse in long-running loops.
+PINNED_SYMBOLS_MAX: Final[int] = 20
+
 # Maximum size of the bash_dedup_emitted_ids set.  Bash history is capped at
 # BASH_HISTORY_MAX (75), but the id set is not evicted when history entries are
 # dropped, so the set can drift above the history cap in long sessions.  Cap the
@@ -1094,6 +1110,11 @@ class SessionCache:
     # Incremented by mark_file_read() when called with a symbol argument.
     # Missing in older sessions → empty dict. Persisted via to_dict/from_dict.
     symbol_access_counts: dict[str, int] = field(default_factory=dict)
+    # User-pinned symbols: list of "<file>::<symbol>" spec strings.  Pinned symbols
+    # always appear at the top of session hints and at the top of the compaction
+    # manifest.  Capped at PINNED_SYMBOLS_MAX (20).  Stored as an ordered list
+    # so insertion order is preserved for display.  Missing in older sessions → [].
+    pinned_symbols: list[str] = field(default_factory=list)
     # Monotonically-incrementing version counter for optimistic CAS in save().
     # Starts at 0 for a new session; each successful save() increments by 1.
     # When two concurrent processes both load version N, the second to save
@@ -1177,6 +1198,7 @@ class SessionCache:
             image_shrink_count=self.image_shrink_count,
             file_access_counts=self.file_access_counts,
             symbol_access_counts=self.symbol_access_counts,
+            pinned_symbols=list(self.pinned_symbols),
             cwd=self.cwd,
         )
 
@@ -1375,6 +1397,44 @@ class SessionCache:
                 self.grep_result_hashes.pop(next(iter(self.grep_result_hashes)))
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
+
+    # ------------------------------------------------------------------
+    # Pinned-symbol helpers
+    # ------------------------------------------------------------------
+
+    def add_pinned(self, spec: str) -> None:
+        """Add *spec* (``"<file>::<symbol>"``) to the pinned-symbols list.
+
+        No-ops when *spec* is already pinned.  Raises ``ValueError`` when the
+        pinned list is at :data:`PINNED_SYMBOLS_MAX` (20 entries).
+        """
+        if spec in self.pinned_symbols:
+            return
+        if len(self.pinned_symbols) >= PINNED_SYMBOLS_MAX:
+            raise ValueError(
+                f"pinned-symbol limit reached ({PINNED_SYMBOLS_MAX}); "
+                "remove an entry with `token-goat pinned remove` first"
+            )
+        self.pinned_symbols.append(spec)
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+
+    def remove_pinned(self, spec: str) -> bool:
+        """Remove *spec* from the pinned-symbols list.
+
+        Returns True when the spec was present and removed, False when it was
+        not in the list (idempotent — no error on missing spec).
+        """
+        if spec not in self.pinned_symbols:
+            return False
+        self.pinned_symbols.remove(spec)
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+        return True
+
+    def list_pinned(self) -> list[str]:
+        """Return the current list of pinned specs (insertion-ordered copy)."""
+        return list(self.pinned_symbols)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SessionCache:
@@ -1629,6 +1689,17 @@ class SessionCache:
                     with contextlib.suppress(TypeError, ValueError):
                         symbol_access_counts[sym_key] = max(0, int(count))
 
+        # pinned_symbols: list[str] — user-pinned "<file>::<symbol>" specs.
+        # Missing in older sessions → [] (backward compat). Malformed entries dropped.
+        pinned_symbols: list[str] = []
+        raw_pinned = d.get("pinned_symbols", [])
+        if isinstance(raw_pinned, list):
+            for spec in raw_pinned:
+                if isinstance(spec, str) and spec and "::" in spec:
+                    pinned_symbols.append(spec)
+            # Defensive trim — manually-edited caches could exceed the cap.
+            pinned_symbols = pinned_symbols[:PINNED_SYMBOLS_MAX]
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -1662,6 +1733,7 @@ class SessionCache:
             image_shrink_count=image_shrink_count,
             file_access_counts=file_access_counts,
             symbol_access_counts=symbol_access_counts,
+            pinned_symbols=pinned_symbols,
             cwd=str(d["cwd"]) if isinstance(d.get("cwd"), str) else None,
         )
 
@@ -2196,6 +2268,7 @@ class _SessionDict(TypedDict, total=False):
     image_shrink_count: dict[str, int]
     file_access_counts: dict[str, int]
     symbol_access_counts: dict[str, int]
+    pinned_symbols: list[str]
     cwd: str | None
 
 

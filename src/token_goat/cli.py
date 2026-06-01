@@ -3087,6 +3087,130 @@ def cmd_decision(
     typer.echo(f"recorded decision for session {resolved[:8]}")
 
 
+@app.command("pinned", rich_help_panel="Core")
+def cmd_pinned(
+    action: str = typer.Argument(
+        ...,
+        help=(
+            "Sub-command: 'add', 'remove', or 'list'. "
+            "Example: token-goat pinned add src/foo.py::MyClass"
+        ),
+    ),
+    spec: str = typer.Argument(
+        "",
+        help=(
+            "Symbol spec in '<file>::<symbol>' format. "
+            "Required for 'add' and 'remove'; ignored for 'list'."
+        ),
+    ),
+    session_id: str = typer.Option(
+        "",
+        "--session-id",
+        "-s",
+        help=(
+            "Session to operate against (full or 8-char short form). "
+            "When omitted, the most-recently-active session is used."
+        ),
+    ),
+) -> None:
+    """Manage pinned symbols for the current session.
+
+    Pinned symbols always appear at the top of session hints and at the top of
+    the compaction manifest.  Up to 20 symbols can be pinned per session.
+
+    Sub-commands::
+
+        token-goat pinned add src/auth.py::login
+        token-goat pinned remove src/auth.py::login
+        token-goat pinned list
+
+    Pinned symbols persist in the session JSON and survive re-reads.  They are
+    surfaced in the manifest under ``## Pinned`` before all other sections so
+    they survive aggressive compaction.
+    """
+    from . import paths as _paths  # noqa: PLC0415
+    from . import session as session_mod  # noqa: PLC0415
+
+    sessions_dir = _paths.data_dir() / "sessions"
+
+    def _resolve_session_id(raw: str) -> str | None:
+        if raw and len(raw) >= 32:
+            return raw
+        if raw:
+            if sessions_dir.exists():
+                for f in sessions_dir.glob(f"{raw}*.json"):
+                    return f.stem
+            return None
+        if not sessions_dir.exists():
+            return None
+        candidates = []
+        for f in sessions_dir.glob("*.json"):
+            try:
+                candidates.append((f.stat().st_mtime, f.stem))
+            except OSError:
+                continue
+        if not candidates:
+            return None
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        return candidates[0][1]
+
+    action = action.lower().strip()
+    if action not in ("add", "remove", "list"):
+        _error(f"unknown action {action!r}; expected 'add', 'remove', or 'list'")
+        raise typer.Exit(1)
+
+    resolved = _resolve_session_id(session_id.strip())
+    if resolved is None:
+        if session_id:
+            _error(f"no session cache found for: {session_id!r}")
+        else:
+            _error(
+                "no session cache files present in "
+                f"{sessions_dir} — start a Claude/Codex session first or pass --session-id"
+            )
+        raise typer.Exit(1)
+
+    if action == "list":
+        cache = session_mod.safe_load(resolved)
+        if cache is None or not cache.pinned_symbols:
+            typer.echo(f"(no pinned symbols for session {resolved[:8]})")
+            raise typer.Exit(0)
+        for entry in cache.pinned_symbols:
+            typer.echo(entry)
+        raise typer.Exit(0)
+
+    # add or remove — spec required
+    spec = spec.strip()
+    if not spec:
+        _error(f"spec is required for '{action}'; pass '<file>::<symbol>'")
+        raise typer.Exit(1)
+    if "::" not in spec:
+        _error(f"invalid spec {spec!r}; expected '<file>::<symbol>' (must contain '::')")
+        raise typer.Exit(1)
+
+    cache = session_mod.safe_load(resolved)
+    if cache is None:
+        _error(f"could not load session cache for {resolved[:8]}")
+        raise typer.Exit(1)
+
+    if action == "add":
+        try:
+            cache.add_pinned(spec)
+        except ValueError as exc:
+            _error(str(exc))
+            raise typer.Exit(1) from exc
+        session_mod.save(cache)
+        typer.echo(f"pinned: {spec} (session {resolved[:8]})")
+    else:  # remove
+        removed = cache.remove_pinned(spec)
+        if removed:
+            session_mod.save(cache)
+            typer.echo(f"unpinned: {spec} (session {resolved[:8]})")
+        else:
+            typer.echo(f"(not pinned: {spec})")
+        raise typer.Exit(0)
+
+
 @app.command("resume", rich_help_panel="Core")
 def cmd_resume(
     session_id: str = typer.Argument(
