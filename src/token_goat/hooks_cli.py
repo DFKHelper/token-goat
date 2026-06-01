@@ -41,7 +41,10 @@ from typing import Final, Literal, ParamSpec, TypeVar, cast
 
 from . import paths
 from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
-from .util import get_logger, sanitize_surrogates
+from .util import configure_stdout_encoding, get_logger, sanitize_surrogates
+
+# Ensure UTF-8 encoding on stdout/stderr for Windows cp1252 terminals.
+configure_stdout_encoding()
 
 #: Valid harness identifiers used by :func:`normalize_payload`, :func:`denormalize_response`,
 #: and :func:`safe_run`.  Defined as a ``Literal`` so callers get a type error on

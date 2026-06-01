@@ -1,11 +1,20 @@
 """Tests for token_goat.util helpers."""
 from __future__ import annotations
 
+import io
 import logging
 import pathlib
 import re
+from unittest import mock
 
-from token_goat.util import ellipsize, get_logger, sanitize_control_chars, strip_ansi
+from token_goat.util import (
+    configure_stdout_encoding,
+    ellipsize,
+    get_logger,
+    sanitize_control_chars,
+    strip_ansi,
+    strip_bom,
+)
 
 
 def test_get_logger_name() -> None:
@@ -198,3 +207,111 @@ class TestSanitizeControlChars:
         """CJK (East Asian) characters are preserved."""
         text = "hello 中文 world"
         assert sanitize_control_chars(text) == text
+
+
+class TestStripBom:
+    """strip_bom removes UTF-8 BOM (U+FEFF) from string start."""
+
+    def test_removes_bom_at_start(self) -> None:
+        """BOM character at the start is removed."""
+        text = "﻿hello world"
+        assert strip_bom(text) == "hello world"
+
+    def test_no_bom_unchanged(self) -> None:
+        """String without BOM is returned unchanged."""
+        text = "hello world"
+        assert strip_bom(text) == "hello world"
+
+    def test_bom_only(self) -> None:
+        """String containing only BOM becomes empty."""
+        text = "﻿"
+        assert strip_bom(text) == ""
+
+    def test_idempotent(self) -> None:
+        """Applying strip_bom twice produces the same result."""
+        text = "﻿hello"
+        once = strip_bom(text)
+        twice = strip_bom(once)
+        assert twice == once
+
+    def test_bom_in_middle_not_removed(self) -> None:
+        """BOM character in the middle is not removed."""
+        text = "hello﻿world"
+        assert strip_bom(text) == text
+
+    def test_empty_string(self) -> None:
+        """Empty string is returned unchanged."""
+        assert strip_bom("") == ""
+
+    def test_multiple_boms_only_first_removed(self) -> None:
+        """Only the BOM at position 0 is removed."""
+        text = "﻿﻿hello"
+        result = strip_bom(text)
+        assert result == "﻿hello"
+
+    def test_json_with_bom(self) -> None:
+        """Real-world example: JSON string starting with BOM."""
+        json_text = '﻿{"key": "value"}'
+        assert strip_bom(json_text) == '{"key": "value"}'
+
+
+class TestConfigureStdoutEncoding:
+    """configure_stdout_encoding reconfigures stdout/stderr for UTF-8."""
+
+    def test_noop_when_stdout_none(self) -> None:
+        """No error when stdout is None."""
+        with mock.patch("sys.stdout", None):
+            # Should not raise
+            configure_stdout_encoding()
+
+    def test_noop_when_no_reconfigure_method(self) -> None:
+        """No error when stdout has no reconfigure method."""
+        fake_stdout = io.StringIO()
+        # StringIO doesn't have reconfigure
+        with mock.patch("sys.stdout", fake_stdout):
+            # Should not raise
+            configure_stdout_encoding()
+
+    def test_calls_reconfigure_on_stdout(self) -> None:
+        """reconfigure is called on stdout when available."""
+        fake_stdout = mock.MagicMock()
+        fake_stdout.reconfigure = mock.MagicMock()
+        with mock.patch("sys.stdout", fake_stdout):
+            configure_stdout_encoding()
+            fake_stdout.reconfigure.assert_called_once_with(encoding="utf-8", errors="replace")
+
+    def test_calls_reconfigure_on_stderr(self) -> None:
+        """reconfigure is called on stderr when available."""
+        fake_stderr = mock.MagicMock()
+        fake_stderr.reconfigure = mock.MagicMock()
+        with mock.patch("sys.stderr", fake_stderr):
+            configure_stdout_encoding()
+            fake_stderr.reconfigure.assert_called_once_with(encoding="utf-8", errors="replace")
+
+    def test_handles_oserror(self) -> None:
+        """OSError from reconfigure is silently caught."""
+        fake_stdout = mock.MagicMock()
+        fake_stdout.reconfigure = mock.MagicMock(side_effect=OSError("test error"))
+        with mock.patch("sys.stdout", fake_stdout):
+            # Should not raise
+            configure_stdout_encoding()
+
+    def test_handles_attribute_error(self) -> None:
+        """AttributeError from reconfigure is silently caught."""
+        fake_stdout = mock.MagicMock()
+        fake_stdout.reconfigure = mock.MagicMock(side_effect=AttributeError("test error"))
+        with mock.patch("sys.stdout", fake_stdout):
+            # Should not raise
+            configure_stdout_encoding()
+
+    def test_continues_on_first_failure(self) -> None:
+        """If stdout reconfigure fails, stderr reconfigure still runs."""
+        fake_stdout = mock.MagicMock()
+        fake_stdout.reconfigure = mock.MagicMock(side_effect=OSError("stdout broken"))
+        fake_stderr = mock.MagicMock()
+        fake_stderr.reconfigure = mock.MagicMock()
+        with mock.patch("sys.stdout", fake_stdout), mock.patch("sys.stderr", fake_stderr):
+            configure_stdout_encoding()
+            # Both should have been called even though stdout failed
+            fake_stdout.reconfigure.assert_called_once()
+            fake_stderr.reconfigure.assert_called_once()

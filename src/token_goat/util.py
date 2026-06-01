@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 from logging import Logger
 from subprocess import CompletedProcess
 
@@ -24,6 +25,8 @@ __all__ = [
     "ellipsize",
     "env_float",
     "env_int",
+    "configure_stdout_encoding",
+    "strip_bom",
 ]
 
 
@@ -225,3 +228,57 @@ def env_int(env_key: str, default: int, *, lo: int | None = None, hi: int | None
     if hi is not None and val > hi:
         val = hi
     return val
+
+
+def configure_stdout_encoding() -> None:
+    """Reconfigure sys.stdout and sys.stderr to use UTF-8 encoding.
+
+    On Windows, the default terminal encoding is cp1252, which cannot encode
+    many Unicode characters (box-drawing chars, arrows, emoji in lefthook output).
+    This function reconfigures both streams to use UTF-8 with ``errors='replace'``
+    so non-ASCII characters are printed correctly (or replaced with U+FFFD on
+    encoding errors).
+
+    This is a no-op if stdout/stderr have no ``reconfigure`` method (older Python
+    versions or special environments like closed pipes), or if reconfiguration fails
+    (e.g. already-closed stream).
+
+    The function catches and silently ignores all exceptions, so it is safe to call
+    at any point in the program lifecycle.
+    """
+    import contextlib
+
+    with contextlib.suppress(AttributeError, OSError):
+        if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    with contextlib.suppress(AttributeError, OSError):
+        if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+
+
+def strip_bom(text: str) -> str:
+    """Remove UTF-8 BOM (U+FEFF) from the start of a string if present.
+
+    On Windows, files may be written with a UTF-8 BOM (Byte Order Mark).
+    When these files are read and parsed as JSON, the BOM becomes U+FEFF
+    at the start of the string, causing json.loads() to fail with a JSONDecodeError.
+
+    This function removes the BOM character if it appears at position 0, leaving
+    the string unchanged otherwise. It is idempotent — calling it multiple times
+    on the same string has no additional effect after the first call.
+
+    Args:
+        text: Input string that may start with a UTF-8 BOM.
+
+    Returns:
+        String with the BOM removed (if present), or unchanged if no BOM.
+
+    Examples:
+        >>> strip_bom("﻿hello")
+        'hello'
+        >>> strip_bom("hello")
+        'hello'
+    """
+    if text.startswith("﻿"):
+        return text[1:]
+    return text

@@ -123,7 +123,7 @@ from typing import Any, Final, TypedDict, TypeVar, cast
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
-from .util import env_int, get_logger
+from .util import env_int, get_logger, strip_bom
 
 _LOG = get_logger("session")
 
@@ -2704,6 +2704,10 @@ def _load_or_empty_json(path: Path) -> dict[str, object]:
     be read (OSError) or parsed (JSONDecodeError), logs a debug message and
     returns an empty dict.
 
+    On Windows, files may be written with a UTF-8 BOM (Byte Order Mark), which
+    becomes U+FEFF at the start of the string. The BOM is stripped before
+    parsing to prevent JSONDecodeError.
+
     Parameters
     ----------
     path
@@ -2715,7 +2719,9 @@ def _load_or_empty_json(path: Path) -> dict[str, object]:
         The parsed JSON as a dict, or an empty dict on any error.
     """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_text(encoding="utf-8")
+        raw = strip_bom(raw)
+        return json.loads(raw)
     except (OSError, json.JSONDecodeError) as e:
         _LOG.debug("load failed for %s: %s — returning empty", path, e)
         return {}
