@@ -284,12 +284,14 @@ class TestCurrentBlockersSection:
         )
         m = compact.build_manifest(sid, max_tokens=400)
         assert "**Blocked:**" in m
-        assert "**Edited:**" in m
+        # Uncommitted edits show as Staged/Uncommitted; committed show as Edited
+        edited_header = "**Staged/Uncommitted:**" if "**Staged/Uncommitted:**" in m else "**Edited:**"
+        assert edited_header in m, f"Expected {edited_header} in:\n{m}"
         blockers_pos = m.index("**Blocked:**")
-        edited_pos = m.index("**Edited:**")
+        edited_pos = m.index(edited_header)
         assert blockers_pos < edited_pos, (
             f"Expected 'Current Blockers' (pos {blockers_pos}) before "
-            f"'Files Edited' (pos {edited_pos})"
+            f"'{edited_header}' (pos {edited_pos})"
         )
 
     def test_success_exit_zero_not_a_blocker(self, tmp_data_dir, make_session):

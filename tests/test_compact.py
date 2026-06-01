@@ -110,7 +110,8 @@ class TestBuildManifest:
         session.mark_file_read(sid, "/proj/src/auth.py", offset=0, limit=50)
         # read + edited = 2 events >= min_events=0 for manifest; but build_manifest has no min
         result = compact.build_manifest(sid)
-        assert "**Edited:**" in result
+        # Uncommitted edits show as Staged/Uncommitted; committed show as Edited
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got:\n{result}"
         assert "auth.py" in result
 
     def test_symbols_section_present(self, tmp_data_dir, monkeypatch):
@@ -172,9 +173,9 @@ class TestBuildManifest:
         session.mark_file_edited(sid, "/proj/src/edited_with_symbols.py")
         session.mark_file_read(sid, "/proj/src/edited_with_symbols.py", symbol="func_from_edited")
         result = compact.build_manifest(sid)
-        # The file should appear in **Edited:**
+        # The file should appear in edited section (Staged/Uncommitted or Edited)
         assert "edited_with_symbols.py" in result
-        assert "**Edited:**" in result
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got:\n{result}"
         # But the symbol should NOT appear in **Symbols Accessed:**
         if "**Symbols Accessed:**" in result:
             syms_part = result.split("**Symbols Accessed:**", 1)[1].split("\n**", 1)[0]
@@ -279,10 +280,15 @@ class TestBuildManifest:
             session.mark_file_edited(sid, "/proj/b.py")
 
         result = compact.build_manifest(sid)
-        # The Edited section lists files in recency order.  Extract just that body
-        # section to avoid the sealed block header (RESUME / ✎ lines) which uses
-        # edit-count ordering and would cause false negatives here.
-        edited_section = result[result.find("**Edited:**"):]
+        # The Edited section (Staged/Uncommitted or committed) lists files in recency order.
+        # Extract just that body section to avoid the sealed block header (RESUME / ✎ lines)
+        # which uses edit-count ordering and would cause false negatives here.
+        # Look for either Staged/Uncommitted (no commits) or Edited (with commits).
+        edited_idx = result.find("**Staged/Uncommitted:**")
+        if edited_idx < 0:
+            edited_idx = result.find("**Edited:**")
+        assert edited_idx >= 0, f"Expected Staged/Uncommitted or Edited section, got:\n{result}"
+        edited_section = result[edited_idx:]
         assert edited_section.index("b.py") < edited_section.index("a.py"), (
             "recency should rank b.py (recent) before a.py (older, higher count)\n" + result
         )
@@ -1389,9 +1395,8 @@ class TestDedupHintEmittedIdsFilterBash:
         monkeypatch.setattr(compact, "_get_git_diff_stat_summary", lambda _root: "")
         monkeypatch.setattr(compact, "_get_git_diff_stat", lambda *a: None)
         result = compact.build_manifest(sid)
-        assert "**Edited:**\n" in result or "**Edited:**" in result, (
-            f"Expected '**Edited:**' header, got something else:\n{result}"
-        )
+        # Uncommitted edits show as Staged/Uncommitted; committed show as Edited
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got:\n{result}"
         assert "**Edited:** (preserve)" not in result, (
             f"'(preserve)' suffix must be dropped:\n{result}"
         )
@@ -1913,7 +1918,8 @@ class TestBuildSealedBlock:
         result = compact.build_manifest(sid)
         assert "### MUST_PRESERVE" in result
         assert "<<preserve>>" in result
-        assert "**Edited:**" in result, (
+        # Uncommitted edits show under **Staged/Uncommitted:**; committed edits under **Edited:**
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), (
             f"Detail section should still appear alongside sealed block:\n{result}"
         )
 
@@ -3244,9 +3250,11 @@ class TestImportanceScoringInManifest:
         result = compact.build_manifest(sid)
         assert "edited_once.py" in result
         assert "read_heavy.py" in result
-        # "**Edited:**" section must appear before "**Files:**"
-        assert result.index("**Edited:**") < result.index("**Files:**"), (
-            f"'**Edited:**' must precede '**Files:**':\n{result}"
+        # Edited section (Staged/Uncommitted or Edited) must appear before Files
+        edited_header = "**Staged/Uncommitted:**" if "**Staged/Uncommitted:**" in result else "**Edited:**"
+        assert edited_header in result, f"Expected {edited_header} in:\n{result}"
+        assert result.index(edited_header) < result.index("**Files:**"), (
+            f"'{edited_header}' must precede '**Files:**':\n{result}"
         )
         # Edited file must appear before read-heavy file
         assert result.index("edited_once.py") < result.index("read_heavy.py"), (
@@ -4221,7 +4229,8 @@ class TestAllSectionsSimultaneous:
         sid = "all-sections-edited"
         self._build_full_session(sid)
         result = compact.build_manifest(sid, max_tokens=800)
-        assert "**Edited:**" in result or "compact.py" in result
+        # Uncommitted edits show as Staged/Uncommitted; committed show as Edited
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result or "compact.py" in result), f"Got:\n{result}"
 
     def test_all_sections_glob_present_in_mature_session(self, tmp_data_dir):
         """Directory Scans section must appear for a mature session with glob history."""
@@ -5562,7 +5571,7 @@ class TestActivityFloorSuppression:
             session.mark_file_edited(sid, f"/proj/src/file{i}.py")
         result = compact.build_manifest_adaptive(sid)
         assert "Token-Goat Session Manifest" in result
-        assert "**Edited:**" in result
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got: {result}"
 
 
 # ---------------------------------------------------------------------------
@@ -5771,8 +5780,8 @@ class TestInlineDiffForTop2Edited:
         cache.cwd = "/proj"
         session.save(cache)
         manifest = compact._build_manifest_from_cache(cache, sid, 800)
-        # bar.py inlines → _inline_diffs_were_emitted=True → merge suppressed → **Edited:** present.
-        assert "**Edited:**" in manifest
+        # bar.py inlines → _inline_diffs_were_emitted=True → merge suppressed → Staged/Uncommitted or Edited present.
+        assert ("**Staged/Uncommitted:**" in manifest or "**Edited:**" in manifest), f"Got:\n{manifest}"
         assert "inline diff" in manifest  # bar.py inlined
         assert "bar.py" in manifest
 
@@ -5923,7 +5932,8 @@ class TestHumanizeBytes:
         sid = "bold-edited-abc"
         session.mark_file_edited(sid, "src/foo.py")
         result = compact.build_manifest(sid)
-        assert "**Edited:**" in result
+        # Uncommitted edits show as Staged/Uncommitted; committed show as Edited
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got:\n{result}"
         assert "### Files Edited" not in result
 
     def test_syms_section_uses_bold_label(self, tmp_data_dir):
@@ -6522,7 +6532,7 @@ class TestFilesEditedReadMerge:
         result = compact.build_manifest(sid, max_tokens=800)
 
         # Separate sections: Edited uses **Edited:** header.
-        assert "**Edited:**" in result
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got: {result}"
 
     def test_edits_only_no_merge(self, tmp_data_dir):
         """With edits but no reads in top-files, no merge is attempted."""
@@ -6532,7 +6542,7 @@ class TestFilesEditedReadMerge:
         # No reads recorded.
         result = compact.build_manifest(sid, max_tokens=600)
         # Edits appear under **Edited:** (not merged).
-        assert "**Edited:**" in result
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got: {result}"
         # **Files:** should not appear (no read entries to merge).
         # Tolerate absence of **Files:** section entirely.
         if "**Files:**" in result:
@@ -7477,7 +7487,7 @@ class TestNoiseFloor:
         # (if they have any content)
         assert "**Patterns Searched:**" in result or "**Patterns Searched:**" not in result  # May be suppressed by other logic
         # But at minimum, key sections should exist
-        assert "**Edited:**" in result
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got: {result}"
         assert "**Symbols Accessed:**" in result or "**Files:**" in result
 
     def test_noise_floor_high_value_drops_all_optional_sections(self, tmp_data_dir, monkeypatch):
@@ -7508,7 +7518,7 @@ class TestNoiseFloor:
         result = compact.build_manifest(sid)
 
         # Protected sections should still be present
-        assert "**Edited:**" in result  # edited is protected
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got: {result}"  # edited is protected
 
         # Optional sections like **Symbols Accessed:** and **Files:** should be dropped
         # when their token count is below 10000
@@ -7540,7 +7550,7 @@ class TestNoiseFloor:
 
         result = compact.build_manifest(sid)
         # The manifest should still have header and edited sections (protected)
-        assert "**Edited:**" in result
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got: {result}"
         # Some optional sections might be dropped if they are small
 
     def test_render_uses_noise_floor_tokens_parameter_not_config(self, tmp_data_dir, monkeypatch):
@@ -7564,7 +7574,7 @@ class TestNoiseFloor:
         # Before the fix this parameter was silently ignored and config (0) was used.
         result, _ = compact._render(cache, sid, 400, noise_floor_tokens=10000)
 
-        assert "**Edited:**" in result  # protected — always survives
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got: {result}"  # protected — always survives
         assert "**Files:**" not in result   # should be dropped: token count < 10000
         assert "**Symbols Accessed:**" not in result    # should be dropped: token count < 10000
 

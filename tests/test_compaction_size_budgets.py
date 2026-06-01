@@ -276,13 +276,13 @@ class TestEditedFilesCap:
 
         manifest, _ = compact.build_manifest_with_count(sid, max_tokens=400)
 
-        assert "**Edited:**" in manifest or "**Files:**" in manifest
+        assert ("**Staged/Uncommitted:**" in manifest or "**Edited:**" in manifest or "**Files:**" in manifest)
         edit_lines = [ln for ln in manifest.splitlines() if ln.startswith("- ✎")]
         assert len(edit_lines) <= 20, (
             f"edited-files section listed {len(edit_lines)} files (cap=20);\n{manifest}"
         )
-        assert "…+" in manifest and "more edited" in manifest, (
-            f"expected overflow notice '…+N more edited' in manifest:\n{manifest}"
+        assert "…+" in manifest and ("more edited" in manifest or "more staged" in manifest), (
+            f"expected overflow notice '…+N more' in manifest:\n{manifest}"
         )
 
     def test_no_overflow_at_exactly_cap(self, tmp_data_dir):

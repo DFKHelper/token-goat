@@ -1208,6 +1208,52 @@ def _get_session_commits(cwd: str | None, session_start_ts: float) -> list[str]:
     return [sanitize_log_str(line, max_len=100) for line in out.splitlines()[:5]]
 
 
+def _get_committed_files(session_cache: object, cwd: str | None) -> set[str]:
+    """Return normalized file paths that were committed since session start.
+
+    Queries ``git log --name-only`` for commits since the session's creation
+    timestamp and returns a set of normalized (lowercase, forward-slash) paths
+    that have been committed.  Used by the manifest builder to identify which
+    edited files are recoverable from git history (lower priority for the
+    compaction manifest) vs. staged/uncommitted (CRITICAL).
+
+    Returns an empty set on any error (git unavailable, not in repo, cwd is None,
+    invalid timestamp, or command timeout).  Fail-soft: never blocks the manifest.
+
+    Times out after 2 seconds.
+    """
+    try:
+        if not cwd:
+            return set()
+        created_ts = float(getattr(session_cache, "created_ts", 0.0) or 0.0)
+        if created_ts <= 0:
+            return set()
+
+        # Use --name-only to get the list of files per commit.
+        # --since uses unix timestamp format (seconds, not ISO 8601).
+        out = _run_git(
+            ["log", "--name-only", "--format=", f"--since={int(created_ts)}"],
+            cwd,
+            timeout=2,
+        )
+        if not out:
+            return set()
+
+        # Normalize each file path: lowercase and forward slashes (same as
+        # session._normalize_path does). One file path per line.
+        committed = set()
+        for line in out.splitlines():
+            line = line.strip()
+            if line:
+                # Normalize the path key: same operation as _norm_key()
+                normalized = _norm_key(line)
+                committed.add(normalized)
+        return committed
+    except (ValueError, TypeError):
+        # In case created_ts cannot be coerced to float
+        return set()
+
+
 def _detect_orchestrator_mode(
     session_cache: object,
     repo_root: str | None,
@@ -4858,13 +4904,28 @@ def _render(
         if getattr(entry, "last_edit_ts", 0.0) > 0.0
     }
 
+    # Get committed files — if a file was edited AND committed this session, it is
+    # recoverable from git and lower-priority for the manifest vs. staged/uncommitted.
+    committed_files_norm = _get_committed_files(cache, cwd)
+
     if edited_clean:
-        edited_lines.append("**Edited:**")
-        # Sort by recency (most recently edited first) so truncation at
+        # Split edited files into two categories: staged/uncommitted (CRITICAL) and
+        # committed (recoverable from git, lower priority).  Only show the Staged/
+        # Uncommitted section when there are uncommitted files; when all edits are
+        # committed, emit a brief summary instead.
+        uncommitted_edits = {
+            path: count for path, count in edited_clean.items()
+            if _norm_key(path) not in committed_files_norm
+        }
+        committed_edits = {
+            path: count for path, count in edited_clean.items()
+            if _norm_key(path) in committed_files_norm
+        }
+
+        # Sort all edited files by recency (most recently edited first) so truncation at
         # _MAX_EDITED_FILES_SHOWN drops the OLDEST edits rather than the newest.
-        # When two files share the same last_edit_ts (e.g. both only edited, never read —
-        # no FileEntry so last_edit_ts=0.0), edit count is the tiebreaker so the
-        # most-touched file still wins within that cohort.
+        # When two files share the same last_edit_ts, edit count is the tiebreaker.
+        # This sorted_edited list is used for all downstream logic (inline diffs, overflow, etc.)
         sorted_edited = sorted(
             edited_clean.items(),
             key=lambda item: (_edit_ts_by_norm.get(_norm_key(item[0]), 0.0), item[1]),
@@ -4873,15 +4934,48 @@ def _render(
         shown_edited = sorted_edited[:_MAX_EDITED_FILES_SHOWN]
         overflow_edited = len(sorted_edited) - len(shown_edited)
 
+        # Determine which section header to show and set up tracking for inline diffs.
+        # Split shown_edited into uncommitted and committed subsets for display.
+        shown_uncommitted = [item for item in shown_edited if _norm_key(item[0]) not in committed_files_norm]
+        shown_committed = [item for item in shown_edited if _norm_key(item[0]) in committed_files_norm]
+
+        if uncommitted_edits:
+            # Render Staged/Uncommitted section (critical — must preserve).
+            edited_lines.append("**Staged/Uncommitted:**")
+            _tracked_edits = uncommitted_edits  # Track for inline diffs below
+            # Will render shown_uncommitted via inline diffs / grouped dir below
+        elif committed_edits:
+            # All edits are committed — emit brief summary instead of full listing.
+            edited_lines.append("**Edited:** All edits committed — see git log")
+            _tracked_edits = {}  # No inline diffs needed
+        else:
+            # This shouldn't happen since we're in the `if edited_clean` block.
+            _tracked_edits = {}
+
+        # Committed section (lower priority, only if there are uncommitted files too).
+        if uncommitted_edits and committed_edits and shown_committed:
+            edited_lines.append("**Committed This Session:**")
+            for path, count in shown_committed:
+                short = _short_path(path, project_root=cwd)
+                suffix = _count_suffix(count)
+                edited_lines.append(f"- {short}{suffix}")
+            overflow_committed = len([item for item in sorted_edited if _norm_key(item[0]) in committed_files_norm]) - len(shown_committed)
+            if overflow_committed > 0:
+                edited_lines.append(f"- …+{overflow_committed} more committed")
+
         # ── #17: single-file inline diff ─────────────────────────────────────
-        # When there is exactly one edited file AND the whole-repo diff is small
-        # (<= _SINGLE_FILE_DIFF_CAP bytes), replace the file-list entry with the
-        # inline diff so the compaction LLM has the exact change without a
-        # round-trip.  Only attempted when cwd is available.
+        # When there is exactly one uncommitted/staged file AND the whole-repo diff
+        # is small (<= _SINGLE_FILE_DIFF_CAP bytes), replace the file-list entry with
+        # the inline diff so the compaction LLM has the exact change without a
+        # round-trip.  Only attempted when cwd is available and there are uncommitted files.
+        # Use shown_uncommitted if available (when we're splitting staged/committed);
+        # otherwise use shown_edited (backward compat for all-committed case).
+        _files_to_render = shown_uncommitted if uncommitted_edits else shown_edited
+
         _single_file_diff_used = False
         _inline_diffs_were_emitted = False  # Item #13: track for Pending Changes gate
-        if len(edited_clean) == 1 and cwd:
-            _only_path, _only_count = shown_edited[0]
+        if len(_files_to_render) == 1 and cwd:
+            _only_path, _only_count = _files_to_render[0]
             _whole_diff = _get_whole_repo_diff(cwd)
             if _whole_diff:
                 edited_lines.append(f"#### {_short_path(_only_path, project_root=cwd)} (inline diff)")
@@ -4898,8 +4992,8 @@ def _render(
             # is unavailable.  Total inlined bytes are capped at _INLINE_DIFF_TOTAL_CAP.
             _inline_budget = _INLINE_DIFF_TOTAL_CAP
             _inlined_paths: set[str] = set()
-            if cwd and len(shown_edited) >= 1:
-                for _ip, _ic in shown_edited[:2]:
+            if cwd and len(_files_to_render) >= 1:
+                for _ip, _ic in _files_to_render[:2]:
                     if _inline_budget <= 0:
                         break
                     _idiff = _get_inline_diff_for_file(_ip, cwd)
@@ -4914,7 +5008,7 @@ def _render(
                         _inline_diffs_were_emitted = True
 
             # Remaining files (not inlined) use the grouped directory format.
-            remaining_shown = [item for item in shown_edited if item[0] not in _inlined_paths]
+            remaining_shown = [item for item in _files_to_render if item[0] not in _inlined_paths]
             if remaining_shown:
                 # Item #35: adaptive directory grouping — increase grouping threshold
                 # when many files are edited to save tokens. If >= 15 edited files,
@@ -4932,8 +5026,8 @@ def _render(
         else:
             _inlined_paths = set()
 
-        if overflow_edited > 0:
-            edited_lines.append(f"- …+{overflow_edited} more edited")
+        if overflow_edited > 0 and _tracked_edits:
+            edited_lines.append(f"- …+{overflow_edited} more staged/uncommitted")
 
         # ── 1a. Pending Changes (git diff --stat HEAD) ────────────────────────
         # Whole-repo stat placed immediately after Files Edited so the compaction
@@ -4944,7 +5038,7 @@ def _render(
         # "Nearly all" = at most one file without an inline diff.
         _skip_pending = (
             _inline_diffs_were_emitted
-            and len(_inlined_paths) >= len(edited_clean) - 1
+            and len(_inlined_paths) >= len(_tracked_edits) - 1
         )
         if pending_diff_stat and not _skip_pending:
             edited_lines.append("**Pending:**")
@@ -4957,7 +5051,8 @@ def _render(
         # ThreadPoolExecutor creation overhead on every manifest build; the
         # process-level TTL caches mean both results are usually already warm
         # on the second call within the same session anyway.
-        edited_paths = list(edited_clean.keys())
+        # Only show diff stat for uncommitted files (committed ones are recoverable from git).
+        edited_paths = list(uncommitted_edits.keys()) if uncommitted_edits else list(edited_clean.keys())
         diff_stat = _get_git_diff_stat(edited_paths, cwd)
         session_commits = _get_session_commits(cwd, created_ts) if created_ts > 0 else []
 

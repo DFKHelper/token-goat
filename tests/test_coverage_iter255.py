@@ -393,7 +393,8 @@ class TestBuildManifest:
         cache.edited_files["src/thing.py"] = 2
         with patch.object(compact_mod.session_mod, "load", return_value=cache):
             result = compact_mod.build_manifest(session_id, max_tokens=400)
-        assert "Files Edited" in result or "Edited" in result
+        # Uncommitted edits show as Staged/Uncommitted; committed show as Edited
+        assert "Staged/Uncommitted:" in result or "Edited:" in result
 
 
 # ---------------------------------------------------------------------------

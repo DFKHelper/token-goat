@@ -328,7 +328,8 @@ class TestRenderManifest:
 
     def test_edited_files_in_manifest(self):
         result, _ = _render(self._cache_with_edits(), "aabbccdd1234", 400)
-        assert "**Edited:**" in result
+        # Uncommitted edits show as Staged/Uncommitted; committed show as Edited
+        assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got:\n{result}"
         assert "foo.py" in result or "bar.py" in result
 
     def test_edit_count_suffix(self):
