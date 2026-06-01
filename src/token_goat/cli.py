@@ -1612,6 +1612,35 @@ def cmd_imports(
     read_commands.imports(file, json_output=json_output)
 
 
+@app.command("grep", rich_help_panel="Core")
+def cmd_grep(
+    pattern: str = typer.Argument(..., help="Regex pattern to search for (forwarded to rg)"),
+    path: str = typer.Argument(".", help="Directory or file to search (default: current directory)"),
+    session_id: str | None = _OPT_SESSION_ID,
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Session-aware grep: run rg and cache results within the session.
+
+    On the first call, runs ``rg {pattern} {path}`` and records the result hash
+    in the session.  On subsequent calls with the same pattern + path, if the
+    results are identical (same content hash), emits the output with a
+    ``⚡ Cached grep result (session hit)`` hint so you know the results haven't
+    changed since the last search.
+
+    Output is compressed to at most 200 lines: first 100 lines, then
+    ``... N more lines ...``, then last 20 lines.
+
+    Examples::
+
+        token-goat grep "def build_hint" src/token_goat/
+        token-goat grep "TODO" . --session-id abc123
+        token-goat grep "pattern" --json
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.grep(pattern, path, session_id=session_id, json_output=json_output)
+
+
 @app.command("memory", rich_help_panel="Core")
 def memory_cmd(
     action: str = typer.Argument(..., help="show | set | unset | clear"),

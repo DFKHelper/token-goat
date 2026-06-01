@@ -6,7 +6,9 @@ import difflib
 import hashlib
 import json
 import sqlite3
+import subprocess
 import sys
+import time
 from collections import defaultdict, deque
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -2161,3 +2163,165 @@ def types(
         typer.echo(
             f"  {kind_label:<{max_kind}}  {name:<{max_name}}  {loc:<{max_loc}}{fields_part}"
         )
+
+
+# ---------------------------------------------------------------------------
+# grep — session-aware grep wrapper
+# ---------------------------------------------------------------------------
+
+# Maximum total output lines before compression kicks in.
+_GREP_MAX_LINES: int = 200
+# Number of leading lines to show before the "... N more ..." marker.
+_GREP_HEAD_LINES: int = 100
+# Number of trailing lines to show after the "... N more ..." marker.
+_GREP_TAIL_LINES: int = 20
+
+
+def _compress_grep_output(lines: list[str]) -> list[str]:
+    """Compress *lines* to at most :data:`_GREP_MAX_LINES` lines.
+
+    When the total line count exceeds the cap, the first
+    :data:`_GREP_HEAD_LINES` lines are shown, followed by a
+    ``... N more lines ...`` marker, then the last
+    :data:`_GREP_TAIL_LINES` lines.
+
+    Returns *lines* unchanged when the total is within the cap.
+    """
+    total = len(lines)
+    if total <= _GREP_MAX_LINES:
+        return lines
+    omitted = total - _GREP_HEAD_LINES - _GREP_TAIL_LINES
+    return [
+        *lines[:_GREP_HEAD_LINES],
+        f"... {omitted} more lines ...",
+        *lines[total - _GREP_TAIL_LINES:],
+    ]
+
+
+def _grep_output_hash(output: str) -> str:
+    """Return an 8-hex-char content hash for *output*.
+
+    Used as the key in the session's ``grep_result_hashes`` dict; truncated to
+    8 characters to keep the session JSON compact (collisions are astronomically
+    unlikely at the scale of per-session grep results).
+    """
+    return hashlib.sha1(output.encode("utf-8", errors="replace"), usedforsecurity=False).hexdigest()[:8]
+
+
+def grep(
+    pattern: str,
+    path: str = ".",
+    session_id: str | None = None,
+    json_output: bool = False,
+) -> None:
+    """Session-aware grep wrapper: run ``rg`` and cache result hashes within the session.
+
+    On a cache hit (same pattern + path appeared in session history AND the
+    result hash matches a previously seen result), prints the output with a
+    ``⚡ Cached grep result (session hit)`` hint.  On a miss, runs
+    ``rg {pattern} {path}``, compresses output to at most
+    :data:`_GREP_MAX_LINES` lines, records the pattern + hash in the session,
+    and emits the result.
+
+    Args:
+        pattern: The regex pattern to search for (forwarded verbatim to ``rg``).
+        path: Directory or file to search (default: current directory).
+        session_id: Session ID for cache lookup and recording.
+        json_output: When True, emit a JSON object instead of plain text.
+    """
+    # Load session cache for history look-up.
+    cache: session.SessionCache | None = None
+    if session_id:
+        cache = session.load(session_id)
+
+    # Find the most-recent history entry for this pattern+path combination so
+    # we can report how long ago the search was run (elapsed_seconds).
+    elapsed_seconds: int = 0
+    seen_before: bool = False
+    if cache is not None and not cache.unavailable:
+        norm_path = path or "."
+        for entry in reversed(cache.greps):
+            entry_path = entry.path or "."
+            if entry.pattern == pattern and entry_path == norm_path:
+                elapsed_seconds = max(0, int(time.time() - entry.ts))
+                seen_before = True
+                break
+
+    # Run rg.
+    try:
+        proc = subprocess.run(  # noqa: S603
+            ["rg", pattern, path],  # noqa: S607
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        raw_output = proc.stdout
+        # rg exits 1 when there are no matches — treat as empty, not an error.
+        # Exit code 2 signals an actual error.
+        if proc.returncode == 2:
+            error_msg = proc.stderr.strip() or "rg returned exit code 2"
+            if json_output:
+                typer.echo(json.dumps({"ok": False, "error": error_msg}, separators=(",", ":")))
+            else:
+                typer.echo(f"grep error: {error_msg}", err=True)
+            return
+    except FileNotFoundError:
+        error_msg = "rg (ripgrep) not found — install ripgrep to use token-goat grep"
+        if json_output:
+            typer.echo(json.dumps({"ok": False, "error": error_msg}, separators=(",", ":")))
+        else:
+            typer.echo(error_msg, err=True)
+        return
+
+    output_lines = raw_output.splitlines()
+    total_lines = len(output_lines)
+    result_hash = _grep_output_hash(raw_output)
+
+    # A cache hit requires both: (a) this pattern+path was searched before,
+    # and (b) the result content hash matches a hash we stored previously.
+    # Condition (b) ensures we only claim a hit when the results are identical —
+    # the filesystem may have changed since the last search.
+    cache_hit = False
+    if seen_before and cache is not None and not cache.unavailable:
+        stored_pattern = cache.get_grep_result_pattern(result_hash)
+        if stored_pattern is not None:
+            cache_hit = True
+
+    compressed_lines = _compress_grep_output(output_lines)
+    compressed_output = "\n".join(compressed_lines)
+
+    if json_output:
+        payload: dict[str, object] = {
+            "ok": True,
+            "pattern": pattern,
+            "path": path,
+            "total_lines": total_lines,
+            "lines_shown": len(compressed_lines),
+            "cache_hit": cache_hit,
+            "output": compressed_output,
+        }
+        if cache_hit:
+            payload["cache_age_seconds"] = elapsed_seconds
+        typer.echo(json.dumps(payload, separators=(",", ":")))
+    else:
+        if cache_hit:
+            typer.echo(
+                f"⚡ Cached grep result (session hit) — same results as {elapsed_seconds} seconds ago"
+            )
+        typer.echo(compressed_output)
+
+    # Record the search in the session so future calls can detect duplicates.
+    if session_id:
+        # mark_grep returns an updated (possibly freshly loaded) cache object —
+        # use that for the subsequent record_grep_result_hash + save so the
+        # two mutations land in the same write.
+        updated_cache = session.mark_grep(
+            session_id,
+            pattern,
+            path=path if path != "." else None,
+            result_count=total_lines,
+        )
+        if not updated_cache.unavailable:
+            updated_cache.record_grep_result_hash(result_hash, pattern)
+            session.save(updated_cache)
