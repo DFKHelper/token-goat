@@ -5,7 +5,7 @@ import logging
 import pathlib
 import re
 
-from token_goat.util import ellipsize, get_logger, strip_ansi
+from token_goat.util import ellipsize, get_logger, sanitize_control_chars, strip_ansi
 
 
 def test_get_logger_name() -> None:
@@ -118,3 +118,83 @@ class TestStripAnsiUtil:
         """util.strip_ansi must re-export the same function as render.ansi.strip_ansi."""
         from token_goat.render.ansi import strip_ansi as render_strip
         assert strip_ansi is render_strip
+
+
+class TestSanitizeControlChars:
+    """sanitize_control_chars removes non-printable control characters."""
+
+    def test_removes_c0_control_chars(self) -> None:
+        """C0 control characters (U+0000–U+001F except tabs/newlines) are stripped."""
+        # Bell (0x07), backspace (0x08), form feed (0x0C), shift-in (0x0F)
+        text = "hello\x07world\x08test\x0cform\x0fout"
+        result = sanitize_control_chars(text)
+        assert result == "helloworldtestformout"
+
+    def test_preserves_tab(self) -> None:
+        """Tab character (U+0009) is preserved."""
+        text = "hello\tworld"
+        assert sanitize_control_chars(text) == text
+
+    def test_preserves_newline(self) -> None:
+        """Newline character (U+000A) is preserved."""
+        text = "hello\nworld"
+        assert sanitize_control_chars(text) == text
+
+    def test_preserves_carriage_return(self) -> None:
+        """Carriage return character (U+000D) is preserved."""
+        text = "hello\rworld"
+        assert sanitize_control_chars(text) == text
+
+    def test_removes_c1_control_chars(self) -> None:
+        """C1 control characters (U+0080–U+009F) are stripped."""
+        # NEL (0x85), IND (0x84), HTS (0x88)
+        text = "hello\x85world\x84test\x88form"
+        result = sanitize_control_chars(text)
+        assert result == "helloworldtestform"
+
+    def test_preserves_box_drawing_chars(self) -> None:
+        """Box-drawing characters (U+2500–U+257F) are preserved."""
+        # Horizontal line, vertical line, corners, etc.
+        text = "╭─────────────╮\n│ content    │\n╰─────────────╯"
+        result = sanitize_control_chars(text)
+        assert result == text
+
+    def test_preserves_unicode_emoji(self) -> None:
+        """Multi-byte Unicode characters like emoji are preserved."""
+        text = "test ✓ success"
+        assert sanitize_control_chars(text) == text
+
+    def test_mixed_control_and_valid_chars(self) -> None:
+        """Mix of control chars and valid text is handled correctly."""
+        text = "hello\x00world\x07test\tgood\nend"
+        result = sanitize_control_chars(text)
+        assert result == "helloworldtest\tgood\nend"
+
+    def test_idempotent(self) -> None:
+        """Applying sanitize_control_chars twice produces the same result."""
+        text = "hello\x00world\x07test"
+        once = sanitize_control_chars(text)
+        twice = sanitize_control_chars(once)
+        assert twice == once
+
+    def test_empty_string(self) -> None:
+        """Empty string returns empty string."""
+        assert sanitize_control_chars("") == ""
+
+    def test_plain_text_unchanged(self) -> None:
+        """Plain ASCII text without control chars is unchanged."""
+        assert sanitize_control_chars("hello world") == "hello world"
+
+    def test_null_byte_removed(self) -> None:
+        """Null byte (U+0000) is removed."""
+        assert sanitize_control_chars("hel\x00lo") == "hello"
+
+    def test_all_tabs_newlines_preserved(self) -> None:
+        """Tabs and newlines together are preserved."""
+        text = "a\tb\nc\td\n"
+        assert sanitize_control_chars(text) == text
+
+    def test_cjk_characters_preserved(self) -> None:
+        """CJK (East Asian) characters are preserved."""
+        text = "hello 中文 world"
+        assert sanitize_control_chars(text) == text

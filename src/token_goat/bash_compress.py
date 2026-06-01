@@ -255,7 +255,7 @@ from pathlib import Path
 from typing import Final
 
 from .render.ansi import strip_ansi
-from .util import env_int, get_logger
+from .util import env_int, get_logger, sanitize_control_chars
 
 _LOG = get_logger("bash_compress")
 
@@ -755,7 +755,7 @@ def split_blocks(
 
 
 def normalise(text: str) -> str:
-    """Run the universal pre-filter pipeline: progress + ANSI + line endings.
+    """Run the universal pre-filter pipeline: progress + ANSI + control chars + line endings.
 
     Every filter should call this on its raw input before per-tool logic, it
     removes the noise that obscures structural patterns.  Idempotent.
@@ -767,6 +767,7 @@ def normalise(text: str) -> str:
     text = text.replace("\r\n", "\n")
     text = strip_progress(text)
     text = strip_ansi(text)
+    text = sanitize_control_chars(text)
     return text
 
 

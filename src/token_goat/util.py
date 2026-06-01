@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 from logging import Logger
 from subprocess import CompletedProcess
@@ -19,6 +20,7 @@ __all__ = [
     "get_logger",
     "run_git",
     "sanitize_surrogates",
+    "sanitize_control_chars",
     "ellipsize",
     "env_float",
     "env_int",
@@ -99,6 +101,27 @@ def sanitize_surrogates(text: str) -> str:
     legitimate multi-byte Unicode) is returned unchanged.
     """
     return text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+
+
+def sanitize_control_chars(text: str) -> str:
+    """Remove non-printable control characters while preserving safe characters.
+
+    Strips C0 control characters (U+0000–U+001F) EXCEPT tab (U+0009), newline
+    (U+000A), and carriage return (U+000D). Also strips C1 control characters
+    (U+0080–U+009F). Preserves all printable Unicode including box-drawing
+    characters (U+2500–U+257F) and other TUI-tool output.
+
+    This is idempotent and safe to call multiple times.
+
+    Args:
+        text: Input string that may contain control characters.
+
+    Returns:
+        String with control characters removed except tab, newline, and carriage return.
+    """
+    # Remove C0 chars (0x00-0x1F) except 0x09 (tab), 0x0A (LF), 0x0D (CR)
+    # Remove C1 chars (0x80-0x9F)
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x80-\x9f]", "", text)
 
 
 def ellipsize(s: str, max_chars: int) -> str:
