@@ -1491,6 +1491,120 @@ class TestSymbolRankingByRecency:
         assert "older.py" in symbols_section
         assert symbols_section.index("recent.py") < symbols_section.index("older.py")
 
+    def test_edited_file_symbols_appear_before_readonly(self, tmp_data_dir, monkeypatch):
+        """Symbols from edited files must appear before symbols from read-only files.
+
+        This prioritization ensures the compaction LLM sees changed code (actively being
+        worked on) before context-only reads, improving context preservation accuracy.
+        """
+        import dataclasses as _dc
+        import itertools as _it
+
+        import token_goat.config as _cfg_mod
+        monkeypatch.setattr(compact, "_load_config", lambda: _dc.replace(
+            _cfg_mod.load(), compact_assist=_dc.replace(
+                _cfg_mod.load().compact_assist, wide_session_threshold=200,
+            ),
+        ))
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
+        sid = "edited-symbols-priority-session"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
+
+        cache = None
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            # Read-only file accessed FIRST (older timestamp)
+            cache = session.mark_file_read(sid, "/proj/src/readonly.py", symbol="readonly_sym", cache=cache)
+
+            # Edited file accessed SECOND (newer timestamp) with symbols
+            cache = session.mark_file_edited(sid, "/proj/src/edited.py", cache=cache)
+            cache = session.mark_file_read(sid, "/proj/src/edited.py", symbol="edited_sym", cache=cache)
+
+            # Padding: read-only files without symbols so the symbol-bearing files stay visible
+            for i in range(16):
+                for _ in range(8):
+                    cache = session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=600, cache=cache)
+        if cache is not None:
+            _session_mod.save(cache)
+
+        result = compact.build_manifest(sid)
+
+        # Find the Symbols Accessed section
+        if "**Symbols Accessed:**" in result:
+            symbols_section = result.split("**Symbols Accessed:**")[1].split("**")[0]
+
+            # Both files should be present
+            assert "edited.py" in symbols_section, "Edited file symbols should appear in manifest"
+            assert "readonly.py" in symbols_section, "Read-only file symbols should appear in manifest"
+
+            # Edited file symbols must appear BEFORE read-only file symbols
+            edited_idx = symbols_section.index("edited.py")
+            readonly_idx = symbols_section.index("readonly.py")
+            assert edited_idx < readonly_idx, (
+                f"Edited file symbols must appear before read-only symbols. "
+                f"edited.py at {edited_idx}, readonly.py at {readonly_idx}"
+            )
+
+    def test_symbol_order_preserved_within_groups(self, tmp_data_dir, monkeypatch):
+        """Within edited and read-only groups, symbol order is preserved from ranking."""
+        import dataclasses as _dc
+        import itertools as _it
+
+        import token_goat.config as _cfg_mod
+        monkeypatch.setattr(compact, "_load_config", lambda: _dc.replace(
+            _cfg_mod.load(), compact_assist=_dc.replace(
+                _cfg_mod.load().compact_assist, wide_session_threshold=200,
+            ),
+        ))
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
+        sid = "symbol-group-order-session"
+        _ts = _it.count(1_000_000_000.0, 0.01)
+        monkeypatch.setattr(session.time, "time", lambda: next(_ts))
+
+        cache = None
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            # Read-only files (older)
+            cache = session.mark_file_read(sid, "/proj/src/readonly1.py", symbol="ro1_sym", cache=cache)
+            cache = session.mark_file_read(sid, "/proj/src/readonly2.py", symbol="ro2_sym", cache=cache)
+
+            # Edited files (newer)
+            cache = session.mark_file_edited(sid, "/proj/src/edited1.py", cache=cache)
+            cache = session.mark_file_read(sid, "/proj/src/edited1.py", symbol="ed1_sym", cache=cache)
+            cache = session.mark_file_edited(sid, "/proj/src/edited2.py", cache=cache)
+            cache = session.mark_file_read(sid, "/proj/src/edited2.py", symbol="ed2_sym", cache=cache)
+
+            # Padding
+            for i in range(16):
+                for _ in range(8):
+                    cache = session.mark_file_read(sid, f"/proj/src/noise{i:02d}.py", offset=0, limit=600, cache=cache)
+        if cache is not None:
+            _session_mod.save(cache)
+
+        result = compact.build_manifest(sid)
+
+        if "**Symbols Accessed:**" in result:
+            symbols_section = result.split("**Symbols Accessed:**")[1].split("**")[0]
+
+            # All files should be present
+            for fname in ("edited1.py", "edited2.py", "readonly1.py", "readonly2.py"):
+                assert fname in symbols_section, f"{fname} should appear in symbols section"
+
+            # edited1 and edited2 should come before readonly1 and readonly2
+            # Find indices for all four
+            idx = {}
+            for fname in ("edited1.py", "edited2.py", "readonly1.py", "readonly2.py"):
+                idx[fname] = symbols_section.index(fname)
+
+            # All edited indices < all readonly indices
+            max_edited = max(idx["edited1.py"], idx["edited2.py"])
+            min_readonly = min(idx["readonly1.py"], idx["readonly2.py"])
+            assert max_edited < min_readonly, (
+                f"All edited files should appear before all readonly files. "
+                f"Max edited index: {max_edited}, Min readonly index: {min_readonly}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # config.load / config.save
