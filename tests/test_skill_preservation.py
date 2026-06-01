@@ -1089,3 +1089,189 @@ class TestCliSkillCompactCommands:
         data = json.loads(result.output.strip())
         assert data["compact"] is True
         assert "text" in data
+
+
+# ---------------------------------------------------------------------------
+# extract_compact_from_marker
+# ---------------------------------------------------------------------------
+
+class TestExtractCompactFromMarker:
+    """Unit tests for skill_cache.extract_compact_from_marker."""
+
+    def test_marker_present_returns_pre_marker_text(self):
+        """Everything above the marker is returned as the compact slice."""
+        body = "# Compact heading\n\nKey rules here.\n\n<!-- COMPACT_END -->\n\nDetail section.\n"
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is not None
+        assert "Key rules here." in result
+        assert "Detail section." not in result
+        assert "<!-- COMPACT_END -->" not in result
+
+    def test_marker_absent_returns_none(self):
+        """When no marker is present, None is returned."""
+        body = "# Skill\n\n## Overview\n\nSome text.\n"
+        assert skill_cache.extract_compact_from_marker(body) is None
+
+    def test_empty_body_returns_none(self):
+        assert skill_cache.extract_compact_from_marker("") is None
+
+    def test_marker_at_start_returns_none(self):
+        """Marker on the first non-empty line yields no pre-marker content."""
+        body = "<!-- COMPACT_END -->\n\nDetail only.\n"
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is None
+
+    def test_marker_strips_whitespace(self):
+        """Pre-marker text is stripped of leading/trailing whitespace."""
+        body = "\n\n# Heading\n\nContent.\n\n<!-- COMPACT_END -->\n\nDetail.\n"
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is not None
+        assert result == "# Heading\n\nContent."
+
+    def test_marker_with_surrounding_whitespace_on_line(self):
+        """Marker line with leading/trailing spaces is still recognised."""
+        body = "# Compact\n\n  <!-- COMPACT_END -->  \n\nDetail.\n"
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is not None
+        assert "# Compact" in result
+        assert "Detail." not in result
+
+    def test_only_first_marker_is_used(self):
+        """When the marker appears multiple times, only the first splits the body."""
+        body = "# Compact\n\nFirst marker zone.\n<!-- COMPACT_END -->\nMiddle zone.\n<!-- COMPACT_END -->\nLower zone.\n"
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is not None
+        assert "First marker zone." in result
+        assert "Middle zone." not in result
+
+    def test_constant_value(self):
+        """COMPACT_END_MARKER has the expected literal value."""
+        assert skill_cache.COMPACT_END_MARKER == "<!-- COMPACT_END -->"
+
+
+# ---------------------------------------------------------------------------
+# hooks_skill: COMPACT_END_MARKER integration
+# ---------------------------------------------------------------------------
+
+class TestPostSkillMarkerCompact:
+    """End-to-end tests for the COMPACT_END_MARKER path in hooks_skill.post_skill."""
+
+    def _large_body_with_marker(self, compact_part: str, detail_part: str) -> str:
+        """Build a large skill body with explicit compact section + detail."""
+        marker = skill_cache.COMPACT_END_MARKER
+        body = f"{compact_part}\n\n{marker}\n\n{detail_part}"
+        # Ensure it's > 4000 bytes so the compact path is triggered.
+        if len(body.encode()) <= 4000:
+            body += "\n\n" + ("padding line.\n" * 300)
+        return body
+
+    def test_marker_compact_stored_when_marker_present(self, tmp_data_dir):
+        """When body has COMPACT_END marker, compact = pre-marker text."""
+        sid = "session-marker-compact-1"
+        compact_part = "# Ralph\n\n## Key Rules\n\nCRITICAL: Do the thing."
+        detail_part = "## Detailed Reference\n\nLots of extra detail here.\n" + ("detail " * 300)
+        body = self._large_body_with_marker(compact_part, detail_part)
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Skill",
+            "tool_input": {"skill": "ralph"},
+            "tool_response": body,
+        }
+        resp = hooks_skill.post_skill(payload)
+        assert resp.get("continue") is True
+
+        stored_compact = skill_cache.get_compact(sid, "ralph")
+        assert stored_compact is not None
+        assert "CRITICAL: Do the thing." in stored_compact
+        assert "Detailed Reference" not in stored_compact
+
+    def test_no_marker_falls_back_to_auto_extract(self, tmp_data_dir):
+        """Without a COMPACT_END marker, auto-extraction is used (pre-existing behaviour)."""
+        sid = "session-marker-fallback"
+        body = (
+            "# Ralph\n\n"
+            "## DoD\n\n"
+            "- CRITICAL: Always preserve the rules\n"
+            "- MUST: Check the definitions\n\n"
+            "## Process\n\n"
+            "**Key directive:** Follow the steps\n\n"
+            + ("Extra paragraph text. " * 300)
+        )
+        assert skill_cache.COMPACT_END_MARKER not in body
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Skill",
+            "tool_input": {"skill": "ralph"},
+            "tool_response": body,
+        }
+        resp = hooks_skill.post_skill(payload)
+        assert resp.get("continue") is True
+
+        stored_compact = skill_cache.get_compact(sid, "ralph")
+        assert stored_compact is not None
+        # Auto-extracted compact should still include CRITICAL/MUST keywords.
+        assert "CRITICAL" in stored_compact or "MUST" in stored_compact
+
+    def test_system_message_emitted_for_large_skill_with_marker(self, tmp_data_dir):
+        """A systemMessage hint is returned when a large skill has a COMPACT_END marker."""
+        sid = "session-marker-sysmsg"
+        compact_part = "# Skill\n\nCRITICAL: Important rule."
+        detail_part = "## Detail\n\n" + ("extra detail. " * 300)
+        body = self._large_body_with_marker(compact_part, detail_part)
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Skill",
+            "tool_input": {"skill": "ralph"},
+            "tool_response": body,
+        }
+        resp = hooks_skill.post_skill(payload)
+        assert resp.get("continue") is True
+        assert "systemMessage" in resp
+        msg = resp["systemMessage"]
+        assert "ralph" in msg
+        assert "token-goat skill-section ralph" in msg
+        # Both token counts should appear in the message.
+        assert "tokens above marker" in msg
+        assert "total" in msg
+
+    def test_no_system_message_when_no_marker(self, tmp_data_dir):
+        """Auto-extracted compact does not produce a systemMessage hint."""
+        sid = "session-no-sysmsg"
+        body = (
+            "# Skill\n\n"
+            "CRITICAL: Always do the thing.\n\n"
+            + ("filler text. " * 400)
+        )
+        assert skill_cache.COMPACT_END_MARKER not in body
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Skill",
+            "tool_input": {"skill": "ralph"},
+            "tool_response": body,
+        }
+        resp = hooks_skill.post_skill(payload)
+        assert resp.get("continue") is True
+        assert "systemMessage" not in resp
+
+    def test_no_system_message_for_small_skill_with_marker(self, tmp_data_dir):
+        """A small body (<=4000 bytes) with a marker does not emit a systemMessage."""
+        sid = "session-small-marker"
+        # Build a body that has the marker but is below the 4000-byte threshold.
+        body = "# Small\n\nCompact content.\n\n<!-- COMPACT_END -->\n\nDetail.\n"
+        assert len(body.encode()) <= 4000
+
+        payload = {
+            "session_id": sid,
+            "tool_name": "Skill",
+            "tool_input": {"skill": "small"},
+            "tool_response": body,
+        }
+        resp = hooks_skill.post_skill(payload)
+        assert resp.get("continue") is True
+        # Small bodies are below the _SKILL_CACHE_MIN_BYTES threshold, so they
+        # are not cached at all — just confirm no crash and no systemMessage.
+        assert "systemMessage" not in resp

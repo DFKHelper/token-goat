@@ -26,12 +26,14 @@ swallowed so a hook never aborts because the cache is full or read-only.
 from __future__ import annotations
 
 __all__ = [
+    "COMPACT_END_MARKER",
     "DEFAULT_MAX_TOTAL_BYTES",
     "OUTPUT_FILENAME_RE",
     "SkillMeta",
     "content_hash",
     "evict_old_entries",
     "extract_checklist_section",
+    "extract_compact_from_marker",
     "extract_h2_headings",
     "extract_named_section",
     "generate_compact_summary",
@@ -106,6 +108,20 @@ _MAX_STORED_BYTES: int = 256 * 1024
 # safe from injection attacks.
 _SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9_:\-]{1,128}$")
 
+# Explicit compact-section delimiter.  Skill authors place this HTML comment on
+# its own line to divide the file into two logical parts:
+#
+#   * Everything **above** the marker is the compact form — the essential
+#     rules, directives, and quick-reference content the agent needs after a
+#     compaction event.  Typically 200–600 tokens.
+#   * Everything **below** is detailed reference — extended examples,
+#     implementation notes, edge cases — useful when the agent wants to drill
+#     deeper via ``token-goat skill-section <name> <heading>``.
+#
+# When the marker is absent ``extract_compact_from_marker`` returns ``None``
+# and the caller falls back to ``generate_compact_summary`` auto-extraction.
+COMPACT_END_MARKER: str = "<!-- COMPACT_END -->"
+
 
 @dataclass
 class SkillMeta:
@@ -173,6 +189,26 @@ def output_id_for(session_id: str, skill_name: str, content_sha: str) -> str:
     return f"{safe_session}-{safe_name}-{content_sha}"
 
 
+def extract_compact_from_marker(body: str) -> str | None:
+    """Return the pre-marker compact slice when ``COMPACT_END_MARKER`` is present.
+
+    Scans *body* for the first line that equals :data:`COMPACT_END_MARKER`
+    (stripped, case-sensitive).  When found, returns everything above the
+    marker, stripped of leading/trailing whitespace.  Returns ``None`` when
+    the marker is absent so callers can fall back to
+    :func:`generate_compact_summary` auto-extraction.
+
+    The returned text is **not** capped — the caller decides whether to
+    truncate.  Skill authors are responsible for keeping the compact section
+    at a reasonable size (target: ≤600 tokens ≈ 2400 chars).
+    """
+    if not body or COMPACT_END_MARKER not in body:
+        return None
+    for i, line in enumerate(body.splitlines()):
+        if line.strip() == COMPACT_END_MARKER:
+            pre_marker = "\n".join(body.splitlines()[:i]).strip()
+            return pre_marker if pre_marker else None
+    return None
 
 
 # Headings searched in priority order when looking for actionable checklist prose.

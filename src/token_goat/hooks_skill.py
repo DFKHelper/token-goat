@@ -193,23 +193,49 @@ def post_skill(payload: HookPayload) -> HookResponse:
         return CONTINUE()
     skill_cache.write_sidecar(meta)
 
-    # Auto-compact large skill bodies (> 4000 chars ~= 1000 tokens) for fast
-    # recall in the PreCompact manifest.  This prevents large skill prose
-    # (Ralph's DoD gates, /improve's iteration sequence) from being lossily
-    # summarized by the compaction LLM — the compact gives the manifest a
-    # concrete key-rules summary to preserve.
+    # Compact large skill bodies (> 4000 chars ~= 1000 tokens) for fast recall
+    # in the PreCompact manifest.  Two strategies are tried in order:
+    #
+    # 1. Explicit marker: if the body contains ``<!-- COMPACT_END -->`` on its
+    #    own line, everything above the marker is the author-curated compact
+    #    section.  This is preferred because it is deterministic and reflects
+    #    deliberate authorial intent.
+    #
+    # 2. Auto-extraction: when no marker is present, ``generate_compact_summary``
+    #    heuristically extracts headings, CRITICAL/MUST/NEVER/RULE lines, and
+    #    bold directives.  This is the pre-existing behaviour (iter 71/72).
+    #
+    # Either result is stored via ``store_compact`` and served by the manifest
+    # renderer without any change to the downstream contract.
+    system_message: str | None = None
     if body_size > 4000:
         try:
-            compact_text = skill_cache.generate_compact_summary(body)
-            if compact_text:
-                skill_cache.store_compact(session_id, skill_name, compact_text)
+            marker_compact = skill_cache.extract_compact_from_marker(body)
+            if marker_compact is not None:
+                skill_cache.store_compact(session_id, skill_name, marker_compact)
+                compact_tokens = len(marker_compact) // 4  # rough estimate: 4 chars/token
+                total_tokens = body_size // 4
                 _LOG.debug(
-                    "post-skill: auto-compact stored for %s (%d chars)",
+                    "post-skill: compact stored for %s via explicit marker (%d chars)",
                     sanitize_log_str(skill_name, max_len=80),
-                    len(compact_text),
+                    len(marker_compact),
                 )
+                system_message = (
+                    f"Skill '{skill_name}' has explicit compact section"
+                    f" ({compact_tokens} tokens above marker vs {total_tokens} total)."
+                    f" Detail at: token-goat skill-section {skill_name} <heading>."
+                )
+            else:
+                compact_text = skill_cache.generate_compact_summary(body)
+                if compact_text:
+                    skill_cache.store_compact(session_id, skill_name, compact_text)
+                    _LOG.debug(
+                        "post-skill: compact stored for %s via auto-extraction (%d chars)",
+                        sanitize_log_str(skill_name, max_len=80),
+                        len(compact_text),
+                    )
         except Exception as exc:  # noqa: BLE001
-            _LOG.debug("post-skill: auto-compact failed: %s", exc)
+            _LOG.debug("post-skill: compact failed: %s", exc)
 
     try:
         session.mark_skill_loaded(
@@ -233,4 +259,8 @@ def post_skill(payload: HookPayload) -> HookResponse:
         meta.truncated,
         sanitize_log_str(source_path, max_len=200) if source_path else "(none)",
     )
+    if system_message:
+        resp = CONTINUE()
+        resp["systemMessage"] = system_message
+        return resp
     return CONTINUE()
