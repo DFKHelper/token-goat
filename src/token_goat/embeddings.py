@@ -8,8 +8,10 @@ __all__ = [
     "EmbeddingsResult",
     "EmbeddingsUnavailable",
     "SearchHit",
+    "SimilarSymbolHit",
     "embed_texts",
     "extract_chunks_for_file",
+    "find_similar_symbols",
     "index_project_embeddings",
     "is_available",
     "merge_nearby_hits",
@@ -1071,3 +1073,194 @@ def semantic_search(
         )
 
     return hits
+
+
+# ---------------------------------------------------------------------------
+# Per-symbol similarity
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SimilarSymbolHit:
+    """A symbol that is semantically similar to the query symbol.
+
+    Attributes:
+        file: Path to the source file, relative to the project root.
+        name: Symbol name (e.g. ``login``, ``UserService``).
+        kind: Symbol kind (e.g. ``function``, ``class``).
+        similarity_score: Similarity as a value in [0, 1].  1 = identical, 0 = unrelated.
+            Derived from cosine distance: ``1 - distance / 2``.
+    """
+
+    file: str
+    name: str
+    kind: str
+    similarity_score: float
+
+
+def find_similar_symbols(
+    project_hash: str,
+    file_path: str,
+    symbol_name: str,
+    top_k: int = 5,
+) -> list[SimilarSymbolHit]:
+    """Find the top-k most semantically similar symbols to the given symbol.
+
+    Looks up the embedding for the named symbol via its chunk (matched by
+    file_rel + line overlap), runs an ANN query to find the nearest neighbours
+    across all indexed chunks, then correlates each hit back to a symbol row.
+    The query symbol itself is excluded from the results.
+
+    Args:
+        project_hash: The hash of the project DB to search in.
+        file_path: Relative path to the file containing the query symbol.
+        symbol_name: Name of the symbol to find similar symbols for.
+        top_k: Number of results to return (default 5).
+
+    Returns:
+        List of ``SimilarSymbolHit`` objects sorted by descending similarity.
+        Empty list if the symbol is not indexed, has no embedding, or an error
+        occurs (fail-soft).
+    """
+    try:
+        return _find_similar_symbols_impl(project_hash, file_path, symbol_name, top_k)
+    except Exception:  # noqa: BLE001
+        _LOG.debug(
+            "find_similar_symbols failed for %s::%s",
+            file_path,
+            symbol_name,
+            exc_info=True,
+        )
+        return []
+
+
+def _find_similar_symbols_impl(
+    project_hash: str,
+    file_path: str,
+    symbol_name: str,
+    top_k: int,
+) -> list[SimilarSymbolHit]:
+    """Inner implementation; exceptions propagate to the fail-soft wrapper."""
+    if not is_available():
+        raise EmbeddingsUnavailable("fastembed not installed")
+
+    # Over-fetch so we have candidates to exclude + re-rank, then trim to top_k.
+    fetch_k = min(max(top_k * _OVER_FETCH_FACTOR, top_k + 10), _MAX_OVER_FETCH)
+
+    with db.open_project(project_hash) as conn:
+        if not _check_vec_available(conn):
+            raise EmbeddingsUnavailable("sqlite-vec not loaded")
+
+        # Step 1 — find the symbol and its line range.
+        sym_row = conn.execute(
+            "SELECT line, end_line FROM symbols WHERE file_rel = ? AND name = ? LIMIT 1",
+            (file_path, symbol_name),
+        ).fetchone()
+        if sym_row is None:
+            _LOG.debug(
+                "find_similar_symbols: symbol %r not found in %r",
+                symbol_name,
+                file_path,
+            )
+            return []
+
+        sym_line: int = sym_row["line"]
+        sym_end: int = sym_row["end_line"] if sym_row["end_line"] is not None else sym_line
+
+        # Step 2 — find a chunk that overlaps the symbol's line range.
+        # Prefer the chunk whose start_line is closest to the symbol start.
+        chunk_row = conn.execute(
+            """
+            SELECT id, embedding
+            FROM (
+                SELECT c.id, e.embedding
+                FROM chunks c
+                JOIN embeddings e ON e.chunk_id = c.id
+                WHERE c.file_rel = ?
+                  AND c.start_line <= ?
+                  AND c.end_line   >= ?
+                ORDER BY ABS(c.start_line - ?) ASC
+                LIMIT 1
+            )
+            """,
+            (file_path, sym_end, sym_line, sym_line),
+        ).fetchone()
+
+        if chunk_row is None:
+            _LOG.debug(
+                "find_similar_symbols: no indexed chunk for %r::%r (lines %d-%d)",
+                file_path,
+                symbol_name,
+                sym_line,
+                sym_end,
+            )
+            return []
+
+        query_chunk_id: int = chunk_row["id"]
+        query_embedding_bytes: bytes = chunk_row["embedding"]
+
+        # Step 3 — ANN search against all embeddings in the project.
+        rows = conn.execute(
+            """
+            SELECT c.file_rel, c.start_line, c.end_line, c.kind, e.distance, e.chunk_id
+            FROM embeddings e
+            JOIN chunks c ON c.id = e.chunk_id
+            WHERE e.embedding MATCH ?
+              AND k = ?
+            ORDER BY e.distance
+            """,
+            (query_embedding_bytes, fetch_k),
+        ).fetchall()
+
+        # Step 4 — correlate each candidate chunk to a symbol row.
+        # Exclude both (a) the query chunk itself, and (b) any chunk that resolves
+        # to the same (file, symbol_name) as the query symbol — handles the case
+        # where a large symbol spans multiple chunks.
+        results: list[SimilarSymbolHit] = []
+        # Pre-populate seen with the query symbol so it can never appear in results.
+        seen: set[tuple[str, str]] = {(file_path, symbol_name)}
+        for row in rows:
+            if len(results) >= top_k:
+                break
+            # Skip the exact query chunk.
+            if row["chunk_id"] == query_chunk_id:
+                continue
+            c_file: str = row["file_rel"]
+            c_start: int = row["start_line"]
+            c_end: int = row["end_line"]
+            # Find the best-matching symbol for this chunk.
+            # Strategy: find the smallest symbol whose line range overlaps the
+            # chunk (i.e. symbol starts at or before the chunk's end AND symbol
+            # ends at or after the chunk's start).  Prefer symbols with smaller
+            # span (more specific match) over large enclosing containers.
+            sym = conn.execute(
+                """
+                SELECT name, kind,
+                       (COALESCE(end_line, line) - line) AS span
+                FROM symbols
+                WHERE file_rel = ?
+                  AND line <= ?
+                  AND (end_line IS NULL OR end_line >= ?)
+                ORDER BY span ASC, ABS(line - ?) ASC
+                LIMIT 1
+                """,
+                (c_file, c_end, c_start, c_start),
+            ).fetchone()
+            if sym is None:
+                continue
+            key = (c_file, sym["name"])
+            if key in seen:
+                continue
+            seen.add(key)
+            # Convert cosine distance [0, 2] to similarity [0, 1].
+            raw_dist = float(row["distance"])
+            similarity = max(0.0, min(1.0, 1.0 - raw_dist / 2.0))
+            results.append(
+                SimilarSymbolHit(
+                    file=c_file,
+                    name=sym["name"],
+                    kind=sym["kind"],
+                    similarity_score=similarity,
+                )
+            )
+
+    return results

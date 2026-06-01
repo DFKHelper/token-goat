@@ -1589,6 +1589,32 @@ def cmd_find(
     read_commands.find(query=query, json_output=json_output)
 
 
+@app.command("similar", rich_help_panel="Core")
+def cmd_similar(
+    target: str = typer.Argument(
+        ...,
+        help="Symbol to compare — 'file::symbol', e.g. 'src/auth.py::login'.",
+    ),
+    k: int = typer.Option(5, "-k", help="Number of similar symbols to return."),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Find the top-k symbols most semantically similar to <file>::<symbol>.
+
+    Uses sqlite-vec embeddings to locate symbols whose implementation is
+    semantically close to the query symbol.  The query symbol itself is
+    excluded from the results.
+
+    Examples::
+
+        token-goat similar src/token_goat/embeddings.py::semantic_search
+        token-goat similar src/auth.py::login -k 3
+        token-goat similar src/token_goat/hints.py::build_hint --json
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.similar(target, json_output=json_output, top_k=k)
+
+
 @app.command("test-for", rich_help_panel="Core")
 def cmd_test_for(
     file: str = typer.Argument(..., help="Implementation file — e.g., 'src/token_goat/read_commands.py'"),

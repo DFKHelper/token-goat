@@ -2699,3 +2699,133 @@ def find(
             typer.echo(f"  {r['file']}:{r['start']}  {snippet}")
     else:
         typer.echo("Semantic matches: (none)")
+
+
+# ---------------------------------------------------------------------------
+# similar
+# ---------------------------------------------------------------------------
+
+
+def similar(target: str, *, json_output: bool = False, top_k: int = 5) -> None:
+    """Find the top-k symbols most semantically similar to ``file::symbol``.
+
+    Args:
+        target: ``"<file>::<symbol>"`` string, e.g. ``"src/auth.py::login"``.
+        json_output: When True, emit JSON instead of plain text.
+        top_k: Number of results to return (default 5).
+    """
+    from . import embeddings  # noqa: PLC0415
+
+    # ------------------------------------------------------------------
+    # Parse target
+    # ------------------------------------------------------------------
+    if "::" not in target:
+        typer.echo(
+            "Error: target must be in 'file::symbol' format, "
+            f"e.g. 'src/auth.py::login'. Got: {target!r}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    file_part, symbol_part = target.split("::", 1)
+    file_part = file_part.strip()
+    symbol_part = symbol_part.strip()
+
+    if not file_part or not symbol_part:
+        typer.echo(
+            "Error: both file and symbol must be non-empty in 'file::symbol'.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    # ------------------------------------------------------------------
+    # Resolve project
+    # ------------------------------------------------------------------
+    import os as _os  # noqa: PLC0415
+
+    cwd = _os.getcwd()
+    proj = find_project(Path(cwd))
+    if proj is None:
+        typer.echo("Not inside an indexed project.  Run `token-goat index` first.")
+        return
+
+    # ------------------------------------------------------------------
+    # Normalise file path to project-relative form
+    # ------------------------------------------------------------------
+    # Accept absolute paths or paths starting with the project root.
+    input_path = Path(file_part)
+    if input_path.is_absolute():
+        try:
+            rel_path = str(input_path.relative_to(proj.root))
+        except ValueError:
+            rel_path = file_part
+    else:
+        rel_path = file_part
+    # Normalise separators to forward slashes (DB stores POSIX paths).
+    rel_path = rel_path.replace("\\", "/")
+
+    # ------------------------------------------------------------------
+    # Look up symbol existence — give a helpful message if not indexed
+    # ------------------------------------------------------------------
+    symbol_found = False
+    try:
+        with db.open_project(proj.hash) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM symbols WHERE file_rel = ? AND name = ? LIMIT 1",
+                (rel_path, symbol_part),
+            ).fetchone()
+            symbol_found = row is not None
+    except db.DBError:
+        pass
+
+    if not symbol_found:
+        msg = (
+            f"Symbol {symbol_part!r} not found in {rel_path!r}. "
+            "Run `token-goat index` to (re-)index the project."
+        )
+        if json_output:
+            typer.echo(json.dumps({"error": msg, "results": []}, separators=(",", ":")))
+        else:
+            typer.echo(msg)
+        return
+
+    # ------------------------------------------------------------------
+    # Find similar symbols
+    # ------------------------------------------------------------------
+    hits = embeddings.find_similar_symbols(
+        proj.hash, rel_path, symbol_part, top_k=top_k
+    )
+
+    # ------------------------------------------------------------------
+    # Output
+    # ------------------------------------------------------------------
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "query": target,
+                    "results": [
+                        {
+                            "file": h.file,
+                            "name": h.name,
+                            "kind": h.kind,
+                            "similarity_score": round(h.similarity_score, 4),
+                        }
+                        for h in hits
+                    ],
+                },
+                separators=(",", ":"),
+            )
+        )
+        return
+
+    if not hits:
+        typer.echo(
+            f"No similar symbols found for {target!r}. "
+            "Run `token-goat index --embeddings` to build the embedding index."
+        )
+        return
+
+    for h in hits:
+        pct = int(round(h.similarity_score * 100))
+        typer.echo(f"{h.file} — {h.name} ({h.kind}) — {pct}% similar")
