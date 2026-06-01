@@ -743,9 +743,9 @@ def symbol(
             # close matches in a half-indexed project would be misleading.
             typer.echo(not_found_extra if not_found_extra else f"No matches for {name!r}")
             if close_matches and not not_found_extra:
+                from .render.common import render_list  # noqa: PLC0415
                 typer.echo("Did you mean:")
-                for candidate in close_matches:
-                    typer.echo(f"  - {candidate}")
+                typer.echo(render_list(close_matches, bullet="-"))
 
     def _global_query(target: str) -> list[dict]:
         """Run the symbols_global query for *target* and shape the rows.
@@ -1618,9 +1618,9 @@ def cache_audit() -> None:
                 issues.append(f"CLAUDE.md contains dynamic pattern {pat!r} — changes every session, busting cache")
 
     if issues:
+        from .render.common import render_list  # noqa: PLC0415
         typer.echo("Cache-busting issues found:")
-        for issue in issues:
-            typer.echo(f"  - {issue}")
+        typer.echo(render_list(issues, bullet="-"))
     else:
         typer.echo("No obvious cache-busting patterns detected.")
 
