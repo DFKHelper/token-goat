@@ -1545,6 +1545,37 @@ def cmd_changed(
     read_commands.changed(since_ref=since, json_output=json_output, limit=limit)
 
 
+@app.command("blame", rich_help_panel="Core")
+def cmd_blame(
+    target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'src/auth.py::login'"),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Show git blame for the lines of a specific symbol — no whole-file blame needed.
+
+    Resolves *symbol* to its line range from the index, then runs
+    ``git blame -L start,end`` on those lines only.
+
+    Output format (text)::
+
+        a1b2c3d4 (Author Name 2026-01-15) 42: def my_function():
+        a1b2c3d4 (Author Name 2026-01-15) 43:     pass
+
+    Output format (JSON)::
+
+        {"file": "...", "symbol": "...", "start_line": N, "end_line": N,
+         "lines": [{"line_no": N, "commit_hash": "...", "author": "...",
+                    "date": "YYYY-MM-DD", "content": "..."}, ...]}
+
+    Examples::
+
+        token-goat blame src/token_goat/hints.py::build_hint
+        token-goat blame git_history.py::blame_symbol --json
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.blame(target, json_output=json_output)
+
+
 @app.command("recent", rich_help_panel="Core")
 def cmd_recent(
     n: int = typer.Option(10, "--n", help="Number of files to show."),  # noqa: B008

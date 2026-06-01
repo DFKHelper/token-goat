@@ -1861,6 +1861,144 @@ def changed(
 
 
 # ---------------------------------------------------------------------------
+# blame — git blame for a specific symbol's lines
+# ---------------------------------------------------------------------------
+
+
+def blame(
+    target: str,
+    json_output: bool = False,
+) -> None:
+    """Show git blame for the lines of *target* (``file::symbol`` format).
+
+    Resolves the symbol's line range from the DB, then runs
+    ``git blame -L start,end --porcelain`` and formats each line as::
+
+        a1b2c3d4 (Author Name 2026-01-15) 42: def my_function():
+
+    Args:
+        target: ``"<file>::<symbol>"`` — e.g., ``"src/auth.py::login"``.
+        json_output: When True, emit a JSON array of line dicts instead.
+
+    JSON line-dict keys: ``line_no``, ``commit_hash``, ``author``, ``date``, ``content``.
+    """
+    import os as _os  # noqa: PLC0415
+
+    from .git_history import blame_symbol  # noqa: PLC0415
+
+    if "::" not in target:
+        _emit_read_error(
+            code="invalid_target",
+            message="Error: target must be '<file>::<symbol>'",
+            json_output=json_output,
+            target=target,
+        )
+        raise typer.Exit(2)
+
+    file_part, _, symbol_name = target.partition("::")
+    file_part = file_part.strip()
+    symbol_name = symbol_name.strip()
+
+    if not file_part or not symbol_name:
+        _emit_read_error(
+            code="invalid_target",
+            message="Error: both <file> and <symbol> must be non-empty",
+            json_output=json_output,
+            target=target,
+        )
+        raise typer.Exit(2)
+
+    # Resolve the file to a project-relative path.
+    try:
+        file_target = _resolve_file_target(file_part)
+    except read_replacement.ProjectIndexUnavailable as exc:
+        _emit_read_error(code=exc.code, message=str(exc), json_output=json_output, file_part=file_part)
+        raise typer.Exit(0) from None
+    except read_replacement.AmbiguousFileMatch as exc:
+        _emit_ambiguous_file_match(file_part, exc.candidates, json_output=json_output)
+        raise typer.Exit(0) from None
+
+    if file_target.rel_path is None:
+        _emit_file_not_found_error(file_part, file_target.current_project, json_output=json_output)
+        raise typer.Exit(0)
+
+    assert file_target.project is not None
+    proj = file_target.project
+    file_rel = file_target.rel_path
+
+    # Look up the symbol's line range from the DB.
+    start_line: int | None = None
+    end_line: int | None = None
+    try:
+        with db.open_project_readonly(proj.hash) as conn:
+            row = conn.execute(
+                "SELECT line, end_line FROM symbols "
+                "WHERE file_rel = ? AND name = ? AND end_line IS NOT NULL "
+                "ORDER BY line LIMIT 1",
+                (file_rel, symbol_name),
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        row = None
+
+    if row is None:
+        suggestions = _close_symbol_matches(proj, file_rel, symbol_name)
+        base_message = f"Symbol not found: {symbol_name} (in {file_rel})"
+        if suggestions and not json_output:
+            base_message = base_message + "\nDid you mean:"
+        _emit_read_error(
+            code="symbol_not_found",
+            message=base_message,
+            json_output=json_output,
+            candidates=suggestions,
+            rel_path=file_rel,
+            item=symbol_name,
+        )
+        raise typer.Exit(0)
+
+    start_line = int(row["line"])
+    end_line = int(row["end_line"])
+
+    # Determine repo root (git root of the project).
+    repo_root = _os.getcwd()
+    if proj is not None:
+        repo_root = str(proj.root)
+
+    blame_lines = blame_symbol(repo_root, file_rel, start_line, end_line)
+
+    if not blame_lines:
+        # Git not available or file not in a git repo — graceful fallback.
+        msg = f"git blame returned no output for {file_rel} lines {start_line}-{end_line}"
+        if json_output:
+            typer.echo(json.dumps({"ok": False, "error": msg}, separators=(",", ":")))
+        else:
+            typer.echo(msg, err=True)
+        raise typer.Exit(0)
+
+    if json_output:
+        typer.echo(json.dumps(
+            {
+                "file": file_rel,
+                "symbol": symbol_name,
+                "start_line": start_line,
+                "end_line": end_line,
+                "lines": blame_lines,
+            },
+            separators=(",", ":"),
+        ))
+        return
+
+    # Text output: "a1b2c3d4 (Author 2026-01-15) 42: content"
+    hash_width = 8
+    for entry in blame_lines:
+        short_hash = str(entry["commit_hash"])[:hash_width]
+        author = str(entry["author"])
+        date = str(entry["date"])
+        line_no = int(str(entry["line_no"]))
+        content = str(entry["content"])
+        typer.echo(f"{short_hash} ({author} {date}) {line_no}: {content}")
+
+
+# ---------------------------------------------------------------------------
 # test_for — find test files for an implementation file
 # ---------------------------------------------------------------------------
 

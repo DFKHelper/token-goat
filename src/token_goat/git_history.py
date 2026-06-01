@@ -42,6 +42,7 @@ __all__ = [
     "find_commits_for_file",
     "build_hint",
     "get_changed_symbols",
+    "blame_symbol",
 ]
 
 import contextlib
@@ -489,3 +490,138 @@ def _get_changed_symbols_inner(
     # Sort by file then symbol for stable, scannable output.
     result.sort(key=lambda r: (str(r["file"]), str(r["symbol"])))
     return result
+
+
+# ---------------------------------------------------------------------------
+# blame_symbol — git blame for a specific line range
+# ---------------------------------------------------------------------------
+
+
+def blame_symbol(
+    repo_root: str | Path,
+    file_path: str,
+    start_line: int,
+    end_line: int,
+) -> list[dict[str, object]]:
+    """Return git blame information for *file_path* lines *start_line*–*end_line*.
+
+    Runs ``git blame -L {start_line},{end_line} --porcelain {file_path}`` and
+    parses the porcelain output into a list of dicts, one per line::
+
+        [
+            {
+                "line_no": int,        -- 1-based line number in the file
+                "commit_hash": str,    -- full 40-char commit hash
+                "author": str,         -- author name
+                "date": str,           -- author date as "YYYY-MM-DD"
+                "content": str,        -- raw source line content
+            },
+            ...
+        ]
+
+    Fail-soft: returns ``[]`` on any git error, missing repo, or parse failure.
+    Never raises.
+    """
+    try:
+        return _blame_symbol_inner(str(repo_root), file_path, start_line, end_line)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("blame_symbol failed", exc_info=True)
+        return []
+
+
+def _blame_symbol_inner(
+    repo_root: str,
+    file_path: str,
+    start_line: int,
+    end_line: int,
+) -> list[dict[str, object]]:
+    """Inner (non-fail-soft) implementation of :func:`blame_symbol`."""
+    raw = _run_git(
+        ["blame", f"-L{start_line},{end_line}", "--porcelain", file_path],
+        cwd=Path(repo_root),
+        timeout=30,
+    )
+    if not raw:
+        return []
+    return _parse_blame_porcelain(raw, start_line)
+
+
+# Regex that matches the opening line of a porcelain blame block:
+#   <40-char-hash> <orig_line> <final_line> [<count>]
+_BLAME_HEADER_RE = re.compile(r"^([0-9a-f]{40}) \d+ (\d+)(?: \d+)?$")
+
+
+def _parse_blame_porcelain(raw: str, start_line: int) -> list[dict[str, object]]:
+    """Parse ``git blame --porcelain`` output into a list of line dicts.
+
+    Porcelain format repeats for each line::
+
+        <hash> <orig_line> <result_line> [<group_count>]
+        author <name>
+        author-time <unix_ts>
+        ... (other header fields)
+        \t<line content>
+
+    Lines that have been grouped (same commit, consecutive) reuse the previously
+    seen commit metadata; only the first occurrence of a hash emits the full
+    header block.
+    """
+    lines = raw.splitlines()
+    entries: list[dict[str, object]] = []
+
+    # Cached metadata per commit hash (porcelain omits headers for repeated commits).
+    commit_cache: dict[str, dict[str, str]] = {}
+    current_hash: str = ""
+    current_meta: dict[str, str] = {}
+    current_line_no: int = start_line
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        m = _BLAME_HEADER_RE.match(line)
+        if m:
+            current_hash = m.group(1)
+            current_line_no = int(m.group(2))
+            if current_hash in commit_cache:
+                current_meta = commit_cache[current_hash]
+            else:
+                current_meta = {}
+                commit_cache[current_hash] = current_meta
+            i += 1
+            continue
+
+        if line.startswith("author ") and not line.startswith("author-"):
+            current_meta["author"] = line[7:]
+            i += 1
+            continue
+
+        if line.startswith("author-time "):
+            try:
+                ts = int(line[12:].strip())
+                import datetime as _dt  # noqa: PLC0415
+                current_meta["date"] = _dt.datetime.fromtimestamp(
+                    ts, tz=_dt.UTC
+                ).strftime("%Y-%m-%d")
+            except (ValueError, OSError):
+                current_meta["date"] = ""
+            i += 1
+            continue
+
+        # Content line — tab-prefixed.
+        if line.startswith("\t"):
+            content = line[1:]  # strip leading tab
+            entries.append({
+                "line_no": current_line_no,
+                "commit_hash": current_hash,
+                "author": current_meta.get("author", ""),
+                "date": current_meta.get("date", ""),
+                "content": content,
+            })
+            i += 1
+            continue
+
+        # Any other header field (summary, committer, filename, …) — skip.
+        i += 1
+
+    return entries
