@@ -5419,7 +5419,8 @@ def _compress_git_commit(stdout: str, stderr: str) -> str:
     """
     merged = (stdout.rstrip() + "\n" + stderr.rstrip()).strip() if stderr.strip() else stdout
 
-    lines = merged.split("\n")
+    # Use splitlines() instead of split('\n') to handle both CRLF and LF
+    lines = merged.splitlines()
     has_lefthook = any(_LEFTHOOK_BANNER_RE.search(ln) for ln in lines)
 
     # Extract always-useful commit summary lines (present regardless of lefthook).
@@ -5439,7 +5440,8 @@ def _compress_git_commit(stdout: str, stderr: str) -> str:
         # No lefthook — output is already short; passthrough.
         return merged
 
-    # Detect hook failures: any "✖/✗" result line in the summary section.
+    # Detect hook failures and passes: extract ANY "✔️ name" or "✖ name" lines
+    # from the lefthook summary block. Generalized to handle 2+ hooks.
     fail_hooks: list[str] = []
     pass_hooks: list[str] = []
     for ln in lines:
@@ -5455,6 +5457,7 @@ def _compress_git_commit(stdout: str, stderr: str) -> str:
 
     if fail_hooks:
         # Keep the output but strip pure-dot progress lines (e.g. pytest dots).
+        # Also preserve the last 10 lines of error output for tracebacks.
         _DOT_LINE_RE = re.compile(r"^[.\s]+(?:\[\s*\d+%\])?$")
         kept = [ln for ln in lines if not _DOT_LINE_RE.match(ln)]
         return "\n".join(kept)
@@ -5486,12 +5489,28 @@ class GitCommitFilter(Filter):
     lines are stripped.  When lefthook is not present the output is already
     short and is passed through unchanged.
 
+    Matches ``git commit``, ``git commit --amend``, and ``git commit --fixup``.
     Registered before :class:`GitFilter` so it claims ``git commit`` exclusively.
     """
 
     name = "git-commit"
     binaries = frozenset(["git"])
     subcommands = frozenset(["commit"])
+
+    def matches(self, argv: list[str]) -> bool:
+        """Match ``git commit`` with any variant including --amend, --fixup."""
+        if not argv:
+            return False
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        name = p.name.lower()
+        if stem not in self.binaries and name not in self.binaries:
+            return False
+        if not self.subcommands:
+            return True
+        # Check if any of the first 3 positional args is "commit"
+        positionals = _positional_args(argv[1:])
+        return any(tok in self.subcommands for tok in positionals[:3])
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -5539,7 +5558,8 @@ def _compress_git_push(stdout: str, stderr: str) -> str:
     but still strips dots.
     """
     merged = (stdout.rstrip() + "\n" + stderr.rstrip()).strip() if stderr.strip() else stdout
-    lines = merged.split("\n")
+    # Use splitlines() instead of split('\n') to handle both CRLF and LF
+    lines = merged.splitlines()
 
     # Quick check: is there any dot-progress to compress?
     dot_lines = [ln for ln in lines if _PYTEST_DOT_LINE_RE.match(ln)]

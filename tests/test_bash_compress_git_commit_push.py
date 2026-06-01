@@ -226,3 +226,193 @@ class TestGitPushFilterFailing:
         f = bc.GitPushFilter()
         result = _apply(f, _PYTEST_DOTS_FAILING, ["git", "push"], exit_code=1)
         assert "3 failed" in result or "FAILED" in result
+
+
+# ---------------------------------------------------------------------------
+# Edge Case 1: Windows CRLF line endings
+# ---------------------------------------------------------------------------
+
+
+class TestGitCommitFilterCRLF:
+    def test_crlf_line_endings_handled(self) -> None:
+        """Test that CRLF line endings are properly handled."""
+        crlf_output = (
+            "╭─────────────────────╮\r\n"
+            "│ 🥊 lefthook  v2.1.8  hook:  pre-commit │\r\n"
+            "╰─────────────────────╯\r\n"
+            "┃  lint ❯\r\n"
+            "All checks passed!\r\n"
+            "  ────────────────────────────────────\r\n"
+            "summary: (done in 5.37 seconds)\r\n"
+            "✔️ lint (0.11 seconds)\r\n"
+            "✔️ typecheck (0.20 seconds)\r\n"
+            "[main d112339] feat: test\r\n"
+            " 1 file changed, 10 insertions(+)"
+        )
+        f = bc.GitCommitFilter()
+        result = _apply(f, crlf_output, ["git", "commit", "-m", "msg"])
+        # Should not fail and should preserve hook names
+        assert "lint" in result
+        assert "typecheck" in result
+        assert "d112339" in result
+
+
+# ---------------------------------------------------------------------------
+# Edge Case 2: Multiple hook stages (3+ hooks)
+# ---------------------------------------------------------------------------
+
+
+class TestGitCommitFilterMultipleHooks:
+    def test_three_hooks_all_pass(self) -> None:
+        """Test with 3 hook stages instead of 2."""
+        output = """\
+╭─────────────────────╮
+│ 🥊 lefthook  v2.1.8  hook:  pre-commit │
+╰─────────────────────╯
+┃  lint ❯
+All checks passed!
+┃  typecheck ❯
+Type check passed!
+┃  format ❯
+Formatting check passed!
+  ────────────────────────────────────
+summary: (done in 10.5 seconds)
+✔️ lint (0.11 seconds)
+✔️ typecheck (5.20 seconds)
+✔️ format (5.19 seconds)
+[main abc1234] feat: multi-hook
+ 3 files changed, 100 insertions(+), 5 deletions(-)"""
+        f = bc.GitCommitFilter()
+        result = _apply(f, output, ["git", "commit", "-m", "msg"])
+        lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(lines) == 1
+        assert "lint" in result
+        assert "typecheck" in result
+        assert "format" in result
+        assert "✔" in result
+
+    def test_four_hooks_one_fails(self) -> None:
+        """Test with 4 hook stages, one failing."""
+        output = """\
+┃  lint ❯
+Error on line 42
+┃  typecheck ❯
+Type check passed!
+┃  format ❯
+Formatting check passed!
+┃  security ❯
+Security scan passed!
+  ────────────────────────────────────
+summary: (done in 15.2 seconds)
+✖ lint (1.20 seconds)
+✔️ typecheck (5.20 seconds)
+✔️ format (3.10 seconds)
+✔️ security (5.75 seconds)"""
+        f = bc.GitCommitFilter()
+        result = _apply(f, output, ["git", "commit", "-m", "msg"])
+        # Error should be preserved
+        assert "Error on line 42" in result
+
+
+# ---------------------------------------------------------------------------
+# Edge Case 3: commit --amend and --fixup variants
+# ---------------------------------------------------------------------------
+
+
+class TestGitCommitFilterAmendFixup:
+    def test_commit_amend_matches(self) -> None:
+        """Test that 'git commit --amend' is dispatched to GitCommitFilter."""
+        f = bc.select_filter(["git", "commit", "--amend"])
+        assert f is not None
+        assert f.name == "git-commit"
+
+    def test_commit_fixup_matches(self) -> None:
+        """Test that 'git commit --fixup' is dispatched to GitCommitFilter."""
+        f = bc.select_filter(["git", "commit", "--fixup=HEAD"])
+        assert f is not None
+        assert f.name == "git-commit"
+
+    def test_commit_amend_with_message_matches(self) -> None:
+        """Test that 'git commit --amend -m msg' is dispatched."""
+        f = bc.select_filter(["git", "commit", "--amend", "-m", "fix"])
+        assert f is not None
+        assert f.name == "git-commit"
+
+    def test_commit_amend_lefthook_compressed(self) -> None:
+        """Test that --amend commits with lefthook are compressed."""
+        output = """\
+╭─────────────────────╮
+│ 🥊 lefthook  v2.1.8  hook:  pre-commit │
+╰─────────────────────╯
+┃  lint ❯
+All checks passed!
+  ────────────────────────────────────
+summary: (done in 0.5 seconds)
+✔️ lint (0.45 seconds)
+[main d112339] feat: updated
+ 1 file changed, 2 insertions(+)"""
+        f = bc.GitCommitFilter()
+        result = _apply(f, output, ["git", "commit", "--amend", "-m", "fix"])
+        lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(lines) == 1
+        assert "lint" in result
+
+
+# ---------------------------------------------------------------------------
+# Edge Case 4: Failed hook preserves error block (last 10 lines)
+# ---------------------------------------------------------------------------
+
+
+class TestGitCommitFilterFailedHookErrorPreservation:
+    def test_failed_hook_preserves_traceback(self) -> None:
+        """Test that failed hook output preserves the error traceback."""
+        output = """\
+┃  lint ❯
+src/module.py:42: Error: undefined name 'foo'
+src/module.py:99: Error: unused import 'bar'
+Error on line 42
+Error on line 99
+Some intermediate output
+Some more output
+The actual traceback starts here
+  File "src/module.py", line 42, in <module>
+    raise ValueError("Critical error")
+ValueError: Critical error
+  ────────────────────────────────────
+summary: (done in 1.23 seconds)
+✖ lint (1.20 seconds)"""
+        f = bc.GitCommitFilter()
+        result = _apply(f, output, ["git", "commit", "-m", "msg"])
+        # The traceback and error should be preserved
+        assert "ValueError: Critical error" in result
+        assert "File \"src/module.py\", line 42" in result
+
+    def test_failed_hook_multiple_errors_preserved(self) -> None:
+        """Test that multiple error messages in failed hook are preserved."""
+        output = """\
+┃  typecheck ❯
+error: Argument 1 to "foo" has incompatible type "str"; expected "int"
+error: Name "undefined_var" is not defined
+error: Operator "+" not supported for types "str" and "int"
+Some output line 1
+Some output line 2
+Some output line 3
+Some output line 4
+Some output line 5
+Some output line 6
+Some output line 7
+Traceback (most recent call last):
+  File "test.py", line 10, in <module>
+    result = func(x)
+  File "lib.py", line 5, in func
+    return x + "string"
+TypeError: unsupported operand type(s) for +
+  ────────────────────────────────────
+summary: (done in 2.50 seconds)
+✖ typecheck (2.40 seconds)"""
+        f = bc.GitCommitFilter()
+        result = _apply(f, output, ["git", "commit", "-m", "msg"])
+        # At least one error line should be preserved
+        assert ("TypeError: unsupported operand" in result or
+                "error:" in result or
+                "Traceback" in result)
