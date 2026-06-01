@@ -1472,6 +1472,26 @@ def outline(
     read_commands.outline(file, json_output=json_output)
 
 
+@app.command("scope", rich_help_panel="Core")
+def scope(
+    target: str = typer.Argument(
+        ...,
+        help="<file>:<line> — e.g., 'src/token_goat/hints.py:42'",
+    ),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Show symbols in scope at <file>:<line>.
+
+    Returns the enclosing function/class chain, module-level imports, and a
+    suggested ``token-goat read`` command for the innermost enclosing function.
+    Useful for understanding what names are visible at a specific line without
+    reading the whole file.
+    """
+    from . import read_commands  # noqa: PLC0415
+
+    read_commands.scope(target, json_output=json_output)
+
+
 @app.command("memory", rich_help_panel="Core")
 def memory_cmd(
     action: str = typer.Argument(..., help="show | set | unset | clear"),

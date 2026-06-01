@@ -1292,6 +1292,190 @@ def outline(
         pass
 
 
+# ---------------------------------------------------------------------------
+# scope — symbols in scope at a given line
+# ---------------------------------------------------------------------------
+
+# Maximum imports to list in the "Module-level imports:" section before truncating.
+_SCOPE_MAX_IMPORTS: int = 15
+
+# Symbol kinds that count as "enclosing scope" for scope resolution.
+# We include all structural kinds — a variable or import at module level can also
+# enclose a line if it appears before it, but for enclosing scope we want the
+# function/class/method nesting chain.
+_SCOPE_ENCLOSING_KINDS: frozenset[str] = frozenset({
+    "function", "async_function", "method", "class", "interface",
+    "struct", "trait", "enum", "constructor",
+})
+
+
+def scope(
+    target: str,
+    json_output: bool = False,
+) -> None:
+    """Show what symbols are in scope at <file>:<line>.
+
+    Accepts ``src/foo.py:42`` or an absolute path with a colon-separated line number.
+    Returns:
+    - **Enclosing scope** — function/class chain enclosing the line, outermost first.
+    - **Module-level imports** — up to 15 imports at the top of the file.
+    - **Suggestion** — a ``token-goat read`` command to read the innermost enclosing function.
+    """
+    # Parse <file>:<line>
+    if ":" not in target:
+        typer.echo(
+            "Error: target must be '<file>:<line>' — e.g., 'src/foo.py:42'",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    # Split on the last colon to allow absolute Windows paths like C:\foo\bar.py:42
+    last_colon = target.rfind(":")
+    file_part = target[:last_colon]
+    line_part = target[last_colon + 1:]
+
+    # Validate line number
+    try:
+        target_line = int(line_part)
+        if target_line < 1:
+            raise ValueError("must be >= 1")
+    except ValueError:
+        typer.echo(
+            f"Error: line number must be a positive integer, got '{line_part}'",
+            err=True,
+        )
+        raise typer.Exit(2) from None
+
+    # Resolve file
+    file_target = _resolve_file_target(file_part)
+    if file_target.rel_path is None:
+        _emit_file_not_found_error(file_part, file_target.current_project, json_output=json_output)
+        raise typer.Exit(0)
+
+    assert file_target.project is not None
+    proj = file_target.project
+    file_rel = file_target.rel_path
+
+    # Query DB
+    enclosing_rows: list = []
+    import_rows: list = []
+    out_of_range = False
+
+    with db.open_project_readonly(proj.hash) as conn:
+        # Find total line count to check if target_line is out of range
+        try:
+            file_row = conn.execute(
+                "SELECT line_count FROM files WHERE rel_path = ?",
+                (file_rel,),
+            ).fetchone()
+            if file_row is not None and file_row["line_count"] is not None and target_line > file_row["line_count"]:
+                out_of_range = True
+        except (sqlite3.OperationalError, TypeError):
+            pass
+
+        # Find enclosing symbols: all symbols whose range spans the target line,
+        # filtered to structural kinds, ordered outermost→innermost.
+        try:
+            enclosing_rows = conn.execute(
+                "SELECT name, kind, line, end_line "
+                "FROM symbols "
+                "WHERE file_rel = ? "
+                "  AND line <= ? AND end_line >= ? "
+                "  AND end_line IS NOT NULL "
+                "ORDER BY line ASC",
+                (file_rel, target_line, target_line),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            enclosing_rows = []
+
+        # Filter to structural enclosing kinds
+        enclosing_rows = [r for r in enclosing_rows if r["kind"] in _SCOPE_ENCLOSING_KINDS]
+
+        # Find module-level imports from imports_exports table
+        try:
+            import_rows = conn.execute(
+                "SELECT target, line "
+                "FROM imports_exports "
+                "WHERE file_rel = ? AND kind = 'import' "
+                "ORDER BY line ASC",
+                (file_rel,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            import_rows = []
+
+    if out_of_range:
+        warn_msg = (
+            f"Warning: line {target_line} is beyond the end of {file_rel}; "
+            "showing module-level scope only."
+        )
+        if json_output:
+            _LOG.warning(warn_msg)
+        else:
+            typer.echo(warn_msg, err=True)
+        enclosing_rows = []
+
+    # Determine the innermost enclosing function (for the suggestion)
+    innermost_fn: str | None = None
+    for row in reversed(enclosing_rows):
+        if row["kind"] in ("function", "async_function", "method"):
+            innermost_fn = row["name"]
+            break
+
+    # Truncate imports list
+    total_imports = len(import_rows)
+    display_imports = import_rows[:_SCOPE_MAX_IMPORTS]
+    truncated_imports = total_imports - len(display_imports)
+
+    if json_output:
+        enclosing_out = [
+            {
+                "name": row["name"],
+                "kind": row["kind"],
+                "start_line": row["line"],
+                "end_line": row["end_line"],
+            }
+            for row in enclosing_rows
+        ]
+        imports_out = [r["target"] for r in display_imports]
+        result: dict[str, object] = {
+            "file": file_rel,
+            "line": target_line,
+            "enclosing": enclosing_out,
+            "imports": imports_out,
+        }
+        if truncated_imports:
+            result["imports_truncated"] = truncated_imports
+        if innermost_fn:
+            result["suggestion"] = f'token-goat read "{file_rel}::{innermost_fn}"'
+        typer.echo(json.dumps(result, separators=(",", ":")))
+        return
+
+    # Text output
+    typer.echo(f"# Scope at {file_rel}:{target_line}")
+    typer.echo("")
+
+    typer.echo("Enclosing scope:")
+    if enclosing_rows:
+        for row in enclosing_rows:
+            typer.echo(f"  {row['kind']:<16}  {row['name']}  (lines {row['line']}–{row['end_line']})")
+    else:
+        typer.echo("  (module level — no enclosing function or class)")
+
+    typer.echo("")
+    typer.echo("Module-level imports:")
+    if display_imports:
+        for imp in display_imports:
+            typer.echo(f"  {imp['target']}")
+        if truncated_imports:
+            typer.echo(f"  ... and {truncated_imports} more")
+    else:
+        typer.echo("  (none)")
+
+    if innermost_fn:
+        typer.echo("")
+        typer.echo(f'Suggestion: token-goat read "{file_rel}::{innermost_fn}"')
+
+
 def stub_view(
     file: str,
     json_output: bool = False,
