@@ -218,3 +218,40 @@ def test_compact_hint_no_session_files():
         result = runner.invoke(cli.app, ["compact-hint", "--auto"])
 
     assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# map — --top N flag
+# ---------------------------------------------------------------------------
+
+def test_map_top_n_happy_path():
+    """map --top 5 limits output to top 5 files by PageRank."""
+    fake_map_text = "src/a.py (rank: 0.050)\nsrc/b.py (rank: 0.040)\n"
+
+    with (
+        patch("token_goat.cli._require_project", return_value=_FAKE_PROJ),
+        patch("token_goat.repomap.build_map", return_value=fake_map_text),
+        patch("token_goat.cli._record_lookup_stat"),
+    ):
+        result = runner.invoke(cli.app, ["map", "--top", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert "rank:" in result.output
+
+
+def test_map_top_zero_error():
+    """map --top 0 should error."""
+    with patch("token_goat.cli._require_project", return_value=_FAKE_PROJ):
+        result = runner.invoke(cli.app, ["map", "--top", "0"])
+
+    assert result.exit_code != 0
+    assert "positive integer" in result.output
+
+
+def test_map_top_negative_error():
+    """map --top -5 should error."""
+    with patch("token_goat.cli._require_project", return_value=_FAKE_PROJ):
+        result = runner.invoke(cli.app, ["map", "--top", "-5"])
+
+    assert result.exit_code != 0
+    assert "positive integer" in result.output

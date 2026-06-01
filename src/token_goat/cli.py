@@ -1268,6 +1268,12 @@ def cmd_map(
              "project exceeds the compact_file_threshold. Overrides the 1-line "
              "summary that compact mode emits for large projects.",
     ),
+    top: int | None = typer.Option(  # noqa: B008
+        None,
+        "--top",
+        help="Limit output to the top N most important files by PageRank score. "
+             "Outputs in compact format: filename (rank: score). Overrides budget.",
+    ),
     top_n: int = typer.Option(  # noqa: B008
         20,
         "--top-n",
@@ -1307,11 +1313,34 @@ def cmd_map(
         raise typer.Exit(1)
 
     _LOG.info(
-        "map start: project=%s budget=%d format=%s compact=%s full=%s since=%s",
-        proj.root.name, budget, fmt, compact, full, since,
+        "map start: project=%s budget=%d format=%s compact=%s full=%s top=%s since=%s",
+        proj.root.name, budget, fmt, compact, full, top, since,
     )
     t0 = time.monotonic()
     try:
+        # --top: show only top N files by PageRank
+        if top is not None:
+            if top <= 0:
+                _error("--top must be a positive integer")
+                raise typer.Exit(1)
+            text = repomap.build_map(
+                proj,
+                budget_tokens=budget,
+                top_n=top,
+            )
+            elapsed = time.monotonic() - t0
+            _LOG.info("map complete: project=%s top=%d dur=%.3fs", proj.root.name, top, elapsed)
+            top_count = sum(1 for line in text.splitlines() if "rank:" in line)
+            _record_lookup_stat(
+                "map_lookup",
+                f"budget={budget},mode=top,top={top}",
+                top_count,
+                scope="project",
+                project_hash=proj.hash,
+            )
+            typer.echo(text)
+            return
+
         # --since: show only changed files, regardless of format
         if since is not None:
             text = repomap.build_map_since(

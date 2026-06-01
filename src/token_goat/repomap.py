@@ -940,6 +940,7 @@ def build_map(
     compact: bool | None = None,
     full: bool = False,
     compact_file_threshold: int | None = None,
+    top_n: int | None = None,
 ) -> str:
     """Build the repo map text under the token budget.
 
@@ -967,6 +968,9 @@ def build_map(
     with a 1-line summary (``"N files indexed. Top modules: …"``).  Callers
     may pass this explicitly; if ``None``, the value is read from the
     token-goat config (default 50).  Passing 0 disables the truncation.
+
+    ``top_n``: when set to a positive integer, return only the top N files by
+    PageRank score, ignoring the token budget. Overrides all other filtering.
     """
     t0 = time.monotonic()
     data = _load_and_rank(project)
@@ -975,6 +979,23 @@ def build_map(
             f"# {project.root.name}\n\n"
             "(no files indexed — run `token-goat index --full`)\n"
         )
+
+    # When --top N is set, return only the top N files in compact (score) format
+    if top_n is not None and top_n > 0:
+        if top_n > len(data.ranked):
+            top_n = len(data.ranked)
+        out = []
+        for rel, _info in data.ranked[:top_n]:
+            score = data.ranks.get(rel, 0.0)
+            out.append(f"{rel} (rank: {score:.3f})\n")
+        elapsed = time.monotonic() - t0
+        _LOG.debug(
+            "build_map: top_n=%d project=%s dur=%.3fs",
+            top_n,
+            project.root.name,
+            elapsed,
+        )
+        return "".join(out)
 
     # Resolve compact mode: explicit caller wins, else auto-engage on tight budget.
     use_compact = compact if compact is not None else budget_tokens < _AUTO_COMPACT_BUDGET
