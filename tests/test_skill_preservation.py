@@ -408,6 +408,59 @@ class TestPostSkillHook:
         cache = session.load(sid)
         assert "ralph" in cache.skill_history
 
+    def test_auto_compact_large_bodies(self, tmp_data_dir):
+        """Large skill bodies (>4000 chars) trigger auto-compact on post-skill hook."""
+        sid = "session-hook-auto-compact"
+        # Create a body > 4000 chars with CRITICAL markers and section headings
+        body = (
+            "# Ralph\n\n"
+            "## DoD\n\n"
+            "- CRITICAL: Always preserve the rules\n"
+            "- MUST: Check the definitions\n\n"
+            "## Process\n\n"
+            "**Key directive:** Follow the steps\n\n"
+            + ("Extra paragraph text. " * 300)
+        )
+        assert len(body) > 4000, "Test body must be > 4000 chars"
+        payload = {
+            "session_id": sid,
+            "tool_name": "Skill",
+            "tool_input": {"skill": "ralph"},
+            "tool_response": body,
+        }
+        resp = hooks_skill.post_skill(payload)
+        assert resp.get("continue") is True
+        # Body should be cached
+        cache = session.load(sid)
+        assert "ralph" in cache.skill_history
+        # Compact should now be available
+        compact_text = skill_cache.get_compact(sid, "ralph")
+        assert compact_text is not None
+        assert len(compact_text) > 0
+        assert len(compact_text) <= 1600  # _COMPACT_MAX_CHARS
+        # Compact should include key-rules
+        assert "CRITICAL" in compact_text or "MUST" in compact_text
+
+    def test_auto_compact_small_bodies_skipped(self, tmp_data_dir):
+        """Small skill bodies (<4000 chars) do not trigger auto-compact."""
+        sid = "session-hook-no-auto-compact"
+        body = "# Ralph\n\n" + ("rule. " * 100)  # Much smaller, ~700 chars
+        assert len(body) < 4000
+        payload = {
+            "session_id": sid,
+            "tool_name": "Skill",
+            "tool_input": {"skill": "ralph"},
+            "tool_response": body,
+        }
+        resp = hooks_skill.post_skill(payload)
+        assert resp.get("continue") is True
+        # Body should be cached
+        cache = session.load(sid)
+        assert "ralph" in cache.skill_history
+        # Compact should NOT be stored for small bodies
+        compact_text = skill_cache.get_compact(sid, "ralph")
+        assert compact_text is None
+
 
 # ---------------------------------------------------------------------------
 # compact manifest section
@@ -449,6 +502,39 @@ class TestManifestActiveSkillsSection:
         sid = "session-event-skills"
         session.mark_skill_loaded(sid, "ralph", "oid", "sha", 1000, False)
         assert compact.event_count(sid) >= 1
+
+    def test_manifest_includes_compact_when_present(self, tmp_data_dir):
+        """When a skill has a stored compact, the manifest embeds it."""
+        sid = "session-manifest-compact"
+        body = (
+            "# Ralph\n\n"
+            "## DoD\n\n"
+            "- CRITICAL: Always follow the DoD\n"
+            "- MUST: Check all items\n\n"
+            "## Process\n\n"
+            "**Key:** Do this in order\n\n"
+            + ("Extra text. " * 400)
+        )
+        assert len(body) > 4000
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        # Manually store a compact for this skill
+        compact_text = skill_cache.generate_compact_summary(body)
+        assert compact_text is not None
+        skill_cache.store_compact(sid, "ralph", compact_text)
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+        m = compact.build_manifest(sid, max_tokens=600)
+        # Skills section should be present
+        assert "**Skills:**" in m
+        assert "ralph" in m
+        # Compact should be embedded with the skill name as a heading
+        assert "**ralph key-rules:**" in m or "ralph" in m
+        # Key rules from the compact should appear
+        assert "CRITICAL" in m or "MUST" in m
 
 
 # ---------------------------------------------------------------------------

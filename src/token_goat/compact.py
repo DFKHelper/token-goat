@@ -4847,6 +4847,23 @@ def _render(
         skill_lines = [
             f"**Skills:** {_skills_summary} — recall via `token-goat skill-body <name>`"
         ]
+
+        # Try to inject compact summaries from the cache for each skill.
+        # This gives the manifest concrete key-rules instead of relying on
+        # compaction LLM to infer them from the full prose.
+        from . import skill_cache  # noqa: PLC0415
+
+        for _se in skill_entries:
+            skill_name = getattr(_se, "skill_name", "")
+            if not skill_name:
+                continue
+            compact_text = skill_cache.get_compact(session_id, skill_name)
+            if compact_text:
+                # Indent the compact as a continuation of the skills line
+                skill_lines.append("")
+                skill_lines.append(f"**{skill_name} key-rules:**")
+                for line in compact_text.splitlines():
+                    skill_lines.append(f"  {line}")
     else:
         skill_lines = []
 

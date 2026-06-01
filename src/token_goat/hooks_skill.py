@@ -193,6 +193,24 @@ def post_skill(payload: HookPayload) -> HookResponse:
         return CONTINUE()
     skill_cache.write_sidecar(meta)
 
+    # Auto-compact large skill bodies (> 4000 chars ~= 1000 tokens) for fast
+    # recall in the PreCompact manifest.  This prevents large skill prose
+    # (Ralph's DoD gates, /improve's iteration sequence) from being lossily
+    # summarized by the compaction LLM — the compact gives the manifest a
+    # concrete key-rules summary to preserve.
+    if body_size > 4000:
+        try:
+            compact_text = skill_cache.generate_compact_summary(body)
+            if compact_text:
+                skill_cache.store_compact(session_id, skill_name, compact_text)
+                _LOG.debug(
+                    "post-skill: auto-compact stored for %s (%d chars)",
+                    sanitize_log_str(skill_name, max_len=80),
+                    len(compact_text),
+                )
+        except Exception as exc:  # noqa: BLE001
+            _LOG.debug("post-skill: auto-compact failed: %s", exc)
+
     try:
         session.mark_skill_loaded(
             session_id=session_id,
