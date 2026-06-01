@@ -9,6 +9,7 @@ __all__ = [
     "SectionResult",
     "SymbolResult",
     "find_in_all_projects",
+    "format_callers_footer",
     "invalidate_file_cache",
     "parse_line_range",
     "read_line_range",
@@ -1289,3 +1290,43 @@ def read_section(
         bytes_extracted=snippet_bytes,
         bytes_saved=max(0, full_bytes - snippet_bytes),
     )
+
+
+# ---------------------------------------------------------------------------
+# Cross-reference footer for symbol reads
+# ---------------------------------------------------------------------------
+
+def format_callers_footer(
+    project: Project,
+    symbol_name: str,
+    limit: int = 3,
+) -> str:
+    """Return a compact "Referenced by: …" footer for *symbol_name*, or an empty string.
+
+    Queries the refs table for up to *limit*+1 call sites so the caller can
+    detect "and more" without a second COUNT query.  Paths are shown relative
+    to the project root (file_rel is already relative in the DB).
+
+    Returns ``""`` on any DB error (fail-soft) or when no callers are indexed.
+
+    Format examples::
+
+        Referenced by: bar.py:42, baz.py:17
+        Referenced by: bar.py:42, baz.py:17, qux.py:99 (and more)
+    """
+    try:
+        callers = db.get_symbol_callers(project.hash, symbol_name, limit=limit)
+    except Exception:  # pragma: no cover — defensive; get_symbol_callers is already fail-soft
+        return ""
+
+    if not callers:
+        return ""
+
+    shown = callers[:limit]
+    has_more = len(callers) > limit
+
+    parts = [f"{c['file_rel']}:{c['line']}" for c in shown]
+    refs_str = ", ".join(parts)
+    if has_more:
+        refs_str += " (and more)"
+    return f"Referenced by: {refs_str}"

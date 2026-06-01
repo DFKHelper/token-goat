@@ -673,6 +673,13 @@ def _run_read_like_command(
         else:
             cb, ca = _context_bounds(cached_result)
             display_text = read_replacement.truncate_symbol_body(cached_result["text"], full=full)
+            if separator_label == "symbol":
+                footer = read_replacement.format_callers_footer(
+                    file_target.project,
+                    cached_result.get("symbol", item_part),
+                )
+                if footer:
+                    display_text = f"{display_text}\n\n{footer}"
             _emit_text_result(
                 display_text, file_target.rel_path, item_part, separator_label, no_header,
                 context_before=cb, context_after=ca, no_color=no_color,
@@ -749,16 +756,28 @@ def _run_read_like_command(
     # (not section/line-range reads) when a session_id is provided.  Emitted to
     # stderr so it appears before the body without corrupting JSON or piped output.
     if session_id and separator_label == "symbol":
+        _sym_name = str(result.get("symbol") or item_part)
         stale_hint = hints.build_symbol_stale_hint(
             session_id=session_id,
             file_path=str(file_target.project.root / file_target.rel_path),
-            symbol_name=result.get("symbol", item_part),
+            symbol_name=_sym_name,
             current_start_line=result.get("start_line", 1),
             current_end_line=result.get("end_line", 1),
             current_text=result.get("text", ""),
         )
         if stale_hint:
             typer.echo(stale_hint, err=True)
+
+    # Cross-reference footer: append "Referenced by: …" for symbol reads in text mode.
+    # Only fires when reading a symbol (not a section or line-range), and is suppressed
+    # in JSON output so the structured payload stays clean.
+    if separator_label == "symbol" and not json_output:
+        footer = read_replacement.format_callers_footer(
+            file_target.project,
+            str(result.get("symbol") or item_part),
+        )
+        if footer:
+            display_text = f"{display_text}\n\n{footer}"
 
     # Emit a cross-project attribution note when the result came from a
     # different project than the shell's cwd.  The user needs to know the

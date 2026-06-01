@@ -1,6 +1,7 @@
 """Tests for read_commands helpers — Item 15: --no-header / TTY auto-detection."""
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -364,3 +365,165 @@ def test_stub_view_returns_symbols(indexed_py_dir, tmp_data_dir, monkeypatch, ca
         "stub_view returned no symbols — likely a wrong column name in the SQL query"
     )
     assert "Skeleton:" in out
+
+
+# ---------------------------------------------------------------------------
+# Cross-reference footer wiring in _run_read_like_command
+# ---------------------------------------------------------------------------
+
+def _make_mock_result_with_symbol(
+    symbol: str = "my_func",
+    text: str = "def my_func(): pass",
+    bytes_total: int = 1000,
+    bytes_extracted: int = 50,
+) -> dict:
+    return {
+        "symbol": symbol,
+        "text": text,
+        "start_line": 1,
+        "end_line": 5,
+        "core_start_line": 1,
+        "core_end_line": 5,
+        "bytes_total": bytes_total,
+        "bytes_extracted": bytes_extracted,
+        "bytes_saved": bytes_total - bytes_extracted,
+    }
+
+
+def test_callers_footer_appended_in_text_mode(capsys: pytest.CaptureFixture[str]) -> None:
+    """footer is appended to text output when callers exist."""
+    from token_goat.read_commands import _run_read_like_command
+
+    mock_result = _make_mock_result_with_symbol()
+    mock_reader = MagicMock(return_value=mock_result)
+    file_target = _make_file_target()
+
+    with (
+        patch("token_goat.read_commands._resolve_file_target", return_value=file_target),
+        patch("token_goat.db.record_stat"),
+        patch("token_goat.read_commands.session.mark_file_read"),
+        patch(
+            "token_goat.read_replacement.format_callers_footer",
+            return_value="Referenced by: bar.py:42",
+        ),
+        patch.object(sys.stdout, "isatty", return_value=False),
+    ):
+        _run_read_like_command(
+            target="src/foo.py::my_func",
+            session_id=None,
+            json_output=False,
+            context_lines=0,
+            separator_label="symbol",
+            missing_label="Symbol",
+            stat_kind="read_replacement",
+            reader=mock_reader,
+            no_header=True,
+        )
+
+    out = capsys.readouterr().out
+    assert "Referenced by: bar.py:42" in out
+    assert "my_func" in out  # body still present
+
+
+def test_callers_footer_absent_in_json_mode(capsys: pytest.CaptureFixture[str]) -> None:
+    """footer is NOT added to JSON output."""
+    from token_goat.read_commands import _run_read_like_command
+
+    mock_result = _make_mock_result_with_symbol()
+    mock_reader = MagicMock(return_value=mock_result)
+    file_target = _make_file_target()
+
+    with (
+        patch("token_goat.read_commands._resolve_file_target", return_value=file_target),
+        patch("token_goat.db.record_stat"),
+        patch("token_goat.read_commands.session.mark_file_read"),
+        patch(
+            "token_goat.read_replacement.format_callers_footer",
+            return_value="Referenced by: bar.py:42",
+        ),
+        patch.object(sys.stdout, "isatty", return_value=False),
+    ):
+        _run_read_like_command(
+            target="src/foo.py::my_func",
+            session_id=None,
+            json_output=True,
+            context_lines=0,
+            separator_label="symbol",
+            missing_label="Symbol",
+            stat_kind="read_replacement",
+            reader=mock_reader,
+            no_header=True,
+        )
+
+    out = capsys.readouterr().out
+    data = json.loads(out.strip())
+    assert "Referenced by" not in data.get("text", "")
+    assert "Referenced by" not in out  # nowhere in raw JSON output
+
+
+def test_callers_footer_absent_when_no_callers(capsys: pytest.CaptureFixture[str]) -> None:
+    """No footer is appended when format_callers_footer returns empty string."""
+    from token_goat.read_commands import _run_read_like_command
+
+    mock_result = _make_mock_result_with_symbol()
+    mock_reader = MagicMock(return_value=mock_result)
+    file_target = _make_file_target()
+
+    with (
+        patch("token_goat.read_commands._resolve_file_target", return_value=file_target),
+        patch("token_goat.db.record_stat"),
+        patch("token_goat.read_commands.session.mark_file_read"),
+        patch(
+            "token_goat.read_replacement.format_callers_footer",
+            return_value="",
+        ),
+        patch.object(sys.stdout, "isatty", return_value=False),
+    ):
+        _run_read_like_command(
+            target="src/foo.py::my_func",
+            session_id=None,
+            json_output=False,
+            context_lines=0,
+            separator_label="symbol",
+            missing_label="Symbol",
+            stat_kind="read_replacement",
+            reader=mock_reader,
+            no_header=True,
+        )
+
+    out = capsys.readouterr().out
+    assert "Referenced by" not in out
+    assert "my_func" in out  # body present
+
+
+def test_callers_footer_not_called_for_section(capsys: pytest.CaptureFixture[str]) -> None:
+    """format_callers_footer is not invoked when separator_label is 'heading'."""
+    from token_goat.read_commands import _run_read_like_command
+
+    mock_result = _make_mock_result_with_symbol(text="section body")
+    mock_reader = MagicMock(return_value=mock_result)
+    file_target = _make_file_target()
+    mock_footer = MagicMock(return_value="Referenced by: bar.py:1")
+
+    with (
+        patch("token_goat.read_commands._resolve_file_target", return_value=file_target),
+        patch("token_goat.db.record_stat"),
+        patch("token_goat.read_commands.session.mark_file_read"),
+        patch("token_goat.read_replacement.format_callers_footer", mock_footer),
+        patch.object(sys.stdout, "isatty", return_value=False),
+    ):
+        _run_read_like_command(
+            target="README.md::Install",
+            session_id=None,
+            json_output=False,
+            context_lines=0,
+            separator_label="heading",
+            missing_label="Section",
+            stat_kind="section_replacement",
+            reader=mock_reader,
+            no_header=True,
+        )
+
+    mock_footer.assert_not_called()
+    out = capsys.readouterr().out
+    assert "Referenced by" not in out

@@ -1273,3 +1273,33 @@ def record_stat(
                 conn.execute(sql, params)
 
     _best_effort_write(_do, "record_stat")
+
+
+def get_symbol_callers(
+    project_hash: str,
+    symbol_name: str,
+    limit: int = 3,
+) -> list[dict[str, object]]:
+    """Return up to *limit*+1 call-site rows for *symbol_name* in the project.
+
+    Each row is a dict with keys ``"file_rel"`` (str) and ``"line"`` (int).
+    Returning *limit*+1 rows allows the caller to detect "and more" without a
+    separate COUNT query — when ``len(result) > limit`` the caller knows there
+    are additional callers beyond what is shown.
+
+    Returns an empty list on any DB error (fail-soft: a broken refs table must
+    not interrupt the agent's read).  Also returns ``[]`` when the project DB
+    does not exist (not yet indexed).
+    """
+    try:
+        with open_project_readonly(project_hash) as conn:
+            rows = conn.execute(
+                "SELECT file_rel, line FROM refs WHERE symbol_name = ? "
+                "ORDER BY file_rel, line LIMIT ?",
+                (symbol_name, limit + 1),
+            ).fetchall()
+        return [{"file_rel": str(r["file_rel"]), "line": int(r["line"])} for r in rows]
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []

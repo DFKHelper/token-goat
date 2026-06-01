@@ -501,6 +501,77 @@ def test_cli_read_with_session_id(indexed_ts_cli, tmp_data_dir):
     assert "greet" in entry.symbols_read
 
 
+# ---------------------------------------------------------------------------
+# format_callers_footer
+# ---------------------------------------------------------------------------
+
+def test_format_callers_footer_with_callers(ts_project):
+    """footer shows callers when refs exist (greet is called at line 11 in index.ts)."""
+    _, proj = ts_project
+    footer = read_replacement.format_callers_footer(proj, "greet")
+    # greet is called inside UserService.hello — should appear in the footer
+    assert footer.startswith("Referenced by:"), repr(footer)
+    assert "index.ts" in footer
+    assert ":11" in footer  # line 11: return greet(this.name);
+
+
+def test_format_callers_footer_no_callers(ts_project):
+    """footer is empty when the symbol has no call-site refs."""
+    _, proj = ts_project
+    # UserService is defined but never called in the fixture file
+    footer = read_replacement.format_callers_footer(proj, "UserService")
+    assert footer == ""
+
+
+def test_format_callers_footer_db_error(ts_project, monkeypatch):
+    """footer is empty (fail-soft) when get_symbol_callers raises an exception."""
+    import token_goat.db as _db
+    _, proj = ts_project
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("simulated DB failure")
+
+    monkeypatch.setattr(_db, "get_symbol_callers", _raise)
+    # format_callers_footer must catch the exception and return ""
+    footer = read_replacement.format_callers_footer(proj, "anything")
+    assert footer == ""
+
+
+def test_format_callers_footer_and_more(ts_project, monkeypatch):
+    """footer shows '(and more)' when more than limit callers exist."""
+    _, proj = ts_project
+    # Patch get_symbol_callers to return limit+1 entries
+    import token_goat.db as _db
+    monkeypatch.setattr(
+        _db,
+        "get_symbol_callers",
+        lambda *_args, **_kwargs: [
+            {"file_rel": f"file{i}.py", "line": i * 10}
+            for i in range(1, 5)  # 4 rows → has_more is True for limit=3
+        ],
+    )
+    footer = read_replacement.format_callers_footer(proj, "something", limit=3)
+    assert "and more" in footer
+    assert footer.count(",") == 2  # only first 3 shown
+
+
+def test_format_callers_footer_exactly_at_limit(ts_project, monkeypatch):
+    """footer shows no '(and more)' when exactly limit callers are returned."""
+    _, proj = ts_project
+    import token_goat.db as _db
+    monkeypatch.setattr(
+        _db,
+        "get_symbol_callers",
+        lambda *_args, **_kwargs: [
+            {"file_rel": f"f{i}.py", "line": i}
+            for i in range(1, 4)  # exactly 3 rows — has_more is False for limit=3
+        ],
+    )
+    footer = read_replacement.format_callers_footer(proj, "something", limit=3)
+    assert "and more" not in footer
+    assert footer.startswith("Referenced by:")
+
+
 def test_cli_section_json_output(indexed_md_cli):
     from typer.testing import CliRunner
 
