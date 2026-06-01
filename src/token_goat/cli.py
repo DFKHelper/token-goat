@@ -2163,6 +2163,92 @@ def stats(
     cli_stats.stats(window=window, json_output=json_output, by_project=by_project, top=top)
 
 
+@app.command(rich_help_panel="Core")
+def cost(
+    session: str | None = typer.Option(
+        None,
+        "--session",
+        "-s",
+        help=(
+            "Show savings for a specific session (full or 8-char short form). "
+            "When omitted, shows all-time summary."
+        ),
+    ),
+) -> None:
+    """Show estimated tokens saved (session or all-time)."""
+    from . import paths as _paths  # noqa: PLC0415
+    from . import session as session_mod  # noqa: PLC0415
+    from . import stats as stats_mod  # noqa: PLC0415
+
+    sessions_dir = _paths.data_dir() / "sessions"
+
+    if session is not None:
+        # Resolve session ID (full, short, or most recent)
+        def _resolve_session_id(raw: str) -> str | None:
+            """Resolve full / short session id against the on-disk cache."""
+            if raw and len(raw) >= 32:
+                return raw
+            if raw:
+                # Short prefix lookup.
+                if sessions_dir.exists():
+                    for f in sessions_dir.glob(f"{raw}*.json"):
+                        return f.stem
+                return None
+            return None
+
+        resolved = _resolve_session_id(session.strip())
+        if resolved is None:
+            _error(f"no session cache found for: {session!r}")
+            raise typer.Exit(1)
+
+        cache = session_mod.safe_load(resolved)
+        if cache is None:
+            _error(f"failed to load session cache: {resolved!r}")
+            raise typer.Exit(1)
+
+        # Compute session savings
+        tokens_saved = 0
+        avoided_reads = 0
+        dedup_hits = 0
+
+        # Count files read and estimate token savings
+        for file_entry in cache.files.values():
+            # Estimate tokens saved per re-read: roughly file_size / 4 tokens
+            # (conservative: not counting all dedup benefits)
+            if file_entry.read_count > 1:
+                # Multiple reads of same file → likely saved via diff-hint or caching
+                avoided_reads += file_entry.read_count - 1
+
+        # Count dedup hits from grep/bash/web
+        dedup_hits += len([g for g in cache.greps if g.ts > 0])
+        dedup_hits += len(cache.bash_history)
+        dedup_hits += len(cache.web_history)
+
+        # Very rough estimate: assume 500 tokens per file read on average
+        # For dedup hits (bash/web/grep repeat), assume 200 tokens saved each
+        tokens_saved = avoided_reads * 500 + dedup_hits * 200
+
+        session_str = f"Session {resolved[:8]}"
+        typer.echo(f"{session_str}: ~{tokens_saved:,} tokens saved via {avoided_reads} cached reads + {dedup_hits} dedup hits")
+        raise typer.Exit(0)
+
+    # All-time summary (no --session flag)
+    summary = stats_mod.summarize(window_days=0)
+
+    total_tokens = summary.total_tokens_saved
+    total_bytes = summary.total_bytes_saved
+
+    # Top 3 sources by tokens saved
+    by_source = summary.by_source
+    if by_source:
+        top_sources = sorted(by_source.items(), key=lambda x: x[1]["tokens_saved"], reverse=True)[:3]
+        top_str = " (" + ", ".join(f"{src}: {data['tokens_saved']:,}" for src, data in top_sources) + ")"
+    else:
+        top_str = ""
+
+    typer.echo(f"All-time: {total_tokens:,} tokens saved, {total_bytes / 1024 / 1024:.1f} MB data avoided{top_str}")
+
+
 # Smart-default constants for no-flag recall of bash-output / web-output.
 # Head is small: just enough to show the command invocation and early output.
 _SMART_DEFAULT_HEAD = 30
