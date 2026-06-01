@@ -794,3 +794,212 @@ class TestSkillCacheOrphanSweep:
         monkeypatch.delenv("TOKEN_GOAT_ORPHAN_SWEEP", raising=False)
         cfg = config.load()
         assert cfg.skill_preservation.orphan_age_secs == 604800
+
+
+# ---------------------------------------------------------------------------
+# generate_compact_summary
+# ---------------------------------------------------------------------------
+
+class TestGenerateCompactSummary:
+    """Unit tests for skill_cache.generate_compact_summary."""
+
+    _SAMPLE_SKILL = """\
+---
+description: A test skill for validation
+---
+
+# Test Skill
+
+## Overview
+
+This is the overview section.
+
+## Rules
+
+CRITICAL: Never skip this step.
+MUST always run tests before committing.
+Normal line without keywords.
+
+### Sub-rules
+
+NEVER ignore a failing test.
+
+## Process
+
+**Step 1:** Do the first thing.
+**Step 2:** Do the second thing.
+Regular prose that should not appear.
+"""
+
+    def test_extracts_frontmatter_description(self):
+        summary = skill_cache.generate_compact_summary(self._SAMPLE_SKILL)
+        assert "A test skill for validation" in summary
+
+    def test_extracts_h2_headings(self):
+        summary = skill_cache.generate_compact_summary(self._SAMPLE_SKILL)
+        assert "## Overview" in summary
+        assert "## Rules" in summary
+        assert "## Process" in summary
+
+    def test_extracts_h3_headings(self):
+        summary = skill_cache.generate_compact_summary(self._SAMPLE_SKILL)
+        assert "### Sub-rules" in summary
+
+    def test_extracts_critical_lines(self):
+        summary = skill_cache.generate_compact_summary(self._SAMPLE_SKILL)
+        assert "CRITICAL: Never skip this step." in summary
+
+    def test_extracts_must_lines(self):
+        summary = skill_cache.generate_compact_summary(self._SAMPLE_SKILL)
+        assert "MUST always run tests before committing." in summary
+
+    def test_extracts_never_lines(self):
+        summary = skill_cache.generate_compact_summary(self._SAMPLE_SKILL)
+        assert "NEVER ignore a failing test." in summary
+
+    def test_extracts_bold_lines(self):
+        summary = skill_cache.generate_compact_summary(self._SAMPLE_SKILL)
+        assert "**Step 1:**" in summary
+        assert "**Step 2:**" in summary
+
+    def test_omits_plain_prose(self):
+        summary = skill_cache.generate_compact_summary(self._SAMPLE_SKILL)
+        assert "Regular prose that should not appear." not in summary
+
+    def test_result_under_1600_chars(self):
+        # A large body should still produce a compact under the cap.
+        big_skill = (
+            "---\ndescription: Big skill\n---\n\n"
+            + "\n".join(f"## Section {i}" for i in range(50))
+            + "\n\n"
+            + "\n".join(f"CRITICAL: Do rule {i} now." for i in range(200))
+            + "\n\n"
+            + "\n".join(f"**Bold directive {i}**" for i in range(200))
+        )
+        summary = skill_cache.generate_compact_summary(big_skill)
+        assert len(summary) <= 1600
+
+    def test_empty_body_returns_empty(self):
+        assert skill_cache.generate_compact_summary("") == ""
+
+    def test_no_frontmatter_still_works(self):
+        body = "## Section A\n\nSome text.\n\nCRITICAL: Important rule.\n"
+        summary = skill_cache.generate_compact_summary(body)
+        assert "## Section A" in summary
+        assert "CRITICAL: Important rule." in summary
+
+    def test_deduplicates_rule_lines(self):
+        body = "CRITICAL: Same rule.\nCRITICAL: Same rule.\nCRITICAL: Same rule.\n"
+        summary = skill_cache.generate_compact_summary(body)
+        assert summary.count("CRITICAL: Same rule.") == 1
+
+
+# ---------------------------------------------------------------------------
+# store_compact / get_compact
+# ---------------------------------------------------------------------------
+
+class TestStoreGetCompact:
+    """Disk persistence for compact summaries."""
+
+    def test_round_trip(self, tmp_data_dir):
+        text = "compact summary text here"
+        skill_cache.store_compact("sess-abc", "ralph", text)
+        result = skill_cache.get_compact("sess-abc", "ralph")
+        assert result == text
+
+    def test_get_absent_returns_none(self, tmp_data_dir):
+        result = skill_cache.get_compact("sess-xyz", "nonexistent-skill")
+        assert result is None
+
+    def test_invalid_skill_name_returns_none(self, tmp_data_dir):
+        # Should not store or raise on invalid names.
+        skill_cache.store_compact("sess1", "../evil", "x")
+        result = skill_cache.get_compact("sess1", "../evil")
+        assert result is None
+
+    def test_different_sessions_isolated(self, tmp_data_dir):
+        skill_cache.store_compact("sess-a", "myskill", "summary for a")
+        skill_cache.store_compact("sess-b", "myskill", "summary for b")
+        assert skill_cache.get_compact("sess-a", "myskill") == "summary for a"
+        assert skill_cache.get_compact("sess-b", "myskill") == "summary for b"
+
+    def test_overwrite_updates_content(self, tmp_data_dir):
+        skill_cache.store_compact("sess1", "myskill", "first")
+        skill_cache.store_compact("sess1", "myskill", "second")
+        assert skill_cache.get_compact("sess1", "myskill") == "second"
+
+
+# ---------------------------------------------------------------------------
+# CLI: skill-compact command and --compact flag
+# ---------------------------------------------------------------------------
+
+class TestCliSkillCompactCommands:
+    """In-process CliRunner tests for skill-compact and skill-body --compact."""
+
+    _SAMPLE_BODY = (
+        "---\ndescription: Test skill description\n---\n\n"
+        "## Overview\n\nSome text.\n\n"
+        "## Rules\n\nCRITICAL: Always follow the rules.\n\n"
+        "**Key directive:** Do the right thing.\n"
+    )
+
+    def _store_skill(self, name: str = "testskill") -> None:
+        """Store a sample skill body into the cache for CLI recall (with sidecar)."""
+        meta = skill_cache.store_output("test-session-123", name, self._SAMPLE_BODY)
+        if meta is not None:
+            skill_cache.write_sidecar(meta)
+
+    def _invoke(self, *args: str):
+        """Invoke the CLI in-process via CliRunner."""
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+        runner = CliRunner()
+        return runner.invoke(app, list(args))
+
+    def test_skill_compact_command_runs(self, tmp_data_dir):
+        """skill-compact exits 0 and prints non-empty output for a cached skill."""
+        self._store_skill()
+        result = self._invoke("skill-compact", "testskill")
+        assert result.exit_code == 0, f"output: {result.output}"
+        assert len(result.output.strip()) > 0
+
+    def test_skill_compact_includes_critical_line(self, tmp_data_dir):
+        """skill-compact output includes CRITICAL keyword lines."""
+        self._store_skill()
+        result = self._invoke("skill-compact", "testskill")
+        assert result.exit_code == 0, f"output: {result.output}"
+        assert "CRITICAL" in result.output
+
+    def test_skill_compact_json_output(self, tmp_data_dir):
+        """skill-compact --json returns a valid JSON object with 'compact': true."""
+        import json  # noqa: PLC0415
+        self._store_skill()
+        result = self._invoke("skill-compact", "--json", "testskill")
+        assert result.exit_code == 0, f"output: {result.output}"
+        data = json.loads(result.output.strip())
+        assert data["compact"] is True
+        assert data["skill_name"] == "testskill"
+        assert "text" in data
+
+    def test_skill_compact_missing_skill_exits_1(self, tmp_data_dir):
+        """skill-compact exits 1 when the skill is not cached."""
+        result = self._invoke("skill-compact", "does-not-exist-xyzzy")
+        assert result.exit_code == 1
+
+    def test_skill_body_compact_flag(self, tmp_data_dir):
+        """skill-body --compact returns a compact summary under 1600 chars."""
+        self._store_skill()
+        result = self._invoke("skill-body", "--compact", "testskill")
+        assert result.exit_code == 0, f"output: {result.output}"
+        assert 0 < len(result.output.strip()) <= 1600
+
+    def test_skill_body_compact_flag_json(self, tmp_data_dir):
+        """skill-body --compact --json returns JSON with compact=true."""
+        import json  # noqa: PLC0415
+        self._store_skill()
+        result = self._invoke("skill-body", "--compact", "--json", "testskill")
+        assert result.exit_code == 0, f"output: {result.output}"
+        data = json.loads(result.output.strip())
+        assert data["compact"] is True
+        assert "text" in data

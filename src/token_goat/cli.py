@@ -3434,6 +3434,15 @@ def cmd_skill_body(
             "When absent, all available section headings are listed below the body output."
         ),
     ),
+    compact: bool = typer.Option(
+        False,
+        "--compact",
+        help=(
+            "Return a compact summary (~400 tokens) instead of the full body. "
+            "Includes description, H2/H3 headings, CRITICAL/MUST/NEVER/RULE lines, "
+            "and bold-emphasis directives."
+        ),
+    ),
 ) -> None:
     """Retrieve a sliced view of a cached Skill body.
 
@@ -3504,6 +3513,39 @@ def cmd_skill_body(
     if body is None:
         _error(f"no cached body for skill: {name}")
         raise typer.Exit(1)
+
+    # --compact: return a compact summary (~400 tokens) instead of the full body.
+    if compact:
+        _compact_session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+        # Try cached compact first; generate and store if absent.
+        compact_text = skill_cache.get_compact(_compact_session_id, name)
+        if not compact_text:
+            compact_text = skill_cache.generate_compact_summary(body)
+            skill_cache.store_compact(_compact_session_id, name, compact_text)
+        body_bytes = len(body.encode())
+        returned_bytes = len(compact_text.encode())
+        saved_bytes = max(0, body_bytes - returned_bytes)
+        _db.record_stat(
+            None,
+            "skill_body_recall",
+            bytes_saved=saved_bytes,
+            tokens_saved=saved_bytes // 4,
+            detail=f"{name[:48]}:compact",
+        )
+        if json_output:
+            payload_c: dict[str, object] = {
+                "skill_name": name,
+                "compact": True,
+                "source": source_label,
+                "text": compact_text,
+                "body_bytes": body_bytes,
+            }
+            if meta is not None:
+                payload_c["output_id"] = meta.output_id
+            typer.echo(json.dumps(payload_c, ensure_ascii=False, separators=(",", ":")))
+        else:
+            typer.echo(compact_text)
+        return
 
     # --section: extract a single named H2 section from the body.
     if section:
@@ -3596,6 +3638,92 @@ def cmd_skill_body(
         return
 
     typer.echo(sliced)
+
+
+@app.command("skill-compact", rich_help_panel="Core")
+def cmd_skill_compact(
+    name: str = typer.Argument(..., help="Skill name (e.g. 'ralph', 'plugin:improve')."),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Generate and print a compact summary (~400 tokens) for a cached skill body.
+
+    Extracts from the full body:
+
+    * The YAML frontmatter ``description`` field (if present).
+    * All H2 and H3 headings as a table of contents.
+    * Lines containing CRITICAL/MUST/NEVER/RULE keywords (first unique occurrence).
+    * Lines starting with ``**`` (bold directives).
+
+    The result is capped at 1600 characters (~400 tokens).  The compact is also
+    stored in the skill cache under ``{session}-{name}-compact`` for instant
+    recall via ``token-goat skill-body --compact <name>``.
+    """
+    from . import db as _db  # noqa: PLC0415
+    from . import hooks_skill, skill_cache  # noqa: PLC0415
+
+    # Resolve the skill body using the same fallback chain as skill-body.
+    meta_candidates = skill_cache.lookup_all_by_name(name)
+    meta: skill_cache.SkillMeta | None = meta_candidates[0] if meta_candidates else None
+    body: str | None = None
+    source_label = "cache"
+    for candidate in meta_candidates:
+        body = skill_cache.load_output(candidate.output_id)
+        if body is not None:
+            meta = candidate
+            break
+        if candidate.source_path:
+            try:
+                from pathlib import Path  # noqa: PLC0415
+
+                body = Path(candidate.source_path).read_text(encoding="utf-8", errors="replace")
+                source_label = f"source:{candidate.source_path}"
+                meta = candidate
+                break
+            except OSError:
+                continue
+    if body is None:
+        resolved = hooks_skill._resolve_skill_body_path(name)
+        if resolved:
+            try:
+                from pathlib import Path  # noqa: PLC0415
+
+                body = Path(resolved).read_text(encoding="utf-8", errors="replace")
+                source_label = f"source:{resolved}"
+            except OSError:
+                body = None
+
+    if body is None:
+        _error(f"no cached body for skill: {name}")
+        raise typer.Exit(1)
+
+    _compact_session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+    compact_text = skill_cache.generate_compact_summary(body)
+    skill_cache.store_compact(_compact_session_id, name, compact_text)
+
+    body_bytes = len(body.encode())
+    returned_bytes = len(compact_text.encode())
+    saved_bytes = max(0, body_bytes - returned_bytes)
+    _db.record_stat(
+        None,
+        "skill_body_recall",
+        bytes_saved=saved_bytes,
+        tokens_saved=saved_bytes // 4,
+        detail=f"{name[:48]}:compact",
+    )
+
+    if json_output:
+        payload: dict[str, object] = {
+            "skill_name": name,
+            "compact": True,
+            "source": source_label,
+            "text": compact_text,
+            "body_bytes": body_bytes,
+        }
+        if meta is not None:
+            payload["output_id"] = meta.output_id
+        typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+    else:
+        typer.echo(compact_text)
 
 
 @app.command("skill-history", rich_help_panel="Core")

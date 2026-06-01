@@ -34,6 +34,8 @@ __all__ = [
     "extract_checklist_section",
     "extract_h2_headings",
     "extract_named_section",
+    "generate_compact_summary",
+    "get_compact",
     "list_by_session",
     "list_outputs",
     "load_output",
@@ -42,6 +44,7 @@ __all__ = [
     "lookup_by_name",
     "output_id_for",
     "read_sidecar",
+    "store_compact",
     "store_output",
     "write_sidecar",
 ]
@@ -591,4 +594,164 @@ def read_sidecar(output_id: str) -> SkillMeta | None:
             source_path=str(data.get("source_path", "")),
         )
     except (TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Compact summary helpers
+# ---------------------------------------------------------------------------
+
+# Maximum characters for a compact summary (~400 tokens at ~4 chars/token).
+_COMPACT_MAX_CHARS: int = 1600
+
+# Keywords that identify high-priority "rule" lines worth including in the compact.
+_RULE_KEYWORDS_RE = re.compile(r"\b(CRITICAL|MUST|NEVER|RULE)\b")
+
+
+def generate_compact_summary(full_body: str) -> str:
+    """Extract a compact summary from *full_body* capped at ~400 tokens (1600 chars).
+
+    The summary includes, in order:
+    1. The YAML frontmatter ``description`` field (if present) as an opening line.
+    2. All H2 and H3 headings as a table of contents.
+    3. All lines containing CRITICAL/MUST/NEVER/RULE keywords (first occurrence
+       per unique line, deduplicated).
+    4. Lines starting with ``**`` (bold emphasis — typically key directives).
+
+    The result is capped at :data:`_COMPACT_MAX_CHARS` characters.  Returns the
+    compact text as a single string; never raises.
+    """
+    if not full_body:
+        return ""
+
+    parts: list[str] = []
+
+    # 1. Extract description from YAML frontmatter (between leading --- fences).
+    fm_desc = _extract_frontmatter_description(full_body)
+    if fm_desc:
+        parts.append(fm_desc)
+
+    # 2. H2/H3 headings as table of contents.
+    headings: list[str] = []
+    for line in full_body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            headings.append(stripped)
+    if headings:
+        parts.append("**Sections:** " + " | ".join(headings))
+
+    # 3. Lines with CRITICAL/MUST/NEVER/RULE (deduplicated, first occurrence only).
+    seen_rules: set[str] = set()
+    rule_lines: list[str] = []
+    for line in full_body.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _RULE_KEYWORDS_RE.search(stripped) and stripped not in seen_rules:
+            seen_rules.add(stripped)
+            rule_lines.append(stripped)
+    if rule_lines:
+        parts.append("\n".join(rule_lines))
+
+    # 4. Bold-emphasis lines (start with "**").
+    bold_lines: list[str] = []
+    seen_bold: set[str] = set()
+    for line in full_body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("**") and stripped not in seen_bold and stripped not in seen_rules:
+            seen_bold.add(stripped)
+            bold_lines.append(stripped)
+    if bold_lines:
+        parts.append("\n".join(bold_lines))
+
+    text = "\n\n".join(parts)
+
+    # Cap at _COMPACT_MAX_CHARS, breaking at a newline boundary when possible.
+    if len(text) > _COMPACT_MAX_CHARS:
+        cut = text.rfind("\n", 0, _COMPACT_MAX_CHARS)
+        if cut <= 0:
+            cut = _COMPACT_MAX_CHARS
+        text = text[:cut].rstrip() + "…"
+
+    return text
+
+
+def _extract_frontmatter_description(body: str) -> str:
+    """Return the ``description`` value from YAML frontmatter, or an empty string.
+
+    Frontmatter is a block delimited by ``---`` at line 0 and a second ``---``
+    later.  The ``description`` field may span multiple lines (block scalar);
+    this implementation handles the simple single-line case (``description: text``)
+    and ignores multi-line scalars to avoid a YAML parser dependency.
+    """
+    lines = body.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+    # Find closing fence.
+    end = -1
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end == -1:
+        return ""
+    # Scan frontmatter block for a simple ``description: ...`` line.
+    desc_re = re.compile(r"^description\s*:\s*(.+)$", re.IGNORECASE)
+    for line in lines[1:end]:
+        m = desc_re.match(line.strip())
+        if m:
+            value = m.group(1).strip().strip("'\"")
+            return value
+    return ""
+
+
+def store_compact(session_id: str, skill_name: str, compact_text: str) -> None:
+    """Persist a compact summary for *skill_name* under the skills cache directory.
+
+    The compact is stored as a plain text file beside the full-body files, keyed
+    by ``{session_fragment}-{safe_name}-compact``.  Fail-soft: any I/O error is
+    logged and swallowed so callers are never interrupted.
+    """
+    name = _safe_skill_name(skill_name)
+    if name is None:
+        _LOG.warning(
+            "skill_cache.store_compact: rejected invalid skill_name: %s",
+            sanitize_log_str(skill_name, max_len=120),
+        )
+        return
+
+    with safe_cache_op("store_compact", log=_LOG):
+        from .cache_common import safe_session_fragment  # noqa: PLC0415
+
+        safe_session = safe_session_fragment(session_id)
+        safe_name = name.replace(":", "_")
+        file_id = f"{safe_session}-{safe_name}-compact"
+        out_dir = _skill_outputs_dir()
+        out_path = out_dir / file_id
+        out_path.write_text(compact_text, encoding="utf-8", errors="replace")
+        _LOG.debug("skill_cache.store_compact: stored id=%s", file_id)
+
+
+def get_compact(session_id: str, skill_name: str) -> str | None:
+    """Return a previously stored compact summary for *skill_name*, or ``None``.
+
+    Looks up by ``{session_fragment}-{safe_name}-compact`` in the skills cache
+    directory.  Returns ``None`` when absent.  Fail-soft on I/O errors.
+    """
+    name = _safe_skill_name(skill_name)
+    if name is None:
+        return None
+
+    try:
+        from .cache_common import safe_session_fragment  # noqa: PLC0415
+
+        safe_session = safe_session_fragment(session_id)
+        safe_name = name.replace(":", "_")
+        file_id = f"{safe_session}-{safe_name}-compact"
+        out_path = _skill_outputs_dir() / file_id
+        if not out_path.exists():
+            return None
+        return out_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _LOG.debug("skill_cache.get_compact: I/O error for %s: %s", skill_name, exc)
         return None
