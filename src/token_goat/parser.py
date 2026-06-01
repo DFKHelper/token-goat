@@ -834,6 +834,7 @@ def index_project(
     *,
     full: bool = True,
     progress: Callable[[int, int], None] | None = None,
+    verbose: bool = False,
 ) -> IndexProjectResult:
     """Index all source files in a project: full or incremental scan and persist to DB.
 
@@ -845,6 +846,7 @@ def index_project(
     Returns IndexProjectResult with total_files, indexed, skipped_unchanged, errors, languages, duration_sec,
     and large_files (a list of LargeFileInfo for files that were skipped or got symbol-only treatment).
     Calls progress(indexed_so_far, total) every 100 files if progress is supplied.
+    When verbose is True, prints each file as it's indexed with its symbol count.
     """
     _LOG.info("index_project started: mode=%s path=%s", "full" if full else "incremental", project.root)
 
@@ -976,6 +978,10 @@ def index_project(
                         n_indexed += 1
                         n_symbols += len(fi.symbols)
                         languages.add(fi.language)
+                        if verbose:
+                            import typer as _typer  # noqa: PLC0415
+                            sym_word = "symbol" if len(fi.symbols) == 1 else "symbols"
+                            _typer.echo(f"indexed: {fi.rel_path} ({len(fi.symbols)} {sym_word})")
                         if existing_sha is not None:
                             _LOG.debug("updated changed file: %s", fi.rel_path)
                     # Track symbol-only files regardless of whether they changed.

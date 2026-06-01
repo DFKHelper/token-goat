@@ -2194,11 +2194,39 @@ def index(
     plugins: bool = typer.Option(False, "--plugins", help="Index ~/.claude/plugins/"),
     watch: bool = typer.Option(False, "--watch", help="Watch for file changes and reindex automatically (polling, Ctrl+C to stop)."),
     report_large: bool = typer.Option(False, "--report-large", help="After indexing, print a table of files that were skipped or received symbol-only treatment due to their size."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Print each file as it's indexed with symbol count."),
+    check: bool = typer.Option(False, "--check", help="Report pending dirty files without indexing. Exit 1 if dirty files exist, 0 if clean."),
 ) -> None:
     """Rebuild project/global indices."""
     from . import paths as _paths  # noqa: PLC0415
     from .parser import index_project  # noqa: PLC0415
     from .project import find_project, make_project_at  # noqa: PLC0415
+
+    # Handle --check flag: read dirty queue and report pending files without indexing.
+    if check:
+
+        queue_path = _paths.dirty_queue_path()
+        pending_entries = []
+        if queue_path.exists():
+            try:
+                lines = queue_path.read_text(encoding="utf-8").splitlines()
+                for line in lines:
+                    if line.strip():
+                        try:
+                            entry = json.loads(line)
+                            if isinstance(entry, dict):
+                                pending_entries.append(entry)
+                        except json.JSONDecodeError:
+                            pass
+            except OSError:
+                pass
+
+        n_pending = len(pending_entries)
+        if n_pending > 0:
+            typer.echo(f"{n_pending} files pending re-index. Run `token-goat index` to update.")
+            raise typer.Exit(1)
+        typer.echo("0 files pending re-index.")
+        raise typer.Exit(0)
 
     proj: Project | None = None
     if root is not None:
@@ -2243,7 +2271,7 @@ def index(
 
     _LOG.info("index start: project=%s mode=%s", proj.root.name, "full" if full else "incremental")
     try:
-        summary = index_project(proj, full=full, progress=_progress)
+        summary = index_project(proj, full=full, progress=_progress, verbose=verbose)
     except Exception as exc:  # noqa: BLE001
         _error(f"indexing failed: {exc}")
         raise typer.Exit(1) from None
