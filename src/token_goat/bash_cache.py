@@ -63,6 +63,7 @@ from .cache_common import (
     load_output_meta_stat,
     load_output_text,
     load_sidecar_json,
+    path_mtime_key,
     safe_cache_op,
     safe_join_output_id,
     short_content_hash,
@@ -566,14 +567,8 @@ def get_recent_error_outputs(session_id: str, max_entries: int = 5) -> list[dict
                 return []
 
             # Collect entries with non-zero exit codes from sidecars
-            def _mtime_key(p: Path) -> float:
-                try:
-                    return p.stat().st_mtime
-                except OSError:
-                    return 0.0
-
             for sidecar_path in sorted(
-                cache_dir.glob("*.json"), key=_mtime_key, reverse=True
+                cache_dir.glob("*.json"), key=path_mtime_key, reverse=True
             ):
                 if len(result) >= max_entries:
                     break
@@ -655,18 +650,8 @@ def find_cached_for_command(command: str, cwd: str | None = None) -> BashOutputM
         cache_dir = _bash_outputs_dir()
         if not cache_dir.is_dir():
             return None
-        def _mtime_key(p: Path) -> float:
-            # Guard against concurrent eviction: if the sidecar is deleted
-            # between glob() and stat(), return 0.0 so the sort still
-            # completes rather than propagating OSError to safe_cache_op and
-            # silently returning None for the whole lookup.
-            try:
-                return p.stat().st_mtime
-            except OSError:
-                return 0.0
-
         for sidecar_path in sorted(
-            cache_dir.glob("*.json"), key=_mtime_key, reverse=True
+            cache_dir.glob("*.json"), key=path_mtime_key, reverse=True
         ):
             # Extract output_id from sidecar filename (strip .json)
             candidate_id = sidecar_path.stem

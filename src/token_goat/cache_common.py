@@ -18,6 +18,7 @@ __all__ = [
     "load_output_meta_stat",
     "load_output_text",
     "load_sidecar_json",
+    "path_mtime_key",
     "safe_cache_op",
     "safe_join_output_id",
     "safe_session_fragment",
@@ -118,6 +119,26 @@ def sidecar_path_for(output_path: Path) -> Path:
     change to the sidecar extension or naming convention lands in one place.
     """
     return output_path.with_suffix(".json")
+
+
+def path_mtime_key(p: Path) -> float:
+    """Return the mtime of *p* as a float, or 0.0 on ``OSError``.
+
+    Used as a ``key=`` argument to ``sorted()`` when ordering cache sidecar
+    files by recency.  The 0.0 fallback guards against concurrent eviction:
+    if a sidecar is deleted between the ``glob()`` and the ``stat()``, the
+    sort still completes instead of propagating ``OSError`` into the
+    surrounding ``safe_cache_op`` context.
+
+    Previously defined as an identical inner function inside
+    ``bash_cache.get_recent_error_outputs``, ``bash_cache.find_cached_for_command``,
+    and ``web_cache.find_cached_for_url``.  Centralised here so the pattern
+    lives once.
+    """
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 class OutputStatDict(TypedDict, total=False):

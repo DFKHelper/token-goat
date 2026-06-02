@@ -1455,6 +1455,30 @@ def _handle_grep_result_content_dedup(payload: HookPayload) -> HookResponse | No
     return None
 
 
+def _extract_grep_args(payload: HookPayload) -> tuple[str, str | None] | None:
+    """Extract and validate the ``pattern`` and optional ``path`` from a Grep payload.
+
+    Returns ``(pattern, path)`` when ``pattern`` is a non-empty string.
+    Returns ``None`` when the pattern is absent, non-string, or empty — which
+    signals the caller to short-circuit and return ``None`` itself.
+
+    ``path`` is normalised to ``None`` when the payload value is present but
+    not a string (e.g. the harness sent a list or integer).
+
+    Previously copied verbatim into :func:`_handle_grep_dedup` and
+    :func:`_handle_glob_dedup`; centralised here so the identical validation
+    logic lives once.
+    """
+    tool_input = get_tool_input(payload)
+    pattern = tool_input.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        return None
+    path = tool_input.get("path")
+    if path is not None and not isinstance(path, str):
+        path = None
+    return pattern, path
+
+
 def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     """Return a dedup hint when the same Grep pattern just ran in this session.
 
@@ -1466,13 +1490,10 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     from .hints import build_grep_dedup_hint  # noqa: PLC0415
     from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
-    tool_input = get_tool_input(payload)
-    pattern = tool_input.get("pattern")
-    if not isinstance(pattern, str) or not pattern:
+    args = _extract_grep_args(payload)
+    if args is None:
         return None
-    path = tool_input.get("path")
-    if path is not None and not isinstance(path, str):
-        path = None
+    pattern, path = args
 
     return run_dedup_hint(
         payload,
@@ -1790,13 +1811,10 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     )
     from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
-    tool_input = get_tool_input(payload)
-    pattern = tool_input.get("pattern")
-    if not isinstance(pattern, str) or not pattern:
+    args = _extract_grep_args(payload)
+    if args is None:
         return None
-    path = tool_input.get("path")
-    if path is not None and not isinstance(path, str):
-        path = None
+    pattern, path = args
 
     session_id, _cwd = get_session_context(payload)
     if not session_id:
@@ -1858,6 +1876,24 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     )
 
 
+def _get_bash_command_from_payload(payload: HookPayload) -> str | None:
+    """Extract and validate the ``command`` string from a Bash tool payload.
+
+    Returns the command string when it is a non-empty string, or ``None``
+    when the field is absent, non-string, or empty — which signals the
+    caller to short-circuit with ``return None``.
+
+    Previously copied verbatim into :func:`_handle_bash_dedup` and
+    :func:`_handle_bash_cache_hit`; centralised here so the identical
+    validation lives once.
+    """
+    tool_input = get_tool_input(payload)
+    command = tool_input.get("command")
+    if not isinstance(command, str) or not command:
+        return None
+    return command
+
+
 def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     """Return a dedup hint when this exact Bash command ran earlier in the session.
 
@@ -1869,9 +1905,8 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     from .hints import build_bash_dedup_hint  # noqa: PLC0415
     from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
-    tool_input = get_tool_input(payload)
-    command = tool_input.get("command")
-    if not isinstance(command, str) or not command:
+    command = _get_bash_command_from_payload(payload)
+    if command is None:
         return None
 
     _, cwd = get_session_context(payload)
@@ -1898,9 +1933,8 @@ def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
     from .hints import build_bash_cache_hit_hint  # noqa: PLC0415
     from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
-    tool_input = get_tool_input(payload)
-    command = tool_input.get("command")
-    if not isinstance(command, str) or not command:
+    command = _get_bash_command_from_payload(payload)
+    if command is None:
         return None
 
     _, cwd = get_session_context(payload)
