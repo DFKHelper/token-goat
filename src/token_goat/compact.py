@@ -3598,7 +3598,7 @@ def event_count(session_id: str) -> int:
     )
 
 
-def _compact_render_kwargs(cfg: _Config) -> dict[str, int]:
+def _compact_render_kwargs(cfg: _Config) -> dict[str, Any]:
     """Unpack the render-tuning fields from *cfg* into a kwargs dict.
 
     Used by the three public ``build_manifest*`` entry points so the field
@@ -3611,6 +3611,7 @@ def _compact_render_kwargs(cfg: _Config) -> dict[str, int]:
         "noise_floor_tokens": ca.noise_floor_tokens,
         "wide_session_threshold": ca.wide_session_threshold,
         "orchestrator_commit_threshold": ca.orchestrator_commit_threshold,
+        "lazy_skill_injection": ca.lazy_skill_injection,
     }
 
 
@@ -3623,6 +3624,7 @@ def _build_manifest_from_cache(
     noise_floor_tokens: int = 0,
     wide_session_threshold: int = 15,
     orchestrator_commit_threshold: int = 5,
+    lazy_skill_injection: bool = True,
 ) -> str:
     """Render the manifest from an already-loaded *cache*.
 
@@ -3651,6 +3653,7 @@ def _build_manifest_from_cache(
         noise_floor_tokens=noise_floor_tokens,
         wide_session_threshold=wide_session_threshold,
         orchestrator_commit_threshold=orchestrator_commit_threshold,
+        lazy_skill_injection=lazy_skill_injection,
     )
     elapsed = time.monotonic() - start
 
@@ -4619,6 +4622,7 @@ def _render(
     noise_floor_tokens: int = 0,
     wide_session_threshold: int = 15,
     orchestrator_commit_threshold: int = 5,
+    lazy_skill_injection: bool = True,
 ) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
@@ -4919,54 +4923,75 @@ def _render(
             f"**Skills:** {_skills_summary} — recall via `token-goat skill-body <name>`"
         ]
 
-        # Try to inject compact summaries from the cache for each skill.
-        # This gives the manifest concrete key-rules instead of relying on
-        # compaction LLM to infer them from the full prose.
         from . import skill_cache  # noqa: PLC0415
 
-        # Distribute the total inline token budget evenly across all skills that
-        # have a cached compact.  This prevents sessions with many large skills
-        # (ralph + improve + marketing + humanizer + …) from inflating the skills
-        # section beyond the global manifest token budget.
-        # Budget is in tokens; convert to chars at 3 chars/token (conservative).
-        _skills_with_compact = [
-            (getattr(_se, "skill_name", ""), skill_cache.get_compact(session_id, getattr(_se, "skill_name", "")))
-            for _se in skill_entries
-            if getattr(_se, "skill_name", "")
-        ]
-        _skills_with_compact = [(_name, _ct) for _name, _ct in _skills_with_compact if _ct]
-        _n_with_compact = len(_skills_with_compact)
-        if _n_with_compact > 0:
-            # Per-skill char budget: evenly divide total budget; also respect the
-            # absolute per-skill ceiling (_SKILL_COMPACT_INLINE_MAX_CHARS).
-            _per_skill_chars = min(
-                _SKILL_COMPACT_INLINE_MAX_CHARS,
-                (_SKILL_INLINE_TOTAL_TOKEN_BUDGET * 3) // _n_with_compact,
-            )
+        if lazy_skill_injection:
+            # Lazy injection: list each skill as a one-line recall pointer.
+            # The model fetches compacts on demand after compaction, paying the
+            # token cost only for skills it actually needs.  A session with 5
+            # skills × 200-token compacts saves ~1 000 tokens at manifest-build
+            # time; the recall command is ~12 tokens per skill.
+            for _se in skill_entries:
+                _skill_name = sanitize_log_str(getattr(_se, "skill_name", ""), max_len=40)
+                if not _skill_name:
+                    continue
+                # Estimate compact token count from cached text size (4 chars/token).
+                _compact_text = skill_cache.get_compact(session_id, _skill_name)
+                if _compact_text:
+                    _tok_est = max(1, len(_compact_text) // 4)
+                    skill_lines.append(
+                        f"- {_skill_name} ({_tok_est} tokens)"
+                        f" → `token-goat skill-body {_skill_name} --compact`"
+                    )
+                else:
+                    skill_lines.append(
+                        f"- {_skill_name} → `token-goat skill-body {_skill_name} --compact`"
+                    )
         else:
-            _per_skill_chars = _SKILL_COMPACT_INLINE_MAX_CHARS
+            # Eager injection: inline the full compact text for each skill.
+            # Distribute the total inline token budget evenly across all skills
+            # that have a cached compact.  This prevents sessions with many large
+            # skills (ralph + improve + marketing + humanizer + …) from inflating
+            # the skills section beyond the global manifest token budget.
+            # Budget is in tokens; convert to chars at 3 chars/token (conservative).
+            _skills_with_compact = [
+                (getattr(_se, "skill_name", ""), skill_cache.get_compact(session_id, getattr(_se, "skill_name", "")))
+                for _se in skill_entries
+                if getattr(_se, "skill_name", "")
+            ]
+            _skills_with_compact = [(_name, _ct) for _name, _ct in _skills_with_compact if _ct]
+            _n_with_compact = len(_skills_with_compact)
+            if _n_with_compact > 0:
+                # Per-skill char budget: evenly divide total budget; also respect the
+                # absolute per-skill ceiling (_SKILL_COMPACT_INLINE_MAX_CHARS).
+                _per_skill_chars = min(
+                    _SKILL_COMPACT_INLINE_MAX_CHARS,
+                    (_SKILL_INLINE_TOTAL_TOKEN_BUDGET * 3) // _n_with_compact,
+                )
+            else:
+                _per_skill_chars = _SKILL_COMPACT_INLINE_MAX_CHARS
 
-        for _skill_name, compact_text in _skills_with_compact:
-            if not compact_text:
-                continue
-            # Apply combined per-skill cap (budget-derived and absolute ceiling).
-            if len(compact_text) > _per_skill_chars:
-                cut = compact_text.rfind("\n", 0, _per_skill_chars)
-                if cut <= 0:
-                    cut = _per_skill_chars
-                compact_text = compact_text[:cut].rstrip() + "…"
-            # Indent the compact as a continuation of the skills line
-            skill_lines.append("")
-            skill_lines.append(f"**{_skill_name} key-rules:**")
-            for line in compact_text.splitlines():
-                skill_lines.append(f"  {line}")
-            # Track that this compact was served: increments compact_served_count
-            # in the SkillEntry so skill-list can report hit vs miss stats.
-            try:
-                from . import session as _session_mod  # noqa: PLC0415
-                _session_mod.record_skill_compact_hit(session_id, _skill_name)
-            except Exception:  # noqa: BLE001
-                pass
+            for _skill_name, compact_text in _skills_with_compact:
+                if not compact_text:
+                    continue
+                # Apply combined per-skill cap (budget-derived and absolute ceiling).
+                if len(compact_text) > _per_skill_chars:
+                    cut = compact_text.rfind("\n", 0, _per_skill_chars)
+                    if cut <= 0:
+                        cut = _per_skill_chars
+                    compact_text = compact_text[:cut].rstrip() + "…"
+                # Indent the compact as a continuation of the skills line
+                skill_lines.append("")
+                skill_lines.append(f"**{_skill_name} key-rules:**")
+                for line in compact_text.splitlines():
+                    skill_lines.append(f"  {line}")
+                # Track that this compact was served: increments compact_served_count
+                # in the SkillEntry so skill-list can report hit vs miss stats.
+                try:
+                    from . import session as _session_mod  # noqa: PLC0415
+                    _session_mod.record_skill_compact_hit(session_id, _skill_name)
+                except Exception:  # noqa: BLE001
+                    pass
     else:
         skill_lines = []
 

@@ -66,6 +66,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_HOOK_WATCHDOG_MS",
     "TOKEN_GOAT_COMPRESS_PROFILE",
     "TOKEN_GOAT_SKILL_COMPRESS",
+    "TOKEN_GOAT_LAZY_SKILL_INJECTION",
 )
 
 
@@ -107,6 +108,7 @@ _ENV_BASH_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES"  # int
 _ENV_WORKER_WATCHDOG: Final[str] = "TOKEN_GOAT_WORKER_WATCHDOG"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_COMPRESS_PROFILE: Final[str] = "TOKEN_GOAT_COMPRESS_PROFILE"  # "auto"|"aggressive"|"balanced"|"minimal"
 _ENV_SKILL_COMPRESS: Final[str] = "TOKEN_GOAT_SKILL_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable body gzip
+_ENV_LAZY_SKILL_INJECTION: Final[str] = "TOKEN_GOAT_LAZY_SKILL_INJECTION"  # set to "0"/"false"/"no"/"off" for eager injection
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -211,6 +213,7 @@ class _CompactAssistToml(TypedDict, total=False):
     max_section_lines: int
     wide_session_threshold: int
     orchestrator_commit_threshold: int
+    lazy_skill_injection: bool
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -446,6 +449,14 @@ class CompactAssistConfig:
     # history section is suppressed (too noisy across long loop iterations).
     # Clamped to [1, 10000]. Default 5.
     orchestrator_commit_threshold: int = 5
+    # Lazy skill injection: when True (default), the manifest's Active Skills
+    # section lists only "name (NNN tokens) → token-goat skill-body name --compact"
+    # for each cached skill instead of inlining the full compact text.  The
+    # model fetches compacts on demand after compaction, paying the token cost
+    # only for skills it actually needs.  Set to False (or
+    # TOKEN_GOAT_LAZY_SKILL_INJECTION=0) to revert to eager injection (full
+    # compact text inlined at manifest-build time).
+    lazy_skill_injection: bool = True
 
 
 @dataclass
@@ -1179,6 +1190,9 @@ def load() -> Config:
         orchestrator_commit_threshold=_validated_int(
             ca_raw.get("orchestrator_commit_threshold", 5), 5, 1, 10000, "compact_assist.orchestrator_commit_threshold"
         ),
+        lazy_skill_injection=_validated_bool(
+            ca_raw.get("lazy_skill_injection", True), True, "compact_assist.lazy_skill_injection"
+        ),
     )
 
     # Environment override: TOKEN_GOAT_COMPACT_ASSIST=0 / false / no / off disables
@@ -1186,6 +1200,8 @@ def load() -> Config:
     # Check the canonical key first; fall back to the legacy alias.
     _env_ca_key = _ENV_COMPACT_ASSIST if os.environ.get(_ENV_COMPACT_ASSIST) else _ENV_COMPACT_ASSIST_LEGACY
     _apply_env_disable(ca, "enabled", _env_ca_key, "compact_assist")
+    # TOKEN_GOAT_LAZY_SKILL_INJECTION=0 reverts to eager injection (full compact text).
+    _apply_env_disable(ca, "lazy_skill_injection", _ENV_LAZY_SKILL_INJECTION, "compact_assist.lazy_skill_injection")
 
     bc_raw: _BashCompressToml = cast("_BashCompressToml", raw.get("bash_compress", {}))
     bc = BashCompressConfig(
@@ -1542,6 +1558,7 @@ def save(config: Config) -> None:
             "max_section_lines": ca.max_section_lines,
             "wide_session_threshold": ca.wide_session_threshold,
             "orchestrator_commit_threshold": ca.orchestrator_commit_threshold,
+            "lazy_skill_injection": ca.lazy_skill_injection,
         },
         "bash_compress": {
             "enabled": bc.enabled,

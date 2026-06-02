@@ -12,11 +12,12 @@ CLI command serving the cached compact.
 from __future__ import annotations
 
 import json
+import unittest.mock
 
 from conftest import fire_skill_hook
 from typer.testing import CliRunner
 
-from token_goat import cli, compact, session, skill_cache
+from token_goat import cli, compact, config, session, skill_cache
 
 runner = CliRunner()
 
@@ -308,27 +309,114 @@ class TestPostSkillHookCompactPipeline:
 # Manifest embeds compact inline
 # ---------------------------------------------------------------------------
 
+def _eager_config() -> config.Config:
+    """Return a Config with lazy_skill_injection=False (eager mode)."""
+    cfg = config.Config()
+    cfg.compact_assist.lazy_skill_injection = False
+    return cfg
+
+
 class TestManifestCompactIntegration:
-    """compact.build_manifest embeds the compact text inline for loaded skills."""
+    """compact.build_manifest embeds skills as lazy recall pointers by default,
+    and as full compact text when lazy_skill_injection=False."""
 
     def _load_skill_via_hook(self, session_id: str, skill_name: str, body: str) -> None:
         """Fire the hook and register the skill in the session cache."""
         fire_skill_hook(session_id, skill_name, body)
 
-    def test_manifest_contains_compact_key_rules_for_marker_skill(self, tmp_data_dir):
-        """Manifest embeds marker-compact inline under 'ralph key-rules:'."""
-        sid = "integ-manifest-marker"
+    # ── Lazy injection (default) ──────────────────────────────────────────────
+
+    def test_lazy_injection_shows_recall_pointer(self, tmp_data_dir):
+        """Default (lazy) mode: manifest shows name + token count + recall command, not inline text."""
+        sid = "integ-lazy-pointer"
         self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         m = compact.build_manifest(sid, max_tokens=800)
         assert "**Skills:**" in m
         assert "ralph" in m
-        # Key-rules heading and content should be embedded.
+        # Lazy format: recall pointer present.
+        assert "token-goat skill-body ralph --compact" in m
+        # Eager format: key-rules heading must NOT be present in lazy mode.
+        assert "ralph key-rules:" not in m
+
+    def test_lazy_injection_shows_token_count(self, tmp_data_dir):
+        """Lazy mode: recall pointer includes a token count estimate for the cached compact."""
+        sid = "integ-lazy-tokcount"
+        self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
+
+        m = compact.build_manifest(sid, max_tokens=800)
+        # The line should look like: "- ralph (NNN tokens) → `token-goat skill-body ralph --compact`"
+        assert "ralph" in m
+        assert "tokens)" in m  # "(NNN tokens)" must appear
+        assert "token-goat skill-body ralph --compact" in m
+
+    def test_lazy_injection_no_compact_cached_still_shows_recall(self, tmp_data_dir):
+        """Lazy mode: when no compact is cached, manifest still shows the recall command."""
+        sid = "integ-lazy-no-compact"
+        small_body = "# TinySkill\n\n" + ("word " * 60)
+        assert len(small_body.encode()) < 4000
+        meta = skill_cache.store_output(sid, "tiny-skill", small_body)
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+
+        m = compact.build_manifest(sid, max_tokens=600)
+        assert "**Skills:**" in m
+        assert "tiny-skill" in m
+        # Even without a compact, the recall command is listed (no token count).
+        assert "token-goat skill-body tiny-skill --compact" in m
+        # No key-rules inline.
+        assert "tiny-skill key-rules:" not in m
+
+    def test_lazy_injection_multiple_skills_all_get_pointers(self, tmp_data_dir):
+        """Lazy mode: both loaded skills appear as recall pointers, no inline text."""
+        sid = "integ-lazy-two-skills"
+        self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
+        self._load_skill_via_hook(sid, "improve", _IMPROVE_SKILL_BODY)
+
+        m = compact.build_manifest(sid, max_tokens=1200)
+        assert "ralph" in m
+        assert "improve" in m
+        # Both get recall pointers.
+        assert "token-goat skill-body ralph --compact" in m
+        assert "token-goat skill-body improve --compact" in m
+        # No inline key-rules sections.
+        assert "key-rules:" not in m
+
+    # ── Eager injection (opt-out via config) ──────────────────────────────────
+
+    def test_eager_injection_embeds_key_rules_for_marker_skill(self, tmp_data_dir):
+        """Eager mode (lazy_skill_injection=False): manifest embeds compact inline under 'ralph key-rules:'."""
+        sid = "integ-eager-marker"
+        self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
+
+        with unittest.mock.patch("token_goat.compact._load_config", return_value=_eager_config()):
+            m = compact.build_manifest(sid, max_tokens=800)
+        assert "**Skills:**" in m
+        assert "ralph" in m
         assert "ralph key-rules:" in m
         assert "CRITICAL" in m or "MUST" in m
 
+    def test_eager_injection_multiple_skills_each_get_compact(self, tmp_data_dir):
+        """Eager mode: when two skills are loaded, both get their compact inline."""
+        sid = "integ-eager-two-skills"
+        self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
+        self._load_skill_via_hook(sid, "improve", _IMPROVE_SKILL_BODY)
+
+        with unittest.mock.patch("token_goat.compact._load_config", return_value=_eager_config()):
+            m = compact.build_manifest(sid, max_tokens=1200)
+        assert "ralph" in m
+        assert "improve" in m
+        # At least one inline compact section should appear.
+        assert "key-rules:" in m
+
+    # ── Unchanged in both modes ───────────────────────────────────────────────
+
     def test_manifest_compact_excludes_detail_section(self, tmp_data_dir):
-        """Detail text below the marker must not appear in the manifest."""
+        """Detail text below the marker must not appear in the manifest (either mode)."""
         sid = "integ-manifest-no-detail"
         self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
@@ -338,17 +426,18 @@ class TestManifestCompactIntegration:
         assert "Anti-shortcut Guards" not in m
 
     def test_manifest_contains_compact_for_auto_extract_skill(self, tmp_data_dir):
-        """Manifest also embeds auto-extracted compact when no marker is present."""
+        """Eager mode: manifest also embeds auto-extracted compact when no marker is present."""
         sid = "integ-manifest-auto"
         self._load_skill_via_hook(sid, "improve", _IMPROVE_SKILL_BODY)
 
-        m = compact.build_manifest(sid, max_tokens=800)
+        with unittest.mock.patch("token_goat.compact._load_config", return_value=_eager_config()):
+            m = compact.build_manifest(sid, max_tokens=800)
         assert "improve" in m
         # The auto-extracted compact's key-rules should appear.
         assert "improve key-rules:" in m or "CRITICAL" in m or "MUST" in m
 
     def test_manifest_skill_section_present_even_without_compact(self, tmp_data_dir):
-        """When compact is absent, the manifest still lists the skill name."""
+        """When compact is absent, the manifest still lists the skill name (both modes)."""
         sid = "integ-manifest-no-compact"
         # Small body — hook won't store a compact.
         small_body = "# TinySkill\n\n" + ("word " * 60)
@@ -367,18 +456,6 @@ class TestManifestCompactIntegration:
         assert "tiny-skill" in m
         # No compact was stored — key-rules section must be absent for this skill.
         assert "tiny-skill key-rules:" not in m
-
-    def test_manifest_multiple_skills_each_get_compact(self, tmp_data_dir):
-        """When two skills are loaded, both get their compact inline."""
-        sid = "integ-manifest-two-skills"
-        self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
-        self._load_skill_via_hook(sid, "improve", _IMPROVE_SKILL_BODY)
-
-        m = compact.build_manifest(sid, max_tokens=1200)
-        assert "ralph" in m
-        assert "improve" in m
-        # At least one compact section should appear.
-        assert "key-rules:" in m
 
 
 # ---------------------------------------------------------------------------
@@ -649,3 +726,61 @@ class TestStoreCompactAtomicWrite:
         assert stored.startswith("--- compact form ("), (
             f"stored compact should start with header, got: {stored[:80]!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Lazy skill injection — config and env var tests
+# ---------------------------------------------------------------------------
+
+class TestLazySkillInjectionConfig:
+    """Config.compact_assist.lazy_skill_injection defaults to True; opt-out via TOML or env var."""
+
+    def _load_skill(self, session_id: str, skill_name: str, body: str) -> None:
+        fire_skill_hook(session_id, skill_name, body)
+
+    def test_config_default_lazy_skill_injection_is_true(self):
+        """CompactAssistConfig defaults lazy_skill_injection to True."""
+        cfg = config.CompactAssistConfig()
+        assert cfg.lazy_skill_injection is True
+
+    def test_config_toml_lazy_false_sets_eager_mode(self, tmp_data_dir):
+        """config.load() honours lazy_skill_injection=false in TOML."""
+        from token_goat import paths
+        cfg_path = paths.config_path()
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(
+            "[compact_assist]\nlazy_skill_injection = false\n",
+            encoding="utf-8",
+        )
+        # Invalidate cache so it re-reads from disk.
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+        loaded = config.load()
+        assert loaded.compact_assist.lazy_skill_injection is False
+        # Cleanup: remove the file so other tests get defaults.
+        cfg_path.unlink(missing_ok=True)
+        cfg_mod._config_mtime_cache = None
+
+    def test_env_var_disables_lazy_injection(self, monkeypatch, tmp_data_dir):
+        """TOKEN_GOAT_LAZY_SKILL_INJECTION=0 sets lazy_skill_injection=False."""
+        import token_goat.config as cfg_mod
+        monkeypatch.setenv("TOKEN_GOAT_LAZY_SKILL_INJECTION", "0")
+        cfg_mod._config_mtime_cache = None
+        loaded = config.load()
+        assert loaded.compact_assist.lazy_skill_injection is False
+
+    def test_env_var_opt_out_causes_eager_injection_in_manifest(self, monkeypatch, tmp_data_dir):
+        """When TOKEN_GOAT_LAZY_SKILL_INJECTION=0, build_manifest inlines compact text."""
+        sid = "integ-envvar-eager"
+        self._load_skill(sid, "ralph", _RALPH_SKILL_BODY)
+
+        # Patch config to simulate env var effect without touching process env
+        # (avoids cross-test pollution from the config cache flush).
+        eager_cfg = config.Config()
+        eager_cfg.compact_assist.lazy_skill_injection = False
+        with unittest.mock.patch("token_goat.compact._load_config", return_value=eager_cfg):
+            m = compact.build_manifest(sid, max_tokens=800)
+        # Eager: inline key-rules present.
+        assert "ralph key-rules:" in m
+        # Lazy pointer must NOT dominate (the recall command may still appear in the header line).
+        assert "CRITICAL" in m or "MUST" in m
