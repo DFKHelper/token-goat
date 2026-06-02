@@ -65,7 +65,9 @@ __all__ = [
     "mark_file_read",
     "mark_glob_run",
     "mark_grep",
+    "get_skill_history",
     "mark_skill_loaded",
+    "record_skill_compact_hit",
     "mark_web_fetch",
     "put_result_cache",
     "record_hint_category",
@@ -891,6 +893,7 @@ class SkillEntry:
     truncated: bool = False
     run_count: int = 1
     source_path: str = ""  # best-effort filesystem path for the skill body
+    compact_served_count: int = 0  # times compact form was served from manifest this session
 
 
 @dataclass
@@ -2055,6 +2058,8 @@ def _serialize_skill_entry(entry: SkillEntry) -> _SkillEntryDict:
     )
     if entry.source_path:
         d["source_path"] = entry.source_path
+    if entry.compact_served_count:
+        d["compact_served_count"] = entry.compact_served_count
     return d
 
 
@@ -2068,6 +2073,12 @@ def _parse_skill_entry(v: dict[str, Any]) -> SkillEntry | None:
     def _inner(d: dict[str, Any]) -> SkillEntry:
         raw_run_count = d.get("run_count", 1)
         run_count = max(1, int(raw_run_count)) if isinstance(raw_run_count, (int, float)) else 1
+        raw_compact_served = d.get("compact_served_count", 0)
+        compact_served_count = (
+            max(0, int(raw_compact_served))
+            if isinstance(raw_compact_served, (int, float))
+            else 0
+        )
         return SkillEntry(
             skill_name=str(d.get("skill_name", "")),
             output_id=str(d.get("output_id", "")),
@@ -2077,6 +2088,7 @@ def _parse_skill_entry(v: dict[str, Any]) -> SkillEntry | None:
             truncated=bool(d.get("truncated", False)),
             run_count=run_count,
             source_path=str(d.get("source_path", "")),
+            compact_served_count=compact_served_count,
         )
     return _safe_parse(_inner, v, "skill")
 
@@ -2266,6 +2278,7 @@ class _SkillEntryDict(TypedDict, total=False):
     truncated: bool
     run_count: int
     source_path: str
+    compact_served_count: int
 
 
 class _DecisionEntryDict(TypedDict, total=False):
@@ -4013,6 +4026,73 @@ def lookup_skill_entry(
     if not safe_name:
         return None
     return _lookup_in_cache(session_id, lambda c: c.skill_history, safe_name, cache)
+
+
+def get_skill_history(
+    session_id: str,
+    *,
+    cache: SessionCache | None = None,
+) -> dict[str, SkillEntry] | None:
+    """Return the skill_history dict for *session_id*, or None on error.
+
+    Returns a shallow reference to the dict (not a copy) so callers can
+    iterate quickly without allocating.  Read-only callers must not mutate
+    the returned dict.  Returns ``None`` when the session is unavailable or
+    the skill_history field is absent.
+    """
+    try:
+        resolved = _resolve_cache(session_id, cache)
+        if resolved.unavailable:
+            return None
+        return resolved.skill_history or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def record_skill_compact_hit(
+    session_id: str,
+    skill_name: str,
+    *,
+    cache: SessionCache | None = None,
+) -> SessionCache:
+    """Increment the ``compact_served_count`` for *skill_name* in *session_id*.
+
+    Called by the compact manifest renderer each time it inlines a skill's
+    compact form into the PreCompact manifest.  Tracking hits per skill per
+    session lets ``token-goat skill-list`` show which compacts are actively
+    saving context versus ones that were generated but never retrieved.
+
+    Fails silently when the entry does not exist yet (race between the
+    PostToolUse hook and an early manifest build) or when the session is
+    unavailable.  Never raises — this is a best-effort metric.
+    """
+    try:
+        safe_name = sanitize_log_str(skill_name, max_len=_MAX_SKILL_NAME_LEN)
+        if not safe_name:
+            return cache or _fresh_cache(session_id)
+        resolved = _resolve_cache(session_id, cache)
+        if resolved.unavailable:
+            return resolved
+        existing = resolved.skill_history.get(safe_name)
+        if existing is None:
+            return resolved
+        now = time.time()
+        updated = SkillEntry(
+            skill_name=existing.skill_name,
+            output_id=existing.output_id,
+            content_sha=existing.content_sha,
+            ts=existing.ts,
+            body_bytes=existing.body_bytes,
+            truncated=existing.truncated,
+            run_count=existing.run_count,
+            source_path=existing.source_path,
+            compact_served_count=existing.compact_served_count + 1,
+        )
+        resolved.skill_history[safe_name] = updated
+        return _commit_mutation(resolved, now)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("record_skill_compact_hit: failed for skill %s", sanitize_log_str(skill_name, max_len=80))
+        return cache or _fresh_cache(session_id)
 
 
 def mark_decision(

@@ -2930,10 +2930,24 @@ def _select_top_skill_entries(
         if skill_name not in deduped or ts > getattr(deduped[skill_name], "ts", 0.0):
             deduped[skill_name] = entry
 
+    # Sort by a composite score: recency (ts) + a small boost per extra load.
+    # A skill with run_count=3 loaded 10 minutes ago should rank above one
+    # with run_count=1 loaded 8 minutes ago — both are actively in use, but
+    # the repeated load signals the agent relies on it more heavily.  The
+    # boost is capped so an ancient but frequently-loaded skill from a prior
+    # session cannot displace a genuinely recent one: each extra load is
+    # worth at most 60 seconds of recency.
+    _RECENCY_BOOST_PER_LOAD_SECS = 60.0
+
+    def _skill_rank(e: object) -> float:
+        ts = getattr(e, "ts", 0.0)
+        rc = max(1, int(getattr(e, "run_count", 1)))
+        return ts + (rc - 1) * _RECENCY_BOOST_PER_LOAD_SECS
+
     return heapq.nlargest(
         _MAX_ACTIVE_SKILLS,
         deduped.values(),
-        key=lambda e: getattr(e, "ts", 0.0),
+        key=_skill_rank,
     )
 
 
@@ -4946,6 +4960,13 @@ def _render(
             skill_lines.append(f"**{_skill_name} key-rules:**")
             for line in compact_text.splitlines():
                 skill_lines.append(f"  {line}")
+            # Track that this compact was served: increments compact_served_count
+            # in the SkillEntry so skill-list can report hit vs miss stats.
+            try:
+                from . import session as _session_mod  # noqa: PLC0415
+                _session_mod.record_skill_compact_hit(session_id, _skill_name)
+            except Exception:  # noqa: BLE001
+                pass
     else:
         skill_lines = []
 

@@ -1511,9 +1511,86 @@ def cmd_map(
             project_hash=proj.hash,
         )
         typer.echo(text)
+        # Active skills footer: append a brief "Active skills" section when the
+        # current session has cached skills.  Appears after the repo overview
+        # so agents orienting in a new codebase immediately see which skills
+        # are loaded and recoverable.  Suppressed when there are no skills (the
+        # typical case for a fresh session) to avoid cluttering the output.
+        _map_skills_footer = _build_map_skills_footer()
+        if _map_skills_footer:
+            typer.echo(_map_skills_footer)
     except Exception as exc:  # noqa: BLE001
         _error(f"failed to build repo map: {exc}. Try `token-goat index --full` to rebuild the index.")
         raise typer.Exit(1) from None
+
+
+def _build_map_skills_footer() -> str:
+    """Build a brief 'Active skills' footer for ``token-goat map`` text output.
+
+    Returns an empty string when no session exists or no skills are cached,
+    so the caller can test with a simple truthiness check.  Failures are
+    swallowed — a broken session cache must never abort the map command.
+
+    Session resolution: uses the most-recently modified session that has
+    cached skills (same heuristic as ``token-goat skill-list``), so the
+    footer reflects the session the agent is currently running in without
+    requiring an explicit ``--session-id`` argument on the map command.
+    """
+    try:
+        from . import compact as _compact_mod  # noqa: PLC0415
+        from . import session as _session_mod  # noqa: PLC0415
+        from . import skill_cache as _sc  # noqa: PLC0415
+
+        # Find the most recent session that has skill entries.
+        outputs = _sc.list_outputs()
+        if not outputs:
+            return ""
+        first_oid = outputs[0].get("output_id", "")
+        sid = first_oid[:16] if len(first_oid) >= 16 else first_oid
+        if not sid:
+            return ""
+
+        skill_history = _session_mod.get_skill_history(sid)
+        if not skill_history:
+            return ""
+
+        _session_started_ts = 0.0
+        try:
+            _cache = _session_mod.safe_load(sid)
+            _session_started_ts = float(getattr(_cache, "started_ts", 0.0) or 0.0)
+        except Exception:  # noqa: BLE001
+            pass
+
+        entries = _compact_mod._select_top_skill_entries(  # noqa: SLF001
+            skill_history,
+            session_started_ts=_session_started_ts,
+        )
+        if not entries:
+            return ""
+
+        skill_names = [
+            getattr(e, "skill_name", "") for e in entries if getattr(e, "skill_name", "")
+        ]
+        if not skill_names:
+            return ""
+
+        lines = ["", "## Active skills"]
+        for sname in skill_names:
+            entry = skill_history.get(sname)
+            run_count = getattr(entry, "run_count", 1) if entry else 1
+            compact_note = ""
+            try:
+                ct = _sc.get_compact(sid, sname)
+                if ct:
+                    from .compact import estimate_tokens as _est  # noqa: PLC0415
+                    compact_note = f" (compact: ~{_est(ct)} tok)"
+            except Exception:  # noqa: BLE001
+                pass
+            run_note = f" ×{run_count}" if run_count > 1 else ""
+            lines.append(f"- {sname}{run_note}{compact_note} — `token-goat skill-body {sname}`")
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 @app.command(rich_help_panel="Core")
@@ -4176,8 +4253,9 @@ def cmd_skill_list(
     For each cached skill, displays:
     - Skill name
     - Cached token count (~body_chars/3, using the canonical token estimator)
-    - Whether a compact slice is available (yes/no)
-    - Compact token count when available (~compact_chars/3, using the canonical token estimator)
+    - Whether a compact slice is available and its token count
+    - Hits: how many times the compact was inlined in a PreCompact manifest this session
+      ("-" when no compact exists; "0" when compact exists but not yet served)
     - Age: when the skill was cached (seconds ago)
 
     When --session-id is omitted, the most-recently active session in the
@@ -4189,6 +4267,7 @@ def cmd_skill_list(
     import time as _time  # noqa: PLC0415
 
     from . import compact as _compact  # noqa: PLC0415
+    from . import session as _session_mod  # noqa: PLC0415
     from . import skill_cache  # noqa: PLC0415
 
     # Resolve session_id: use the provided one or fall back to most-recent session.
@@ -4224,6 +4303,19 @@ def cmd_skill_list(
     now = _time.time()
     rows: list[dict[str, object]] = []
 
+    # Build a lookup of compact_served_count from the live session history.
+    # This is the per-session hit counter incremented each time the compact
+    # form is inlined into a PreCompact manifest — distinct from run_count
+    # (how many times the skill was loaded) and compact availability (whether
+    # a compact exists at all).
+    _compact_hit_by_name: dict[str, int] = {}
+    try:
+        _skill_entries = _session_mod.get_skill_history(resolved_session)
+        for _sk_name, _sk_entry in (_skill_entries or {}).items():
+            _compact_hit_by_name[_sk_name] = getattr(_sk_entry, "compact_served_count", 0)
+    except Exception:  # noqa: BLE001
+        pass
+
     for meta in entries:
         mtime = mtime_by_oid.get(meta.output_id, meta.ts)
         age_secs = max(0.0, now - mtime) if mtime > 0 else -1.0
@@ -4243,15 +4335,20 @@ def cmd_skill_list(
         compact_body = skill_cache._strip_compact_header(compact_text) if compact_text else ""
         compact_tokens = _compact.estimate_tokens(compact_body) if compact_body else 0
 
+        compact_served_count = _compact_hit_by_name.get(meta.skill_name, 0)
+
         rows.append({
             "name": meta.skill_name,
             "body_tokens": body_tokens,
             "has_compact": has_compact,
             "compact_tokens": compact_tokens,
             "age_secs": round(age_secs),
+            "compact_served_count": compact_served_count,
         })
 
     if json_output:
+        # Include compact_served_count in the JSON output so downstream
+        # tooling (e.g. dashboards) can track compact hit rates per skill.
         _emit_json({
             "session_id": resolved_session,
             "skills": rows,
@@ -4264,7 +4361,7 @@ def cmd_skill_list(
 
     typer.echo(f"Session: {resolved_session}")
     typer.echo()
-    header = f"{'Skill':<40}  {'Body':>6}  {'Compact':>10}  {'Cached'}"
+    header = f"{'Skill':<40}  {'Body':>6}  {'Compact':>10}  {'Hits':>5}  {'Cached'}"
     typer.echo(header)
     typer.echo("-" * len(header))
     for row in rows:
@@ -4273,8 +4370,13 @@ def cmd_skill_list(
         has_compact = bool(row["has_compact"])
         compact_tokens = int(row["compact_tokens"])  # type: ignore[call-overload]
         age_secs = int(row["age_secs"])  # type: ignore[call-overload]
+        compact_served = int(row.get("compact_served_count", 0))  # type: ignore[call-overload]
 
         compact_col = f"~{compact_tokens} tok" if has_compact else "no"
+        # Hits column: number of times the compact was inlined in a manifest.
+        # "-" when no compact exists (hit is impossible), "0" when compact
+        # exists but was never served yet (generated but not yet used).
+        hits_col = "-" if not has_compact else str(compact_served)
 
         if age_secs < 0:
             age_str = "unknown"
@@ -4285,7 +4387,7 @@ def cmd_skill_list(
         else:
             age_str = f"{age_secs // 3600}h {(age_secs % 3600) // 60}m ago"
 
-        typer.echo(f"{name:<40}  ~{body_tokens:>5}  {compact_col:>10}  {age_str}")
+        typer.echo(f"{name:<40}  ~{body_tokens:>5}  {compact_col:>10}  {hits_col:>5}  {age_str}")
 
     typer.echo()
     typer.echo(f"{len(rows)} skill(s) cached in this session.")
