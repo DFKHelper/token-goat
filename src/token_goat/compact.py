@@ -642,6 +642,15 @@ _SKILL_STALE_THRESHOLD_SECS: Final[int] = 30 * 60
 # cached body may be outdated if the underlying skill file was updated since.
 _SKILL_STALE_FOR_SESSION_SECS: Final[int] = 6 * 3600  # 6 hours
 
+# Per-skill inline compact text budget in the manifest.  When a skill's cached
+# compact exceeds this character limit it is truncated at a newline boundary so
+# the manifest stays within its global token budget even when many large skills
+# (ralph + improve + marketing + humanizer) are all loaded simultaneously.
+# 600 chars ≈ 150 tokens — enough for the key-rules / DoD section of any skill
+# without drowning the higher-priority edited-files and blockers sections.
+# Callers can always retrieve the full compact via ``token-goat skill-body --compact``.
+_SKILL_COMPACT_INLINE_MAX_CHARS: Final[int] = 600
+
 # Maximum decisions surfaced in the **Decisions:** manifest section.  Opt-in via
 # ``token-goat decision "<text>"``, so the volume is self-limited — typical
 # sessions log 0–3 decisions per task.  5 covers heavier sessions while keeping
@@ -4859,6 +4868,15 @@ def _render(
                 continue
             compact_text = skill_cache.get_compact(session_id, skill_name)
             if compact_text:
+                # Apply per-skill character cap so many loaded large skills
+                # (ralph + improve + marketing + humanizer) don't blow the global
+                # manifest budget.  Full compact is always available via
+                # `token-goat skill-body --compact <name>`.
+                if len(compact_text) > _SKILL_COMPACT_INLINE_MAX_CHARS:
+                    cut = compact_text.rfind("\n", 0, _SKILL_COMPACT_INLINE_MAX_CHARS)
+                    if cut <= 0:
+                        cut = _SKILL_COMPACT_INLINE_MAX_CHARS
+                    compact_text = compact_text[:cut].rstrip() + "…"
                 # Indent the compact as a continuation of the skills line
                 skill_lines.append("")
                 skill_lines.append(f"**{skill_name} key-rules:**")

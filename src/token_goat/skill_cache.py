@@ -195,10 +195,15 @@ def extract_compact_from_marker(body: str) -> str | None:
     """Return the pre-marker compact slice when ``COMPACT_END_MARKER`` is present.
 
     Scans *body* for the first line that equals :data:`COMPACT_END_MARKER`
-    (stripped, case-sensitive).  When found, returns everything above the
-    marker, stripped of leading/trailing whitespace.  Returns ``None`` when
-    the marker is absent so callers can fall back to
-    :func:`generate_compact_summary` auto-extraction.
+    (stripped, case-sensitive) that is **not** inside a fenced code block.
+    When found, returns everything above the marker, stripped of leading/trailing
+    whitespace.  Returns ``None`` when the marker is absent so callers can fall
+    back to :func:`generate_compact_summary` auto-extraction.
+
+    Code-block awareness: the marker is ignored when it appears between a
+    pair of triple-backtick (````) or triple-tilde (~~~) fences.  This prevents
+    a skill body that *documents* the marker (e.g. a how-to example) from being
+    mis-split at the wrong location.
 
     The returned text is **not** capped — the caller decides whether to
     truncate.  Skill authors are responsible for keeping the compact section
@@ -206,9 +211,21 @@ def extract_compact_from_marker(body: str) -> str | None:
     """
     if not body or COMPACT_END_MARKER not in body:
         return None
-    for i, line in enumerate(body.splitlines()):
-        if line.strip() == COMPACT_END_MARKER:
-            pre_marker = "\n".join(body.splitlines()[:i]).strip()
+    in_code_block = False
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Track fenced code block state.  A fence opens or closes when the
+        # stripped line starts with ``` or ~~~.  We toggle on each fence line
+        # rather than matching pairs so a mismatched fence file still terminates
+        # correctly at end-of-file.
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        if stripped == COMPACT_END_MARKER:
+            pre_marker = "\n".join(lines[:i]).strip()
             return pre_marker if pre_marker else None
     return None
 
@@ -310,13 +327,18 @@ def extract_h2_headings(body: str) -> list[str]:
 
 
 def extract_named_section(body: str, heading: str) -> str | None:
-    """Return the content of the ``##``-level section matching *heading*, or ``None``.
+    """Return the content of the section matching *heading*, or ``None``.
+
+    Searches ``##``-level headings first, then ``###``-level headings so that
+    subsections of large skills (e.g. ``### Phase 1 — Explore`` inside ralph)
+    are reachable without knowing the exact heading level.  A ``##`` match
+    always wins over a ``###`` match for the same heading text.
 
     Case-insensitive prefix match on the heading text (after stripping the
-    ``## `` prefix).  Collects lines from the line after the matched heading
-    up to the next ``##``-level heading or end of file.  Returns ``None`` when
-    no matching heading is found or the extracted content is empty after
-    stripping.
+    leading ``#`` prefix and whitespace).  Collects lines from the line after
+    the matched heading up to the next heading at the same or higher level, or
+    end of file.  Returns ``None`` when no matching heading is found or the
+    extracted content is empty after stripping.
 
     This is the in-memory equivalent of ``read_replacement.read_section`` for
     skill bodies, which are not indexed in the project DB.
@@ -327,23 +349,39 @@ def extract_named_section(body: str, heading: str) -> str | None:
     heading_lower = heading.strip().lower()
     lines = body.splitlines()
     n = len(lines)
-    match_start = -1
 
-    for i, raw_line in enumerate(lines):
-        stripped = raw_line.strip()
-        if stripped.startswith("## "):
-            section_title = stripped[3:].strip().lower()
-            if section_title.startswith(heading_lower):
-                match_start = i
-                break
+    # Two-pass: prefer ## then fall back to ### or deeper.
+    # Each pass records (line_index, heading_level) for the first match.
+    match_start = -1
+    match_level = -1
+
+    for pass_level in (2, 3, 4):
+        prefix = "#" * pass_level + " "
+        for i, raw_line in enumerate(lines):
+            stripped = raw_line.strip()
+            if stripped.startswith(prefix):
+                section_title = stripped[len(prefix):].strip().lower()
+                if section_title.startswith(heading_lower):
+                    match_start = i
+                    match_level = pass_level
+                    break
+        if match_start != -1:
+            break
 
     if match_start == -1:
         return None
 
+    # Collect body lines until the next heading at the same or higher level.
     body_lines: list[str] = []
     for j in range(match_start + 1, n):
-        if lines[j].strip().startswith("## "):
-            break
+        stripped_j = lines[j].strip()
+        # Stop at any heading at match_level or shorter (higher in hierarchy).
+        # "#".startswith("##") is False but "###".startswith("##") is True, so
+        # we check whether the line's leading-hash count is <= match_level.
+        if stripped_j.startswith("#"):
+            level_j = len(stripped_j) - len(stripped_j.lstrip("#"))
+            if level_j <= match_level:
+                break
         body_lines.append(lines[j])
 
     text = "\n".join(body_lines).strip()

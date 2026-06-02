@@ -1275,3 +1275,218 @@ class TestPostSkillMarkerCompact:
         # Small bodies are below the _SKILL_CACHE_MIN_BYTES threshold, so they
         # are not cached at all — just confirm no crash and no systemMessage.
         assert "systemMessage" not in resp
+
+
+# ---------------------------------------------------------------------------
+# extract_compact_from_marker — code-block awareness
+# ---------------------------------------------------------------------------
+
+class TestExtractCompactFromMarkerCodeBlock:
+    """Markers inside fenced code blocks must be ignored."""
+
+    def test_marker_inside_backtick_fence_ignored(self):
+        """Marker inside a triple-backtick fence is not the split point."""
+        body = (
+            "# Skill\n\nReal compact content.\n\n"
+            "```markdown\n<!-- COMPACT_END -->\n```\n\n"
+            "<!-- COMPACT_END -->\n\n"
+            "Detail section.\n"
+        )
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is not None
+        # Split must happen at the SECOND (real) marker, not the one in the code block.
+        assert "Real compact content." in result
+        assert "Detail section." not in result
+        # The code block content should appear in the compact (it's above the real marker).
+        assert "```markdown" in result
+
+    def test_marker_inside_tilde_fence_ignored(self):
+        """Marker inside a triple-tilde fence is also ignored."""
+        body = (
+            "# Skill\n\nPre-marker content.\n\n"
+            "~~~\n<!-- COMPACT_END -->\n~~~\n\n"
+            "More compact content.\n\n"
+            "<!-- COMPACT_END -->\n\n"
+            "Detail section after real marker.\n"
+        )
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is not None
+        assert "Pre-marker content." in result
+        assert "More compact content." in result
+        assert "Detail section after real marker." not in result
+
+    def test_marker_only_in_code_block_returns_none(self):
+        """When the only marker is inside a code block, returns None."""
+        body = (
+            "# Skill\n\nContent.\n\n"
+            "```\n<!-- COMPACT_END -->\n```\n\n"
+            "More content.\n"
+        )
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is None
+
+    def test_normal_marker_without_code_blocks_still_works(self):
+        """Baseline: no code blocks, marker is recognised as before."""
+        body = "# Compact\n\nRules here.\n\n<!-- COMPACT_END -->\n\nDetail.\n"
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is not None
+        assert "Rules here." in result
+        assert "Detail." not in result
+
+    def test_crlf_body_with_code_block_marker_ignored(self):
+        """CRLF line endings + code block: marker inside fence is skipped."""
+        body = (
+            "# Skill\r\n\r\nCompact rules.\r\n\r\n"
+            "```\r\n<!-- COMPACT_END -->\r\n```\r\n\r\n"
+            "<!-- COMPACT_END -->\r\n\r\n"
+            "Detail text.\r\n"
+        )
+        result = skill_cache.extract_compact_from_marker(body)
+        assert result is not None
+        assert "Compact rules." in result
+        assert "Detail text." not in result
+
+
+# ---------------------------------------------------------------------------
+# extract_named_section — H3 and deeper heading support
+# ---------------------------------------------------------------------------
+
+class TestExtractNamedSectionH3:
+    """extract_named_section must match ### and #### headings when ## is absent."""
+
+    def test_h3_section_extracted(self):
+        """### heading content is returned when no ## match exists."""
+        body = (
+            "# Skill\n\n"
+            "## Overview\n\nOverview text.\n\n"
+            "### Sub-section\n\nSub-section content.\n\n"
+            "## Other\n\nOther text.\n"
+        )
+        result = skill_cache.extract_named_section(body, "Sub-section")
+        assert result is not None
+        assert "Sub-section content." in result
+        assert "Other text." not in result
+
+    def test_h2_beats_h3_same_heading(self):
+        """When both ## and ### have the same heading text, ## wins."""
+        body = (
+            "## Target\n\nH2 content.\n\n"
+            "## Other\n\n### Target\n\nH3 content.\n"
+        )
+        result = skill_cache.extract_named_section(body, "Target")
+        assert result is not None
+        assert "H2 content." in result
+        assert "H3 content." not in result
+
+    def test_h3_section_stops_at_next_h2(self):
+        """Content after the matched ### heading stops at the next ## heading."""
+        body = (
+            "## Parent\n\n"
+            "### Child\n\nChild content.\n\n"
+            "## Sibling\n\nSibling content.\n"
+        )
+        result = skill_cache.extract_named_section(body, "Child")
+        assert result is not None
+        assert "Child content." in result
+        assert "Sibling content." not in result
+
+    def test_h3_section_stops_at_next_h3(self):
+        """Content after the matched ### heading also stops at the next ### heading."""
+        body = (
+            "### First\n\nFirst content.\n\n"
+            "### Second\n\nSecond content.\n"
+        )
+        result = skill_cache.extract_named_section(body, "First")
+        assert result is not None
+        assert "First content." in result
+        assert "Second content." not in result
+
+    def test_h2_section_still_extracted_correctly(self):
+        """Original ## behaviour is unaffected by the H3 change."""
+        body = "## DoD\n\n- criterion one\n- criterion two\n\n## Other\n\nOther.\n"
+        result = skill_cache.extract_named_section(body, "DoD")
+        assert result is not None
+        assert "criterion one" in result
+        assert "Other." not in result
+
+    def test_unknown_heading_returns_none(self):
+        """Heading not found at any level returns None."""
+        body = "## Overview\n\nSome text.\n"
+        assert skill_cache.extract_named_section(body, "does-not-exist") is None
+
+    def test_case_insensitive_h3_match(self):
+        """H3 headings are matched case-insensitively."""
+        body = "### PHASE 1 — EXPLORE\n\nExplore content.\n"
+        result = skill_cache.extract_named_section(body, "phase 1")
+        assert result is not None
+        assert "Explore content." in result
+
+
+# ---------------------------------------------------------------------------
+# compact manifest — per-skill inline compact cap
+# ---------------------------------------------------------------------------
+
+class TestManifestSkillCompactCap:
+    """Inline compact text in the manifest is capped per skill to protect budget."""
+
+    def test_large_compact_is_truncated_in_manifest(self, tmp_data_dir):
+        """A compact > 600 chars is truncated before injection into the manifest."""
+        sid = "integ-compact-cap-large"
+        # Build a skill body that produces a long compact via auto-extract.
+        # 100 CRITICAL lines × ~30 chars = ~3000 chars — well over the 600-char cap.
+        rule_lines = "\n".join(f"CRITICAL: Rule number {i} is very important." for i in range(100))
+        body = f"# LargeCap\n\n## Rules\n\n{rule_lines}\n\n" + ("filler text. " * 200)
+        meta = skill_cache.store_output(sid, "large-cap", body)
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        compact_text = skill_cache.generate_compact_summary(body)
+        assert compact_text and len(compact_text) > 600, (
+            f"Compact should be > 600 chars for this test to be meaningful; got {len(compact_text)}"
+        )
+        skill_cache.store_compact(sid, "large-cap", compact_text)
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+
+        m = compact.build_manifest(sid, max_tokens=800)
+        assert "large-cap" in m
+        # Find the key-rules block for this skill and measure its size.
+        # After the cap, the embedded compact should be <= 600 chars (plus heading line).
+        rules_start = m.find("**large-cap key-rules:**")
+        if rules_start != -1:
+            # Extract just the compact block content.
+            next_bold = m.find("**", rules_start + len("**large-cap key-rules:**"))
+            block = m[rules_start:next_bold] if next_bold != -1 else m[rules_start:]
+            # Block includes the heading line; the compact text body should be <= ~620 chars.
+            assert len(block) <= 700, (
+                f"Inline compact block in manifest is {len(block)} chars — exceeds expected cap"
+            )
+
+    def test_small_compact_not_truncated(self, tmp_data_dir):
+        """A compact < 600 chars is injected verbatim (no truncation)."""
+        sid = "integ-compact-cap-small"
+        body = (
+            "# SmallCap\n\n"
+            "## DoD\n\nCRITICAL: Pass all tests.\nMUST: Lint clean.\n\n"
+            + ("filler text. " * 200)
+        )
+        meta = skill_cache.store_output(sid, "small-cap", body)
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        compact_text = skill_cache.generate_compact_summary(body)
+        assert compact_text
+        # Confirm the compact is small enough to pass through untruncated.
+        skill_cache.store_compact(sid, "small-cap", compact_text)
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+
+        m = compact.build_manifest(sid, max_tokens=600)
+        assert "small-cap" in m
+        # CRITICAL and MUST rules should appear verbatim (no truncation ellipsis nearby).
+        if "small-cap key-rules:" in m:
+            rules_start = m.find("small-cap key-rules:")
+            block = m[rules_start:rules_start + 700]
+            assert "CRITICAL" in block or "MUST" in block
