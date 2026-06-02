@@ -41,6 +41,7 @@ __all__ = [
     "DBReadOnlyError",
     "VecExtensionUnavailable",
     "file_count",
+    "list_all_project_hashes",
     "get_file_exports",
     "get_file_importers",
     "get_file_imports",
@@ -1163,6 +1164,24 @@ def project_has_files(project_hash: str) -> bool:
     except (sqlite3.Error, OSError) as e:
         _LOG.debug("project_is_indexed(%s…) failed: %s", project_hash[:8], e)
         return False
+
+
+def list_all_project_hashes() -> list[str]:
+    """Return the hash of every project registered in the global DB.
+
+    Used by cross-project operations (e.g. ``token-goat semantic --all-projects``)
+    to iterate all known project DBs.  Returns an empty list when the global DB
+    does not exist or is unreadable — callers must gracefully handle the empty case.
+    """
+    try:
+        with open_global_readonly() as conn:
+            rows = conn.execute("SELECT hash FROM projects").fetchall()
+        return [str(r["hash"]) for r in rows]
+    except FileNotFoundError:
+        return []
+    except (DBError, sqlite3.Error, OSError) as exc:
+        _LOG.debug("list_all_project_hashes: global DB unavailable: %s", exc)
+        return []
 
 
 def touch_project_last_seen(project_hash: str) -> None:

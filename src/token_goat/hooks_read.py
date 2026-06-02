@@ -649,6 +649,55 @@ def _handle_skill_file_read(
     if matched_entry is None:
         return None
 
+    # Diff-aware staleness check: if the skill file on disk has changed SINCE
+    # the body was cached, the cached copy no longer matches.  Redirecting to a
+    # stale cache would cause the agent to miss updates; let the read proceed and
+    # the PostToolUse(Skill) handler will refresh the cache on the next load.
+    #
+    # Gate: we only consider staleness when:
+    #   1. content_sha and source_path are both non-empty (cache has provenance).
+    #   2. The file's mtime is NEWER than the cache timestamp (entry.ts).  If the
+    #      file was last modified BEFORE the cache was written, the cache is not
+    #      stale — there is nothing new to re-read.  This prevents false-positives
+    #      when a test or user caches a synthetic body for a real skill file: the
+    #      cache timestamp would be newer than the file, so the check is skipped.
+    cached_sha = getattr(matched_entry, "content_sha", "") or ""
+    source_path = getattr(matched_entry, "source_path", "") or ""
+    # ts is a Unix timestamp; 0.0 = epoch (also valid).  Use -1.0 as the
+    # "unknown" sentinel — a missing or non-numeric ts means skip the check.
+    _raw_ts = getattr(matched_entry, "ts", None)
+    try:
+        cache_ts = float(_raw_ts) if _raw_ts is not None else -1.0
+    except (TypeError, ValueError):
+        cache_ts = -1.0
+    if cached_sha and source_path and cache_ts >= 0.0:
+        try:
+            import hashlib as _hashlib  # noqa: PLC0415
+            from pathlib import Path as _Path  # noqa: PLC0415
+
+            src_path_obj = _Path(source_path)
+            file_mtime = src_path_obj.stat().st_mtime
+            # Only perform the SHA comparison when the file was modified after
+            # the cache was written.  If file_mtime <= cache_ts the file has not
+            # changed since caching — short-circuit without reading the full file.
+            if file_mtime > cache_ts:
+                disk_bytes = src_path_obj.read_bytes()
+                disk_sha = _hashlib.sha256(disk_bytes).hexdigest()
+                if disk_sha != cached_sha:
+                    _LOG.info(
+                        "pre-read: skill '%s' cache stale (file mtime %.0f > cache ts %.0f, "
+                        "disk sha %s…  != cached %s…); allowing read to proceed",
+                        sanitize_log_str(skill_name),
+                        file_mtime,
+                        cache_ts,
+                        disk_sha[:12],
+                        cached_sha[:12],
+                    )
+                    return None
+        except OSError:
+            # File not found or unreadable — can't verify staleness; emit hint.
+            pass
+
     from .hints import _hint_fingerprint  # noqa: PLC0415
 
     hint_text = (

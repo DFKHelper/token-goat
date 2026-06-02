@@ -1164,17 +1164,114 @@ def semantic(
             "Use --full to restore verbose two-line output with kind and distance."
         ),
     ),
+    all_projects: bool = typer.Option(
+        False,
+        "--all-projects",
+        help=(
+            "Search across all indexed projects, not just the current one. "
+            "Useful when skill files are indexed as a separate project "
+            "(e.g. after `token-goat index --root ~/.claude/skills/`). "
+            "Results include the project root path as a prefix."
+        ),
+    ),
 ) -> None:
     """Semantic search using local embeddings (fastembed + sqlite-vec)."""
     from . import embeddings  # noqa: PLC0415
-
-    proj = _require_project()
 
     # Negative sentinel means "use library default".  Anything >= 0 is treated
     # as an explicit threshold; pass a large value to effectively disable.
     threshold: float | None = (
         embeddings.DEFAULT_DISTANCE_THRESHOLD if max_distance < 0 else max_distance
     )
+
+    if all_projects:
+        # Cross-project semantic search: run against every known project DB and
+        # merge results, deduplicating by (project_hash, file_rel, start_line).
+        # Results are re-sorted globally by effective distance so the top-k
+        # across all projects are returned.  Each hit's file_rel is prefixed with
+        # the project root so the user can tell which project it came from.
+        from . import db as _db_mod  # noqa: PLC0415
+        from .project import make_project_at  # noqa: PLC0415
+
+        project_hashes = _db_mod.list_all_project_hashes()
+        if not project_hashes:
+            typer.echo("(no indexed projects found — run `token-goat index` first)")
+            raise typer.Exit(0)
+
+        all_hits: list[tuple[str, embeddings.SearchHit]] = []  # (project_root, hit)
+        # Use a dict as a dedup tracker keyed by (project_hash, file_rel, start_line).
+        # Avoid referencing `set` (the builtin) because cli.py also defines a typer
+        # command function named `set`, which makes mypy treat the builtin as shadowed.
+        seen_dedup: dict[tuple[str, str, int], bool] = {}
+        for ph in project_hashes:
+            try:
+                with _db_mod.open_global_readonly() as gconn:
+                    row = gconn.execute(
+                        "SELECT root FROM projects WHERE hash = ?", (ph,)
+                    ).fetchone()
+                if row is None:
+                    continue
+                proj_root = str(row["root"])
+                proj = make_project_at(Path(proj_root))
+                proj_hits = embeddings.semantic_search(
+                    proj,
+                    query,
+                    k=k,
+                    max_distance=threshold,
+                    boost_verbatim=not no_rerank,
+                    demote_generated=not no_rerank,
+                )
+            except (embeddings.EmbeddingsUnavailable, Exception):  # noqa: BLE001
+                # Skip projects without embeddings or unavailable DBs.
+                continue
+            for h in proj_hits:
+                dedup_key = (ph, h.file_rel, h.start_line)
+                if dedup_key not in seen_dedup:
+                    seen_dedup[dedup_key] = True
+                    all_hits.append((proj_root, h))
+
+        # Sort globally by effective distance, take top-k.
+        all_hits.sort(key=lambda x: x[1].distance)
+        all_hits = all_hits[:k]
+
+        _record_lookup_stat(
+            "semantic_search", query, len(all_hits), scope="all_projects",
+        )
+
+        if json_output:
+            out = [
+                {
+                    "project": pr,
+                    "file": h.file_rel,
+                    "start": h.start_line,
+                    "end": h.end_line,
+                    "kind": h.kind,
+                    "distance": h.distance,
+                    "preview": h.text[:200],
+                }
+                for pr, h in all_hits
+            ]
+            typer.echo(json.dumps(out, separators=(",", ":")))
+            return
+
+        if not all_hits:
+            typer.echo("(no results)")
+            return
+
+        for proj_root, h in all_hits:
+            if compact:
+                snippet = h.text.replace("\n", " ")[:100]
+                typer.echo(f"[{proj_root}] {h.file_rel}:{h.start_line}  {snippet}")
+            else:
+                preview = h.text.replace("\n", " ")[:120]
+                typer.echo(
+                    f"[{proj_root}] {h.file_rel}:{h.start_line}-{h.end_line} "
+                    f"({h.kind}, d={h.distance:.4f})"
+                )
+                typer.echo(f"  {preview}")
+        return
+
+    proj = _require_project()
 
     try:
         hits = embeddings.semantic_search(
@@ -3959,14 +4056,26 @@ def cmd_skill_size(
         body_len = int(skill["body_len"])  # type: ignore[call-overload]
         compact_len = int(skill["compact_len"])  # type: ignore[call-overload]
 
-        # Estimate tokens: 4 bytes per token (reasonable for English prose).
-        body_tokens = body_len // 4
-        # When no compact form has been stored, the manifest emits a brief
-        # header stub (~50 tokens) plus the auto-extracted summary.  Fall back
-        # to using body_tokens as an upper-bound estimate so the overhead is
-        # not misleadingly reported as 0 tokens for uncondensed skills.
-        effective_compact_len = compact_len if compact_len > 0 else body_len
-        compact_tokens = effective_compact_len // 4
+        # Prefer char-based counts when available (added in get_all_cached_skills
+        # iter-5).  Chars give a consistent token estimate matching store_compact's
+        # own formula (``len(compact_text) // 4``) and avoid inflating the count
+        # with UTF-8 multi-byte overhead or the stored header line.  Fall back to
+        # byte-based counts for caches written by older versions of token-goat.
+        body_chars = skill.get("body_chars")  # type: ignore[union-attr]
+        body_measure = int(body_chars) if isinstance(body_chars, int) else body_len  # type: ignore[call-overload]
+
+        # Estimate tokens: 4 chars per token (reasonable for English prose).
+        body_tokens = body_measure // 4
+        # compact_chars: char count of the compact *body* (header stripped), set
+        # by get_all_cached_skills when compact text is present.  When absent or
+        # zero, fall back to body_measure so overhead is not misleadingly zero.
+        compact_chars = skill.get("compact_chars")  # type: ignore[union-attr]
+        compact_measure = (
+            int(compact_chars)  # type: ignore[call-overload]
+            if isinstance(compact_chars, int) and int(compact_chars) > 0  # type: ignore[call-overload]
+            else (compact_len if compact_len > 0 else body_measure)
+        )
+        compact_tokens = compact_measure // 4
         compact_is_estimated = compact_len == 0
 
         # Worst-case overhead at 100 turns: loaded in every turn.

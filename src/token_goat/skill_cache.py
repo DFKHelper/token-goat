@@ -796,8 +796,30 @@ def read_sidecar(output_id: str) -> SkillMeta | None:
 # Maximum characters for a compact summary (~400 tokens at ~4 chars/token).
 _COMPACT_MAX_CHARS: int = 1600
 
+# Regex that matches the one-line header prepended by store_compact:
+# "--- compact form (N tokens) ---\n"
+# Used by _strip_compact_header to recover the bare body for accurate token counting.
+_COMPACT_HEADER_RE = re.compile(r"^--- compact form \(\d+ tokens\) ---\n")
+
 # Keywords that identify high-priority "rule" lines worth including in the compact.
 _RULE_KEYWORDS_RE = re.compile(r"\b(CRITICAL|MUST|NEVER|RULE)\b")
+
+
+def _strip_compact_header(stored_text: str) -> str:
+    """Strip the one-line metadata header from a stored compact text and return the body.
+
+    :func:`store_compact` prepends ``"--- compact form (N tokens) ---\\n"`` so
+    readers can immediately see the token count.  When computing token counts
+    programmatically (e.g. in :func:`get_all_cached_skills`) we need only the
+    body so that ``len(body) // 4`` matches the formula used at write time.
+
+    Returns the input unchanged when no header is present (safe for callers that
+    may receive raw body text instead of stored compact text).
+    """
+    m = _COMPACT_HEADER_RE.match(stored_text)
+    if m:
+        return stored_text[m.end():]
+    return stored_text
 
 
 def generate_compact_summary(full_body: str) -> str:
@@ -1088,13 +1110,26 @@ def get_all_cached_skills(session_id: str | None = None) -> list[dict[str, objec
 
         compact_len = len(compact_text.encode("utf-8", errors="replace")) if compact_text else 0
 
+        # Compute compact_chars: character count of the compact *body* (header
+        # stripped) so callers can derive token counts with the same
+        # ``len(body) // 4`` formula used in store_compact — avoiding the
+        # double-count from the header line and the byte-vs-char discrepancy
+        # for non-ASCII content.  See _strip_compact_header for the stripping logic.
+        if compact_text:
+            compact_body_text = _strip_compact_header(compact_text)
+            compact_chars = len(compact_body_text)
+        else:
+            compact_chars = 0
+
         # Check for marker.
         has_marker = extract_compact_from_marker(body) is not None
 
         results.append({
             "name": meta.skill_name,
             "body_len": len(body.encode("utf-8", errors="replace")),
+            "body_chars": len(body),
             "compact_len": compact_len,
+            "compact_chars": compact_chars,
             "has_marker": has_marker,
         })
 
