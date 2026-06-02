@@ -236,6 +236,7 @@ class _SkillPreservationToml(TypedDict, total=False):
     max_cache_bytes: int
     orphan_sweep_enabled: bool
     orphan_age_secs: int
+    truncation_budget_tokens: int
 
 
 class _ImageShrinkToml(TypedDict, total=False):
@@ -533,12 +534,20 @@ class SkillPreservationConfig:
         orphan_age_secs: Age threshold for the orphan sweep (default 7 days).
             Blobs whose mtime is older than this are removed.  Valid range:
             1 s – 30 days (2 592 000 s).
+        truncation_budget_tokens: When a skill has no ``<!-- COMPACT_END -->``
+            marker, ``generate_compact_summary`` auto-extracts a compact.  This
+            setting caps the injected compact at a configurable token budget so
+            very large skills without an explicit marker don't dominate the
+            session manifest.  Default 800 tokens (≈ 3200 chars at 4 chars/token).
+            Set to 0 to disable the cap (use the module-level ``_COMPACT_MAX_CHARS``
+            limit of ~400 tokens instead).  Valid range: 0 – 8000 tokens.
     """
 
     enabled: bool = True
     max_cache_bytes: int = 5 * 1024 * 1024
     orphan_sweep_enabled: bool = True
     orphan_age_secs: int = 604800
+    truncation_budget_tokens: int = 800
 
 
 @dataclass
@@ -1219,6 +1228,10 @@ def load() -> Config:
         orphan_age_secs=_validated_int(
             sp_raw.get("orphan_age_secs", 604800), 604800, 1, 2_592_000, "skill_preservation.orphan_age_secs",
         ),
+        truncation_budget_tokens=_validated_int(
+            sp_raw.get("truncation_budget_tokens", 800), 800, 0, 8000,
+            "skill_preservation.truncation_budget_tokens",
+        ),
     )
     _apply_env_disable(sp, "enabled", _ENV_SKILL_PRESERVATION, "skill_preservation")
     _apply_env_disable(sp, "orphan_sweep_enabled", _ENV_ORPHAN_SWEEP, "skill_preservation.orphan_sweep_enabled")
@@ -1420,7 +1433,7 @@ def load() -> Config:
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d cache_files=%d cache_bytes=%d; "
         "session_brief enabled=%s; "
-        "skill_preservation enabled=%s max_cache_bytes=%d; "
+        "skill_preservation enabled=%s max_cache_bytes=%d truncation_budget_tokens=%d; "
         "image_shrink prefer_avif=%s avif_quality=%d jpeg_quality=%d max_image_pixels=%d; "
         "curator enabled=%s min_samples=%d threshold_pct=%d; "
         "hint_budget enabled=%s max=%d max_structured=%d max_index_only=%d; "
@@ -1443,6 +1456,7 @@ def load() -> Config:
         sb.enabled,
         sp.enabled,
         sp.max_cache_bytes,
+        sp.truncation_budget_tokens,
         is_cfg.prefer_avif,
         is_cfg.avif_quality,
         is_cfg.jpeg_quality,
@@ -1521,6 +1535,7 @@ def save(config: Config) -> None:
             "max_cache_bytes": sp.max_cache_bytes,
             "orphan_sweep_enabled": sp.orphan_sweep_enabled,
             "orphan_age_secs": sp.orphan_age_secs,
+            "truncation_budget_tokens": sp.truncation_budget_tokens,
         },
         "image_shrink": {
             "prefer_avif": is_cfg.prefer_avif,

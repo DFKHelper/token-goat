@@ -37,6 +37,7 @@ __all__ = [
     "extract_all_headings",
     "extract_h2_headings",
     "extract_named_section",
+    "_parse_section_ordinal",
     "generate_compact_summary",
     "get_all_cached_skills",
     "get_compact",
@@ -393,6 +394,29 @@ def extract_all_headings(body: str, max_level: int = 3) -> list[tuple[int, str]]
     return headings
 
 
+def _parse_section_ordinal(heading: str) -> tuple[str, int | None]:
+    """Split a heading like ``Usage#2`` into ``("Usage", 2)``.
+
+    The ``#N`` suffix selects which occurrence to return when a skill contains
+    multiple headings with the same text (e.g. two ``## Usage`` sections).
+    Returns ``(heading, None)`` when no ordinal suffix is present or the suffix
+    is malformed, so a real heading containing ``#`` is not mistakenly treated
+    as an ordinal.
+    """
+    if "#" not in heading:
+        return heading, None
+    base, _, ordinal_str = heading.rpartition("#")
+    if not base or not ordinal_str:
+        return heading, None
+    try:
+        ordinal = int(ordinal_str)
+    except ValueError:
+        return heading, None
+    if ordinal < 1:
+        return heading, None
+    return base, ordinal
+
+
 def extract_named_section(body: str, heading: str) -> str | None:
     """Return the content of the section matching *heading*, or ``None``.
 
@@ -407,25 +431,34 @@ def extract_named_section(body: str, heading: str) -> str | None:
     end of file.  Returns ``None`` when no matching heading is found or the
     extracted content is empty after stripping.
 
+    Supports an ordinal suffix ``Heading#N`` (1-based) to select the *N*-th
+    occurrence when a skill contains multiple sections with the same heading
+    text.  Without an ordinal, the first match is returned and a warning is
+    logged listing other match line numbers so the caller knows to add ``#2``,
+    ``#3``, etc.
+
     This is the in-memory equivalent of ``read_replacement.read_section`` for
     skill bodies, which are not indexed in the project DB.
     """
     if not body or not heading:
         return None
 
-    heading_lower = heading.strip().lower()
+    base_heading, ordinal = _parse_section_ordinal(heading)
+    heading_lower = base_heading.strip().lower()
     lines = body.splitlines()
     n = len(lines)
 
     # Two-pass: prefer ## then fall back to ### or deeper.
-    # Each pass records (line_index, heading_level) for the first match.
-    # Code-block-aware: headings inside fenced blocks (``` or ~~~) are skipped.
-    match_start = -1
-    match_level = -1
+    # Each pass collects ALL matches at that level (for ordinal selection and
+    # disambiguation warnings).  Code-block-aware: headings inside fenced
+    # blocks (``` or ~~~) are skipped.
+    # matches_at_level: list of (line_index, heading_level) for each match.
+    matches: list[tuple[int, int]] = []
 
     for pass_level in (2, 3, 4):
         prefix = "#" * pass_level + " "
         in_code_block = False
+        level_matches: list[tuple[int, int]] = []
         for i, raw_line in enumerate(lines):
             stripped = raw_line.strip()
             if stripped.startswith("```") or stripped.startswith("~~~"):
@@ -436,14 +469,37 @@ def extract_named_section(body: str, heading: str) -> str | None:
             if stripped.startswith(prefix):
                 section_title = stripped[len(prefix):].strip().lower()
                 if section_title.startswith(heading_lower):
-                    match_start = i
-                    match_level = pass_level
-                    break
-        if match_start != -1:
+                    level_matches.append((i, pass_level))
+        if level_matches:
+            matches = level_matches
             break
 
-    if match_start == -1:
+    if not matches:
         return None
+
+    # Apply ordinal selection or first-match default with disambiguation warning.
+    if ordinal is not None:
+        if ordinal > len(matches):
+            _LOG.info(
+                "extract_named_section: ordinal %d requested for %r but only %d match(es); "
+                "no section returned",
+                ordinal, base_heading, len(matches),
+            )
+            return None
+        match_start, match_level = matches[ordinal - 1]
+    elif len(matches) > 1:
+        # Multiple sections share this heading text; return the first and log a
+        # disambiguation hint so the caller knows to add #2, #3, etc.
+        other_lines = ", ".join(str(line_idx + 1) for line_idx, _ in matches[1:])
+        _LOG.warning(
+            "extract_named_section: %d sections share heading %r; returning first "
+            "(line %d). Use %r#2, %r#3, … (other matches at lines: %s)",
+            len(matches), base_heading, matches[0][0] + 1,
+            base_heading, base_heading, other_lines,
+        )
+        match_start, match_level = matches[0]
+    else:
+        match_start, match_level = matches[0]
 
     # Collect body lines until the next heading at the same or higher level.
     body_lines: list[str] = []

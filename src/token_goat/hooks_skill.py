@@ -297,6 +297,26 @@ def post_skill(payload: HookPayload) -> HookResponse:
             else:
                 compact_text = skill_cache.generate_compact_summary(body)
                 if compact_text:
+                    # Apply the configurable truncation_budget_tokens cap so that
+                    # skills without an explicit COMPACT_END marker don't inject
+                    # oversized compacts into the manifest.  4 chars ≈ 1 token.
+                    try:
+                        from .config import load as _load_cfg  # noqa: PLC0415
+                        _cfg_budget = _load_cfg().skill_preservation.truncation_budget_tokens
+                    except Exception:  # noqa: BLE001
+                        _cfg_budget = 800
+                    if _cfg_budget > 0:
+                        _budget_chars = _cfg_budget * 4
+                        if len(compact_text) > _budget_chars:
+                            _cut = compact_text.rfind("\n", 0, _budget_chars)
+                            if _cut <= 0:
+                                _cut = _budget_chars
+                            compact_text = compact_text[:_cut].rstrip() + "…"
+                            _LOG.debug(
+                                "post-skill: compact for %s truncated to budget (%d tokens)",
+                                sanitize_log_str(skill_name, max_len=80),
+                                _cfg_budget,
+                            )
                     skill_cache.store_compact(session_id, skill_name, compact_text)
                     _LOG.debug(
                         "post-skill: compact stored for %s via auto-extraction (%d chars)",

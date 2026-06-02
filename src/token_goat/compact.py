@@ -651,6 +651,17 @@ _SKILL_STALE_FOR_SESSION_SECS: Final[int] = 6 * 3600  # 6 hours
 # Callers can always retrieve the full compact via ``token-goat skill-body --compact``.
 _SKILL_COMPACT_INLINE_MAX_CHARS: Final[int] = 600
 
+# Total token budget for ALL inline skill compacts injected into the manifest.
+# A session can load up to _MAX_ACTIVE_SKILLS (6) skills, each with up to
+# _SKILL_COMPACT_INLINE_MAX_CHARS (600 chars ≈ 150 tokens).  Without a total
+# cap, 6 × 150 = 900 tokens can be injected — more than twice the 400-token
+# manifest budget.  This ceiling distributes the budget fairly: each skill gets
+# at most total_budget / n_skills tokens.  100 tokens per skill is enough to
+# surface the 3–5 key rules that survive compaction; the full compact is
+# always available via ``token-goat skill-body --compact <name>``.
+# 300 tokens × 3 chars/token = 900 chars total, shared across all skills.
+_SKILL_INLINE_TOTAL_TOKEN_BUDGET: Final[int] = 300
+
 # Maximum decisions surfaced in the **Decisions:** manifest section.  Opt-in via
 # ``token-goat decision "<text>"``, so the volume is self-limited — typical
 # sessions log 0–3 decisions per task.  5 covers heavier sessions while keeping
@@ -4899,26 +4910,42 @@ def _render(
         # compaction LLM to infer them from the full prose.
         from . import skill_cache  # noqa: PLC0415
 
-        for _se in skill_entries:
-            skill_name = getattr(_se, "skill_name", "")
-            if not skill_name:
+        # Distribute the total inline token budget evenly across all skills that
+        # have a cached compact.  This prevents sessions with many large skills
+        # (ralph + improve + marketing + humanizer + …) from inflating the skills
+        # section beyond the global manifest token budget.
+        # Budget is in tokens; convert to chars at 3 chars/token (conservative).
+        _skills_with_compact = [
+            (getattr(_se, "skill_name", ""), skill_cache.get_compact(session_id, getattr(_se, "skill_name", "")))
+            for _se in skill_entries
+            if getattr(_se, "skill_name", "")
+        ]
+        _skills_with_compact = [(_name, _ct) for _name, _ct in _skills_with_compact if _ct]
+        _n_with_compact = len(_skills_with_compact)
+        if _n_with_compact > 0:
+            # Per-skill char budget: evenly divide total budget; also respect the
+            # absolute per-skill ceiling (_SKILL_COMPACT_INLINE_MAX_CHARS).
+            _per_skill_chars = min(
+                _SKILL_COMPACT_INLINE_MAX_CHARS,
+                (_SKILL_INLINE_TOTAL_TOKEN_BUDGET * 3) // _n_with_compact,
+            )
+        else:
+            _per_skill_chars = _SKILL_COMPACT_INLINE_MAX_CHARS
+
+        for _skill_name, compact_text in _skills_with_compact:
+            if not compact_text:
                 continue
-            compact_text = skill_cache.get_compact(session_id, skill_name)
-            if compact_text:
-                # Apply per-skill character cap so many loaded large skills
-                # (ralph + improve + marketing + humanizer) don't blow the global
-                # manifest budget.  Full compact is always available via
-                # `token-goat skill-body --compact <name>`.
-                if len(compact_text) > _SKILL_COMPACT_INLINE_MAX_CHARS:
-                    cut = compact_text.rfind("\n", 0, _SKILL_COMPACT_INLINE_MAX_CHARS)
-                    if cut <= 0:
-                        cut = _SKILL_COMPACT_INLINE_MAX_CHARS
-                    compact_text = compact_text[:cut].rstrip() + "…"
-                # Indent the compact as a continuation of the skills line
-                skill_lines.append("")
-                skill_lines.append(f"**{skill_name} key-rules:**")
-                for line in compact_text.splitlines():
-                    skill_lines.append(f"  {line}")
+            # Apply combined per-skill cap (budget-derived and absolute ceiling).
+            if len(compact_text) > _per_skill_chars:
+                cut = compact_text.rfind("\n", 0, _per_skill_chars)
+                if cut <= 0:
+                    cut = _per_skill_chars
+                compact_text = compact_text[:cut].rstrip() + "…"
+            # Indent the compact as a continuation of the skills line
+            skill_lines.append("")
+            skill_lines.append(f"**{_skill_name} key-rules:**")
+            for line in compact_text.splitlines():
+                skill_lines.append(f"  {line}")
     else:
         skill_lines = []
 
