@@ -13,45 +13,30 @@ from token_goat import bash_compress as bc
 
 
 class TestStripAnsi:
-    def test_removes_basic_color_codes(self):
-        text = "\x1b[31mred\x1b[0m \x1b[32mgreen\x1b[0m"
-        assert bc.strip_ansi(text) == "red green"
-
-    def test_removes_256_color_codes(self):
-        text = "\x1b[38;5;208mhello\x1b[0m"
-        assert bc.strip_ansi(text) == "hello"
-
-    def test_removes_truecolor(self):
-        text = "\x1b[38;2;255;0;0mred truecolor\x1b[0m"
-        assert bc.strip_ansi(text) == "red truecolor"
-
-    def test_removes_osc_title_sequences(self):
-        text = "\x1b]0;window title\x07after"
-        assert bc.strip_ansi(text) == "after"
-
-    def test_removes_cursor_movement(self):
-        text = "first\x1b[2Asecond\x1b[3Bthird"
-        assert bc.strip_ansi(text) == "firstsecondthird"
-
-    def test_idempotent_on_plain_text(self):
-        assert bc.strip_ansi("plain text") == "plain text"
-
-    def test_handles_empty(self):
-        assert bc.strip_ansi("") == ""
-
-    def test_preserves_unicode(self):
-        text = "\x1b[1m日本語\x1b[0m"
-        assert bc.strip_ansi(text) == "日本語"
-
-    def test_removes_osc_st_terminated(self):
-        # OSC with ST (ESC \) terminator — used by hyperlink sequences
-        text = "\x1b]8;;https://example.com\x1b\\click\x1b]8;;\x1b\\after"
-        assert bc.strip_ansi(text) == "clickafter"
-
-    def test_removes_dcs_sequence(self):
-        # DCS string terminated by ST — used by tmux passthrough, sixel, etc.
-        text = "before\x1bPsomedata\x1b\\after"
-        assert bc.strip_ansi(text) == "beforeafter"
+    @pytest.mark.parametrize("text,expected", [
+        # Basic SGR color codes
+        ("\x1b[31mred\x1b[0m \x1b[32mgreen\x1b[0m", "red green"),
+        # 256-color palette
+        ("\x1b[38;5;208mhello\x1b[0m", "hello"),
+        # 24-bit truecolor
+        ("\x1b[38;2;255;0;0mred truecolor\x1b[0m", "red truecolor"),
+        # OSC BEL-terminated (window title)
+        ("\x1b]0;window title\x07after", "after"),
+        # Cursor movement sequences
+        ("first\x1b[2Asecond\x1b[3Bthird", "firstsecondthird"),
+        # Plain text passes through unchanged
+        ("plain text", "plain text"),
+        # Empty string
+        ("", ""),
+        # Unicode preserved after stripping bold
+        ("\x1b[1m日本語\x1b[0m", "日本語"),
+        # OSC with ST (ESC \) terminator — hyperlink sequences
+        ("\x1b]8;;https://example.com\x1b\\click\x1b]8;;\x1b\\after", "clickafter"),
+        # DCS string terminated by ST — tmux passthrough, sixel, etc.
+        ("before\x1bPsomedata\x1b\\after", "beforeafter"),
+    ])
+    def test_strips_escape_sequences(self, text, expected):
+        assert bc.strip_ansi(text) == expected
 
     def test_is_same_function_as_render_ansi(self):
         # bc.strip_ansi must be the same object as render.ansi.strip_ansi

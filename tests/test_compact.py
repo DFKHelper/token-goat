@@ -660,65 +660,74 @@ class TestBuildManifestAdaptive:
 class TestNoisePathFilter:
     """Build artifacts, lockfiles, and OS metadata must not eat manifest budget."""
 
-    def test_pyc_extension_is_noise(self):
-        assert compact.is_noise_path("/proj/src/foo.pyc") is True
-        assert compact.is_noise_path("/proj/src/foo.pyo") is True
+    @pytest.mark.parametrize("path", [
+        # Compiled Python bytecode
+        "/proj/src/foo.pyc",
+        "/proj/src/foo.pyo",
+        # Native binaries
+        "/proj/build/libfoo.so",
+        "C:/proj/foo.dll",
+        # Lockfiles
+        "/proj/package-lock.json",
+        "/proj/uv.lock",
+        "/proj/Cargo.lock",
+        # OS metadata
+        "/proj/.DS_Store",
+        "/proj/Thumbs.db",
+        # Cache and VCS directories
+        "/proj/src/__pycache__/foo.cpython-311.pyc",
+        "/proj/.git/HEAD",
+        "/proj/node_modules/react/index.js",
+        "/proj/.venv/lib/site-packages/x.py",
+        "/proj/.mypy_cache/x.json",
+        # Framework build outputs
+        "/proj/.next/server/chunks/0.js",
+        "/proj/.nuxt/dist/app.mjs",
+        "/proj/.svelte-kit/output/app.js",
+        "/proj/.turbo/log",
+        "/proj/target/debug/foo",
+        # Extended cache directories
+        "/proj/.tox/py311/lib/x.py",
+        "/proj/.cache/pip/wheels/x.whl",
+        "/proj/.parcel-cache/abc.json",
+        "/proj/coverage/lcov.info",
+        "/proj/.nyc_output/123.json",
+        # Egg-info and site-packages
+        "/proj/mypkg.egg-info/PKG-INFO",
+        "/proj/venv/lib/site-packages/numpy/x.py",
+        # Coverage and pid/lock files
+        "/proj/.coverage",
+        "/proj/coverage.xml",
+        "/proj/lcov.info",
+        "/proj/worker.pid",
+        "/proj/projects/abc.lock",
+        # Windows separators
+        "C:\\proj\\__pycache__\\x.py",
+        # Automation tool artifacts (improve-skill, improve-commit-msg)
+        ".improve-state-general.json",
+        "/proj/.improve-state-my-feature.json",
+        "C:\\proj\\.improve-state-foo.json",
+        "improve_commit_msg_foo_2.txt",
+        "/tmp/improve_commit_msg_general_1.txt",
+        "C:\\tmp\\improve_commit_msg_x.txt",
+        # Unix and Windows temp directories
+        "/tmp/anything.py",
+        "/tmp/scratch.json",
+        "C:/Users/x/AppData/Local/Temp/foo.txt",
+        "C:\\Users\\x\\AppData\\Roaming\\bar.json",
+    ])
+    def test_noise_path_is_detected(self, path):
+        assert compact.is_noise_path(path) is True
 
-    def test_native_binaries_are_noise(self):
-        assert compact.is_noise_path("/proj/build/libfoo.so") is True
-        assert compact.is_noise_path("C:/proj/foo.dll") is True
-
-    def test_lockfiles_are_noise(self):
-        assert compact.is_noise_path("/proj/package-lock.json") is True
-        assert compact.is_noise_path("/proj/uv.lock") is True
-        assert compact.is_noise_path("/proj/Cargo.lock") is True
-
-    def test_os_metadata_is_noise(self):
-        assert compact.is_noise_path("/proj/.DS_Store") is True
-        assert compact.is_noise_path("/proj/Thumbs.db") is True
-
-    def test_cache_directories_are_noise(self):
-        assert compact.is_noise_path("/proj/src/__pycache__/foo.cpython-311.pyc") is True
-        assert compact.is_noise_path("/proj/.git/HEAD") is True
-        assert compact.is_noise_path("/proj/node_modules/react/index.js") is True
-        assert compact.is_noise_path("/proj/.venv/lib/site-packages/x.py") is True
-        assert compact.is_noise_path("/proj/.mypy_cache/x.json") is True
-
-    def test_extended_build_dirs_are_noise(self):
-        """Framework build outputs and language-specific compile dirs."""
-        assert compact.is_noise_path("/proj/.next/server/chunks/0.js") is True
-        assert compact.is_noise_path("/proj/.nuxt/dist/app.mjs") is True
-        assert compact.is_noise_path("/proj/.svelte-kit/output/app.js") is True
-        assert compact.is_noise_path("/proj/.turbo/log") is True
-        assert compact.is_noise_path("/proj/target/debug/foo") is True
-
-    def test_extended_cache_dirs_are_noise(self):
-        assert compact.is_noise_path("/proj/.tox/py311/lib/x.py") is True
-        assert compact.is_noise_path("/proj/.cache/pip/wheels/x.whl") is True
-        assert compact.is_noise_path("/proj/.parcel-cache/abc.json") is True
-        assert compact.is_noise_path("/proj/coverage/lcov.info") is True
-        assert compact.is_noise_path("/proj/.nyc_output/123.json") is True
-
-    def test_egg_info_and_site_packages_are_noise(self):
-        assert compact.is_noise_path("/proj/mypkg.egg-info/PKG-INFO") is True
-        assert compact.is_noise_path("/proj/venv/lib/site-packages/numpy/x.py") is True
-
-    def test_coverage_and_pidlock_files_are_noise(self):
-        assert compact.is_noise_path("/proj/.coverage") is True
-        assert compact.is_noise_path("/proj/coverage.xml") is True
-        assert compact.is_noise_path("/proj/lcov.info") is True
-        assert compact.is_noise_path("/proj/worker.pid") is True
-        assert compact.is_noise_path("/proj/projects/abc.lock") is True
-
-    def test_real_source_files_pass(self):
-        assert compact.is_noise_path("/proj/src/auth.py") is False
-        assert compact.is_noise_path("/proj/tests/test_x.py") is False
-        assert compact.is_noise_path("README.md") is False
-        assert compact.is_noise_path("") is False
-
-    def test_windows_separators_work(self):
-        assert compact.is_noise_path("C:\\proj\\__pycache__\\x.py") is True
-        assert compact.is_noise_path("C:\\proj\\src\\auth.py") is False
+    @pytest.mark.parametrize("path", [
+        "/proj/src/auth.py",
+        "/proj/tests/test_x.py",
+        "README.md",
+        "",
+        "C:\\proj\\src\\auth.py",
+    ])
+    def test_real_source_file_passes(self, path):
+        assert compact.is_noise_path(path) is False
 
     def test_noise_files_excluded_from_manifest(self, tmp_data_dir):
         """A session whose only reads are noise paths should not get listed in Key Files Read."""
@@ -744,25 +753,9 @@ class TestNoisePathFilter:
         assert "real.py" in result
         assert "poetry.lock" not in result
 
-    # -- automation tool artifacts (regression: these leaked into manifests) --
-
-    def test_improve_state_files_are_noise(self):
-        assert compact.is_noise_path(".improve-state-general.json") is True
-        assert compact.is_noise_path("/proj/.improve-state-my-feature.json") is True
-        assert compact.is_noise_path("C:\\proj\\.improve-state-foo.json") is True
-
-    def test_improve_commit_msg_files_are_noise(self):
-        assert compact.is_noise_path("/tmp/improve_commit_msg_general_1.txt") is True
-        assert compact.is_noise_path("improve_commit_msg_foo_2.txt") is True
-        assert compact.is_noise_path("C:\\tmp\\improve_commit_msg_x.txt") is True
-
-    def test_unix_tmp_dir_is_noise(self):
-        assert compact.is_noise_path("/tmp/anything.py") is True
-        assert compact.is_noise_path("/tmp/scratch.json") is True
-
-    def test_windows_temp_dirs_are_noise(self):
-        assert compact.is_noise_path("C:/Users/x/AppData/Local/Temp/foo.txt") is True
-        assert compact.is_noise_path("C:\\Users\\x\\AppData\\Roaming\\bar.json") is True
+    # Automation tool artifacts and temp dirs are covered by
+    # test_noise_path_is_detected above (extend the parametrize list there
+    # to add new cases rather than adding new single-assert methods here).
 
     def test_automation_edits_excluded_from_manifest(self, tmp_data_dir):
         """Regression: improve-skill artifacts must never appear in 'Files Edited'."""

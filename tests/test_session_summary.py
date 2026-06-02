@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+from token_goat import paths as paths_mod
 from token_goat import session as session_mod
 from token_goat.cli import app
 
@@ -130,8 +131,10 @@ class TestSessionSummaryCommand:
         )}
         session_mod.save(sess1)
 
-        # Wait a bit to ensure different mtime
-        time.sleep(0.01)
+        # Backdate sess1's file mtime so sess2 is unambiguously newer without sleeping.
+        sess1_path = paths_mod.session_cache_path(session_id_1)
+        past_ts = sess1_path.stat().st_mtime - 2.0
+        os.utime(str(sess1_path), (past_ts, past_ts))
 
         sess2 = session_mod.SessionCache(
             session_id=session_id_2,
