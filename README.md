@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>85%</b> smaller reads &nbsp;·&nbsp; <b>97.4%</b> image compression &nbsp;·&nbsp; <b>130</b> bash output filters &nbsp;·&nbsp; smarter compactions
+  <b>85%</b> smaller reads &nbsp;·&nbsp; <b>97.4%</b> image compression &nbsp;·&nbsp; <b>130</b> bash output filters &nbsp;·&nbsp; <b>94–97%</b> skill overhead cut &nbsp;·&nbsp; compaction memory
 </p>
 
 <p align="center"><b>Your AI re-reads the same file three times. Every compaction causes amnesia. Every build log buries the one line that matters. You pay for all of it. Token-Goat fixes all of it — automatically.</b></p>
@@ -50,9 +50,11 @@ Restart your AI sessions. Run <code>token-goat stats</code> a couple of minutes 
 
 AIs read `auth.py`. Then reads it again. And again. Then a third time after compaction wipes the session. Then it can't find what it wanted and searches other lines and files. You pay for every token and most of it is waste.
 
-Long sessions accumulate waste four ways. Screenshots cross the model at full resolution. A single PNG can land at 10+ MB. The agent re-reads files it already parsed earlier in the same conversation. When a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things. And every `pytest`, `npm install`, `docker build`, or `git log` dumps thousands of lines of progress bars, deprecation warnings, and passing-test names that bury the one line that actually matters.
+Long sessions accumulate waste five ways. Screenshots cross the model at full resolution. A single PNG can land at 10+ MB. The agent re-reads files it already parsed earlier in the same conversation. When a session compacts, the summary LLM doesn't know which files were edited or which symbols mattered, so it preserves the wrong things. And every `pytest`, `npm install`, `docker build`, or `git log` dumps thousands of lines of progress bars, deprecation warnings, and passing-test names that bury the one line that actually matters.
 
-The fastest way to reduce AI token costs is fixing these four, not writing shorter prompts. Each one is preventable. Token-Goat intercepts all four, automatically.
+The fifth waste is skills. A single large skill invocation can inject 10k–65k tokens of skill body on every turn. Invoke the same skill twice, or let compaction wipe the session, and the full body re-loads from scratch. Token-Goat caches the compact form on first load, intercepts direct reads of skill files, detects re-invocations, and ensures the compaction manifest carries the full skill index — so nothing is forgotten and the full body never re-enters context unnecessarily.
+
+The fastest way to reduce AI token costs is fixing these five, not writing shorter prompts. Each one is preventable. Token-Goat intercepts all five, automatically.
 
 ## What changes
 
@@ -63,10 +65,10 @@ The fastest way to reduce AI token costs is fixing these four, not writing short
 | Agent re-reads a file edited mid-session | Unified diff injected as a hint — full Read avoided when the diff covers the change |
 | Compaction forgets which files were edited | Structured session manifest injected before compact |
 | Same files re-read from scratch after `/compact` | Recovery hint at SessionStart lists cached snapshot + bash + WebFetch IDs |
-| Loaded skill body (Ralph DoD, /improve sequence) summarised away by compaction | `### Active Skills` manifest section + `**Skills**:` recovery block list every loaded skill; full body recoverable via `token-goat skill-body <name>` without re-invoking |
+| Loaded skill body summarised away by compaction | `### Active Skills` manifest section + `**Skills**:` recovery block list every loaded skill; full body recoverable via `token-goat skill-body <name>` without re-invoking |
 | Large skill bodies re-injected each turn (6 active skills = 65k+ tokens) | `<!-- COMPACT_END -->` marker: everything above the marker is the compact form; token-goat detects it on load, caches the compact slice, and injects only that — typically ~400 tokens vs. 10k+ |
 | Model reads a skill SKILL.md file directly mid-session (burning the full 10k–65k tokens again) | Pre-Read hook intercepts `*/.claude/skills/<name>/SKILL.md` paths; if the skill is already cached this session it emits a `token-goat skill-body <name>` hint instead |
-| Same large skill invoked twice in a session (e.g. `/improve` called again) | Re-load detection: second invocation emits cached token count + `skill-body`/`skill-section` recall hints instead of re-caching the full body |
+| Same large skill invoked twice in a session | Re-load detection: second invocation emits cached token count + `skill-body`/`skill-section` recall hints instead of re-caching the full body |
 | Full file read for one function or section | `token-goat read file::symbol`, about 85% smaller |
 | `pytest` dumps 150 PASSED lines + dots + tracebacks | Failures-first view, 80 to 97% smaller |
 | `npm install` floods deprecation warnings + spinner | Errors kept; warnings collapsed by package, ~90% smaller |
