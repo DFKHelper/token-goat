@@ -46,6 +46,17 @@ _LOG = get_logger("hooks_skill")
 # storing it would waste the cache slot without enabling useful recall.
 _SKILL_CACHE_MIN_BYTES: int = 256
 
+# Hard upper bound on skill body size accepted for caching.  Bodies larger
+# than this are truncated by skill_cache.store_output (cap = 256 KB), but
+# encoding a multi-MB string to UTF-8 bytes twice — once here for the size
+# check and once inside store_output — wastes CPU in a hook that must be
+# fast.  We take only the first _SKILL_CACHE_MAX_CHARS characters and let
+# store_output do the byte-precise tail-preserve truncation from there.
+# 2 MB of characters covers all realistic skill bodies (the largest known
+# skill, ralph, is ~30 KB) and ensures the hook never stalls on a runaway
+# tool response.
+_SKILL_CACHE_MAX_CHARS: int = 2 * 1024 * 1024  # 2 MB character cap
+
 
 def _extract_skill_body(payload: HookPayload) -> str:
     """Pull the skill body text from a PostToolUse(Skill) payload.
@@ -148,6 +159,9 @@ def post_skill(payload: HookPayload) -> HookResponse:
     Failures at any step are logged and swallowed so a degraded cache or a
     misshapen payload never blocks the agent.
     """
+    if not isinstance(payload, dict):
+        _LOG.debug("post-skill: non-dict payload (type=%s); skipping", type(payload).__name__)
+        return CONTINUE()
     tool_name = payload.get("tool_name", "")
     if tool_name != "Skill":
         return CONTINUE()
@@ -167,7 +181,10 @@ def post_skill(payload: HookPayload) -> HookResponse:
     tool_input = get_tool_input(payload)
     skill_name_raw = tool_input.get("skill")
     if not isinstance(skill_name_raw, str) or not skill_name_raw:
-        _LOG.debug("post-skill: tool_input missing 'skill' field; skipping")
+        _LOG.debug(
+            "post-skill: tool_input 'skill' field missing or non-string (type=%s); skipping",
+            type(skill_name_raw).__name__,
+        )
         return CONTINUE()
     # Normalize: strip whitespace, strip any leading path components (e.g.
     # "~/.claude/skills/ralph" → "ralph"), and lowercase so cache lookups are
@@ -181,8 +198,25 @@ def post_skill(payload: HookPayload) -> HookResponse:
     if skill_name_stripped.lower().endswith(".md"):
         skill_name_stripped = skill_name_stripped[:-3]
     skill_name = skill_name_stripped.lower() if skill_name_stripped else skill_name_raw.strip()
+    # Guard: if the name is empty after all normalization (e.g. input was "/" or
+    # "/.md"), there is nothing safe to cache.  Log and bail rather than letting
+    # the downstream name-validation in skill_cache.store_output reject it
+    # silently after we have already extracted the body.
+    if not skill_name:
+        _LOG.debug("post-skill: skill name empty after normalization (raw=%r); skipping",
+                   sanitize_log_str(skill_name_raw, max_len=120))
+        return CONTINUE()
 
     body = _extract_skill_body(payload)
+    # Pre-cap runaway bodies before the byte-count: encoding a multi-MB string
+    # twice (here + inside store_output) wastes hook latency.  Store_output
+    # handles byte-precise tail-preserve truncation from the capped string.
+    if len(body) > _SKILL_CACHE_MAX_CHARS:
+        _LOG.debug(
+            "post-skill: body exceeds max chars cap (%d chars > %d); pre-truncating",
+            len(body), _SKILL_CACHE_MAX_CHARS,
+        )
+        body = body[-_SKILL_CACHE_MAX_CHARS:]  # keep tail (most useful content)
     body_size = len(body.encode("utf-8", errors="replace"))
     if body_size < _SKILL_CACHE_MIN_BYTES:
         _LOG.debug(

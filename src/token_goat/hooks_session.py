@@ -776,7 +776,14 @@ def _build_recovery_hint(session_id: str) -> str | None:
         now = _time.time()
         stale_threshold = 6 * 3600  # 6 hours, mirrors compact.py::_SKILL_STALE_FOR_SESSION_SECS
 
-        # Deduplicate: keep only the most-recent ts per skill name
+        # Deduplicate: keep only the most-recent ts per skill name.
+        # Two-pass dedup: first collect all unique skill names across the full
+        # skill_all list (for accurate overflow count), then deduplicate the
+        # visible slice (skill_entries) for rendering.
+        all_unique_names: set[str] = {
+            sn for se in skill_all
+            if (sn := getattr(se, "skill_name", ""))
+        }
         deduped_skills: dict[str, object] = {}
         for se in skill_entries:
             sname = getattr(se, "skill_name", "")
@@ -797,7 +804,11 @@ def _build_recovery_hint(session_id: str) -> str | None:
                 stale_marker = f" (stale: {age_hours}h)"
             skill_parts.append(f"{sname}{stale_marker}")
 
-        dropped = len(skill_all) - len(sorted_skills)
+        # Overflow count: use unique skill names from skill_all so repeated
+        # loads of the same skill (run_count > 1) don't inflate the "+N more"
+        # counter — we only report unique skills not shown in the visible slice.
+        shown_names = {getattr(se, "skill_name", "") for se in sorted_skills[:8]}
+        dropped = len(all_unique_names - shown_names)
         suffix = f", +{dropped} more" if dropped > 0 else ""
         skill_str = ", ".join(skill_parts) + suffix
         line = f"**Skills:** {skill_str} (recall via `token-goat skill-body <name>`)"
