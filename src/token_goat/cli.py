@@ -3659,8 +3659,15 @@ def cmd_skill_body(
         if not compact_text:
             compact_text = skill_cache.generate_compact_summary(body)
             skill_cache.store_compact(_compact_session_id, name, compact_text)
+        # Normalise: strip the stored-file header (added by store_compact) so we
+        # can always prepend a fresh one.  get_compact() returns the stored bytes
+        # verbatim (header included), while a freshly generated compact has no
+        # header yet — stripping is idempotent when no header is present.
+        compact_bare = skill_cache._strip_compact_header(compact_text)
+        compact_tokens = max(1, len(compact_bare) // 4)
+        compact_display = f"--- compact form ({compact_tokens} tokens) ---\n{compact_bare}"
         body_bytes = len(body.encode())
-        returned_bytes = len(compact_text.encode())
+        returned_bytes = len(compact_display.encode())
         saved_bytes = max(0, body_bytes - returned_bytes)
         _db.record_stat(
             None,
@@ -3674,14 +3681,14 @@ def cmd_skill_body(
                 "skill_name": name,
                 "compact": True,
                 "source": source_label,
-                "text": compact_text,
+                "text": compact_display,
                 "body_bytes": body_bytes,
             }
             if meta is not None:
                 payload_c["output_id"] = meta.output_id
             typer.echo(json.dumps(payload_c, ensure_ascii=False, separators=(",", ":")))
         else:
-            typer.echo(compact_text)
+            typer.echo(compact_display)
         return
 
     # --section: extract a single named H2/H3/H4 section from the body.
@@ -3861,8 +3868,13 @@ def cmd_skill_compact(
     compact_source = "marker" if marker_compact is not None else "auto"
     skill_cache.store_compact(_compact_session_id, name, compact_text)
 
+    # compact_text is the bare body (no stored-file header).  Prepend a fresh
+    # header so the output is self-documenting regardless of the source.
+    compact_tokens = max(1, len(compact_text) // 4)
+    compact_display = f"--- compact form ({compact_tokens} tokens) ---\n{compact_text}"
+
     body_bytes = len(body.encode())
-    returned_bytes = len(compact_text.encode())
+    returned_bytes = len(compact_display.encode())
     saved_bytes = max(0, body_bytes - returned_bytes)
     _db.record_stat(
         None,
@@ -3878,7 +3890,7 @@ def cmd_skill_compact(
             "compact": True,
             "compact_source": compact_source,
             "source": source_label,
-            "text": compact_text,
+            "text": compact_display,
             "body_bytes": body_bytes,
             "returned_bytes": returned_bytes,
             "saved_bytes": saved_bytes,
@@ -3888,7 +3900,7 @@ def cmd_skill_compact(
             payload["output_id"] = meta.output_id
         typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
     else:
-        typer.echo(compact_text)
+        typer.echo(compact_display)
 
 
 @app.command("skill-history", rich_help_panel="Core")

@@ -1063,6 +1063,8 @@ def store_compact(session_id: str, skill_name: str, compact_text: str) -> None:
         return
 
     with safe_cache_op("store_compact", log=_LOG):
+        from . import paths as _paths  # noqa: PLC0415
+
         file_id = _compact_file_id(session_id, name)
         out_dir = _skill_outputs_dir()
         out_path = out_dir / file_id
@@ -1073,7 +1075,10 @@ def store_compact(session_id: str, skill_name: str, compact_text: str) -> None:
         compact_tokens = max(1, len(compact_text) // 4)
         header = f"--- compact form ({compact_tokens} tokens) ---\n"
         stored_text = header + compact_text
-        out_path.write_text(stored_text, encoding="utf-8", errors="replace")
+        # Use atomic write (temp file + rename) so concurrent sessions writing the
+        # same compact cannot produce a torn file.  Matches the pattern used by
+        # store_blob / session.py for all other cache writes.
+        _paths.atomic_write_text(out_path, stored_text)
         _LOG.debug("skill_cache.store_compact: stored id=%s (%d tokens)", file_id, compact_tokens)
 
 

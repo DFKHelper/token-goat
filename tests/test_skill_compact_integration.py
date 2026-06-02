@@ -562,3 +562,134 @@ class TestSkillBodyCompactCommand:
         assert "text" in data
         assert len(data["text"]) > 0
         assert "CRITICAL" in data["text"] or "MUST" in data["text"]
+
+
+class TestSkillBodyCompactHeaderConsistency:
+    """skill-body --compact always emits the '--- compact form (N tokens) ---' header."""
+
+    def _store_skill(self, sid: str, skill_name: str, body: str) -> None:
+        payload = {
+            "session_id": sid,
+            "tool_name": "Skill",
+            "tool_input": {"skill": skill_name},
+            "tool_response": body,
+        }
+        hooks_skill.post_skill(payload)
+
+    def test_first_call_has_header(self, tmp_data_dir, monkeypatch):
+        """On the first invocation (no cached compact), output includes the header."""
+        sid = "header-test-first"
+        monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
+        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+
+        result = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
+        assert result.exit_code == 0, f"unexpected exit: {result.stdout}"
+        # Header must be present on first call (freshly generated, not yet cached).
+        assert result.stdout.startswith("--- compact form ("), (
+            f"expected '--- compact form …' header on first call, got: {result.stdout[:80]!r}"
+        )
+
+    def test_second_call_has_same_header(self, tmp_data_dir, monkeypatch):
+        """On a subsequent invocation (compact already cached), header is still present."""
+        sid = "header-test-second"
+        monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
+        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+
+        # First call populates the cache.
+        r1 = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
+        assert r1.exit_code == 0
+        # Second call reads from cache — must also start with the header.
+        r2 = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
+        assert r2.exit_code == 0
+        assert r2.stdout.startswith("--- compact form ("), (
+            f"expected '--- compact form …' header on second (cached) call, got: {r2.stdout[:80]!r}"
+        )
+
+    def test_both_calls_produce_identical_output(self, tmp_data_dir, monkeypatch):
+        """First and second calls produce identical output (header + body are consistent)."""
+        sid = "header-test-idempotent"
+        monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
+        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+
+        r1 = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
+        r2 = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
+        assert r1.exit_code == 0 and r2.exit_code == 0
+        assert r1.stdout == r2.stdout, (
+            "first and second --compact calls should produce identical output"
+        )
+
+    def test_skill_compact_command_has_header(self, tmp_data_dir, monkeypatch):
+        """'token-goat skill-compact' also always emits the compact form header."""
+        sid = "skill-compact-header"
+        monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
+        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+
+        result = runner.invoke(cli.app, ["skill-compact", "ralph"])
+        assert result.exit_code == 0, f"unexpected exit: {result.stdout}"
+        assert result.stdout.startswith("--- compact form ("), (
+            f"expected '--- compact form …' header from skill-compact, got: {result.stdout[:80]!r}"
+        )
+
+    def test_header_token_count_matches_body(self, tmp_data_dir, monkeypatch):
+        """The token count in the header accurately reflects the compact body length."""
+        import re
+
+        sid = "header-token-count"
+        monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
+        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+
+        result = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
+        assert result.exit_code == 0
+        output = result.stdout
+        m = re.match(r"--- compact form \((\d+) tokens\) ---\n(.*)", output, re.DOTALL)
+        assert m is not None, f"header pattern not found in: {output[:120]!r}"
+        claimed_tokens = int(m.group(1))
+        body_text = m.group(2)
+        expected_tokens = max(1, len(body_text) // 4)
+        assert claimed_tokens == expected_tokens, (
+            f"header claims {claimed_tokens} tokens but body has {len(body_text)} chars "
+            f"({expected_tokens} tokens)"
+        )
+
+
+class TestStoreCompactAtomicWrite:
+    """store_compact uses atomic write so concurrent callers can't produce torn files."""
+
+    def test_stored_file_readable_after_concurrent_writes(self, tmp_data_dir):
+        """Two concurrent store_compact calls for the same skill don't corrupt the file."""
+        import threading
+
+        errors: list[Exception] = []
+
+        def write_compact(thread_id: int) -> None:
+            try:
+                skill_cache.store_compact(
+                    f"session-{thread_id}",
+                    "ralph",
+                    f"compact body from thread {thread_id} " * 50,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        threads = [threading.Thread(target=write_compact, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"threads raised exceptions: {errors}"
+
+        # Every written file must be readable and non-empty UTF-8.
+        for i in range(8):
+            text = skill_cache.get_compact(f"session-{i}", "ralph")
+            assert text is not None, f"session-{i} compact was None after concurrent write"
+            assert f"compact body from thread {i}" in text or "--- compact form" in text
+
+    def test_store_compact_header_present_in_stored_file(self, tmp_data_dir):
+        """The stored file (not the CLI display) always contains the header."""
+        skill_cache.store_compact("sess-atomic", "testskill", "bare compact body text " * 10)
+        stored = skill_cache.get_compact("sess-atomic", "testskill")
+        assert stored is not None
+        assert stored.startswith("--- compact form ("), (
+            f"stored compact should start with header, got: {stored[:80]!r}"
+        )
