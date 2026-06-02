@@ -361,11 +361,34 @@ def post_skill(payload: HookPayload) -> HookResponse:
                     f" Detail at: token-goat skill-section {skill_name} <heading>."
                 )
             else:
+                # Warn when a large body has no COMPACT_END marker.  Large skills
+                # without an explicit marker force the auto-extractor to guess the
+                # compact section, which is less accurate and may miss load-bearing
+                # content.  The threshold of 32 KB (32_768 bytes) is chosen to
+                # flag skills comparable to ralph (~30 KB) while leaving small
+                # helper skills quiet.
+                _LARGE_BODY_WARN_BYTES: int = 32_768
+                if body_size >= _LARGE_BODY_WARN_BYTES:
+                    import sys as _sys  # noqa: PLC0415
+                    _sys.stderr.write(
+                        f"token-goat warning: skill '{sanitize_log_str(skill_name, max_len=80)}'"
+                        f" body is {body_size // 1024} KB but has no <!-- COMPACT_END --> marker."
+                        f" Add the marker after the section the agent needs most to improve"
+                        f" context savings accuracy.\n"
+                    )
+                    _LOG.warning(
+                        "post-skill: large skill body (%d bytes) without COMPACT_END marker: %s",
+                        body_size,
+                        sanitize_log_str(skill_name, max_len=80),
+                    )
                 compact_text = skill_cache.generate_compact_summary(body)
                 if compact_text:
                     # Apply the configurable truncation_budget_tokens cap so that
                     # skills without an explicit COMPACT_END marker don't inject
                     # oversized compacts into the manifest.  4 chars ≈ 1 token.
+                    # Cut at a markdown heading or paragraph boundary so the stored
+                    # compact ends at a coherent structural point rather than
+                    # mid-sentence (uses find_markdown_boundary from cache_common).
                     try:
                         from .config import load as _load_cfg  # noqa: PLC0415
                         _cfg_budget = _load_cfg().skill_preservation.truncation_budget_tokens
@@ -374,12 +397,16 @@ def post_skill(payload: HookPayload) -> HookResponse:
                     if _cfg_budget > 0:
                         _budget_chars = _cfg_budget * 4
                         if len(compact_text) > _budget_chars:
-                            _cut = compact_text.rfind("\n", 0, _budget_chars)
+                            from .cache_common import (
+                                find_markdown_boundary as _fmb,  # noqa: PLC0415
+                            )
+                            _cut = _fmb(compact_text, _budget_chars)
                             if _cut <= 0:
                                 _cut = _budget_chars
                             compact_text = compact_text[:_cut].rstrip() + "…"
                             _LOG.debug(
-                                "post-skill: compact for %s truncated to budget (%d tokens)",
+                                "post-skill: compact for %s truncated to budget (%d tokens)"
+                                " at markdown boundary",
                                 sanitize_log_str(skill_name, max_len=80),
                                 _cfg_budget,
                             )

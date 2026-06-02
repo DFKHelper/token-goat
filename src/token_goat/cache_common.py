@@ -12,6 +12,7 @@ __all__ = [
     "build_keyed_output_id",
     "build_output_id",
     "evict_cache_dir",
+    "find_markdown_boundary",
     "get_cache_dir",
     "list_cache_outputs",
     "load_output_meta_stat",
@@ -403,6 +404,70 @@ def write_sidecar_metadata(
             getattr(meta, "output_id", "?"),
             exc,
         )
+
+
+def find_markdown_boundary(text: str, max_chars: int, *, min_keep: int = 128) -> int:
+    """Return the best cut index within *text[:max_chars]* at a markdown boundary.
+
+    Prefers cutting just before a markdown heading (a line starting with ``#``)
+    or at a paragraph break (a blank line, i.e. ``\\n\\n``).  Falls back to the
+    last plain newline.  If no newline is found within the window, returns
+    *max_chars* unchanged so the caller can still hard-cut.
+
+    This helper is used by compact-text truncation in the skill-preservation
+    pipeline so that text cut to fit a token budget ends at a coherent point
+    (end of a section or paragraph) rather than mid-sentence.  The returned
+    index is exclusive — the slice ``text[:result]`` is the coherent prefix.
+
+    The search window is ``text[:max_chars]`` (not the whole string) so the
+    function is O(*max_chars*), not O(len(text)).
+
+    *min_keep* sets a lower bound on the returned index.  A boundary found
+    before *min_keep* is discarded (too close to the start — it would produce
+    a nearly-empty slice) and the next lower-priority strategy is tried.
+    Defaults to 128 characters; callers may override it.
+
+    Strategy (in priority order):
+    1. Last ``\\n#`` in the window at position >= *min_keep* — cut just before
+       the ``#`` so the heading belongs to the *next* slice rather than
+       producing an orphaned header.
+    2. Last ``\\n\\n`` in the window at position >= *min_keep* — cut after the
+       double-newline so the paragraph break is included in the kept prefix.
+    3. Last ``\\n`` in the window at position >= *min_keep* — cut after the
+       newline.
+    4. *max_chars* — hard cut, no useful boundary found within the minimum
+       window.
+
+    Examples::
+
+        >>> text = "## Intro\\n\\nSome text.\\n\\n## Section 2\\nMore."
+        >>> find_markdown_boundary(text, 30)  # cuts before '## Section 2'
+        22
+    """
+    window = text[:max_chars]
+
+    # Priority 1: last '\n#' whose cut position is at or beyond min_keep.
+    # rfind returns the rightmost occurrence; if that falls before min_keep
+    # the boundary would produce a nearly-empty kept slice, so skip it.
+    heading_pos = window.rfind("\n#")
+    if heading_pos >= min_keep:
+        # Include the '\n', exclude the '#' so the heading belongs to the
+        # next slice and the kept prefix ends cleanly after the blank line.
+        return heading_pos + 1
+
+    # Priority 2: last blank line (paragraph break) at a useful position.
+    para_pos = window.rfind("\n\n")
+    if para_pos >= min_keep:
+        return para_pos + 2  # include both '\n' characters in the kept prefix
+
+    # Priority 3: last plain newline at a useful position.
+    nl_pos = window.rfind("\n")
+    if nl_pos >= min_keep:
+        return nl_pos + 1
+
+    # Fallback: hard cut at max_chars.  The caller appends "…" to signal
+    # truncation; the mid-sentence cut is unavoidable here.
+    return max_chars
 
 
 def truncate_tail_preserve(

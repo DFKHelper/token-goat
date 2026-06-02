@@ -70,6 +70,7 @@ from .cache_common import (
     OUTPUT_FILENAME_RE,
     OutputStatDict,
     evict_cache_dir,
+    find_markdown_boundary,
     get_cache_dir,
     list_cache_outputs,
     load_output_meta_stat,
@@ -414,9 +415,11 @@ def extract_checklist_section(body: str) -> str | None:
     if not text:
         return None
 
-    # Cap at _CHECKLIST_MAX_CHARS; prefer breaking at a newline boundary.
+    # Cap at _CHECKLIST_MAX_CHARS; prefer breaking at a markdown boundary
+    # (heading or paragraph) rather than at an arbitrary newline so the
+    # extracted checklist is a complete unit.
     if len(text) > _CHECKLIST_MAX_CHARS:
-        cut = text.rfind("\n", 0, _CHECKLIST_MAX_CHARS)
+        cut = find_markdown_boundary(text, _CHECKLIST_MAX_CHARS)
         if cut <= 0:
             cut = _CHECKLIST_MAX_CHARS
         text = text[:cut].rstrip() + "…"
@@ -1379,9 +1382,12 @@ def generate_compact_summary(full_body: str) -> str:
 
     text = "\n\n".join(parts)
 
-    # Cap at _COMPACT_MAX_CHARS, breaking at a newline boundary when possible.
+    # Cap at _COMPACT_MAX_CHARS, breaking at a markdown heading or paragraph
+    # boundary when possible so the compact ends at a coherent structural point
+    # rather than mid-sentence.  Falls back to the last plain newline, then
+    # hard-cuts at the byte cap.
     if len(text) > _COMPACT_MAX_CHARS:
-        cut = text.rfind("\n", 0, _COMPACT_MAX_CHARS)
+        cut = find_markdown_boundary(text, _COMPACT_MAX_CHARS)
         if cut <= 0:
             cut = _COMPACT_MAX_CHARS
         text = text[:cut].rstrip() + "…"
