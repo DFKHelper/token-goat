@@ -1251,6 +1251,161 @@ def _try_diff_hint(
     return pre_tool_use_with_context(str(hint))
 
 
+def _try_diff_serve(
+    session_id: str,
+    file_path: str,
+    *,
+    req_start: int | None = None,
+    req_end: int | None = None,
+    entry_line_ranges: list[tuple[int, int]] | None = None,
+) -> HookResponse | None:
+    """Intercept a re-read of a changed file and serve a unified diff instead.
+
+    When ``[hints] serve_diff_on_reread = true``, this function fires *before*
+    the normal diff-hint path.  If a session snapshot exists for *file_path* and
+    the file content has changed since the snapshot was taken, the pre-read hook
+    is converted from "add a hint and let the Read proceed" to "block the Read
+    and serve the diff as the tool result."  The model receives a compact unified
+    diff in context rather than the full file, which can save 10-100x tokens when
+    only a few lines changed.
+
+    The function re-uses the same range-overlap guard from :func:`_try_diff_hint`
+    so partial reads of unrelated file sections are not intercepted.
+
+    Returns a :data:`~hooks_common.HookResponse` using :func:`deny_redirect` (a
+    ``permissionDecision: deny`` response with the diff in ``additionalContext``)
+    when a diff was generated and the saving clears a minimum threshold, or
+    ``None`` otherwise.
+
+    Records the realized saving as a ``diff_served`` stat row with
+    ``bytes_saved = file_size - diff_size``.
+
+    Note: the *serve_diff_on_reread* config flag **must** be checked by the
+    caller before invoking this function — the function itself does not re-read
+    the config so it can be called from a hot path without an extra config load.
+    """
+    import difflib  # noqa: PLC0415 — stdlib, deferred to avoid startup cost
+
+    # Range-overlap guard: same logic as _try_diff_hint.
+    if (
+        req_start is not None
+        and req_end is not None
+        and entry_line_ranges
+        and entry_line_ranges != [(0, 0)]
+    ):
+        from .hints import _PROXIMITY_SLOP_LINES  # noqa: PLC0415
+
+        global_min = entry_line_ranges[0][0]
+        global_max = entry_line_ranges[0][1]
+        for _s, _e in entry_line_ranges[1:]:
+            if _s < global_min:
+                global_min = _s
+            if _e > global_max:
+                global_max = _e
+        if req_start > global_max + _PROXIMITY_SLOP_LINES or req_end < global_min - _PROXIMITY_SLOP_LINES:
+            _LOG.debug(
+                "diff-serve: suppressed for %s (range [%d,%d] outside cached [%d,%d] ±%d)",
+                sanitize_log_str(file_path),
+                req_start,
+                req_end,
+                global_min,
+                global_max,
+                _PROXIMITY_SLOP_LINES,
+            )
+            return None
+
+    from . import snapshots  # noqa: PLC0415
+
+    # Load the snapshot (what the model last saw for this file).
+    snapshot_bytes = snapshots.load(session_id, file_path)
+    if snapshot_bytes is None:
+        return None
+
+    # Load the current file content.
+    try:
+        with Path(file_path).open("rb") as fh:
+            current_bytes = fh.read(snapshots.MAX_SNAPSHOT_BYTES + 1)
+    except OSError as exc:
+        _LOG.debug("diff-serve: cannot read %s: %s", sanitize_log_str(file_path), exc)
+        return None
+    if len(current_bytes) > snapshots.MAX_SNAPSHOT_BYTES:
+        return None
+
+    # If file unchanged, nothing to serve.
+    if current_bytes == snapshot_bytes:
+        return None
+
+    # Decode both sides for difflib.
+    snapshot_text = snapshot_bytes.decode("utf-8", errors="replace")
+    current_text = current_bytes.decode("utf-8", errors="replace")
+
+    # Generate a unified diff.
+    import os.path as _osp  # noqa: PLC0415
+
+    fname = _osp.basename(file_path)
+    diff_lines = list(difflib.unified_diff(
+        snapshot_text.splitlines(keepends=True),
+        current_text.splitlines(keepends=True),
+        fromfile=f"a/{fname}",
+        tofile=f"b/{fname}",
+        lineterm="",
+    ))
+
+    if not diff_lines:
+        # No textual diff (e.g. only BOM or encoding change) — fall through.
+        return None
+
+    diff_text = "\n".join(diff_lines)
+    diff_bytes = len(diff_text.encode("utf-8"))
+    file_size = len(current_bytes)
+
+    # Only intercept when the diff is meaningfully smaller than the full file.
+    # A diff larger than 50% of the file provides diminishing returns and risks
+    # confusing the model with a near-complete diff instead of the file itself.
+    if diff_bytes >= file_size * 0.5:
+        _LOG.debug(
+            "diff-serve: skipping for %s (diff=%d bytes >= 50%% of file=%d bytes)",
+            sanitize_log_str(file_path), diff_bytes, file_size,
+        )
+        return None
+
+    bytes_saved = max(0, file_size - diff_bytes)
+
+    # Record the stat.
+    from . import db as _db  # noqa: PLC0415
+
+    try:
+        _db.record_stat(
+            None,
+            "diff_served",
+            bytes_saved=bytes_saved,
+            tokens_saved=bytes_saved // 4,
+            detail=sanitize_log_str(file_path, max_len=512),
+        )
+    except Exception:  # noqa: BLE001 — fail-soft; never block the agent
+        _LOG.debug("diff-serve: stat record failed for %s", sanitize_log_str(file_path), exc_info=True)
+
+    _LOG.info(
+        "pre-read: diff-serve blocking Read for %s (bytes_saved=%d, diff=%d bytes)",
+        sanitize_log_str(file_path), bytes_saved, diff_bytes,
+    )
+
+    context_msg = (
+        f"token-goat intercepted the Read of `{sanitize_log_str(file_path, max_len=200)}` "
+        f"and is serving a unified diff instead of the full file to save ~{bytes_saved // 4} tokens.\n"
+        f"The diff shows changes since you last read this file:\n\n"
+        f"```diff\n{diff_text}\n```\n\n"
+        f"If you need the full file content, run: `token-goat read \"{sanitize_log_str(file_path, max_len=200)}\"`"
+    )
+
+    from .hooks_common import deny_redirect  # noqa: PLC0415
+
+    return deny_redirect(
+        reason="token-goat serves diff instead of full file re-read to save tokens",
+        context=context_msg,
+    )
+
+
 def _handle_grep_result_content_dedup(payload: HookPayload) -> HookResponse | None:
     """Return a hint when grep results match a prior grep's results by content hash.
 
@@ -2084,7 +2239,8 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 _LOG.debug("pre-read: predictive unlock check failed", exc_info=True)
                 _predictive_unlock = False
         if (entry is not None and entry.last_edit_ts > entry.last_read_ts) or _predictive_unlock:
-            # Compute requested read range for the overlap guard in _try_diff_hint.
+            # Compute requested read range for the overlap guard in _try_diff_hint
+            # and _try_diff_serve.
             _raw_offset = tool_input.get("offset")
             _raw_limit = tool_input.get("limit")
             _req_start: int | None = None
@@ -2098,6 +2254,28 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 _req_end = _req_start + (_safe_limit or DEFAULT_READ_LIMIT) - 1
             except (TypeError, ValueError):
                 pass
+
+            # serve_diff_on_reread: when enabled, block the Read and serve the
+            # unified diff as the tool result instead of the full file.  Fires
+            # before the normal diff-hint path — if it returns a response we
+            # short-circuit the entire hint pipeline.
+            try:
+                from . import config as _cfg_mod  # noqa: PLC0415
+
+                _hints_cfg = _cfg_mod.load().hints
+            except Exception:  # noqa: BLE001 — fail-soft
+                _hints_cfg = None
+            if _hints_cfg is not None and getattr(_hints_cfg, "serve_diff_on_reread", False):
+                _diff_serve_response = _try_diff_serve(
+                    session_id,
+                    file_path,
+                    req_start=_req_start,
+                    req_end=_req_end,
+                    entry_line_ranges=entry.line_ranges if entry is not None else None,
+                )
+                if _diff_serve_response is not None:
+                    return _diff_serve_response
+
             diff_response = _try_diff_hint(
                 session_id,
                 file_path,

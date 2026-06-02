@@ -67,6 +67,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_COMPRESS_PROFILE",
     "TOKEN_GOAT_SKILL_COMPRESS",
     "TOKEN_GOAT_LAZY_SKILL_INJECTION",
+    "TOKEN_GOAT_SERVE_DIFF_ON_REREAD",
 )
 
 
@@ -109,6 +110,7 @@ _ENV_WORKER_WATCHDOG: Final[str] = "TOKEN_GOAT_WORKER_WATCHDOG"  # set to "0"/"f
 _ENV_COMPRESS_PROFILE: Final[str] = "TOKEN_GOAT_COMPRESS_PROFILE"  # "auto"|"aggressive"|"balanced"|"minimal"
 _ENV_SKILL_COMPRESS: Final[str] = "TOKEN_GOAT_SKILL_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable body gzip
 _ENV_LAZY_SKILL_INJECTION: Final[str] = "TOKEN_GOAT_LAZY_SKILL_INJECTION"  # set to "0"/"false"/"no"/"off" for eager injection
+_ENV_SERVE_DIFF_ON_REREAD: Final[str] = "TOKEN_GOAT_SERVE_DIFF_ON_REREAD"  # set to "1"/"true"/"yes"/"on" to enable diff-as-tool-result
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -304,6 +306,7 @@ class _HintsToml(TypedDict, total=False):
     bash_dedup_min_bytes: int
     web_dedup_min_bytes: int
     grep_dedup_min_matches: int
+    serve_diff_on_reread: bool
 
 
 class _WebFetchToml(TypedDict, total=False):
@@ -798,6 +801,14 @@ class HintsConfig:
     web_dedup_min_bytes: int = 200
     # Minimum match result count for grep dedup hints. Default 5.
     grep_dedup_min_matches: int = 5
+    # When True, a re-read of a changed file is intercepted: the pre-read hook
+    # denies the Read tool call and injects a unified diff (via difflib) as the
+    # tool result instead of the full file content.  This can save 10-100x tokens
+    # compared to a full re-read when only a few lines changed.  Opt-in (default
+    # False) because it changes the tool result format — the model receives a diff
+    # instead of the raw file, which may confuse agents not expecting it.  Enable
+    # via TOKEN_GOAT_SERVE_DIFF_ON_REREAD=1 or [hints] serve_diff_on_reread = true.
+    serve_diff_on_reread: bool = False
 
 
 @dataclass
@@ -1367,9 +1378,14 @@ def load() -> Config:
         grep_dedup_min_matches=_validated_int(
             hints_raw.get("grep_dedup_min_matches", 5), 5, 0, 100000, "hints.grep_dedup_min_matches"
         ),
+        serve_diff_on_reread=_validated_bool(
+            hints_raw.get("serve_diff_on_reread", False), False, "hints.serve_diff_on_reread"
+        ),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
     _apply_env_enable(hints_cfg, "json_sidecar", _ENV_HINT_JSON_SIDECAR, "hints.json_sidecar")
+    # Opt-in env override: TOKEN_GOAT_SERVE_DIFF_ON_REREAD=1/true/yes/on enables.
+    _apply_env_enable(hints_cfg, "serve_diff_on_reread", _ENV_SERVE_DIFF_ON_REREAD, "hints.serve_diff_on_reread")
     # Integer env overrides for dedup thresholds
     hints_cfg.bash_dedup_min_bytes = _env_int(
         _ENV_BASH_DEDUP_MIN_BYTES, hints_cfg.bash_dedup_min_bytes, 0, 100000, "hints.bash_dedup_min_bytes"
