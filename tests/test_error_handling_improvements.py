@@ -25,7 +25,7 @@ class TestEmitStaleCompactHintExceptionLogging:
 
         with (
             patch.object(sc_mod, "get_compact", side_effect=RuntimeError("db locked")),
-            caplog.at_level(logging.DEBUG, logger="token_goat"),
+            caplog.at_level(logging.DEBUG, logger="token_goat.hooks"),
         ):
             # Must not raise
             _emit_stale_compact_hint(
@@ -53,7 +53,7 @@ class TestEmitStaleCompactHintExceptionLogging:
         with (
             patch.object(sc_mod, "get_compact", return_value="--- compact form ---\nbody\n"),
             patch.object(sc_mod, "extract_compact_source_sha", side_effect=ValueError("bad compact")),
-            caplog.at_level(logging.DEBUG, logger="token_goat"),
+            caplog.at_level(logging.DEBUG, logger="token_goat.hooks"),
         ):
             _emit_stale_compact_hint(
                 skill_name="my-skill",
@@ -119,7 +119,7 @@ class TestParseLocalImportsExceptionLogging:
         bad_source = MagicMock()
         bad_source.splitlines.side_effect = RuntimeError("encoding error in splitlines")
 
-        with caplog.at_level(logging.DEBUG, logger="token_goat"):
+        with caplog.at_level(logging.DEBUG, logger="token_goat.hooks"):
             result = _parse_local_imports(
                 source=bad_source,  # type: ignore[arg-type]
                 file_path="/src/foo.py",
