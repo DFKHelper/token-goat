@@ -820,3 +820,139 @@ class TestLoadJsonConfig:
         cfg.write_text(json.dumps(payload), encoding="utf-8")
         result = _load_json_config(cfg)
         assert result == payload
+
+
+# ---------------------------------------------------------------------------
+# Regression: lock/claim/sentinel file permissions (iter-36 security hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerClaimFilePermissions:
+    """Worker claim and lock files must use owner-only permissions (0o600) on POSIX.
+
+    Files that contain PID numbers, timestamps, or act as inter-process
+    synchronisation primitives must not be world-readable or world-writable.
+    A world-writable lock file lets any local user truncate it, breaking the
+    worker's exclusivity guarantee.
+    """
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix permissions not meaningful on Windows")
+    def test_worker_claim_file_is_owner_only(self, tmp_path, monkeypatch):
+        """The worker claim file must be created with mode 0o600 (owner-only)."""
+        import stat
+
+        from token_goat import worker
+
+        monkeypatch.setattr(worker, "_worker_claim_path", lambda: tmp_path / "worker.claim")
+
+        fd = worker._try_claim_worker_slot()
+        assert fd is not None, "Failed to claim worker slot — test setup error"
+        try:
+            claim_path = tmp_path / "worker.claim"
+            assert claim_path.exists(), "Claim file was not created"
+            mode = claim_path.stat().st_mode & 0o777
+            assert mode == 0o600, (
+                f"Worker claim file has mode {oct(mode)}, expected 0o600 — "
+                "world/group readable claim files expose PID information to other users"
+            )
+            assert not (claim_path.stat().st_mode & stat.S_IWGRP), "Claim file is group-writable"
+            assert not (claim_path.stat().st_mode & stat.S_IWOTH), "Claim file is world-writable"
+        finally:
+            import contextlib
+            import os
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            claim_path = tmp_path / "worker.claim"
+            claim_path.unlink(missing_ok=True)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix permissions not meaningful on Windows")
+    def test_eviction_lock_file_is_owner_only(self, tmp_path, monkeypatch):
+        """The image-cache eviction lock file must be created with mode 0o600."""
+        import stat
+
+        from token_goat import worker
+
+        lock_path = tmp_path / "eviction.lock"
+        fd = worker._acquire_eviction_lock(lock_path)
+        assert fd is not None, "Failed to acquire eviction lock — test setup error"
+        try:
+            assert lock_path.exists(), "Eviction lock file was not created"
+            mode = lock_path.stat().st_mode & 0o777
+            assert mode == 0o600, (
+                f"Eviction lock file has mode {oct(mode)}, expected 0o600 — "
+                "the file contains a PID stamp that should not be visible to other users"
+            )
+            # The most dangerous bit: world-writable lets any local user corrupt the lock
+            assert not (lock_path.stat().st_mode & stat.S_IWOTH), (
+                "Eviction lock file is world-writable — any local user could corrupt it"
+            )
+        finally:
+            import contextlib
+            import os
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            lock_path.unlink(missing_ok=True)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix permissions not meaningful on Windows")
+    def test_dirty_queue_lock_not_world_writable(self, tmp_path):
+        """The POSIX dirty-queue lock must NOT be created with 0o666 (world-writable).
+
+        A world-writable lock file lets any local user truncate it, which would
+        silently break the worker's exclusive-write guarantee on the dirty queue.
+        The correct mode is 0o600 (owner-only).
+        """
+        import stat
+
+        from token_goat import worker
+
+        lock_path = tmp_path / "queue.lock"
+
+        # Exercise the context manager to create the lock file.
+        with worker._dirty_queue_lock(lock_path):
+            pass  # lock created and released
+
+        assert lock_path.exists(), "Dirty queue lock file was not created"
+        mode = lock_path.stat().st_mode & 0o777
+        # Must NOT be 0o666 (old buggy value) — world-writable is the critical risk
+        assert not (lock_path.stat().st_mode & stat.S_IWOTH), (
+            f"Dirty queue lock has world-write bit set (mode={oct(mode)}) — "
+            "any local user can corrupt the lock, breaking worker exclusivity"
+        )
+        assert not (lock_path.stat().st_mode & stat.S_IWGRP), (
+            f"Dirty queue lock has group-write bit set (mode={oct(mode)})"
+        )
+
+
+class TestDbProjectLockFilePermissions:
+    """Project writer lock files in db.py must use owner-only permissions."""
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Unix permissions not meaningful on Windows")
+    def test_project_writer_lock_is_owner_only(self, tmp_path, monkeypatch):
+        """The project writer lock file must be created with mode 0o600 (owner-only).
+
+        The lock file contains the writer's PID, timestamp, and platform string.
+        Making it world-readable exposes process information to other local users.
+        """
+        import stat
+
+        from token_goat import db, paths
+
+        # Redirect the locks directory to tmp_path so we don't touch user data.
+        monkeypatch.setattr(paths, "locks_dir", lambda: tmp_path)
+
+        project_hash = "a" * 40
+        # Acquire (and immediately release) the writer lock so the file is created.
+        with db.project_writer_lock(project_hash, timeout_sec=2.0):
+            lock_path = tmp_path / f"{project_hash}.lock"
+            if not lock_path.exists():
+                pytest.skip("lock file not created before yield — environment issue")
+
+            mode = lock_path.stat().st_mode & 0o777
+            assert not (lock_path.stat().st_mode & stat.S_IRGRP), (
+                f"Project lock file is group-readable (mode={oct(mode)}) — "
+                "exposes PID/timestamp to other local users"
+            )
+            assert not (lock_path.stat().st_mode & stat.S_IROTH), (
+                f"Project lock file is world-readable (mode={oct(mode)}) — "
+                "exposes PID/timestamp to all users"
+            )

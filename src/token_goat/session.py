@@ -2667,7 +2667,10 @@ def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
         paths.ensure_dir(mark.parent)
         # O_CREAT|O_EXCL is atomic: the process that wins the create records
         # the stat row; concurrent losers see the file on the next stat().
-        fd = os.open(str(mark), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        # 0o600: owner-only — consistent with other sentinel/lock files and
+        # ensures session-ID fragments encoded in the path are not visible to
+        # other local users on multi-user systems.
+        fd = os.open(str(mark), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(fd)
     except FileExistsError:
         # Another process created the mark between our exists() check and

@@ -1061,7 +1061,10 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
         """
         for attempt in (1, 2):
             try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                # 0o600: owner-only — the lock file contains a PID, timestamp,
+                # and platform string that should not be visible to other local
+                # users on multi-user systems.
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             except FileExistsError:
                 try:
                     text = lock_path.read_text(encoding="utf-8")

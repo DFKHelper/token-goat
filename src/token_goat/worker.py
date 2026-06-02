@@ -642,7 +642,9 @@ def _try_claim_worker_slot() -> int | None:
     paths.ensure_dir(claim_path.parent)
     for attempt in (1, 2):
         try:
-            fd = os.open(str(claim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            # 0o600: owner-only — the claim file holds a PID and process
+            # create-time that should not be readable by other local users.
+            fd = os.open(str(claim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             if attempt == 1 and _worker_claim_is_stale(claim_path):
                 _LOG.info("removing stale worker claim file")
@@ -711,8 +713,12 @@ def _dirty_queue_lock(lock_path: Path) -> Iterator[None]:
                     time.sleep(0.001)
         else:
             # POSIX: fcntl.flock (blocking).
+            # Use 0o600 (owner-only) so the lock file is not world-readable or
+            # world-writable.  0o666 would let any local user truncate or corrupt
+            # the lock file, which could disrupt the worker's exclusive-write
+            # guarantee on shared systems.
             try:
-                fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o666)
+                fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
                 fcntl.flock(fd, fcntl.LOCK_EX)
                 lock_acquired = True
             except OSError as e:
@@ -1500,15 +1506,19 @@ def _acquire_eviction_lock(lock_path: Path) -> int | None:
     the lock release atomic from a watcher's perspective.
     """
     flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    # Use 0o600 (owner-only) so the lock file — which contains a PID stamp — is
+    # not readable by other local users on multi-user systems.  0o644 would
+    # expose the PID, which is a minor information leak and is inconsistent with
+    # the owner-only mode used for all other token-goat lock/claim files.
     try:
-        fd = os.open(str(lock_path), flags, 0o644)
+        fd = os.open(str(lock_path), flags, 0o600)
     except FileExistsError:
         if _eviction_lock_is_stale(lock_path):
             _LOG.info("clearing stale image-cache eviction lock at %s", lock_path)
             with contextlib.suppress(OSError):
                 lock_path.unlink()
             try:
-                fd = os.open(str(lock_path), flags, 0o644)
+                fd = os.open(str(lock_path), flags, 0o600)
             except FileExistsError:
                 # Another evictor grabbed it in the gap — that's fine, they win.
                 _LOG.warning("image-cache eviction lock contention: another process holds %s", lock_path)
