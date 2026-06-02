@@ -667,3 +667,96 @@ def make_session(tmp_data_dir) -> callable:
     return _make_session
 
 
+# ============================================================================
+# Skill Cache / SkillPreservationConfig Helpers
+# ============================================================================
+# These fixtures eliminate the repeated 3-line pattern found throughout the
+# skill iter tests:
+#   from token_goat.config import SkillPreservationConfig
+#   cfg_sp = SkillPreservationConfig(compress_bodies=True, compress_min_bytes=1024)
+#   with patch("token_goat.config.load") as mock_cfg:
+#       mock_cfg.return_value.skill_preservation = cfg_sp
+#       ...
+# Use `skill_compress_cfg` when you only need the config object, and
+# `patch_skill_config` when you need the patcher itself.
+
+
+@pytest.fixture
+def skill_compress_cfg():
+    """Return a SkillPreservationConfig with compression enabled at a 1 KB threshold.
+
+    The most common config in skill iter tests.  Equivalent to:
+        SkillPreservationConfig(compress_bodies=True, compress_min_bytes=1024)
+    """
+    from token_goat.config import SkillPreservationConfig
+
+    return SkillPreservationConfig(compress_bodies=True, compress_min_bytes=1024)
+
+
+@pytest.fixture
+def patch_skill_config():
+    """Context-manager factory that patches token_goat.config.load with a given skill_preservation.
+
+    Usage::
+
+        def test_something(tmp_data_dir, patch_skill_config, skill_compress_cfg):
+            from token_goat import skill_cache
+            with patch_skill_config(skill_compress_cfg) as mock_cfg:
+                meta = skill_cache.store_output("sess", "skill", body)
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _patch(skill_preservation_cfg):
+        with patch("token_goat.config.load") as mock_cfg:
+            mock_cfg.return_value.skill_preservation = skill_preservation_cfg
+            yield mock_cfg
+
+    return _patch
+
+
+def make_large_skill_body(size_bytes: int = 20_000) -> str:
+    """Return a padded skill body string at least *size_bytes* long.
+
+    Used by tests that need a large body to trigger gzip compression or other
+    size-sensitive code paths. Module-level function (not a fixture) so tests can
+    call it with different sizes without fixture overhead.
+    """
+    line = "# Skill Body\n\n" + ("This is skill content with words. " * 20 + "\n") * 20
+    while len(line.encode("utf-8")) < size_bytes:
+        line += "More content here for padding purposes.\n"
+    return line
+
+
+def make_skill_body_with_sections(size_bytes: int = 20_000) -> str:
+    """Return a multi-section skill body at least *size_bytes* long.
+
+    Contains ## Overview, ## Rules, ## Implementation Details, and ## Summary
+    sections. Used by tests that exercise section extraction on compressed bodies.
+    Module-level function (not a fixture) so tests can call it with different sizes.
+    """
+    lines = [
+        "# Big Skill",
+        "",
+        "## Overview",
+        "",
+        "This skill does many things.",
+        "",
+        "## Rules",
+        "",
+        "MUST follow rules.",
+        "NEVER skip steps.",
+        "",
+        "## Implementation Details",
+        "",
+    ]
+    filler = "This is detailed implementation content with lots of words. " * 10
+    while sum(len(ln) + 1 for ln in lines) < size_bytes:
+        lines.append(filler)
+    lines.append("")
+    lines.append("## Summary")
+    lines.append("")
+    lines.append("The summary section.")
+    return "\n".join(lines)
+
+

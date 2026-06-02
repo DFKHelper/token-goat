@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
-import pytest
 from typer.testing import CliRunner
 
 from token_goat import cli
@@ -14,18 +12,17 @@ from token_goat import session as session_mod
 runner = CliRunner()
 
 
-def test_cost_alltime_exits_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_cost_alltime_exits_zero(tmp_data_dir):
     """Test that cost command without --session exits with 0 and shows all-time summary."""
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
     result = runner.invoke(cli.app, ["cost"])
     assert result.exit_code == 0
     assert "tokens" in result.stdout.lower()
     assert "all-time" in result.stdout.lower()
 
 
-def test_cost_session_flag_with_valid_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_cost_session_flag_with_valid_session(tmp_data_dir):
     """Test cost command with --session flag and a valid session cache."""
-    sessions_dir = tmp_path / "sessions"
+    sessions_dir = tmp_data_dir / "sessions"
     sessions_dir.mkdir(parents=True)
 
     # Create a minimal session cache
@@ -40,8 +37,6 @@ def test_cost_session_flag_with_valid_session(tmp_path: Path, monkeypatch: pytes
     # Write to disk
     session_file = sessions_dir / f"{session_id}.json"
     session_file.write_text(json.dumps(session_cache.to_dict()))
-
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
 
     result = runner.invoke(cli.app, ["cost", "--session", session_id])
     assert result.exit_code == 0
@@ -49,9 +44,9 @@ def test_cost_session_flag_with_valid_session(tmp_path: Path, monkeypatch: pytes
     assert "session" in result.stdout.lower()
 
 
-def test_cost_session_flag_short_form(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_cost_session_flag_short_form(tmp_data_dir):
     """Test cost command with --session using short form (8 chars)."""
-    sessions_dir = tmp_path / "sessions"
+    sessions_dir = tmp_data_dir / "sessions"
     sessions_dir.mkdir(parents=True)
 
     # Create a minimal session cache
@@ -67,19 +62,15 @@ def test_cost_session_flag_short_form(tmp_path: Path, monkeypatch: pytest.Monkey
     session_file = sessions_dir / f"{session_id}.json"
     session_file.write_text(json.dumps(session_cache.to_dict()))
 
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
-
     result = runner.invoke(cli.app, ["cost", "--session", "abc123de"])
     assert result.exit_code == 0
     assert "tokens" in result.stdout.lower()
 
 
-def test_cost_session_flag_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_cost_session_flag_not_found(tmp_data_dir):
     """Test cost command with --session pointing to nonexistent session."""
-    sessions_dir = tmp_path / "sessions"
+    sessions_dir = tmp_data_dir / "sessions"
     sessions_dir.mkdir(parents=True)
-
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
 
     result = runner.invoke(cli.app, ["cost", "--session", "nonexistent"])
     assert result.exit_code == 1
