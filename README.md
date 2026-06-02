@@ -64,6 +64,7 @@ The fastest way to reduce AI token costs is fixing these four, not writing short
 | Compaction forgets which files were edited | Structured session manifest injected before compact |
 | Same files re-read from scratch after `/compact` | Recovery hint at SessionStart lists cached snapshot + bash + WebFetch IDs |
 | Loaded skill body (Ralph DoD, /improve sequence) summarised away by compaction | `### Active Skills` manifest section + `**Skills**:` recovery block list every loaded skill; full body recoverable via `token-goat skill-body <name>` without re-invoking |
+| Large skill bodies re-injected each turn (6 active skills = 65k+ tokens) | `<!-- COMPACT_END -->` marker: everything above the marker is the compact form; token-goat detects it on load, caches the compact slice, and injects only that — typically ~400 tokens vs. 10k+ |
 | Full file read for one function or section | `token-goat read file::symbol`, about 85% smaller |
 | `pytest` dumps 150 PASSED lines + dots + tracebacks | Failures-first view, 80 to 97% smaller |
 | `npm install` floods deprecation warnings + spinner | Errors kept; warnings collapsed by package, ~90% smaller |
@@ -296,10 +297,27 @@ Manual paths:
 | `token-goat symbol <name>` | Jump to a symbol definition. Add `--all-projects` to search across every indexed repo. |
 | `token-goat read "file::symbol"` | Pull one function or class, not the whole file. Supports qualified lookups: `read "file.py::Class.method"`. |
 | `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading. Disambiguate duplicates with `"doc.md::Heading#2"`. |
+| `token-goat skill-section "<name>::<heading>"` | Extract a named section from an installed skill without reading the full skill file. |
+| `token-goat skeleton "file"` | Show all signatures in a file without bodies — typically 70–90% fewer tokens than a full read. |
+| `token-goat outline "file"` | List top-level symbols with line ranges and docstring hints — one-glance file map. |
+| `token-goat scope "file:line"` | Show symbols in scope at a given line — avoids reading the whole file to understand locals. |
+| `token-goat exports "file"` | List public (exported) symbols with types and docstring hints. |
+| `token-goat refs "<name>"` | Show all files and line numbers where a symbol is referenced. |
+| `token-goat changed [<ref>]` | List symbols that changed since a git ref, without reading the full diff. |
+| `token-goat blame "file::symbol"` | Git blame narrowed to a specific symbol's lines — no whole-file blame needed. |
+| `token-goat types ["file"]` | List type definitions (TypedDict, Protocol, dataclass, Pydantic models) in a file or across the project. |
+| `token-goat imports "file"` | Show the import graph for a file one level deep. |
+| `token-goat find "<query>"` | Unified search: exact/fuzzy symbol match + semantic, merged and ranked by confidence. |
+| `token-goat similar "file::symbol"` | Find the top-k symbols most semantically similar to a given symbol. |
+| `token-goat test-for "file"` | Find test file(s) for an implementation file and list their test functions. |
+| `token-goat recent [N]` | Show the N most recently edited/accessed files with their symbols. |
+| `token-goat grep "<pattern>"` | Session-aware grep: runs `rg` and caches results; repeat patterns get a dedup hint instead of re-running. |
 | `token-goat semantic "<query>"` | Find code by meaning, not by filename. Tune with `--max-distance <float>` or `--no-rerank`. |
 | `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a 300-token budget. |
 | `token-goat gdrive-sections <file-id>` | List the heading outline of a Google Doc without fetching the body. |
 | `token-goat stats` | See how many tokens you have saved. Shows a per-source breakdown (image / hint / read / compact / bash / web). |
+| `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
+| `token-goat history` | Show current session access history: bash commands, URLs fetched, and grep patterns. |
 | `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head+tail view by default; pass `--full` for everything, or narrow with `--head N`, `--tail N`, or `--grep PATTERN`. |
 | `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
 | `token-goat compress --cmd '<command>'` | Preview what the Bash compression hook would do to any command — runs it, applies the matching filter, and prints the compressed view. |
@@ -307,10 +325,15 @@ Manual paths:
 | `token-goat web-history` | List cached WebFetch responses (newest first) with their IDs, byte sizes, status codes, and URL previews. |
 | `token-goat skill-body <name>` | Retrieve a cached Skill body by name without re-invoking the skill (which would replay side effects). Same head+tail default, `--full`, and `--head`/`--tail`/`--grep` slicers as `bash-output`. |
 | `token-goat skill-history` | List cached Skill bodies (newest first) with their IDs, byte sizes, truncation status, and skill names. |
+| `token-goat skill-compact "<name>"` | Generate and print a compact summary (~400 tokens) for a cached skill body — useful for skills without a `<!-- COMPACT_END -->` marker. |
+| `token-goat skill-size` | Show per-session token overhead for all cached skills, with restructure recommendations. |
+| `token-goat skill-diff "<name>"` | Unified diff between the two most recent cached versions of a skill — tracks skill updates across sessions. |
 | `token-goat compact-hint --session-id <id>` | Inspect the compaction manifest for a session. Add `--trigger auto` to preview the pressure-aware budget the live PreCompact hook would use. |
 | `token-goat resume <session_id>` | Emit a single post-compact recovery packet — top skills, last two Bash outputs, top edited-file diffs, and `git diff --stat`, capped at ~2000 tokens. Replaces 5-10 round-trips. |
 | `token-goat config list / get / set / validate` | Inspect or edit `config.toml` from the CLI. `validate` reports unknown keys with did-you-mean suggestions. |
 | `token-goat clean-cache` | Prune on-disk caches to their configured floor without waiting for the worker. |
+| `token-goat prune-cache` | Manually trigger LRU eviction across all cache directories (images, bash, web, skills). |
+| `token-goat session-summary` | Compact one-liner about current session state — designed for orchestrators and multi-agent loops. |
 | `token-goat cache-audit` | Audit your Claude Code config for patterns that bust the prompt cache. |
 | `token-goat install` | Wire up hooks and autostart. `--dry-run` previews the changes, `--verify` audits an existing install. |
 | `token-goat doctor` | Confirm everything is wired correctly. Surfaces install state, cold-import timing, cache hit rates, compaction-budget telemetry, opt-in flag status, and canonical-root sanity. |
@@ -318,6 +341,14 @@ Manual paths:
 First `token-goat semantic` call downloads a small embedding model, about 130 MB, into the token-goat data directory. One-time. Offline after that.
 
 Missed lookups recover surgically: `symbol` auto-redirects to a single high-confidence close match (pass `--strict` to opt out), while `read` and `section` print a "Did you mean…?" list — a typo costs at most one extra glance, not a re-read.
+
+### Skill efficiency — the `<!-- COMPACT_END -->` marker
+
+When Claude Code invokes a skill, it re-injects the full skill body on every subsequent turn. A large skill file (e.g. a 10k-token `/improve` or `/ralph`) can cost 40–65k tokens per session across 6 active skills. The `<!-- COMPACT_END -->` marker solves this: place it in any skill file to split it into a compact form (above the marker, ~400 tokens) and a reference section (below). Token-goat detects the marker the first time the skill fires, caches only the compact slice, and injects that from then on.
+
+To add the marker to a skill, open the file and insert `<!-- COMPACT_END -->` on its own line where the "quick reference ends and the detail begins" — typically after the quick-start table and before step-by-step instructions. The full reference section is still reachable via `token-goat skill-section "<name>::<heading>"` or `token-goat skill-body <name>` when needed.
+
+To check overhead for your current skills: `token-goat skill-size`.
 
 ## What gets installed?
 

@@ -63,6 +63,30 @@ The compaction hook subprocess is the most latency-sensitive path in token-goat 
 
 **Test-suite speed.** The test suite uses `pytest-xdist --dist=loadscope` so tests in the same module share a worker process, keeping module-scoped fixtures (DB state, parser caches) alive across the module without cross-worker contamination. A `make_fake_git_repo` conftest helper creates marker-only project dirs without `git init`, keeping git-dependent tests confined to the `slow` marker group. `pytest-randomly` seeds expose order-dependent flakes; `pytest-rerunfailures` retries once before failing to absorb transient OS timing issues.
 
+### 86-iteration batch (June 2026)
+
+**Skill efficiency — COMPACT_END marker.** The primary source of per-turn context growth when multiple skills are active is the full re-injection of every skill body on each model turn. For 6 active skills totaling 10k+ tokens each, this adds 65k+ tokens/turn without the agent requesting it. The fix is a first-class marker: `<!-- COMPACT_END -->` placed in a skill file splits it into a compact form (above) and a reference section (below). `PostToolUse(Skill)` detects the marker, stores both slices in `skill_cache.py`, and injects only the compact form in the manifest and recovery hint. The full body is retrievable on demand via `token-goat skill-body` or `token-goat skill-section`. The `skill-compact` command auto-extracts a compact summary for skills that don't have the marker; `skill-size` surfaces per-skill overhead with restructure recommendations.
+
+**Orchestrator-mode manifest.** `compact.build_manifest()` detects orchestrator-style sessions (many commits per session, CI-like bash patterns) and switches to a denser manifest format: recent commit hashes inline, active-error and open-question blocks foregrounded, most-accessed-file list elevated. The `session-summary` command emits a one-liner suitable for sub-agent prompts.
+
+**ANSI strip performance.** `strip_ansi()` in `util.py` gained a fast path (no escape bytes → early return), OSC hyperlink stripping, and PUA character removal. `sanitize_control_chars()` is the companion for arbitrary terminal output. Both are applied in the web-output and bash-output cache write paths.
+
+**Compression profiles.** `bash_compress.py` exposes four named profiles (`aggressive`, `balanced`, `minimal`, `auto`) selectable via `TOKEN_GOAT_COMPRESS_PROFILE` or `[compression] profile` in `config.toml`. `auto` (the default) picks the harness-appropriate level based on the detected AI tool.
+
+**BaseFilter ABC.** All bash compression filters now inherit from `BaseFilter` (abstract `should_apply()` + `apply()`) instead of duck-typing. `GitCommitFilter` compresses lefthook output from multi-second commit runs; `GitPushFilter` suppresses remote-progress lines.
+
+**Windows lock fix.** `db.py`'s stale-lock detection now uses `psutil.pid_exists()` consistently on Windows instead of checking POSIX-only `/proc/<pid>`. Stale locks older than 60 s are auto-cleared regardless of platform.
+
+**Watchdog improvements.** `WatchdogThread` gained an `on_latch` callback fired when the watchdog re-attaches to a new worker PID, enabling callers to reset health state without polling. The `worker --status` CLI command reports the worker's running/stopped state and PID without requiring daemon mode.
+
+**Hint system.** `HintItem` dataclass with priority constants (`HINT_PRIORITY_*`) feeds `apply_hint_priority_limit()` so the highest-signal hints win when the budget is tight. `build_high_frequency_hint()` escalates re-read warnings based on `file_access_counts`; `build_test_file_hint()` suppresses dedup hints on test files that legitimately re-read fixtures.
+
+**Session file locking.** `session.py` uses `fcntl` (POSIX) / `msvcrt` (Windows) for byte-range locking on the session JSON file, preventing torn writes when hooks overlap on fast machines.
+
+**Code intelligence CLI.** New surgical-read commands added: `outline`, `skeleton`, `scope`, `exports`, `refs`, `changed`, `blame`, `types`, `imports`, `grep`, `recent`, `find`, `similar`, `test-for`. These extend the surgical-read principle from symbol/section extraction to dependency graphs, type hierarchies, and test mapping — any of which saves a full-file read.
+
+**Render helpers.** `render/common.py` exposes `render_table()`, `render_list()`, and `render_panel()` so all CLI output goes through a single formatting layer rather than ad-hoc Rich calls scattered across command handlers.
+
 ### Hook event flow
 
 | Event | Fired by | Handles |
