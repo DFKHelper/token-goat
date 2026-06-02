@@ -302,8 +302,9 @@ class TestBashOutputRecallStat:
         # The full body is much larger than 5 lines → bytes_saved must be > 0.
         assert row["bytes_saved"] > 0, "sliced recall must record positive bytes_saved"
         assert row["tokens_saved"] > 0, "sliced recall must record positive tokens_saved"
-        # tokens_saved must be bytes_saved // 4 (the bash-family conversion).
-        assert row["tokens_saved"] == row["bytes_saved"] // 4
+        # tokens_saved must use the canonical max(1, bytes // 3 + 1) formula.
+        bs = row["bytes_saved"]
+        assert row["tokens_saved"] == (max(1, bs // 3 + 1) if bs > 0 else 0)
 
         # Verify the arithmetic: saved = full_body_bytes - returned_slice_bytes.
         full_bytes = len(body.encode())
@@ -436,7 +437,8 @@ class TestWebOutputRecallStat:
 
         assert row["bytes_saved"] > 0
         assert row["tokens_saved"] > 0
-        assert row["tokens_saved"] == row["bytes_saved"] // 4
+        bs = row["bytes_saved"]
+        assert row["tokens_saved"] == (max(1, bs // 3 + 1) if bs > 0 else 0)
 
         full_bytes = len(body.encode())
         returned_slice = "\n".join(body.splitlines()[:5])

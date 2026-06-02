@@ -1379,7 +1379,7 @@ def _try_diff_serve(
             None,
             "diff_served",
             bytes_saved=bytes_saved,
-            tokens_saved=bytes_saved // 4,
+            tokens_saved=max(1, bytes_saved // 3 + 1) if bytes_saved > 0 else 0,
             detail=sanitize_log_str(file_path, max_len=512),
         )
     except Exception:  # noqa: BLE001 — fail-soft; never block the agent
@@ -1390,9 +1390,10 @@ def _try_diff_serve(
         sanitize_log_str(file_path), bytes_saved, diff_bytes,
     )
 
+    _tokens_saved_est = max(1, bytes_saved // 3 + 1) if bytes_saved > 0 else 0
     context_msg = (
         f"token-goat intercepted the Read of `{sanitize_log_str(file_path, max_len=200)}` "
-        f"and is serving a unified diff instead of the full file to save ~{bytes_saved // 4} tokens.\n"
+        f"and is serving a unified diff instead of the full file to save ~{_tokens_saved_est} tokens.\n"
         f"The diff shows changes since you last read this file:\n\n"
         f"```diff\n{diff_text}\n```\n\n"
         f"If you need the full file content, run: `token-goat read \"{sanitize_log_str(file_path, max_len=200)}\"`"

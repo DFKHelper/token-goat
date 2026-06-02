@@ -3087,7 +3087,7 @@ def _run_output_recall_command(
         None,
         stat_kind,
         bytes_saved=_saved_bytes,
-        tokens_saved=_saved_bytes // 4,
+        tokens_saved=max(1, _saved_bytes // 3 + 1) if _saved_bytes > 0 else 0,
         detail=output_id[:64],
     )
 

@@ -737,7 +737,7 @@ def _run_read_like_command(
             )
 
     bytes_saved = result.get("bytes_saved", 0)
-    tokens_saved = bytes_saved // 4
+    tokens_saved = max(1, bytes_saved // 3 + 1) if bytes_saved > 0 else 0
     _LOG.debug(
         "%s served: %s::%s bytes_saved=%d tokens_saved=%d",
         stat_kind, file_target.rel_path, item_part, bytes_saved, tokens_saved,
@@ -973,7 +973,7 @@ def _run_read_line_range(
     db.record_stat(
         file_target.project.hash,
         "read_replacement",
-        tokens_saved=bytes_saved // 4,
+        tokens_saved=max(1, bytes_saved // 3 + 1) if bytes_saved > 0 else 0,
         bytes_saved=bytes_saved,
         detail=f"{file_target.rel_path}::{item_part}",
     )
@@ -1442,7 +1442,7 @@ def outline(
             for r in filtered
         )
         saved = max(0, src_bytes - outline_bytes)
-        db.record_stat(None, "outline", bytes_saved=saved, tokens_saved=saved // 4, detail=file_rel)
+        db.record_stat(None, "outline", bytes_saved=saved, tokens_saved=max(1, saved // 3 + 1) if saved > 0 else 0, detail=file_rel)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1698,7 +1698,7 @@ def stub_view(
             for r in filtered
         )
         saved = max(0, src_bytes - stub_bytes)
-        db.record_stat(None, "stub_view", bytes_saved=saved, tokens_saved=saved // 4, detail=file_rel)
+        db.record_stat(None, "stub_view", bytes_saved=saved, tokens_saved=max(1, saved // 3 + 1) if saved > 0 else 0, detail=file_rel)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1778,7 +1778,7 @@ def exports(
             el = int(r["end_line"]) if r["end_line"] is not None else sl  # type: ignore[call-overload]
             export_bytes += len(_format_outline_line(str(r["name"]), str(r["kind"]), sl, el, None).encode())
         saved = max(0, src_bytes - export_bytes)
-        db.record_stat(None, "exports", bytes_saved=saved, tokens_saved=saved // 4, detail=file_rel)
+        db.record_stat(None, "exports", bytes_saved=saved, tokens_saved=max(1, saved // 3 + 1) if saved > 0 else 0, detail=file_rel)
     except Exception:  # noqa: BLE001
         pass
 

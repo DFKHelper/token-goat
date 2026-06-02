@@ -858,7 +858,7 @@ class TestRecordCachedStatSavingsAccounting:
         assert len(calls) == 1
         assert calls[0]["kind"] == "bash_output_cached"
         assert calls[0]["bytes_saved"] == 4096
-        assert calls[0]["tokens_saved"] == 4096 // 4  # 1024
+        assert calls[0]["tokens_saved"] == max(1, 4096 // 3 + 1)  # 1366
 
     def test_skill_cached_records_nonzero_bytes(self, monkeypatch):
         """skill_cached should record the actual body size of the cached skill."""
@@ -870,16 +870,17 @@ class TestRecordCachedStatSavingsAccounting:
         assert len(calls) == 1
         assert calls[0]["kind"] == "skill_cached"
         assert calls[0]["bytes_saved"] == 32768
-        assert calls[0]["tokens_saved"] == 32768 // 4  # 8192
+        assert calls[0]["tokens_saved"] == max(1, 32768 // 3 + 1)  # 10923
 
-    def test_tokens_saved_is_bytes_divided_by_four(self, monkeypatch):
-        """tokens_saved must be floor(bytes_saved / 4) for any byte count."""
+    def test_tokens_saved_uses_canonical_formula(self, monkeypatch):
+        """tokens_saved must use max(1, bytes // 3 + 1) — the same formula as compact.estimate_tokens."""
         from token_goat.hooks_common import record_cached_stat
 
         calls = self._capture_record_stat_calls(monkeypatch)
         record_cached_stat("bash_output_cached", "some-cmd", bytes_saved=7)
 
-        assert calls[0]["tokens_saved"] == 1  # 7 // 4
+        # max(1, 7 // 3 + 1) = max(1, 3) = 3
+        assert calls[0]["tokens_saved"] == max(1, 7 // 3 + 1)  # 3
 
     def test_zero_bytes_saved_when_omitted(self, monkeypatch):
         """Callers that don't pass bytes_saved get 0 (backwards-compatible)."""

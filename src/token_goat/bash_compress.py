@@ -1055,8 +1055,16 @@ class CompressedOutput:
 
     @property
     def tokens_saved(self) -> int:
-        """Estimated token savings using the project's ~4 bytes/token rule."""
-        return self.bytes_saved // 4
+        """Estimated token savings.
+
+        Uses ``max(1, bytes // 3 + 1)`` — the same formula as
+        :func:`compact.estimate_tokens` — so all savings accounting is
+        consistent.  Returns 0 when ``bytes_saved`` is 0.
+        """
+        n = self.bytes_saved
+        if n <= 0:
+            return 0
+        return max(1, n // 3 + 1)
 
     @property
     def percent_saved(self) -> float:

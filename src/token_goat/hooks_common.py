@@ -570,7 +570,8 @@ def record_cached_stat(kind: str, detail: str, bytes_saved: int = 0) -> None:
                      :func:`sanitize_log_str` before passing.
         bytes_saved: Byte length of the cached content.  Defaults to 0.
     """
-    tokens = max(0, bytes_saved) // 4
+    _bs = max(0, bytes_saved)
+    tokens = max(1, _bs // 3 + 1) if _bs > 0 else 0
     try:
         from . import db  # noqa: PLC0415
 
