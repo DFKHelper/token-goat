@@ -524,8 +524,69 @@ def _render_kpi_section(stats: StatsData) -> list[str]:
 
 # ── Section: by kind ──────────────────────────────────────────────────────────
 
+# Category groups for the "By kind" table.  Each entry is (label, set-of-kinds).
+# Kinds not matched by any group fall into the last catch-all group.
+# The order controls the visual order of group headers in the table.
+_KIND_GROUPS: list[tuple[str, frozenset[str]]] = [
+    ("Read savings", frozenset({
+        "read_replacement", "section_replacement", "symbol_read",
+        "section_read", "stub_view", "outline", "exports",
+    })),
+    ("Lookups", frozenset({
+        "symbol_lookup", "semantic_search", "map_lookup",
+    })),
+    ("Images", frozenset({
+        "image_shrink", "gdrive_image", "webfetch_image", "image_shrink_skipped",
+    })),
+    ("Hints", frozenset({
+        "session_hint", "session_hint_overhead",
+        "read_dedup_hint", "grep_dedup_hint", "diff_hint",
+        "predictive_prefetch_hit",
+    })),
+    ("Bash", frozenset({
+        "bash_dedup_hint", "bash_output_cached", "bash_output_recall",
+        "bash_output_recall_miss", "bash_dedup_stale",
+    })),
+    ("Web", frozenset({
+        "web_dedup_hint", "web_output_cached", "web_output_recall",
+        "web_output_recall_miss", "web_dedup_stale",
+    })),
+    ("Compact / Skills", frozenset({
+        "compact_manifest", "compact_assist", "compact_recovery",
+        "skill_body_recall", "skill_compact_served", "skill_cached",
+        "resume_packet", "decision_log",
+    })),
+    ("Other", frozenset()),  # catch-all: kinds not in any group above
+]
+
+
+def _kind_group_label(kind: str) -> str:
+    """Return the group label for *kind*, falling back to ``"Other"`` for dynamic kinds
+    such as ``bash_compress:pytest`` that don't appear in the static set.
+
+    Dynamic ``bash_compress:*`` kinds are routed to the Bash group by prefix.
+    """
+    if kind.startswith("bash_compress:"):
+        return "Bash"
+    for label, members in _KIND_GROUPS:
+        if label == "Other":
+            continue
+        if kind in members:
+            return label
+    return "Other"
+
+
+def _group_separator(label: str) -> str:
+    """Return a dim group-label separator line for the by-kind table."""
+    return f"{_M}  {fg(*C.TEXT_DIM)}{label}{RESET}"
+
+
 def _render_by_kind_section(stats: StatsData) -> list[str]:
-    """Render the "By kind" table: one row per event kind, ordered by share (largest first).
+    """Render the "By kind" table with category grouping.
+
+    Kinds are grouped into named categories (Read savings, Lookups, Images, Hints,
+    Bash, Web, Compact/Skills, Other).  Within each category rows are ordered by
+    share, largest first.  Groups with no data are omitted entirely.
 
     Bar fill is scaled to the largest positive-bytes kind.  Share percentage
     uses absolute-value totals so overhead kinds (negative bytes/tokens) reduce
@@ -558,14 +619,30 @@ def _render_by_kind_section(stats: StatsData) -> list[str]:
             return k.bytes / share_bytes_denom
         return _abs_share(k.bytes, k.tokens, share_bytes_denom, share_tokens_denom)
 
-    # Rows are ordered by share of the period total, largest first — matching
-    # the share column the row renders, so the column reads monotonically.
-    for k in sorted(stats.by_kind, key=_share, reverse=True):
-        share = _share(k)
-        lines.append(_table_row(
-            k.kind, _bar_fraction(k.bytes, gross_bytes), k.bytes, k.tokens, k.events, share,
-            bytes_mode_only=k.bytes_mode_only,
-        ))
+    # Build a lookup: group_label -> [KindStat], sorted by share desc within each group.
+    by_group: dict[str, list[KindStat]] = {}
+    for k in stats.by_kind:
+        grp = _kind_group_label(k.kind)
+        by_group.setdefault(grp, []).append(k)
+    for grp_kinds in by_group.values():
+        grp_kinds.sort(key=_share, reverse=True)
+
+    # Emit groups in the canonical order defined by _KIND_GROUPS.
+    first_group = True
+    for group_label, _ in _KIND_GROUPS:
+        group_kinds = by_group.get(group_label)
+        if not group_kinds:
+            continue
+        if not first_group:
+            lines.append("")  # blank line between groups
+        first_group = False
+        lines.append(_group_separator(group_label))
+        for k in group_kinds:
+            share = _share(k)
+            lines.append(_table_row(
+                k.kind, _bar_fraction(k.bytes, gross_bytes), k.bytes, k.tokens, k.events, share,
+                bytes_mode_only=k.bytes_mode_only,
+            ))
 
     if bytes_mode_kinds:
         names = ", ".join(bytes_mode_kinds)

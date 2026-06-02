@@ -325,6 +325,62 @@ def _query_project(proj_hash: str, sql: str, params: tuple[object, ...]) -> list
         raise typer.Exit(1) from None
 
 
+def _sum_file_sizes(project_hash: str, file_rels: list[str]) -> int:
+    """Return the sum of ``files.size`` for the given *file_rels* in one project.
+
+    Used by :func:`_record_lookup_stat` to estimate the bytes an agent *would*
+    have needed to read the source files directly, so the savings reported for
+    ``symbol_lookup``, ``semantic_search``, and ``map_lookup`` reflect the
+    real context reduction rather than zero.
+
+    Best-effort: returns 0 on any DB or data error so the caller can use the
+    result without guarding against exceptions.
+
+    Args:
+        project_hash: The project whose ``files`` table to query.
+        file_rels:    Relative paths to look up.  Duplicates are deduplicated
+                      before the query so each file is counted once.
+
+    Returns:
+        Sum of ``size`` for all matched rows; 0 if none match or on error.
+    """
+    if not file_rels or not project_hash:
+        return 0
+    try:
+        _db_mod = _lazy_import("db")
+        unique_rels = list(dict.fromkeys(file_rels))  # dedup, preserve order
+        placeholders = ",".join("?" * len(unique_rels))
+        sql = f"SELECT COALESCE(SUM(size), 0) AS total FROM files WHERE rel_path IN ({placeholders})"
+        with _db_mod.open_project_readonly(project_hash) as conn:
+            row = conn.execute(sql, unique_rels).fetchone()
+        return int(row["total"]) if row else 0
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("_sum_file_sizes failed project=%s: %s", project_hash[:8] if project_hash else "", exc)
+        return 0
+
+
+def _total_project_bytes(project_hash: str) -> int:
+    """Return the sum of ``files.size`` for every file in *project_hash*.
+
+    Used to compute ``map_lookup`` savings: the map overview is a token-budgeted
+    summary of the whole repo, so the counterfactual is the agent reading every
+    source file individually.
+
+    Best-effort: returns 0 on any DB or data error.
+    """
+    if not project_hash:
+        return 0
+    try:
+        _db_mod = _lazy_import("db")
+        sql = "SELECT COALESCE(SUM(size), 0) AS total FROM files"
+        with _db_mod.open_project_readonly(project_hash) as conn:
+            row = conn.execute(sql).fetchone()
+        return int(row["total"]) if row else 0
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("_total_project_bytes failed project=%s: %s", project_hash[:8] if project_hash else "", exc)
+        return 0
+
+
 def _record_lookup_stat(
     kind: str,
     query_text: str,
@@ -332,15 +388,17 @@ def _record_lookup_stat(
     *,
     scope: str,
     project_hash: str | None = None,
+    bytes_saved: int = 0,
 ) -> None:
     """Record an adoption-tracking stat for a CLI lookup command.
 
-    Lookup commands (``token-goat symbol`` / ``token-goat semantic``) are not
-    content fetches — their job is to steer the agent toward a narrow surgical
-    read instead of a full-file Read or shotgun Grep.  ``bytes_saved`` /
-    ``tokens_saved`` are always 0; the row only shows up in ``token-goat
-    stats`` when ``[stats] record_zero_savings = true`` (same opt-in policy as
-    ``image_shrink_skipped`` and ``predictive_prefetch_hit``).
+    Lookup commands (``token-goat symbol`` / ``token-goat semantic``) steer
+    the agent toward a narrow surgical read instead of a full-file Read or
+    shotgun Grep.  When the caller provides *bytes_saved* (estimated as
+    ``sum(source file sizes) − output bytes``), the row records real context
+    reduction.  Without it, ``bytes_saved`` is 0 and the row only shows up in
+    ``token-goat stats`` when ``[stats] record_zero_savings = true`` (same
+    opt-in policy as ``image_shrink_skipped``).
 
     The row exists so adoption — how often the agent reaches for a lookup
     instead of a raw Read/Grep — is measurable.  ``detail`` packs ``query``,
@@ -359,11 +417,12 @@ def _record_lookup_stat(
         # explicit so ``token-goat stats --json`` consumers can detect it.
         q = query_text[:180] + ("…" if len(query_text) > 180 else "")
         detail = f"q={q!r} scope={scope} hits={result_count}"
+        tokens_saved = max(1, bytes_saved // 3 + 1) if bytes_saved > 0 else 0
         _db.record_stat(
             project_hash,
             kind,
-            bytes_saved=0,
-            tokens_saved=0,
+            bytes_saved=bytes_saved,
+            tokens_saved=tokens_saved,
             detail=detail,
         )
     except Exception as exc:  # noqa: BLE001
@@ -915,9 +974,17 @@ def symbol(
                 name, pool,
                 n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
             )
+    # Savings: the agent's alternative would have been to Read each source
+    # file.  Estimate savings as sum(file sizes) − the size of our compact
+    # metadata output (file:line:kind:name:sig lines, roughly 80 bytes each).
+    _sym_file_rels = [r["file"] for r in results if r.get("file")]
+    _sym_file_total = _sum_file_sizes(proj.hash, _sym_file_rels)
+    _sym_output_bytes = max(80 * len(results), len(json.dumps(results, separators=(",", ":")).encode()))
+    _sym_bytes_saved = max(0, _sym_file_total - _sym_output_bytes)
     _record_lookup_stat(
         "symbol_lookup", name, len(results), scope="project",
         project_hash=proj.hash,
+        bytes_saved=_sym_bytes_saved,
     )
     not_found_extra = hint
     if inline_hit and not not_found_extra:
@@ -1305,9 +1372,15 @@ def semantic(
             typer.echo(f"{r['file']}:{r['start']}  {snippet}")
         return
 
+    # Savings: unique source files minus the snippet chunks actually returned.
+    _sem_file_rels = list(dict.fromkeys(h.file_rel for h in hits))
+    _sem_file_total = _sum_file_sizes(proj.hash, _sem_file_rels)
+    _sem_output_bytes = sum(len(h.text.encode()) for h in hits)
+    _sem_bytes_saved = max(0, _sem_file_total - _sem_output_bytes)
     _record_lookup_stat(
         "semantic_search", query, len(hits), scope="project",
         project_hash=proj.hash,
+        bytes_saved=_sem_bytes_saved,
     )
 
     if json_output:
@@ -1414,6 +1487,11 @@ def cmd_map(
         proj.root.name, budget, fmt, compact, full, top, since,
     )
     t0 = time.monotonic()
+    # Savings baseline: total indexed source bytes in the project.
+    # Queried once outside each branch so all map modes share the same denominator.
+    # Best-effort: _total_project_bytes returns 0 on any error.
+    _map_proj_total = _total_project_bytes(proj.hash)
+
     try:
         # --top: show only top N files by PageRank
         if top is not None:
@@ -1434,6 +1512,7 @@ def cmd_map(
                 top_count,
                 scope="project",
                 project_hash=proj.hash,
+                bytes_saved=max(0, _map_proj_total - len(text.encode())),
             )
             typer.echo(text)
             return
@@ -1456,6 +1535,7 @@ def cmd_map(
                 changed_lines,
                 scope="project",
                 project_hash=proj.hash,
+                bytes_saved=max(0, _map_proj_total - len(text.encode())),
             )
             typer.echo(text)
             return
@@ -1464,12 +1544,14 @@ def cmd_map(
             data = repomap.build_map_json(proj)
             elapsed = time.monotonic() - t0
             _LOG.info("map complete: project=%s files=%d dur=%.3fs", proj.root.name, len(data), elapsed)
+            _map_json_bytes = len(json.dumps(data, separators=(",", ":")).encode())
             _record_lookup_stat(
                 "map_lookup",
                 f"budget={budget},mode=json,compact={compact},full={full}",
                 len(data),
                 scope="project",
                 project_hash=proj.hash,
+                bytes_saved=max(0, _map_proj_total - _map_json_bytes),
             )
             typer.echo(json.dumps(data, separators=(",", ":")))
             return
@@ -1484,6 +1566,7 @@ def cmd_map(
                 top_n,
                 scope="project",
                 project_hash=proj.hash,
+                bytes_saved=max(0, _map_proj_total - len(diagram.encode())),
             )
             typer.echo(diagram)
             return
@@ -1509,6 +1592,7 @@ def cmd_map(
             file_lines,
             scope="project",
             project_hash=proj.hash,
+            bytes_saved=max(0, _map_proj_total - len(text.encode())),
         )
         typer.echo(text)
         # Active skills footer: append a brief "Active skills" section when the
