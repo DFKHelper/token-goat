@@ -60,6 +60,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD",
     "TOKEN_GOAT_WEB_CACHE_MAX_FILES",
     "TOKEN_GOAT_WEB_CACHE_MAX_BYTES",
+    "TOKEN_GOAT_WEB_COMPRESS",
     "TOKEN_GOAT_BASH_CACHE_MAX_FILES",
     "TOKEN_GOAT_BASH_CACHE_MAX_BYTES",
     "TOKEN_GOAT_WORKER_WATCHDOG",
@@ -104,6 +105,7 @@ _ENV_GREP_DEDUP_MIN_MATCHES: Final[str] = "TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES"  #
 _ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD"  # integer override
 _ENV_WEB_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_FILES"  # integer override (file count)
 _ENV_WEB_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_BYTES"  # integer override (bytes)
+_ENV_WEB_COMPRESS: Final[str] = "TOKEN_GOAT_WEB_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable body gzip
 _ENV_BASH_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_FILES"  # integer override (file count)
 _ENV_BASH_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES"  # integer override (bytes)
 _ENV_WORKER_WATCHDOG: Final[str] = "TOKEN_GOAT_WORKER_WATCHDOG"  # set to "0"/"false"/"no"/"off" to disable
@@ -316,6 +318,8 @@ class _WebFetchToml(TypedDict, total=False):
     deny: list[str]
     max_file_count: int
     max_bytes: int
+    compress_bodies: bool
+    compress_min_bytes: int
 
 
 class _WorkerToml(TypedDict, total=False):
@@ -855,12 +859,24 @@ class WebFetchConfig:
             Set to 0 to disable file-count eviction.
         max_bytes: Maximum total bytes stored across all cached responses (default 32 MB).
             Set to 0 to disable byte-based eviction (not recommended).
+        compress_bodies: When ``True`` (default), response body files larger than
+            ``compress_min_bytes`` are stored gzip-compressed to reduce disk usage.
+            Reads are transparently decompressed.  Set to ``False`` to store bodies
+            as plain text (slightly higher read speed at the cost of ~70% more disk
+            space for large HTML responses).  Can also be disabled at runtime by
+            setting ``TOKEN_GOAT_WEB_COMPRESS=0``.
+        compress_min_bytes: Minimum body size (bytes) for gzip compression to
+            apply when ``compress_bodies`` is ``True``.  Bodies smaller than this
+            are stored uncompressed (the gzip overhead outweighs the saving for
+            tiny blobs).  Default 16 KB.  Valid range: 1 KB to 10 MB.
     """
 
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
     max_file_count: int = 4096
     max_bytes: int = 32 * 1024 * 1024
+    compress_bodies: bool = True
+    compress_min_bytes: int = 16 * 1024
 
 
 @dataclass
@@ -1408,6 +1424,13 @@ def load() -> Config:
             wf_raw.get("max_bytes", 32 * 1024 * 1024),
             32 * 1024 * 1024, 1024, 4 * 1024 * 1024 * 1024, "webfetch.max_bytes",
         ),
+        compress_bodies=_validated_bool(
+            wf_raw.get("compress_bodies", True), True, "webfetch.compress_bodies",
+        ),
+        compress_min_bytes=_validated_int(
+            wf_raw.get("compress_min_bytes", 16 * 1024), 16 * 1024, 1024, 10 * 1024 * 1024,
+            "webfetch.compress_min_bytes",
+        ),
     )
     # Apply env overrides for web cache caps
     wf_cfg.max_file_count = _env_int(
@@ -1416,6 +1439,7 @@ def load() -> Config:
     wf_cfg.max_bytes = _env_int(
         _ENV_WEB_CACHE_MAX_BYTES, wf_cfg.max_bytes, 1024, 4 * 1024 * 1024 * 1024, "webfetch.max_bytes"
     )
+    _apply_env_disable(wf_cfg, "compress_bodies", _ENV_WEB_COMPRESS, "webfetch.compress_bodies")
 
     wk_raw: _WorkerToml = cast("_WorkerToml", raw.get("worker", {}))
     wk = WorkerConfig(
@@ -1638,6 +1662,8 @@ def save(config: Config) -> None:
             "deny": config.webfetch.deny,
             "max_file_count": config.webfetch.max_file_count,
             "max_bytes": config.webfetch.max_bytes,
+            "compress_bodies": config.webfetch.compress_bodies,
+            "compress_min_bytes": config.webfetch.compress_min_bytes,
         },
         "worker": {
             "watchdog_enabled": config.worker.watchdog_enabled,

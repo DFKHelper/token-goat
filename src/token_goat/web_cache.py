@@ -53,6 +53,8 @@ __all__ = [
     "write_sidecar",
 ]
 
+import contextlib
+import gzip
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +102,14 @@ _TRUNC_MARKER = "[token-goat: web output truncated; stored {n} of {total} bytes]
 # typically navigation chrome that the agent rarely needs.
 _MAX_STORED_BYTES: int = 2 * 1024 * 1024
 
+# File extension appended to gzip-compressed web output files.  The cache
+# reader checks for the ``.gz`` variant first so decompression is transparent.
+_GZ_SUFFIX: str = ".gz"
+
+# gzip compression level (1-9).  Level 6 balances speed and ratio well for
+# HTML/JSON text (typical 70-85% reduction on large doc pages).
+_GZ_LEVEL: int = 6
+
 
 @dataclass
 class WebOutputMeta:
@@ -128,6 +138,66 @@ class WebOutputMeta:
 def _web_outputs_dir() -> Path:
     """Return ``data_dir() / "web_outputs"`` and create it on first use."""
     return get_cache_dir("web_outputs")
+
+
+def _store_blob_gz(output_id: str, text: str) -> Path | None:
+    """Write *text* gzip-compressed to the web_outputs cache directory.
+
+    Writes the compressed body as ``output_id.gz`` AND an empty ``output_id.txt``
+    stub file.  The stub ensures the entry is discoverable by :func:`list_outputs`
+    and subject to the normal LRU eviction machinery (which scans for ``.txt``
+    files).  :func:`load_output` checks for the ``.gz`` sibling first so callers
+    transparently receive the decompressed text.
+
+    Returns the ``.gz`` path on success, or ``None`` on I/O error.
+    """
+    from . import paths as _paths  # noqa: PLC0415
+
+    with safe_cache_op("_store_blob_gz", log=_LOG):
+        out_dir = _web_outputs_dir()
+        gz_path = out_dir / (output_id + _GZ_SUFFIX)
+        try:
+            raw_bytes = text.encode("utf-8", errors="replace")
+            compressed = gzip.compress(raw_bytes, compresslevel=_GZ_LEVEL)
+            _paths.atomic_write_bytes(gz_path, compressed)
+            _LOG.debug(
+                "_store_blob_gz: wrote %s (%d bytes raw -> %d compressed)",
+                gz_path.name, len(raw_bytes), len(compressed),
+            )
+        except OSError as exc:
+            _LOG.debug("_store_blob_gz: failed to write %s: %s", output_id, exc)
+            return None
+
+        # Write an empty .txt stub so list_outputs() / evict_old_entries() can
+        # discover and manage this entry through the standard cache machinery.
+        stub_result = store_blob(output_id, "", _web_outputs_dir, "web_cache")
+        if stub_result is None:
+            _LOG.debug("_store_blob_gz: stub write failed for %s", output_id)
+            # Clean up the gz file so we don't leave an orphaned compressed file.
+            with contextlib.suppress(OSError):
+                gz_path.unlink()
+            return None
+
+        return gz_path
+    return None  # safe_cache_op suppressed an exception
+
+
+def _load_blob_gz(output_id: str) -> str | None:
+    """Return the decompressed text for a gzip-compressed web output, or ``None``.
+
+    Checks for ``output_id.gz`` in the web_outputs directory.  Returns ``None``
+    when no ``.gz`` file exists so :func:`load_output` can fall back to plain text.
+    """
+    out_dir = _web_outputs_dir()
+    gz_path = out_dir / (output_id + _GZ_SUFFIX)
+    if not gz_path.is_file():
+        return None
+    try:
+        with gzip.open(gz_path, "rb") as fh:
+            return fh.read().decode("utf-8", errors="replace")
+    except (OSError, gzip.BadGzipFile) as exc:
+        _LOG.debug("_load_blob_gz: failed to decompress %s: %s", gz_path.name, exc)
+        return None
 
 
 _DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}
@@ -211,6 +281,8 @@ def store_output(
     content_type: str | None = None,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     max_file_count: int = 4096,
+    compress_bodies: bool = True,
+    compress_min_bytes: int = 16 * 1024,
 ) -> WebOutputMeta | None:
     """Write *body* to the cache and return descriptive metadata.
 
@@ -224,6 +296,12 @@ def store_output(
     is back under ``max_total_bytes`` AND the file count is at or under
     ``max_file_count``; the eviction is best-effort and a failed pass simply
     leaves the directory slightly over budget — the next call will try again.
+
+    When ``compress_bodies`` is ``True`` (the default) and the stored body
+    exceeds ``compress_min_bytes``, the body is written gzip-compressed as
+    ``output_id.gz`` alongside an empty ``output_id.txt`` stub (so the
+    eviction machinery can still discover the entry by scanning ``.txt``
+    files).  :func:`load_output` transparently decompresses ``.gz`` bodies.
     """
     meta: WebOutputMeta | None = None
     with safe_cache_op("store_output", log=_LOG):
@@ -236,7 +314,16 @@ def store_output(
             cleaned_body, _MAX_STORED_BYTES, marker_template=_TRUNC_MARKER,
         )
 
-        if store_blob(out_id, stored, _web_outputs_dir, "web_cache") is None:
+        # Determine whether to compress this body.
+        stored_bytes_len = len(stored.encode("utf-8", errors="replace"))
+        compress = compress_bodies and stored_bytes_len >= compress_min_bytes
+
+        if compress:
+            write_ok = _store_blob_gz(out_id, stored) is not None
+        else:
+            write_ok = store_blob(out_id, stored, _web_outputs_dir, "web_cache") is not None
+
+        if not write_ok:
             return None
 
         meta = WebOutputMeta(
@@ -251,8 +338,8 @@ def store_output(
         )
 
         _LOG.debug(
-            "web_cache: stored id=%s bytes=%d truncated=%s",
-            out_id, body_bytes, truncated,
+            "web_cache: stored id=%s bytes=%d truncated=%s compressed=%s",
+            out_id, body_bytes, truncated, compress,
         )
     # Best-effort eviction runs outside safe_cache_op so an OSError during the
     # directory walk never discards a confirmed write (the file is already on disk).
@@ -265,7 +352,16 @@ def store_output(
 
 
 def load_output(output_id: str) -> str | None:
-    """Return the cached response body for *output_id*, or ``None`` if absent."""
+    """Return the cached response body for *output_id*, or ``None`` if absent.
+
+    Transparently decompresses gzip-stored bodies: checks for ``output_id.gz``
+    first and falls back to plain-text ``output_id.txt`` for entries written
+    before compression was introduced (or when compression was disabled).
+    """
+    # Check for compressed variant first.
+    gz_result = _load_blob_gz(output_id)
+    if gz_result is not None:
+        return gz_result
     return load_output_text(output_id, _web_outputs_dir, "web_cache")
 
 

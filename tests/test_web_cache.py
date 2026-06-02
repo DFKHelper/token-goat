@@ -80,8 +80,11 @@ class TestStoreAndLoad:
         """Eviction removes oldest entries when byte cap is exceeded."""
         metas = []
         for i in range(5):
+            # Disable compression so the on-disk size matches the input size for
+            # predictable eviction assertions.
             m = web_cache.store_output(
                 f"sess{i}", f"https://b.example/{i}", "X" * 50_000, 200,
+                compress_bodies=False,
             )
             assert m is not None
             metas.append(m)
@@ -365,3 +368,151 @@ class TestGetOutputSize:
         size = web_cache.get_output_size(meta.output_id)
         assert size is not None
         assert size == 3 * 1024 * 1024, f"Expected original 3MB, got {size} bytes"
+
+
+class TestGzipCompression:
+    """Tests for gzip-compressed web cache storage (compress_bodies=True)."""
+
+    def test_large_body_stored_compressed(self, tmp_data_dir):
+        """Bodies above compress_min_bytes threshold are stored as .gz files."""
+        from pathlib import Path
+
+        body = "Large web page content. " * 1000  # ~24 KB — above 16 KB default threshold
+        meta = web_cache.store_output(
+            "sess-gz-1",
+            "https://example.com/large-page",
+            body,
+            200,
+            compress_bodies=True,
+            compress_min_bytes=16 * 1024,
+        )
+        assert meta is not None
+
+        cache_dir = web_cache._web_outputs_dir()
+        gz_path = Path(cache_dir) / (meta.output_id + ".gz")
+        txt_path = Path(cache_dir) / (meta.output_id + ".txt")
+
+        assert gz_path.exists(), ".gz file must exist for large compressed body"
+        assert txt_path.exists(), ".txt stub must exist for eviction machinery"
+        # Compressed file must be smaller than the raw body
+        assert gz_path.stat().st_size < len(body.encode("utf-8")), "gzip file should be smaller than raw body"
+
+    def test_compressed_body_transparent_read(self, tmp_data_dir):
+        """load_output transparently decompresses .gz stored bodies."""
+        body = "Readable page content with text. " * 600  # ~20 KB
+        meta = web_cache.store_output(
+            "sess-gz-2",
+            "https://example.com/readable",
+            body,
+            200,
+            compress_bodies=True,
+            compress_min_bytes=8 * 1024,
+        )
+        assert meta is not None
+
+        loaded = web_cache.load_output(meta.output_id)
+        assert loaded is not None
+        assert "Readable page content" in loaded
+
+    def test_small_body_not_compressed(self, tmp_data_dir):
+        """Bodies below compress_min_bytes are stored as plain text, not compressed."""
+        from pathlib import Path
+
+        body = "Short page"  # well below 16 KB threshold
+        meta = web_cache.store_output(
+            "sess-gz-3",
+            "https://example.com/short",
+            body,
+            200,
+            compress_bodies=True,
+            compress_min_bytes=16 * 1024,
+        )
+        assert meta is not None
+
+        cache_dir = web_cache._web_outputs_dir()
+        gz_path = Path(cache_dir) / (meta.output_id + ".gz")
+        txt_path = Path(cache_dir) / (meta.output_id + ".txt")
+
+        assert txt_path.exists(), ".txt file must exist for small (uncompressed) body"
+        assert not gz_path.exists(), ".gz file must NOT exist for small body"
+
+        loaded = web_cache.load_output(meta.output_id)
+        assert loaded is not None and "Short page" in loaded
+
+    def test_compress_disabled_stores_plain_text(self, tmp_data_dir):
+        """When compress_bodies=False, bodies are always stored as plain text."""
+        from pathlib import Path
+
+        body = "Large page body for testing. " * 2000  # ~60 KB — above any threshold
+        meta = web_cache.store_output(
+            "sess-gz-4",
+            "https://example.com/no-compress",
+            body,
+            200,
+            compress_bodies=False,
+            compress_min_bytes=16 * 1024,
+        )
+        assert meta is not None
+
+        cache_dir = web_cache._web_outputs_dir()
+        gz_path = Path(cache_dir) / (meta.output_id + ".gz")
+        txt_path = Path(cache_dir) / (meta.output_id + ".txt")
+
+        assert txt_path.exists(), ".txt file must exist when compression is disabled"
+        assert not gz_path.exists(), ".gz file must NOT exist when compression is disabled"
+
+        loaded = web_cache.load_output(meta.output_id)
+        assert loaded is not None and "Large page body" in loaded
+
+    def test_load_output_falls_back_to_plain_when_no_gz(self, tmp_data_dir):
+        """load_output still reads plain .txt files (backward compat with pre-compression entries)."""
+        # Store without compression to simulate an old cache entry
+        body = "Old cache entry without compression. " * 300
+        meta = web_cache.store_output(
+            "sess-gz-5",
+            "https://example.com/old-entry",
+            body,
+            200,
+            compress_bodies=False,
+        )
+        assert meta is not None
+
+        # load_output must still find and return the plain-text body
+        loaded = web_cache.load_output(meta.output_id)
+        assert loaded is not None
+        assert "Old cache entry" in loaded
+
+    def test_config_compress_bodies_wires_through(self, tmp_data_dir, monkeypatch):
+        """compress_bodies from WebFetchConfig is passed through the post_fetch hook."""
+        from pathlib import Path
+
+        from token_goat import config
+
+        # Monkeypatch config to disable compression
+        original_load = config.load
+
+        def _patched_load():
+            cfg = original_load()
+            cfg.webfetch.compress_bodies = False
+            return cfg
+
+        monkeypatch.setattr(config, "load", _patched_load)
+
+        body = "Substantial page body content. " * 1000  # ~32 KB
+        payload = {
+            "session_id": "cfg-gz-1",
+            "tool_name": "WebFetch",
+            "tool_input": {"url": "https://example.com/cfg-test"},
+            "tool_response": {"output": body, "status_code": 200},
+        }
+        _assert_continue(hooks_fetch.post_fetch(payload))
+
+        # Find the cached entry
+        from token_goat import session as _session
+        cache = _session.load("cfg-gz-1")
+        assert len(cache.web_history) == 1
+        entry = next(iter(cache.web_history.values()))
+
+        cache_dir = web_cache._web_outputs_dir()
+        gz_path = Path(cache_dir) / (entry.output_id + ".gz")
+        assert not gz_path.exists(), "When compress_bodies=False in config, .gz must not be created"

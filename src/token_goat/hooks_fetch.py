@@ -468,6 +468,8 @@ def post_fetch(payload: HookPayload) -> HookResponse:
         content_type=content_type,
         max_total_bytes=cfg.webfetch.max_bytes,
         max_file_count=cfg.webfetch.max_file_count,
+        compress_bodies=cfg.webfetch.compress_bodies,
+        compress_min_bytes=cfg.webfetch.compress_min_bytes,
     )
     if meta is None:
         return CONTINUE()
