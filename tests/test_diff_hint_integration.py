@@ -187,6 +187,166 @@ class TestDiffHintEndToEnd:
         )
 
 
+class TestDiffHintFingerprintDedup:
+    """Diff hint fingerprint deduplication — same diff suppressed, new edit re-fires."""
+
+    def _make_large_file(self, path, version: int = 1) -> str:
+        body = "".join(f"def fn_{i}():\n    return {i}\n" for i in range(200))
+        content = f"VERSION = {version}\n" + body
+        path.write_text(content, encoding="utf-8")
+        return content
+
+    def test_second_prereread_same_diff_suppressed(self, tmp_data_dir, tmp_path):
+        """After a diff hint fires once, a second pre_read with the same edit
+        should suppress the diff hint (identical fingerprint in hints_seen)."""
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "dedup_test.py"
+        self._make_large_file(src, version=1)
+
+        sid = "diff-dedup-suppress-1"
+
+        # 1. Read — populates snapshot.
+        _assert_continue(hooks_read.post_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+        }))
+
+        # 2. Edit — bumps last_edit_ts and updates file on disk.
+        self._make_large_file(src, version=2)
+        _assert_continue(_post_edit_sync({
+            "session_id": sid,
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        }))
+
+        # 3. First pre_read — diff hint should fire.
+        result1 = hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        })
+        _assert_continue(result1)
+        hso1 = result1.get("hookSpecificOutput") or {}
+        ctx1 = hso1.get("additionalContext", "") if isinstance(hso1, dict) else ""
+        assert "dedup_test.py" in ctx1 or "```diff" in ctx1, (
+            f"First pre_read should emit diff hint; got: {ctx1!r}"
+        )
+
+        # 4. Second pre_read with no new edit — diff hint should be suppressed.
+        result2 = hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        })
+        _assert_continue(result2)
+        hso2 = result2.get("hookSpecificOutput") or {}
+        ctx2 = hso2.get("additionalContext", "") if isinstance(hso2, dict) else ""
+        # The diff hint should be suppressed (fingerprint already in hints_seen).
+        # Either no context at all, or a different (session / cooldown) hint — not a diff.
+        assert "```diff" not in ctx2, (
+            f"Second pre_read with same edit should suppress diff hint; got: {ctx2!r}"
+        )
+
+    def test_new_edit_after_dedup_fires_diff_hint_again(self, tmp_data_dir, tmp_path):
+        """After the diff hint is suppressed by fingerprint dedup, a subsequent
+        edit that produces a distinguishably different diff fires the hint again.
+
+        To guarantee a different diff fingerprint, the second edit adds new
+        function definitions (changes a different number of lines) rather than
+        just bumping a version integer, so the micro-diff summary text differs.
+        """
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "refire_test.py"
+        body = "".join(f"def fn_{i}():\n    return {i}\n" for i in range(200))
+        original = "VERSION = 1\n" + body
+        src.write_text(original, encoding="utf-8")
+
+        sid = "diff-dedup-refire-1"
+
+        # 1. Read — populates snapshot.
+        _assert_continue(hooks_read.post_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+        }))
+
+        # 2. First edit: bump VERSION line (1 line changed → micro-diff ±2 lines @ L1).
+        v2 = "VERSION = 2\n" + body
+        src.write_text(v2, encoding="utf-8")
+        _assert_continue(_post_edit_sync({
+            "session_id": sid,
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        }))
+
+        # 3. First pre_read — diff hint fires (fingerprint registered).
+        result1 = hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        })
+        _assert_continue(result1)
+        hso1 = result1.get("hookSpecificOutput") or {}
+        ctx1 = hso1.get("additionalContext", "") if isinstance(hso1, dict) else ""
+        assert "refire_test.py" in ctx1 or "```diff" in ctx1, (
+            f"First pre_read should emit diff hint; got: {ctx1!r}"
+        )
+
+        # 4. Second pre_read — same diff, suppressed.
+        result_suppressed = hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        })
+        _assert_continue(result_suppressed)
+        hso_s = result_suppressed.get("hookSpecificOutput") or {}
+        ctx_s = hso_s.get("additionalContext", "") if isinstance(hso_s, dict) else ""
+        assert "```diff" not in ctx_s, (
+            f"Second pre_read with same edit should suppress diff hint; got: {ctx_s!r}"
+        )
+
+        # 5. Update snapshot to current (VERSION=2) content then make a
+        # structurally different edit: add several new lines at the top so the
+        # diff involves more changed lines than the first edit.  This guarantees
+        # the micro-diff summary text (or full diff text) differs from the first
+        # hint, producing a new fingerprint.
+        _assert_continue(hooks_read.post_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+        }))
+        # Add 5 extra lines at the start — diff will show ±7 lines (5 added + 1
+        # removed + 1 added for VERSION, i.e. a large structural change) rather
+        # than the ±2 of the first edit.
+        extra_header = "EXTRA_1 = 1\nEXTRA_2 = 2\nEXTRA_3 = 3\nEXTRA_4 = 4\nEXTRA_5 = 5\n"
+        v3 = extra_header + "VERSION = 3\n" + body
+        src.write_text(v3, encoding="utf-8")
+        _assert_continue(_post_edit_sync({
+            "session_id": sid,
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        }))
+
+        # 6. Third pre_read — new diff content → new fingerprint → should fire again.
+        result3 = hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        })
+        _assert_continue(result3)
+        hso3 = result3.get("hookSpecificOutput") or {}
+        ctx3 = hso3.get("additionalContext", "") if isinstance(hso3, dict) else ""
+        assert "refire_test.py" in ctx3 or "```diff" in ctx3, (
+            f"After structurally different edit, diff hint should re-fire; got: {ctx3!r}"
+        )
+
+
 class TestPredictivePrefetchTelemetry:
     """A diff-hint hit against a predictive snapshot records an attribution row.
 

@@ -2304,8 +2304,37 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 hso = diff_response.get("hookSpecificOutput") or {}
                 diff_text = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
                 if diff_text:
-                    # Diff hints are HIGH priority: file changed since last read.
-                    hint_items.append(HintItem(diff_text, HINT_PRIORITY_HIGH))
+                    # Fingerprint dedup: suppress diff hints whose content hasn't changed
+                    # since the last emission (i.e., same edit, same diff, repeated re-read).
+                    # The fingerprint includes the diff text so a new edit produces new
+                    # content → new fingerprint → emits again.
+                    from .hints import _hint_fingerprint as _dhfp  # noqa: PLC0415
+
+                    _diff_fp = _dhfp(diff_text, path=file_path)
+                    if cache.has_hint_fingerprint(_diff_fp):
+                        # Identical diff hint already emitted in this session — suppress.
+                        _LOG.debug(
+                            "pre-read: diff hint fingerprint %s already seen; suppressing duplicate for %s",
+                            _diff_fp,
+                            sanitize_log_str(file_path),
+                        )
+                        try:
+                            from . import db as _db_diff  # noqa: PLC0415
+
+                            _db_diff.record_stat(
+                                None,
+                                "diff_hint_backoff_suppressed",
+                                bytes_saved=0,
+                                tokens_saved=0,
+                                detail=sanitize_log_str(file_path, max_len=512),
+                            )
+                        except Exception:  # noqa: BLE001 — fail-soft; never block the agent
+                            _LOG.debug("diff_hint_backoff_suppressed: stat record failed", exc_info=True)
+                    else:
+                        # New fingerprint — mark seen and emit.
+                        cache.mark_hint_seen(_diff_fp)
+                        # Diff hints are HIGH priority: file changed since last read.
+                        hint_items.append(HintItem(diff_text, HINT_PRIORITY_HIGH))
 
         if not hint_items:
             # Per-file hint cooldown: if a tokens_saved>0 session hint was already
