@@ -1233,7 +1233,7 @@ def _hint_from_cache(
         return ReadHint(
             _apply_terse(
                 f"`{fname}` L{req_start}-{req_end} cached (L{cached_summary}{extra}){sym_suffix}. "
-                f"~{wasted}t wasted — adjust offset/limit."
+                f"~{wasted}t wasted."
             ),
             wasted,
         )
@@ -1250,7 +1250,7 @@ def _hint_from_cache(
         return ReadHint(
             _apply_terse(
                 f"`{fname}` cached L{cached_summary}{extra}{sym_suffix}. "
-                f"Overlap: {overlap_lines}L (~{wasted}t) — use `offset={resume_offset}`."
+                f"Overlap (~{wasted}t) — use `offset={resume_offset}`."
             ),
             wasted,
         )
@@ -1923,7 +1923,7 @@ def _build_diff_hint_inner(
         return None
 
     prose_diff = ReadHint(
-        _apply_terse(f"`{fname}` diff (~{tokens_saved} tokens saved):\n")
+        _apply_terse(f"`{fname}` changed:\n")
         + f"```diff\n{diff_text}\n```\n",
         tokens_saved,
     )
