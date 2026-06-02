@@ -34,6 +34,7 @@ __all__ = [
     "evict_old_entries",
     "extract_checklist_section",
     "extract_compact_from_marker",
+    "extract_all_headings",
     "extract_h2_headings",
     "extract_named_section",
     "generate_compact_summary",
@@ -323,6 +324,45 @@ def extract_h2_headings(body: str) -> list[str]:
         stripped = line.strip()
         if stripped.startswith("## ") and len(stripped) > 3:
             headings.append(stripped[3:].strip())
+    return headings
+
+
+def extract_all_headings(body: str, max_level: int = 3) -> list[tuple[int, str]]:
+    """Return all headings up to *max_level* depth as ``(level, title)`` tuples.
+
+    Unlike :func:`extract_h2_headings`, this function includes H3 (and
+    optionally H4+) headings so callers can show the complete navigable
+    section tree.  :func:`extract_named_section` can reach H3/H4 sections
+    but they were previously invisible in the "Sections available" hint,
+    making subsections of large skills like ralph undiscoverable without
+    knowing the exact heading text in advance.
+
+    Each tuple is ``(heading_level, heading_text)`` where *heading_level* is
+    the number of leading ``#`` characters (2, 3, or 4).
+
+    Returns an empty list when *body* is empty.  Headings inside fenced code
+    blocks are excluded to avoid false positives from Markdown examples.
+    """
+    if not body:
+        return []
+    headings: list[tuple[int, str]] = []
+    in_code_block = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        if not stripped.startswith("#"):
+            continue
+        # Count leading hashes.
+        level = len(stripped) - len(stripped.lstrip("#"))
+        if level < 2 or level > max_level:
+            continue
+        title = stripped[level:].strip()
+        if title:
+            headings.append((level, title))
     return headings
 
 

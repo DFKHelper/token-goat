@@ -1130,14 +1130,18 @@ def skill_section(
 
     section_text = skill_cache.extract_named_section(body, heading)
     if section_text is None:
-        headings = skill_cache.extract_h2_headings(body)
-        if headings:
+        all_headings = skill_cache.extract_all_headings(body, max_level=3)
+        if all_headings:
+            heading_labels = [
+                f"  {title}" if level >= 3 else title
+                for level, title in all_headings
+            ]
             msg = (
                 f"Section {heading!r} not found in skill {skill_name!r}. "
-                f"Available: {', '.join(headings)}"
+                f"Available (## and ###): {', '.join(heading_labels)}"
             )
         else:
-            msg = f"Section {heading!r} not found in skill {skill_name!r} (no H2 sections detected)"
+            msg = f"Section {heading!r} not found in skill {skill_name!r} (no headings detected)"
         _emit_read_error(
             code="section_not_found",
             message=msg,

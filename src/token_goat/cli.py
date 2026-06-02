@@ -3545,7 +3545,13 @@ def cmd_skill_body(
                 body = None
 
     if body is None:
-        _error(f"no cached body for skill: {name}")
+        _error(
+            f"no cached body for skill: {name}. "
+            "The PostToolUse(Skill) hook captures bodies automatically when skills are invoked. "
+            f"To populate the cache: invoke the skill first (Skill(skill={name!r})), "
+            "or if the skill file is installed, index it with: "
+            "token-goat index --root ~/.claude/skills/"
+        )
         raise typer.Exit(1)
 
     # --compact: return a compact summary (~400 tokens) instead of the full body.
@@ -3581,18 +3587,22 @@ def cmd_skill_body(
             typer.echo(compact_text)
         return
 
-    # --section: extract a single named H2 section from the body.
+    # --section: extract a single named H2/H3 section from the body.
     if section:
         section_text = skill_cache.extract_named_section(body, section)
         if section_text is None:
-            headings = skill_cache.extract_h2_headings(body)
-            if headings:
+            all_headings = skill_cache.extract_all_headings(body, max_level=3)
+            if all_headings:
+                heading_labels = [
+                    f"  {title}" if level >= 3 else title
+                    for level, title in all_headings
+                ]
                 _error(
                     f"section {section!r} not found in skill {name!r}. "
-                    f"Available: {', '.join(headings)}"
+                    f"Available (## and ###): {', '.join(heading_labels)}"
                 )
             else:
-                _error(f"section {section!r} not found in skill {name!r} (no H2 sections detected)")
+                _error(f"section {section!r} not found in skill {name!r} (no headings detected)")
             raise typer.Exit(1)
         sliced = section_text
         # Record stat for the bytes saved vs. full body.
@@ -3624,11 +3634,20 @@ def cmd_skill_body(
     lines = _apply_recall_filters(body.splitlines(), head=head, tail=tail, grep=grep, full=full)
     sliced = "\n".join(lines)
 
-    # Append a sections-available line when H2 headings exist and we're in text mode.
+    # Append a sections-available line when headings exist and we're in text mode.
+    # Include H2 and H3 headings so subsections of large skills (ralph, improve, etc.)
+    # are discoverable — extract_named_section can reach them but they were previously
+    # invisible, leaving H3-only sections like "Wild Ideas Phase" or "Operating Modes"
+    # unreachable without knowing the exact name in advance.
     if not json_output and not section:
-        headings = skill_cache.extract_h2_headings(body)
-        if headings:
-            sliced = sliced + "\n\n**Sections available:** " + ", ".join(headings)
+        all_headings = skill_cache.extract_all_headings(body, max_level=3)
+        if all_headings:
+            # Prefix H3 headings with two spaces so H2 vs H3 is visually distinct.
+            heading_labels = [
+                f"  {title}" if level >= 3 else title
+                for level, title in all_headings
+            ]
+            sliced = sliced + "\n\n**Sections available:** " + ", ".join(heading_labels)
 
     # Record a recall stat so `token-goat stats` reflects the value of avoiding
     # a re-load (and the side effects + tool-result block that come with it).
@@ -3727,7 +3746,11 @@ def cmd_skill_compact(
                 body = None
 
     if body is None:
-        _error(f"no cached body for skill: {name}")
+        _error(
+            f"no cached body for skill: {name}. "
+            "Invoke the skill first to populate the cache, "
+            "or index the skill directory: token-goat index --root ~/.claude/skills/"
+        )
         raise typer.Exit(1)
 
     _compact_session_id = os.environ.get("CLAUDE_SESSION_ID", "")
@@ -3925,19 +3948,28 @@ def cmd_skill_size(
         body_len = int(skill["body_len"])  # type: ignore[call-overload]
         compact_len = int(skill["compact_len"])  # type: ignore[call-overload]
 
-        # Estimate tokens: 4 bytes per token.
+        # Estimate tokens: 4 bytes per token (reasonable for English prose).
         body_tokens = body_len // 4
-        compact_tokens = compact_len // 4
+        # When no compact form has been stored, the manifest emits a brief
+        # header stub (~50 tokens) plus the auto-extracted summary.  Fall back
+        # to using body_tokens as an upper-bound estimate so the overhead is
+        # not misleadingly reported as 0 tokens for uncondensed skills.
+        effective_compact_len = compact_len if compact_len > 0 else body_len
+        compact_tokens = effective_compact_len // 4
+        compact_is_estimated = compact_len == 0
 
         # Worst-case overhead at 100 turns: loaded in every turn.
         per_100_overhead = compact_tokens * 100
 
         flag = "⚠ restructure" if per_100_overhead > 50_000 else ""
+        if compact_is_estimated:
+            flag = (flag + " (no compact, using body estimate)").strip()
 
         items.append({
             "name": name,
             "body_tokens": body_tokens,
             "compact_tokens": compact_tokens,
+            "compact_is_estimated": compact_is_estimated,
             "per_100_overhead": per_100_overhead,
             "flag": flag,
         })
