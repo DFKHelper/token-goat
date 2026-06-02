@@ -1,3 +1,10 @@
+"""C and C++ symbol extractor using regex-based heuristics.
+
+Extracts functions, classes, structs, enums, typedefs, and ``#include``
+directives.  The C++ extractor (``extract``) handles templates, methods,
+and namespaces; the C extractor (``extract_c``) uses the same symbol
+pipeline with ``language="c"`` so tree-sitter selects the C grammar.
+"""
 from __future__ import annotations
 
 __all__ = ["extract", "extract_c"]
@@ -211,6 +218,22 @@ def _extract_imports(source: bytes) -> list[ImpExp]:
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
+    """Extract symbols, refs, and imports from a C++ source file.
+
+    Uses the ``cpp`` tree-sitter grammar via :func:`_extract_symbols` to
+    pull out functions, classes, structs, enums, and typedefs.  Refs are
+    extracted by scanning call-like patterns against ``_CALL_NOISE``.
+    ``#include`` directives become :class:`~token_goat.parser.ImpExp` rows.
+    Sections are not produced (C++ has no heading concept); returns ``[]``
+    for the section list.
+
+    :param source: Raw file bytes (UTF-8 or latin-1 content is tolerated via
+        ``errors='replace'`` inside the tree-sitter layer).
+    :param rel_path: Project-relative path used for logging and symbol
+        metadata; not used for file I/O.
+    :return: ``(symbols, refs, imports, sections)`` — sections is always
+        an empty list for C++ files.
+    """
     symbols = _extract_symbols(source, "cpp")
     refs = common.extract_refs_from_source(source, common.CALL_RE, _CALL_NOISE)
     imp_exp = _extract_imports(source)
@@ -222,6 +245,16 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
 
 def extract_c(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
+    """Extract symbols, refs, and imports from a C source file.
+
+    Identical pipeline to :func:`extract` but uses the ``c`` tree-sitter
+    grammar, which does not include C++-specific constructs (templates,
+    namespaces, classes).  Returns an empty section list.
+
+    :param source: Raw file bytes.
+    :param rel_path: Project-relative path used for logging and symbol metadata.
+    :return: ``(symbols, refs, imports, sections)`` — sections is always empty.
+    """
     symbols = _extract_symbols(source, "c")
     refs = common.extract_refs_from_source(source, common.CALL_RE, _CALL_NOISE)
     imp_exp = _extract_imports(source)

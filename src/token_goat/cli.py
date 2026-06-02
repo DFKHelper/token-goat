@@ -1,4 +1,28 @@
-"""Typer CLI with stub subcommands."""
+"""User-facing CLI: all ``token-goat`` subcommands in one Typer application.
+
+Entry point: :func:`main` / ``token-goat`` (console script).  Subcommands are
+organised into groups:
+
+- **Surgical reads** — ``symbol``, ``read``, ``section``, ``semantic``,
+  ``deps``: return narrow slices of indexed files instead of the whole file.
+- **Repo overview** — ``map``: PageRank-ranked, token-budgeted repo overview.
+- **Session / compaction** — ``compact-hint``, ``recovery``, ``resume``,
+  ``decision``, ``pinned``: inspect or replay pre-compaction manifests and
+  the post-compact recovery hint.
+- **Skill preservation** — ``skill-body``, ``skill-compact``, ``skill-diff``,
+  ``skill-size``, ``skill-list``: inspect cached skill bodies.
+- **Google Drive** — ``gdrive-fetch``, ``gdrive-sections``, ``gdrive-list``,
+  ``gdrive-auth``: download and shrink Drive files.
+- **Web / Bash history** — ``web-output``, ``bash-output``, ``history``,
+  ``bash-history``: replay cached tool output.
+- **Image tools** — ``fetch-image``, ``image-shrink``, ``compress``.
+- **Indexing** — ``index``, ``reindex``, ``stats``, ``memory``,
+  ``git-history``: manage the per-project SQLite index.
+- **Lifecycle** — ``install``, ``uninstall``, ``doctor``, ``worker``.
+
+All CLI handlers call :func:`raise_for_error` on non-zero exits and use
+:func:`~token_goat.util.get_logger` for structured logging.
+"""
 from __future__ import annotations
 
 import builtins

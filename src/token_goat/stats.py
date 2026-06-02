@@ -1,4 +1,25 @@
-"""Token-savings telemetry aggregator."""
+"""Token-savings telemetry: aggregate and render per-session and all-time stats.
+
+Stats are stored as rows in the ``stats`` table of each per-project SQLite DB
+(and the global DB for project-agnostic events) by
+:func:`~token_goat.db.record_stat`.  This module reads those rows back,
+aggregates them by event kind, and formats them for display.
+
+Public API:
+
+- :func:`aggregate_stats` — load all stat rows from every known project DB
+  (plus global.db) and return a flat list of :class:`StatRow` dataclasses,
+  one per recorded event.
+- :func:`render_text` / :func:`render_json` — format aggregated stats as
+  human-readable text panels or structured JSON, respectively; called by the
+  ``token-goat stats`` CLI command.
+
+Stats are read via the read-only DB path
+(:func:`~token_goat.db.open_global_readonly` /
+:func:`~token_goat.db.open_project_readonly`) so the ``stats`` command never
+acquires a write lock on any DB and completes in milliseconds even for large
+projects.
+"""
 from __future__ import annotations
 
 import hashlib

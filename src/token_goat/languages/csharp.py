@@ -1,3 +1,10 @@
+"""C# symbol extractor using tree_sitter_language_pack.
+
+Extracts classes, interfaces, enums, structs, records, delegates, methods,
+properties, and ``using`` import directives.  Extra symbols (constructors,
+static members, constants, events, and indexers not surfaced by tree-sitter)
+are discovered by a secondary regex pass.
+"""
 from __future__ import annotations
 
 __all__ = ["extract"]
@@ -141,6 +148,19 @@ def _extract_extras_inner(source: bytes, class_names: frozenset[str]) -> list[Sy
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
+    """Extract symbols, refs, and imports from a C# source file.
+
+    Uses the ``csharp`` tree-sitter grammar.  After the main tree-sitter pass,
+    a secondary regex scan adds constructors, static fields, constants, events,
+    and indexers that tree-sitter does not surface individually.  ``using``
+    directives become :class:`~token_goat.parser.ImpExp` import rows.
+    Method promotion is enabled so instance methods on classes bubble up to
+    top-level symbol visibility.  Sections are not produced (returns ``[]``).
+
+    :param source: Raw file bytes (UTF-8 encoding assumed; errors are replaced).
+    :param rel_path: Project-relative path used for logging and symbol metadata.
+    :return: ``(symbols, refs, imports, sections)`` — sections is always empty.
+    """
     collected = common.collect_symbols_and_refs(
         source, "csharp", rel_path, _LOG, common.CALL_RE, _CALL_NOISE, promote_methods=True
     )

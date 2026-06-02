@@ -1,4 +1,33 @@
-"""Builds informational hints for PreToolUse on Read."""
+"""Hint generator for PreToolUse (Read, Grep, Bash) interception.
+
+The ``hints`` module is the main decision layer executed by the pre-tool
+hooks (``hooks_read.py``).  For each incoming ``Read``/``Grep``/``Bash``
+event it decides whether to emit a hint that redirects the agent away from
+re-reading content it has already seen, and if so, what that hint should say.
+
+Key public entry points:
+
+- :func:`get_hint` — main entry point called by the pre-read hook; returns
+  a hint string or ``None`` if no hint applies.
+- :func:`get_grep_hint` — equivalent for Grep events; deduplicates repeated
+  patterns.
+- :func:`get_bash_read_hint` — for Bash commands that are equivalent to
+  file reads (``cat``, ``head``, ``tail``, ``bat``, …).
+
+Hint categories (in priority order):
+
+1. **Diff-aware re-read** — file was edited this session: tell the agent what
+   changed rather than returning the whole new content.
+2. **Session dedup** — file was already read this session: remind the agent of
+   what it learned and suggest ``token-goat read`` for any new symbol lookups.
+3. **Structured file** — TOML / YAML / JSON / INI / Dockerfile: suggest
+   ``token-goat section`` instead of a full re-read.
+4. **Grep dedup** — same pattern was already searched: show the cached result
+   count instead of re-running.
+
+All hint functions are fail-soft: exceptions are caught and logged; ``None``
+is returned so a broken hint layer never interrupts the agent's work.
+"""
 from __future__ import annotations
 
 import difflib

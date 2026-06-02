@@ -1,3 +1,10 @@
+"""Kotlin symbol extractor using regex-based heuristics.
+
+Extracts classes, interfaces, objects, data classes, sealed classes,
+companion objects, functions, properties, and ``import`` statements.
+Tree-sitter is not used for Kotlin; the entire extraction is regex-driven
+against the raw source bytes.
+"""
 from __future__ import annotations
 
 __all__ = ["extract"]
@@ -147,6 +154,19 @@ def _extract_kotlin_imports(source: bytes) -> list[ImpExp]:
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
+    """Extract symbols, refs, and imports from a Kotlin source file.
+
+    Uses a regex-based pipeline (no tree-sitter grammar for Kotlin).
+    :func:`_extract_kotlin_symbols` handles ``class``, ``interface``,
+    ``object``, ``fun``, and ``val``/``var`` declarations at any nesting level.
+    Refs are extracted by scanning call-like patterns against ``_CALL_NOISE``.
+    ``import`` directives become :class:`~token_goat.parser.ImpExp` rows.
+    Sections are not produced (returns ``[]``).
+
+    :param source: Raw file bytes (UTF-8 encoding assumed; errors are replaced).
+    :param rel_path: Project-relative path used for logging and symbol metadata.
+    :return: ``(symbols, refs, imports, sections)`` — sections is always empty.
+    """
     symbols = _extract_kotlin_symbols(source)
     refs = common.extract_refs_from_source(source, common.CALL_RE, _CALL_NOISE)
     imp_exp = _extract_kotlin_imports(source)

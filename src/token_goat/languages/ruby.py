@@ -1,3 +1,11 @@
+"""Ruby symbol extractor using tree_sitter_language_pack.
+
+Extracts modules, classes, methods (``def``), singleton methods, constants,
+and attribute accessors.  A secondary regex pass adds ``require`` /
+``require_relative`` calls as :class:`~token_goat.parser.ImpExp` import rows.
+Method promotion is enabled so instance methods surface at the top of the
+symbol list for easy ``token-goat symbol`` lookup.
+"""
 from __future__ import annotations
 
 __all__ = ["extract"]
@@ -135,6 +143,19 @@ def _extract_extras_inner(source: bytes, seen_names: set[tuple[str, int]]) -> li
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
+    """Extract symbols, refs, and imports from a Ruby source file.
+
+    Uses the ``ruby`` tree-sitter grammar with method promotion enabled so
+    instance methods on classes surface at top-level symbol visibility.  A
+    secondary pass via :func:`_extract_extras` catches additional patterns
+    not covered by tree-sitter.  ``require`` / ``require_relative`` lines are
+    parsed into :class:`~token_goat.parser.ImpExp` import rows.  Sections are
+    not produced (returns ``[]``).
+
+    :param source: Raw file bytes (UTF-8 encoding assumed; errors are replaced).
+    :param rel_path: Project-relative path used for logging and symbol metadata.
+    :return: ``(symbols, refs, imports, sections)`` — sections is always empty.
+    """
     collected = common.collect_symbols_and_refs(
         source, "ruby", rel_path, _LOG, common.CALL_RE, _CALL_NOISE, promote_methods=True
     )

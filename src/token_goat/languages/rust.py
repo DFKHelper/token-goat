@@ -111,6 +111,19 @@ def _extract_statics_inner(source: bytes) -> list[Symbol]:
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
+    """Extract symbols, refs, and imports from a Rust source file.
+
+    Uses the ``rust`` tree-sitter grammar with method promotion enabled.
+    Two secondary regex passes add trait method signatures (tree-sitter does
+    not surface these individually) and ``static [mut] NAME: ...`` declarations
+    (which tree-sitter also misses).  ``use`` declarations are parsed into
+    :class:`~token_goat.parser.ImpExp` import rows via
+    :func:`_parse_use_target`.  Sections are not produced (returns ``[]``).
+
+    :param source: Raw file bytes (UTF-8 encoding assumed; errors are replaced).
+    :param rel_path: Project-relative path used for logging and symbol metadata.
+    :return: ``(symbols, refs, imports, sections)`` — sections is always empty.
+    """
     collected = common.collect_symbols_and_refs(
         source, "rust", rel_path, _LOG, common.CALL_RE, _CALL_NOISE, promote_methods=True
     )

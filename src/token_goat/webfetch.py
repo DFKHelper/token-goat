@@ -703,6 +703,15 @@ def _make_pinned_transport(pinned_ip: str) -> httpx.HTTPTransport:
         """HTTPTransport subclass that uses the pre-validated IP for DNS resolution."""
 
         def handle_request(self, request: httpx.Request) -> httpx.Response:
+            """Send *request* with DNS resolution pinned to the pre-validated IP.
+
+            Temporarily monkey-patches :func:`socket.getaddrinfo` to return
+            the IP that was already verified by ``_is_ssrf_safe`` so a hostile
+            DNS server cannot return a different address at TCP connect time
+            (DNS rebinding protection).  The original ``getaddrinfo`` is
+            always restored in the ``finally`` block — including on exceptions
+            — so the monkey-patch is never leaked to other threads.
+            """
             _prev = socket.getaddrinfo
             socket.getaddrinfo = _pinned_getaddrinfo  # type: ignore[assignment]  # monkey-patching socket.getaddrinfo to pin DNS resolution; typeshed expects exact overloaded signature
             try:

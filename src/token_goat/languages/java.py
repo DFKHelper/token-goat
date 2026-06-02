@@ -1,3 +1,10 @@
+"""Java symbol extractor using tree_sitter_language_pack.
+
+Extracts classes, interfaces, enums, annotation types, and their methods.
+A secondary regex pass surfaces additional symbols not covered by tree-sitter
+(anonymous inner classes, static initializers, lambda assignments).
+``import`` statements are parsed into :class:`~token_goat.parser.ImpExp` rows.
+"""
 from __future__ import annotations
 
 __all__ = ["extract"]
@@ -111,6 +118,18 @@ def _extract_java_extras_inner(source: bytes, class_names: frozenset[str]) -> li
 
 
 def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
+    """Extract symbols, refs, and imports from a Java source file.
+
+    Uses the ``java`` tree-sitter grammar.  After the tree-sitter pass, a
+    secondary regex scan adds symbols tree-sitter does not surface on its own
+    (e.g. anonymous classes, static initializers, lambda field assignments).
+    ``import`` statements are converted to :class:`~token_goat.parser.ImpExp`
+    rows with fully-qualified target names.  Sections are not produced.
+
+    :param source: Raw file bytes (UTF-8 encoding assumed; errors are replaced).
+    :param rel_path: Project-relative path used for logging and symbol metadata.
+    :return: ``(symbols, refs, imports, sections)`` — sections is always empty.
+    """
     collected = common.collect_symbols_and_refs(
         source, "java", rel_path, _LOG, common.CALL_RE, _CALL_NOISE
     )
