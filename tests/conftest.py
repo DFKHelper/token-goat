@@ -760,3 +760,30 @@ def make_skill_body_with_sections(size_bytes: int = 20_000) -> str:
     return "\n".join(lines)
 
 
+def fire_skill_hook(session_id: str, skill_name: str, body: str) -> dict:
+    """Fire the PostToolUse(Skill) hook and return the response dict.
+
+    Consolidates the repeated 8-line payload-build + ``hooks_skill.post_skill``
+    call that previously appeared in test_skill_compact_integration.py,
+    test_skill_final_chain_integration.py, test_skill_iter10_integration.py, and
+    test_skill_preservation.py.
+
+    Usage::
+
+        from conftest import fire_skill_hook
+
+        def test_something(tmp_data_dir):
+            resp = fire_skill_hook("my-session", "ralph", body_text)
+            assert resp.get("continue") is True
+    """
+    from token_goat import hooks_skill
+
+    payload = {
+        "session_id": session_id,
+        "tool_name": "Skill",
+        "tool_input": {"skill": skill_name},
+        "tool_response": body,
+    }
+    return hooks_skill.post_skill(payload)
+
+

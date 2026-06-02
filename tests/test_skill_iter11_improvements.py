@@ -187,12 +187,13 @@ class TestPostSkillAlternativeFieldNames:
     """post_skill extracts skill name from 'skillName' and 'name' fallbacks."""
 
     def _run_post_skill_and_capture_name(
-        self, tool_input: dict, skill_name: str, tmp_path, monkeypatch
+        self, tool_input: dict, skill_name: str, monkeypatch
     ) -> list[str]:
-        """Shared helper: run post_skill and return the list of captured skill names."""
-        from token_goat import paths as _paths
+        """Shared helper: run post_skill and return the list of captured skill names.
+
+        Requires the ``tmp_data_dir`` fixture to be active so data_dir is already patched.
+        """
         from token_goat import session as _session
-        monkeypatch.setattr(_paths, "data_dir", lambda: tmp_path)
 
         captured_names: list[str] = []
         monkeypatch.setattr(_session, "lookup_skill_entry", lambda sid, name: None)
@@ -231,26 +232,26 @@ class TestPostSkillAlternativeFieldNames:
         assert resp.get("continue") is True
         return captured_names
 
-    def test_skill_field_standard(self, tmp_path, monkeypatch):
+    def test_skill_field_standard(self, tmp_data_dir, monkeypatch):
         """Standard 'skill' field is still used when present."""
         names = self._run_post_skill_and_capture_name(
-            {"skill": "ralph"}, "ralph", tmp_path, monkeypatch
+            {"skill": "ralph"}, "ralph", monkeypatch
         )
         assert "ralph" in names, f"Expected 'ralph', got: {names!r}"
 
-    def test_skillname_camelcase_field(self, tmp_path, monkeypatch):
+    def test_skillname_camelcase_field(self, tmp_data_dir, monkeypatch):
         """'skillName' camelCase field is used when 'skill' is absent."""
         names = self._run_post_skill_and_capture_name(
-            {"skillName": "ralph"}, "ralph", tmp_path, monkeypatch
+            {"skillName": "ralph"}, "ralph", monkeypatch
         )
         assert "ralph" in names, (
             f"Expected 'ralph' captured from skillName field, got: {names!r}"
         )
 
-    def test_name_field_fallback(self, tmp_path, monkeypatch):
+    def test_name_field_fallback(self, tmp_data_dir, monkeypatch):
         """'name' field is used when both 'skill' and 'skillName' are absent."""
         names = self._run_post_skill_and_capture_name(
-            {"name": "improve"}, "improve", tmp_path, monkeypatch
+            {"name": "improve"}, "improve", monkeypatch
         )
         assert "improve" in names, (
             f"Expected 'improve' captured from 'name' field, got: {names!r}"

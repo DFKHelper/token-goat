@@ -15,6 +15,7 @@ import os
 import time
 
 import pytest
+from conftest import fire_skill_hook
 
 from token_goat import (
     compact,
@@ -318,13 +319,7 @@ class TestPostSkillHook:
     def test_captures_body_to_cache_and_session(self, tmp_data_dir):
         sid = "session-hook-capture"
         body = "# Ralph SKILL\n\n" + ("DoD rule. " * 200)
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": body,
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "ralph", body)
         # Hook always returns CONTINUE — never blocks the agent.
         assert resp.get("continue") is True
         # Session should now have a skill_history entry.
@@ -338,13 +333,7 @@ class TestPostSkillHook:
     def test_tiny_body_skipped(self, tmp_data_dir):
         """Bodies below the min-byte threshold are not cached (likely stubs)."""
         sid = "session-hook-tiny"
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "tiny"},
-            "tool_response": "Skill loaded.",  # well under 256 byte min
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "tiny", "Skill loaded.")  # well under 256 byte min
         assert resp.get("continue") is True
         cache = session.load(sid)
         assert "tiny" not in cache.skill_history
@@ -363,13 +352,7 @@ class TestPostSkillHook:
         sid = "session-hook-disabled"
         monkeypatch.setenv("TOKEN_GOAT_SKILL_PRESERVATION", "0")
         body = "# Ralph SKILL\n\n" + ("rule. " * 200)
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": body,
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "ralph", body)
         assert resp.get("continue") is True
         cache = session.load(sid)
         assert "ralph" not in cache.skill_history
@@ -422,13 +405,7 @@ class TestPostSkillHook:
             + ("Extra paragraph text. " * 300)
         )
         assert len(body) > 4000, "Test body must be > 4000 chars"
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": body,
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "ralph", body)
         assert resp.get("continue") is True
         # Body should be cached
         cache = session.load(sid)
@@ -448,13 +425,7 @@ class TestPostSkillHook:
         sid = "session-hook-no-auto-compact"
         body = "# Ralph\n\n" + ("rule. " * 100)  # Much smaller, ~700 chars
         assert len(body) < 4000
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": body,
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "ralph", body)
         assert resp.get("continue") is True
         # Body should be cached
         cache = session.load(sid)
@@ -1285,13 +1256,7 @@ class TestPostSkillMarkerCompact:
         detail_part = "## Detailed Reference\n\nLots of extra detail here.\n" + ("detail " * 300)
         body = self._large_body_with_marker(compact_part, detail_part)
 
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": body,
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "ralph", body)
         assert resp.get("continue") is True
 
         stored_compact = skill_cache.get_compact(sid, "ralph")
@@ -1313,13 +1278,7 @@ class TestPostSkillMarkerCompact:
         )
         assert skill_cache.COMPACT_END_MARKER not in body
 
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": body,
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "ralph", body)
         assert resp.get("continue") is True
 
         stored_compact = skill_cache.get_compact(sid, "ralph")
@@ -1334,13 +1293,7 @@ class TestPostSkillMarkerCompact:
         detail_part = "## Detail\n\n" + ("extra detail. " * 300)
         body = self._large_body_with_marker(compact_part, detail_part)
 
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": body,
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "ralph", body)
         assert resp.get("continue") is True
         assert "systemMessage" in resp
         msg = resp["systemMessage"]
@@ -1360,13 +1313,7 @@ class TestPostSkillMarkerCompact:
         )
         assert skill_cache.COMPACT_END_MARKER not in body
 
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": body,
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "ralph", body)
         assert resp.get("continue") is True
         assert "systemMessage" not in resp
 
@@ -1377,13 +1324,7 @@ class TestPostSkillMarkerCompact:
         body = "# Small\n\nCompact content.\n\n<!-- COMPACT_END -->\n\nDetail.\n"
         assert len(body.encode()) <= 4000
 
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "small"},
-            "tool_response": body,
-        }
-        resp = hooks_skill.post_skill(payload)
+        resp = fire_skill_hook(sid, "small", body)
         assert resp.get("continue") is True
         # Small bodies are below the _SKILL_CACHE_MIN_BYTES threshold, so they
         # are not cached at all — just confirm no crash and no systemMessage.
@@ -1910,21 +1851,15 @@ class TestLookupSkillEntryNormalization:
         """post_skill emits a systemMessage reload hint on the second load of the same skill."""
         sid = "sess-reload-hint"
         body = "# Ralph\n\n## DoD\n\nCRITICAL: Follow the rules.\n\n" + ("body. " * 300)
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": body,
-        }
         # First load: no reload hint.
-        resp1 = hooks_skill.post_skill(payload)
+        resp1 = fire_skill_hook(sid, "ralph", body)
         assert resp1.get("continue") is True
         # First load may emit a compact systemMessage (about COMPACT_END), but not a reload hint.
         msg1 = resp1.get("systemMessage", "")
         assert "already loaded" not in msg1, f"Unexpected reload hint on first load: {msg1!r}"
 
         # Second load: should get the reload hint.
-        resp2 = hooks_skill.post_skill(payload)
+        resp2 = fire_skill_hook(sid, "ralph", body)
         assert resp2.get("continue") is True
         msg2 = resp2.get("systemMessage", "")
         assert "already loaded" in msg2, f"Expected reload hint on second load, got: {msg2!r}"

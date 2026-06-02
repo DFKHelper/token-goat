@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 
+from conftest import fire_skill_hook
 from typer.testing import CliRunner
 
-from token_goat import cli, compact, hooks_skill, session, skill_cache
+from token_goat import cli, compact, session, skill_cache
 
 runner = CliRunner()
 
@@ -199,21 +200,12 @@ class TestExtractCompactFromMarker:
 class TestPostSkillHookCompactPipeline:
     """End-to-end: PostToolUse Skill hook with a realistic skill body."""
 
-    def _fire_hook(self, session_id: str, skill_name: str, body: str) -> dict:
-        payload = {
-            "session_id": session_id,
-            "tool_name": "Skill",
-            "tool_input": {"skill": skill_name},
-            "tool_response": body,
-        }
-        return hooks_skill.post_skill(payload)
-
     # ── marker path ────────────────────────────────────────────────────────
 
     def test_marker_compact_stored_after_hook(self, tmp_data_dir):
         """Firing the hook with a COMPACT_END body stores the compact."""
         sid = "integ-marker-stored"
-        resp = self._fire_hook(sid, "ralph", _RALPH_SKILL_BODY)
+        resp = fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
         assert resp.get("continue") is True
 
         stored = skill_cache.get_compact(sid, "ralph")
@@ -223,7 +215,7 @@ class TestPostSkillHookCompactPipeline:
     def test_marker_compact_contains_key_rules(self, tmp_data_dir):
         """The stored compact must include the CRITICAL/MUST/NEVER rules."""
         sid = "integ-marker-rules"
-        self._fire_hook(sid, "ralph", _RALPH_SKILL_BODY)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         stored = skill_cache.get_compact(sid, "ralph")
         assert stored is not None
@@ -234,7 +226,7 @@ class TestPostSkillHookCompactPipeline:
     def test_marker_compact_smaller_than_full_body(self, tmp_data_dir):
         """Stored compact must be strictly smaller than the full body."""
         sid = "integ-marker-size"
-        self._fire_hook(sid, "ralph", _RALPH_SKILL_BODY)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         stored = skill_cache.get_compact(sid, "ralph")
         assert stored is not None
@@ -243,7 +235,7 @@ class TestPostSkillHookCompactPipeline:
     def test_marker_compact_within_30pct_of_body(self, tmp_data_dir):
         """Compact should be at most ~35% of the full body (marker at ~30%)."""
         sid = "integ-marker-ratio"
-        self._fire_hook(sid, "ralph", _RALPH_SKILL_BODY)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         stored = skill_cache.get_compact(sid, "ralph")
         assert stored is not None
@@ -253,7 +245,7 @@ class TestPostSkillHookCompactPipeline:
     def test_hook_system_message_emitted_for_marker_skill(self, tmp_data_dir):
         """Hook should set systemMessage when a compact section is found."""
         sid = "integ-marker-sysmsg"
-        resp = self._fire_hook(sid, "ralph", _RALPH_SKILL_BODY)
+        resp = fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
         # systemMessage is optional but should be present for marker path.
         system_msg = resp.get("systemMessage", "")
         assert "ralph" in system_msg.lower() or system_msg == "", (
@@ -266,7 +258,7 @@ class TestPostSkillHookCompactPipeline:
     def test_session_records_skill_after_hook(self, tmp_data_dir):
         """Session history should have a 'ralph' entry after the hook fires."""
         sid = "integ-marker-session"
-        self._fire_hook(sid, "ralph", _RALPH_SKILL_BODY)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         cache = session.load(sid)
         assert "ralph" in cache.skill_history
@@ -276,7 +268,7 @@ class TestPostSkillHookCompactPipeline:
     def test_no_marker_falls_back_to_auto_extract(self, tmp_data_dir):
         """Without a marker, auto-extraction still produces a compact."""
         sid = "integ-auto-extract"
-        self._fire_hook(sid, "improve", _IMPROVE_SKILL_BODY)
+        fire_skill_hook(sid, "improve", _IMPROVE_SKILL_BODY)
 
         stored = skill_cache.get_compact(sid, "improve")
         assert stored is not None, "auto-extract should store a compact"
@@ -285,7 +277,7 @@ class TestPostSkillHookCompactPipeline:
     def test_no_marker_auto_extract_contains_dod_rules(self, tmp_data_dir):
         """Auto-extracted compact for the improve skill includes CRITICAL/MUST rules."""
         sid = "integ-auto-extract-rules"
-        self._fire_hook(sid, "improve", _IMPROVE_SKILL_BODY)
+        fire_skill_hook(sid, "improve", _IMPROVE_SKILL_BODY)
 
         stored = skill_cache.get_compact(sid, "improve")
         assert stored is not None
@@ -295,7 +287,7 @@ class TestPostSkillHookCompactPipeline:
     def test_no_marker_auto_extract_smaller_than_body(self, tmp_data_dir):
         """Auto-extracted compact must be smaller than the full body."""
         sid = "integ-auto-extract-size"
-        self._fire_hook(sid, "improve", _IMPROVE_SKILL_BODY)
+        fire_skill_hook(sid, "improve", _IMPROVE_SKILL_BODY)
 
         stored = skill_cache.get_compact(sid, "improve")
         assert stored is not None
@@ -306,7 +298,7 @@ class TestPostSkillHookCompactPipeline:
         sid = "integ-small-no-compact"
         small_body = "# Small\n\n" + ("Line. " * 100)  # well under 4000 chars
         assert len(small_body.encode()) < 4000
-        self._fire_hook(sid, "small-skill", small_body)
+        fire_skill_hook(sid, "small-skill", small_body)
 
         stored = skill_cache.get_compact(sid, "small-skill")
         assert stored is None, "compact must not be stored for small bodies"
@@ -321,13 +313,7 @@ class TestManifestCompactIntegration:
 
     def _load_skill_via_hook(self, session_id: str, skill_name: str, body: str) -> None:
         """Fire the hook and register the skill in the session cache."""
-        payload = {
-            "session_id": session_id,
-            "tool_name": "Skill",
-            "tool_input": {"skill": skill_name},
-            "tool_response": body,
-        }
-        hooks_skill.post_skill(payload)
+        fire_skill_hook(session_id, skill_name, body)
 
     def test_manifest_contains_compact_key_rules_for_marker_skill(self, tmp_data_dir):
         """Manifest embeds marker-compact inline under 'ralph key-rules:'."""
@@ -479,13 +465,7 @@ class TestSkillBodyCompactCommand:
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
 
         # Store via hook so the compact is persisted.
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": _RALPH_SKILL_BODY,
-        }
-        hooks_skill.post_skill(payload)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         result = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
         assert result.exit_code == 0, f"skill-body --compact failed: {result.stdout}"
@@ -502,13 +482,7 @@ class TestSkillBodyCompactCommand:
         sid = "integ-body-compact-size"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
 
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": _RALPH_SKILL_BODY,
-        }
-        hooks_skill.post_skill(payload)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         # Full body output.
         full_result = runner.invoke(cli.app, ["skill-body", "--full", "ralph"])
@@ -527,13 +501,7 @@ class TestSkillBodyCompactCommand:
         sid = "integ-body-compact-auto"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
 
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "improve"},
-            "tool_response": _IMPROVE_SKILL_BODY,
-        }
-        hooks_skill.post_skill(payload)
+        fire_skill_hook(sid, "improve", _IMPROVE_SKILL_BODY)
 
         result = runner.invoke(cli.app, ["skill-body", "--compact", "improve"])
         assert result.exit_code == 0
@@ -547,13 +515,7 @@ class TestSkillBodyCompactCommand:
         sid = "integ-body-compact-json"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
 
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": "ralph"},
-            "tool_response": _RALPH_SKILL_BODY,
-        }
-        hooks_skill.post_skill(payload)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         result = runner.invoke(cli.app, ["skill-body", "--compact", "--json", "ralph"])
         assert result.exit_code == 0
@@ -567,20 +529,11 @@ class TestSkillBodyCompactCommand:
 class TestSkillBodyCompactHeaderConsistency:
     """skill-body --compact always emits the '--- compact form (N tokens) ---' header."""
 
-    def _store_skill(self, sid: str, skill_name: str, body: str) -> None:
-        payload = {
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": skill_name},
-            "tool_response": body,
-        }
-        hooks_skill.post_skill(payload)
-
     def test_first_call_has_header(self, tmp_data_dir, monkeypatch):
         """On the first invocation (no cached compact), output includes the header."""
         sid = "header-test-first"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
-        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         result = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
         assert result.exit_code == 0, f"unexpected exit: {result.stdout}"
@@ -593,7 +546,7 @@ class TestSkillBodyCompactHeaderConsistency:
         """On a subsequent invocation (compact already cached), header is still present."""
         sid = "header-test-second"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
-        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         # First call populates the cache.
         r1 = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
@@ -609,7 +562,7 @@ class TestSkillBodyCompactHeaderConsistency:
         """First and second calls produce identical output (header + body are consistent)."""
         sid = "header-test-idempotent"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
-        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         r1 = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
         r2 = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
@@ -622,7 +575,7 @@ class TestSkillBodyCompactHeaderConsistency:
         """'token-goat skill-compact' also always emits the compact form header."""
         sid = "skill-compact-header"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
-        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         result = runner.invoke(cli.app, ["skill-compact", "ralph"])
         assert result.exit_code == 0, f"unexpected exit: {result.stdout}"
@@ -636,7 +589,7 @@ class TestSkillBodyCompactHeaderConsistency:
 
         sid = "header-token-count"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
-        self._store_skill(sid, "ralph", _RALPH_SKILL_BODY)
+        fire_skill_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
         result = runner.invoke(cli.app, ["skill-body", "--compact", "ralph"])
         assert result.exit_code == 0

@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import json
 
+from conftest import fire_skill_hook
 from typer.testing import CliRunner
 
-from token_goat import cli, compact, hooks_skill, session, skill_cache
+from token_goat import cli, compact, session, skill_cache
 
 runner = CliRunner()
 
@@ -53,17 +54,6 @@ _DETAIL_SECTION = (
 _LARGE_SKILL_BODY = _COMPACT_SECTION + "\n<!-- COMPACT_END -->\n" + _DETAIL_SECTION
 
 
-def _fire_post_skill_hook(session_id: str, skill_name: str, body: str) -> dict:
-    """Fire the PostToolUse(Skill) hook as the hooks_cli dispatcher would."""
-    payload = {
-        "session_id": session_id,
-        "tool_name": "Skill",
-        "tool_input": {"skill": skill_name},
-        "tool_response": body,
-    }
-    return hooks_skill.post_skill(payload)
-
-
 # ---------------------------------------------------------------------------
 # Step 1: PostToolUse(Skill) → body cached + compact generated
 # ---------------------------------------------------------------------------
@@ -74,7 +64,7 @@ class TestStep1HookCachesSkill:
 
     def test_hook_stores_body(self, tmp_data_dir):
         sid = "chain-step1-body"
-        resp = _fire_post_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
+        resp = fire_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
         assert resp.get("continue") is True
 
         # Body must be loadable from the cache.
@@ -86,7 +76,7 @@ class TestStep1HookCachesSkill:
 
     def test_hook_stores_compact(self, tmp_data_dir):
         sid = "chain-step1-compact"
-        _fire_post_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
+        fire_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
 
         stored_compact = skill_cache.get_compact(sid, "chain-skill")
         assert stored_compact is not None, "Compact must be stored for large skills"
@@ -96,7 +86,7 @@ class TestStep1HookCachesSkill:
 
     def test_hook_registers_session_entry(self, tmp_data_dir):
         sid = "chain-step1-session"
-        _fire_post_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
+        fire_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
 
         cache = session.load(sid)
         assert "chain-skill" in cache.skill_history, (
@@ -106,7 +96,7 @@ class TestStep1HookCachesSkill:
     def test_compact_has_source_sha_header(self, tmp_data_dir):
         """The stored compact must embed a source SHA so staleness can be detected."""
         sid = "chain-step1-sha"
-        _fire_post_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
+        fire_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
 
         stored_compact = skill_cache.get_compact(sid, "chain-skill")
         assert stored_compact is not None
@@ -297,7 +287,7 @@ class TestStep4FullChain:
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
 
         # --- 1. Hook fires: body + compact cached -------------------------
-        resp = _fire_post_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
+        resp = fire_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
         assert resp.get("continue") is True
 
         stored_compact = skill_cache.get_compact(sid, "chain-skill")
@@ -356,7 +346,7 @@ class TestStep4FullChain:
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
 
         # Hook fires.
-        _fire_post_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
+        fire_skill_hook(sid, "chain-skill", _LARGE_SKILL_BODY)
 
         # Run --all to ensure compact is current.
         result = runner.invoke(cli.app, ["skill-compact", "--all"])

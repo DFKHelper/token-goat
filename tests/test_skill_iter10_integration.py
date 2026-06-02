@@ -19,10 +19,11 @@ from __future__ import annotations
 
 import json
 
+from conftest import fire_skill_hook
 from hook_helpers import assert_continue as _assert_continue
 from typer.testing import CliRunner
 
-from token_goat import cli, hooks_read, hooks_session, hooks_skill, paths, skill_cache
+from token_goat import cli, hooks_read, hooks_session, paths, skill_cache
 
 runner = CliRunner()
 
@@ -84,15 +85,6 @@ class TestFullSkillRoundTrip:
     rather than calling individual functions directly.
     """
 
-    def _fire_skill_hook(self, session_id: str, skill_name: str, body: str) -> dict:
-        payload = {
-            "session_id": session_id,
-            "tool_name": "Skill",
-            "tool_input": {"skill": skill_name},
-            "tool_response": body,
-        }
-        return hooks_skill.post_skill(payload)
-
     def test_hook_to_sidecar_with_marker_skill(self, tmp_data_dir):
         """Full chain: hook stores compact → session_start(compact) writes sidecar
         that mentions the skill name and recall command.
@@ -100,7 +92,7 @@ class TestFullSkillRoundTrip:
         sid = "e2e-marker-sidecar"
 
         # Step 1: PostToolUse Skill fires — stores body + compact.
-        resp = self._fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
+        resp = fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
         assert resp.get("continue") is True
 
         # Verify compact was stored (precondition for the sidecar to mention compact).
@@ -131,7 +123,7 @@ class TestFullSkillRoundTrip:
         sid = "e2e-pre-read-inject"
 
         # Step 1: fire hook.
-        self._fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
+        fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
 
         # Step 2: session_start(compact) writes sidecar.
         result = hooks_session.session_start({
@@ -166,7 +158,7 @@ class TestFullSkillRoundTrip:
         """Second pre_read after recovery injection must NOT re-inject."""
         sid = "e2e-no-double-inject"
 
-        self._fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
+        fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
         hooks_session.session_start({
             "session_id": sid,
             "source": "compact",
@@ -202,7 +194,7 @@ class TestFullSkillRoundTrip:
         """A skill with no COMPACT_END marker also appears in the recovery sidecar."""
         sid = "e2e-no-marker-sidecar"
 
-        self._fire_skill_hook(sid, "no-marker-skill", _LARGE_SKILL_BODY_NO_MARKER)
+        fire_skill_hook(sid, "no-marker-skill", _LARGE_SKILL_BODY_NO_MARKER)
         hooks_session.session_start({
             "session_id": sid,
             "source": "compact",
@@ -220,8 +212,8 @@ class TestFullSkillRoundTrip:
         """Two loaded skills both appear in the recovery sidecar."""
         sid = "e2e-two-skills-sidecar"
 
-        self._fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
-        self._fire_skill_hook(sid, "no-marker-skill", _LARGE_SKILL_BODY_NO_MARKER)
+        fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
+        fire_skill_hook(sid, "no-marker-skill", _LARGE_SKILL_BODY_NO_MARKER)
 
         hooks_session.session_start({
             "session_id": sid,
@@ -237,7 +229,7 @@ class TestFullSkillRoundTrip:
         """Compact extracted by the hook is readable after the full round-trip."""
         sid = "e2e-compact-survives"
 
-        self._fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
+        fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
 
         # Compact must be readable before and after the session_start + pre_read cycle.
         before = skill_cache.get_compact(sid, "test-skill")
@@ -384,19 +376,11 @@ class TestInstallSkillCommandDocumentation:
 class TestSkillListCLIAfterHook:
     """token-goat skill-list correctly reflects what the hook has stored."""
 
-    def _fire_hook(self, sid: str, name: str, body: str) -> None:
-        hooks_skill.post_skill({
-            "session_id": sid,
-            "tool_name": "Skill",
-            "tool_input": {"skill": name},
-            "tool_response": body,
-        })
-
     def test_skill_list_shows_hook_loaded_skill(self, tmp_data_dir, monkeypatch):
         """skill-list includes a skill that was loaded via the PostToolUse hook."""
         sid = "skill-list-hook-1"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
-        self._fire_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
+        fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
 
         result = runner.invoke(cli.app, ["skill-list", "--session-id", sid])
         assert result.exit_code == 0, f"skill-list failed: {result.stdout}"
@@ -408,7 +392,7 @@ class TestSkillListCLIAfterHook:
         """skill-list shows compact=yes for a skill with COMPACT_END marker."""
         sid = "skill-list-hook-compact"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
-        self._fire_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
+        fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
 
         result = runner.invoke(cli.app, ["skill-list", "--session-id", sid, "--json"])
         assert result.exit_code == 0, f"skill-list --json failed: {result.stdout}"
@@ -425,8 +409,8 @@ class TestSkillListCLIAfterHook:
         """skill-list shows both skills after two hook invocations."""
         sid = "skill-list-hook-two"
         monkeypatch.setenv("CLAUDE_SESSION_ID", sid)
-        self._fire_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
-        self._fire_hook(sid, "no-marker-skill", _LARGE_SKILL_BODY_NO_MARKER)
+        fire_skill_hook(sid, "test-skill", _LARGE_SKILL_BODY_WITH_MARKER)
+        fire_skill_hook(sid, "no-marker-skill", _LARGE_SKILL_BODY_NO_MARKER)
 
         result = runner.invoke(cli.app, ["skill-list", "--session-id", sid])
         assert result.exit_code == 0, f"skill-list failed: {result.stdout}"
