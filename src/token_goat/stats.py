@@ -72,6 +72,13 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # mechanical-pair-free and prevents drift when a new hint is added but its
     # overhead row is forgotten.
     "session_hint": SOURCE_HINT,
+    # session_hint_suppressed: per-file cooldown suppression events.  A session
+    # hint was not injected because the same file already received a
+    # tokens_saved>0 hint this session and has not been edited since.  The
+    # bytes_saved / tokens_saved are always 0 (the suppression is the saving,
+    # recorded under session_hint's parent row); this row exists to make the
+    # suppression rate visible in ``token-goat stats``.
+    "session_hint_suppressed": SOURCE_HINT,
     "diff_hint": SOURCE_HINT,
     # structured_file_hint: per-config-file (.toml/.yaml/.json/.ini/Dockerfile)
     # hint emitted by hooks_read.handle_pre_read_structured.  Same prevention

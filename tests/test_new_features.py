@@ -389,6 +389,7 @@ class TestPreReadGitHint:
                 hints_seen=set(),
                 hints_content_dedup={},
                 has_hint_fingerprint=lambda fp: False,
+                has_session_hint_been_emitted=lambda key: False,
                 get_hint_content_summary=lambda ch: None,
                 record_hint_content_seen=MagicMock(),
             )),

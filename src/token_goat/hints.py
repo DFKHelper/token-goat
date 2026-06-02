@@ -54,6 +54,7 @@ __all__ = [
     "_HINT_KIND_STRUCTURED",
     "_HINT_KIND_INDEX_ONLY",
     "_PROXIMITY_SLOP_LINES",
+    "_MAX_CACHED_RANGES_DISPLAY",
 ]
 
 # ---------------------------------------------------------------------------
@@ -474,6 +475,15 @@ _SYMBOLS_SUFFIX_MAX_CHARS = 60
 # is clearly iterating on it. Stop emitting dedup nags that the agent
 # is ignoring anyway.
 _SUPPRESS_HINT_AT_READ_COUNT: Final[int] = 5
+
+# Maximum number of cached ranges shown in the hint text.  When a file has
+# been read in many non-overlapping slices the range list can grow long;
+# listing all of them inflates the hint's own token cost.  Cap at 10 so
+# the hint stays terse while still naming the most-recently-read areas.
+# The 10 most-recently-accessed (highest-index) ranges are used, not the
+# first 10 in insertion order, because recent context is more relevant to
+# the agent's current task.
+_MAX_CACHED_RANGES_DISPLAY: Final[int] = 10
 
 # A request narrower than this (with an explicit limit set by the agent) is treated
 # as "surgical intent" — the agent is already doing the right thing by reading a
@@ -1137,8 +1147,15 @@ def _hint_from_cache(
         if cached_end > last_cached_end:
             last_cached_end = cached_end
 
-    cached_summary = ", ".join(f"{s}-{e}" for s, e in line_ranges[:3])
-    extra = f" (+{n_ranges - 3} more ranges)" if n_ranges > 3 else ""
+    # Trim the displayed ranges to the _MAX_CACHED_RANGES_DISPLAY most-recent
+    # (highest line numbers) to keep hint text terse.  The full range list is
+    # still used for overlap/exact-match logic above; only the human-readable
+    # summary is capped here.  Sorting by start line and taking the tail gives
+    # the most recently accessed sections of the file, which are highest signal.
+    _display_ranges = sorted(line_ranges, key=lambda r: r[0])[-_MAX_CACHED_RANGES_DISPLAY:]
+    _n_hidden = n_ranges - len(_display_ranges)
+    cached_summary = ", ".join(f"{s}-{e}" for s, e in _display_ranges)
+    extra = f" (+{_n_hidden} more ranges)" if _n_hidden > 0 else ""
 
     # Exact re-read of already-cached lines — the full request is avoidable.
     if exact_match:

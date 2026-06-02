@@ -1293,6 +1293,16 @@ class SessionCache:
     # calls in to_dict() when the set has not changed.  Invalidated by
     # _invalidate_json_cache() on any mutation.  Not persisted.
     _bash_dedup_sorted_cache: list[str] | None = field(default=None, repr=False, compare=False)
+    # Per-file hint cooldown: tracks normalized file paths for which a
+    # ``tokens_saved > 0`` session hint has already been emitted this session.
+    # When a file is in this set AND has not been edited since the hint was
+    # injected, further identical-kind hints for that file are suppressed and
+    # recorded as ``session_hint_suppressed`` stats instead of being injected
+    # again.  The set is cleared for a specific file by mark_file_edited().
+    # Not persisted to disk — a per-process-invocation guard only; losing it
+    # on process restart causes at most one extra hint injection, which is
+    # acceptable.
+    _session_hinted_files: set[str] = field(default_factory=set, repr=False, compare=False)
 
     def to_dict(self) -> _SessionDict:
         """Serialize to dict for JSON."""
@@ -1499,6 +1509,42 @@ class SessionCache:
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
         self._pending_hint_save = True
+
+    # ------------------------------------------------------------------
+    # Per-file hint cooldown helpers
+    # ------------------------------------------------------------------
+
+    def has_session_hint_been_emitted(self, file_key: str) -> bool:
+        """Return True when a tokens_saved>0 session hint was already emitted for *file_key*.
+
+        Called in pre-read before building a session hint to avoid injecting
+        the same hint twice for a file that hasn't changed since the last hint.
+
+        *file_key* must be the normalised path (output of ``_normalize_path``).
+        """
+        return file_key in self._session_hinted_files
+
+    def mark_session_hint_emitted(self, file_key: str) -> None:
+        """Record that a tokens_saved>0 session hint was emitted for *file_key*.
+
+        After this call, :meth:`has_session_hint_been_emitted` returns True for
+        *file_key* until the file is edited (which calls
+        :meth:`clear_session_hint_cooldown`).
+
+        *file_key* must be the normalised path (output of ``_normalize_path``).
+        """
+        self._session_hinted_files.add(file_key)
+
+    def clear_session_hint_cooldown(self, file_key: str) -> None:
+        """Remove *file_key* from the per-file hint cooldown set.
+
+        Called by :func:`mark_file_edited` so that the next Read after an edit
+        is eligible to receive a fresh session hint (the hint content changes
+        when the file changes).
+
+        *file_key* must be the normalised path (output of ``_normalize_path``).
+        """
+        self._session_hinted_files.discard(file_key)
 
     def get_file_access_count(self, file_path: str) -> int:
         """Return the number of times *file_path* has been accessed this session.
@@ -3661,6 +3707,10 @@ def mark_file_edited(
     entry = cache.files.get(key)
     if entry is not None:
         entry.last_edit_ts = now
+    # Clear the per-file hint cooldown so the next Read after an edit is
+    # eligible to receive a fresh session hint (hint content changes when the
+    # file changes, so the cooldown must not suppress the updated hint).
+    cache.clear_session_hint_cooldown(key)
     _LOG.debug(
         "mark_file_edited: %s (edit #%d this session, total edited files=%d)",
         key,

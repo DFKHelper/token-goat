@@ -2292,14 +2292,45 @@ def pre_read(payload: HookPayload) -> HookResponse:
                     hint_items.append(HintItem(diff_text, HINT_PRIORITY_HIGH))
 
         if not hint_items:
-            hint = build_read_hint(
-                session_id=session_id,
-                file_path=file_path,
-                offset=tool_input.get("offset"),
-                limit=tool_input.get("limit"),
-                cwd=cwd,
-                cache=cache,
+            # Per-file hint cooldown: if a tokens_saved>0 session hint was already
+            # emitted for this file this session AND the file has not been edited
+            # since then, suppress the hint to reduce noise.  Record the suppression
+            # as a session_hint_suppressed stat so operators can see the benefit.
+            _file_key = session._normalize_path(file_path)  # type: ignore[attr-defined]
+            _hint_cooldown_active = (
+                hasattr(cache, "has_session_hint_been_emitted")
+                and cache.has_session_hint_been_emitted(_file_key)
+                and not (entry is not None and entry.last_edit_ts > entry.last_read_ts)
             )
+            hint = None
+            if _hint_cooldown_active:
+                _LOG.debug(
+                    "pre-read: session hint suppressed (per-file cooldown) for %s",
+                    sanitize_log_str(file_path),
+                )
+                cache.record_hint_suppressed("session_hint_suppressed")
+                # Record to the stats DB as a zero-saving suppression event so
+                # ``token-goat stats`` can show the per-file cooldown savings.
+                try:
+                    from . import db as _db_mod  # noqa: PLC0415
+                    _db_mod.record_stat(
+                        None,
+                        "session_hint_suppressed",
+                        bytes_saved=0,
+                        tokens_saved=0,
+                        detail=sanitize_log_str(file_path, max_len=512),
+                    )
+                except Exception:  # noqa: BLE001 — fail-soft; never block the agent
+                    _LOG.debug("session_hint_suppressed: stat record failed", exc_info=True)
+            else:
+                hint = build_read_hint(
+                    session_id=session_id,
+                    file_path=file_path,
+                    offset=tool_input.get("offset"),
+                    limit=tool_input.get("limit"),
+                    cwd=cwd,
+                    cache=cache,
+                )
             if hint:
                 from .hints import _hint_fingerprint  # noqa: PLC0415
 
@@ -2331,6 +2362,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
                         # hint passes fingerprint dedup and will actually enter context.
                         from .hints import _record_hint_emitted as _rhe  # noqa: PLC0415
                         _rhe(cache, session._normalize_path(file_path))  # type: ignore[attr-defined]  # private function on lazy-loaded session module
+                        # Per-file cooldown: mark this file as already hinted so
+                        # subsequent reads (without an intervening edit) are suppressed.
+                        if hasattr(cache, "mark_session_hint_emitted"):
+                            cache.mark_session_hint_emitted(_file_key)
                     else:
                         _LOG.debug(
                             "pre-read: hint built for %s but tokens_saved=0; no stat recorded",
