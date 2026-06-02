@@ -1,4 +1,123 @@
-"""Shared test fixtures."""
+"""Shared test fixtures and helpers for the token-goat test suite.
+
+Quick reference — fixtures available to all test files
+=======================================================
+
+Data isolation (use one per test or test class)
+------------------------------------------------
+``tmp_data_dir`` (function-scoped)
+    Patches ``token_goat.paths.data_dir`` to a fresh pytest ``tmp_path``.
+    Use this in any test that calls ``skill_cache.store_output``,
+    ``session.load/save``, ``db.open_*``, or any other code that writes
+    under ``data_dir()``.  Yields the ``Path`` object so you can inspect
+    what was written.
+
+    To apply to every method in a class without repeating the parameter::
+
+        class TestFoo:
+            @pytest.fixture(autouse=True)
+            def _isolate_data_dir(self, tmp_data_dir):
+                self.tmp_data_dir = tmp_data_dir
+
+``module_tmp_data_dir`` (module-scoped)
+    Same as ``tmp_data_dir`` but shared across the whole test module.
+    Only safe for read-only test groups — tests that write embeddings or
+    mutate the indexed DB should stay at function scope.
+
+Home directory isolation
+------------------------
+``patched_home``
+    Creates a fake home dir under ``tmp_path/home`` and monkeypatches
+    ``Path.home()`` to point at it.  Used by install tests.
+
+Helper functions (module-level, import from conftest directly)
+--------------------------------------------------------------
+``make_project_from_root(root)``
+    Build a ``Project`` from a directory path.  Pair with ``tmp_data_dir``.
+
+``make_fake_git_repo(parent, name)``
+    Create a minimal ``.git/HEAD`` stub — no subprocesses, ~5x faster than
+    ``make_git_repo``.  Use when the test only needs project detection, not
+    actual git operations.
+
+``make_git_repo(parent, name, *, files, commits, ...)``
+    Create a real git repo under ``parent/name``.  Optional ``files`` dict
+    seeds a single initial commit; ``commits`` list seeds multiple commits.
+    Marked ``@pytest.mark.slow`` — inject into tests that need real history.
+
+``make_large_skill_body(size_bytes)``
+    Return a padded skill body string of at least *size_bytes* bytes.
+    Useful for testing gzip compression thresholds.
+
+``make_skill_body_with_sections(size_bytes)``
+    Return a multi-section skill body (## Overview, ## Rules, etc.) of
+    at least *size_bytes* bytes.  Used by section-extraction tests.
+
+``fire_skill_hook(session_id, skill_name, body)``
+    Fire the ``PostToolUse(Skill)`` hook and return the response dict.
+    Replaces the 8-line payload-build + ``hooks_skill.post_skill`` call.
+
+Skill preservation helpers (fixtures, import via parameter)
+-----------------------------------------------------------
+``skill_compress_cfg``
+    Returns ``SkillPreservationConfig(compress_bodies=True, compress_min_bytes=1024)``.
+    The most common skill-preservation config in iter tests.
+
+``patch_skill_config``
+    Context-manager factory.  Usage::
+
+        with patch_skill_config(skill_compress_cfg) as mock_cfg:
+            meta = skill_cache.store_output("sess", "skill", body)
+
+Session factory
+---------------
+``make_session`` (fixture, requires ``tmp_data_dir``)
+    Returns the ``_make_session`` factory.  Build a ``SessionCache`` with
+    optional backdated timestamp, pre-read files, edits, web fetches, and
+    bash runs.  See ``_make_session`` docstring for keyword args.
+
+Project fixtures (function-scoped, index the sample fixtures)
+-------------------------------------------------------------
+``ts_project``, ``py_project``, ``md_project``
+    Index the sample fixture directory and return just the ``Project``.
+
+``ts_project_tuple``, ``py_project_tuple``, ``md_project_tuple``
+    Same but return ``(proj_root, project)`` for tests that need the path.
+
+``ts_project_unindexed``, ``py_project_unindexed``, ``md_project_unindexed``
+    Copy sample fixture to tmp dir without indexing.  Tests that do their
+    own indexing use these.
+
+Module-scoped project fixtures (index once per test module)
+-----------------------------------------------------------
+``ts_project_module``, ``py_project_module``, ``md_project_module``
+    Module-scoped equivalents of the function-scoped project fixtures.
+    Only safe for read-only test groups.
+
+``ts_project_tuple_module``, ``py_project_tuple_module``, ``md_project_tuple_module``
+    Module-scoped ``(proj_root, project)`` tuple equivalents.
+
+Autouse fixtures (active for all tests, no import needed)
+---------------------------------------------------------
+``isolate_hooks_stderr_log``
+    Redirects ``hooks-stderr.log`` writes to an isolated temp file.
+    Prevents test hook crashes from polluting the real log.
+
+``isolate_registry``
+    Replaces ``winreg`` with an in-memory fake so no test touches the real
+    Windows registry.
+
+``isolate_worker_autostart``
+    Stubs ``worker._register_autostart`` to a no-op.
+
+``_disable_user_git_hooks`` (session-scoped)
+    Points ``core.hooksPath`` at an empty directory for the pytest session.
+    Prevents user-global lefthook from firing on every ``git init/commit``
+    (~20-30 s overhead per call on Windows).
+
+``isolate_hook_logging``
+    Prevents hook dispatch from writing to the real daily log file.
+"""
 import logging
 import shutil
 from pathlib import Path

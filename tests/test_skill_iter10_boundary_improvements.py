@@ -144,14 +144,13 @@ class TestLargeBodyWarning:
     _LARGE_BODY_THRESHOLD: int = 32_768  # 32 KB
 
     @pytest.fixture(autouse=True)
-    def _patch_data_dir(self, tmp_path, monkeypatch):
-        """Redirect paths.data_dir to tmp_path for every test in this class.
+    def _patch_data_dir(self, tmp_data_dir):
+        """Redirect paths.data_dir to a temp dir for every test in this class.
 
-        Replaces the per-test ``monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)``
-        that appeared in every test method.
+        Uses the shared ``tmp_data_dir`` fixture so tests do not write to the
+        real data directory.
         """
-        from token_goat import paths
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        self.tmp_data_dir = tmp_data_dir
 
     def _make_payload(self, skill_name: str, body: str) -> dict:
         return {
@@ -278,10 +277,13 @@ class TestCompactBudgetMarkdownBoundary:
     """Auto-extracted compact is cut at a markdown boundary, not a random newline."""
 
     @pytest.fixture(autouse=True)
-    def _patch_data_dir(self, tmp_path, monkeypatch):
-        """Redirect paths.data_dir to tmp_path for every test in this class."""
-        from token_goat import paths
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+    def _patch_data_dir(self, tmp_data_dir):
+        """Redirect paths.data_dir to a temp dir for every test in this class.
+
+        Uses the shared ``tmp_data_dir`` fixture so tests do not write to the
+        real data directory.
+        """
+        self.tmp_data_dir = tmp_data_dir
 
     def _make_multi_section_body(self) -> str:
         """Return a body > 4000 bytes whose auto-compact will have multiple sections."""

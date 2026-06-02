@@ -521,6 +521,11 @@ class TestStaleCompactHint:
 class TestSkillListJsonCompactStale:
     """skill-list --json includes compact_stale field per skill."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_data_dir(self, tmp_data_dir):
+        """Redirect skill_cache writes to a temp dir so tests don't pollute the real data dir."""
+        self.tmp_data_dir = tmp_data_dir
+
     def _store_skill_with_compact(self, session_id: str, skill_name: str, body: str,
                                    compact_sha_matches: bool) -> None:
         """Store a skill body and compact in the test cache."""
@@ -538,7 +543,7 @@ class TestSkillListJsonCompactStale:
         compact_body = "# Compact\n\nRule: do things correctly."
         skill_cache.store_compact(session_id, skill_name, compact_body, source_sha=source_sha)
 
-    def test_json_includes_compact_stale_true(self, tmp_path, monkeypatch, capsys):
+    def test_json_includes_compact_stale_true(self):
         """compact_stale=True when stored compact sha does not match body sha."""
         from typer.testing import CliRunner
 
@@ -546,12 +551,6 @@ class TestSkillListJsonCompactStale:
 
         session_id = "sess-iter13-stale-t"
         body = "# My Skill\n\nsome content that is unique for this test\n" * 20
-
-        monkeypatch.setattr(
-            "token_goat.skill_cache._skill_outputs_dir",
-            lambda: tmp_path / "skills",
-        )
-        (tmp_path / "skills").mkdir(parents=True, exist_ok=True)
 
         self._store_skill_with_compact(session_id, "myskill13", body, compact_sha_matches=False)
 
@@ -574,7 +573,7 @@ class TestSkillListJsonCompactStale:
             f"Expected compact_stale=True or null for stale compact, got: {skill_row['compact_stale']}"
         )
 
-    def test_json_includes_compact_stale_false_when_current(self, tmp_path, monkeypatch):
+    def test_json_includes_compact_stale_false_when_current(self):
         """compact_stale=False when compact sha matches body sha."""
         from typer.testing import CliRunner
 
@@ -582,12 +581,6 @@ class TestSkillListJsonCompactStale:
 
         session_id = "sess-iter13-fresh-t"
         body = "# My Fresh Skill\n\ncontent for fresh compact test\n" * 15
-
-        monkeypatch.setattr(
-            "token_goat.skill_cache._skill_outputs_dir",
-            lambda: tmp_path / "skills",
-        )
-        (tmp_path / "skills").mkdir(parents=True, exist_ok=True)
 
         self._store_skill_with_compact(session_id, "freshskill13", body, compact_sha_matches=True)
 
@@ -609,7 +602,7 @@ class TestSkillListJsonCompactStale:
             f"Expected compact_stale=False for current compact, got: {skill_row['compact_stale']}"
         )
 
-    def test_json_compact_stale_null_when_no_compact(self, tmp_path, monkeypatch):
+    def test_json_compact_stale_null_when_no_compact(self):
         """compact_stale=null (None) when no compact exists for the skill."""
         from typer.testing import CliRunner
 
@@ -618,12 +611,6 @@ class TestSkillListJsonCompactStale:
 
         session_id = "sess-iter13-nocompact"
         body = "# No Compact Skill\n\nno compact generated for this one\n" * 10
-
-        monkeypatch.setattr(
-            "token_goat.skill_cache._skill_outputs_dir",
-            lambda: tmp_path / "skills",
-        )
-        (tmp_path / "skills").mkdir(parents=True, exist_ok=True)
 
         # Store body only — no compact.
         meta = skill_cache.store_output(session_id, "nocompact13", body)

@@ -24,6 +24,11 @@ import pytest
 class TestSkillSectionCacheFallback:
     """skill_section uses the cached body when get_skill_file_path returns None."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_data_dir(self, tmp_data_dir):
+        """Redirect skill_cache writes to a temp dir so tests don't pollute the real data dir."""
+        self.tmp_data_dir = tmp_data_dir
+
     def _make_body(self) -> str:
         return (
             "# My Skill\n\n"
@@ -179,6 +184,11 @@ class TestSkillSectionCacheFallback:
 
 class TestSkillCompactAll:
     """skill_cache: batch compact regeneration staleness logic."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_data_dir(self, tmp_data_dir):
+        """Redirect skill_cache writes to a temp dir so tests don't pollute the real data dir."""
+        self.tmp_data_dir = tmp_data_dir
 
     def _store_skill_with_sidecar(
         self, name: str, body: str, session_id: str = "test-session-all12"
