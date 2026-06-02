@@ -4509,18 +4509,37 @@ def cmd_skill_list(
 
         compact_served_count = _compact_hit_by_name.get(meta.skill_name, 0)
 
+        # Determine whether the cached compact is stale relative to the body.
+        # A compact is stale when its embedded source_sha (written by store_compact)
+        # does not match the body's content_sha from the sidecar.  When no compact
+        # exists, compact_stale is None (not applicable).  When the compact predates
+        # source-sha tracking (no embedded sha), compact_stale is also None because
+        # we cannot determine staleness without the reference hash.
+        compact_stale: bool | None = None
+        if has_compact and compact_text:
+            compact_src_sha = skill_cache.extract_compact_source_sha(compact_text) or ""
+            body_sha = meta.content_sha or ""
+            if compact_src_sha and body_sha:
+                # Compare by prefix length of the stored compact SHA fragment
+                # (store_compact embeds only the first 12 hex chars).
+                frag_len = len(compact_src_sha)
+                compact_stale = body_sha[:frag_len] != compact_src_sha
+
         rows.append({
             "name": meta.skill_name,
             "body_tokens": body_tokens,
             "has_compact": has_compact,
             "compact_tokens": compact_tokens,
+            "compact_stale": compact_stale,
             "age_secs": round(age_secs),
             "compact_served_count": compact_served_count,
         })
 
     if json_output:
-        # Include compact_served_count in the JSON output so downstream
-        # tooling (e.g. dashboards) can track compact hit rates per skill.
+        # Each skill entry includes:
+        #   compact_served_count — hits in PreCompact manifests this session
+        #   compact_stale — True when the compact's source_sha differs from the
+        #     body's content_sha (null when no compact or SHA unavailable)
         _emit_json({
             "session_id": resolved_session,
             "skills": rows,
@@ -4533,7 +4552,7 @@ def cmd_skill_list(
 
     typer.echo(f"Session: {resolved_session}")
     typer.echo()
-    header = f"{'Skill':<40}  {'Body':>6}  {'Compact':>10}  {'Hits':>5}  {'Cached'}"
+    header = f"{'Skill':<40}  {'Body':>6}  {'Compact':>14}  {'Hits':>5}  {'Cached'}"
     typer.echo(header)
     typer.echo("-" * len(header))
     for row in rows:
@@ -4543,8 +4562,15 @@ def cmd_skill_list(
         compact_tokens = int(row["compact_tokens"])  # type: ignore[call-overload]
         age_secs = int(row["age_secs"])  # type: ignore[call-overload]
         compact_served = int(row.get("compact_served_count", 0))  # type: ignore[call-overload]
+        compact_stale = row.get("compact_stale")  # bool | None
 
-        compact_col = f"~{compact_tokens} tok" if has_compact else "no"
+        if not has_compact:
+            compact_col = "no"
+        elif compact_stale is True:
+            compact_col = f"~{compact_tokens} tok [stale]"
+        else:
+            compact_col = f"~{compact_tokens} tok"
+
         # Hits column: number of times the compact was inlined in a manifest.
         # "-" when no compact exists (hit is impossible), "0" when compact
         # exists but was never served yet (generated but not yet used).
@@ -4559,7 +4585,7 @@ def cmd_skill_list(
         else:
             age_str = f"{age_secs // 3600}h {(age_secs % 3600) // 60}m ago"
 
-        typer.echo(f"{name:<40}  ~{body_tokens:>5}  {compact_col:>10}  {hits_col:>5}  {age_str}")
+        typer.echo(f"{name:<40}  ~{body_tokens:>5}  {compact_col:>14}  {hits_col:>5}  {age_str}")
 
     typer.echo()
     typer.echo(f"{len(rows)} skill(s) cached in this session.")

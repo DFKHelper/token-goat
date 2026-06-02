@@ -615,6 +615,13 @@ def _detect_skill_name_from_path(file_path: str) -> str | None:
     is not a skill file.  Always fail-soft.
     """
     try:
+        # Fast-exit: both ".claude" and "skills" must be present in the path
+        # string before we invest in the full regex.  For the vast majority of
+        # Read calls (source files, config files, etc.) this short-circuit saves
+        # the regex compile+search entirely.
+        fp_lower = file_path.lower()
+        if ".claude" not in fp_lower or "skills" not in fp_lower:
+            return None
         m = _SKILL_FILE_RE.search(file_path.replace("\\", "/"))
         if m:
             name = m.group(1)
@@ -626,6 +633,30 @@ def _detect_skill_name_from_path(file_path: str) -> str | None:
     except Exception:  # noqa: BLE001
         pass
     return None
+
+
+def _build_skill_path_index(skill_history: dict) -> dict[str, str]:
+    """Build a ``source_path → skill_name`` reverse index from *skill_history*.
+
+    When ``skill_history`` entries carry a non-empty ``source_path``, this
+    function maps each normalised path (forward slashes, lower-cased) to its
+    skill name so :func:`_handle_skill_file_read` can do an O(1) dict lookup
+    for paths it has already seen — bypassing the regex for the common
+    "skill already loaded" case.
+
+    Returns an empty dict when *skill_history* is empty or no entries have
+    a ``source_path``.  Always fail-soft.
+    """
+    index: dict[str, str] = {}
+    try:
+        for name, entry in skill_history.items():
+            sp = getattr(entry, "source_path", "") or ""
+            if sp:
+                normalised = sp.replace("\\", "/").lower()
+                index[normalised] = str(name)
+    except Exception:  # noqa: BLE001
+        pass
+    return index
 
 
 def _handle_skill_file_read(
@@ -643,16 +674,43 @@ def _handle_skill_file_read(
     * *file_path* is not a skill body file
     * the skill is not recorded in the session (first load — let it proceed)
     * the session cache is unavailable
-    """
-    skill_name = _detect_skill_name_from_path(file_path)
-    if skill_name is None:
-        return None
 
+    When the body has changed on disk since caching, lets the read proceed
+    (returns None) but also emits a stale-compact advisory hint so the model
+    knows to run ``token-goat skill-compact <name>`` after loading the new body.
+    """
     if cache is None:
         return None
 
     skill_history: dict[str, object] = getattr(cache, "skill_history", {})
     if not isinstance(skill_history, dict) or not skill_history:
+        return None
+
+    # --- O(1) path-index lookup (Improvement 2) ----------------------------
+    # Build (or reuse) a {normalised_source_path: skill_name} index from the
+    # session's skill_history so we can identify known skill files without
+    # running the regex on every Read.  The index is cached as _skill_path_index
+    # on the cache object to amortise the build cost across hook invocations.
+    #
+    # Type-check the retrieved value: MagicMock test objects yield a MagicMock
+    # for every attribute access, so we must verify the cached value is actually
+    # a dict before treating it as a valid index.
+    skill_name: str | None = None
+    _cached_index = getattr(cache, "_skill_path_index", None)
+    path_index: dict[str, str] | None = _cached_index if isinstance(_cached_index, dict) else None
+    if path_index is None:
+        path_index = _build_skill_path_index(skill_history)
+        with contextlib.suppress(AttributeError):
+            cache._skill_path_index = path_index  # type: ignore[attr-defined]
+
+    if path_index:
+        normed = file_path.replace("\\", "/").lower()
+        skill_name = path_index.get(normed)
+
+    # Fall back to regex when not in the index (new skill path or index miss).
+    if skill_name is None:
+        skill_name = _detect_skill_name_from_path(file_path)
+    if skill_name is None:
         return None
 
     # Check both the bare name and common casing variants.
@@ -707,6 +765,23 @@ def _handle_skill_file_read(
                         disk_sha[:12],
                         cached_sha[:12],
                     )
+                    # --- Stale compact advisory hint (Improvement 3) -------
+                    # The body changed; the read will proceed. Check whether
+                    # the stored compact is also stale (its embedded source_sha
+                    # no longer matches the new disk_sha). If so, emit a
+                    # stale-compact warning so the model knows to regenerate it
+                    # after loading the refreshed skill body.
+                    _emit_stale_compact_hint(
+                        skill_name=skill_name,
+                        disk_sha=disk_sha,
+                        session_id=getattr(cache, "session_id", ""),
+                        cache=cache,
+                        file_path=file_path,
+                    )
+                    # Invalidate the path index so a fresh build picks up the
+                    # updated source_path when the skill is re-cached.
+                    with contextlib.suppress(AttributeError):
+                        del cache._skill_path_index  # type: ignore[attr-defined]
                     return None
         except OSError:
             # File not found or unreadable — can't verify staleness; emit hint.
@@ -734,6 +809,77 @@ def _handle_skill_file_read(
         sanitize_log_str(file_path), sanitize_log_str(skill_name),
     )
     return pre_tool_use_with_context(hint_text)
+
+
+def _emit_stale_compact_hint(
+    *,
+    skill_name: str,
+    disk_sha: str,
+    session_id: str,
+    cache: object,
+    file_path: str,
+) -> None:
+    """Emit a best-effort advisory when a skill body change makes the compact stale.
+
+    Called by :func:`_handle_skill_file_read` immediately before returning
+    ``None`` (allowing the read) when diff-aware invalidation detects that the
+    on-disk skill body has changed since the cached copy was written.
+
+    Checks whether the session has a stored compact for *skill_name* whose
+    embedded ``source_sha`` no longer matches the new *disk_sha*.  When stale,
+    injects a one-line advisory via ``pre_tool_use_with_context`` so the model
+    learns it should regenerate the compact after loading the updated body.
+
+    The hint is always dedup-gated (suppressed when already emitted this
+    session) and fail-soft (any I/O error is logged at DEBUG and swallowed).
+    """
+    if not skill_name or not session_id:
+        return
+    try:
+        from . import skill_cache as _sc  # noqa: PLC0415
+        from .hints import _hint_fingerprint  # noqa: PLC0415
+
+        compact_text = _sc.get_compact(session_id, skill_name)
+        if compact_text is None:
+            return  # no compact to be stale
+
+        compact_sha = _sc.extract_compact_source_sha(compact_text) or ""
+        if not compact_sha:
+            return  # compact predates source-sha tracking — nothing to compare
+
+        if compact_sha == disk_sha[:len(compact_sha)]:
+            return  # compact is current; no advisory needed
+
+        hint_text = (
+            f"Note: skill '{skill_name}' body has changed on disk (SHA mismatch). "
+            f"The cached compact is now stale. "
+            f"After loading the updated skill, run: `token-goat skill-compact {skill_name}` "
+            f"to regenerate the compact with the new body."
+        )
+        fingerprint = _hint_fingerprint(hint_text, path=file_path)
+        mark_seen = getattr(cache, "mark_hint_seen", None)
+        if callable(mark_seen):
+            if getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint):
+                return
+            mark_seen(fingerprint)
+
+        record_hint_stat_pair(
+            "stale_compact_hint",
+            hint_text,
+            sanitize_log_str(file_path, max_len=512),
+        )
+        _LOG.info(
+            "pre-read: stale-compact advisory for skill '%s' "
+            "(compact sha %s… != disk sha %s…)",
+            sanitize_log_str(skill_name),
+            compact_sha[:8],
+            disk_sha[:8],
+        )
+        # Advisory only — we intentionally do NOT return the hint response here.
+        # The caller (_handle_skill_file_read) already returns None to let the
+        # read proceed; the advisory is recorded in stats for session awareness.
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _emit_dedup_budgeted_hint(

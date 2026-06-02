@@ -29,6 +29,7 @@ __all__ = [
     "COMPACT_END_MARKER",
     "DEFAULT_MAX_TOTAL_BYTES",
     "MAX_COMPACT_FILE_COUNT",
+    "SIDECAR_SCHEMA_VERSION",
     "OUTPUT_FILENAME_RE",
     "SkillMeta",
     "content_hash",
@@ -81,7 +82,6 @@ from .cache_common import (
     sidecar_path_for,
     store_blob,
     truncate_tail_preserve,
-    write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
 from .util import get_logger
@@ -90,6 +90,17 @@ _LOG = get_logger("skill_cache")
 
 # One-shot orphan sweep flag: set to True after the sweep runs in this process.
 _sweep_done = False
+
+# Schema version embedded in every newly written SkillMeta sidecar JSON.
+# Increment this when a new required field is added so that read_sidecar can
+# detect entries written by older versions and handle them gracefully.
+#
+# v1  — original schema (output_id, skill_name, content_sha, body_bytes, ts,
+#        truncated; source_path added later as optional with "" default)
+# v2  — explicit schema_v field; source_path promoted from implicit default to
+#        tracked presence; read_sidecar detects v1 entries and back-fills
+#        source_path as "" without discarding the entry.
+SIDECAR_SCHEMA_VERSION: int = 2
 
 # Total byte budget for the on-disk skill body store.  When exceeded, the
 # oldest entries (by mtime) are evicted until the cap is met.  5 MB is small
@@ -1112,20 +1123,50 @@ def sidecar_meta_path(output_id: str) -> Path | None:
 
 
 def write_sidecar(meta: SkillMeta) -> None:
-    """Persist *meta* as a JSON sidecar next to its output file (best-effort)."""
-    write_sidecar_metadata(
-        sidecar_meta_path(meta.output_id),
-        meta,
-        log=_LOG,
-        log_prefix="skill_cache",
-    )
+    """Persist *meta* as a JSON sidecar next to its output file (best-effort).
+
+    Embeds :data:`SIDECAR_SCHEMA_VERSION` in the written JSON so that
+    :func:`read_sidecar` can detect entries created by older versions and
+    apply appropriate migration or ignore-and-continue logic.
+    """
+    import json as _json  # noqa: PLC0415
+    from dataclasses import asdict as _asdict  # noqa: PLC0415
+
+    sidecar_path = sidecar_meta_path(meta.output_id)
+    if sidecar_path is None:
+        return
+    try:
+        from . import paths as _paths  # noqa: PLC0415
+        payload = _asdict(meta)
+        payload["schema_v"] = SIDECAR_SCHEMA_VERSION
+        _paths.atomic_write_text(
+            sidecar_path,
+            _json.dumps(payload, ensure_ascii=False),
+        )
+    except OSError as exc:
+        _LOG.debug(
+            "skill_cache: sidecar write failed for %s: %s",
+            meta.output_id,
+            exc,
+        )
 
 
 def read_sidecar(output_id: str) -> SkillMeta | None:
     """Return parsed :class:`SkillMeta` from the sidecar JSON, or None.
 
-    Tolerant of older sidecars that lack fields added later — missing fields
-    fall back to safe defaults so an old cache survives a token-goat upgrade.
+    Tolerant of older sidecars that lack fields added in later schema versions:
+
+    * **v1 → v2**: ``source_path`` was added as an optional field with ``""``
+      default; older entries simply omit it.  :func:`read_sidecar` back-fills
+      the default so callers never see ``None`` for this field.
+    * Entries with ``schema_v`` greater than :data:`SIDECAR_SCHEMA_VERSION`
+      (written by a future version of token-goat) are loaded with best-effort
+      parsing — unknown fields are silently ignored, known fields retain their
+      safe defaults when absent.
+
+    Returns ``None`` only when the file is missing, unreadable, or the JSON
+    payload cannot be coerced into a valid :class:`SkillMeta` at all (e.g. the
+    required ``output_id`` field is a dict rather than a string).
     """
     p = sidecar_meta_path(output_id)
     if p is None:
@@ -1134,6 +1175,22 @@ def read_sidecar(output_id: str) -> SkillMeta | None:
     if data is None:
         return None
     try:
+        # Log a debug note when the stored schema version is ahead of ours so
+        # operators can tell if a downgrade is in play without failing loudly.
+        stored_v = data.get("schema_v")
+        if stored_v is not None:
+            try:
+                stored_v_int = int(stored_v)
+            except (TypeError, ValueError):
+                stored_v_int = 0
+            if stored_v_int > SIDECAR_SCHEMA_VERSION:
+                _LOG.debug(
+                    "read_sidecar: entry %s has schema_v=%s > current %s; "
+                    "unknown fields will be ignored",
+                    output_id,
+                    stored_v,
+                    SIDECAR_SCHEMA_VERSION,
+                )
         return SkillMeta(
             output_id=str(data.get("output_id", output_id)),
             skill_name=str(data.get("skill_name", "")),
@@ -1141,6 +1198,7 @@ def read_sidecar(output_id: str) -> SkillMeta | None:
             body_bytes=int(data.get("body_bytes", 0)),
             ts=float(data.get("ts", 0.0)),
             truncated=bool(data.get("truncated", False)),
+            # v1 entries lack source_path; default to "" (safe for all callers).
             source_path=str(data.get("source_path", "")),
         )
     except (TypeError, ValueError):
