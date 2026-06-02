@@ -2149,3 +2149,179 @@ class TestSkillCompactCLIMarkerPreference:
         data = json.loads(result.output.strip())
         assert data["saved_bytes"] > 0, "Expected positive byte savings for marker compact"
         assert data["returned_bytes"] < data["body_bytes"], "Compact must be smaller than full body"
+
+
+# ---------------------------------------------------------------------------
+# Compact file eviction
+# ---------------------------------------------------------------------------
+
+class TestCompactFileEviction:
+    """Compact files ({session}-{name}-compact, no extension) accumulate outside the
+    main LRU eviction path (which only targets .txt body files).  Two guards exist:
+
+    1. _sweep_skill_orphans: age-based sweep removes compacts older than orphan_age_secs.
+    2. _evict_compact_files: count-based eviction removes oldest compacts when the count
+       exceeds MAX_COMPACT_FILE_COUNT.
+    """
+
+    def _make_compact(self, cache_dir, name: str, age_secs: float = 0.0):
+        """Write a compact file (no extension) and backdate its mtime."""
+        fp = cache_dir / name
+        fp.write_text("compact content", encoding="utf-8")
+        if age_secs > 0:
+            old = time.time() - age_secs
+            os.utime(fp, (old, old))
+        return fp
+
+    def _reset_sweep(self, monkeypatch) -> None:
+        monkeypatch.setattr(skill_cache, "_sweep_done", False)
+
+    def _force_sweep_enabled(self, monkeypatch) -> None:
+        from token_goat import config as cfg_module  # noqa: PLC0415
+        orig_load = cfg_module.load
+        def _enabled_load():
+            c = orig_load()
+            c.skill_preservation.orphan_sweep_enabled = True
+            return c
+        monkeypatch.setattr(cfg_module, "load", _enabled_load)
+
+    # -- _COMPACT_FILENAME_RE matches correct names --------------------------
+
+    def test_compact_filename_re_matches_valid(self):
+        """_COMPACT_FILENAME_RE accepts valid compact file names."""
+        pattern = skill_cache._COMPACT_FILENAME_RE
+        assert pattern.match("abc123-ralph-compact")
+        assert pattern.match("a" * 16 + "-improve-compact")
+        assert pattern.match("session-fragment-my_skill-compact")
+
+    def test_compact_filename_re_rejects_txt(self):
+        """_COMPACT_FILENAME_RE rejects .txt body file names."""
+        pattern = skill_cache._COMPACT_FILENAME_RE
+        assert not pattern.match("abc123-ralph-somesha.txt")
+        assert not pattern.match("abc123-ralph.txt")
+
+    def test_compact_filename_re_rejects_no_compact_suffix(self):
+        """_COMPACT_FILENAME_RE rejects names that don't end with -compact."""
+        pattern = skill_cache._COMPACT_FILENAME_RE
+        assert not pattern.match("abc123-ralph-summary")
+        assert not pattern.match("abc123-ralph-COMPACT")  # case-sensitive
+
+    # -- _sweep_skill_orphans: age-based compact sweep -----------------------
+
+    def test_sweep_removes_old_compact_files(self, tmp_data_dir, monkeypatch):
+        """_sweep_skill_orphans deletes compact files older than orphan_age_secs."""
+        self._reset_sweep(monkeypatch)
+        self._force_sweep_enabled(monkeypatch)
+        cache_dir = skill_cache._skill_outputs_dir()
+        old_compact = self._make_compact(
+            cache_dir, "abc123-ralph-compact", age_secs=8 * 86400
+        )
+        skill_cache._sweep_skill_orphans()
+        assert not old_compact.exists(), "old compact file should have been swept"
+
+    def test_sweep_leaves_recent_compact_files(self, tmp_data_dir, monkeypatch):
+        """_sweep_skill_orphans does NOT delete compact files newer than orphan_age_secs."""
+        self._reset_sweep(monkeypatch)
+        self._force_sweep_enabled(monkeypatch)
+        cache_dir = skill_cache._skill_outputs_dir()
+        recent_compact = self._make_compact(
+            cache_dir, "def456-improve-compact", age_secs=3600
+        )
+        skill_cache._sweep_skill_orphans()
+        assert recent_compact.exists(), "recent compact must not be swept"
+
+    def test_sweep_handles_mix_of_body_and_compact(self, tmp_data_dir, monkeypatch):
+        """Sweep correctly removes old body AND old compact files in the same pass."""
+        self._reset_sweep(monkeypatch)
+        self._force_sweep_enabled(monkeypatch)
+        cache_dir = skill_cache._skill_outputs_dir()
+        old_body_name = "a" * 16 + "-myskill-" + "b" * 16 + ".txt"
+        old_body = self._make_compact(cache_dir, old_body_name, age_secs=8 * 86400)
+        old_compact = self._make_compact(
+            cache_dir, "aa12345678901234-myskill-compact", age_secs=8 * 86400
+        )
+        recent_compact = self._make_compact(
+            cache_dir, "bb12345678901234-other-compact", age_secs=3600
+        )
+        skill_cache._sweep_skill_orphans()
+        assert not old_body.exists(), "old body should be swept"
+        assert not old_compact.exists(), "old compact should be swept"
+        assert recent_compact.exists(), "recent compact must survive"
+
+    # -- _evict_compact_files: count-based eviction --------------------------
+
+    def test_evict_compact_no_op_below_cap(self, tmp_data_dir):
+        """_evict_compact_files is a no-op when compact count is below the cap."""
+        cache_dir = skill_cache._skill_outputs_dir()
+        names = [f"s{i:016d}-skill{i}-compact" for i in range(3)]
+        files = [self._make_compact(cache_dir, n) for n in names]
+        skill_cache._evict_compact_files(max_compact_files=10)
+        for f in files:
+            assert f.exists(), f"file {f.name} should survive under-cap eviction"
+
+    def test_evict_compact_removes_oldest_when_over_cap(self, tmp_data_dir):
+        """_evict_compact_files removes the oldest compact files when count exceeds cap."""
+        cache_dir = skill_cache._skill_outputs_dir()
+        # Create 5 compacts; make the first 2 old, the last 3 recent.
+        old_files = []
+        for i in range(2):
+            name = f"old{i:016d}-skill{i}-compact"
+            fp = self._make_compact(cache_dir, name, age_secs=1000 + i * 10)
+            old_files.append(fp)
+        recent_files = []
+        for i in range(3):
+            name = f"new{i:016d}-skill{i}-compact"
+            fp = self._make_compact(cache_dir, name)
+            recent_files.append(fp)
+
+        # Cap at 3 — the 2 oldest should be evicted.
+        skill_cache._evict_compact_files(max_compact_files=3)
+
+        for f in old_files:
+            assert not f.exists(), f"oldest compact {f.name} should have been evicted"
+        for f in recent_files:
+            assert f.exists(), f"recent compact {f.name} should survive"
+
+    def test_evict_compact_ignores_txt_files(self, tmp_data_dir):
+        """_evict_compact_files must not touch .txt body files."""
+        cache_dir = skill_cache._skill_outputs_dir()
+        # Create a .txt body file and a compact file.
+        body_name = "a" * 16 + "-mybody-" + "b" * 16 + ".txt"
+        body_file = cache_dir / body_name
+        body_file.write_text("body content", encoding="utf-8")
+        compact_file = self._make_compact(
+            cache_dir, "cc12345678901234-mybody-compact", age_secs=9999
+        )
+        # Cap at 0 — only compact files are candidates.
+        skill_cache._evict_compact_files(max_compact_files=0)
+        assert body_file.exists(), ".txt body must not be touched by compact eviction"
+        assert not compact_file.exists(), "compact file should be evicted"
+
+    def test_evict_via_evict_old_entries(self, tmp_data_dir):
+        """evict_old_entries calls the compact file eviction as a side-effect."""
+        cache_dir = skill_cache._skill_outputs_dir()
+        # Create more compact files than the cap allows.
+        for i in range(5):
+            self._make_compact(cache_dir, f"s{i:016d}-evt{i}-compact", age_secs=i * 10 + 1)
+
+        # A very small cap triggers compact eviction.
+        skill_cache.evict_old_entries(
+            max_total_bytes=10 * 1024 * 1024,  # generous byte cap so no body eviction
+            max_compact_files=2,
+        )
+        # Count surviving compact files.
+        remaining = [
+            fp for fp in cache_dir.iterdir()
+            if skill_cache._COMPACT_FILENAME_RE.match(fp.name)
+        ]
+        assert len(remaining) <= 2, (
+            f"Expected at most 2 compact files after eviction, found {len(remaining)}: "
+            + ", ".join(fp.name for fp in remaining)
+        )
+
+    def test_evict_compact_missing_dir_is_noop(self, tmp_path, monkeypatch):
+        """_evict_compact_files is a no-op when the cache dir does not exist."""
+        monkeypatch.setattr(
+            skill_cache, "_skill_outputs_dir", lambda: tmp_path / "nonexistent_dir"
+        )
+        skill_cache._evict_compact_files(max_compact_files=0)  # must not raise

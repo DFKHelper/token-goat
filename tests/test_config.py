@@ -651,6 +651,90 @@ class TestEnvIntHelper:
         assert result == 42
         assert any("not an int" in record.message for record in caplog.records)
 
+
+class TestSkillPreservationForwardCompat:
+    """Forward-compatibility: unknown keys inside [skill_preservation] must be silently
+    tolerated — no crash, known keys still take effect.
+
+    This guards against future config additions breaking installs that have not yet
+    been updated to understand the new keys.
+    """
+
+    def _reset_cache(self) -> None:
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+
+    def test_unknown_key_does_not_crash(self, tmp_path, monkeypatch):
+        """A config file with an unknown key inside [skill_preservation] must load without error."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[skill_preservation]\n"
+            "enabled = true\n"
+            "future_key_not_yet_known = 999\n"
+            "another_future_option = \"hello\"\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        # Must not raise.
+        cfg = cfg_mod.load()
+        # Known keys still load correctly.
+        assert cfg.skill_preservation.enabled is True
+
+    def test_known_keys_survive_alongside_unknown(self, tmp_path, monkeypatch):
+        """Known keys in [skill_preservation] are correctly applied even when unknown
+        keys are present in the same section."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            "[skill_preservation]\n"
+            "truncation_budget_tokens = 1200\n"
+            "compress_bodies = false\n"
+            "compress_min_bytes = 8192\n"
+            "unknown_future_flag = true\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.skill_preservation.truncation_budget_tokens == 1200
+        assert cfg.skill_preservation.compress_bodies is False
+        assert cfg.skill_preservation.compress_min_bytes == 8192
+
+    def test_all_known_keys_round_trip(self, tmp_path, monkeypatch):
+        """All six documented [skill_preservation] keys survive a TOML write + read cycle."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        cfg.skill_preservation.enabled = True
+        cfg.skill_preservation.orphan_sweep_enabled = False
+        cfg.skill_preservation.orphan_age_secs = 172800  # 2 days
+        cfg.skill_preservation.truncation_budget_tokens = 600
+        cfg.skill_preservation.compress_bodies = False
+        cfg.skill_preservation.compress_min_bytes = 4096
+        cfg_mod.save(cfg)
+        self._reset_cache()
+
+        cfg2 = cfg_mod.load()
+        assert cfg2.skill_preservation.enabled is True
+        assert cfg2.skill_preservation.orphan_sweep_enabled is False
+        assert cfg2.skill_preservation.orphan_age_secs == 172800
+        assert cfg2.skill_preservation.truncation_budget_tokens == 600
+        assert cfg2.skill_preservation.compress_bodies is False
+        assert cfg2.skill_preservation.compress_min_bytes == 4096
+
     def test_env_int_logs_on_out_of_range(self, monkeypatch, caplog):
         """When env var is out of range, _env_int logs a warning."""
         import logging

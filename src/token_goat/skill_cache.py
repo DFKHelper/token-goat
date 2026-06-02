@@ -28,6 +28,7 @@ from __future__ import annotations
 __all__ = [
     "COMPACT_END_MARKER",
     "DEFAULT_MAX_TOTAL_BYTES",
+    "MAX_COMPACT_FILE_COUNT",
     "OUTPUT_FILENAME_RE",
     "SkillMeta",
     "content_hash",
@@ -95,6 +96,23 @@ _sweep_done = False
 # enough to be invisible on any modern disk while big enough to hold dozens of
 # skill bodies (most are 5–30 KB; the largest known skill is ~50 KB).
 DEFAULT_MAX_TOTAL_BYTES: int = 5 * 1024 * 1024
+
+# Maximum number of compact files allowed in the cache directory.  Compact
+# files have no extension (``{session}-{name}-compact``) so they are invisible
+# to the `.txt`-only LRU eviction in :func:`evict_old_entries`.  Without a
+# count cap they accumulate indefinitely — one compact per (session, skill)
+# pair per ``token-goat skill-compact`` invocation.  Each file is tiny
+# (usually < 2 KB) so a byte cap would never fire, but a count cap of 500
+# gives plenty of headroom for active use (a session with 10 skills × 50
+# compactions = 500) while bounding the long-term tail of orphaned compacts.
+MAX_COMPACT_FILE_COUNT: int = 500
+
+# Compact file name regex: ``{session}-{safe_name}-compact`` with no extension.
+# Session fragment and safe_name are restricted to ``[a-zA-Z0-9_-]``.  The
+# trailing ``-compact`` literal is the distinguishing token.
+_COMPACT_FILENAME_RE: re.Pattern[str] = re.compile(
+    r"^[a-zA-Z0-9_\-]{1,80}-compact$"
+)
 
 # Sentinel placed at the head of every output file marking the truncation
 # boundary, so a reader can immediately see when the stored bytes are partial.
@@ -594,6 +612,11 @@ def _sweep_skill_orphans() -> None:
     (default 7 days) belongs to a dead session and can be safely removed.
     Sidecars (``.json``) next to removed blobs are also deleted.
 
+    Also sweeps compact files (``{session}-{name}-compact``, no extension).
+    These are invisible to the `.txt`-only LRU eviction in
+    :func:`evict_old_entries` and would otherwise accumulate indefinitely
+    after their corresponding session ends.
+
     Runs once per process (guarded by ``_sweep_done`` flag) at first
     ``store_output()`` call. Fail-soft: any I/O error is logged and skipped.
     Never raises.
@@ -620,22 +643,35 @@ def _sweep_skill_orphans() -> None:
 
     now = time.time()
     removed = 0
+    compact_removed = 0
     try:
         for fp in cache_dir.iterdir():
             if fp.suffix == ".json":
                 continue
-            if not OUTPUT_FILENAME_RE.match(fp.name):
+            is_body = OUTPUT_FILENAME_RE.match(fp.name)
+            is_compact = _COMPACT_FILENAME_RE.match(fp.name)
+            if not is_body and not is_compact:
                 continue
             try:
                 age = now - fp.stat().st_mtime
                 if age <= age_secs:
                     continue
                 fp.unlink()
-                removed += 1
-                _LOG.debug("_sweep_skill_orphans: removed %s (age=%.1f days)", fp.name, age / 86400.0)
-                sidecar = fp.with_suffix(".json")
-                with contextlib.suppress(OSError):
-                    sidecar.unlink()
+                if is_body:
+                    removed += 1
+                    _LOG.debug(
+                        "_sweep_skill_orphans: removed body %s (age=%.1f days)",
+                        fp.name, age / 86400.0,
+                    )
+                    sidecar = fp.with_suffix(".json")
+                    with contextlib.suppress(OSError):
+                        sidecar.unlink()
+                else:
+                    compact_removed += 1
+                    _LOG.debug(
+                        "_sweep_skill_orphans: removed compact %s (age=%.1f days)",
+                        fp.name, age / 86400.0,
+                    )
             except OSError as exc:
                 _LOG.debug("_sweep_skill_orphans: failed to remove %s: %s", fp.name, exc)
     except OSError as exc:
@@ -644,6 +680,8 @@ def _sweep_skill_orphans() -> None:
 
     if removed > 0:
         _LOG.info("_sweep_skill_orphans: removed %d stale skill body blob(s)", removed)
+    if compact_removed > 0:
+        _LOG.info("_sweep_skill_orphans: removed %d stale compact file(s)", compact_removed)
 
 
 def store_output(
@@ -744,13 +782,87 @@ def load_output_meta(output_id: str) -> OutputStatDict | None:
     return load_output_meta_stat(output_id, _skill_outputs_dir, "skill_cache")
 
 
-def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
-    """Evict the oldest entries until total size is at or under *max_total_bytes*."""
-    return evict_cache_dir(
+def evict_old_entries(
+    *,
+    max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+    max_compact_files: int = MAX_COMPACT_FILE_COUNT,
+) -> int:
+    """Evict the oldest body entries until total size is at or under *max_total_bytes*.
+
+    Also enforces a count cap on compact files (``{session}-{name}-compact``,
+    no extension).  Compact files are tiny (usually < 2 KB each) so the
+    byte-cap eviction that :func:`cache_common.evict_cache_dir` runs on
+    ``.txt`` body files would never reach them — without a count cap they
+    accumulate indefinitely.  The oldest compacts (by mtime) are removed first
+    when the count exceeds *max_compact_files*.
+
+    Returns the number of body files removed by the LRU eviction (the compact
+    count eviction runs separately and does not add to this total).
+    """
+    removed = evict_cache_dir(
         cache_dir_fn=_skill_outputs_dir,
         log_name="skill_cache",
         max_total_bytes=max_total_bytes,
     )
+    _evict_compact_files(max_compact_files=max_compact_files)
+    return removed
+
+
+def _evict_compact_files(*, max_compact_files: int = MAX_COMPACT_FILE_COUNT) -> None:
+    """Remove the oldest compact files when the count exceeds *max_compact_files*.
+
+    Compact files are named ``{session}-{name}-compact`` with no extension and
+    are not tracked by the byte-cap LRU eviction that targets ``.txt`` body
+    files.  This function provides a separate count-based guard so a long-lived
+    install (many sessions × many skills) does not accumulate thousands of
+    tiny compact files.
+
+    Fail-soft: any I/O error is logged at DEBUG and skipped.  Never raises.
+    """
+    try:
+        cache_dir = _skill_outputs_dir()
+        if not cache_dir.is_dir():
+            return
+
+        compacts: list[tuple[Path, float]] = []
+        try:
+            for fp in cache_dir.iterdir():
+                if not _COMPACT_FILENAME_RE.match(fp.name):
+                    continue
+                try:
+                    st = fp.stat()
+                except OSError:
+                    continue
+                compacts.append((fp, float(st.st_mtime)))
+        except OSError as exc:
+            _LOG.debug("skill_cache._evict_compact_files: directory scan failed: %s", exc)
+            return
+
+        if len(compacts) <= max_compact_files:
+            return
+
+        # Sort oldest-first and evict the surplus.
+        compacts.sort(key=lambda t: t[1])
+        to_evict = len(compacts) - max_compact_files
+        evicted = 0
+        for fp, _mtime in compacts[:to_evict]:
+            try:
+                fp.unlink(missing_ok=True)
+                evicted += 1
+                _LOG.debug("skill_cache._evict_compact_files: removed %s", fp.name)
+            except OSError as exc:
+                _LOG.debug(
+                    "skill_cache._evict_compact_files: failed to remove %s: %s",
+                    fp.name, exc,
+                )
+
+        if evicted > 0:
+            _LOG.info(
+                "skill_cache._evict_compact_files: evicted %d compact file(s) (cap=%d)",
+                evicted, max_compact_files,
+            )
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("skill_cache._evict_compact_files: unexpected error: %s", exc)
 
 
 def invalidate_for_path(file_path: str) -> int:

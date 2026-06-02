@@ -1561,6 +1561,8 @@ def save(config: Config) -> None:
             "orphan_sweep_enabled": sp.orphan_sweep_enabled,
             "orphan_age_secs": sp.orphan_age_secs,
             "truncation_budget_tokens": sp.truncation_budget_tokens,
+            "compress_bodies": sp.compress_bodies,
+            "compress_min_bytes": sp.compress_min_bytes,
         },
         "image_shrink": {
             "prefer_avif": is_cfg.prefer_avif,
