@@ -135,9 +135,10 @@ _LOG = get_logger("session")
 _IS_WINDOWS: bool = sys.platform == "win32"
 
 _T = TypeVar("_T")
+_V = TypeVar("_V")  # Entry-value type for _lookup_in_cache
 
 
-def _coerce_ts(raw: Any) -> float:
+def _coerce_ts(raw: object) -> float:
     """Return *raw* as float if it is numeric, else 0.0."""
     return float(raw) if isinstance(raw, (int, float)) else 0.0
 
@@ -159,10 +160,10 @@ def _safe_max_ts(a: float, b: float) -> float:
     return result if result != -math.inf else 0.0
 
 
-def _coerce_nonneg_int(raw: Any, default: int = 0) -> int:
+def _coerce_nonneg_int(raw: object, default: int = 0) -> int:
     """Return ``int(raw)`` clamped to ≥ 0, or *default* on error."""
     try:
-        return max(0, int(raw))
+        return max(0, int(raw))  # type: ignore[call-overload]  # deliberate: coerces arbitrary input via int(); TypeError caught below
     except (TypeError, ValueError):
         return default
 
@@ -3901,15 +3902,18 @@ def mark_bash_run(
 
 def _lookup_in_cache(
     session_id: str,
-    accessor: Callable[[SessionCache], dict[str, Any]],
+    accessor: Callable[[SessionCache], dict[str, _V]],
     key: str,
     cache: SessionCache | None,
-) -> Any | None:
+) -> _V | None:
     """Resolve *session_id*, guard on unavailable, then return ``accessor(cache).get(key)``.
 
     Shared by :func:`lookup_bash_entry`, :func:`lookup_web_entry`, and
     :func:`lookup_skill_entry` — they differ only in which dict field is accessed.
     Returns ``None`` on invalid session_id (ValueError) or unavailable cache.
+
+    The generic parameter ``_V`` ties the return type to the dict value type
+    declared by *accessor*, so callers get a typed result without a cast.
     """
     try:
         cache = _resolve_cache(session_id, cache)

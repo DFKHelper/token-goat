@@ -4646,7 +4646,7 @@ def cmd_skill_list(
         compact_tokens = int(row["compact_tokens"])  # type: ignore[call-overload]
         age_secs = int(row["age_secs"])  # type: ignore[call-overload]
         compact_served = int(row.get("compact_served_count", 0))  # type: ignore[call-overload]
-        compact_stale = row.get("compact_stale")  # bool | None
+        compact_stale = cast("bool | None", row.get("compact_stale"))
 
         if not has_compact:
             compact_col = "no"

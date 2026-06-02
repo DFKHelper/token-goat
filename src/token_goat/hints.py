@@ -4104,7 +4104,7 @@ def build_test_file_hint(
 
 
 def build_pinned_hint(
-    session_cache: Any,
+    session_cache: session.SessionCache | None,
     file_path: str,
     symbol_name: str,
 ) -> HintItem | None:
@@ -4119,8 +4119,8 @@ def build_pinned_hint(
     not match any pin.
 
     Args:
-        session_cache: A :class:`SessionCache` instance (or any object with a
-            ``pinned_symbols`` attribute).  Accepts ``None`` gracefully.
+        session_cache: A :class:`SessionCache` instance, or ``None`` (returns
+            ``None`` immediately when absent).
         file_path: The path of the file being read (raw, as supplied to the tool).
         symbol_name: The symbol name extracted from the read request.  May be
             empty when the read is not symbol-targeted, in which case the

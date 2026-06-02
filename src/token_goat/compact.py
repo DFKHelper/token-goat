@@ -41,7 +41,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, TypeVar
 from urllib.parse import urlparse
 
 from . import paths
@@ -4137,10 +4137,13 @@ def _apply_section_line_cap(lines: list[str], cap: int) -> list[str]:
     return kept_lines
 
 
+_E = TypeVar("_E")  # Entry type for _render_section — ties list element to formatter argument
+
+
 def _render_section(
     header: str,
-    entries: list[Any],
-    fmt: Callable[[Any], str],
+    entries: list[_E],
+    fmt: Callable[[_E], str],
 ) -> list[str]:
     """Render a manifest section as a list of lines.
 

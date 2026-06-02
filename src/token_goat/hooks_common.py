@@ -723,7 +723,7 @@ def load_session_safe(session_id: str) -> SessionCache | None:
         return None
 
 
-def update_session(session_id: str, fn: Callable[[Any], None]) -> bool:
+def update_session(session_id: str, fn: Callable[[SessionCache], None]) -> bool:
     """Load session cache, call a mutation function, and save — fail-soft pattern.
 
     Centralises the load→mutate→save pattern that appears across multiple hook
