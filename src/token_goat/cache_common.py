@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import stat as _stat_module
+import sys
 import time
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -529,6 +530,20 @@ def safe_join_output_id(
         candidate.relative_to(base)
     except ValueError:
         _log.warning("%s: rejected output_id escaping base dir: %r", log_name, output_id[:200])
+        return None
+    # Windows MAX_PATH guard: paths >= 260 chars cause silent OSError failures on
+    # systems without the LongPathsEnabled registry key.  The filename component
+    # is capped by OUTPUT_FILENAME_RE to 84 chars (80 id + ".txt"), so this guard
+    # only fires when the data directory itself is unusually deep (long username,
+    # managed profile, OneDrive redirection, etc.).  Returning None is safe: the
+    # caller will treat it as a cache miss rather than writing to an unreachable
+    # path that silently fails.
+    if sys.platform == "win32" and len(str(candidate)) >= 260:
+        _log.warning(
+            "%s: rejected output_id — resulting path exceeds Windows MAX_PATH (260 chars): "
+            "len=%d path=%r",
+            log_name, len(str(candidate)), str(candidate)[:260],
+        )
         return None
     return candidate
 

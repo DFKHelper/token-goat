@@ -2347,6 +2347,56 @@ def _run_index_with_timeout(
         executor.shutdown(wait=False)
 
 
+def _invalidate_skill_cache_entries(entries: list[DirtyQueueEntry]) -> None:
+    """Purge skill cache entries for any dirty queue entries that are skill files.
+
+    A skill body file can be edited between two loads of the same skill within
+    one session.  Without this step, the worker re-indexes the file but leaves
+    the now-stale cached body in ``data_dir()/skills/``.  The next
+    ``token-goat skill-body`` recall (or the compaction manifest) would then
+    serve the old content.
+
+    The check is cheap: it only reconstructs the full path when the relative
+    path contains ``.claude/skills/`` (case-insensitive).  This avoids the
+    overhead of calling ``skill_cache.invalidate_for_path`` on every edited
+    source file in the project.
+
+    Fail-soft: called inside a broad ``except Exception`` wrapper in the caller.
+    """
+    # Quick pre-filter: skip the import entirely when no entry looks like a skill.
+    _SKILL_HINT = (r"\.claude" + os.sep + "skills").lower()
+    _SKILL_HINT_FWD = ".claude/skills"
+
+    candidate_entries = [
+        e for e in entries
+        if (
+            _SKILL_HINT_FWD in (e.get("path") or "").lower()
+            or _SKILL_HINT in (e.get("path") or "").lower()
+        )
+    ]
+    if not candidate_entries:
+        return
+
+    from . import skill_cache  # noqa: PLC0415
+
+    for entry in candidate_entries:
+        rel = entry.get("path") or ""
+        root = entry.get("project_root") or ""
+        if not rel:
+            continue
+        # Build the full path: project_root + rel when root is available,
+        # otherwise fall back to using rel alone (hooks always set project_root
+        # so this fallback is a belt-and-suspenders guard).
+        full_path = str(Path(root) / rel) if root else rel
+        n = skill_cache.invalidate_for_path(full_path)
+        if n > 0:
+            _LOG.info(
+                "dirty queue: invalidated %d skill cache entr%s for edited path %s",
+                n, "y" if n == 1 else "ies",
+                sanitize_log_str(full_path, max_len=120),
+            )
+
+
 def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     """Re-index files that were marked dirty by Edit/Write/MultiEdit hooks.
 
@@ -2370,6 +2420,16 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
       monopolising the worker's attention.
     """
     _LOG.debug("processing %d dirty queue entries", len(entries))
+
+    # Skill cache invalidation: if any dirty entry is a skill body file, purge
+    # its cached body so the stale entry is not served to the agent after the
+    # edit.  This runs *before* the re-index so the fresher body is available
+    # by the time the next ``token-goat skill-body`` recall fires.  Fail-soft:
+    # an import or I/O error here must never block the index path.
+    try:
+        _invalidate_skill_cache_entries(entries)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("skill cache invalidation failed (non-fatal)", exc_info=True)
 
     if _is_under_memory_pressure():
         _LOG.info(

@@ -32,6 +32,7 @@ __all__ = [
     "SkillMeta",
     "content_hash",
     "evict_old_entries",
+    "invalidate_for_path",
     "extract_checklist_section",
     "extract_compact_from_marker",
     "extract_all_headings",
@@ -750,6 +751,100 @@ def evict_old_entries(*, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> int:
         log_name="skill_cache",
         max_total_bytes=max_total_bytes,
     )
+
+
+def invalidate_for_path(file_path: str) -> int:
+    """Remove all cached skill entries whose ``source_path`` matches *file_path*.
+
+    Called by the worker after re-indexing a file that was in the dirty queue,
+    when that file is a known skill body path.  Ensures that the stale cached
+    body is not served to the agent after the skill has been edited on disk.
+
+    Also removes associated compact files keyed to the same skill name/session
+    so a subsequent ``--compact`` recall regenerates from the fresh body.
+
+    Returns the number of body files removed.  Fail-soft: any I/O error is
+    logged and skipped so the worker is never interrupted.
+    """
+    if not file_path:
+        return 0
+
+    # Normalise the path for comparison: resolve forward-slash/back-slash
+    # differences on Windows.
+    try:
+        norm_path = str(Path(file_path).resolve())
+    except (OSError, ValueError):
+        norm_path = file_path.replace("\\", "/")
+
+    removed = 0
+    # Set of compact-file name suffixes to purge, built during the body-removal
+    # loop (before files are deleted) so the second pass sees the right suffix
+    # patterns even though the body .txt files have already been unlinked.
+    compact_suffixes: set[str] = set()
+    cache_dir = _skill_outputs_dir()
+    if not cache_dir.is_dir():
+        return 0
+
+    for entry in list_outputs():
+        oid = entry.get("output_id")
+        if not oid:
+            continue
+        meta = read_sidecar(oid)
+        if meta is None:
+            continue
+        if not meta.source_path:
+            continue
+        try:
+            candidate_norm = str(Path(meta.source_path).resolve())
+        except (OSError, ValueError):
+            candidate_norm = meta.source_path.replace("\\", "/")
+        if candidate_norm != norm_path:
+            continue
+        # Match found: collect the compact suffix pattern BEFORE removing files
+        # so the suffix is available even after the body .txt is deleted.
+        safe_name = meta.skill_name.replace(":", "_")
+        if ":" in meta.skill_name:
+            safe_name += "n"
+        compact_suffixes.add(f"-{safe_name}-compact")
+        # Remove body file (.txt and optionally .gz) and sidecar (.json).
+        body_path = cache_dir / f"{oid}.txt"
+        gz_path = cache_dir / f"{oid}.gz"
+        sidecar = cache_dir / f"{oid}.json"
+        for p in (body_path, gz_path, sidecar):
+            try:
+                if p.exists():
+                    p.unlink()
+                    _LOG.debug("skill_cache.invalidate_for_path: removed %s", p.name)
+            except OSError as exc:
+                _LOG.debug("skill_cache.invalidate_for_path: failed to remove %s: %s", p.name, exc)
+        removed += 1
+
+    # Purge compact files whose name ends with any of the collected suffixes.
+    # Compact files are named ``{session_fragment}-{safe_name}-compact`` with no
+    # extension, so ``fp.suffix == ""`` and the suffix pattern is an exact match.
+    if compact_suffixes:
+        try:
+            for fp in cache_dir.iterdir():
+                if fp.suffix:  # compact files have no extension (.txt/.gz/.json have suffixes)
+                    continue
+                for sfx in compact_suffixes:
+                    if fp.name.endswith(sfx):
+                        with contextlib.suppress(OSError):
+                            fp.unlink()
+                            _LOG.debug(
+                                "skill_cache.invalidate_for_path: removed compact %s", fp.name
+                            )
+                        break
+        except OSError as exc:
+            _LOG.debug("skill_cache.invalidate_for_path: compact scan failed: %s", exc)
+
+    if removed > 0:
+        _LOG.info(
+            "skill_cache.invalidate_for_path: removed %d entr%s for path %s",
+            removed, "y" if removed == 1 else "ies",
+            sanitize_log_str(file_path, max_len=120),
+        )
+    return removed
 
 
 def list_outputs() -> list[OutputStatDict]:
