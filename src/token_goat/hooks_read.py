@@ -50,7 +50,9 @@ from .hooks_common import (
     CONTINUE,
     HookPayload,
     HookResponse,
+    deny_redirect,
     emit_if_new_hint,
+    extract_tool_response_text,
     get_session_context,
     get_tool_input,
     is_real_int,
@@ -59,8 +61,10 @@ from .hooks_common import (
     pre_tool_use_with_update,
     record_cached_stat,
     record_hint_stat_pair,
+    run_dedup_hint,
     sanitize_log_str,
     sanitize_opt,
+    validate_cwd,
 )
 from .hooks_common import (
     LOG as _LOG,
@@ -494,7 +498,6 @@ def _try_surgical_read_hint(
     try:
         from . import db as _db  # noqa: PLC0415
         from . import read_replacement as _rr
-        from .hooks_common import validate_cwd  # noqa: PLC0415
         from .project import find_project  # noqa: PLC0415
 
         cwd_path = validate_cwd(cwd, caller="surgical-read-hint")
@@ -549,7 +552,6 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
     """
     try:
         from . import git_history  # noqa: PLC0415
-        from .hooks_common import validate_cwd  # noqa: PLC0415
         from .project import find_project  # noqa: PLC0415
 
         cwd_path = validate_cwd(cwd, caller="pre-read-git-hint")
@@ -1387,8 +1389,6 @@ def _try_diff_serve(
         f"If you need the full file content, run: `token-goat read \"{sanitize_log_str(file_path, max_len=200)}\"`"
     )
 
-    from .hooks_common import deny_redirect  # noqa: PLC0415
-
     return deny_redirect(
         reason="token-goat serves diff instead of full file re-read to save tokens",
         context=context_msg,
@@ -1488,7 +1488,6 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     reuse the prior result.
     """
     from .hints import build_grep_dedup_hint  # noqa: PLC0415
-    from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
     args = _extract_grep_args(payload)
     if args is None:
@@ -1620,7 +1619,6 @@ def _try_grep_symbol_hint(pattern: str, cwd: str | None) -> str | None:
         return None
     try:
         from . import db as _db  # noqa: PLC0415
-        from .hooks_common import validate_cwd  # noqa: PLC0415
         from .project import find_project  # noqa: PLC0415
 
         cwd_path = validate_cwd(cwd, caller="grep-symbol-hint")
@@ -1682,7 +1680,6 @@ def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
     qualifier, method = m.group(1), m.group(2)
     try:
         from . import db as _db  # noqa: PLC0415
-        from .hooks_common import validate_cwd  # noqa: PLC0415
         from .project import find_project  # noqa: PLC0415
 
         cwd_path = validate_cwd(cwd, caller="grep-dotted-hint")
@@ -1809,7 +1806,6 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
         build_glob_dedup_hint,
         compute_stale_threshold,
     )
-    from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
     args = _extract_grep_args(payload)
     if args is None:
@@ -1855,7 +1851,6 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
                         f"{_cached_display}\n"
                         "(Serving from cache. Run without hints to force a fresh scan.)"
                     )
-                    from .hooks_common import record_cached_stat  # noqa: PLC0415
                     record_cached_stat("glob_result_cache_hit", sanitize_log_str(pattern, max_len=200))
                     _LOG.info(
                         "pre-read: glob result cache hit for pattern=%s (age=%ds)",
@@ -1903,7 +1898,6 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     the normal bash-as-read handling when no dedup hit is available.
     """
     from .hints import build_bash_dedup_hint  # noqa: PLC0415
-    from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
     command = _get_bash_command_from_payload(payload)
     if command is None:
@@ -1931,7 +1925,6 @@ def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
     path handles that case).
     """
     from .hints import build_bash_cache_hit_hint  # noqa: PLC0415
-    from .hooks_common import run_dedup_hint  # noqa: PLC0415
 
     command = _get_bash_command_from_payload(payload)
     if command is None:
@@ -2525,10 +2518,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # implementation file has been read this session. If not, suggest reading it first.
         try:
             from .hints import build_test_file_hint  # noqa: PLC0415
-            from .hooks_common import validate_cwd as _validate_cwd  # noqa: PLC0415
             from .project import find_project as _find_project_for_test  # noqa: PLC0415
 
-            _cwd_path = _validate_cwd(cwd, caller="test-file-hint")
+            _cwd_path = validate_cwd(cwd, caller="test-file-hint")
             if _cwd_path is not None:
                 _proj = _find_project_for_test(_cwd_path)
                 if _proj is not None:
@@ -2926,8 +2918,6 @@ def _extract_bash_response(payload: HookPayload) -> tuple[str, str, int | None]:
     extraction is delegated to :func:`hooks_common.extract_tool_response_text`;
     stderr and exit_code are Bash-specific and extracted here directly.
     """
-    from .hooks_common import extract_tool_response_text  # noqa: PLC0415
-
     # stdout: use the common extractor (handles str / list / dict shapes).
     # Bash payloads use "stdout" as the primary key, then fall back to the
     # generic "output"/"text"/"content" keys used by other tools.

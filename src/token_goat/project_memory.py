@@ -64,10 +64,7 @@ def _load_raw(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     try:
-        try:
-            import tomllib  # Python 3.11+
-        except ImportError:
-            import tomli as tomllib  # type: ignore[no-redef,import-not-found]  # tomli fallback for Python <3.11; no-redef because name reused from the try branch
+        import tomllib  # noqa: PLC0415 — lazy: only TOML memory paths import this
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         return {k: str(v) for k, v in data.items() if isinstance(v, (str, int, float, bool))}
     except Exception as exc:  # noqa: BLE001
