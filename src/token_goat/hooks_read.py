@@ -2339,14 +2339,55 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 except Exception:  # noqa: BLE001 — fail-soft; never block the agent
                     _LOG.debug("session_hint_suppressed: stat record failed", exc_info=True)
             else:
-                hint = build_read_hint(
-                    session_id=session_id,
-                    file_path=file_path,
-                    offset=tool_input.get("offset"),
-                    limit=tool_input.get("limit"),
-                    cwd=cwd,
-                    cache=cache,
-                )
+                # Exponential-backoff suppression: emit the session hint only at
+                # specific read_count thresholds so heavily-used files do not
+                # produce a hint on every re-read.  read_count is the number of
+                # prior reads (already recorded by the post-Read hook); a file
+                # with read_count=0 has never been read this session (no hint
+                # possible yet).  The backoff thresholds {1, 3, 10, 30} fire on
+                # the 2nd, 4th, 11th, and 31st reads, cutting volume by ~70%.
+                # Backoff only applies when entry exists (read_count >= 1); a
+                # missing entry means this is the first read and build_read_hint
+                # returns None anyway.  An empty threshold list disables backoff
+                # (original behaviour: emit on every re-read).
+                _backoff_active = False
+                if entry is not None:
+                    _entry_read_count = entry.read_count
+                    try:
+                        from . import config as _cfg_mod_bo  # noqa: PLC0415
+                        _bo_thresholds = _cfg_mod_bo.load().hints.backoff_thresholds
+                    except Exception:  # noqa: BLE001 — fail-soft
+                        _bo_thresholds = [1, 3, 10, 30]
+                    if _bo_thresholds and _entry_read_count not in _bo_thresholds:
+                        _backoff_active = True
+                        _LOG.debug(
+                            "pre-read: session hint suppressed (backoff) for %s "
+                            "(read_count=%d not in thresholds=%s)",
+                            sanitize_log_str(file_path),
+                            _entry_read_count,
+                            _bo_thresholds,
+                        )
+                        cache.record_hint_suppressed("hint_backoff_suppressed")
+                        try:
+                            from . import db as _db_mod_bo  # noqa: PLC0415
+                            _db_mod_bo.record_stat(
+                                None,
+                                "hint_backoff_suppressed",
+                                bytes_saved=0,
+                                tokens_saved=0,
+                                detail=sanitize_log_str(file_path, max_len=512),
+                            )
+                        except Exception:  # noqa: BLE001 — fail-soft; never block the agent
+                            _LOG.debug("hint_backoff_suppressed: stat record failed", exc_info=True)
+                if not _backoff_active:
+                    hint = build_read_hint(
+                        session_id=session_id,
+                        file_path=file_path,
+                        offset=tool_input.get("offset"),
+                        limit=tool_input.get("limit"),
+                        cwd=cwd,
+                        cache=cache,
+                    )
             if hint:
                 from .hints import _hint_fingerprint  # noqa: PLC0415
 

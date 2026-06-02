@@ -309,6 +309,7 @@ class _HintsToml(TypedDict, total=False):
     web_dedup_min_bytes: int
     grep_dedup_min_matches: int
     serve_diff_on_reread: bool
+    backoff_thresholds: list[int]
 
 
 class _WebFetchToml(TypedDict, total=False):
@@ -789,6 +790,13 @@ class HintsConfig:
             ≈ 150 tokens saved; a short dedup hint costs ~12 tokens, netting ~138
             tokens saved. Below this threshold the hint cost exceeds the saving and
             dedup is suppressed. Clamped to [0, 100000].
+        backoff_thresholds: Sorted list of read_count values at which a session
+            re-read hint is emitted. A hint fires only when the file's read_count
+            (number of prior reads in this session) is in this set; all other
+            re-reads are silently suppressed as ``hint_backoff_suppressed``.
+            Default [1, 3, 10, 30] fires on the 2nd, 4th, 11th, and 31st reads,
+            cutting hint volume by ~70% on heavily-used files. Set to [] to
+            disable backoff (emit on every re-read, original behaviour).
     """
 
     suppress_after_ignored: int = 5
@@ -813,6 +821,14 @@ class HintsConfig:
     # instead of the raw file, which may confuse agents not expecting it.  Enable
     # via TOKEN_GOAT_SERVE_DIFF_ON_REREAD=1 or [hints] serve_diff_on_reread = true.
     serve_diff_on_reread: bool = False
+    # Exponential backoff thresholds for session re-read hints.  A session hint is
+    # emitted only when the file's read_count (reads before this one) is in this set.
+    # The default sequence {1, 3, 10, 30} fires on the 2nd, 4th, 11th, and 31st
+    # reads; all other re-reads are suppressed as hint_backoff_suppressed.  This
+    # cuts hint volume by ~70% on heavily-used files without losing signal.
+    # Set to [] to disable backoff (emit on every re-read).
+    # Override via [hints] backoff_thresholds = [1, 3, 10, 30] in config.toml.
+    backoff_thresholds: list[int] = field(default_factory=lambda: [1, 3, 10, 30])
 
 
 @dataclass
@@ -1096,6 +1112,31 @@ def _validated_str_list(val: object, default: list[str], name: str) -> list[str]
             unknown.append(item)
     if unknown:
         _LOG.warning("config: %s contained non-string entries (ignored): %s", name, unknown)
+    return valid
+
+
+def _validated_int_list(val: object, default: list[int], name: str) -> list[int]:
+    """Validate a TOML list-of-ints, dropping non-integer entries with a warning.
+
+    Returns a fresh list copy of ``default`` when *val* is not a list at all.
+    Empty lists are accepted as a meaningful value (disables the feature).
+    Non-negative integers only; negative entries are dropped with a warning.
+    """
+    if not isinstance(val, list):
+        _LOG.warning("config: %s must be a list of integers; using default %s", name, default)
+        return list(default)
+    valid: list[int] = []
+    invalid: list[object] = []
+    for item in val:
+        if isinstance(item, bool):
+            # bool is a subclass of int in Python; reject it explicitly.
+            invalid.append(item)
+        elif isinstance(item, int) and item >= 0:
+            valid.append(item)
+        else:
+            invalid.append(item)
+    if invalid:
+        _LOG.warning("config: %s contained invalid entries (ignored): %s", name, invalid)
     return valid
 
 
@@ -1396,6 +1437,11 @@ def load() -> Config:
         ),
         serve_diff_on_reread=_validated_bool(
             hints_raw.get("serve_diff_on_reread", False), False, "hints.serve_diff_on_reread"
+        ),
+        backoff_thresholds=_validated_int_list(
+            hints_raw.get("backoff_thresholds", [1, 3, 10, 30]),
+            [1, 3, 10, 30],
+            "hints.backoff_thresholds",
         ),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.

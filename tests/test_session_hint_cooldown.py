@@ -260,3 +260,177 @@ class TestSessionHintSuppressedStat:
         # After restoring, the cooldown is gone (fresh process).
         restored = SessionCache.from_dict(d)
         assert not restored.has_session_hint_been_emitted(file_key)
+
+
+# ---------------------------------------------------------------------------
+# Test 4: exponential backoff for session re-read hints
+# ---------------------------------------------------------------------------
+
+
+class TestSessionHintBackoff:
+    """Tests for [hints] backoff_thresholds: hint fires only at {1, 3, 10, 30}."""
+
+    def _pre_read_with_read_count(
+        self,
+        read_count: int,
+        backoff_thresholds: list[int] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """Call pre_read with a session entry whose read_count is *read_count*.
+
+        Returns (suppressed_kinds, emitted_hints) where:
+          suppressed_kinds — list of hint kinds passed to record_hint_suppressed
+          emitted_hints — list of additionalContext strings that reached context
+        """
+        from token_goat import hooks_read
+
+        if backoff_thresholds is None:
+            backoff_thresholds = [1, 3, 10, 30]
+
+        cache = _make_session_cache()
+
+        # Inject a FileEntry with the requested read_count into the cache so
+        # the pre-read hook sees it as a previously-read file.
+        file_key = session_mod._normalize_path("/fake/src/target.py")
+        entry = FileEntry(
+            rel_or_abs="/fake/src/target.py",
+            last_read_ts=time.time(),
+            read_count=read_count,
+            line_ranges=[(1, 100)],
+            symbols_read=[],
+        )
+        cache.files[file_key] = entry
+
+        suppressed: list[str] = []
+        cache.record_hint_suppressed = lambda kind: suppressed.append(kind)  # type: ignore[method-assign]
+
+        fake_hint = _make_mock_hint("already read /fake/src/target.py")
+
+        from token_goat.config import HintsConfig
+
+        mock_cfg = HintsConfig(backoff_thresholds=backoff_thresholds)
+
+        class _FakeCfgObj:
+            hints = mock_cfg
+
+        with (
+            patch("token_goat.hooks_read._try_shrink_image", return_value=None),
+            patch("token_goat.hooks_read._try_diff_hint", return_value=None),
+            patch("token_goat.hooks_read._try_diff_serve", return_value=None),
+            patch("token_goat.hooks_read._try_unchanged_file_hint", return_value=None),
+            patch("token_goat.hooks_read._build_git_hint", return_value=None),
+            patch("token_goat.hints.build_read_hint", return_value=fake_hint),
+            patch("token_goat.hooks_read._record_session_hint_impact"),
+            patch("token_goat.session.load", return_value=cache),
+            patch("token_goat.hooks_read._get_session", return_value=session_mod),
+            patch("token_goat.hooks_read.config", create=True),
+            # Patch config.load inside hooks_read so backoff uses our thresholds.
+            patch(
+                "token_goat.hooks_read.config",
+                create=True,
+                **{"load.return_value": _FakeCfgObj()},  # type: ignore[arg-type]
+            ),
+        ):
+            # Patch the lazy import inside the else branch.
+            import token_goat.config as _real_cfg
+            with patch.object(_real_cfg, "load", return_value=_FakeCfgObj()):
+                payload = {
+                    "tool_name": "Read",
+                    "session_id": cache.session_id,
+                    "cwd": "/fake",
+                    "tool_input": {"file_path": "/fake/src/target.py"},
+                }
+                response = hooks_read.pre_read(payload)
+
+        ctx = (response or {}).get("hookSpecificOutput", {}).get("additionalContext", "")
+        emitted = [ctx] if ctx else []
+        return suppressed, emitted
+
+    def test_threshold_read_counts_emit_hint(self) -> None:
+        """Hint fires for each threshold value in {1, 3, 10, 30}."""
+        for rc in [1, 3, 10, 30]:
+            suppressed, emitted = self._pre_read_with_read_count(rc)
+            assert "hint_backoff_suppressed" not in suppressed, (
+                f"read_count={rc} should emit hint but backoff suppressed it"
+            )
+
+    def test_non_threshold_read_counts_suppress_hint(self) -> None:
+        """Hint is suppressed for read counts not in the threshold set."""
+        for rc in [2, 4, 5, 7, 11, 15, 20, 25, 31, 50]:
+            suppressed, emitted = self._pre_read_with_read_count(rc)
+            assert "hint_backoff_suppressed" in suppressed, (
+                f"read_count={rc} should be suppressed by backoff but was not"
+            )
+
+    def test_empty_thresholds_disables_backoff(self) -> None:
+        """When backoff_thresholds=[], every re-read emits a hint (original behaviour)."""
+        # read_count=2 would normally be suppressed; with empty list it should pass through.
+        suppressed, _ = self._pre_read_with_read_count(2, backoff_thresholds=[])
+        assert "hint_backoff_suppressed" not in suppressed
+
+    def test_backoff_suppressed_stat_recorded(self) -> None:
+        """When backoff fires, record_hint_suppressed('hint_backoff_suppressed') is called."""
+        suppressed, _ = self._pre_read_with_read_count(2)
+        assert "hint_backoff_suppressed" in suppressed
+
+    def test_backoff_stat_counter_in_cache(self) -> None:
+        """record_hint_suppressed('hint_backoff_suppressed') increments the cache counter."""
+        cache = _make_session_cache()
+        assert cache.hints_suppressed_by_type.get("hint_backoff_suppressed", 0) == 0
+        cache.record_hint_suppressed("hint_backoff_suppressed")
+        assert cache.hints_suppressed_by_type["hint_backoff_suppressed"] == 1
+
+    def test_backoff_does_not_fingerprint_suppressed_hint(self) -> None:
+        """When backoff suppresses, no fingerprint is added to the cache (mark_hint_seen not called)."""
+        import time
+
+        from token_goat import hooks_read
+
+        cache = _make_session_cache()
+        file_key = session_mod._normalize_path("/fake/src/target.py")
+        entry = FileEntry(
+            rel_or_abs="/fake/src/target.py",
+            last_read_ts=time.time(),
+            read_count=2,  # not in {1, 3, 10, 30}
+            line_ranges=[(1, 100)],
+            symbols_read=[],
+        )
+        cache.files[file_key] = entry
+
+        hints_seen_keys_before = set(cache.hints_seen.keys())
+
+        from token_goat.config import HintsConfig
+
+        class _FakeCfgObj:
+            hints = HintsConfig(backoff_thresholds=[1, 3, 10, 30])
+
+        import token_goat.config as _real_cfg
+        with (
+            patch("token_goat.hooks_read._try_shrink_image", return_value=None),
+            patch("token_goat.hooks_read._try_diff_hint", return_value=None),
+            patch("token_goat.hooks_read._try_diff_serve", return_value=None),
+            patch("token_goat.hooks_read._try_unchanged_file_hint", return_value=None),
+            patch("token_goat.hooks_read._build_git_hint", return_value=None),
+            patch("token_goat.hints.build_read_hint", return_value=_make_mock_hint("x")),
+            patch("token_goat.session.load", return_value=cache),
+            patch("token_goat.hooks_read._get_session", return_value=session_mod),
+            patch.object(_real_cfg, "load", return_value=_FakeCfgObj()),
+        ):
+            payload = {
+                "tool_name": "Read",
+                "session_id": cache.session_id,
+                "cwd": "/fake",
+                "tool_input": {"file_path": "/fake/src/target.py"},
+            }
+            hooks_read.pre_read(payload)
+
+        # No new fingerprints should have been added to hints_seen.
+        assert set(cache.hints_seen.keys()) == hints_seen_keys_before
+
+
+def _make_mock_hint(text: str) -> object:
+    """Return a lightweight fake ReadHint with tokens_saved > 0."""
+    from unittest.mock import MagicMock
+    fake = MagicMock()
+    fake.__str__ = lambda self: text
+    fake.tokens_saved = 50
+    return fake
