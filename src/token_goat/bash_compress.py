@@ -1643,6 +1643,17 @@ _PYTEST_SLOW_DURATION_RE: Final[re.Pattern[str]] = re.compile(
 _PYTEST_PREAMBLE_RE: Final[re.Pattern[str]] = re.compile(
     r"^collecting\s"
 )
+# Pytest warnings summary section: doc-reference footer lines like
+#   "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html"
+# These are emitted once per warnings section and add no actionable information.
+_PYTEST_WARN_DOCS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*--\s+Docs:\s+https?://"
+)
+# Warning message line inside the warnings summary section.
+# These look like: "  /path/to/file.py:123: DeprecationWarning: some message"
+_PYTEST_WARN_MSG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\S.*:\d+:\s+\S.*Warning\b"
+)
 
 
 class PytestFilter(Filter):
@@ -1666,6 +1677,11 @@ class PytestFilter(Filter):
     * **slowest N durations**: Keep the section header + first 5 entries;
       collapse the rest to a count.  A full slow-test table for a large suite
       is hundreds of lines the agent does not need.
+    * **warnings summary**: Deduplicate repeated ``DeprecationWarning`` /
+      ``PytestWarning`` messages — same warning text from different call sites
+      is collapsed to the first occurrence.  Drop ``-- Docs:`` footer lines
+      (always the same URL, adds ~4 tokens per unique warning type with no
+      signal the agent cannot infer from the warning message itself).
 
     On a 5 KB pytest run with no failures the output shrinks to ~10 lines.
     With failures the failure tracebacks are preserved untouched so the agent
@@ -1685,10 +1701,14 @@ class PytestFilter(Filter):
         in_failures = False
         in_errors = False
         in_slow_section = False
+        in_warnings_section = False
         slow_kept = 0
         slow_dropped = 0
         in_cov_table = False
         cov_table_rows_dropped = 0
+        # Warnings deduplication: map normalised warning message → count seen
+        warn_msg_seen: dict[str, int] = {}
+        warnings_dropped = 0
         for line in lines:
             # Strip pytest-xdist worker prefix ([gw0], [gw1], ...) so downstream
             # logic sees clean lines regardless of -n parallelism.
@@ -1711,6 +1731,7 @@ class PytestFilter(Filter):
                 in_failures = "FAILURES" in line
                 in_errors = "ERRORS" in line or "short test summary" in line
                 in_slow_section = "slowest" in line and "durations" in line
+                in_warnings_section = "warnings summary" in line
                 in_cov_table = False
                 kept.append(line)
                 continue
@@ -1744,6 +1765,33 @@ class PytestFilter(Filter):
                 # Anything else exits the table context
                 in_cov_table = False
 
+            # --- warnings summary section ---
+            # Deduplicate repeated DeprecationWarning / PytestWarning blocks.
+            # Each unique warning message (normalised) is kept on first occurrence;
+            # subsequent identical messages are dropped and counted.
+            # Docs-reference footer lines ("-- Docs: https://…") are always dropped.
+            if in_warnings_section:
+                # Docs-reference line: always drop (emitted once per section, no signal).
+                if _PYTEST_WARN_DOCS_RE.match(line):
+                    warnings_dropped += 1
+                    continue
+                # Warning message line: deduplicate by normalised message text.
+                if _PYTEST_WARN_MSG_RE.match(line):
+                    # Normalise: strip file path (before the colon-digit) and line number
+                    # so that the same warning from different call sites groups together.
+                    colon_idx = line.rfind("Warning")
+                    norm_key = line[colon_idx:].strip() if colon_idx >= 0 else line.strip()
+                    count = warn_msg_seen.get(norm_key, 0)
+                    warn_msg_seen[norm_key] = count + 1
+                    if count == 0:
+                        kept.append(line)
+                    else:
+                        warnings_dropped += 1
+                    continue
+                # Everything else in the warnings section (test file references,
+                # source code snippets, blank lines) is kept verbatim — these are
+                # low-volume context lines that help locate the issue.
+
             # --- slowest durations section ---
             # Keep the first 5 entries; collapse the rest.
             if in_slow_section:
@@ -1768,6 +1816,7 @@ class PytestFilter(Filter):
                     if _PYTEST_HEADER_RE.match(line):
                         in_failures = "FAILURES" in line
                         in_errors = "ERRORS" in line or "short test summary" in line
+                        in_warnings_section = "warnings summary" in line
                         kept.append(line)
                         continue
                 else:
@@ -1801,6 +1850,10 @@ class PytestFilter(Filter):
         kept = _trim_repeated_prefix(kept, _PYTEST_COLLECT_RE, keep=3)
         if passed_count:
             kept.append(f"[token-goat: collapsed {passed_count} PASSED lines]")
+        if warnings_dropped:
+            kept.append(
+                f"[token-goat: collapsed {warnings_dropped} duplicate/docs warning lines]"
+            )
         # Drop runs of consecutive blank lines (pytest pads blocks with them).
         return self._finalize(kept)
 

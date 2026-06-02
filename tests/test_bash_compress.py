@@ -640,6 +640,89 @@ class TestPytestFilter:
         # Summary line kept
         assert "1 passed" in result.text
 
+    def test_warnings_section_deduplicates_repeated_messages(self):
+        """Repeated DeprecationWarning messages in the warnings summary are deduplicated."""
+        # Same warning message from two different test files — should keep only the first.
+        text = (
+            "= warnings summary =\n"
+            "tests/test_a.py::test_one\n"
+            "  /usr/lib/python3.12/pkg/mod.py:123: DeprecationWarning: use new_api() instead\n"
+            "    old_api()\n"
+            "tests/test_b.py::test_two\n"
+            "  /usr/lib/python3.12/pkg/mod.py:123: DeprecationWarning: use new_api() instead\n"
+            "    old_api()\n"
+            "  -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
+            "= 2 passed in 0.5s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 0, ["pytest"])
+        # First occurrence of the warning message kept
+        assert "DeprecationWarning: use new_api() instead" in result.text
+        # Duplicate warning message dropped
+        assert result.text.count("DeprecationWarning: use new_api() instead") == 1
+        # Docs footer dropped
+        assert "Docs: https://" not in result.text
+        # Collapse notice emitted
+        assert "collapsed" in result.text
+        # Final summary kept
+        assert "2 passed" in result.text
+
+    def test_warnings_section_drops_docs_footer(self):
+        """The -- Docs: https://... footer is always dropped from the warnings section."""
+        text = (
+            "= warnings summary =\n"
+            "tests/test_x.py::test_y\n"
+            "  /site-packages/lib.py:50: PytestUnraisableExceptionWarning: something\n"
+            "    fn()\n"
+            "  -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
+            "= 1 passed in 0.1s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 0, ["pytest"])
+        assert "-- Docs:" not in result.text
+        assert "PytestUnraisableExceptionWarning" in result.text
+
+    def test_warnings_section_preserves_unique_messages(self):
+        """Different warning types are each kept once in the warnings summary."""
+        text = (
+            "= warnings summary =\n"
+            "tests/test_a.py::test_one\n"
+            "  /pkg/mod.py:10: DeprecationWarning: use foo() instead\n"
+            "    old_foo()\n"
+            "tests/test_b.py::test_two\n"
+            "  /pkg/mod.py:20: DeprecationWarning: use bar() instead\n"
+            "    old_bar()\n"
+            "  -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
+            "= 2 passed in 0.3s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 0, ["pytest"])
+        # Both unique messages should be present
+        assert "use foo() instead" in result.text
+        assert "use bar() instead" in result.text
+
+    def test_warnings_section_high_volume_deprecations(self):
+        """A high-volume warnings block (same warning 20 times) collapses aggressively."""
+        warn_line = "  /site-packages/old_lib.py:42: DeprecationWarning: old_lib is deprecated\n"
+        code_line = "    old_lib.call()\n"
+        tests = "".join(
+            f"tests/test_{i}.py::test_fn\n{warn_line}{code_line}"
+            for i in range(20)
+        )
+        text = (
+            "= warnings summary =\n"
+            + tests
+            + "  -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n"
+            "= 20 passed in 1.5s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 0, ["pytest"])
+        # Only one copy of the warning message
+        assert result.text.count("DeprecationWarning: old_lib is deprecated") == 1
+        # Collapse notice mentions at least 19 dropped lines
+        assert "collapsed" in result.text
+        assert "20 passed" in result.text
+
 
 # ---------------------------------------------------------------------------
 # Jest filter
