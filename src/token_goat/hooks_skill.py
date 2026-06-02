@@ -313,6 +313,28 @@ def post_skill(payload: HookPayload) -> HookResponse:
                     sanitize_log_str(skill_name, max_len=80),
                     len(marker_compact),
                 )
+                # Warn when the explicit compact slice exceeds the configured
+                # truncation_budget_tokens so skill authors know the COMPACT_END
+                # marker is placed too late in the file.
+                try:
+                    from .config import load as _load_cfg  # noqa: PLC0415
+                    _budget = _load_cfg().skill_preservation.truncation_budget_tokens
+                    if _budget > 0 and compact_tokens > _budget:
+                        import sys as _sys  # noqa: PLC0415
+                        _sys.stderr.write(
+                            f"token-goat warning: skill '{sanitize_log_str(skill_name, max_len=80)}'"
+                            f" compact slice is {compact_tokens} tokens"
+                            f" (budget: {_budget} tokens)."
+                            f" Move <!-- COMPACT_END --> earlier in the file.\n"
+                        )
+                        _LOG.warning(
+                            "post-skill: compact for %s exceeds budget (%d > %d tokens)",
+                            sanitize_log_str(skill_name, max_len=80),
+                            compact_tokens,
+                            _budget,
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
                 # Record tokens saved = full body − compact (serving compact saves
                 # this many tokens per manifest emission vs re-reading the full body).
                 _saved_bytes = max(0, body_size - compact_bytes)

@@ -4138,6 +4138,131 @@ def cmd_skill_size(
     typer.echo(f"Total overhead at 100 turns: ~{total_k:.0f}k tokens")
 
 
+@app.command("skill-list", rich_help_panel="Core")
+def cmd_skill_list(
+    session_id: str | None = _OPT_SESSION_ID,
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """List skills cached in the current (or specified) session.
+
+    For each cached skill, displays:
+    - Skill name
+    - Cached token count (~body_bytes/4)
+    - Whether a compact slice is available (yes/no)
+    - Compact token count when available (~compact_bytes/4)
+    - Age: when the skill was cached (seconds ago)
+
+    When --session-id is omitted, the most-recently active session in the
+    cache directory is used.  Pass --session-id to inspect a specific session.
+
+    Useful after a compaction event to confirm which skills are recoverable
+    via ``token-goat skill-body <name>``.
+    """
+    import time as _time  # noqa: PLC0415
+
+    from . import skill_cache  # noqa: PLC0415
+
+    # Resolve session_id: use the provided one or fall back to most-recent session.
+    resolved_session = session_id
+    if resolved_session is None:
+        # Find the most-recently modified session file in the skills cache.
+        outputs = skill_cache.list_outputs()
+        if not outputs:
+            typer.echo("No cached skills found (no skills have been loaded in any session).")
+            raise typer.Exit(0)
+        # list_outputs() returns newest-first; extract session prefix from first entry.
+        first_oid = outputs[0].get("output_id", "")
+        # Session prefix is the first 16 chars of the output_id.
+        resolved_session = first_oid[:16] if len(first_oid) >= 16 else first_oid
+
+    if not resolved_session:
+        typer.echo("No cached skills found.")
+        raise typer.Exit(0)
+
+    entries = skill_cache.list_by_session(resolved_session)
+    if not entries:
+        typer.echo(f"No cached skills for session: {resolved_session}")
+        raise typer.Exit(0)
+
+    # Enrich each entry with compact availability and timestamps from list_outputs().
+    # Build a lookup: output_id -> mtime from list_outputs (which has mtime).
+    mtime_by_oid: dict[str, float] = {}
+    for entry in skill_cache.list_outputs():
+        oid = entry.get("output_id")
+        if oid:
+            mtime_by_oid[oid] = float(entry.get("mtime", 0.0))
+
+    now = _time.time()
+    rows: list[dict[str, object]] = []
+
+    for meta in entries:
+        mtime = mtime_by_oid.get(meta.output_id, meta.ts)
+        age_secs = max(0.0, now - mtime) if mtime > 0 else -1.0
+
+        # Load the body to get accurate byte count and compact availability.
+        body = skill_cache.load_output(meta.output_id)
+        body_bytes = len(body.encode("utf-8", errors="replace")) if body else 0
+        body_tokens = body_bytes // 4
+
+        compact_text = skill_cache.get_compact(resolved_session, meta.skill_name)
+        if compact_text is None:
+            # Normalise plugin-namespaced name (underscore vs colon) for lookup.
+            alt_name = meta.skill_name.replace("_", ":")
+            compact_text = skill_cache.get_compact(resolved_session, alt_name)
+        has_compact = compact_text is not None
+
+        from . import skill_cache as _sc  # noqa: PLC0415
+        compact_body = _sc._strip_compact_header(compact_text) if compact_text else ""
+        compact_tokens = len(compact_body) // 4 if compact_body else 0
+
+        rows.append({
+            "name": meta.skill_name,
+            "body_tokens": body_tokens,
+            "has_compact": has_compact,
+            "compact_tokens": compact_tokens,
+            "age_secs": round(age_secs),
+        })
+
+    if json_output:
+        _emit_json({
+            "session_id": resolved_session,
+            "skills": rows,
+        })
+        return
+
+    if not rows:
+        typer.echo(f"No cached skills for session: {resolved_session}")
+        raise typer.Exit(0)
+
+    typer.echo(f"Session: {resolved_session}")
+    typer.echo()
+    header = f"{'Skill':<40}  {'Body':>6}  {'Compact':>10}  {'Cached'}"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for row in rows:
+        name = str(row["name"])
+        body_tokens = int(row["body_tokens"])  # type: ignore[call-overload]
+        has_compact = bool(row["has_compact"])
+        compact_tokens = int(row["compact_tokens"])  # type: ignore[call-overload]
+        age_secs = int(row["age_secs"])  # type: ignore[call-overload]
+
+        compact_col = f"~{compact_tokens} tok" if has_compact else "no"
+
+        if age_secs < 0:
+            age_str = "unknown"
+        elif age_secs < 60:
+            age_str = f"{age_secs}s ago"
+        elif age_secs < 3600:
+            age_str = f"{age_secs // 60}m ago"
+        else:
+            age_str = f"{age_secs // 3600}h {(age_secs % 3600) // 60}m ago"
+
+        typer.echo(f"{name:<40}  ~{body_tokens:>5}  {compact_col:>10}  {age_str}")
+
+    typer.echo()
+    typer.echo(f"{len(rows)} skill(s) cached in this session.")
+
+
 @app.command("decision", rich_help_panel="Core")
 def cmd_decision(
     text: str = typer.Argument(

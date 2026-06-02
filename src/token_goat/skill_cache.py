@@ -56,6 +56,7 @@ __all__ = [
 ]
 
 import contextlib
+import gzip
 import re
 import time
 from dataclasses import dataclass
@@ -126,6 +127,14 @@ _SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9_:\-]{1,128}$")
 # and the caller falls back to ``generate_compact_summary`` auto-extraction.
 COMPACT_END_MARKER: str = "<!-- COMPACT_END -->"
 
+# File extension appended to compressed skill body files.  The cache reader
+# checks for the ``.gz`` variant first so decompression is fully transparent.
+_GZ_SUFFIX: str = ".gz"
+
+# gzip compression level (1–9).  Level 6 balances speed and ratio well for
+# Markdown text (typical 70–80% reduction on skill bodies).
+_GZ_LEVEL: int = 6
+
 
 @dataclass
 class SkillMeta:
@@ -148,6 +157,64 @@ class SkillMeta:
 def _skill_outputs_dir() -> Path:
     """Return ``data_dir() / "skills"`` and create it on first use."""
     return get_cache_dir("skills")
+
+
+def _store_blob_gz(output_id: str, text: str) -> Path | None:
+    """Write *text* gzip-compressed to the skills cache directory.
+
+    Writes the compressed body as ``output_id.gz`` AND an empty ``output_id.txt``
+    stub file.  The stub ensures the entry is discoverable by :func:`list_outputs`
+    and subject to the normal LRU eviction machinery (which scans for ``.txt``
+    files).  :func:`load_output` checks for the ``.gz`` sibling first so callers
+    transparently receive the decompressed text.
+
+    Returns the ``.gz`` path on success, or ``None`` on I/O error.
+    """
+    from . import paths as _paths  # noqa: PLC0415
+
+    with safe_cache_op("_store_blob_gz", log=_LOG):
+        out_dir = _skill_outputs_dir()
+        gz_path = out_dir / (output_id + _GZ_SUFFIX)
+        try:
+            raw_bytes = text.encode("utf-8", errors="replace")
+            compressed = gzip.compress(raw_bytes, compresslevel=_GZ_LEVEL)
+            _paths.atomic_write_bytes(gz_path, compressed)
+            _LOG.debug("_store_blob_gz: wrote %s (%d bytes raw -> %d compressed)",
+                       gz_path.name, len(raw_bytes), len(compressed))
+        except OSError as exc:
+            _LOG.debug("_store_blob_gz: failed to write %s: %s", output_id, exc)
+            return None
+
+        # Write an empty .txt stub so list_outputs() / evict_old_entries() can
+        # discover and manage this entry through the standard cache machinery.
+        stub_result = store_blob(output_id, "", _skill_outputs_dir, "skill_cache")
+        if stub_result is None:
+            _LOG.debug("_store_blob_gz: stub write failed for %s", output_id)
+            # Clean up the gz file so we don't leave an orphaned compressed file.
+            with contextlib.suppress(OSError):
+                gz_path.unlink()
+            return None
+
+        return gz_path
+    return None
+
+
+def _load_blob_gz(output_id: str) -> str | None:
+    """Return the decompressed text for a gzip-compressed skill body, or ``None``.
+
+    Checks for ``output_id.gz`` in the skills directory.  Returns ``None`` when
+    no ``.gz`` file exists so :func:`load_output` can fall back to plain text.
+    """
+    out_dir = _skill_outputs_dir()
+    gz_path = out_dir / (output_id + _GZ_SUFFIX)
+    if not gz_path.is_file():
+        return None
+    try:
+        with gzip.open(gz_path, "rb") as fh:
+            return fh.read().decode("utf-8", errors="replace")
+    except (OSError, gzip.BadGzipFile) as exc:
+        _LOG.debug("_load_blob_gz: failed to decompress %s: %s", gz_path.name, exc)
+        return None
 
 
 def content_hash(content: str) -> str:
@@ -612,7 +679,26 @@ def store_output(
         stored, truncated = truncate_tail_preserve(
             body, _MAX_STORED_BYTES, marker_template=_TRUNC_MARKER,
         )
-        if store_blob(out_id, stored, _skill_outputs_dir, "skill_cache") is None:
+
+        # Determine whether to compress this body.
+        compress = False
+        try:
+            from .config import load as _load_config  # noqa: PLC0415
+            _sp = _load_config().skill_preservation
+            compress = (
+                _sp.compress_bodies
+                and len(stored.encode("utf-8", errors="replace")) >= _sp.compress_min_bytes
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        stored_path: Path | None
+        if compress:
+            stored_path = _store_blob_gz(out_id, stored)
+        else:
+            stored_path = store_blob(out_id, stored, _skill_outputs_dir, "skill_cache")
+
+        if stored_path is None:
             return None
 
         meta = SkillMeta(
@@ -631,15 +717,23 @@ def store_output(
         evict_old_entries(max_total_bytes=max_total_bytes)
 
         _LOG.debug(
-            "skill_cache: stored id=%s skill=%s bytes=%d truncated=%s",
-            out_id, name, meta.body_bytes, truncated,
+            "skill_cache: stored id=%s skill=%s bytes=%d truncated=%s compressed=%s",
+            out_id, name, meta.body_bytes, truncated, compress,
         )
         return meta
     return None
 
 
 def load_output(output_id: str) -> str | None:
-    """Return the cached skill body for *output_id*, or ``None`` if absent."""
+    """Return the cached skill body for *output_id*, or ``None`` if absent.
+
+    Transparently decompresses gzip-stored bodies: checks for ``output_id.gz``
+    first, then falls back to the plain-text file so callers see plain text
+    regardless of how the body was stored.
+    """
+    gz_text = _load_blob_gz(output_id)
+    if gz_text is not None:
+        return gz_text
     return load_output_text(output_id, _skill_outputs_dir, "skill_cache")
 
 

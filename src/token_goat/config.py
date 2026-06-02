@@ -65,6 +65,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_WORKER_WATCHDOG",
     "TOKEN_GOAT_HOOK_WATCHDOG_MS",
     "TOKEN_GOAT_COMPRESS_PROFILE",
+    "TOKEN_GOAT_SKILL_COMPRESS",
 )
 
 
@@ -105,6 +106,7 @@ _ENV_BASH_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_FILES"  # int
 _ENV_BASH_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES"  # integer override (bytes)
 _ENV_WORKER_WATCHDOG: Final[str] = "TOKEN_GOAT_WORKER_WATCHDOG"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_COMPRESS_PROFILE: Final[str] = "TOKEN_GOAT_COMPRESS_PROFILE"  # "auto"|"aggressive"|"balanced"|"minimal"
+_ENV_SKILL_COMPRESS: Final[str] = "TOKEN_GOAT_SKILL_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable body gzip
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -237,6 +239,8 @@ class _SkillPreservationToml(TypedDict, total=False):
     orphan_sweep_enabled: bool
     orphan_age_secs: int
     truncation_budget_tokens: int
+    compress_bodies: bool
+    compress_min_bytes: int
 
 
 class _ImageShrinkToml(TypedDict, total=False):
@@ -541,6 +545,17 @@ class SkillPreservationConfig:
             session manifest.  Default 800 tokens (≈ 3200 chars at 4 chars/token).
             Set to 0 to disable the cap (use the module-level ``_COMPACT_MAX_CHARS``
             limit of ~400 tokens instead).  Valid range: 0 – 8000 tokens.
+        compress_bodies: When ``True`` (default), skill body files larger than
+            ``compress_min_bytes`` are stored gzip-compressed to reduce disk
+            footprint and eviction pressure.  Decompression is transparent on
+            read so callers see plain text regardless of whether the body was
+            stored compressed or not.  Can be disabled by setting
+            ``TOKEN_GOAT_SKILL_COMPRESS=0``.
+        compress_min_bytes: Minimum body size (bytes) for gzip compression to
+            apply when ``compress_bodies`` is ``True``.  Bodies smaller than
+            this threshold are stored as plain text (compression overhead not
+            worth it for small files).  Default 16 384 (16 KB).
+            Valid range: 1 024 – 10 485 760 (1 KB – 10 MB).
     """
 
     enabled: bool = True
@@ -548,6 +563,8 @@ class SkillPreservationConfig:
     orphan_sweep_enabled: bool = True
     orphan_age_secs: int = 604800
     truncation_budget_tokens: int = 800
+    compress_bodies: bool = True
+    compress_min_bytes: int = 16 * 1024
 
 
 @dataclass
@@ -1232,9 +1249,17 @@ def load() -> Config:
             sp_raw.get("truncation_budget_tokens", 800), 800, 0, 8000,
             "skill_preservation.truncation_budget_tokens",
         ),
+        compress_bodies=_validated_bool(
+            sp_raw.get("compress_bodies", True), True, "skill_preservation.compress_bodies",
+        ),
+        compress_min_bytes=_validated_int(
+            sp_raw.get("compress_min_bytes", 16 * 1024), 16 * 1024, 1024, 10 * 1024 * 1024,
+            "skill_preservation.compress_min_bytes",
+        ),
     )
     _apply_env_disable(sp, "enabled", _ENV_SKILL_PRESERVATION, "skill_preservation")
     _apply_env_disable(sp, "orphan_sweep_enabled", _ENV_ORPHAN_SWEEP, "skill_preservation.orphan_sweep_enabled")
+    _apply_env_disable(sp, "compress_bodies", _ENV_SKILL_COMPRESS, "skill_preservation.compress_bodies")
 
     is_raw: _ImageShrinkToml = cast("_ImageShrinkToml", raw.get("image_shrink", {}))
     is_cfg = ImageShrinkConfig(
