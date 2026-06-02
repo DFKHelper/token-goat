@@ -140,7 +140,7 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
                 if parent:
                     dir_counts[parent] = dir_counts.get(parent, 0) + 1
             except Exception:  # noqa: BLE001
-                pass
+                _LOG.debug("_build_session_topic: failed to parse path %r (skip)", fpath, exc_info=True)
 
         # Pick the top directory (most edits there = likely focus area)
         top_area = ""

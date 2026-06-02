@@ -368,7 +368,11 @@ def _parse_local_imports(source: str, file_path: str, cwd: str | None) -> list[s
                             return results[:_PREDICTIVE_SNAPSHOT_CAP]
 
     except Exception:  # noqa: BLE001
-        pass
+        _LOG.debug(
+            "_resolve_import_candidates: unexpected error parsing %s (fail-soft)",
+            file_path,
+            exc_info=True,
+        )
 
     return results[:_PREDICTIVE_SNAPSHOT_CAP]
 

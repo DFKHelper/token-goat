@@ -879,7 +879,7 @@ def _emit_stale_compact_hint(
         # The caller (_handle_skill_file_read) already returns None to let the
         # read proceed; the advisory is recorded in stats for session awareness.
     except Exception:  # noqa: BLE001
-        pass
+        _LOG.debug("_emit_stale_compact_hint: unexpected error (fail-soft)", exc_info=True)
 
 
 def _emit_dedup_budgeted_hint(

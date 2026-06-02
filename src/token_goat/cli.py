@@ -1643,7 +1643,7 @@ def _build_map_skills_footer() -> str:
             _cache = _session_mod.safe_load(sid)
             _session_started_ts = float(getattr(_cache, "started_ts", 0.0) or 0.0)
         except Exception:  # noqa: BLE001
-            pass
+            _LOG.debug("skill-sections: failed to load session timestamp for %s (using 0.0)", sid, exc_info=True)
 
         entries = _compact_mod._select_top_skill_entries(  # noqa: SLF001
             skill_history,
@@ -1669,7 +1669,7 @@ def _build_map_skills_footer() -> str:
                     from .compact import estimate_tokens as _est  # noqa: PLC0415
                     compact_note = f" (compact: ~{_est(ct)} tok)"
             except Exception:  # noqa: BLE001
-                pass
+                _LOG.debug("skill-sections: failed to get compact info for %r (skip)", sname, exc_info=True)
             run_note = f" ×{run_count}" if run_count > 1 else ""
             lines.append(f"- {sname}{run_note}{compact_note} — `token-goat skill-body {sname}`")
         return "\n".join(lines)
@@ -2348,7 +2348,7 @@ def cmd_session_summary(
             # Count non-empty lines
             commits_count = len([line for line in result.stdout.strip().split("\n") if line.strip()])
     except Exception:  # noqa: BLE001
-        pass
+        _LOG.debug("session brief: git log failed (commits_count=0)", exc_info=True)
 
     # Estimate token savings from stats or formula
     tokens_saved_estimate = 0
@@ -4570,7 +4570,7 @@ def cmd_skill_list(
         for _sk_name, _sk_entry in (_skill_entries or {}).items():
             _compact_hit_by_name[_sk_name] = getattr(_sk_entry, "compact_served_count", 0)
     except Exception:  # noqa: BLE001
-        pass
+        _LOG.debug("skill list: failed to load compact-hit counts for session %s", resolved_session, exc_info=True)
 
     for meta in entries:
         mtime = mtime_by_oid.get(meta.output_id, meta.ts)
@@ -4983,7 +4983,7 @@ def cmd_resume(
                 resolved_id = candidate
                 break
         except Exception:  # noqa: BLE001
-            pass
+            _LOG.debug("resume: failed to resolve short session id %r", session_id, exc_info=True)
         if resolved_id is None:
             _error(f"no session found for short id: {session_id!r}")
             raise typer.Exit(1)
@@ -5054,7 +5054,7 @@ def cmd_recovery(
                 resolved_id = f.stem
                 break
         except Exception:  # noqa: BLE001
-            pass
+            _LOG.debug("recovery-sidecar: failed to resolve short session id %r", session_id, exc_info=True)
         if resolved_id is None:
             _error(f"no session found for short id: {session_id!r}")
             raise typer.Exit(1)
@@ -5790,7 +5790,7 @@ def compact_hint(
         if _sc is not None:
             _is_noop = hooks_cli_mod._is_noop_session(_sc)
     except Exception:  # noqa: BLE001
-        pass
+        _LOG.debug("compact-hint: failed to load noop-session flag for %s", resolved_session_id, exc_info=True)
 
     n_events = compact_mod.event_count(resolved_session_id)
     events_sufficient = n_events >= cfg.min_events
@@ -5951,7 +5951,7 @@ def compact_hint(
                         f"  current counts     : edited={_c_edited}, bash={_c_bash}"
                     )
             except Exception:  # noqa: BLE001
-                pass
+                _LOG.debug("compact-hint: failed to read sentinel/current counts for debug output", exc_info=True)
         typer.echo(f"  noop_session       : {_is_noop}")
         typer.echo("")
 
