@@ -861,7 +861,7 @@ class TestKindToSource:
         valid = {
             stats.SOURCE_IMAGE, stats.SOURCE_HINT, stats.SOURCE_READ,
             stats.SOURCE_COMPACT, stats.SOURCE_BASH, stats.SOURCE_WEB,
-            stats.SOURCE_OTHER,
+            stats.SOURCE_SKILL, stats.SOURCE_OTHER,
         }
         for kind, src in stats._KIND_TO_SOURCE.items():
             assert src in valid, f"kind {kind!r} maps to unknown source {src!r}"

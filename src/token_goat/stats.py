@@ -37,6 +37,7 @@ SOURCE_READ = "read"
 SOURCE_COMPACT = "compact"
 SOURCE_BASH = "bash"
 SOURCE_WEB = "web"
+SOURCE_SKILL = "skill"
 SOURCE_OTHER = "other"
 
 # Map each raw event kind → user-facing source bucket.  Unknown kinds fall
@@ -136,6 +137,19 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # other "preserve through compaction" mechanisms (skill_body_recall,
     # compact_recovery, resume_packet).
     "decision_log": SOURCE_COMPACT,
+    # skill cache family — tracks the tokens saved by serving compact form
+    # instead of the full body, and the adoption signal for skill caching.
+    #
+    # skill_compact_served: fired in the post-skill hook when a compact is
+    #   stored for a large skill body.  tokens_saved = (full body tokens) −
+    #   (compact tokens); bytes_saved = the same delta in bytes.  This is the
+    #   primary savings signal for the skill-preservation feature.
+    # skill_cached: adoption signal — fired once per new skill body stored to
+    #   disk.  bytes_saved / tokens_saved are always 0 (the compaction saving
+    #   is attributed to skill_compact_served).  Exists so the number of
+    #   distinct skills cached per session is measurable.
+    "skill_compact_served": SOURCE_SKILL,
+    "skill_cached": SOURCE_SKILL,
     # bash output cache family — preventing repeat command runs is structurally
     # distinct from preventing file re-reads (no source file is involved), so
     # it gets its own user-visible bucket rather than folding into HINT.
@@ -210,8 +224,8 @@ def kind_to_source(kind: str) -> str:
     """Map a raw stats event *kind* to a user-facing source bucket.
 
     Returns one of ``SOURCE_IMAGE``, ``SOURCE_HINT``, ``SOURCE_READ``,
-    ``SOURCE_COMPACT``, ``SOURCE_BASH``, ``SOURCE_WEB``, or ``SOURCE_OTHER``
-    for unknown kinds.
+    ``SOURCE_COMPACT``, ``SOURCE_BASH``, ``SOURCE_WEB``, ``SOURCE_SKILL``,
+    or ``SOURCE_OTHER`` for unknown kinds.
 
     Resolution order:
     1. Exact match against ``_KIND_TO_SOURCE`` (the canonical static table).
@@ -247,6 +261,7 @@ __all__ = [
     "SOURCE_IMAGE",
     "SOURCE_OTHER",
     "SOURCE_READ",
+    "SOURCE_SKILL",
     "SOURCE_WEB",
     "StatsSummary",
     "kind_to_source",

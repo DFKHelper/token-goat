@@ -152,6 +152,29 @@ def _resolve_skill_body_path(skill_name: str) -> str:
     return ""
 
 
+def _record_skill_compact_stat(skill_name: str, bytes_saved: int, tokens_saved: int) -> None:
+    """Record a ``skill_compact_served`` savings row in the stats DB.
+
+    Fires whenever a compact form is stored for a skill body (either via
+    explicit ``<!-- COMPACT_END -->`` marker or auto-extraction).  The savings
+    represent the token reduction from serving the compact form in the
+    PreCompact manifest instead of the full body.  Failures are logged and
+    swallowed — a broken stats DB must never abort the hook.
+    """
+    try:
+        from . import db as _db  # noqa: PLC0415
+
+        _db.record_stat(
+            None,
+            "skill_compact_served",
+            bytes_saved=bytes_saved,
+            tokens_saved=tokens_saved,
+            detail=sanitize_log_str(skill_name, max_len=200),
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.debug("post-skill: skill_compact_served stat record failed", exc_info=True)
+
+
 def post_skill(payload: HookPayload) -> HookResponse:
     """PostToolUse(Skill) hook: persist the loaded skill body to disk + session history.
 
@@ -282,13 +305,19 @@ def post_skill(payload: HookPayload) -> HookResponse:
             marker_compact = skill_cache.extract_compact_from_marker(body)
             if marker_compact is not None:
                 skill_cache.store_compact(session_id, skill_name, marker_compact)
-                compact_tokens = len(marker_compact) // 4  # rough estimate: 4 chars/token
+                compact_bytes = len(marker_compact.encode("utf-8", errors="replace"))
+                compact_tokens = compact_bytes // 4  # rough estimate: 4 bytes/token
                 total_tokens = body_size // 4
                 _LOG.debug(
                     "post-skill: compact stored for %s via explicit marker (%d chars)",
                     sanitize_log_str(skill_name, max_len=80),
                     len(marker_compact),
                 )
+                # Record tokens saved = full body − compact (serving compact saves
+                # this many tokens per manifest emission vs re-reading the full body).
+                _saved_bytes = max(0, body_size - compact_bytes)
+                _saved_tokens = max(0, total_tokens - compact_tokens)
+                _record_skill_compact_stat(skill_name, _saved_bytes, _saved_tokens)
                 system_message = (
                     f"Skill '{skill_name}' has explicit compact section"
                     f" ({compact_tokens} tokens above marker vs {total_tokens} total)."
@@ -318,6 +347,14 @@ def post_skill(payload: HookPayload) -> HookResponse:
                                 _cfg_budget,
                             )
                     skill_cache.store_compact(session_id, skill_name, compact_text)
+                    _compact_bytes = len(compact_text.encode("utf-8", errors="replace"))
+                    _compact_tokens = _compact_bytes // 4
+                    _full_tokens = body_size // 4
+                    _record_skill_compact_stat(
+                        skill_name,
+                        max(0, body_size - _compact_bytes),
+                        max(0, _full_tokens - _compact_tokens),
+                    )
                     _LOG.debug(
                         "post-skill: compact stored for %s via auto-extraction (%d chars)",
                         sanitize_log_str(skill_name, max_len=80),

@@ -1002,6 +1002,92 @@ def doctor(  # noqa: C901
         ok("(none)", "cache directories not yet created")
 
     # ------------------------------------------------------------------
+    # 13-skill. Skill cache health
+    # ------------------------------------------------------------------
+    # Shows how many distinct skills are cached, the total on-disk size,
+    # the age of the oldest/newest entry, and whether any cached entry is
+    # stale (the source file on disk was modified after the body was cached).
+    typer.echo("\nSkill cache health")
+    try:
+        import pathlib as _pathlib  # noqa: PLC0415
+
+        from . import skill_cache as _skill_cache  # noqa: PLC0415
+
+        all_outputs = _skill_cache.list_outputs()
+        # Filter to non-compact body files only (compact entries end with "-compact").
+        body_entries = [e for e in all_outputs if not str(e.get("output_id", "")).endswith("-compact")]
+        if not body_entries:
+            ok("(none)", "no skill bodies cached yet")
+        else:
+            # Count distinct skill names and aggregate metrics.
+            # Prefer sidecar metadata when available; fall back to stat-derived
+            # mtime and disk size so entries stored without a sidecar are still
+            # counted and aged correctly.
+            skill_names: set[str] = set()
+            total_body_bytes = 0
+            oldest_ts: float | None = None
+            newest_ts: float | None = None
+            stale_count = 0
+            for entry in body_entries:
+                oid = entry.get("output_id")
+                if not oid:
+                    continue
+                meta = _skill_cache.read_sidecar(oid)
+                if meta is not None:
+                    skill_names.add(meta.skill_name)
+                    total_body_bytes += meta.body_bytes
+                    entry_ts = meta.ts
+                else:
+                    # No sidecar — derive name from output_id and size from disk.
+                    # output_id format: {session_prefix}-{safe_name}-{sha}
+                    parts = str(oid).split("-")
+                    if len(parts) >= 3:
+                        # skill name is everything between prefix and sha (last part)
+                        skill_names.add("-".join(parts[1:-1]))
+                    disk_bytes = int(entry.get("size_bytes", 0))
+                    total_body_bytes += disk_bytes
+                    entry_ts = float(entry.get("mtime", 0.0))
+
+                if entry_ts:
+                    if oldest_ts is None or entry_ts < oldest_ts:
+                        oldest_ts = entry_ts
+                    if newest_ts is None or entry_ts > newest_ts:
+                        newest_ts = entry_ts
+
+                # Stale detection: if source_path is known (via sidecar) and
+                # the source file on disk is newer than the cached body, flag it.
+                if meta is not None and meta.source_path:
+                    try:
+                        src_path = _pathlib.Path(meta.source_path)
+                        if src_path.is_file():
+                            src_mtime = src_path.stat().st_mtime
+                            if src_mtime > meta.ts:
+                                stale_count += 1
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            ok("distinct skills", str(len(skill_names)))
+            ok("cached entries", str(len(body_entries)))
+            ok("total body bytes", _humanize_bytes_doctor(total_body_bytes))
+            if oldest_ts is not None:
+                oldest_age_days = (time.time() - oldest_ts) / 86400
+                ok("oldest entry", f"{oldest_age_days:.1f}d ago")
+            if newest_ts is not None:
+                newest_age_h = (time.time() - newest_ts) / 3600
+                ok("newest entry", f"{newest_age_h:.1f}h ago")
+            if stale_count > 0:
+                flag(
+                    "stale entries",
+                    f"{stale_count} (source file changed after caching; "
+                    "use `token-goat skill-body <name>` to check currency)",
+                    warn=True,
+                )
+            else:
+                ok("stale entries", "0")
+    except Exception as _e_skill_health:  # noqa: BLE001
+        flag("skill cache health", str(_e_skill_health), warn=True)
+
+    # ------------------------------------------------------------------
     # 13a. Index health per project
     # ------------------------------------------------------------------
     # For each indexed project, report file count, symbol count, and last-indexed
