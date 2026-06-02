@@ -55,6 +55,7 @@ __all__ = [
     "_HINT_KIND_INDEX_ONLY",
     "_PROXIMITY_SLOP_LINES",
     "_MAX_CACHED_RANGES_DISPLAY",
+    "_line_ranges_global_bounds",
 ]
 
 # ---------------------------------------------------------------------------
@@ -868,6 +869,37 @@ def _build_read_hint_inner(
 _PROXIMITY_SLOP_LINES: int = 200
 
 
+def _line_ranges_global_bounds(
+    line_ranges: list[tuple[int, int]],
+) -> tuple[int, int]:
+    """Return ``(global_min_start, global_max_end)`` across all cached line ranges.
+
+    Computes the outermost line boundary of a list of ``(start, end)`` range
+    tuples in a single pass.  Used by proximity-check guards in hint builders
+    and hook handlers to determine whether a new read request falls within the
+    ±:data:`_PROXIMITY_SLOP_LINES` band of any previously-read section.
+
+    Args:
+        line_ranges: Non-empty list of ``(start_line, end_line)`` tuples
+                     (1-indexed, inclusive).  Callers must verify the list is
+                     non-empty before calling; passing an empty list raises
+                     ``IndexError``.
+
+    Returns:
+        A ``(global_min, global_max)`` pair where ``global_min`` is the
+        smallest start line and ``global_max`` is the largest end line across
+        all ranges.
+    """
+    global_min = line_ranges[0][0]
+    global_max = line_ranges[0][1]
+    for range_start, range_end in line_ranges[1:]:
+        if range_start < global_min:
+            global_min = range_start
+        if range_end > global_max:
+            global_max = range_end
+    return global_min, global_max
+
+
 def _should_suppress_full_file_hint(n_lines: int | None, threshold: int | None = None) -> bool:
     """Return True when a full-file hint should be suppressed based on line count.
 
@@ -1117,13 +1149,7 @@ def _hint_from_cache(
     # Compute the global min/max cached line in a single pass and suppress
     # when the request falls entirely outside the ±slop band.
     if line_ranges:
-        global_min = line_ranges[0][0]
-        global_max = line_ranges[0][1]
-        for _s, _e in line_ranges[1:]:
-            if _s < global_min:
-                global_min = _s
-            if _e > global_max:
-                global_max = _e
+        global_min, global_max = _line_ranges_global_bounds(line_ranges)
         if req_start > global_max + _PROXIMITY_SLOP_LINES or req_end < global_min - _PROXIMITY_SLOP_LINES:
             _LOG.debug(
                 "_hint_from_cache: suppressing hint for %s "

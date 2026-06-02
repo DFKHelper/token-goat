@@ -446,23 +446,28 @@ def _is_quiet_hours(quiet_hours: str) -> bool:
     if not m:
         return False
     try:
-        start_h, start_m, end_h, end_m = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
-        if not (0 <= start_h < 24 and 0 <= start_m < 60 and 0 <= end_h < 24 and 0 <= end_m < 60):
+        start_h = int(m.group(1))
+        start_m = int(m.group(2))
+        end_h = int(m.group(3))
+        end_m = int(m.group(4))
+        hour_valid = 0 <= start_h < 24 and 0 <= end_h < 24
+        minute_valid = 0 <= start_m < 60 and 0 <= end_m < 60
+        if not (hour_valid and minute_valid):
             return False
     except ValueError:
         return False
 
     now = datetime.datetime.now()
-    current = now.hour * 60 + now.minute
-    start = start_h * 60 + start_m
-    end = end_h * 60 + end_m
+    current_minutes = now.hour * 60 + now.minute
+    window_start = start_h * 60 + start_m
+    window_end = end_h * 60 + end_m
 
-    if start <= end:
-        # Normal range: e.g. 09:00-17:00
-        return start <= current < end
+    if window_start <= window_end:
+        # Normal range (same day): e.g. 09:00-17:00
+        return window_start <= current_minutes < window_end
     else:
         # Midnight-crossing range: e.g. 22:00-07:00
-        return current >= start or current < end
+        return current_minutes >= window_start or current_minutes < window_end
 
 
 def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:

@@ -192,7 +192,7 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     detected = bash_compress.detect_from_command(cmd)
     if detected is None:
         return None
-    filter_, _argv = detected
+    filter_, _ = detected
 
     if filter_.name in cfg.disabled_filters:
         _LOG.debug("bash_compress: filter %s disabled by config; skipping", filter_.name)
@@ -1163,15 +1163,9 @@ def _try_diff_hint(
         and entry_line_ranges
         and entry_line_ranges != [(0, 0)]  # collapsed sentinel = full file
     ):
-        from .hints import _PROXIMITY_SLOP_LINES  # noqa: PLC0415
+        from .hints import _PROXIMITY_SLOP_LINES, _line_ranges_global_bounds  # noqa: PLC0415
 
-        global_min = entry_line_ranges[0][0]
-        global_max = entry_line_ranges[0][1]
-        for _s, _e in entry_line_ranges[1:]:
-            if _s < global_min:
-                global_min = _s
-            if _e > global_max:
-                global_max = _e
+        global_min, global_max = _line_ranges_global_bounds(entry_line_ranges)
         if req_start > global_max + _PROXIMITY_SLOP_LINES or req_end < global_min - _PROXIMITY_SLOP_LINES:
             _LOG.debug(
                 "diff-hint: suppressed for %s (range [%d,%d] outside cached [%d,%d] ±%d)",
@@ -1293,15 +1287,9 @@ def _try_diff_serve(
         and entry_line_ranges
         and entry_line_ranges != [(0, 0)]
     ):
-        from .hints import _PROXIMITY_SLOP_LINES  # noqa: PLC0415
+        from .hints import _PROXIMITY_SLOP_LINES, _line_ranges_global_bounds  # noqa: PLC0415
 
-        global_min = entry_line_ranges[0][0]
-        global_max = entry_line_ranges[0][1]
-        for _s, _e in entry_line_ranges[1:]:
-            if _s < global_min:
-                global_min = _s
-            if _e > global_max:
-                global_max = _e
+        global_min, global_max = _line_ranges_global_bounds(entry_line_ranges)
         if req_start > global_max + _PROXIMITY_SLOP_LINES or req_end < global_min - _PROXIMITY_SLOP_LINES:
             _LOG.debug(
                 "diff-serve: suppressed for %s (range [%d,%d] outside cached [%d,%d] ±%d)",
