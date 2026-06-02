@@ -915,6 +915,54 @@ def _write_compact_skip_sentinel(
         pass
 
 
+def _write_precompact_estimate(session_id: str, cache: object) -> None:
+    """Write a JSON sentinel with the bytes estimate for the pre-compact session.
+
+    Called from ``pre_compact`` immediately after the session cache is loaded —
+    at that point ``bash_history`` and ``web_history`` still hold the
+    pre-compaction data.  After compaction Claude Code may start a *new* session
+    so the post-compact ``SessionStart`` handler cannot reconstruct this
+    estimate from the (empty) new session cache.
+
+    The sentinel is keyed by the *pre-compact* session ID.  The
+    ``_try_recovery_response`` function in ``hooks_session.py`` looks for the
+    most recently written sentinel so it works even when the session ID changes
+    after compaction.
+
+    Errors are silently swallowed — this is advisory telemetry only.
+    """
+    import json as _json  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+
+    try:
+        bash_hist: dict = getattr(cache, "bash_history", None) or {}
+        web_hist: dict = getattr(cache, "web_history", None) or {}
+        bytes_estimate = 0
+        for be in bash_hist.values():
+            bytes_estimate += getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
+        for we in web_hist.values():
+            bytes_estimate += getattr(we, "body_bytes", 0)
+        payload = _json.dumps(
+            {
+                "bytes_estimate": max(0, bytes_estimate),
+                "bash_count": len(bash_hist),
+                "web_count": len(web_hist),
+                "session_id": session_id,
+                "ts": _time.time(),
+            },
+            separators=(",", ":"),
+        )
+        sentinel = paths.precompact_estimate_path(session_id)
+        paths.ensure_dir(sentinel.parent)
+        sentinel.write_text(payload, encoding="utf-8")
+        _LOG.debug(
+            "pre-compact: wrote estimate sentinel session=%s bytes=%d bash=%d web=%d",
+            session_id[:16], max(0, bytes_estimate), len(bash_hist), len(web_hist),
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-compact: estimate sentinel write failed", exc_info=True)
+
+
 def _is_noop_session(cache: object) -> bool:
     """Return True when the session has no meaningful activity worth manifesting.
 
@@ -1008,6 +1056,13 @@ def pre_compact(payload: HookPayload) -> HookResponse:
         )
         _write_compact_skip_sentinel(str(session_id), edited_count=0, bash_count=0)
         return CONTINUE()
+
+    # Write the pre-compact bytes estimate sentinel so that the post-compact
+    # SessionStart handler can read it when building the recovery_pending sidecar.
+    # The session cache has live bash/web history HERE but will be a fresh empty
+    # cache in the new post-compact session.  Storing the estimate now prevents
+    # _check_recovery_pending from computing 0 when it reads from the empty cache.
+    _write_precompact_estimate(str(session_id), session_cache)
 
     # Compute adaptive budget based on session complexity.
     # This replaces the fixed config value as the base — complex sessions with

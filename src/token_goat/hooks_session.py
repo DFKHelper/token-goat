@@ -1008,37 +1008,113 @@ def _build_recovery_hint(session_id: str) -> str | None:
     return _truncate_recovery_hint(hint_text)
 
 
+def _read_precompact_estimate() -> int:
+    """Return the bytes_estimate from the most recently written precompact estimate sentinel.
+
+    The PreCompact hook writes ``sentinels/precompact_estimate_{session_id}.json``
+    immediately after loading the session cache (before compaction destroys the
+    bash/web history).  This function scans the sentinels directory for all such
+    files, picks the newest one written within the last 5 minutes, reads its
+    ``bytes_estimate`` field, and deletes the file.
+
+    Returns 0 when no suitable sentinel is found (fail-soft).
+    """
+    import json as _json  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+
+    try:
+        from . import paths as _paths  # noqa: PLC0415
+
+        sentinels = _paths.sentinels_dir()
+        if not sentinels.exists():
+            return 0
+        # Find all precompact_estimate_*.json files written within the last 5 minutes.
+        cutoff = _time.time() - 300.0
+        candidates = []
+        for p in sentinels.glob("precompact_estimate_*.json"):
+            try:
+                mtime = p.stat().st_mtime
+                if mtime >= cutoff:
+                    candidates.append((mtime, p))
+            except OSError:
+                continue
+        if not candidates:
+            return 0
+        # Pick the most recently written estimate sentinel.
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        _, best = candidates[0]
+        try:
+            data = _json.loads(best.read_text(encoding="utf-8"))
+            estimate = int(data.get("bytes_estimate", 0))
+        except (OSError, ValueError, TypeError):
+            estimate = 0
+        # Delete the sentinel so it is not consumed again.
+        import contextlib as _contextlib  # noqa: PLC0415
+        with _contextlib.suppress(OSError):
+            best.unlink(missing_ok=True)
+        _LOG.debug(
+            "session-start: read precompact estimate %d bytes from %s",
+            estimate, best.name,
+        )
+        return max(0, estimate)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _try_recovery_response(session_id: str | None, source: str) -> HookResponse | None:
     """Defer a recovery hint by writing a sidecar when *source* is "compact".
 
     Instead of injecting the recovery hint immediately at SessionStart, this
-    function writes the hint text to a ``sentinels/recovery_pending_{session_id}``
+    function writes the hint payload to a ``sentinels/recovery_pending_{session_id}``
     sidecar file and returns ``None`` (CONTINUE).  The pre-read hook in
     ``hooks_read.py`` checks for this sidecar on the first ``PreToolUse(Read)``
     or ``PreToolUse(Bash)`` after compaction, injects it there, and deletes the
     file.  This defers the token cost to the moment when the agent actually
     needs the context (item 2 — deferred recovery hint).
 
+    The sidecar is stored as a JSON payload::
+
+        {"hint": "<hint text>", "bytes_estimate": N}
+
+    The ``bytes_estimate`` is read from the precompact estimate sentinel written
+    by the PreCompact hook (``precompact_estimate_{session_id}.json``).  This
+    ensures the stat pair recorded when the hint fires reflects the pre-compaction
+    bash/web history size rather than the (empty) new session cache.
+
     Returns ``None`` in all cases so the caller always falls through to the
     normal session-start flow.  A writing failure is logged but does not
     prevent the session from continuing — the recovery hint is advisory and
     its loss is benign.
     """
+    import json as _json  # noqa: PLC0415
+
     if source != "compact" or not session_id:
         return None
     hint = _build_recovery_hint(session_id)
     if not hint:
         return None
 
-    # Write the hint to a sidecar file for deferred injection.
+    # Recover the bytes estimate from the PreCompact-phase sentinel.  The
+    # pre-compact hook wrote it when the session cache still had bash/web
+    # history; by the time we reach here (post-compact SessionStart) the
+    # new session cache is empty.
+    bytes_estimate = _read_precompact_estimate()
+
+    # Write the hint + estimate as JSON to the sidecar for deferred injection.
     try:
         from . import paths  # noqa: PLC0415
 
+        payload = _json.dumps(
+            {"hint": hint, "bytes_estimate": bytes_estimate},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
         sidecar = paths.recovery_pending_path(session_id)
-        paths.atomic_write_text(sidecar, hint)
+        paths.atomic_write_text(sidecar, payload)
         _LOG.info(
-            "session-start: compact-recovery hint deferred to sidecar for session=%s (%d chars)",
-            session_id[:16], len(hint),
+            "session-start: compact-recovery hint deferred to sidecar for session=%s"
+            " (%d chars, bytes_estimate=%d)",
+            session_id[:16], len(hint), bytes_estimate,
         )
     except Exception:  # noqa: BLE001
         _LOG.debug("recovery hint: sidecar write failed", exc_info=True)

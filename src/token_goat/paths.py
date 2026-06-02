@@ -34,6 +34,7 @@ __all__ = [
     "roll_log_if_oversized",
     "manifest_sha_sidecar_path",
     "manifest_text_sidecar_path",
+    "precompact_estimate_path",
     "recovery_pending_path",
     "sentinels_dir",
     "safe_join",
@@ -643,6 +644,30 @@ def recovery_pending_path(session_id: str) -> Path:
     """
     safe_id = _sanitize_session_id_for_filename(session_id)
     return _safe_child_path(sentinels_dir(), f"recovery_pending_{safe_id}", "", "session_id")
+
+
+def precompact_estimate_path(session_id: str) -> Path:
+    """Path to ``sentinels/precompact_estimate_{session_id}``.
+
+    Written by the PreCompact hook immediately after loading the session cache,
+    before compaction destroys the bash/web history.  The file stores a JSON
+    payload::
+
+        {"bytes_estimate": N, "bash_count": M, "web_count": K, "session_id": "A", "ts": float}
+
+    The SessionStart handler (source=="compact") reads this file to recover the
+    byte estimate for the stat pair written by ``_check_recovery_pending`` in
+    ``hooks_read.py``.  The session ID embedded in the payload lets the reader
+    confirm the sentinel is from the expected compaction cycle.
+
+    Raises ``ValueError`` if *session_id* contains a null byte or escapes the
+    ``sentinels/`` directory.
+
+    On Windows, colons in *session_id* are sanitized to underscores before
+    path construction to prevent silent NTFS Alternate Data Stream creation.
+    """
+    safe_id = _sanitize_session_id_for_filename(session_id)
+    return _safe_child_path(sentinels_dir(), f"precompact_estimate_{safe_id}", ".json", "session_id")
 
 
 def manifest_sha_sidecar_path(session_id: str) -> Path:

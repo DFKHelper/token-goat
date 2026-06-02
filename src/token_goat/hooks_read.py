@@ -1967,6 +1967,38 @@ def _estimate_recovery_context_bytes(cache: object) -> int:
         return 0
 
 
+def _parse_recovery_sidecar(raw: str) -> tuple[str, int]:
+    """Parse a recovery_pending sidecar file, returning (hint_text, bytes_estimate).
+
+    The sidecar may be in one of two formats:
+
+    * **JSON** (new format): ``{"hint": "<hint text>", "bytes_estimate": N}``
+      Written by the post-compact SessionStart handler after reading the
+      precompact estimate sentinel.  ``bytes_estimate`` reflects the actual
+      bash/web history size from the pre-compaction session cache.
+
+    * **Plain text** (legacy): the entire file content is the hint text.
+      Written by older versions of the handler.  ``bytes_estimate`` falls back
+      to 0 in this case (the previous behaviour).
+
+    Returns ``(hint, bytes_estimate)``.  Errors in JSON parsing fall back to
+    treating the whole content as plain-text hint with 0 estimate.
+    """
+    import json as _json  # noqa: PLC0415
+
+    raw_stripped = raw.strip()
+    if raw_stripped.startswith("{"):
+        try:
+            data = _json.loads(raw_stripped)
+            hint = str(data.get("hint", raw))
+            estimate = int(data.get("bytes_estimate", 0))
+            return hint, max(0, estimate)
+        except (ValueError, TypeError):
+            pass
+    # Plain-text fallback: treat entire content as hint with no estimate.
+    return raw, 0
+
+
 def _check_recovery_pending(session_id: str, cache: object) -> str | None:
     """Return the deferred recovery hint text and consume the sidecar, or None.
 
@@ -1978,7 +2010,11 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
 
     Also records a matched stat pair:
     - ``compact_recovery``: positive bytes/tokens saved (bash + web content that
-      would need re-loading without the hint).
+      would need re-loading without the hint).  The estimate is read from the
+      JSON sidecar payload written by the SessionStart handler, which in turn
+      reads it from the precompact estimate sentinel written by the PreCompact
+      hook while the session cache still had live data.  This ensures the stat
+      reflects real pre-compaction history rather than the empty new session.
     - ``compact_recovery_overhead``: negative bytes/tokens (the hint text cost).
 
     Fail-soft: any I/O error returns None so a missing or unreadable sidecar
@@ -1993,8 +2029,10 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
         sidecar = _paths.recovery_pending_path(session_id)
         if not sidecar.exists():
             return None
-        hint = sidecar.read_text(encoding="utf-8")
+        raw = sidecar.read_text(encoding="utf-8")
         sidecar.unlink(missing_ok=True)
+        # Parse sidecar: new JSON format carries bytes_estimate; legacy plain-text falls back to 0.
+        hint, stored_bytes_estimate = _parse_recovery_sidecar(raw)
         # Mark in-process so we don't re-check on subsequent calls.
         try:  # noqa: SIM105
             cache.recovery_injected = True  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this attribute at runtime
@@ -2002,16 +2040,24 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
             pass
         hint_bytes = len(hint.encode("utf-8"))
         _LOG.info(
-            "pre-read: deferred recovery hint injected for session=%s (%d chars)",
-            session_id[:16], hint_bytes,
+            "pre-read: deferred recovery hint injected for session=%s (%d chars, stored_estimate=%d)",
+            session_id[:16], hint_bytes, stored_bytes_estimate,
         )
         # Record matched stat pair: savings (context prevented from being
         # re-read) plus injection overhead (the hint text itself costs tokens).
+        # Use the stored_bytes_estimate from the JSON sidecar (written by
+        # _try_recovery_response from the PreCompact-phase estimate sentinel)
+        # rather than re-computing from the current (possibly empty) session cache.
+        # Fall back to live estimation only when the sidecar was in legacy plain-text format.
         try:
             from . import db as _db  # noqa: PLC0415
 
             _BYTES_PER_TOKEN = 4  # conservative estimate matching hints.CHARS_PER_TOKEN
-            context_bytes = _estimate_recovery_context_bytes(cache)
+            context_bytes = (
+                stored_bytes_estimate
+                if stored_bytes_estimate > 0
+                else _estimate_recovery_context_bytes(cache)
+            )
             context_tokens = max(1, context_bytes // _BYTES_PER_TOKEN) if context_bytes > 0 else 0
             overhead_tokens = max(1, hint_bytes // _BYTES_PER_TOKEN)
             if context_bytes > 0:

@@ -1045,9 +1045,12 @@ class TestRecoveryPendingAtomicWrite:
     def test_recovery_pending_uses_atomic_write_text(self, tmp_data_dir, monkeypatch):
         """_try_recovery_response must write the sidecar via paths.atomic_write_text.
 
-        The recovery_pending sidecar carries the full recovery hint text; a torn
+        The recovery_pending sidecar carries the full recovery hint JSON; a torn
         partial write would surface garbled content to the model on the next tool call.
+        The sidecar format is JSON: {"hint": "<hint text>", "bytes_estimate": N}.
         """
+        import json as _json
+
         from token_goat import hooks_session, paths
 
         HINT_TEXT = "## Compact Recovery\n- file1.py edited\n"
@@ -1070,4 +1073,194 @@ class TestRecoveryPendingAtomicWrite:
         assert atomic_calls, "atomic_write_text was not called for recovery_pending sidecar"
         sidecar_path, content = atomic_calls[0]
         assert "recovery_pending" in str(sidecar_path)
-        assert content == HINT_TEXT
+        # Sidecar is now JSON with hint text embedded.
+        data = _json.loads(content)
+        assert data["hint"] == HINT_TEXT, (
+            f"sidecar JSON hint field must equal the hint text; got: {data!r}"
+        )
+        assert "bytes_estimate" in data, "sidecar JSON must contain bytes_estimate field"
+
+
+class TestPrecompactEstimateSentinel:
+    """Tests for the precompact estimate sentinel written by the PreCompact hook.
+
+    The PreCompact hook writes ``sentinels/precompact_estimate_{session_id}.json``
+    while the session cache still has bash/web history.  The SessionStart handler
+    reads this sentinel to embed a non-zero bytes_estimate in the recovery_pending
+    sidecar, fixing the bug where compact_recovery stats always showed 0 bytes_saved.
+    """
+
+    def test_precompact_writes_estimate_sentinel(self, tmp_data_dir):
+        """pre_compact writes a precompact_estimate sentinel with bash/web byte counts."""
+        import json as _json
+
+        from token_goat import hooks_cli, session
+
+        sid = "precompact-est-1"
+        # Seed known byte counts.
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha="aaaa1111bbbb2222",
+            cmd_preview="pytest tests/",
+            output_id=f"{sid[:16]}-0000000000001-aaaa1111bbbb2222",
+            stdout_bytes=7000,
+            stderr_bytes=200,
+            exit_code=0,
+            truncated=False,
+        )
+        session.mark_web_fetch(
+            session_id=sid,
+            url_sha="cccc3333dddd4444",
+            url_preview="https://docs.example.com",
+            output_id=f"{sid[:16]}-0000000000002-cccc3333dddd4444",
+            body_bytes=4500,
+            status_code=200,
+            truncated=False,
+        )
+
+        # Run pre_compact to trigger sentinel write.
+        hooks_cli.pre_compact({"session_id": sid, "trigger": "manual"})
+
+        sentinel = paths.precompact_estimate_path(sid)
+        assert sentinel.exists(), "precompact_estimate sentinel must be written by pre_compact"
+        data = _json.loads(sentinel.read_text(encoding="utf-8"))
+        assert data["bash_count"] == 1, f"bash_count mismatch: {data}"
+        assert data["web_count"] == 1, f"web_count mismatch: {data}"
+        # bytes_estimate = 7000 + 200 (bash) + 4500 (web) = 11700
+        assert data["bytes_estimate"] == 11700, (
+            f"bytes_estimate={data['bytes_estimate']} expected 11700 (bash 7200 + web 4500)"
+        )
+        assert data["session_id"] == sid
+
+    def test_recovery_sidecar_contains_estimate_from_sentinel(self, tmp_data_dir):
+        """_try_recovery_response embeds bytes_estimate from precompact sentinel in the sidecar JSON."""
+        import json as _json
+
+        from token_goat import hooks_session, paths, session
+
+        sid = "precompact-est-2"
+        session.mark_file_read(sid, "/proj/src/auth.py", offset=0, limit=100)
+        session.mark_file_edited(sid, "/proj/src/auth.py")
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha="bbbb2222cccc3333",
+            cmd_preview="uv run pytest",
+            output_id=f"{sid[:16]}-0000000000001-bbbb2222cccc3333",
+            stdout_bytes=6000,
+            stderr_bytes=300,
+            exit_code=0,
+            truncated=False,
+        )
+
+        # Simulate PreCompact writing the estimate sentinel.
+        sentinel = paths.precompact_estimate_path(sid)
+        paths.ensure_dir(sentinel.parent)
+        sentinel.write_text(
+            _json.dumps(
+                {"bytes_estimate": 6300, "bash_count": 1, "web_count": 0, "session_id": sid, "ts": 1.0},
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+
+        # SessionStart reads sentinel and embeds it in sidecar.
+        hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+
+        sidecar = paths.recovery_pending_path(sid)
+        assert sidecar.exists(), "recovery sidecar must be written by compact SessionStart"
+        data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        assert "hint" in data, "sidecar must have 'hint' field"
+        assert "bytes_estimate" in data, "sidecar must have 'bytes_estimate' field"
+        assert data["bytes_estimate"] == 6300, (
+            f"bytes_estimate={data['bytes_estimate']} expected 6300 from sentinel"
+        )
+        # Sentinel must be consumed (deleted) after being read.
+        assert not sentinel.exists(), "precompact_estimate sentinel must be deleted after being read"
+
+    def test_full_roundtrip_compact_recovery_stat_nonzero(self, tmp_data_dir):
+        """Full round-trip: pre_compact → session_start(compact) → pre_read → stat has nonzero bytes_saved.
+
+        This is the core regression test for the compact_recovery estimation bug.
+        In the bug: _estimate_recovery_context_bytes read from the empty new session cache
+        and always returned 0.  With the fix, the estimate is stored in the precompact
+        sentinel during PreCompact (when the session has data) and surfaced via the sidecar.
+        """
+        import json as _json
+
+        from token_goat import db, hooks_cli, hooks_read, hooks_session, session
+
+        sid = "precompact-est-roundtrip"
+        # Seed bash and web history with known sizes.
+        session.mark_file_read(sid, "/proj/src/main.py", offset=0, limit=200)
+        session.mark_file_edited(sid, "/proj/src/main.py")
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha="ffff0000aaaa1111",
+            cmd_preview="uv run pytest tests/ -x",
+            output_id=f"{sid[:16]}-0000000000001-ffff0000aaaa1111",
+            stdout_bytes=9000,
+            stderr_bytes=0,
+            exit_code=0,
+            truncated=False,
+        )
+        session.mark_web_fetch(
+            session_id=sid,
+            url_sha="eeee9999cccc8888",
+            url_preview="https://api.example.com/docs",
+            output_id=f"{sid[:16]}-0000000000002-eeee9999cccc8888",
+            body_bytes=5000,
+            status_code=200,
+            truncated=False,
+        )
+        # Expected total: 9000 (bash stdout) + 5000 (web body) = 14000 bytes.
+
+        # Phase 1: PreCompact writes the estimate sentinel while cache has data.
+        hooks_cli.pre_compact({"session_id": sid, "trigger": "manual"})
+
+        sentinel = paths.precompact_estimate_path(sid)
+        assert sentinel.exists(), "precompact_estimate sentinel must exist after pre_compact"
+        est_data = _json.loads(sentinel.read_text(encoding="utf-8"))
+        assert est_data["bytes_estimate"] == 14000, (
+            f"PreCompact estimate={est_data['bytes_estimate']} expected 14000"
+        )
+
+        # Phase 2: SessionStart (source=compact) reads sentinel and embeds in sidecar.
+        hooks_session.session_start({
+            "session_id": sid,
+            "source": "compact",
+            "cwd": "/proj",
+        })
+
+        # Sentinel must be consumed.
+        assert not sentinel.exists(), "precompact_estimate sentinel must be consumed by session_start"
+
+        sidecar = paths.recovery_pending_path(sid)
+        assert sidecar.exists(), "recovery sidecar must exist after compact session_start"
+        sidecar_data = _json.loads(sidecar.read_text(encoding="utf-8"))
+        assert sidecar_data["bytes_estimate"] == 14000, (
+            f"sidecar bytes_estimate={sidecar_data['bytes_estimate']} expected 14000"
+        )
+
+        # Phase 3: pre_read injects hint and records stats.
+        hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/src/main.py"},
+        })
+
+        with db.open_global() as conn:
+            row = conn.execute(
+                "SELECT bytes_saved, tokens_saved FROM stats WHERE kind = 'compact_recovery'"
+            ).fetchone()
+
+        assert row is not None, "compact_recovery stat row must be written after pre_read"
+        assert row["bytes_saved"] == 14000, (
+            f"compact_recovery bytes_saved={row['bytes_saved']} expected 14000 (bash 9000 + web 5000)"
+        )
+        assert row["tokens_saved"] > 0, (
+            f"compact_recovery tokens_saved must be positive, got {row['tokens_saved']}"
+        )
