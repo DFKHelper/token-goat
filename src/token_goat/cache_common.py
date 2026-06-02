@@ -331,6 +331,14 @@ def evict_cache_dir(
         pass
 
     if total <= max_total_bytes and len(entries) <= max_file_count:
+        _log.debug(
+            "%s: eviction skipped (within limits): %.1f KB / %.1f KB, %d / %d files",
+            log_name,
+            total / 1024,
+            max_total_bytes / 1024,
+            len(entries),
+            max_file_count,
+        )
         return 0
 
     entries.sort(key=lambda t: t[1])  # oldest first

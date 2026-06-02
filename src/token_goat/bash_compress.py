@@ -1422,6 +1422,13 @@ class Filter(BaseFilter):
                     )
                 notes.append("early-exit: normalisation alone sufficient")
             elif norm_bytes > MAX_INSPECT_BYTES:
+                _LOG.debug(
+                    "filter %s: input exceeds inspect budget (%d KiB > %d KiB); "
+                    "falling back to truncation",
+                    self.name,
+                    norm_bytes // 1024,
+                    MAX_INSPECT_BYTES // 1024,
+                )
                 notes.append(
                     f"input exceeded inspect budget ({MAX_INSPECT_BYTES // 1024} KiB); "
                     "fell back to truncation"

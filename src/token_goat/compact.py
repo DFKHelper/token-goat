@@ -3804,6 +3804,18 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
                 session_id[:8], cached_ts,
             )
             prior_counts = None
+        elif sidecar_age >= _MANIFEST_CACHE_TTL_SECS:
+            _LOG.debug(
+                "build_manifest: sidecar cache expired session=%s age=%.0fs ttl=%.0fs"
+                " — rebuilding manifest",
+                session_id[:8], sidecar_age, _MANIFEST_CACHE_TTL_SECS,
+            )
+        elif cached_fp != fingerprint:
+            _LOG.debug(
+                "build_manifest: sidecar fingerprint mismatch session=%s"
+                " — session changed, rebuilding manifest (stored=%s current=%s)",
+                session_id[:8], cached_fp, fingerprint,
+            )
     elif sidecar_data is not None:
         # Cache write happened earlier in this process — still surface prior_counts
         # for the delta line so the new manifest reflects the growth/shrink.

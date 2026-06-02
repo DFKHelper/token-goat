@@ -1057,6 +1057,10 @@ def pre_compact(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     if not manifest:
+        _LOG.debug(
+            "pre-compact: manifest builder returned empty string (events=%d session=%s); skipping injection",
+            n_events, str(session_id)[:16],
+        )
         _write_compact_skip_sentinel(
             str(session_id), edited_count=_sentinel_edited, bash_count=_sentinel_bash,
         )
