@@ -4,11 +4,16 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-02
+
+Bundles two 50-commit improvement runs: a skill-cache / context-savings accuracy loop (source_sha stale-compact detection, separate compact/body eviction buckets, sidecar schema v2, lazy skill injection, gzip web-cache compression, serve-diff-on-reread, session-hint cooldown) and a general quality loop (type safety, error handling, performance, security, test coverage, code clarity, DRY, docs, observability, imports). Also fixes broken stats accounting for `bash_output_cached`, `skill_cached`, `web_output_cached`, `symbol`, `map`, and `semantic` lookup savings, and adds RuffFilter and MypyFilter bash-compress support.
+
 ### Bash compression
 
 - **Nine new filters (22 → 31 total).** `eza` / `exa` / `ls` (directory listings trimmed to header + 25 + 5 entries; `--tree` mode keeps 40 + 10), `tree` (50 + 10 + final summary line), `fd` / `fdfind` (path lists trimmed to 35 + 5), `bat` / `batcat` (strips ANSI chrome and box-drawing borders, caps at 50 lines), `delta` (strips decorative separators, caps at 80), `jq` (caps at 200 preserving closing brackets), `yq` (caps at 150), `fzf` (compact selection output, caps long upstream pipes at 50), `lazygit` (detects TUI mode and returns an actionable note instead of raw control sequences).
 - **GhFilter list truncation.** `gh pr list`, `gh run list`, and `gh issue list` tabular output is now capped at 30 rows with a count summary.
 - **`_head_tail_compress` helper.** Shared head + tail + marker slicing extracted from 8 filter classes, eliminating repeated boilerplate.
+- **RuffFilter and MypyFilter.** New filters compress ruff check and mypy output, stripping redundant context lines and capping verbose diagnostic blocks.
 
 ### Reliability
 
@@ -31,6 +36,33 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **~20% test suite wall-time reduction.** Eviction tests reduced from 4098 to 100 files; session-cache parameter added to manifest-trim and line-range loops to avoid repeated disk I/O.
 - **Integration tests for new filters.** Nine integration tests verify each new filter family dispatches correctly through the hook pipeline.
 - **Edge case coverage for `_not_indexed_hint`.** Tests cover malformed marker files and missing locks directory.
+
+### Skill cache
+
+- **`source_sha` in compact headers.** Embedded SHA enables stale-compact detection: the pre-read hook emits an advisory when a skill body changes on disk after the compact was cached.
+- **Separate eviction buckets.** Compact slices (1 MB cap) and full bodies (5 MB cap) evict independently so a large body cannot push out all compact entries.
+- **Sidecar schema v2.** Forward-compatible sidecar metadata with graceful migration for v1 entries.
+- **Lazy skill injection.** The compaction manifest emits a `token-goat skill-body --compact` recall pointer instead of the full compact text; reduces manifest token cost for sessions with many loaded skills. Opt-out via `TOKEN_GOAT_LAZY_SKILL_INJECTION=0`.
+- **Gzip body compression for skills ≥ 16 KB.** Transparent decompression on read; reduces eviction pressure.
+
+### Context savings
+
+- **Stats accounting fixed.** `bash_output_cached`, `skill_cached`, and `web_output_cached` now record actual `bytes_saved`; previously always 0. `symbol`, `map`, `section`, and `semantic` lookup stats record `estimated_full_size − slice_size` as savings.
+- **Serve diff on re-read (opt-in).** `[read_hints] serve_diff_on_reread = true` intercepts re-reads of changed files and returns a unified diff instead of the full content.
+- **Gzip compression for web-cache bodies ≥ 16 KB.** Same pattern as skill body compression; reduces disk footprint and eviction churn.
+- **Session-hint cooldown.** Each file's session hint is suppressed after first emission within the session; `session_hint_suppressed` stat tracks the bypass rate.
+- **Unified token formula.** `max(1, bytes // 3 + 1)` replaces inconsistent `bytes // 4` across all accounting sites.
+- **Stats category grouping.** `token-goat stats` groups kinds by Read / Bash / Cache / Hints / Skills / Other.
+
+### Quality
+
+- **Type signatures strengthened.** `Any` parameters replaced with concrete types; `_lookup_in_cache` and `_render_section` made generic with `TypeVar`.
+- **Exception chaining.** `raise ... from e` added at key error propagation points; bare `except` clauses replaced.
+- **Regex patterns hoisted.** 16 in-function `re.compile()` calls in `bash_compress.py`, `compact.py`, and `bash_cache.py` moved to module/class level (pre-bash and pre-compact hot paths).
+- **File permission hardening.** Lock files and session contention marks set to `0o600` (previously `0o644` or implicit umask).
+- **DRY helpers.** `path_mtime_key()` added to `cache_common`; `_extract_grep_args()` and `_get_bash_command_from_payload()` extracted in `hooks_read`.
+- **Debug log coverage.** Silent decision points in `bash_compress`, `cache_common`, `compact`, and `hooks_cli` now emit DEBUG records.
+- **55 new tests** covering coverage gaps, error-handling paths, permission modes, and DRY helper contracts.
 
 ## [1.0.0] - 2026-05-29
 
