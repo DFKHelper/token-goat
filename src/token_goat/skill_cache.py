@@ -811,6 +811,10 @@ def generate_compact_summary(full_body: str) -> str:
        per unique line, deduplicated, code-block-aware).
     4. Lines starting with ``**`` (bold emphasis — typically key directives,
        code-block-aware).
+    5. Fallback for flat skill files: when none of the above yield content, the
+       first non-empty, non-heading prose paragraph (up to 400 chars) is used.
+       Flat skills (no structural headings, no rule keywords) still get a usable
+       compact so the compaction manifest is not empty for that skill.
 
     The result is capped at :data:`_COMPACT_MAX_CHARS` characters.  Returns the
     compact text as a single string; never raises.
@@ -829,14 +833,32 @@ def generate_compact_summary(full_body: str) -> str:
     # fenced blocks from all three extraction phases (headings, rules, bold).
     # A fence opens or closes when a stripped line starts with ``` or ~~~.
     in_code_block = False
+    # Frontmatter tracking: skip the leading --- block so field declarations
+    # (e.g. "description: ...") are not captured as prose or rule lines.
+    # _fm_open/closed follow the first pair of "---" lines at the head of the
+    # document; after that, "---" is a normal horizontal rule.
+    in_frontmatter = False
     headings: list[str] = []
     seen_rules: set[str] = set()
     rule_lines: list[str] = []
     seen_bold: set[str] = set()
     bold_lines: list[str] = []
+    # Track first prose paragraph for the flat-file fallback (phase 5).
+    first_prose: str = ""
 
-    for line in full_body.splitlines():
+    for line_idx, line in enumerate(full_body.splitlines()):
         stripped = line.strip()
+
+        # Frontmatter detection: the very first line "---" opens a YAML block;
+        # a subsequent "---" closes it.  We skip all content inside.
+        if line_idx == 0 and stripped == "---":
+            in_frontmatter = True
+            continue
+        if in_frontmatter:
+            if stripped == "---":
+                in_frontmatter = False
+            continue
+
         # Track fenced code block state.
         if stripped.startswith("```") or stripped.startswith("~~~"):
             in_code_block = not in_code_block
@@ -847,6 +869,7 @@ def generate_compact_summary(full_body: str) -> str:
         # 2. H2/H3 headings as table of contents.
         if stripped.startswith("## ") or stripped.startswith("### "):
             headings.append(stripped)
+            continue
 
         if not stripped:
             continue
@@ -861,12 +884,33 @@ def generate_compact_summary(full_body: str) -> str:
             seen_bold.add(stripped)
             bold_lines.append(stripped)
 
+        # 5. Collect first prose paragraph for flat-file fallback: skip H1 titles
+        # and lines that are solely horizontal rules or other Markdown decorators.
+        if (
+            not first_prose
+            and not stripped.startswith("#")
+            and not stripped.startswith(">")
+            and not set(stripped).issubset(set("-_* \t"))
+            and len(stripped) >= 20
+        ):
+            first_prose = stripped
+
     if headings:
         parts.append("**Sections:** " + " | ".join(headings))
     if rule_lines:
         parts.append("\n".join(rule_lines))
     if bold_lines:
         parts.append("\n".join(bold_lines))
+
+    # 5. Flat-file fallback: when none of the structural extractions yielded
+    # content beyond a possible frontmatter description, include the first prose
+    # paragraph so the manifest is not empty for minimally structured skills.
+    if not headings and not rule_lines and not bold_lines and first_prose:
+        cap = min(len(first_prose), 400)
+        prose_snippet = first_prose[:cap]
+        if cap < len(first_prose):
+            prose_snippet = prose_snippet.rstrip() + "…"
+        parts.append(prose_snippet)
 
     text = "\n\n".join(parts)
 

@@ -3587,19 +3587,19 @@ def cmd_skill_body(
             typer.echo(compact_text)
         return
 
-    # --section: extract a single named H2/H3 section from the body.
+    # --section: extract a single named H2/H3/H4 section from the body.
     if section:
         section_text = skill_cache.extract_named_section(body, section)
         if section_text is None:
-            all_headings = skill_cache.extract_all_headings(body, max_level=3)
+            all_headings = skill_cache.extract_all_headings(body, max_level=4)
             if all_headings:
                 heading_labels = [
-                    f"  {title}" if level >= 3 else title
+                    f"    {title}" if level >= 4 else (f"  {title}" if level >= 3 else title)
                     for level, title in all_headings
                 ]
                 _error(
                     f"section {section!r} not found in skill {name!r}. "
-                    f"Available (## and ###): {', '.join(heading_labels)}"
+                    f"Available (##, ###, ####): {', '.join(heading_labels)}"
                 )
             else:
                 _error(f"section {section!r} not found in skill {name!r} (no headings detected)")
@@ -3635,16 +3635,16 @@ def cmd_skill_body(
     sliced = "\n".join(lines)
 
     # Append a sections-available line when headings exist and we're in text mode.
-    # Include H2 and H3 headings so subsections of large skills (ralph, improve, etc.)
+    # Include H2, H3, and H4 headings so subsections of large skills (ralph, improve, etc.)
     # are discoverable — extract_named_section can reach them but they were previously
-    # invisible, leaving H3-only sections like "Wild Ideas Phase" or "Operating Modes"
+    # invisible, leaving H3/H4-only sections like "Wild Ideas Phase" or "Operating Modes"
     # unreachable without knowing the exact name in advance.
     if not json_output and not section:
-        all_headings = skill_cache.extract_all_headings(body, max_level=3)
+        all_headings = skill_cache.extract_all_headings(body, max_level=4)
         if all_headings:
-            # Prefix H3 headings with two spaces so H2 vs H3 is visually distinct.
+            # Prefix H3 headings with two spaces, H4 with four, so depth is visually distinct.
             heading_labels = [
-                f"  {title}" if level >= 3 else title
+                f"    {title}" if level >= 4 else (f"  {title}" if level >= 3 else title)
                 for level, title in all_headings
             ]
             sliced = sliced + "\n\n**Sections available:** " + ", ".join(heading_labels)

@@ -1130,15 +1130,15 @@ def skill_section(
 
     section_text = skill_cache.extract_named_section(body, heading)
     if section_text is None:
-        all_headings = skill_cache.extract_all_headings(body, max_level=3)
+        all_headings = skill_cache.extract_all_headings(body, max_level=4)
         if all_headings:
             heading_labels = [
-                f"  {title}" if level >= 3 else title
+                f"    {title}" if level >= 4 else (f"  {title}" if level >= 3 else title)
                 for level, title in all_headings
             ]
             msg = (
                 f"Section {heading!r} not found in skill {skill_name!r}. "
-                f"Available (## and ###): {', '.join(heading_labels)}"
+                f"Available (##, ###, ####): {', '.join(heading_labels)}"
             )
         else:
             msg = f"Section {heading!r} not found in skill {skill_name!r} (no headings detected)"

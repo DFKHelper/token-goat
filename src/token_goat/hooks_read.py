@@ -576,8 +576,12 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
 
 # Pattern for skill body files: */.claude/skills/<name>/SKILL.md or */.claude/skills/<name>.md
 # Also catches plugin layout: */.claude/plugins/<plugin>/skills/<name>/SKILL.md
+# And marketplace cache layout:
+#   */.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md
+# The (?:[^/\\]+[/\\])* quantifier allows any number of path segments between
+# "plugins/" and "skills/" so all three layout depths are covered by one pattern.
 _SKILL_FILE_RE = _re.compile(
-    r"[/\\]\.claude[/\\](?:plugins[/\\][^/\\]+[/\\])?skills[/\\]([^/\\]+)"
+    r"[/\\]\.claude[/\\](?:plugins[/\\](?:[^/\\]+[/\\])*)?skills[/\\]([^/\\]+)"
     r"(?:[/\\]SKILL\.md|\.md)$",
     _re.IGNORECASE,
 )
@@ -590,7 +594,8 @@ def _detect_skill_name_from_path(file_path: str) -> str | None:
     * ``~/.claude/skills/<name>/SKILL.md``
     * ``~/.claude/skills/<name>.md``
     * ``~/.claude/plugins/<plugin>/skills/<name>/SKILL.md``
-    * The same shapes under plugin marketplace cache paths.
+    * ``~/.claude/plugins/cache/<marketplace>/<plugin>/<ver>/skills/<name>/SKILL.md``
+    * The same shapes with Windows backslash separators.
 
     Returns the bare skill name (e.g. ``"ralph"``), or ``None`` when the path
     is not a skill file.  Always fail-soft.
