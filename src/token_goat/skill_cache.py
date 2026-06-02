@@ -54,6 +54,7 @@ __all__ = [
     "lookup_by_name",
     "output_id_for",
     "read_sidecar",
+    "sidecar_meta_path",
     "store_compact",
     "store_output",
     "write_sidecar",

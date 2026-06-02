@@ -4021,13 +4021,13 @@ def cmd_skill_compact(
         # no session is set, all entries in the cache directory).
         if _compact_session_id:
             from . import session as _session_mod  # noqa: PLC0415
-            session_cache = _session_mod.get_session(_compact_session_id)
+            session_cache = _session_mod.load(_compact_session_id)
             skill_names_raw: list[str] = list(
                 {entry.skill_name for entry in skill_cache.list_by_session(_compact_session_id)}
             )
-            # Also include skills recorded in the session skills dict, which may
+            # Also include skills recorded in the session skill_history dict, which may
             # differ slightly in name normalisation from the cache file list.
-            for sname in (getattr(session_cache, "skills", None) or {}):
+            for sname in (getattr(session_cache, "skill_history", None) or {}):
                 if sname not in skill_names_raw:
                     skill_names_raw.append(sname)
         else:
