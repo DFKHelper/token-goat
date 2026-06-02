@@ -361,6 +361,36 @@ _MANIFEST_CACHE_TTL_SECS: Final[float] = 600.0
 _manifest_sha_written_this_process: set[str] = set()
 
 # ---------------------------------------------------------------------------
+# Pre-compiled regex patterns used during manifest construction.
+# ---------------------------------------------------------------------------
+# Hoisted to module level so they are compiled once at import time rather than
+# on every build_manifest() / _extract_* / _find_open_questions() call.
+
+# Matches "FAILED tests/foo.py::ClassName::test_name" lines in pytest output.
+_PYTEST_FAILED_RE: Final[re.Pattern[str]] = re.compile(
+    r"FAILED\s+((?:tests?|src)[^\s]+::[\w\[\]<>-]+(?:::[\w\[\]<>-]+)*)",
+    re.IGNORECASE,
+)
+
+# Package-manager install/update lines (pip/uv, npm, cargo, yarn).
+_DEP_CHANGE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"successfully installed\s+(.+)", re.IGNORECASE),
+    re.compile(r"^\+\s+([\w@/-][\w@/.-]+)", re.MULTILINE),
+    re.compile(r"added\s+\d+\s+package", re.IGNORECASE),
+    re.compile(r"^\s*added\s+([\w@/-].+)", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"updated\s+([\w@/-].+)", re.IGNORECASE),
+    re.compile(r"resolved\s+([\w@/-].+)", re.IGNORECASE),
+    re.compile(r"compiling\s+([\w-]+)\s+v([\d.]+)", re.IGNORECASE),
+)
+
+# TODO/FIXME/WHY/HACK/XXX markers in source files.
+_OPEN_QUESTION_MARKER_RE: Final[re.Pattern[str]] = re.compile(
+    r"#\s*(TODO|FIXME|WHY|HACK|XXX)\b[:\s]*(.*?)(?:\s*$|\s*[#?])",
+    re.IGNORECASE,
+)
+_OPEN_QUESTION_INLINE_RE: Final[re.Pattern[str]] = re.compile(r"#[^#]*\?(?:\s|$)")
+
+# ---------------------------------------------------------------------------
 # Manifest sidecar helpers (item #1 of 2026-05-24 design)
 # ---------------------------------------------------------------------------
 # The sidecar file ``sentinels/manifest_sha_{session_id}`` stores a small JSON
@@ -2467,14 +2497,6 @@ def _extract_test_failures(bash_history: object) -> list[str]:
     except Exception:  # noqa: BLE001
         return []
 
-    # Pattern: "FAILED tests/foo/bar.py::ClassName::test_name" or
-    #          "FAILED tests/foo/bar.py::test_name" (no class)
-    # Also catches "FAILED src/..." for non-standard layouts.
-    _FAILED_RE = re.compile(
-        r"FAILED\s+((?:tests?|src)[^\s]+::[\w\[\]<>-]+(?:::[\w\[\]<>-]+)*)",
-        re.IGNORECASE,
-    )
-
     seen: set[str] = set()
     failures: list[str] = []
 
@@ -2491,7 +2513,7 @@ def _extract_test_failures(bash_history: object) -> list[str]:
         if not raw:
             continue
         for line in raw.splitlines():
-            m = _FAILED_RE.search(line)
+            m = _PYTEST_FAILED_RE.search(line)
             if m:
                 name = sanitize_log_str(m.group(1), max_len=120)
                 if name and name not in seen:
@@ -2558,15 +2580,7 @@ def _extract_dep_changes(bash_history: object) -> list[str]:
     # Patterns that indicate a package was added/updated/installed.
     # Covers pip/uv ("Successfully installed foo-1.0"), npm ("added 3 packages"),
     # cargo ("Compiling / Adding foo v1.0"), yarn ("info Direct dependencies").
-    _CHANGE_PATTERNS = (
-        re.compile(r"successfully installed\s+(.+)", re.IGNORECASE),
-        re.compile(r"^\+\s+([\w@/-][\w@/.-]+)", re.MULTILINE),
-        re.compile(r"added\s+\d+\s+package", re.IGNORECASE),
-        re.compile(r"^\s*added\s+([\w@/-].+)", re.IGNORECASE | re.MULTILINE),
-        re.compile(r"updated\s+([\w@/-].+)", re.IGNORECASE),
-        re.compile(r"resolved\s+([\w@/-].+)", re.IGNORECASE),
-        re.compile(r"compiling\s+([\w-]+)\s+v([\d.]+)", re.IGNORECASE),
-    )
+    # (Pre-compiled at module level as _DEP_CHANGE_PATTERNS.)
 
     seen: set[str] = set()
     changes: list[str] = []
@@ -2587,7 +2601,7 @@ def _extract_dep_changes(bash_history: object) -> list[str]:
             stripped = line.strip()
             if not stripped:
                 continue
-            for pat in _CHANGE_PATTERNS:
+            for pat in _DEP_CHANGE_PATTERNS:
                 m = pat.search(stripped)
                 if m:
                     clean = sanitize_log_str(stripped, max_len=100)
@@ -3949,13 +3963,8 @@ def _find_open_questions(edited_file_paths: list[str], max_questions: int = 5) -
     if not edited_file_paths:
         return []
 
-    # Pattern: # TODO/FIXME/WHY/HACK/XXX marker
-    # Matches: "# TODO description" or "# TODO: description"
-    marker_pattern = re.compile(
-        r"#\s*(TODO|FIXME|WHY|HACK|XXX)\b[:\s]*(.*?)(?:\s*$|\s*[#?])",
-        re.IGNORECASE
-    )
-    question_pattern = re.compile(r"#[^#]*\?(?:\s|$)")
+    # Patterns pre-compiled at module level as _OPEN_QUESTION_MARKER_RE
+    # and _OPEN_QUESTION_INLINE_RE.
 
     questions: list[tuple[str, int, str]] = []  # (filepath, line_num, description)
 
@@ -3987,7 +3996,7 @@ def _find_open_questions(edited_file_paths: list[str], max_questions: int = 5) -
                     continue
 
                 # Check for TODO/FIXME/WHY/HACK/XXX markers
-                m = marker_pattern.search(line)
+                m = _OPEN_QUESTION_MARKER_RE.search(line)
                 if m:
                     marker, description = m.groups()
                     description = description.strip()
@@ -4003,7 +4012,7 @@ def _find_open_questions(edited_file_paths: list[str], max_questions: int = 5) -
                     continue
 
                 # Check for inline ? in comments (e.g., "# should this be here?")
-                if question_pattern.search(line) and "#" in line:
+                if _OPEN_QUESTION_INLINE_RE.search(line) and "#" in line:
                     # Extract just the comment part
                     comment_start = line.index("#")
                     comment = line[comment_start:].strip()[:80]

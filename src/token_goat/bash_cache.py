@@ -98,6 +98,13 @@ _TRUNC_MARKER = "[token-goat: bash output truncated; stored {n} of {total} bytes
 # commands can return the entire stored file when asked.
 _MAX_STORED_BYTES: int = 2 * 1024 * 1024
 
+# Pre-compiled patterns for normalize_command_for_cache_key, called on every
+# bash command to compute cache keys (hot path).
+_WHITESPACE_RE: re.Pattern[str] = re.compile(r"\s+")
+_SINGLE_CHAR_FLAG_RE: re.Pattern[str] = re.compile(r"^-[a-zA-Z0-9]$")
+# Tools where short-flag sorting improves cache-hit rates.
+_SORT_FLAG_TOOLS: frozenset[str] = frozenset({"pytest", "rg", "grep", "git"})
+
 
 @dataclass
 class BashOutputMeta:
@@ -144,7 +151,7 @@ def normalize_command_for_cache_key(cmd: str) -> str:
     normalized = cmd.strip()
 
     # Step 2: Normalize internal whitespace to single spaces
-    normalized = re.sub(r'\s+', ' ', normalized)
+    normalized = _WHITESPACE_RE.sub(' ', normalized)
 
     # Step 3: Normalize Windows path separators within tokens
     # A token is a contiguous run of non-whitespace characters.
@@ -178,10 +185,7 @@ def normalize_command_for_cache_key(cmd: str) -> str:
 
     tool = tokens[tool_start_idx]
 
-    # Tools where flag sorting helps (most common ones with many short flags)
-    sort_flag_tools = {'pytest', 'rg', 'grep', 'git'}
-
-    if tool in sort_flag_tools and len(tokens) > tool_start_idx + 1:
+    if tool in _SORT_FLAG_TOOLS and len(tokens) > tool_start_idx + 1:
         # Collect leading single-char flags after the tool, preserve order until
         # we hit the first non-flag argument (positional arg or --long-flag).
         pre_tool = tokens[:tool_start_idx]
@@ -197,7 +201,7 @@ def normalize_command_for_cache_key(cmd: str) -> str:
         found_non_flag = False
 
         for token in rest:
-            if not found_non_flag and re.match(r'^-[a-zA-Z0-9]$', token):
+            if not found_non_flag and _SINGLE_CHAR_FLAG_RE.match(token):
                 # Single-char flag: -x, -q, -1, etc.
                 single_char_flags.append(token)
             else:

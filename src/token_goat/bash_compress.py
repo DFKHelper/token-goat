@@ -3275,6 +3275,15 @@ def _dedup_log_lines(lines: list[str], keep_first_n: int = 3) -> list[str]:
     return out
 
 
+# Pod/container prefix patterns for ``kubectl logs --prefix`` and sidecar-style
+# output. Compiled at module level — used by _dedup_log_lines_with_pod_prefix
+# which is called once per log block but benefits from a pre-compiled pattern.
+_KUBECTL_POD_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[[^\]]+\]\s+"          # --prefix: [pod/name/container]
+    r"|^[a-z0-9][a-z0-9\-\.]*\s+\|\s+"  # legacy: "podname | "
+)
+
+
 def _dedup_log_lines_with_pod_prefix(lines: list[str], keep_first_n: int = 3) -> list[str]:
     """Deduplicate log lines that differ only in timestamps and/or pod prefixes.
 
@@ -3288,14 +3297,9 @@ def _dedup_log_lines_with_pod_prefix(lines: list[str], keep_first_n: int = 3) ->
     verbatim (preserving the original line with its pod prefix and timestamp so
     the reader can see which pods are affected).  The rest are collapsed.
     """
-    _pod_prefix_re = re.compile(
-        r"^\[[^\]]+\]\s+"          # --prefix: [pod/name/container]
-        r"|^[a-z0-9][a-z0-9\-\.]*\s+\|\s+"  # legacy: "podname | "
-    )
-
     def _normalise(line: str) -> str:
         # Strip pod prefix then timestamp.
-        no_pod = _pod_prefix_re.sub("", line)
+        no_pod = _KUBECTL_POD_PREFIX_RE.sub("", line)
         return _strip_timestamp(no_pod).strip()
 
     out: list[str] = []
@@ -4241,6 +4245,10 @@ class LinterFilter(Filter):
         "pyright", "pylint", "tsc",
         "stylelint", "rome",
     ])
+    # Matches diagnostic codes and severity keywords in pyright/pylint output.
+    _DIAG_KEY_RE: re.Pattern[str] = re.compile(
+        r"\b([A-Z][A-Z0-9]+\d+|error|warning|note)\b"
+    )
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -4250,7 +4258,7 @@ class LinterFilter(Filter):
         if binary in ("pyright", "pylint"):
             compressed = dedupe_by_key(
                 merged.split("\n"),
-                re.compile(r"\b([A-Z][A-Z0-9]+\d+|error|warning|note)\b"),
+                self._DIAG_KEY_RE,
                 keep_first_n=3,
                 fmt="[token-goat: +{count} more matching {key_value}]",
             )
@@ -4774,26 +4782,28 @@ def _truncate_listing(stdout: str, stderr: str, *, head: int = 100) -> str:
     return merged
 
 
+_GIT_REMOTE_KEEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:From |To |   [a-f0-9]+\.\.[a-f0-9]+|\s+\*\s|\s+!\s|\s+\+\s|fatal:|error:|warning:)"
+)
+_GIT_REMOTE_DROP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:remote: (?:Counting|Compressing|Total|Enumerating|Receiving|Resolving) objects|"
+    r"Receiving objects:|Resolving deltas:|Unpacking objects:|Updating files:)"
+)
+
+
 def _compress_git_remote(stdout: str, stderr: str) -> str:
     """Drop ``remote: Counting/Compressing objects`` progress; keep ref updates."""
-    keep_re = re.compile(
-        r"^(?:From |To |   [a-f0-9]+\.\.[a-f0-9]+|\s+\*\s|\s+!\s|\s+\+\s|fatal:|error:|warning:)"
-    )
-    drop_re = re.compile(
-        r"^(?:remote: (?:Counting|Compressing|Total|Enumerating|Receiving|Resolving) objects|"
-        r"Receiving objects:|Resolving deltas:|Unpacking objects:|Updating files:)"
-    )
     merged_lines = stdout.split("\n") + ([] if not stderr.strip() else ["---"] + stderr.split("\n"))
     kept: list[str] = []
     dropped = 0
     for line in merged_lines:
-        if drop_re.match(line):
+        if _GIT_REMOTE_DROP_RE.match(line):
             dropped += 1
             continue
         # When neither side matches a keep/drop pattern, keep it (could be an
         # unanticipated diagnostic).
         kept.append(line)
-        _ = keep_re  # keep_re is documentation of what we *intend* to keep
+        _ = _GIT_REMOTE_KEEP_RE  # documents what we *intend* to keep
     if dropped:
         kept.append(f"[token-goat: dropped {dropped} 'remote:' progress lines]")
     return "\n".join(kept)
@@ -5173,6 +5183,9 @@ _GIT_STATUS_NOISE_RE: Final[re.Pattern[str]] = re.compile(
     r"|^nothing to commit, working tree clean"
     r"|^nothing added to commit but untracked files present"
 )
+# Short/porcelain format detection: every non-empty line starts with two
+# XY status chars followed by a space (e.g. "M  foo.py", "?? bar.py").
+_SHORT_STATUS_RE: Final[re.Pattern[str]] = re.compile(r"^[MADRCU?! ][MADRCU?! ] ")
 
 
 def _compress_git_status_verbose(stdout: str, stderr: str) -> str:
@@ -5189,7 +5202,6 @@ def _compress_git_status_verbose(stdout: str, stderr: str) -> str:
 
     # Detect short/porcelain format: non-empty lines all match XY-space pattern.
     non_empty = [ln for ln in lines if ln.strip()]
-    _SHORT_STATUS_RE = re.compile(r"^[MADRCU?! ][MADRCU?! ] ")
     if non_empty and all(_SHORT_STATUS_RE.match(ln) for ln in non_empty[:5]):
         # Already compact — pass through.
         out = stdout
@@ -5277,6 +5289,13 @@ _GIT_BLAME_LINE_RE: Final[re.Pattern[str]] = re.compile(
 _GIT_BLAME_AUTHOR_RE: Final[re.Pattern[str]] = re.compile(
     r"^\^?([0-9a-f]{7,40})\s+\(([^)]+?)\s+\d{4}-\d\d-\d\d"
 )
+_GIT_BLAME_PORCELAIN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[0-9a-f]{40} \d+ \d+"
+)
+_GIT_BLAME_PORCELAIN_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^([0-9a-f]{40}) (\d+) (\d+)(?: (\d+))?$"
+)
+_GIT_BLAME_AUTHOR_LINE_RE: Final[re.Pattern[str]] = re.compile(r"^author (.+)")
 
 
 def _compress_git_blame(stdout: str, stderr: str) -> str:
@@ -5292,8 +5311,7 @@ def _compress_git_blame(stdout: str, stderr: str) -> str:
         return stdout
 
     # Determine if this is porcelain format (40-hex-char at start).
-    _PORCELAIN_RE = re.compile(r"^[0-9a-f]{40} \d+ \d+")
-    is_porcelain = any(_PORCELAIN_RE.match(ln) for ln in lines[:5] if ln.strip())
+    is_porcelain = any(_GIT_BLAME_PORCELAIN_RE.match(ln) for ln in lines[:5] if ln.strip())
 
     if is_porcelain:
         return _compress_git_blame_porcelain(lines, stderr)
@@ -5349,9 +5367,6 @@ def _compress_git_blame_annotated(lines: list[str], stderr: str) -> str:
 
 def _compress_git_blame_porcelain(lines: list[str], stderr: str) -> str:
     """Collapse same-commit runs in porcelain blame format (``git blame --porcelain``)."""
-    _PORCELAIN_HEADER_RE = re.compile(r"^([0-9a-f]{40}) (\d+) (\d+)(?: (\d+))?$")
-    _AUTHOR_RE = re.compile(r"^author (.+)")
-
     out: list[str] = []
     current_hash: str | None = None
     current_author: str | None = None
@@ -5361,7 +5376,7 @@ def _compress_git_blame_porcelain(lines: list[str], stderr: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
-        m = _PORCELAIN_HEADER_RE.match(line)
+        m = _GIT_BLAME_PORCELAIN_HEADER_RE.match(line)
         if m:
             commit_hash = m.group(1)
             if commit_hash == current_hash:
@@ -5390,7 +5405,7 @@ def _compress_git_blame_porcelain(lines: list[str], stderr: str) -> str:
                 # Collect metadata lines until the content line.
                 while i < len(lines) and not lines[i].startswith("\t"):
                     meta = lines[i]
-                    am = _AUTHOR_RE.match(meta)
+                    am = _GIT_BLAME_AUTHOR_LINE_RE.match(meta)
                     if am:
                         current_author = am.group(1).strip()
                     block_lines.append(meta)
@@ -5468,6 +5483,8 @@ _GIT_COMMIT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
 _GIT_COMMIT_STAT_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(\d+\s+files?\s+changed.*)"
 )
+# Pure-dot progress lines emitted by lefthook/pytest runners (e.g. "......[100%]")
+_DOT_LINE_RE: Final[re.Pattern[str]] = re.compile(r"^[.\s]+(?:\[\s*\d+%\])?$")
 
 
 def _compress_git_commit(stdout: str, stderr: str) -> str:
@@ -5519,7 +5536,6 @@ def _compress_git_commit(stdout: str, stderr: str) -> str:
     if fail_hooks:
         # Keep the output but strip pure-dot progress lines (e.g. pytest dots).
         # Also preserve the last 10 lines of error output for tracebacks.
-        _DOT_LINE_RE = re.compile(r"^[.\s]+(?:\[\s*\d+%\])?$")
         kept = [ln for ln in lines if not _DOT_LINE_RE.match(ln)]
         return "\n".join(kept)
 
@@ -5777,6 +5793,9 @@ class GoTestFilter(Filter):
 
     name = "go-test"
     binaries = frozenset(["go"])
+    _GOROUTINE_HEADER_RE: re.Pattern[str] = re.compile(
+        r"^(?:Goroutine \d+|Previous|Current)\s"
+    )
 
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         if not argv:
@@ -5813,7 +5832,6 @@ class GoTestFilter(Filter):
         race_pending_fence = False  # leading "==================" before WARNING seen
         race_goroutine_frames: int = 0  # frame count inside current goroutine section
         _MAX_RACE_GOROUTINE_FRAMES = 5
-        _GOROUTINE_HEADER_RE = re.compile(r"^(?:Goroutine \d+|Previous|Current)\s")
         race_count = 0
 
         def _flush_race_block() -> None:
@@ -5824,7 +5842,7 @@ class GoTestFilter(Filter):
             goroutine_frame_count = 0
             goroutine_frames_dropped = 0
             for rline in race_block_lines:
-                if _GOROUTINE_HEADER_RE.match(rline):
+                if self._GOROUTINE_HEADER_RE.match(rline):
                     # Flush frame-drop note for the previous goroutine section.
                     if goroutine_frames_dropped:
                         kept.append(
@@ -20752,6 +20770,14 @@ FILTERS: list[Filter] = [
 ]
 
 
+# Shell redirect tokens: >, <, >>, 2>, 2>>, >&, &>, 1>, 1>>.  Compiled at
+# module level because detect_from_command() is on the critical path (called
+# for every pre-bash hook invocation).
+_REDIRECT_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(\d*)(>>?|<<?).*$|^&>$|^>&.*$"
+)
+
+
 def select_filter(argv: list[str]) -> Filter | None:
     """Return the first registered filter whose ``matches(argv)`` is True.
 
@@ -20816,7 +20842,6 @@ def detect_from_command(command: str) -> tuple[Filter, list[str]] | None:
     # means shell redirect.  Inside quotes (e.g. -k "a > b") shlex folds the >
     # into the surrounding token, so it won't appear as a standalone element.
     # Common redirect forms: >, <, >>, 2>, 2>>, >&, &>, 1>, 1>>, /dev/null sinks.
-    _REDIRECT_TOKEN_RE = re.compile(r"^(\d*)(>>?|<<?).*$|^&>$|^>&.*$")  # noqa: N806
     if any(_REDIRECT_TOKEN_RE.match(tok) for tok in argv):
         return None
     filter_ = select_filter(argv)
