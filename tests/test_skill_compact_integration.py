@@ -645,10 +645,13 @@ class TestSkillBodyCompactHeaderConsistency:
         assert m is not None, f"header pattern not found in: {output[:120]!r}"
         claimed_tokens = int(m.group(1))
         body_text = m.group(2)
-        expected_tokens = max(1, len(body_text) // 4)
+        # Token count uses the canonical estimator: max(1, len(text) // 3 + 1).
+        # This is more accurate than the old // 4 approximation (~25% undercount).
+        from token_goat.compact import estimate_tokens
+        expected_tokens = estimate_tokens(body_text)
         assert claimed_tokens == expected_tokens, (
             f"header claims {claimed_tokens} tokens but body has {len(body_text)} chars "
-            f"({expected_tokens} tokens)"
+            f"({expected_tokens} tokens via estimate_tokens)"
         )
 
 

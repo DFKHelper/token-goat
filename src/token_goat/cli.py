@@ -3597,6 +3597,7 @@ def cmd_skill_body(
     When ``--section`` is absent and the body has H2 headings, the command
     appends a ``**Sections available:** ...`` line listing them.
     """
+    from . import compact as _compact  # noqa: PLC0415
     from . import db as _db  # noqa: PLC0415
     from . import hooks_skill, skill_cache  # noqa: PLC0415
 
@@ -3683,16 +3684,17 @@ def cmd_skill_body(
         # verbatim (header included), while a freshly generated compact has no
         # header yet — stripping is idempotent when no header is present.
         compact_bare = skill_cache._strip_compact_header(compact_text)
-        compact_tokens = max(1, len(compact_bare) // 4)
+        compact_tokens = max(1, _compact.estimate_tokens(compact_bare))
         compact_display = f"--- compact form ({compact_tokens} tokens) ---\n{compact_bare}"
         body_bytes = len(body.encode())
         returned_bytes = len(compact_display.encode())
         saved_bytes = max(0, body_bytes - returned_bytes)
+        _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(compact_display))
         _db.record_stat(
             None,
             "skill_body_recall",
             bytes_saved=saved_bytes,
-            tokens_saved=saved_bytes // 4,
+            tokens_saved=_tokens_saved,
             detail=f"{name[:48]}:compact",
         )
         if json_output:
@@ -3733,11 +3735,12 @@ def cmd_skill_body(
         body_bytes = len(body.encode())
         returned_bytes = len(sliced.encode())
         saved_bytes = max(0, body_bytes - returned_bytes)
+        _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(sliced))
         _db.record_stat(
             None,
             "skill_body_recall",
             bytes_saved=saved_bytes,
-            tokens_saved=saved_bytes // 4,
+            tokens_saved=_tokens_saved,
             detail=f"{name[:48]}::{section[:16]}",
         )
         if json_output:
@@ -3778,11 +3781,12 @@ def cmd_skill_body(
     body_bytes = len(body.encode())
     returned_bytes = len(sliced.encode())
     saved_bytes = max(0, body_bytes - returned_bytes)
+    _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(sliced))
     _db.record_stat(
         None,
         "skill_body_recall",
         bytes_saved=saved_bytes,
-        tokens_saved=saved_bytes // 4,
+        tokens_saved=_tokens_saved,
         detail=name[:64],
     )
 
@@ -3835,6 +3839,7 @@ def cmd_skill_compact(
     stored in the skill cache under ``{session}-{name}-compact`` for instant
     recall via ``token-goat skill-body --compact <name>``.
     """
+    from . import compact as _compact  # noqa: PLC0415
     from . import db as _db  # noqa: PLC0415
     from . import hooks_skill, skill_cache  # noqa: PLC0415
 
@@ -3891,17 +3896,18 @@ def cmd_skill_compact(
 
     # compact_text is the bare body (no stored-file header).  Prepend a fresh
     # header so the output is self-documenting regardless of the source.
-    compact_tokens = max(1, len(compact_text) // 4)
+    compact_tokens = max(1, _compact.estimate_tokens(compact_text))
     compact_display = f"--- compact form ({compact_tokens} tokens) ---\n{compact_text}"
 
     body_bytes = len(body.encode())
     returned_bytes = len(compact_display.encode())
     saved_bytes = max(0, body_bytes - returned_bytes)
+    _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(compact_display))
     _db.record_stat(
         None,
         "skill_body_recall",
         bytes_saved=saved_bytes,
-        tokens_saved=saved_bytes // 4,
+        tokens_saved=_tokens_saved,
         detail=f"{name[:48]}:compact:{compact_source}",
     )
 
@@ -3915,7 +3921,7 @@ def cmd_skill_compact(
             "body_bytes": body_bytes,
             "returned_bytes": returned_bytes,
             "saved_bytes": saved_bytes,
-            "saved_tokens": saved_bytes // 4,
+            "saved_tokens": _tokens_saved,
         }
         if meta is not None:
             payload["output_id"] = meta.output_id
@@ -4058,8 +4064,8 @@ def cmd_skill_size(
 
     For each cached skill, displays:
     - Name of the skill
-    - Total tokens (~body_bytes/4)
-    - Compact tokens (~compact_bytes/4)
+    - Total tokens (~body_chars/3, using the canonical token estimator)
+    - Compact tokens (~compact_chars/3, using the canonical token estimator)
     - Per-100-turn overhead (compact_tokens * 100, worst-case if loaded in every turn)
     - Flag: "⚠ restructure" if overhead > 50,000 tokens
 
@@ -4090,15 +4096,16 @@ def cmd_skill_size(
         compact_len = int(skill["compact_len"])  # type: ignore[call-overload]
 
         # Prefer char-based counts when available (added in get_all_cached_skills
-        # iter-5).  Chars give a consistent token estimate matching store_compact's
-        # own formula (``len(compact_text) // 4``) and avoid inflating the count
-        # with UTF-8 multi-byte overhead or the stored header line.  Fall back to
-        # byte-based counts for caches written by older versions of token-goat.
+        # iter-5).  Chars give a consistent token estimate matching the canonical
+        # ``compact.estimate_tokens`` formula (max(1, len(text) // 3 + 1)) and
+        # avoid inflating the count with UTF-8 multi-byte overhead or the stored
+        # header line.  Fall back to byte-based counts for older cache entries.
         body_chars = skill.get("body_chars")  # type: ignore[union-attr]
         body_measure = int(body_chars) if isinstance(body_chars, int) else body_len  # type: ignore[call-overload]
 
-        # Estimate tokens: 4 chars per token (reasonable for English prose).
-        body_tokens = body_measure // 4
+        # Estimate tokens using the canonical estimator: ~3 chars/token (conservative).
+        # Mirrors compact.estimate_tokens(text) = max(1, len(text) // 3 + 1).
+        body_tokens = max(1, body_measure // 3 + 1)
         # compact_chars: char count of the compact *body* (header stripped), set
         # by get_all_cached_skills when compact text is present.  When absent or
         # zero, fall back to body_measure so overhead is not misleadingly zero.
@@ -4108,7 +4115,7 @@ def cmd_skill_size(
             if isinstance(compact_chars, int) and int(compact_chars) > 0  # type: ignore[call-overload]
             else (compact_len if compact_len > 0 else body_measure)
         )
-        compact_tokens = compact_measure // 4
+        compact_tokens = max(1, compact_measure // 3 + 1)
         compact_is_estimated = compact_len == 0
 
         # Worst-case overhead at 100 turns: loaded in every turn.
@@ -4168,9 +4175,9 @@ def cmd_skill_list(
 
     For each cached skill, displays:
     - Skill name
-    - Cached token count (~body_bytes/4)
+    - Cached token count (~body_chars/3, using the canonical token estimator)
     - Whether a compact slice is available (yes/no)
-    - Compact token count when available (~compact_bytes/4)
+    - Compact token count when available (~compact_chars/3, using the canonical token estimator)
     - Age: when the skill was cached (seconds ago)
 
     When --session-id is omitted, the most-recently active session in the
@@ -4181,6 +4188,7 @@ def cmd_skill_list(
     """
     import time as _time  # noqa: PLC0415
 
+    from . import compact as _compact  # noqa: PLC0415
     from . import skill_cache  # noqa: PLC0415
 
     # Resolve session_id: use the provided one or fall back to most-recent session.
@@ -4220,10 +4228,10 @@ def cmd_skill_list(
         mtime = mtime_by_oid.get(meta.output_id, meta.ts)
         age_secs = max(0.0, now - mtime) if mtime > 0 else -1.0
 
-        # Load the body to get accurate byte count and compact availability.
+        # Load the body to get accurate token count and compact availability.
         body = skill_cache.load_output(meta.output_id)
-        body_bytes = len(body.encode("utf-8", errors="replace")) if body else 0
-        body_tokens = body_bytes // 4
+        body_text = body or ""
+        body_tokens = _compact.estimate_tokens(body_text) if body_text else 0
 
         compact_text = skill_cache.get_compact(resolved_session, meta.skill_name)
         if compact_text is None:
@@ -4232,9 +4240,8 @@ def cmd_skill_list(
             compact_text = skill_cache.get_compact(resolved_session, alt_name)
         has_compact = compact_text is not None
 
-        from . import skill_cache as _sc  # noqa: PLC0415
-        compact_body = _sc._strip_compact_header(compact_text) if compact_text else ""
-        compact_tokens = len(compact_body) // 4 if compact_body else 0
+        compact_body = skill_cache._strip_compact_header(compact_text) if compact_text else ""
+        compact_tokens = _compact.estimate_tokens(compact_body) if compact_body else 0
 
         rows.append({
             "name": meta.skill_name,

@@ -1103,6 +1103,7 @@ def skill_section(
     """
     import typer  # noqa: PLC0415
 
+    from . import compact as _compact  # noqa: PLC0415
     from . import db as _db  # noqa: PLC0415
     from . import skill_cache  # noqa: PLC0415
 
@@ -1152,11 +1153,12 @@ def skill_section(
     body_bytes = len(body.encode())
     returned_bytes = len(section_text.encode())
     saved_bytes = max(0, body_bytes - returned_bytes)
+    _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(section_text))
     _db.record_stat(
         None,
         "section_replacement",
         bytes_saved=saved_bytes,
-        tokens_saved=saved_bytes // 4,
+        tokens_saved=_tokens_saved,
         detail=f"{skill_name[:40]}::{heading[:16]}",
     )
 
