@@ -580,9 +580,22 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
 #   */.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md
 # The (?:[^/\\]+[/\\])* quantifier allows any number of path segments between
 # "plugins/" and "skills/" so all three layout depths are covered by one pattern.
+#
+# Two match groups are returned:
+#   group(1) — the path segment immediately after "skills/".  This is the
+#              canonical outer-directory skill name in all known layouts.
+#   group(2) — an optional extra segment that appears in the nested subdir
+#              layout ``skills/<outer>/<inner>/SKILL.md`` (e.g.
+#              ``skills/brainstorming/brainstorming/SKILL.md``).  When
+#              present the outer directory (group 1) is the skill name and
+#              group(2) is discarded.
 _SKILL_FILE_RE = _re.compile(
     r"[/\\]\.claude[/\\](?:plugins[/\\](?:[^/\\]+[/\\])*)?skills[/\\]([^/\\]+)"
-    r"(?:[/\\]SKILL\.md|\.md)$",
+    r"(?:"
+    r"[/\\]([^/\\]+)[/\\]SKILL\.md"  # nested: <outer>/<inner>/SKILL.md — use <outer>
+    r"|[/\\]SKILL\.md"               # standard: <name>/SKILL.md
+    r"|\.md"                         # flat: <name>.md
+    r")$",
     _re.IGNORECASE,
 )
 
@@ -593,6 +606,7 @@ def _detect_skill_name_from_path(file_path: str) -> str | None:
     Recognises:
     * ``~/.claude/skills/<name>/SKILL.md``
     * ``~/.claude/skills/<name>.md``
+    * ``~/.claude/skills/<name>/<name>/SKILL.md``  (nested subdir layout)
     * ``~/.claude/plugins/<plugin>/skills/<name>/SKILL.md``
     * ``~/.claude/plugins/cache/<marketplace>/<plugin>/<ver>/skills/<name>/SKILL.md``
     * The same shapes with Windows backslash separators.

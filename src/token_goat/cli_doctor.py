@@ -1084,6 +1084,76 @@ def doctor(  # noqa: C901
                 )
             else:
                 ok("stale entries", "0")
+
+            # ----------------------------------------------------------
+            # Compact-to-body ratio guard: warn when a skill's compact is
+            # less than 20% of the full body — the compact is so small
+            # relative to the body that it may be missing load-bearing
+            # content, or the skill body has grown significantly since the
+            # compact was generated (so token savings estimates are stale).
+            # Threshold: compact must be at least 5% of the body (below
+            # that it is likely a stub) and at most 20% of the body to be
+            # considered healthy.  The upper bound is intentionally loose —
+            # compacts above 20% are fine (more coverage).  The "< 5%"
+            # lower bound flags near-empty compacts that would provide
+            # little recall value.
+            # ----------------------------------------------------------
+            try:
+                compact_entries = [
+                    e for e in all_outputs
+                    if str(e.get("output_id", "")).endswith("-compact")
+                ]
+                _COMPACT_RATIO_WARN = 0.20  # < 20% → compact too small relative to body
+                low_ratio_skills: list[str] = []
+                for ce in compact_entries:
+                    coid = ce.get("output_id", "")
+                    # Derive the skill name from the compact output ID.
+                    # Compact IDs end with "-compact"; the preceding segment is
+                    # "{session_prefix}-{safe_skill_name}-compact".
+                    name_candidate = str(coid)
+                    if name_candidate.endswith("-compact"):
+                        name_candidate = name_candidate[:-len("-compact")]
+                    # Strip session prefix (first segment, separated by "-").
+                    parts = name_candidate.split("-")
+                    skill_label = "-".join(parts[1:]) if len(parts) >= 2 else name_candidate
+
+                    compact_size = int(ce.get("size_bytes", 0))
+                    if compact_size == 0:
+                        continue
+
+                    # Find the corresponding body entry to get body_bytes.
+                    # Match by skill name: look for a sidecar whose skill_name
+                    # normalises to the same label.
+                    body_size: int | None = None
+                    for be in body_entries:
+                        boid = be.get("output_id", "")
+                        bm = _skill_cache.read_sidecar(boid)
+                        if bm is not None and bm.skill_name and bm.skill_name.lower() == skill_label.lower():
+                            body_size = bm.body_bytes
+                            break
+
+                    if body_size is None or body_size == 0:
+                        continue
+
+                    ratio = compact_size / body_size
+                    if ratio < _COMPACT_RATIO_WARN:
+                        low_ratio_skills.append(
+                            f"{skill_label} ({ratio:.0%} of body — "
+                            f"run `token-goat skill-compact {skill_label}` to refresh)"
+                        )
+
+                if low_ratio_skills:
+                    flag(
+                        "compact coverage",
+                        f"{len(low_ratio_skills)} skill(s) with compact < 20% of body: "
+                        + ", ".join(low_ratio_skills),
+                        warn=True,
+                    )
+                else:
+                    ok("compact coverage", "ok (all compacts ≥ 20% of body, or no compacts yet)")
+            except Exception:  # noqa: BLE001 — compact ratio check is best-effort
+                pass
+
     except Exception as _e_skill_health:  # noqa: BLE001
         flag("skill cache health", str(_e_skill_health), warn=True)
 

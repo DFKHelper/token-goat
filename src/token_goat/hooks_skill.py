@@ -142,6 +142,13 @@ def _resolve_skill_body_path(skill_name: str) -> str:
     else:
         candidates.append(home / ".claude" / "skills" / skill_name / "SKILL.md")
         candidates.append(home / ".claude" / "skills" / skill_name / f"{skill_name}.md")
+        # Nested subdir layout: ``skills/<name>/<name>/SKILL.md``
+        # Some Claude Code skill packages use a double-directory layout where
+        # the skill files live one level deeper (e.g.
+        # ``skills/brainstorming/brainstorming/SKILL.md``).
+        candidates.append(
+            home / ".claude" / "skills" / skill_name / skill_name / "SKILL.md"
+        )
 
     for p in candidates:
         try:
@@ -202,10 +209,18 @@ def post_skill(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     tool_input = get_tool_input(payload)
-    skill_name_raw = tool_input.get("skill")
+    # Claude Code sends the skill name in tool_input["skill"] (snake_case).
+    # Guard against alternative field names that may appear in future Claude Code
+    # versions or third-party harnesses (e.g. "skillName" camelCase, "name").
+    skill_name_raw = (
+        tool_input.get("skill")
+        or tool_input.get("skillName")
+        or tool_input.get("name")
+    )
     if not isinstance(skill_name_raw, str) or not skill_name_raw:
         _LOG.debug(
-            "post-skill: tool_input 'skill' field missing or non-string (type=%s); skipping",
+            "post-skill: tool_input skill field missing or non-string "
+            "(tried 'skill', 'skillName', 'name'; type=%s); skipping",
             type(skill_name_raw).__name__,
         )
         return CONTINUE()
