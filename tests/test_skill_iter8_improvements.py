@@ -14,6 +14,8 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Improvement 1: doctor skill cache health section
 # ---------------------------------------------------------------------------
@@ -22,30 +24,37 @@ from unittest.mock import patch
 class TestDoctorSkillCacheHealth:
     """doctor emits a skill cache health section."""
 
-    def test_doctor_skill_section_present(self, tmp_path, monkeypatch):
-        """doctor output contains the 'Skill cache health' heading."""
-        from typer.testing import CliRunner
+    @pytest.fixture(autouse=True)
+    def _patch_doctor_paths(self, tmp_path, monkeypatch):
+        """Redirect data_dir, hook_wrapper_path, and hook_wrapper_content for doctor tests.
 
-        from token_goat import cli, paths
+        Replaces the repeated 3-line block in every test method::
 
+            monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+            monkeypatch.setattr(paths, "hook_wrapper_path", lambda: tmp_path / "bin" / "tg-hook.cmd")
+            monkeypatch.setattr(paths, "hook_wrapper_content", lambda: "")
+        """
+        from token_goat import paths
         monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
         monkeypatch.setattr(paths, "hook_wrapper_path", lambda: tmp_path / "bin" / "tg-hook.cmd")
         monkeypatch.setattr(paths, "hook_wrapper_content", lambda: "")
+
+    def test_doctor_skill_section_present(self, monkeypatch):
+        """doctor output contains the 'Skill cache health' heading."""
+        from typer.testing import CliRunner
+
+        from token_goat import cli
 
         runner = CliRunner()
         result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0
         assert "Skill cache health" in result.output
 
-    def test_doctor_skill_section_no_cache(self, tmp_path, monkeypatch):
+    def test_doctor_skill_section_no_cache(self, monkeypatch):
         """When no skills are cached, doctor shows '(none)' for the skill section."""
         from typer.testing import CliRunner
 
-        from token_goat import cli, paths
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
-        monkeypatch.setattr(paths, "hook_wrapper_path", lambda: tmp_path / "bin" / "tg-hook.cmd")
-        monkeypatch.setattr(paths, "hook_wrapper_content", lambda: "")
+        from token_goat import cli
 
         runner = CliRunner()
         result = runner.invoke(cli.app, ["doctor"])

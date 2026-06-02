@@ -695,6 +695,19 @@ def test_handler_lookup_caches_after_first_dispatch():
 class TestCompactSkipSentinel:
     """pre_compact sentinel fast-path: fresh sentinel skips heavy imports."""
 
+    @pytest.fixture(autouse=True)
+    def _patch_data_dir(self, tmp_path, monkeypatch):
+        """Redirect paths.data_dir to tmp_path for every test in this class.
+
+        Replaces the repeated ``monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)``
+        that appeared in every test method.  tmp_path is still accessible via
+        ``self._tmp_path`` for tests that need to construct paths explicitly.
+        """
+        import token_goat.paths as paths
+
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        self._tmp_path = tmp_path
+
     def test_fresh_sentinel_skips_via_check_mock(self, tmp_path, monkeypatch):
         """When _check_compact_skip_sentinel returns True, pre_compact returns CONTINUE
         and does NOT call into compact/config (no heavy imports needed)."""
@@ -725,10 +738,6 @@ class TestCompactSkipSentinel:
         from token_goat import hooks_cli as hc
         from token_goat import paths
 
-        # Patch data_dir first, THEN write the sentinel so both the write and the
-        # subsequent check resolve to the same tmp_path-rooted location.
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
-
         session_id = "sentinel_test_stale"
         sentinel = paths.compact_skip_sentinel_path(session_id)
         sentinel.parent.mkdir(parents=True, exist_ok=True)
@@ -739,20 +748,16 @@ class TestCompactSkipSentinel:
         # The stale sentinel must return False from the check.
         assert hc._check_compact_skip_sentinel(session_id) is False
 
-    def test_missing_sentinel_returns_false(self, tmp_path, monkeypatch):
+    def test_missing_sentinel_returns_false(self, monkeypatch):
         """No sentinel file → _check_compact_skip_sentinel returns False."""
         from token_goat import hooks_cli as hc
-        from token_goat import paths
 
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
         assert hc._check_compact_skip_sentinel("no_such_session") is False
 
     def test_write_sentinel_creates_file(self, tmp_path, monkeypatch):
         """_write_compact_skip_sentinel creates the sentinel file."""
         from token_goat import hooks_cli as hc
         from token_goat import paths
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         session_id = "sentinel_write_test"
         hc._write_compact_skip_sentinel(session_id)
@@ -763,20 +768,14 @@ class TestCompactSkipSentinel:
     def test_check_sentinel_returns_true_for_fresh(self, tmp_path, monkeypatch):
         """_check_compact_skip_sentinel returns True for a just-written sentinel."""
         from token_goat import hooks_cli as hc
-        from token_goat import paths
-
-        # Patch first so write and check resolve to the same directory.
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
         session_id = "sentinel_fresh_check"
         hc._write_compact_skip_sentinel(session_id)
         assert hc._check_compact_skip_sentinel(session_id) is True
 
-    def test_pre_compact_no_session_id_no_crash(self, tmp_path, monkeypatch):
+    def test_pre_compact_no_session_id_no_crash(self, monkeypatch):
         """pre_compact with no session_id must not crash and must return continue."""
         from token_goat import hooks_cli as hc
-        from token_goat import paths
 
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
         result = hc.pre_compact({"trigger": "auto"})
         assert result.get("continue") is True
 
@@ -794,8 +793,6 @@ class TestCompactSkipSentinel:
 
         from token_goat import hooks_cli as hc
         from token_goat import paths
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         session_id = "sentinel_activity_floor"
         # Write the sentinel first…
@@ -827,9 +824,6 @@ class TestCompactSkipSentinel:
         calls between hook fires).
         """
         from token_goat import hooks_cli as hc
-        from token_goat import paths
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         session_id = "sentinel_no_session_file"
         hc._write_compact_skip_sentinel(session_id)
@@ -848,8 +842,6 @@ class TestCompactSkipSentinel:
 
         from token_goat import hooks_cli as hc
         from token_goat import paths
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         session_id = "sentinel_session_older"
         # Write the session file FIRST, then back-date its mtime by 10 min.
@@ -873,8 +865,6 @@ class TestCompactSkipSentinel:
 
         from token_goat import hooks_cli as hc
         from token_goat import paths
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         session_id = "sentinel_future_dated"
         hc._write_compact_skip_sentinel(session_id)
@@ -902,8 +892,6 @@ class TestCompactSkipSentinel:
 
         from token_goat import hooks_cli as hc
         from token_goat import paths
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         session_id = "sentinel_short_ttl"
         hc._write_compact_skip_sentinel(session_id)
@@ -960,8 +948,6 @@ class TestCompactSkipSentinel:
         from token_goat import hooks_cli as hc
         from token_goat import paths
 
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
-
         session_id = "fat32_grace_1_5s"
         hc._write_compact_skip_sentinel(session_id)
         sentinel = paths.compact_skip_sentinel_path(session_id)
@@ -987,8 +973,6 @@ class TestCompactSkipSentinel:
 
         from token_goat import hooks_cli as hc
         from token_goat import paths
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         session_id = "fat32_grace_2_5s"
         hc._write_compact_skip_sentinel(session_id)

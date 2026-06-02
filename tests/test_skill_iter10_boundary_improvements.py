@@ -143,6 +143,16 @@ class TestLargeBodyWarning:
 
     _LARGE_BODY_THRESHOLD: int = 32_768  # 32 KB
 
+    @pytest.fixture(autouse=True)
+    def _patch_data_dir(self, tmp_path, monkeypatch):
+        """Redirect paths.data_dir to tmp_path for every test in this class.
+
+        Replaces the per-test ``monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)``
+        that appeared in every test method.
+        """
+        from token_goat import paths
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
     def _make_payload(self, skill_name: str, body: str) -> dict:
         return {
             "tool_name": "Skill",
@@ -171,13 +181,11 @@ class TestLargeBodyWarning:
         return body
 
     def test_warning_emitted_for_large_body_without_marker(
-        self, tmp_path: object, monkeypatch: object
+        self, monkeypatch: object
     ) -> None:
         """Stderr warning is written when body > 32 KB and no COMPACT_END."""
-        from token_goat import hooks_skill, paths
+        from token_goat import hooks_skill
         from token_goat.config import SkillPreservationConfig
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         body = self._large_body_no_marker(self._LARGE_BODY_THRESHOLD + 1000)
         assert "COMPACT_END" not in body, "Test setup: body must have no marker"
@@ -206,13 +214,11 @@ class TestLargeBodyWarning:
         )
 
     def test_no_warning_for_large_body_with_marker(
-        self, tmp_path: object, monkeypatch: object
+        self, monkeypatch: object
     ) -> None:
         """No stderr warning when body > 32 KB but COMPACT_END marker is present."""
-        from token_goat import hooks_skill, paths
+        from token_goat import hooks_skill
         from token_goat.config import SkillPreservationConfig
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         body = self._large_body_with_marker(self._LARGE_BODY_THRESHOLD + 1000)
         assert "COMPACT_END" in body, "Test setup: body must have the marker"
@@ -237,13 +243,11 @@ class TestLargeBodyWarning:
         )
 
     def test_no_warning_for_small_body(
-        self, tmp_path: object, monkeypatch: object
+        self, monkeypatch: object
     ) -> None:
         """No warning for a body smaller than the threshold, even without a marker."""
-        from token_goat import hooks_skill, paths
+        from token_goat import hooks_skill
         from token_goat.config import SkillPreservationConfig
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         body = "# Small Skill\n\nJust a few lines.\nNot very large.\n"
         assert len(body.encode("utf-8")) < self._LARGE_BODY_THRESHOLD
@@ -273,6 +277,12 @@ class TestLargeBodyWarning:
 class TestCompactBudgetMarkdownBoundary:
     """Auto-extracted compact is cut at a markdown boundary, not a random newline."""
 
+    @pytest.fixture(autouse=True)
+    def _patch_data_dir(self, tmp_path, monkeypatch):
+        """Redirect paths.data_dir to tmp_path for every test in this class."""
+        from token_goat import paths
+        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+
     def _make_multi_section_body(self) -> str:
         """Return a body > 4000 bytes whose auto-compact will have multiple sections."""
         sections = []
@@ -288,12 +298,10 @@ class TestCompactBudgetMarkdownBoundary:
         return body
 
     def test_compact_ends_before_heading_when_truncated(
-        self, tmp_path: object, monkeypatch: object
+        self,
     ) -> None:
         """When compact is cut to budget, the cut point is at or before a heading."""
-        from token_goat import paths, skill_cache
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
+        from token_goat import skill_cache
 
         body = self._make_multi_section_body()
         compact = skill_cache.generate_compact_summary(body)
@@ -323,13 +331,11 @@ class TestCompactBudgetMarkdownBoundary:
         assert truncated.endswith("…"), f"Truncated compact must end with '…': {truncated!r}"
 
     def test_compact_budget_cut_via_hook(
-        self, tmp_path: object, monkeypatch: object
+        self, monkeypatch: object
     ) -> None:
         """post_skill applies markdown-boundary truncation when compact exceeds budget."""
-        from token_goat import hooks_skill, paths, skill_cache
+        from token_goat import hooks_skill, skill_cache
         from token_goat.config import SkillPreservationConfig
-
-        monkeypatch.setattr(paths, "data_dir", lambda: tmp_path)
 
         body = self._make_multi_section_body()
 

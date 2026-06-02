@@ -13,6 +13,32 @@ from token_goat import cli
 runner = CliRunner()
 
 
+@pytest.fixture
+def patch_prune_caches(tmp_path, monkeypatch):
+    """Patch the three paths prune-cache reads so tests are isolated to tmp_path.
+
+    Replaces the repeated 3-line block::
+
+        monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
+        monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
+        monkeypatch.setattr(
+            "token_goat.paths.session_cache_path",
+            lambda sid: tmp_path / "sessions" / f"{sid}.json",
+        )
+
+    Tests that need a custom ``session_cache_path`` (e.g. a non-default sessions_dir)
+    can still apply their own ``monkeypatch.setattr`` after using this fixture — the
+    last setter wins.
+    """
+    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
+    monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
+    monkeypatch.setattr(
+        "token_goat.paths.session_cache_path",
+        lambda sid: tmp_path / "sessions" / f"{sid}.json",
+    )
+    return tmp_path
+
+
 def _create_cache_file(cache_dir: Path, name: str, size_bytes: int = 100, age_days: float = 10.0) -> Path:
     """Create a cache file with specified size and age."""
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -24,15 +50,12 @@ def _create_cache_file(cache_dir: Path, name: str, size_bytes: int = 100, age_da
     return f
 
 
-def test_prune_cache_dry_run_no_deletion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_prune_cache_dry_run_no_deletion(patch_prune_caches):
     """Test --dry-run flag doesn't delete anything."""
+    tmp_path = patch_prune_caches
     bash_cache = tmp_path / "bash_outputs"
     bash_cache.mkdir()
     f = _create_cache_file(bash_cache, "test.txt", size_bytes=100, age_days=10)
-
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
-    monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
-    monkeypatch.setattr("token_goat.paths.session_cache_path", lambda sid: tmp_path / "sessions" / f"{sid}.json")
 
     result = runner.invoke(cli.app, ["prune-cache", "--dry-run"])
     assert result.exit_code == 0
@@ -41,8 +64,9 @@ def test_prune_cache_dry_run_no_deletion(tmp_path: Path, monkeypatch: pytest.Mon
     assert f.exists(), "File should still exist after dry-run"
 
 
-def test_prune_cache_removes_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_prune_cache_removes_files(patch_prune_caches):
     """Test prune-cache actually removes files when not dry-run."""
+    tmp_path = patch_prune_caches
     bash_cache = tmp_path / "bash_outputs"
     web_cache = tmp_path / "web_outputs"
     bash_cache.mkdir()
@@ -51,37 +75,26 @@ def test_prune_cache_removes_files(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     _create_cache_file(bash_cache, "test.txt", size_bytes=100, age_days=10)
     _create_cache_file(web_cache, "test.txt", size_bytes=200, age_days=10)
 
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
-    monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
-    monkeypatch.setattr("token_goat.paths.session_cache_path", lambda sid: tmp_path / "sessions" / f"{sid}.json")
-
     result = runner.invoke(cli.app, ["prune-cache"])
     assert result.exit_code == 0
     assert "freed" in result.stdout
     assert "Total:" in result.stdout
 
 
-def test_prune_cache_empty_caches_shows_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_prune_cache_empty_caches_shows_zero(patch_prune_caches):
     """Test prune-cache shows 0 MB freed when caches are empty."""
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
-    monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
-    monkeypatch.setattr("token_goat.paths.session_cache_path", lambda sid: tmp_path / "sessions" / f"{sid}.json")
-
     result = runner.invoke(cli.app, ["prune-cache"])
     assert result.exit_code == 0
     # Empty caches should show skipped
     assert "skipped" in result.stdout or "no cleanup needed" in result.stdout
 
 
-def test_prune_cache_json_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_prune_cache_json_output(patch_prune_caches):
     """Test prune-cache --json output is valid JSON."""
+    tmp_path = patch_prune_caches
     bash_cache = tmp_path / "bash_outputs"
     bash_cache.mkdir()
     _create_cache_file(bash_cache, "test.txt", size_bytes=100, age_days=10)
-
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
-    monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
-    monkeypatch.setattr("token_goat.paths.session_cache_path", lambda sid: tmp_path / "sessions" / f"{sid}.json")
 
     result = runner.invoke(cli.app, ["prune-cache", "--json"])
     assert result.exit_code == 0
@@ -96,15 +109,12 @@ def test_prune_cache_json_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
         pytest.fail(f"Output is not valid JSON: {result.stdout}")
 
 
-def test_prune_cache_dry_run_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_prune_cache_dry_run_json(patch_prune_caches):
     """Test prune-cache --dry-run --json sets dry_run flag."""
+    tmp_path = patch_prune_caches
     bash_cache = tmp_path / "bash_outputs"
     bash_cache.mkdir()
     _create_cache_file(bash_cache, "test.txt", size_bytes=100, age_days=10)
-
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
-    monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
-    monkeypatch.setattr("token_goat.paths.session_cache_path", lambda sid: tmp_path / "sessions" / f"{sid}.json")
 
     result = runner.invoke(cli.app, ["prune-cache", "--dry-run", "--json"])
     assert result.exit_code == 0
@@ -112,8 +122,9 @@ def test_prune_cache_dry_run_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert data["dry_run"] is True
 
 
-def test_prune_cache_removes_old_sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_prune_cache_removes_old_sessions(patch_prune_caches, monkeypatch):
     """Test prune-cache removes session files older than 7 days."""
+    tmp_path = patch_prune_caches
     sessions_dir = tmp_path / "sessions"
     sessions_dir.mkdir()
 
@@ -124,8 +135,7 @@ def test_prune_cache_removes_old_sessions(tmp_path: Path, monkeypatch: pytest.Mo
     import os
     os.utime(recent_session, (recent_mtime, recent_mtime))
 
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
-    monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
+    # Override the session_cache_path to point to this custom sessions_dir.
     monkeypatch.setattr("token_goat.paths.session_cache_path", lambda sid: sessions_dir / f"{sid}.json")
 
     result = runner.invoke(cli.app, ["prune-cache"])
@@ -134,8 +144,9 @@ def test_prune_cache_removes_old_sessions(tmp_path: Path, monkeypatch: pytest.Mo
     assert recent_session.exists(), "Recent session should remain"
 
 
-def test_prune_cache_multiple_caches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_prune_cache_multiple_caches(patch_prune_caches):
     """Test prune-cache handles multiple cache directories at once."""
+    tmp_path = patch_prune_caches
     bash_cache = tmp_path / "bash_outputs"
     web_cache = tmp_path / "web_outputs"
     skills_cache = tmp_path / "skills"
@@ -148,10 +159,6 @@ def test_prune_cache_multiple_caches(tmp_path: Path, monkeypatch: pytest.MonkeyP
     _create_cache_file(web_cache, "web.txt", size_bytes=200, age_days=10)
     _create_cache_file(skills_cache, "skill.txt", size_bytes=50, age_days=10)
 
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
-    monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
-    monkeypatch.setattr("token_goat.paths.session_cache_path", lambda sid: tmp_path / "sessions" / f"{sid}.json")
-
     result = runner.invoke(cli.app, ["prune-cache"])
     assert result.exit_code == 0
     assert "bash_outputs" in result.stdout
@@ -160,15 +167,12 @@ def test_prune_cache_multiple_caches(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "Total:" in result.stdout
 
 
-def test_prune_cache_summary_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_prune_cache_summary_format(patch_prune_caches):
     """Test prune-cache summary output format."""
+    tmp_path = patch_prune_caches
     bash_cache = tmp_path / "bash_outputs"
     bash_cache.mkdir()
     _create_cache_file(bash_cache, "test.txt", size_bytes=1024, age_days=10)
-
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
-    monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "images")
-    monkeypatch.setattr("token_goat.paths.session_cache_path", lambda sid: tmp_path / "sessions" / f"{sid}.json")
 
     result = runner.invoke(cli.app, ["prune-cache"])
     assert result.exit_code == 0
@@ -177,11 +181,15 @@ def test_prune_cache_summary_format(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert any(c.isdigit() for c in result.stdout), "Output should contain numbers"
 
 
-def test_prune_cache_nonexistent_dir_skipped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_prune_cache_nonexistent_dir_skipped(patch_prune_caches, monkeypatch):
     """Test prune-cache skips nonexistent cache directories gracefully."""
-    monkeypatch.setattr("token_goat.paths.data_dir", lambda: tmp_path)
+    tmp_path = patch_prune_caches
+    # Override image and session paths to nonexistent subdirs for this test.
     monkeypatch.setattr("token_goat.paths.image_cache_dir", lambda: tmp_path / "nonexistent_images")
-    monkeypatch.setattr("token_goat.paths.session_cache_path", lambda sid: tmp_path / "nonexistent_sessions" / f"{sid}.json")
+    monkeypatch.setattr(
+        "token_goat.paths.session_cache_path",
+        lambda sid: tmp_path / "nonexistent_sessions" / f"{sid}.json",
+    )
 
     result = runner.invoke(cli.app, ["prune-cache"])
     assert result.exit_code == 0
