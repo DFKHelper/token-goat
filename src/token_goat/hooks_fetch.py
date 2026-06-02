@@ -490,9 +490,8 @@ def post_fetch(payload: HookPayload) -> HookResponse:
     # Emit a size hint if the response is large enough to benefit from --grep
     _maybe_emit_web_size_hint(meta, None)
 
-    # Informational stat row — no saving claimed at capture time; the saving
-    # is realized when (and if) the agent later avoids a re-fetch.
-    record_cached_stat("web_output_cached", sanitize_log_str(url, max_len=200))
+    # Record bytes cached so the stats view reflects actual content stored.
+    record_cached_stat("web_output_cached", sanitize_log_str(url, max_len=200), bytes_saved=body_size)
 
     _LOG.info(
         "post-fetch: cached body id=%s bytes=%d status=%s truncated=%s",

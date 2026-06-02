@@ -440,7 +440,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
     except (ValueError, OSError) as exc:
         _LOG.debug("post-skill: session record failed: %s", exc)
 
-    record_cached_stat("skill_cached", sanitize_log_str(skill_name, max_len=200))
+    record_cached_stat("skill_cached", sanitize_log_str(skill_name, max_len=200), bytes_saved=body_size)
 
     _LOG.info(
         "post-skill: cached skill name=%s bytes=%d truncated=%s source=%s",

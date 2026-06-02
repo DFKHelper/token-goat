@@ -144,10 +144,11 @@ _KIND_TO_SOURCE: dict[str, str] = {
     #   stored for a large skill body.  tokens_saved = (full body tokens) −
     #   (compact tokens); bytes_saved = the same delta in bytes.  This is the
     #   primary savings signal for the skill-preservation feature.
-    # skill_cached: adoption signal — fired once per new skill body stored to
-    #   disk.  bytes_saved / tokens_saved are always 0 (the compaction saving
-    #   is attributed to skill_compact_served).  Exists so the number of
-    #   distinct skills cached per session is measurable.
+    # skill_cached: fired once per new skill body stored to disk.
+    #   bytes_saved / tokens_saved = size of the cached body (4 chars ≈ 1 token).
+    #   The compaction delta (full − compact) is separately attributed to
+    #   skill_compact_served.  Both together give the total skill-preservation
+    #   savings picture.
     "skill_compact_served": SOURCE_SKILL,
     "skill_cached": SOURCE_SKILL,
     # bash output cache family — preventing repeat command runs is structurally

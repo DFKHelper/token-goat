@@ -2927,9 +2927,8 @@ def post_bash(payload: HookPayload) -> HookResponse:
     except (ValueError, OSError) as exc:
         _LOG.debug("post-bash: session record failed: %s", exc)
 
-    # Record a stat row for observability.  No saving is claimed here — the
-    # saving is realized when (and if) the agent later avoids a re-run.
-    record_cached_stat("bash_output_cached", sanitize_log_str(display_cmd, max_len=200))
+    # Record bytes cached so the stats view reflects actual content stored.
+    record_cached_stat("bash_output_cached", sanitize_log_str(display_cmd, max_len=200), bytes_saved=total_bytes)
 
     _LOG.info(
         "post-bash: cached output id=%s bytes=%d exit=%s truncated=%s",

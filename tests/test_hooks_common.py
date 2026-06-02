@@ -821,3 +821,92 @@ class TestLoadSessionSafe:
         # Must not raise
         result = load_session_safe("any-id")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# record_cached_stat — bytes_saved / tokens_saved accounting
+# ---------------------------------------------------------------------------
+
+class TestRecordCachedStatSavingsAccounting:
+    """record_cached_stat should pass actual bytes_saved and derived tokens_saved
+    to db.record_stat.  Prior to the fix both fields were hard-coded to 0."""
+
+    def _capture_record_stat_calls(self, monkeypatch):
+        """Return (calls list, patcher).  Each call is a dict with the kwargs
+        passed to db.record_stat."""
+        calls = []
+
+        def _fake_record_stat(project_hash, kind, bytes_saved=0, tokens_saved=0, detail=None):
+            calls.append({
+                "kind": kind,
+                "bytes_saved": bytes_saved,
+                "tokens_saved": tokens_saved,
+                "detail": detail,
+            })
+
+        import token_goat.db as _db
+        monkeypatch.setattr(_db, "record_stat", _fake_record_stat)
+        return calls
+
+    def test_bash_output_cached_records_nonzero_bytes(self, monkeypatch):
+        """bash_output_cached should record the actual byte count of cached output."""
+        from token_goat.hooks_common import record_cached_stat
+
+        calls = self._capture_record_stat_calls(monkeypatch)
+        record_cached_stat("bash_output_cached", "pytest --tb=short", bytes_saved=4096)
+
+        assert len(calls) == 1
+        assert calls[0]["kind"] == "bash_output_cached"
+        assert calls[0]["bytes_saved"] == 4096
+        assert calls[0]["tokens_saved"] == 4096 // 4  # 1024
+
+    def test_skill_cached_records_nonzero_bytes(self, monkeypatch):
+        """skill_cached should record the actual body size of the cached skill."""
+        from token_goat.hooks_common import record_cached_stat
+
+        calls = self._capture_record_stat_calls(monkeypatch)
+        record_cached_stat("skill_cached", "ralph", bytes_saved=32768)
+
+        assert len(calls) == 1
+        assert calls[0]["kind"] == "skill_cached"
+        assert calls[0]["bytes_saved"] == 32768
+        assert calls[0]["tokens_saved"] == 32768 // 4  # 8192
+
+    def test_tokens_saved_is_bytes_divided_by_four(self, monkeypatch):
+        """tokens_saved must be floor(bytes_saved / 4) for any byte count."""
+        from token_goat.hooks_common import record_cached_stat
+
+        calls = self._capture_record_stat_calls(monkeypatch)
+        record_cached_stat("bash_output_cached", "some-cmd", bytes_saved=7)
+
+        assert calls[0]["tokens_saved"] == 1  # 7 // 4
+
+    def test_zero_bytes_saved_when_omitted(self, monkeypatch):
+        """Callers that don't pass bytes_saved get 0 (backwards-compatible)."""
+        from token_goat.hooks_common import record_cached_stat
+
+        calls = self._capture_record_stat_calls(monkeypatch)
+        record_cached_stat("glob_result_cache_hit", "**/*.py")
+
+        assert calls[0]["bytes_saved"] == 0
+        assert calls[0]["tokens_saved"] == 0
+
+    def test_negative_bytes_clamped_to_zero(self, monkeypatch):
+        """A negative bytes_saved value should be clamped to 0 — never negative
+        bytes or tokens should reach the DB."""
+        from token_goat.hooks_common import record_cached_stat
+
+        calls = self._capture_record_stat_calls(monkeypatch)
+        record_cached_stat("bash_output_cached", "cmd", bytes_saved=-100)
+
+        assert calls[0]["bytes_saved"] == 0
+        assert calls[0]["tokens_saved"] == 0
+
+    def test_db_error_is_swallowed(self, monkeypatch):
+        """A DB failure must not propagate — record_cached_stat is fail-soft."""
+        import token_goat.db as _db
+        monkeypatch.setattr(_db, "record_stat", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("DB gone")))
+
+        from token_goat.hooks_common import record_cached_stat
+        # Must not raise
+        record_cached_stat("bash_output_cached", "cmd", bytes_saved=1024)

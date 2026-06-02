@@ -550,33 +550,31 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
     )
 
 
-def record_cached_stat(kind: str, detail: str) -> None:
-    """Record an informational stat row for a cache-capture event (bash/web/skill).
+def record_cached_stat(kind: str, detail: str, bytes_saved: int = 0) -> None:
+    """Record a stat row for a cache-capture event (bash/web/skill).
 
     All three post-capture handlers (``hooks_read``, ``hooks_fetch``,
-    ``hooks_skill``) previously duplicated the same five-line pattern::
+    ``hooks_skill``) call this helper after storing output to disk.
 
-        try:
-            db.record_stat(None, kind, bytes_saved=0, tokens_saved=0, detail=...)
-        except Exception:
-            _LOG.debug("...: stat record failed", exc_info=True)
-
-    No saving is claimed at capture time — the saving is realized later when
-    (and if) the agent avoids a re-run/re-fetch/re-load.  These rows are
-    therefore informational only; ``stats.py`` groups them under a
-    non-saving bucket so they never inflate the headline number.
+    ``bytes_saved`` should be the byte length of the content that was stored
+    (and therefore no longer needs to be re-read or re-run by the agent).
+    Tokens are estimated at 4 bytes per token.  Callers that do not know the
+    size may omit the argument, which records zero savings (backwards-compatible
+    behaviour preserved for ``glob_result_cache_hit`` and similar events).
 
     Args:
-        kind:   Stat kind string (e.g. ``"bash_output_cached"``,
-                ``"web_output_cached"``, ``"skill_cached"``).
-        detail: Short sanitised label for triage (command preview, URL, skill
-                name).  Callers must sanitise with :func:`sanitize_log_str`
-                before passing.
+        kind:        Stat kind string (e.g. ``"bash_output_cached"``,
+                     ``"web_output_cached"``, ``"skill_cached"``).
+        detail:      Short sanitised label for triage (command preview, URL,
+                     skill name).  Callers must sanitise with
+                     :func:`sanitize_log_str` before passing.
+        bytes_saved: Byte length of the cached content.  Defaults to 0.
     """
+    tokens = max(0, bytes_saved) // 4
     try:
         from . import db  # noqa: PLC0415
 
-        db.record_stat(None, kind, bytes_saved=0, tokens_saved=0, detail=detail)
+        db.record_stat(None, kind, bytes_saved=max(0, bytes_saved), tokens_saved=tokens, detail=detail)
     except Exception:  # noqa: BLE001
         LOG.debug("record_cached_stat(%s): stat record failed", kind, exc_info=True)
 
