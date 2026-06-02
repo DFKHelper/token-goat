@@ -432,9 +432,11 @@ class TestDoctorConfigurationSection:
             "compact_assist.enabled",  # CompactAssistConfig
             "compact_assist.auto_trigger_multiplier",
             "compact_assist.max_manifest_tokens",
+            "compact_assist.lazy_skill_injection",  # iter 3: lazy skill injection
             "skill_preservation.enabled",  # SkillPreservationConfig
             "hints.json_sidecar",  # HintsConfig
             "hints.suppress_after_ignored",
+            "hints.serve_diff_on_reread",  # iter 4: opt-in diff-on-reread
             "bash_compress.enabled",  # BashCompressConfig
             "bash_compress.max_lines",
             "session_brief.enabled",  # SessionBriefConfig

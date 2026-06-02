@@ -1343,6 +1343,11 @@ def doctor(  # noqa: C901
             "compact_assist.max_manifest_tokens",
             str(cfg.compact_assist.max_manifest_tokens),
         )
+        # lazy_skill_injection: emit recall pointer instead of full compact body in manifest.
+        ok(
+            "compact_assist.lazy_skill_injection",
+            str(cfg.compact_assist.lazy_skill_injection).lower(),
+        )
         # skill_preservation: enabled / cache cap / large-skill knobs.
         ok("skill_preservation.enabled", str(cfg.skill_preservation.enabled).lower())
         ok(
@@ -1368,6 +1373,11 @@ def doctor(  # noqa: C901
         ok(
             "hints.suppress_after_ignored",
             str(cfg.hints.suppress_after_ignored),
+        )
+        # serve_diff_on_reread: intercept re-reads of changed files and inject a diff.
+        ok(
+            "hints.serve_diff_on_reread",
+            str(cfg.hints.serve_diff_on_reread).lower(),
         )
         # bash_compress: enabled + max line/byte caps so the user can verify
         # the safety net is intact.
