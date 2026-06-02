@@ -169,7 +169,18 @@ def post_skill(payload: HookPayload) -> HookResponse:
     if not isinstance(skill_name_raw, str) or not skill_name_raw:
         _LOG.debug("post-skill: tool_input missing 'skill' field; skipping")
         return CONTINUE()
-    skill_name = skill_name_raw.strip()
+    # Normalize: strip whitespace, strip any leading path components (e.g.
+    # "~/.claude/skills/ralph" → "ralph"), and lowercase so cache lookups are
+    # consistent across invocations regardless of how the skill was referenced.
+    skill_name_stripped = skill_name_raw.strip()
+    # Strip path separators: if the name contains slashes or backslashes, take
+    # only the last component (and strip a trailing .md suffix if present).
+    import os as _os  # noqa: PLC0415
+    if "/" in skill_name_stripped or _os.sep in skill_name_stripped:
+        skill_name_stripped = skill_name_stripped.replace("\\", "/").split("/")[-1]
+    if skill_name_stripped.lower().endswith(".md"):
+        skill_name_stripped = skill_name_stripped[:-3]
+    skill_name = skill_name_stripped.lower() if skill_name_stripped else skill_name_raw.strip()
 
     body = _extract_skill_body(payload)
     body_size = len(body.encode("utf-8", errors="replace"))
@@ -183,6 +194,30 @@ def post_skill(payload: HookPayload) -> HookResponse:
     source_path = _resolve_skill_body_path(skill_name)
 
     from . import session, skill_cache  # noqa: PLC0415
+
+    # Check whether this skill was already loaded in this session.  When it was,
+    # the body is already in context (from the earlier Skill tool result) and the
+    # compaction manifest already lists it.  Emit a systemMessage so the model
+    # knows it can use the cached body via ``token-goat skill-body`` rather than
+    # treating this as a fresh first load.
+    prior_entry = session.lookup_skill_entry(session_id, skill_name)
+    if prior_entry is not None:
+        run_count = getattr(prior_entry, "run_count", 1)
+        body_tokens = body_size // 4  # rough estimate: 4 chars/token
+        reload_msg = (
+            f"Note: skill '{skill_name}' was already loaded in this session "
+            f"({run_count}x prior). Its body ({body_tokens} tokens) is already "
+            f"in context — you do not need to re-read it. "
+            f"Recall the cached body: `token-goat skill-body {skill_name}`. "
+            f"Recall a specific section: `token-goat skill-section {skill_name} <heading>`."
+        )
+        _LOG.info(
+            "post-skill: duplicate load for skill %s (run_count=%d); emitting reload hint",
+            sanitize_log_str(skill_name, max_len=80), run_count,
+        )
+        resp = CONTINUE()
+        resp["systemMessage"] = reload_msg
+        return resp
 
     meta = skill_cache.store_output(
         session_id, skill_name, body,

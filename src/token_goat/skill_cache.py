@@ -886,8 +886,15 @@ def store_compact(session_id: str, skill_name: str, compact_text: str) -> None:
         file_id = f"{safe_session}-{safe_name}-compact"
         out_dir = _skill_outputs_dir()
         out_path = out_dir / file_id
-        out_path.write_text(compact_text, encoding="utf-8", errors="replace")
-        _LOG.debug("skill_cache.store_compact: stored id=%s", file_id)
+        # Prepend a header so readers (compaction manifest, CLI, model) immediately
+        # know this is the truncated compact form and how large it is relative to
+        # the full body.  The token estimate uses the 4-chars/token convention
+        # consistent with how hooks_skill.py reports body size.
+        compact_tokens = max(1, len(compact_text) // 4)
+        header = f"--- compact form ({compact_tokens} tokens) ---\n"
+        stored_text = header + compact_text
+        out_path.write_text(stored_text, encoding="utf-8", errors="replace")
+        _LOG.debug("skill_cache.store_compact: stored id=%s (%d tokens)", file_id, compact_tokens)
 
 
 def get_compact(session_id: str, skill_name: str) -> str | None:

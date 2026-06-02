@@ -574,6 +574,98 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
         return None
 
 
+# Pattern for skill body files: */.claude/skills/<name>/SKILL.md or */.claude/skills/<name>.md
+# Also catches plugin layout: */.claude/plugins/<plugin>/skills/<name>/SKILL.md
+_SKILL_FILE_RE = _re.compile(
+    r"[/\\]\.claude[/\\](?:plugins[/\\][^/\\]+[/\\])?skills[/\\]([^/\\]+)"
+    r"(?:[/\\]SKILL\.md|\.md)$",
+    _re.IGNORECASE,
+)
+
+
+def _detect_skill_name_from_path(file_path: str) -> str | None:
+    """Return the skill name if *file_path* points to a skill body file, else None.
+
+    Recognises:
+    * ``~/.claude/skills/<name>/SKILL.md``
+    * ``~/.claude/skills/<name>.md``
+    * ``~/.claude/plugins/<plugin>/skills/<name>/SKILL.md``
+    * The same shapes under plugin marketplace cache paths.
+
+    Returns the bare skill name (e.g. ``"ralph"``), or ``None`` when the path
+    is not a skill file.  Always fail-soft.
+    """
+    try:
+        m = _SKILL_FILE_RE.search(file_path.replace("\\", "/"))
+        if m:
+            name = m.group(1)
+            # Normalize: strip any trailing .md suffix if the file itself IS <name>.md
+            # (the flat layout without a subdirectory).
+            if name.lower().endswith(".md"):
+                name = name[:-3]
+            return name.lower() if name else None
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _handle_skill_file_read(
+    session_id: str,
+    file_path: str,
+    cache: object,
+) -> HookResponse | None:
+    """Return a hint when the agent tries to Read a skill body file directly.
+
+    When the session already has the skill loaded (via PostToolUse(Skill)), the
+    full body is in context and re-reading the file is wasteful.  Suggest
+    ``token-goat skill-body <name>`` as the cheaper recall path.
+
+    Returns None when:
+    * *file_path* is not a skill body file
+    * the skill is not recorded in the session (first load — let it proceed)
+    * the session cache is unavailable
+    """
+    skill_name = _detect_skill_name_from_path(file_path)
+    if skill_name is None:
+        return None
+
+    if cache is None:
+        return None
+
+    skill_history: dict[str, object] = getattr(cache, "skill_history", {})
+    if not isinstance(skill_history, dict) or not skill_history:
+        return None
+
+    # Check both the bare name and common casing variants.
+    matched_entry = (
+        skill_history.get(skill_name)
+        or skill_history.get(skill_name.lower())
+    )
+    if matched_entry is None:
+        return None
+
+    from .hints import _hint_fingerprint  # noqa: PLC0415
+
+    hint_text = (
+        f"Note: skill '{skill_name}' was already loaded this session via the Skill tool — "
+        f"its body is in context. Use `token-goat skill-body {skill_name}` to recall the "
+        f"cached body (~95% fewer tokens than reading the file). "
+        f"For a specific section: `token-goat skill-section {skill_name} <heading>`."
+    )
+    fingerprint = _hint_fingerprint(hint_text, path=file_path)
+    mark_seen = getattr(cache, "mark_hint_seen", None)
+    if callable(mark_seen):
+        # Suppress if already emitted for this path this session.
+        if getattr(cache, "has_hint_fingerprint", lambda _: False)(fingerprint):
+            return None
+        mark_seen(fingerprint)
+
+    record_hint_stat_pair("skill_file_read_hint", hint_text, sanitize_log_str(file_path, max_len=512))
+    _LOG.info(
+        "pre-read: skill-file hint injected for %s (skill=%s)",
+        sanitize_log_str(file_path), sanitize_log_str(skill_name),
+    )
+    return pre_tool_use_with_context(hint_text)
 
 
 def _emit_dedup_budgeted_hint(
@@ -1641,6 +1733,14 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _recovery_text = _check_recovery_pending(session_id, cache)
         if _recovery_text:
             return pre_tool_use_with_context(_recovery_text)
+
+        # Skill-file read hint: fires first when the agent tries to Read a skill body
+        # file directly (e.g. ~/.claude/skills/ralph/SKILL.md) for a skill already
+        # loaded this session.  The body is already in context from the Skill tool
+        # result; suggest token-goat skill-body instead.
+        skill_file_response = _handle_skill_file_read(session_id, file_path, cache)
+        if skill_file_response is not None:
+            return skill_file_response
 
         # Index-only file hint: fires first so machine-generated lockfiles and bundles
         # (uv.lock, package-lock.json, *.min.js, *.map, …) are intercepted before any

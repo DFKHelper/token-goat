@@ -437,7 +437,9 @@ class TestPostSkillHook:
         compact_text = skill_cache.get_compact(sid, "ralph")
         assert compact_text is not None
         assert len(compact_text) > 0
-        assert len(compact_text) <= 1600  # _COMPACT_MAX_CHARS
+        # The returned text includes a "--- compact form (N tokens) ---" header
+        # (~40 chars) prepended to the body content (capped at 1600 chars).
+        assert len(compact_text) <= 1700  # _COMPACT_MAX_CHARS (1600) + header overhead
         # Compact should include key-rules
         assert "CRITICAL" in compact_text or "MUST" in compact_text
 
@@ -991,7 +993,11 @@ class TestStoreGetCompact:
         text = "compact summary text here"
         skill_cache.store_compact("sess-abc", "ralph", text)
         result = skill_cache.get_compact("sess-abc", "ralph")
-        assert result == text
+        # get_compact returns the stored text prefixed with a "--- compact form
+        # (N tokens) ---" header so the model knows it received a truncated form.
+        assert result is not None
+        assert text in result
+        assert "compact form" in result
 
     def test_get_absent_returns_none(self, tmp_data_dir):
         result = skill_cache.get_compact("sess-xyz", "nonexistent-skill")
@@ -1006,13 +1012,23 @@ class TestStoreGetCompact:
     def test_different_sessions_isolated(self, tmp_data_dir):
         skill_cache.store_compact("sess-a", "myskill", "summary for a")
         skill_cache.store_compact("sess-b", "myskill", "summary for b")
-        assert skill_cache.get_compact("sess-a", "myskill") == "summary for a"
-        assert skill_cache.get_compact("sess-b", "myskill") == "summary for b"
+        # get_compact returns the stored text prefixed with a "--- compact form
+        # (N tokens) ---" header so the model knows it received a truncated form.
+        result_a = skill_cache.get_compact("sess-a", "myskill") or ""
+        result_b = skill_cache.get_compact("sess-b", "myskill") or ""
+        assert "summary for a" in result_a
+        assert "summary for b" in result_b
+        assert "compact form" in result_a
+        assert "compact form" in result_b
 
     def test_overwrite_updates_content(self, tmp_data_dir):
         skill_cache.store_compact("sess1", "myskill", "first")
         skill_cache.store_compact("sess1", "myskill", "second")
-        assert skill_cache.get_compact("sess1", "myskill") == "second"
+        result = skill_cache.get_compact("sess1", "myskill") or ""
+        assert "second" in result
+        assert "first" not in result
+        # Header must be present.
+        assert "compact form" in result
 
 
 # ---------------------------------------------------------------------------
