@@ -3044,11 +3044,10 @@ def _format_glob_entry(entry: object, *, cwd: str | None = None) -> str:
 def _token_count(text: str) -> int:
     """Rough token estimate: 1 token ≈ 4 characters.
 
-    Used for per-section budget enforcement inside :func:`_render`.  The same
-    ratio is used by :func:`estimate_tokens` (which divides by 3); using 4
-    here makes section budgets slightly conservative so the
-    assembled manifest fits the global budget even before the final
-    ``estimate_tokens`` check.
+    Used for per-section budget enforcement inside :func:`_render`.
+    :func:`estimate_tokens` uses ``len // 3 + 1`` (more generous).  Using 4
+    here makes section budgets slightly conservative so the assembled manifest
+    fits the global budget even before the final ``estimate_tokens`` check.
     """
     return len(text) // 4
 
@@ -5813,7 +5812,7 @@ def _render(
 
     # ── Safety net: priority-aware section truncation ────────────────────────
     # Per-section budgets use _token_count (len//4, conservative) while
-    # estimate_tokens uses len/3.5 (slightly more generous).  In rare cases
+    # estimate_tokens uses (len//3 + 1), slightly more generous.  In rare cases
     # the assembled total can still exceed max_tokens by a few tokens.
     #
     # Strategy: for each droppable section in priority order, first try

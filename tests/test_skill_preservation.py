@@ -1506,3 +1506,262 @@ class TestManifestSkillCompactCap:
             rules_start = m.find("small-cap key-rules:")
             block = m[rules_start:rules_start + 700]
             assert "CRITICAL" in block or "MUST" in block
+
+
+# ---------------------------------------------------------------------------
+# generate_compact_summary — code-block awareness
+# ---------------------------------------------------------------------------
+
+class TestGenerateCompactSummaryCodeBlockAwareness:
+    """generate_compact_summary must exclude headings and rule keywords from fenced blocks."""
+
+    def test_headings_inside_backtick_fence_excluded(self):
+        """## headings inside ``` fences are not included in the TOC."""
+        body = (
+            "# Skill\n\n"
+            "## Real Section\n\nReal content.\n\n"
+            "```markdown\n"
+            "## Fake Section In Code Block\n"
+            "### Another Fake\n"
+            "```\n\n"
+            "## Another Real Section\n\nMore content.\n"
+        )
+        result = skill_cache.generate_compact_summary(body)
+        assert "Real Section" in result
+        assert "Another Real Section" in result
+        assert "Fake Section In Code Block" not in result
+        assert "Another Fake" not in result
+
+    def test_headings_inside_tilde_fence_excluded(self):
+        """## headings inside ~~~ fences are also excluded."""
+        body = (
+            "## Real\n\nContent.\n\n"
+            "~~~\n"
+            "## Fake\n"
+            "~~~\n\n"
+            "## Also Real\n\nMore.\n"
+        )
+        result = skill_cache.generate_compact_summary(body)
+        assert "Real" in result
+        assert "Also Real" in result
+        assert "Fake" not in result
+
+    def test_rule_keywords_inside_fence_excluded(self):
+        """CRITICAL/MUST/NEVER/RULE lines inside fenced blocks are excluded."""
+        body = (
+            "## Rules\n\n"
+            "CRITICAL: Real rule.\n\n"
+            "```python\n"
+            "# CRITICAL: This is a code comment, not a rule\n"
+            "# NEVER do this in code\n"
+            "x = 1\n"
+            "```\n\n"
+            "MUST: Another real rule.\n"
+        )
+        result = skill_cache.generate_compact_summary(body)
+        assert "CRITICAL: Real rule." in result
+        assert "MUST: Another real rule." in result
+        assert "# CRITICAL: This is a code comment, not a rule" not in result
+        assert "# NEVER do this in code" not in result
+
+    def test_bold_lines_inside_fence_excluded(self):
+        """Bold lines (**...) inside fenced blocks are excluded."""
+        body = (
+            "## Directives\n\n"
+            "**Key directive:** Follow this.\n\n"
+            "```\n"
+            "**Not a directive:** Inside code block.\n"
+            "```\n\n"
+            "**Another directive:** Also follow.\n"
+        )
+        result = skill_cache.generate_compact_summary(body)
+        assert "**Key directive:** Follow this." in result
+        assert "**Another directive:** Also follow." in result
+        assert "**Not a directive:** Inside code block." not in result
+
+    def test_multiple_fences_correctly_toggle(self):
+        """Multiple alternating fenced blocks are all excluded."""
+        body = (
+            "## Real\n\nReal content.\n\n"
+            "```\n## Fake1\n```\n\n"
+            "CRITICAL: Real rule.\n\n"
+            "~~~\n## Fake2\nNEVER: Fake rule.\n~~~\n\n"
+            "## Also Real\n\nMore content.\n"
+        )
+        result = skill_cache.generate_compact_summary(body)
+        assert "Real" in result
+        assert "Also Real" in result
+        assert "CRITICAL: Real rule." in result
+        assert "Fake1" not in result
+        assert "Fake2" not in result
+        assert "NEVER: Fake rule." not in result
+
+    def test_unclosed_fence_suppresses_rest(self):
+        """An unclosed fence causes the rest of the body to be treated as code."""
+        body = (
+            "## Real Section\n\n"
+            "CRITICAL: Above the unclosed fence.\n\n"
+            "```\n"
+            "## Fake Heading\n"
+            "MUST: Inside unclosed fence.\n"
+            # Note: no closing ``` — rest of body treated as code
+        )
+        result = skill_cache.generate_compact_summary(body)
+        assert "Real Section" in result
+        assert "CRITICAL: Above the unclosed fence." in result
+        assert "Fake Heading" not in result
+        assert "MUST: Inside unclosed fence." not in result
+
+
+# ---------------------------------------------------------------------------
+# extract_named_section — code-block awareness
+# ---------------------------------------------------------------------------
+
+class TestExtractNamedSectionCodeBlock:
+    """extract_named_section must not match headings inside fenced code blocks."""
+
+    def test_heading_in_backtick_fence_not_matched(self):
+        """A ## heading inside a ``` fence is not matched as a section."""
+        body = (
+            "## Real Section\n\nReal content.\n\n"
+            "```\n"
+            "## Not A Real Section\n"
+            "```\n\n"
+            "## Another Real\n\nMore content.\n"
+        )
+        assert skill_cache.extract_named_section(body, "Not A Real Section") is None
+
+    def test_heading_in_tilde_fence_not_matched(self):
+        """A ## heading inside a ~~~ fence is not matched as a section."""
+        body = (
+            "## Real\n\nContent.\n\n"
+            "~~~\n"
+            "## Fake\n"
+            "~~~\n\n"
+            "## Actual\n\nActual content.\n"
+        )
+        assert skill_cache.extract_named_section(body, "Fake") is None
+
+    def test_real_heading_after_fence_still_found(self):
+        """A real heading that follows a fenced block is still matched."""
+        body = (
+            "```\n"
+            "## Fake\n"
+            "```\n\n"
+            "## Real Target\n\nTarget content.\n"
+        )
+        result = skill_cache.extract_named_section(body, "Real Target")
+        assert result is not None
+        assert "Target content." in result
+
+    def test_h3_heading_in_fence_not_matched(self):
+        """A ### heading inside a fence is not matched in the H3 pass."""
+        body = (
+            "## Overview\n\nOverview text.\n\n"
+            "```\n"
+            "### Fake Sub\n"
+            "```\n\n"
+            "### Real Sub\n\nReal sub content.\n"
+        )
+        assert skill_cache.extract_named_section(body, "Fake Sub") is None
+        result = skill_cache.extract_named_section(body, "Real Sub")
+        assert result is not None
+        assert "Real sub content." in result
+
+
+# ---------------------------------------------------------------------------
+# extract_checklist_section — code-block awareness
+# ---------------------------------------------------------------------------
+
+class TestExtractChecklistSectionCodeBlock:
+    """extract_checklist_section must not match checklist headings inside fenced blocks."""
+
+    def test_dod_heading_in_fence_ignored(self):
+        """A '## DoD' heading inside a ``` fence is not matched."""
+        body = (
+            "# Skill\n\n"
+            "```\n"
+            "## DoD\n"
+            "- Fake dod item in code block\n"
+            "```\n\n"
+            "## Real Section\n\nReal content.\n"
+        )
+        result = skill_cache.extract_checklist_section(body)
+        assert result is None
+
+    def test_checklist_heading_after_fence_still_found(self):
+        """The real checklist heading outside a fence is still found."""
+        body = (
+            "```\n"
+            "## DoD\n"
+            "- Fake item\n"
+            "```\n\n"
+            "## DoD\n\n"
+            "- Real criterion one\n"
+            "- Real criterion two\n"
+        )
+        result = skill_cache.extract_checklist_section(body)
+        assert result is not None
+        assert "Real criterion one" in result
+        assert "Fake item" not in result
+
+    def test_steps_heading_in_tilde_fence_ignored(self):
+        """A '## Steps' heading inside a ~~~ fence is not matched."""
+        body = (
+            "~~~\n"
+            "## Steps\n"
+            "1. Fake step\n"
+            "~~~\n\n"
+            "## Overview\n\nSome overview.\n"
+        )
+        result = skill_cache.extract_checklist_section(body)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# output_id_for — namespace collision guard
+# ---------------------------------------------------------------------------
+
+class TestOutputIdForCollisionGuard:
+    """output_id_for must produce distinct IDs for plugin:name vs plugin_name."""
+
+    def test_colon_name_distinct_from_underscore_name(self):
+        """'plugin:improve' and 'plugin_improve' produce different output IDs."""
+        sha = "abc1234567890def"
+        id_colon = skill_cache.output_id_for("sess123456789abc", "plugin:improve", sha)
+        id_underscore = skill_cache.output_id_for("sess123456789abc", "plugin_improve", sha)
+        assert id_colon != id_underscore
+
+    def test_namespaced_id_ends_with_n_marker(self):
+        """The namespaced form has an 'n' suffix in the safe-name segment."""
+        sha = "abc1234567890def"
+        id_colon = skill_cache.output_id_for("sess123456789abc", "plugin:skill", sha)
+        # The safe-name part should be 'plugin_skilln' (n = namespace marker).
+        assert "plugin_skilln" in id_colon
+
+    def test_plain_name_no_n_marker(self):
+        """A plain name without ':' does not get the 'n' namespace marker."""
+        sha = "abc1234567890def"
+        id_plain = skill_cache.output_id_for("sess123456789abc", "myskill", sha)
+        assert "myskill-" in id_plain
+        assert "myskill" + "n" + "-" not in id_plain
+
+    def test_same_name_same_session_same_content_idempotent(self):
+        """Same (session, name, sha) always produces the same ID (idempotent)."""
+        sha = "abc1234567890def"
+        a = skill_cache.output_id_for("sess123456789abc", "plugin:improve", sha)
+        b = skill_cache.output_id_for("sess123456789abc", "plugin:improve", sha)
+        assert a == b
+
+    def test_compact_file_id_also_collision_free(self, tmp_data_dir):
+        """store_compact / get_compact use distinct paths for plugin:name vs plugin_name."""
+        sid = "sess-collision-guard"
+        # Store compact for both; each should be addressable independently.
+        skill_cache.store_compact(sid, "plugin:improve", "Compact for namespaced skill.")
+        skill_cache.store_compact(sid, "plugin_improve", "Compact for underscore skill.")
+        c1 = skill_cache.get_compact(sid, "plugin:improve")
+        c2 = skill_cache.get_compact(sid, "plugin_improve")
+        assert c1 is not None
+        assert c2 is not None
+        assert "namespaced" in c1
+        assert "underscore" in c2

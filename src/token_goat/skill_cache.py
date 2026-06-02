@@ -186,9 +186,19 @@ def output_id_for(session_id: str, skill_name: str, content_sha: str) -> str:
     Session ID is short-prefixed (16 chars) so total filename length stays
     well under PATH_MAX; ``:`` in plugin-namespaced skill names is replaced
     with ``_`` so the result is filesystem-safe everywhere.
+
+    Collision-free namespace marker: when the original *skill_name* contains a
+    ``:`` (plugin-namespaced form), a ``n`` suffix is appended to the
+    filesystem-safe name segment so that ``plugin:improve`` produces
+    ``plugin_improven`` while the plain ``plugin_improve`` skill produces
+    ``plugin_improve`` — distinct filenames despite both mapping to the same
+    ``_``-substituted string.  The ``n`` stands for "namespaced" and is chosen
+    because it does not appear in the short content hash (hex-only).
     """
     safe_session = safe_session_fragment(session_id)
     safe_name = skill_name.replace(":", "_")
+    if ":" in skill_name:
+        safe_name += "n"  # namespace-collision guard
     return f"{safe_session}-{safe_name}-{content_sha}"
 
 
@@ -268,11 +278,18 @@ def extract_checklist_section(body: str) -> str | None:
     # Priority: return the match for the highest-priority heading found.
     # We do a single pass recording the first-found position per heading, then
     # return the match with the lowest priority index.
+    # Code-block-aware: headings inside fenced blocks (``` or ~~~) are skipped.
     best_priority: int = len(targets)
     best_start: int = -1
+    in_code_block = False
 
     for i, raw_line in enumerate(lines):
         stripped = raw_line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
         if not stripped.startswith("## "):
             continue
         low = stripped.lower()
@@ -315,13 +332,23 @@ def extract_h2_headings(body: str) -> list[str]:
     the ``--section`` flag is absent so the agent can discover section names
     before deciding which to fetch.
 
+    Code-block-aware: headings inside fenced blocks (``` or ~~~) are excluded so
+    the agent does not see false section names from Markdown code examples inside
+    the skill body.
+
     Returns an empty list when *body* is empty or contains no ``##`` headings.
     """
     if not body:
         return []
     headings: list[str] = []
+    in_code_block = False
     for line in body.splitlines():
         stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
         if stripped.startswith("## ") and len(stripped) > 3:
             headings.append(stripped[3:].strip())
     return headings
@@ -392,13 +419,20 @@ def extract_named_section(body: str, heading: str) -> str | None:
 
     # Two-pass: prefer ## then fall back to ### or deeper.
     # Each pass records (line_index, heading_level) for the first match.
+    # Code-block-aware: headings inside fenced blocks (``` or ~~~) are skipped.
     match_start = -1
     match_level = -1
 
     for pass_level in (2, 3, 4):
         prefix = "#" * pass_level + " "
+        in_code_block = False
         for i, raw_line in enumerate(lines):
             stripped = raw_line.strip()
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                in_code_block = not in_code_block
+                continue
+            if in_code_block:
+                continue
             if stripped.startswith(prefix):
                 section_title = stripped[len(prefix):].strip().lower()
                 if section_title.startswith(heading_lower):
@@ -771,10 +805,12 @@ def generate_compact_summary(full_body: str) -> str:
 
     The summary includes, in order:
     1. The YAML frontmatter ``description`` field (if present) as an opening line.
-    2. All H2 and H3 headings as a table of contents.
+    2. All H2 and H3 headings as a table of contents (code-block-aware: headings
+       inside fenced blocks are excluded to avoid false positives from examples).
     3. All lines containing CRITICAL/MUST/NEVER/RULE keywords (first occurrence
-       per unique line, deduplicated).
-    4. Lines starting with ``**`` (bold emphasis — typically key directives).
+       per unique line, deduplicated, code-block-aware).
+    4. Lines starting with ``**`` (bold emphasis — typically key directives,
+       code-block-aware).
 
     The result is capped at :data:`_COMPACT_MAX_CHARS` characters.  Returns the
     compact text as a single string; never raises.
@@ -789,36 +825,46 @@ def generate_compact_summary(full_body: str) -> str:
     if fm_desc:
         parts.append(fm_desc)
 
-    # 2. H2/H3 headings as table of contents.
+    # Single-pass over lines: track code-block state to exclude content inside
+    # fenced blocks from all three extraction phases (headings, rules, bold).
+    # A fence opens or closes when a stripped line starts with ``` or ~~~.
+    in_code_block = False
     headings: list[str] = []
-    for line in full_body.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("## ") or stripped.startswith("### "):
-            headings.append(stripped)
-    if headings:
-        parts.append("**Sections:** " + " | ".join(headings))
-
-    # 3. Lines with CRITICAL/MUST/NEVER/RULE (deduplicated, first occurrence only).
     seen_rules: set[str] = set()
     rule_lines: list[str] = []
+    seen_bold: set[str] = set()
+    bold_lines: list[str] = []
+
     for line in full_body.splitlines():
         stripped = line.strip()
+        # Track fenced code block state.
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+
+        # 2. H2/H3 headings as table of contents.
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            headings.append(stripped)
+
         if not stripped:
             continue
+
+        # 3. Lines with CRITICAL/MUST/NEVER/RULE (deduplicated, first occurrence).
         if _RULE_KEYWORDS_RE.search(stripped) and stripped not in seen_rules:
             seen_rules.add(stripped)
             rule_lines.append(stripped)
-    if rule_lines:
-        parts.append("\n".join(rule_lines))
 
-    # 4. Bold-emphasis lines (start with "**").
-    bold_lines: list[str] = []
-    seen_bold: set[str] = set()
-    for line in full_body.splitlines():
-        stripped = line.strip()
+        # 4. Bold-emphasis lines (start with "**").
         if stripped.startswith("**") and stripped not in seen_bold and stripped not in seen_rules:
             seen_bold.add(stripped)
             bold_lines.append(stripped)
+
+    if headings:
+        parts.append("**Sections:** " + " | ".join(headings))
+    if rule_lines:
+        parts.append("\n".join(rule_lines))
     if bold_lines:
         parts.append("\n".join(bold_lines))
 
@@ -863,12 +909,28 @@ def _extract_frontmatter_description(body: str) -> str:
     return ""
 
 
+def _compact_file_id(session_id: str, skill_name: str) -> str:
+    """Build the filesystem-safe compact-file ID for a (session, skill) pair.
+
+    Uses the same namespace-collision guard as :func:`output_id_for`: when
+    *skill_name* contains a ``:`` (plugin-namespaced form) an ``n`` suffix is
+    appended to the safe name so ``plugin:improve`` and ``plugin_improve``
+    produce distinct compact file IDs.
+    """
+    safe_session = safe_session_fragment(session_id)
+    safe_name = skill_name.replace(":", "_")
+    if ":" in skill_name:
+        safe_name += "n"  # namespace-collision guard (matches output_id_for)
+    return f"{safe_session}-{safe_name}-compact"
+
+
 def store_compact(session_id: str, skill_name: str, compact_text: str) -> None:
     """Persist a compact summary for *skill_name* under the skills cache directory.
 
     The compact is stored as a plain text file beside the full-body files, keyed
-    by ``{session_fragment}-{safe_name}-compact``.  Fail-soft: any I/O error is
-    logged and swallowed so callers are never interrupted.
+    by ``{session_fragment}-{safe_name}-compact`` (collision-safe: see
+    :func:`_compact_file_id`).  Fail-soft: any I/O error is logged and swallowed
+    so callers are never interrupted.
     """
     name = _safe_skill_name(skill_name)
     if name is None:
@@ -879,11 +941,7 @@ def store_compact(session_id: str, skill_name: str, compact_text: str) -> None:
         return
 
     with safe_cache_op("store_compact", log=_LOG):
-        from .cache_common import safe_session_fragment  # noqa: PLC0415
-
-        safe_session = safe_session_fragment(session_id)
-        safe_name = name.replace(":", "_")
-        file_id = f"{safe_session}-{safe_name}-compact"
+        file_id = _compact_file_id(session_id, name)
         out_dir = _skill_outputs_dir()
         out_path = out_dir / file_id
         # Prepend a header so readers (compaction manifest, CLI, model) immediately
@@ -900,19 +958,16 @@ def store_compact(session_id: str, skill_name: str, compact_text: str) -> None:
 def get_compact(session_id: str, skill_name: str) -> str | None:
     """Return a previously stored compact summary for *skill_name*, or ``None``.
 
-    Looks up by ``{session_fragment}-{safe_name}-compact`` in the skills cache
-    directory.  Returns ``None`` when absent.  Fail-soft on I/O errors.
+    Looks up by ``{session_fragment}-{safe_name}-compact`` (collision-safe: see
+    :func:`_compact_file_id`) in the skills cache directory.  Returns ``None``
+    when absent.  Fail-soft on I/O errors.
     """
     name = _safe_skill_name(skill_name)
     if name is None:
         return None
 
     try:
-        from .cache_common import safe_session_fragment  # noqa: PLC0415
-
-        safe_session = safe_session_fragment(session_id)
-        safe_name = name.replace(":", "_")
-        file_id = f"{safe_session}-{safe_name}-compact"
+        file_id = _compact_file_id(session_id, name)
         out_path = _skill_outputs_dir() / file_id
         if not out_path.exists():
             return None
