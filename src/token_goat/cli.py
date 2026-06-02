@@ -3656,9 +3656,28 @@ def cmd_skill_body(
         _compact_session_id = os.environ.get("CLAUDE_SESSION_ID", "")
         # Try cached compact first; generate and store if absent.
         compact_text = skill_cache.get_compact(_compact_session_id, name)
+        # Staleness check: compare the sha embedded in the compact header against
+        # the current body's sha.  When they differ the compact was generated from
+        # an older version of the skill body — warn so callers know the compact may
+        # not reflect the latest body content.  This can happen when a skill file
+        # is updated on disk between two loads within the same session.
+        compact_stale = False
+        if compact_text and meta is not None and meta.content_sha:
+            compact_sha = skill_cache.extract_compact_source_sha(compact_text)
+            if compact_sha is not None and not meta.content_sha.startswith(compact_sha):
+                compact_stale = True
+                _LOG.info(
+                    "skill-body --compact: stale compact for %s "
+                    "(compact sha=%s, body sha=%s…); regenerating",
+                    name, compact_sha, meta.content_sha[:12],
+                )
+                # Regenerate from the current body so the user gets fresh content.
+                compact_text = None
         if not compact_text:
             compact_text = skill_cache.generate_compact_summary(body)
-            skill_cache.store_compact(_compact_session_id, name, compact_text)
+            body_sha = meta.content_sha if meta is not None else None
+            skill_cache.store_compact(_compact_session_id, name, compact_text, source_sha=body_sha)
+            compact_stale = False  # freshly generated — no longer stale
         # Normalise: strip the stored-file header (added by store_compact) so we
         # can always prepend a fresh one.  get_compact() returns the stored bytes
         # verbatim (header included), while a freshly generated compact has no
@@ -3683,6 +3702,7 @@ def cmd_skill_body(
                 "source": source_label,
                 "text": compact_display,
                 "body_bytes": body_bytes,
+                "compact_stale": compact_stale,
             }
             if meta is not None:
                 payload_c["output_id"] = meta.output_id
@@ -3866,7 +3886,8 @@ def cmd_skill_compact(
     marker_compact = skill_cache.extract_compact_from_marker(body)
     compact_text = marker_compact if marker_compact is not None else skill_cache.generate_compact_summary(body)
     compact_source = "marker" if marker_compact is not None else "auto"
-    skill_cache.store_compact(_compact_session_id, name, compact_text)
+    body_sha = meta.content_sha if meta is not None else None
+    skill_cache.store_compact(_compact_session_id, name, compact_text, source_sha=body_sha)
 
     # compact_text is the bare body (no stored-file header).  Prepend a fresh
     # header so the output is self-documenting regardless of the source.

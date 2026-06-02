@@ -1030,6 +1030,56 @@ class TestStoreGetCompact:
         # Header must be present.
         assert "compact form" in result
 
+    def test_store_compact_with_source_sha_embeds_in_header(self, tmp_data_dir):
+        """When source_sha is provided, the first 12 hex chars appear in the header."""
+        text = "compact summary with sha"
+        sha = "abcdef0123456789"
+        skill_cache.store_compact("sess-sha", "myskill", text, source_sha=sha)
+        result = skill_cache.get_compact("sess-sha", "myskill") or ""
+        # Header should contain sha= with first 12 chars.
+        assert "sha=abcdef012345" in result, f"Expected sha in header, got: {result[:80]}"
+        assert text in result
+
+    def test_store_compact_without_source_sha_uses_old_header(self, tmp_data_dir):
+        """When no source_sha is provided, the old header format is used (no sha=)."""
+        text = "compact without sha"
+        skill_cache.store_compact("sess-nosha", "myskill", text)
+        result = skill_cache.get_compact("sess-nosha", "myskill") or ""
+        assert "sha=" not in result, f"Expected no sha in header, got: {result[:80]}"
+        assert text in result
+
+    def test_extract_compact_source_sha_returns_sha_when_present(self, tmp_data_dir):
+        """extract_compact_source_sha extracts the sha from a compact header."""
+        text = "compact body"
+        sha = "deadbeef1234abcd"
+        skill_cache.store_compact("sess-extract", "myskill", text, source_sha=sha)
+        stored = skill_cache.get_compact("sess-extract", "myskill") or ""
+        extracted = skill_cache.extract_compact_source_sha(stored)
+        assert extracted is not None
+        assert extracted == sha[:12], f"Expected {sha[:12]!r}, got {extracted!r}"
+
+    def test_extract_compact_source_sha_returns_none_for_old_header(self):
+        """extract_compact_source_sha returns None for old-style headers without sha."""
+        old_style = "--- compact form (42 tokens) ---\nbody text here"
+        result = skill_cache.extract_compact_source_sha(old_style)
+        assert result is None
+
+    def test_extract_compact_source_sha_returns_none_for_no_header(self):
+        """extract_compact_source_sha returns None when there is no header at all."""
+        plain_text = "just plain body text with no header"
+        result = skill_cache.extract_compact_source_sha(plain_text)
+        assert result is None
+
+    def test_strip_compact_header_works_with_sha_header(self, tmp_data_dir):
+        """_strip_compact_header correctly strips both old and new header formats."""
+        text = "body content to strip"
+        sha = "1234567890ab"
+        skill_cache.store_compact("sess-strip", "myskill", text, source_sha=sha)
+        stored = skill_cache.get_compact("sess-strip", "myskill") or ""
+        # Header should be stripped, leaving only the body.
+        stripped = skill_cache._strip_compact_header(stored)
+        assert stripped == text, f"Expected {text!r}, got {stripped!r}"
+
 
 # ---------------------------------------------------------------------------
 # CLI: skill-compact command and --compact flag
@@ -1105,6 +1155,53 @@ class TestCliSkillCompactCommands:
         data = json.loads(result.output.strip())
         assert data["compact"] is True
         assert "text" in data
+
+    def test_skill_body_compact_json_includes_compact_stale_field(self, tmp_data_dir):
+        """skill-body --compact --json returns compact_stale=false when freshly generated."""
+        import json  # noqa: PLC0415
+        self._store_skill()
+        result = self._invoke("skill-body", "--compact", "--json", "testskill")
+        assert result.exit_code == 0, f"output: {result.output}"
+        data = json.loads(result.output.strip())
+        # compact_stale should be present and false for a freshly generated compact.
+        assert "compact_stale" in data, f"compact_stale key missing from: {data}"
+        assert data["compact_stale"] is False, f"Expected compact_stale=false, got: {data['compact_stale']}"
+
+    def test_skill_body_compact_json_detects_stale_compact(self, tmp_data_dir):
+        """skill-body --compact --json returns compact_stale=false when compact was regenerated from current body.
+
+        When a stale compact (derived from an older body sha) is detected, it is discarded
+        and regenerated from the current body — so compact_stale=False in the output.
+        """
+        import json  # noqa: PLC0415
+        # Store the skill body with sha "v1" captured in its sidecar.
+        v1_body = self._SAMPLE_BODY + "\n\n## Extra section added in v1"
+        meta = skill_cache.store_output("test-session-stale", "testskill", v1_body)
+        if meta is not None:
+            skill_cache.write_sidecar(meta)
+
+        # Store a compact with a DIFFERENT source sha (simulating stale compact from
+        # a prior body version — compact was generated from an older sha, but body now has
+        # a different sha from store_output).  Use a valid hex string so the regex matches.
+        skill_cache.store_compact("test-session-stale", "testskill", "stale compact text", source_sha="aabbcc001122")
+
+        # Invoke skill-body --compact for this session.
+        import unittest.mock  # noqa: PLC0415
+        with unittest.mock.patch.dict(os.environ, {"CLAUDE_SESSION_ID": "test-session-stale"}):
+            result = self._invoke("skill-body", "--compact", "--json", "testskill")
+
+        assert result.exit_code == 0, f"output: {result.output}"
+        data = json.loads(result.output.strip())
+        # The stale compact was detected and regenerated — compact_stale must be False
+        # (the returned compact is freshly generated, not the stale one).
+        assert "compact_stale" in data, f"compact_stale key missing from: {data}"
+        assert data["compact_stale"] is False, (
+            f"Stale compact should trigger regeneration (compact_stale=False), got: {data['compact_stale']}"
+        )
+        # The fresh compact should NOT contain the stale text.
+        assert "stale compact text" not in data.get("text", ""), (
+            "Stale compact text should not appear in output after regeneration"
+        )
 
 
 # ---------------------------------------------------------------------------

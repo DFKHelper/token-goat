@@ -1273,11 +1273,23 @@ def doctor(  # noqa: C901
             "compact_assist.max_manifest_tokens",
             str(cfg.compact_assist.max_manifest_tokens),
         )
-        # skill_preservation: enabled / cache cap.
+        # skill_preservation: enabled / cache cap / large-skill knobs.
         ok("skill_preservation.enabled", str(cfg.skill_preservation.enabled).lower())
         ok(
             "skill_preservation.max_cache_bytes",
             str(cfg.skill_preservation.max_cache_bytes),
+        )
+        ok(
+            "skill_preservation.truncation_budget_tokens",
+            str(cfg.skill_preservation.truncation_budget_tokens),
+        )
+        ok(
+            "skill_preservation.compress_bodies",
+            str(cfg.skill_preservation.compress_bodies).lower(),
+        )
+        ok(
+            "skill_preservation.compress_min_bytes",
+            str(cfg.skill_preservation.compress_min_bytes),
         )
         # hints: json_sidecar (r2 iter 1) plus the quiet-hours window if set.
         ok("hints.json_sidecar", str(cfg.hints.json_sidecar).lower())

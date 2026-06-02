@@ -240,6 +240,53 @@ class TestBuildManifest:
         max_chars = 50 * 4
         assert len(result) <= max_chars
 
+    def test_manifest_400_token_budget_enforced_with_skills(self, tmp_data_dir):
+        """The default 400-token cap is enforced even when many large skills are included.
+
+        This is the realistic scenario: a session has many file reads, several greps,
+        edited files, AND skill_history entries (each skill compact ~400 tokens), which
+        without per-skill and per-section caps could push the manifest well over 400 tokens.
+        """
+        sid = "budget-skills-session-xyz"
+        # Build a realistic wide session: lots of files + greps + edits + skills.
+        for i in range(15):
+            session.mark_file_read(sid, f"/proj/src/module{i:02d}.py", offset=0, limit=300)
+        for i in range(5):
+            session.mark_grep(sid, f"pattern{i}", "/proj/src")
+        for i in range(3):
+            session.mark_file_edited(sid, f"/proj/src/edited{i:02d}.py")
+
+        # Add three large skills via the proper API (mark_skill_loaded creates real SkillEntry
+        # objects that serialize correctly — avoids MagicMock JSON serialization failures).
+        session.mark_skill_loaded(
+            sid, "ralph", output_id="ralph-out-abc", content_sha="abc123def456",
+            body_bytes=32000, truncated=False,
+        )
+        session.mark_skill_loaded(
+            sid, "improve", output_id="improve-out-def", content_sha="def789abc012",
+            body_bytes=18000, truncated=False,
+        )
+        session.mark_skill_loaded(
+            sid, "superman", output_id="superman-out-bcd", content_sha="bcd456def890",
+            body_bytes=24000, truncated=False,
+        )
+
+        result = compact.build_manifest(sid, max_tokens=400)
+
+        # PRIMARY assertion: manifest must not exceed the 400-token cap.
+        # At 4 chars/token (standard estimate), 400 tokens = 1600 chars.
+        max_chars = 400 * 4
+        assert len(result) <= max_chars, (
+            f"Manifest ({len(result)} chars = ~{len(result)//4} tokens) "
+            f"exceeds 400-token cap ({max_chars} chars). "
+            f"Skills in manifest should respect the global budget.\n"
+            f"--- manifest ---\n{result}\n---"
+        )
+        # Skills section should be present (skills were recently loaded).
+        assert "ralph" in result or "improve" in result or "superman" in result, (
+            f"Expected at least one skill in manifest, got:\n{result}"
+        )
+
     def test_edited_files_sorted_by_edit_count(self, tmp_data_dir):
         # Neither file is ever *read*, so no FileEntry exists and last_edit_ts=0.0
         # for both.  The recency tiebreaker therefore falls back to edit count:

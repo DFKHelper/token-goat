@@ -265,3 +265,31 @@ class TestDoctorCompactionUtilization:
         result = runner.invoke(cli.app, ["doctor"])
         assert result.exit_code == 0
         assert "p50=50%" in result.output
+
+
+class TestDoctorSkillPreservationConfig:
+    """doctor output covers all skill_preservation config knobs for large-skill tuning."""
+
+    def test_doctor_reports_skill_preservation_truncation_budget(self, tmp_data_dir):
+        """skill_preservation.truncation_budget_tokens must appear in doctor output."""
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, f"doctor exited non-zero: {result.output}"
+        assert "skill_preservation.truncation_budget_tokens" in result.output, (
+            f"Expected truncation_budget_tokens in doctor output, got:\n{result.output}"
+        )
+
+    def test_doctor_reports_skill_preservation_compress_bodies(self, tmp_data_dir):
+        """skill_preservation.compress_bodies must appear in doctor output."""
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, f"doctor exited non-zero: {result.output}"
+        assert "skill_preservation.compress_bodies" in result.output, (
+            f"Expected compress_bodies in doctor output, got:\n{result.output}"
+        )
+
+    def test_doctor_reports_skill_preservation_compress_min_bytes(self, tmp_data_dir):
+        """skill_preservation.compress_min_bytes must appear in doctor output."""
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, f"doctor exited non-zero: {result.output}"
+        assert "skill_preservation.compress_min_bytes" in result.output, (
+            f"Expected compress_min_bytes in doctor output, got:\n{result.output}"
+        )

@@ -38,6 +38,7 @@ __all__ = [
     "extract_h2_headings",
     "extract_named_section",
     "_parse_section_ordinal",
+    "extract_compact_source_sha",
     "generate_compact_summary",
     "get_all_cached_skills",
     "get_compact",
@@ -946,10 +947,14 @@ def read_sidecar(output_id: str) -> SkillMeta | None:
 # Maximum characters for a compact summary (~400 tokens at ~4 chars/token).
 _COMPACT_MAX_CHARS: int = 1600
 
-# Regex that matches the one-line header prepended by store_compact:
-# "--- compact form (N tokens) ---\n"
-# Used by _strip_compact_header to recover the bare body for accurate token counting.
-_COMPACT_HEADER_RE = re.compile(r"^--- compact form \(\d+ tokens\) ---\n")
+# Regex that matches the one-line header prepended by store_compact.
+# Two supported forms:
+#   Old (pre-staleness-tracking): "--- compact form (N tokens) ---\n"
+#   New (with source SHA):        "--- compact form (N tokens, sha=ABCD1234) ---\n"
+# Used by _strip_compact_header to recover the bare body for accurate token counting
+# and by extract_compact_source_sha to retrieve the embedded SHA.
+_COMPACT_HEADER_RE = re.compile(r"^--- compact form \(\d+ tokens(?:, sha=[0-9a-f]+)?\) ---\n")
+_COMPACT_HEADER_SHA_RE = re.compile(r"^--- compact form \(\d+ tokens, sha=([0-9a-f]+)\) ---\n")
 
 # Keywords that identify high-priority "rule" lines worth including in the compact.
 _RULE_KEYWORDS_RE = re.compile(r"\b(CRITICAL|MUST|NEVER|RULE)\b")
@@ -958,10 +963,11 @@ _RULE_KEYWORDS_RE = re.compile(r"\b(CRITICAL|MUST|NEVER|RULE)\b")
 def _strip_compact_header(stored_text: str) -> str:
     """Strip the one-line metadata header from a stored compact text and return the body.
 
-    :func:`store_compact` prepends ``"--- compact form (N tokens) ---\\n"`` so
-    readers can immediately see the token count.  When computing token counts
-    programmatically (e.g. in :func:`get_all_cached_skills`) we need only the
-    body so that ``len(body) // 4`` matches the formula used at write time.
+    :func:`store_compact` prepends ``"--- compact form (N tokens) ---\\n"`` (or the
+    newer ``"--- compact form (N tokens, sha=ABCD1234) ---\\n"`` form) so readers can
+    immediately see the token count.  When computing token counts programmatically
+    (e.g. in :func:`get_all_cached_skills`) we need only the body so that
+    ``len(body) // 4`` matches the formula used at write time.
 
     Returns the input unchanged when no header is present (safe for callers that
     may receive raw body text instead of stored compact text).
@@ -970,6 +976,28 @@ def _strip_compact_header(stored_text: str) -> str:
     if m:
         return stored_text[m.end():]
     return stored_text
+
+
+def extract_compact_source_sha(stored_text: str) -> str | None:
+    """Return the ``source_sha`` embedded in a compact header, or ``None``.
+
+    When :func:`store_compact` is called with a *source_sha* (the sha256 hex
+    digest of the body that generated the compact), it embeds the first 12 hex
+    characters in the header line:
+
+        ``--- compact form (N tokens, sha=ABCD12345678) ---``
+
+    This function extracts that fragment so callers can compare it against the
+    current body's sha and warn when the compact is derived from a different
+    version of the skill body (i.e. the compact may be stale).
+
+    Returns ``None`` when the header is absent or was written by an older version
+    of token-goat that did not embed a sha.
+    """
+    m = _COMPACT_HEADER_SHA_RE.match(stored_text)
+    if m:
+        return m.group(1)
+    return None
 
 
 def generate_compact_summary(full_body: str) -> str:
@@ -1140,13 +1168,29 @@ def _compact_file_id(session_id: str, skill_name: str) -> str:
     return f"{safe_session}-{safe_name}-compact"
 
 
-def store_compact(session_id: str, skill_name: str, compact_text: str) -> None:
+def store_compact(
+    session_id: str,
+    skill_name: str,
+    compact_text: str,
+    source_sha: str | None = None,
+) -> None:
     """Persist a compact summary for *skill_name* under the skills cache directory.
 
     The compact is stored as a plain text file beside the full-body files, keyed
     by ``{session_fragment}-{safe_name}-compact`` (collision-safe: see
     :func:`_compact_file_id`).  Fail-soft: any I/O error is logged and swallowed
     so callers are never interrupted.
+
+    *source_sha* is the sha256 hex digest of the skill body that generated this
+    compact.  When supplied, the first 12 hex characters are embedded in the
+    header line so :func:`extract_compact_source_sha` can later verify freshness:
+
+        ``--- compact form (N tokens, sha=ABCD12345678) ---``
+
+    Callers should pass the ``content_sha`` from the :class:`SkillMeta` entry
+    that was active when the compact was generated.  Omitting it (or passing
+    ``None``) stores the old header format, which is treated as "unknown sha"
+    by the staleness check and will not trigger a stale-compact warning.
     """
     name = _safe_skill_name(skill_name)
     if name is None:
@@ -1167,7 +1211,14 @@ def store_compact(session_id: str, skill_name: str, compact_text: str) -> None:
         # the full body.  The token estimate uses the 4-chars/token convention
         # consistent with how hooks_skill.py reports body size.
         compact_tokens = max(1, len(compact_text) // 4)
-        header = f"--- compact form ({compact_tokens} tokens) ---\n"
+        # Embed the first 12 hex chars of source_sha when available so the
+        # staleness check in cmd_skill_body can detect when the compact was
+        # derived from a different version of the body.
+        if source_sha and len(source_sha) >= 8:
+            sha_fragment = source_sha[:12]
+            header = f"--- compact form ({compact_tokens} tokens, sha={sha_fragment}) ---\n"
+        else:
+            header = f"--- compact form ({compact_tokens} tokens) ---\n"
         stored_text = header + compact_text
         # Use atomic write (temp file + rename) so concurrent sessions writing the
         # same compact cannot produce a torn file.  Matches the pattern used by

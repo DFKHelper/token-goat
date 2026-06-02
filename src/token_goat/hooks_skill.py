@@ -304,7 +304,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
         try:
             marker_compact = skill_cache.extract_compact_from_marker(body)
             if marker_compact is not None:
-                skill_cache.store_compact(session_id, skill_name, marker_compact)
+                skill_cache.store_compact(session_id, skill_name, marker_compact, source_sha=meta.content_sha)
                 compact_bytes = len(marker_compact.encode("utf-8", errors="replace"))
                 compact_tokens = compact_bytes // 4  # rough estimate: 4 bytes/token
                 total_tokens = body_size // 4
@@ -368,7 +368,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
                                 sanitize_log_str(skill_name, max_len=80),
                                 _cfg_budget,
                             )
-                    skill_cache.store_compact(session_id, skill_name, compact_text)
+                    skill_cache.store_compact(session_id, skill_name, compact_text, source_sha=meta.content_sha)
                     _compact_bytes = len(compact_text.encode("utf-8", errors="replace"))
                     _compact_tokens = _compact_bytes // 4
                     _full_tokens = body_size // 4
