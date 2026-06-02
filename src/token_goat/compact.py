@@ -5242,10 +5242,24 @@ def _render(
         "glob": len(getattr(cache, "glob_history", None) or []),  # glob scans
     }
 
-    sec_budgets = _section_budgets(max_tokens, fixed_tokens, section_content_counts)
+    # Safety margin: the internal ``_token_count`` helper uses ``len // 4``
+    # (conservative) while the final ``estimate_tokens`` check uses
+    # ``len // 3 + 1`` (more generous, ~33 % higher for the same text).
+    # This discrepancy means assembled sections can collectively use more
+    # tokens than ``max_tokens`` when measured by ``estimate_tokens``, causing
+    # the safety-trim pass to fire and burn extra CPU.  Reducing the budget
+    # seen by ``_section_budgets`` by 15 % provides a headroom cushion so the
+    # assembled manifest stays under the limit on the first pass in the common
+    # case, without meaningfully shrinking useful content (15 % of a 400-token
+    # budget is 60 tokens — the safety-trim pass already handles up to ~80).
+    _SECTION_BUDGET_SAFETY_FACTOR: float = 0.85
+    sec_budget_max = max(1, int(max_tokens * _SECTION_BUDGET_SAFETY_FACTOR))
+    sec_budgets = _section_budgets(sec_budget_max, fixed_tokens, section_content_counts)
     _LOG.debug(
-        "_render: fixed_tokens=%d  section_budgets=%s content_counts=%s (session=%s)",
-        fixed_tokens, sec_budgets, section_content_counts, session_id[:8],
+        "_render: fixed_tokens=%d  section_budgets=%s content_counts=%s "
+        "safety_margin=15%% (max_tokens=%d sec_budget_max=%d) (session=%s)",
+        fixed_tokens, sec_budgets, section_content_counts,
+        max_tokens, sec_budget_max, session_id[:8],
     )
 
     # ── 2. Symbols accessed — up to 40 % of remaining budget ─────────────────

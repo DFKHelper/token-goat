@@ -3898,35 +3898,24 @@ def cmd_skill_body(
     typer.echo(sliced)
 
 
-@app.command("skill-compact", rich_help_panel="Core")
-def cmd_skill_compact(
-    name: str = typer.Argument(..., help="Skill name (e.g. 'ralph', 'plugin:improve')."),
-    json_output: bool = _OPT_JSON,
-) -> None:
-    """Generate and print a compact summary (~400 tokens) for a cached skill body.
+def _resolve_skill_body_for_compact(
+    name: str,
+) -> tuple[str | None, Any | None, str]:
+    """Resolve the skill body, meta, and source label for ``skill-compact``.
 
-    Extracts from the full body:
-
-    * The YAML frontmatter ``description`` field (if present).
-    * All H2 and H3 headings as a table of contents.
-    * Lines containing CRITICAL/MUST/NEVER/RULE keywords (first unique occurrence).
-    * Lines starting with ``**`` (bold directives).
-
-    The result is capped at 1600 characters (~400 tokens).  The compact is also
-    stored in the skill cache under ``{session}-{name}-compact`` for instant
-    recall via ``token-goat skill-body --compact <name>``.
+    Shared by the single-skill and ``--all`` code paths to avoid duplication.
+    Returns ``(body, meta, source_label)``; *body* is ``None`` when the skill
+    cannot be located.  *meta* is a :class:`skill_cache.SkillMeta` or ``None``.
     """
-    from . import compact as _compact  # noqa: PLC0415
-    from . import db as _db  # noqa: PLC0415
-    from . import hooks_skill, skill_cache  # noqa: PLC0415
+    from . import hooks_skill  # noqa: PLC0415
+    from . import skill_cache as skill_cache_mod
 
-    # Resolve the skill body using the same fallback chain as skill-body.
-    meta_candidates = skill_cache.lookup_all_by_name(name)
-    meta: skill_cache.SkillMeta | None = meta_candidates[0] if meta_candidates else None
+    meta_candidates = skill_cache_mod.lookup_all_by_name(name)
+    meta: skill_cache_mod.SkillMeta | None = meta_candidates[0] if meta_candidates else None
     body: str | None = None
     source_label = "cache"
     for candidate in meta_candidates:
-        body = skill_cache.load_output(candidate.output_id)
+        body = skill_cache_mod.load_output(candidate.output_id)
         if body is not None:
             meta = candidate
             break
@@ -3950,6 +3939,202 @@ def cmd_skill_compact(
                 source_label = f"source:{resolved}"
             except OSError:
                 body = None
+    return body, meta, source_label
+
+
+def _generate_compact_for_body(
+    body: str,
+    name: str,
+    meta: Any | None,
+    session_id: str,
+) -> tuple[str, str, str]:
+    """Generate a compact for *body* and store it in the cache.
+
+    Returns ``(compact_display, compact_source, body_sha_or_empty)``.
+    *compact_display* is the full display text including the header line.
+    """
+    from . import compact as _compact  # noqa: PLC0415
+    from . import skill_cache as skill_cache_mod  # noqa: PLC0415
+
+    marker_compact = skill_cache_mod.extract_compact_from_marker(body)
+    compact_text = (
+        marker_compact if marker_compact is not None
+        else skill_cache_mod.generate_compact_summary(body)
+    )
+    compact_source = "marker" if marker_compact is not None else "auto"
+    body_sha = meta.content_sha if meta is not None else None
+    skill_cache_mod.store_compact(session_id, name, compact_text, source_sha=body_sha)
+    compact_tokens = max(1, _compact.estimate_tokens(compact_text))
+    compact_display = f"--- compact form ({compact_tokens} tokens) ---\n{compact_text}"
+    return compact_display, compact_source, (body_sha or "")
+
+
+@app.command("skill-compact", rich_help_panel="Core")
+def cmd_skill_compact(
+    name: str = typer.Argument(
+        None,  # type: ignore[assignment]
+        help="Skill name (e.g. 'ralph', 'plugin:improve'). Omit with --all to process every cached skill.",
+    ),
+    json_output: bool = _OPT_JSON,
+    all_skills: bool = typer.Option(
+        False,
+        "--all",
+        help=(
+            "Regenerate compacts for every skill cached in the current session "
+            "whose stored compact is stale (source SHA mismatch) or absent. "
+            "Skips skills with a fresh compact already on disk. "
+            "Prints a one-line status for each skill processed."
+        ),
+    ),
+) -> None:
+    """Generate and print a compact summary (~400 tokens) for a cached skill body.
+
+    Extracts from the full body:
+
+    * The YAML frontmatter ``description`` field (if present).
+    * All H2 and H3 headings as a table of contents.
+    * Lines containing CRITICAL/MUST/NEVER/RULE keywords (first unique occurrence).
+    * Lines starting with ``**`` (bold directives).
+
+    The result is capped at 1600 characters (~400 tokens).  The compact is also
+    stored in the skill cache under ``{session}-{name}-compact`` for instant
+    recall via ``token-goat skill-body --compact <name>``.
+
+    Use ``--all`` to regenerate compacts for all skills in the current session
+    that are stale or have no compact yet.  Useful after a skill is updated on
+    disk between loads — the staleness check compares the SHA embedded in the
+    stored compact header against the body's current content SHA.
+    """
+    from . import compact as _compact  # noqa: PLC0415
+    from . import db as _db  # noqa: PLC0415
+    from . import skill_cache  # noqa: PLC0415
+
+    _compact_session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+
+    # ── --all mode: batch-regenerate stale or missing compacts ────────────────
+    if all_skills:
+        if name is not None:
+            _error("Cannot combine a skill NAME argument with --all.")
+            raise typer.Exit(1)
+
+        # Enumerate unique skill names visible in the current session (or, when
+        # no session is set, all entries in the cache directory).
+        if _compact_session_id:
+            from . import session as _session_mod  # noqa: PLC0415
+            session_cache = _session_mod.get_session(_compact_session_id)
+            skill_names_raw: list[str] = list(
+                {entry.skill_name for entry in skill_cache.list_by_session(_compact_session_id)}
+            )
+            # Also include skills recorded in the session skills dict, which may
+            # differ slightly in name normalisation from the cache file list.
+            for sname in (getattr(session_cache, "skills", None) or {}):
+                if sname not in skill_names_raw:
+                    skill_names_raw.append(sname)
+        else:
+            # No session: process all unique skill names across the whole cache.
+            skill_names_raw = list(
+                {
+                    meta.skill_name
+                    for entry in skill_cache.list_outputs()
+                    if (oid := entry.get("output_id"))
+                    and not oid.endswith("-compact")
+                    and (meta := skill_cache.read_sidecar(oid)) is not None
+                }
+            )
+
+        if not skill_names_raw:
+            msg = "No cached skills found"
+            if _compact_session_id:
+                msg += f" for session {_compact_session_id[:16]}"
+            typer.echo(msg + ".")
+            return
+
+        processed = 0
+        skipped = 0
+        failed = 0
+        results: list[dict[str, object]] = []
+
+        for sname in sorted(skill_names_raw):
+            body, meta, source_label = _resolve_skill_body_for_compact(sname)
+            if body is None:
+                if json_output:
+                    results.append({"skill_name": sname, "status": "not_found"})
+                else:
+                    typer.echo(f"  {sname}: not found (skipped)")
+                failed += 1
+                continue
+
+            # Staleness check: does an up-to-date compact already exist?
+            body_sha = meta.content_sha if meta is not None else ""
+            existing_compact = skill_cache.get_compact(_compact_session_id, sname)
+            if existing_compact and body_sha:
+                compact_sha = skill_cache.extract_compact_source_sha(existing_compact)
+                if compact_sha is not None and body_sha.startswith(compact_sha):
+                    if json_output:
+                        results.append({
+                            "skill_name": sname,
+                            "status": "up_to_date",
+                        })
+                    else:
+                        typer.echo(f"  {sname}: up-to-date (skipped)")
+                    skipped += 1
+                    continue
+
+            # Generate and store the compact.
+            try:
+                compact_display, compact_source, _sha = _generate_compact_for_body(
+                    body, sname, meta, _compact_session_id
+                )
+                body_bytes = len(body.encode())
+                returned_bytes = len(compact_display.encode())
+                saved_bytes = max(0, body_bytes - returned_bytes)
+                _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(compact_display))
+                _db.record_stat(
+                    None,
+                    "skill_body_recall",
+                    bytes_saved=saved_bytes,
+                    tokens_saved=_tokens_saved,
+                    detail=f"{sname[:48]}:compact:{compact_source}:all",
+                )
+                if json_output:
+                    results.append({
+                        "skill_name": sname,
+                        "status": "regenerated",
+                        "compact_source": compact_source,
+                        "body_bytes": body_bytes,
+                        "saved_bytes": saved_bytes,
+                        "saved_tokens": _tokens_saved,
+                    })
+                else:
+                    typer.echo(f"  {sname}: regenerated ({compact_source}, saved {_tokens_saved} tokens)")
+                processed += 1
+            except Exception as exc:  # noqa: BLE001
+                if json_output:
+                    results.append({"skill_name": sname, "status": "error", "error": str(exc)})
+                else:
+                    typer.echo(f"  {sname}: error — {exc}")
+                failed += 1
+
+        if json_output:
+            typer.echo(json.dumps({
+                "all": True,
+                "processed": processed,
+                "skipped": skipped,
+                "failed": failed,
+                "skills": results,
+            }, ensure_ascii=False, separators=(",", ":")))
+        else:
+            typer.echo(
+                f"\nDone: {processed} regenerated, {skipped} up-to-date, {failed} failed/not-found."
+            )
+        return
+
+    # ── Single-skill mode ─────────────────────────────────────────────────────
+    if name is None:
+        _error("Provide a skill NAME or use --all to process every cached skill.")
+        raise typer.Exit(1)
+
+    body, meta, source_label = _resolve_skill_body_for_compact(name)
 
     if body is None:
         _error(
@@ -3959,22 +4144,9 @@ def cmd_skill_compact(
         )
         raise typer.Exit(1)
 
-    _compact_session_id = os.environ.get("CLAUDE_SESSION_ID", "")
-
-    # Prefer the author-curated COMPACT_END marker slice when present —
-    # it is deterministic, typically smaller than auto-extraction, and yields
-    # more accurate byte/token savings figures for the user.  Fall back to
-    # heuristic auto-extraction when the marker is absent.
-    marker_compact = skill_cache.extract_compact_from_marker(body)
-    compact_text = marker_compact if marker_compact is not None else skill_cache.generate_compact_summary(body)
-    compact_source = "marker" if marker_compact is not None else "auto"
-    body_sha = meta.content_sha if meta is not None else None
-    skill_cache.store_compact(_compact_session_id, name, compact_text, source_sha=body_sha)
-
-    # compact_text is the bare body (no stored-file header).  Prepend a fresh
-    # header so the output is self-documenting regardless of the source.
-    compact_tokens = max(1, _compact.estimate_tokens(compact_text))
-    compact_display = f"--- compact form ({compact_tokens} tokens) ---\n{compact_text}"
+    compact_display, compact_source, body_sha = _generate_compact_for_body(
+        body, name, meta, _compact_session_id
+    )
 
     body_bytes = len(body.encode())
     returned_bytes = len(compact_display.encode())

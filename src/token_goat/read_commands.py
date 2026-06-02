@@ -1089,16 +1089,21 @@ def skill_section(
 ) -> None:
     """Extract a named heading section from an installed or cached skill file.
 
-    Resolves *skill_name* to its on-disk path (checking the skill body cache
-    first, then the standard install locations under ``~/.claude/skills/``),
-    reads the file, then extracts the named H2 section using the same
-    case-insensitive prefix match as ``token-goat skill-body --section``.
+    Resolution order:
 
-    Does not require the skill file to be indexed in the token-goat DB —
-    the file is read directly from disk.
+    1. Resolve *skill_name* to its on-disk path (checking the skill body cache
+       ``source_path`` first, then ``~/.claude/skills/<name>/SKILL.md`` and
+       plugin install locations).  When found, read the file from disk.
+    2. **Skill-cache fallback**: when the disk file is not found (e.g. after a
+       ``uv tool install --reinstall``) but a cached skill body exists from this
+       or a previous session, extract the section from the cached body without
+       touching the filesystem.  The section content is identical — the cache
+       stores the full body verbatim.
 
-    When the skill cannot be located, emits a human-readable error and exits
-    with code 1, including a hint to index via
+    Does not require the skill file to be indexed in the token-goat DB.
+
+    When neither disk nor cache can provide the skill, emits a human-readable
+    error and exits with code 1, including a hint to index via
     ``token-goat index --root ~/.claude/skills/``.
     """
     import typer  # noqa: PLC0415
@@ -1107,27 +1112,45 @@ def skill_section(
     from . import db as _db  # noqa: PLC0415
     from . import skill_cache  # noqa: PLC0415
 
+    body: str | None = None
+    source_label: str = f"skills/{skill_name}"
+
+    # Strategy 1: resolve to an on-disk file and read it.
     skill_path = skill_cache.get_skill_file_path(skill_name)
-    if skill_path is None:
+    if skill_path is not None:
+        try:
+            body = skill_path.read_text(encoding="utf-8", errors="replace")
+            source_label = str(skill_path)
+        except OSError as exc:
+            _emit_read_error(
+                code="skill_read_error",
+                message=f"Could not read skill file '{skill_path}': {exc}",
+                json_output=json_output,
+            )
+            raise typer.Exit(1) from None
+
+    # Strategy 2: fall back to the skill body cache when the disk file is
+    # unavailable.  This handles the common case where the skill was loaded in
+    # a prior or current session but the SKILL.md is no longer reachable (e.g.
+    # the tool was reinstalled and the venv path changed).
+    if body is None:
+        for candidate in skill_cache.lookup_all_by_name(skill_name):
+            cached_body = skill_cache.load_output(candidate.output_id)
+            if cached_body is not None:
+                body = cached_body
+                source_label = f"cache:{candidate.output_id[:16]}"
+                break
+
+    if body is None:
         _emit_read_error(
             code="skill_not_found",
             message=(
-                f"Skill '{skill_name}' not found. "
+                f"Skill '{skill_name}' not found on disk or in cache. "
                 "Index with: token-goat index --root ~/.claude/skills/"
             ),
             json_output=json_output,
         )
         raise typer.Exit(1)
-
-    try:
-        body = skill_path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        _emit_read_error(
-            code="skill_read_error",
-            message=f"Could not read skill file '{skill_path}': {exc}",
-            json_output=json_output,
-        )
-        raise typer.Exit(1) from None
 
     section_text = skill_cache.extract_named_section(body, heading)
     if section_text is None:
@@ -1169,7 +1192,7 @@ def skill_section(
             "ok": True,
             "skill_name": skill_name,
             "heading": heading,
-            "source": str(skill_path),
+            "source": source_label,
             "text": section_text,
             "body_bytes": body_bytes,
         }
