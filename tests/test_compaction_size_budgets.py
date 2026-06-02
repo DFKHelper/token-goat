@@ -33,10 +33,10 @@ from token_goat.repomap import estimate_tokens
 # Budgets — adjust deliberately if behaviour intentionally changes.
 # ---------------------------------------------------------------------------
 
-# Saturated hint measures ~548 tokens after iter-29 added ### Pending Work
-# and ### Key Commands sections (14 entries across three sections + two new
-# sections).  580 gives a 32-token cushion for minor format additions.
-_RECOVERY_HINT_SATURATED_BUDGET = 580
+# Saturated hint is now hard-capped at 400 tokens by _truncate_recovery_hint
+# (reduced from the prior 800-token budget to keep overhead modest).
+# Observed ~439 tokens at saturation; 460 gives ~21-token cushion.
+_RECOVERY_HINT_SATURATED_BUDGET = 460
 # Files-only hint is one-line-per-file with no IDs plus ### Key Commands.
 # With .py files the Key Commands section adds symbol/read commands too.
 # Observed ~218 tokens; 240 gives ~22-token headroom.

@@ -4,7 +4,7 @@ Covers:
 1. _build_pending_work_section — failed pytest, uncommitted edits, non-zero uv run
 2. _build_key_commands_section — context-sensitive key commands
 3. _diff_stats_for_file — (+N/-M lines) diff stats from snapshots
-4. _truncate_recovery_hint — 800-token size guard
+4. _truncate_recovery_hint — 400-token default size guard (reduced from 800)
 5. Integration: the new sections appear in _build_recovery_hint output
 """
 from __future__ import annotations

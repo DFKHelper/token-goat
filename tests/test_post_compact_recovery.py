@@ -519,20 +519,17 @@ class TestSkillDedup:
 
 
 class TestRecoveryStatAccounting:
-    """Neither compact_recovery nor compact_recovery_overhead rows are written.
+    """compact_recovery and compact_recovery_overhead rows are written when the hint fires.
 
-    Both stat rows were dropped (Option A):
-    - The zero-byte base ``compact_recovery`` row was noise (294 writes/month,
-      0 bytes/tokens saved).
-    - The ``compact_recovery_overhead`` row recorded only the cost side with
-      no matching positive counterpart, making the compact bucket appear as a
-      pure -N kt/month loss in ``token-goat stats``.
-    The injection is still logged at INFO level for auditability.
+    The savings row (compact_recovery) records the estimated bytes/tokens of
+    bash and web content the model would otherwise need to re-run or re-fetch.
+    The overhead row (compact_recovery_overhead) records the negative cost of
+    injecting the hint text.  Both rows are absent when no hint is emitted
+    (empty session → hint suppressed).
     """
 
-    def test_no_stat_rows_written_when_hint_fires(self, tmp_data_dir):
-        """Neither base nor overhead row is written even when the hint fires;
-        the injection is auditable via the INFO log."""
+    def test_stat_rows_written_when_hint_fires(self, tmp_data_dir):
+        """compact_recovery and compact_recovery_overhead rows appear after hint injection."""
         from token_goat import db, hooks_read
 
         sid = "rec-overhead-1"
@@ -543,21 +540,18 @@ class TestRecoveryStatAccounting:
             "cwd": "/proj",
         })
 
-        # After session_start no stat rows should be present.
+        # After session_start the sidecar is written but stats are not yet recorded
+        # (stats are recorded when the sidecar is consumed on the first pre-read).
         with db.open_global() as conn:
             after_start = {r["kind"] for r in conn.execute(
                 "SELECT kind FROM stats"
                 " WHERE kind IN ('compact_recovery', 'compact_recovery_overhead')"
             ).fetchall()}
         assert "compact_recovery" not in after_start, (
-            "zero-byte base row must NOT be written at session_start"
-        )
-        assert "compact_recovery_overhead" not in after_start, (
-            "overhead row must NOT appear at session_start"
+            "recovery row must not appear at session_start (deferred to first pre-read)"
         )
 
-        # Trigger pre_read on any file — the sidecar is consumed but no stat row
-        # is written (Option A: both rows dropped).
+        # Trigger pre_read — the sidecar is consumed and both stat rows are written.
         hooks_read.pre_read({
             "session_id": sid,
             "tool_name": "Read",
@@ -566,24 +560,46 @@ class TestRecoveryStatAccounting:
 
         with db.open_global() as conn:
             rows = conn.execute(
-                "SELECT kind FROM stats"
+                "SELECT kind, bytes_saved, tokens_saved FROM stats"
                 " WHERE kind IN ('compact_recovery', 'compact_recovery_overhead')"
             ).fetchall()
 
         kinds = {r["kind"] for r in rows}
-        assert "compact_recovery" not in kinds, (
-            "zero-byte base row must never be written"
+        assert "compact_recovery" in kinds, (
+            "compact_recovery savings row must be written when hint fires"
         )
-        assert "compact_recovery_overhead" not in kinds, (
-            "overhead row must NOT be written — dropped in Option A"
+        assert "compact_recovery_overhead" in kinds, (
+            "compact_recovery_overhead cost row must be written when hint fires"
         )
 
-    def test_no_overhead_row_when_hint_not_fired(self, tmp_data_dir):
-        """When no hint is emitted (empty session) no overhead row should appear."""
+        # Savings row: bytes_saved and tokens_saved must be positive (bash + web bytes).
+        savings_rows = [r for r in rows if r["kind"] == "compact_recovery"]
+        assert savings_rows, "compact_recovery savings row missing"
+        savings = savings_rows[0]
+        assert savings["bytes_saved"] > 0, (
+            f"compact_recovery bytes_saved must be positive, got {savings['bytes_saved']}"
+        )
+        assert savings["tokens_saved"] > 0, (
+            f"compact_recovery tokens_saved must be positive, got {savings['tokens_saved']}"
+        )
+
+        # Overhead row: bytes_saved and tokens_saved must be negative (injection cost).
+        overhead_rows = [r for r in rows if r["kind"] == "compact_recovery_overhead"]
+        assert overhead_rows, "compact_recovery_overhead row missing"
+        overhead = overhead_rows[0]
+        assert overhead["bytes_saved"] < 0, (
+            f"compact_recovery_overhead bytes_saved must be negative, got {overhead['bytes_saved']}"
+        )
+        assert overhead["tokens_saved"] < 0, (
+            f"compact_recovery_overhead tokens_saved must be negative, got {overhead['tokens_saved']}"
+        )
+
+    def test_no_stat_rows_when_hint_not_fired(self, tmp_data_dir):
+        """When no hint is emitted (empty session) neither stat row should appear."""
         from token_goat import db
 
         sid = "rec-overhead-2"
-        # No state seeded — empty session → hint suppressed.
+        # No state seeded — empty session → hint suppressed → no sidecar written.
         hooks_session.session_start({
             "session_id": sid,
             "source": "compact",
@@ -599,17 +615,42 @@ class TestRecoveryStatAccounting:
         assert "compact_recovery" not in kinds, "base row must not appear when hint suppressed"
         assert "compact_recovery_overhead" not in kinds, "overhead row must not appear when hint suppressed"
 
-    def test_no_base_row_written(self, tmp_data_dir):
-        """The zero-byte compact_recovery base row must never be written — it
-        was a pure noise bucket (294 writes/month, 0 bytes/tokens saved)."""
-        from token_goat import db
+    def test_savings_reflect_bash_and_web_bytes(self, tmp_data_dir):
+        """compact_recovery bytes_saved equals sum of bash + web bytes in session cache."""
+        from token_goat import db, hooks_read
 
         sid = "rec-overhead-3"
-        _seed_state(sid)
+        # Seed known byte counts so we can verify the savings estimate.
+        session.mark_file_read(sid, "/proj/src/auth.py", offset=0, limit=100)
+        session.mark_bash_run(
+            session_id=sid,
+            cmd_sha="aabbccdd11223344",
+            cmd_preview="uv run pytest",
+            output_id=f"{sid[:16]}-0000000000001-aabbccdd11223344",
+            stdout_bytes=5000,
+            stderr_bytes=500,
+            exit_code=0,
+            truncated=False,
+        )
+        session.mark_web_fetch(
+            session_id=sid,
+            url_sha="deadbeef00112233",
+            url_preview="https://example.com/api",
+            output_id=f"{sid[:16]}-0000000000002-deadbeef00112233",
+            body_bytes=3000,
+            status_code=200,
+            truncated=False,
+        )
+
         hooks_session.session_start({
             "session_id": sid,
             "source": "compact",
             "cwd": "/proj",
+        })
+        hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/src/auth.py"},
         })
 
         with db.open_global() as conn:
@@ -617,7 +658,131 @@ class TestRecoveryStatAccounting:
                 "SELECT bytes_saved, tokens_saved FROM stats WHERE kind = 'compact_recovery'"
             ).fetchone()
 
-        assert row is None, "compact_recovery base row must not be written"
+        assert row is not None, "compact_recovery savings row must be written"
+        # Expected: 5000 + 500 (bash) + 3000 (web) = 8500 bytes
+        expected_bytes = 8500
+        assert row["bytes_saved"] == expected_bytes, (
+            f"bytes_saved={row['bytes_saved']} expected {expected_bytes} "
+            f"(bash 5500 + web 3000)"
+        )
+
+
+class TestEstimateRecoveryContextBytes:
+    """Unit tests for _estimate_recovery_context_bytes (hooks_read module)."""
+
+    def test_returns_zero_for_empty_cache(self):
+        """No bash/web history → 0 bytes estimated."""
+        from unittest.mock import MagicMock
+
+        from token_goat.hooks_read import _estimate_recovery_context_bytes
+
+        cache = MagicMock()
+        cache.bash_history = {}
+        cache.web_history = {}
+        assert _estimate_recovery_context_bytes(cache) == 0
+
+    def test_sums_bash_stdout_stderr(self):
+        """Bash stdout + stderr bytes are both included in the total."""
+        from unittest.mock import MagicMock
+
+        from token_goat.hooks_read import _estimate_recovery_context_bytes
+        from token_goat.session import BashEntry
+
+        be = BashEntry(
+            cmd_sha="abc",
+            cmd_preview="pytest",
+            output_id="oid1",
+            ts=1.0,
+            stdout_bytes=2000,
+            stderr_bytes=300,
+            exit_code=0,
+            truncated=False,
+        )
+        cache = MagicMock()
+        cache.bash_history = {"abc": be}
+        cache.web_history = {}
+        assert _estimate_recovery_context_bytes(cache) == 2300
+
+    def test_sums_web_body_bytes(self):
+        """Web body bytes are included in the total."""
+        from unittest.mock import MagicMock
+
+        from token_goat.hooks_read import _estimate_recovery_context_bytes
+        from token_goat.session import WebEntry
+
+        we = WebEntry(
+            url_sha="xyz",
+            url_preview="https://example.com",
+            output_id="oid2",
+            ts=2.0,
+            body_bytes=4000,
+            status_code=200,
+            truncated=False,
+        )
+        cache = MagicMock()
+        cache.bash_history = {}
+        cache.web_history = {"xyz": we}
+        assert _estimate_recovery_context_bytes(cache) == 4000
+
+    def test_sums_bash_and_web_combined(self):
+        """Combined bash + web bytes are summed correctly."""
+        from unittest.mock import MagicMock
+
+        from token_goat.hooks_read import _estimate_recovery_context_bytes
+        from token_goat.session import BashEntry, WebEntry
+
+        be = BashEntry(
+            cmd_sha="b1",
+            cmd_preview="cmd",
+            output_id="o1",
+            ts=1.0,
+            stdout_bytes=1000,
+            stderr_bytes=200,
+            exit_code=0,
+            truncated=False,
+        )
+        we = WebEntry(
+            url_sha="w1",
+            url_preview="https://x.com",
+            output_id="o2",
+            ts=2.0,
+            body_bytes=3000,
+            status_code=200,
+            truncated=False,
+        )
+        cache = MagicMock()
+        cache.bash_history = {"b1": be}
+        cache.web_history = {"w1": we}
+        # 1000 + 200 + 3000 = 4200
+        assert _estimate_recovery_context_bytes(cache) == 4200
+
+    def test_fail_soft_on_missing_attributes(self):
+        """Broken cache object returns 0 (fail-soft)."""
+        from token_goat.hooks_read import _estimate_recovery_context_bytes
+
+        class BrokenCache:
+            @property
+            def bash_history(self):
+                raise RuntimeError("no attribute")
+
+        assert _estimate_recovery_context_bytes(BrokenCache()) == 0
+
+
+class TestRecoveryHintTokenBudget:
+    """Recovery hint respects the 400-token default budget."""
+
+    def test_default_budget_is_400_tokens(self, tmp_data_dir):
+        """Built hint is within the 400-token default budget (1600 chars)."""
+        from token_goat.hooks_session import _build_recovery_hint
+
+        sid = "budget-1"
+        _seed_state(sid)
+        hint = _build_recovery_hint(sid)
+        assert hint is not None
+        # 400 tokens × 4 chars/token = 1600 chars maximum
+        assert len(hint) <= 1600, (
+            f"hint length {len(hint)} exceeds 1600-char budget (400 tokens × 4 chars/token)"
+        )
 
 
 class TestResumeAnchor:

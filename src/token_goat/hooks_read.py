@@ -1771,6 +1771,31 @@ def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
     )
 
 
+def _estimate_recovery_context_bytes(cache: object) -> int:
+    """Estimate bytes of context the recovery hint prevents from being re-read.
+
+    Sums the stored byte sizes of bash outputs and web-fetch bodies present in
+    the session cache.  These are the concrete blobs that the agent would
+    otherwise need to re-run or re-fetch to rebuild its post-compact context.
+    File sizes are not included because file byte counts are not stored in the
+    session cache (only line ranges are tracked), so including them would
+    require disk reads on the hot pre-read path.
+
+    Returns 0 on any error (fail-soft).
+    """
+    try:
+        total = 0
+        bash_hist = getattr(cache, "bash_history", None) or {}
+        for be in bash_hist.values():
+            total += getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
+        web_hist = getattr(cache, "web_history", None) or {}
+        for we in web_hist.values():
+            total += getattr(we, "body_bytes", 0)
+        return max(0, total)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _check_recovery_pending(session_id: str, cache: object) -> str | None:
     """Return the deferred recovery hint text and consume the sidecar, or None.
 
@@ -1779,6 +1804,11 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
     is written by the SessionStart handler when ``source == "compact"``.  On
     first hit we read the payload, delete the sidecar, and mark the session so
     subsequent calls in the same process skip the disk check.
+
+    Also records a matched stat pair:
+    - ``compact_recovery``: positive bytes/tokens saved (bash + web content that
+      would need re-loading without the hint).
+    - ``compact_recovery_overhead``: negative bytes/tokens (the hint text cost).
 
     Fail-soft: any I/O error returns None so a missing or unreadable sidecar
     never blocks the hook.
@@ -1799,16 +1829,37 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
             cache.recovery_injected = True  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this attribute at runtime
         except Exception:  # noqa: BLE001
             pass
+        hint_bytes = len(hint.encode("utf-8"))
         _LOG.info(
             "pre-read: deferred recovery hint injected for session=%s (%d chars)",
-            session_id[:16], len(hint),
+            session_id[:16], hint_bytes,
         )
-        # compact_recovery_overhead stat removed (Option A): neither the cost
-        # side (overhead) nor the benefit side (downstream hint savings) were
-        # being measured reliably, so the row appeared as a pure -N kt/mo loss
-        # in `token-goat stats` with no matching positive counterpart.  Dropping
-        # both avoids the misleading negative.  The injection is still logged at
-        # INFO so it is auditable in the daily log.
+        # Record matched stat pair: savings (context prevented from being
+        # re-read) plus injection overhead (the hint text itself costs tokens).
+        try:
+            from . import db as _db  # noqa: PLC0415
+
+            _BYTES_PER_TOKEN = 4  # conservative estimate matching hints.CHARS_PER_TOKEN
+            context_bytes = _estimate_recovery_context_bytes(cache)
+            context_tokens = max(1, context_bytes // _BYTES_PER_TOKEN) if context_bytes > 0 else 0
+            overhead_tokens = max(1, hint_bytes // _BYTES_PER_TOKEN)
+            if context_bytes > 0:
+                _db.record_stat(
+                    None,
+                    "compact_recovery",
+                    bytes_saved=context_bytes,
+                    tokens_saved=context_tokens,
+                    detail=f"session={session_id[:8]}",
+                )
+            _db.record_stat(
+                None,
+                "compact_recovery_overhead",
+                bytes_saved=-hint_bytes,
+                tokens_saved=-overhead_tokens,
+                detail=f"session={session_id[:8]}",
+            )
+        except Exception:  # noqa: BLE001
+            _LOG.debug("pre-read: recovery stat record failed", exc_info=True)
         return hint
     except Exception:  # noqa: BLE001
         _LOG.debug("pre-read: recovery sidecar check failed", exc_info=True)

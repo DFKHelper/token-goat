@@ -539,7 +539,7 @@ def _diff_stats_for_file(session_id: str, file_path: str) -> tuple[int, int] | N
 _RECOVERY_CHARS_PER_TOKEN: int = 4
 
 
-def _truncate_recovery_hint(text: str, max_tokens: int = 800) -> str:
+def _truncate_recovery_hint(text: str, max_tokens: int = 400) -> str:
     """Truncate *text* to at most *max_tokens* by dropping lower-priority sections.
 
     Sections are dropped in ascending priority order:
