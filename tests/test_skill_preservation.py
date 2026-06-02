@@ -1765,3 +1765,290 @@ class TestOutputIdForCollisionGuard:
         assert c2 is not None
         assert "namespaced" in c1
         assert "underscore" in c2
+
+
+# ---------------------------------------------------------------------------
+# Improvement 1: lookup_skill_entry normalizes name (re-load detection accuracy)
+# ---------------------------------------------------------------------------
+
+class TestLookupSkillEntryNormalization:
+    """lookup_skill_entry must use the same key as mark_skill_loaded."""
+
+    def test_lookup_matches_after_mark(self, tmp_data_dir):
+        """A skill stored by mark_skill_loaded is found by lookup_skill_entry."""
+        sid = "sess-lookup-norm-1"
+        session.mark_skill_loaded(sid, "ralph", "oid1", "sha1", 5000, False)
+        entry = session.lookup_skill_entry(sid, "ralph")
+        assert entry is not None
+        assert entry.skill_name == "ralph"
+
+    def test_lookup_with_plugin_namespace(self, tmp_data_dir):
+        """Plugin-namespaced skills are found by the same name they were stored under."""
+        sid = "sess-lookup-ns"
+        session.mark_skill_loaded(sid, "plugin:improve", "oid2", "sha2", 8000, False)
+        entry = session.lookup_skill_entry(sid, "plugin:improve")
+        assert entry is not None
+        assert entry.skill_name == "plugin:improve"
+
+    def test_lookup_returns_none_for_different_name(self, tmp_data_dir):
+        """lookup_skill_entry returns None when the skill was not loaded."""
+        sid = "sess-lookup-miss"
+        session.mark_skill_loaded(sid, "ralph", "oid3", "sha3", 3000, False)
+        assert session.lookup_skill_entry(sid, "other-skill") is None
+
+    def test_reload_detection_increments_run_count(self, tmp_data_dir):
+        """Second load of the same skill increments run_count, not a new entry."""
+        sid = "sess-reload-count"
+        session.mark_skill_loaded(sid, "ralph", "oid4", "sha4", 5000, False)
+        entry_after_first = session.lookup_skill_entry(sid, "ralph")
+        assert entry_after_first is not None
+        assert entry_after_first.run_count == 1
+
+        session.mark_skill_loaded(sid, "ralph", "oid4", "sha4", 5000, False)
+        entry_after_second = session.lookup_skill_entry(sid, "ralph")
+        assert entry_after_second is not None
+        assert entry_after_second.run_count == 2
+
+    def test_post_skill_hook_emits_reload_hint_on_second_load(self, tmp_data_dir):
+        """post_skill emits a systemMessage reload hint on the second load of the same skill."""
+        sid = "sess-reload-hint"
+        body = "# Ralph\n\n## DoD\n\nCRITICAL: Follow the rules.\n\n" + ("body. " * 300)
+        payload = {
+            "session_id": sid,
+            "tool_name": "Skill",
+            "tool_input": {"skill": "ralph"},
+            "tool_response": body,
+        }
+        # First load: no reload hint.
+        resp1 = hooks_skill.post_skill(payload)
+        assert resp1.get("continue") is True
+        # First load may emit a compact systemMessage (about COMPACT_END), but not a reload hint.
+        msg1 = resp1.get("systemMessage", "")
+        assert "already loaded" not in msg1, f"Unexpected reload hint on first load: {msg1!r}"
+
+        # Second load: should get the reload hint.
+        resp2 = hooks_skill.post_skill(payload)
+        assert resp2.get("continue") is True
+        msg2 = resp2.get("systemMessage", "")
+        assert "already loaded" in msg2, f"Expected reload hint on second load, got: {msg2!r}"
+        assert "ralph" in msg2
+        assert "token-goat skill-body ralph" in msg2
+
+
+# ---------------------------------------------------------------------------
+# Improvement 2: _select_top_skill_entries uses session_started_ts
+# ---------------------------------------------------------------------------
+
+class TestSelectTopSkillEntriesSessionWindow:
+    """Skills loaded at session start must stay in the manifest throughout the session."""
+
+    def test_skill_loaded_at_session_start_is_selected(self):
+        """A skill loaded at session start (now - 2 hours) appears when session_started_ts provided."""
+        from token_goat.compact import _select_top_skill_entries  # noqa: PLC0415
+
+        two_hours_ago = time.time() - 7200.0
+        session_start = two_hours_ago - 10.0  # started 10 sec before the skill was loaded
+        entry = session.SkillEntry(
+            skill_name="ralph",
+            output_id="oid1",
+            content_sha="sha1",
+            ts=two_hours_ago,
+            body_bytes=30000,
+            truncated=False,
+            run_count=1,
+        )
+        skill_history = {"ralph": entry}
+
+        # With session_started_ts, the skill must be included despite being > 30 min old.
+        selected = _select_top_skill_entries(skill_history, session_started_ts=session_start)
+        assert len(selected) == 1
+        assert getattr(selected[0], "skill_name", "") == "ralph"
+
+    def test_skill_older_than_session_is_excluded(self):
+        """A skill loaded before this session started is excluded."""
+        from token_goat.compact import _select_top_skill_entries  # noqa: PLC0415
+
+        yesterday = time.time() - 86400.0
+        session_start = time.time() - 3600.0  # session started 1 hour ago
+        entry = session.SkillEntry(
+            skill_name="old-skill",
+            output_id="oid2",
+            content_sha="sha2",
+            ts=yesterday,
+            body_bytes=5000,
+            truncated=False,
+            run_count=1,
+        )
+        skill_history = {"old-skill": entry}
+
+        selected = _select_top_skill_entries(skill_history, session_started_ts=session_start)
+        assert len(selected) == 0
+
+    def test_without_session_started_ts_uses_stale_threshold(self):
+        """When session_started_ts=0, the legacy 30-min stale window is used."""
+        from token_goat.compact import _select_top_skill_entries  # noqa: PLC0415
+
+        recent_ts = time.time() - 60.0  # 1 min ago — well within 30-min window
+        entry = session.SkillEntry(
+            skill_name="newskill",
+            output_id="oid3",
+            content_sha="sha3",
+            ts=recent_ts,
+            body_bytes=5000,
+            truncated=False,
+            run_count=1,
+        )
+        skill_history = {"newskill": entry}
+        selected = _select_top_skill_entries(skill_history, session_started_ts=0.0)
+        assert len(selected) == 1
+
+    def test_manifest_includes_skill_loaded_45_min_ago(self, tmp_data_dir):
+        """Skills loaded 45 min ago appear in the manifest when session started before that."""
+        sid = "sess-old-skill-in-manifest"
+        # Simulate a session that started 60 min ago and loaded a skill 45 min ago.
+        session_start_ts = time.time() - 3600.0
+        skill_ts = time.time() - 2700.0  # 45 min ago — beyond the old 30-min cutoff
+
+        # Manually load the skill into the session cache with an old timestamp.
+        cache = session.load(sid)
+        entry = session.SkillEntry(
+            skill_name="ralph",
+            output_id="fake-oid",
+            content_sha="fake-sha",
+            ts=skill_ts,
+            body_bytes=25000,
+            truncated=False,
+            run_count=1,
+        )
+        cache.skill_history["ralph"] = entry
+        # Set session start time in the past too.
+        cache.started_ts = session_start_ts
+        session.save(cache)
+
+        manifest = compact.build_manifest(sid, max_tokens=600)
+        # The manifest must include the skill despite it being 45 min old.
+        assert "**Skills:**" in manifest, "Expected Skills section in manifest"
+        assert "ralph" in manifest, "Expected 'ralph' in manifest"
+
+
+# ---------------------------------------------------------------------------
+# Improvement 3: overflow count in manifest is accurate
+# ---------------------------------------------------------------------------
+
+class TestManifestSkillOverflowCount:
+    """The +N more count reflects unique skill names, not raw dict entries."""
+
+    def test_overflow_count_correct_with_7_unique_skills(self, tmp_data_dir):
+        """When 7 distinct skills are loaded, overflow shows +1 more (cap is 6)."""
+        sid = "sess-overflow-skills"
+        skill_names = [f"skill-{i}" for i in range(7)]
+        for name in skill_names:
+            session.mark_skill_loaded(sid, name, f"oid-{name}", f"sha-{name}", 5000, False)
+
+        manifest = compact.build_manifest(sid, max_tokens=800)
+        assert "**Skills:**" in manifest
+        # Should mention that some skills are hidden: "+1 more"
+        assert "+1 more" in manifest
+
+    def test_overflow_not_shown_when_all_skills_fit(self, tmp_data_dir):
+        """When <= 6 skills are loaded, no overflow marker appears."""
+        sid = "sess-no-overflow-skills"
+        for i in range(3):
+            session.mark_skill_loaded(sid, f"skill-{i}", f"oid-{i}", f"sha-{i}", 5000, False)
+
+        manifest = compact.build_manifest(sid, max_tokens=600)
+        assert "**Skills:**" in manifest
+        assert "+0 more" not in manifest
+        # No "more" suffix when all skills fit
+        assert " more" not in manifest
+
+
+# ---------------------------------------------------------------------------
+# Improvement 4: skill-compact CLI prefers COMPACT_END marker
+# ---------------------------------------------------------------------------
+
+class TestSkillCompactCLIMarkerPreference:
+    """skill-compact should use the COMPACT_END marker slice when present."""
+
+    _MARKER_BODY = (
+        "# Author-curated compact section.\n\n"
+        "CRITICAL: Do not skip the protocol.\n\n"
+        "<!-- COMPACT_END -->\n\n"
+        "## Detailed Reference\n\n"
+        "This part should NOT appear in the compact output.\n"
+        + ("extra detail filler. " * 200)
+    )
+
+    _AUTO_BODY = (
+        "# No marker here.\n\n"
+        "## Overview\n\nSome overview text.\n\n"
+        "## Rules\n\nCRITICAL: Always check the rules.\n"
+        + ("padding. " * 200)
+    )
+
+    def _store_skill(self, sid: str, name: str, body: str) -> None:
+        meta = skill_cache.store_output(sid, name, body)
+        if meta is not None:
+            skill_cache.write_sidecar(meta)
+
+    def _invoke(self, *args: str):
+        from typer.testing import CliRunner  # noqa: PLC0415
+
+        from token_goat.cli import app  # noqa: PLC0415
+        runner = CliRunner()
+        return runner.invoke(app, list(args))
+
+    def test_marker_body_uses_pre_marker_slice(self, tmp_data_dir):
+        """skill-compact output is the pre-marker slice, not auto-extracted text."""
+        sid = "sess-marker-cli"
+        self._store_skill(sid, "authortool", self._MARKER_BODY)
+        result = self._invoke("skill-compact", "authortool")
+        assert result.exit_code == 0, f"stderr: {result.output}"
+        # The curated compact content should be present.
+        assert "Author-curated compact section." in result.output
+        assert "CRITICAL: Do not skip the protocol." in result.output
+        # The detail section after the marker should be absent.
+        assert "Detailed Reference" not in result.output
+        assert "should NOT appear" not in result.output
+
+    def test_no_marker_body_uses_auto_extraction(self, tmp_data_dir):
+        """skill-compact falls back to auto-extraction when no COMPACT_END marker."""
+        sid = "sess-no-marker-cli"
+        self._store_skill(sid, "autotool", self._AUTO_BODY)
+        result = self._invoke("skill-compact", "autotool")
+        assert result.exit_code == 0, f"stderr: {result.output}"
+        # Auto-extracted compact must include the CRITICAL keyword line.
+        assert "CRITICAL" in result.output
+
+    def test_json_output_includes_compact_source_marker(self, tmp_data_dir):
+        """skill-compact --json reports compact_source='marker' when marker is present."""
+        import json  # noqa: PLC0415
+        sid = "sess-marker-json"
+        self._store_skill(sid, "markertool", self._MARKER_BODY)
+        result = self._invoke("skill-compact", "--json", "markertool")
+        assert result.exit_code == 0, f"stderr: {result.output}"
+        data = json.loads(result.output.strip())
+        assert data.get("compact_source") == "marker", f"Expected compact_source=marker, got {data}"
+        assert "saved_bytes" in data
+        assert "saved_tokens" in data
+
+    def test_json_output_includes_compact_source_auto(self, tmp_data_dir):
+        """skill-compact --json reports compact_source='auto' when no marker."""
+        import json  # noqa: PLC0415
+        sid = "sess-auto-json"
+        self._store_skill(sid, "autotool2", self._AUTO_BODY)
+        result = self._invoke("skill-compact", "--json", "autotool2")
+        assert result.exit_code == 0, f"stderr: {result.output}"
+        data = json.loads(result.output.strip())
+        assert data.get("compact_source") == "auto", f"Expected compact_source=auto, got {data}"
+
+    def test_marker_compact_is_smaller_than_full_body(self, tmp_data_dir):
+        """Compact output is smaller than the full body, and savings are positive."""
+        import json  # noqa: PLC0415
+        sid = "sess-savings"
+        self._store_skill(sid, "savetool", self._MARKER_BODY)
+        result = self._invoke("skill-compact", "--json", "savetool")
+        assert result.exit_code == 0, f"stderr: {result.output}"
+        data = json.loads(result.output.strip())
+        assert data["saved_bytes"] > 0, "Expected positive byte savings for marker compact"
+        assert data["returned_bytes"] < data["body_bytes"], "Compact must be smaller than full body"

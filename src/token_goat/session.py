@@ -4000,8 +4000,19 @@ def mark_skill_loaded(
 def lookup_skill_entry(
     session_id: str, skill_name: str, *, cache: SessionCache | None = None
 ) -> SkillEntry | None:
-    """Return the :class:`SkillEntry` for *skill_name* in *session_id*, or None."""
-    return _lookup_in_cache(session_id, lambda c: c.skill_history, skill_name, cache)
+    """Return the :class:`SkillEntry` for *skill_name* in *session_id*, or None.
+
+    Normalises *skill_name* through the same :func:`sanitize_log_str` call that
+    :func:`mark_skill_loaded` uses when writing the entry, so the dict key used
+    for the lookup is byte-for-byte identical to the key used at write time.
+    Without this normalisation, a caller passing a raw skill name longer than
+    :data:`_MAX_SKILL_NAME_LEN` (128 chars) would receive ``None`` even though
+    the entry exists under the truncated form — breaking re-load detection.
+    """
+    safe_name = sanitize_log_str(skill_name, max_len=_MAX_SKILL_NAME_LEN)
+    if not safe_name:
+        return None
+    return _lookup_in_cache(session_id, lambda c: c.skill_history, safe_name, cache)
 
 
 def mark_decision(

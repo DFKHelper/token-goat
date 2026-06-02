@@ -3754,7 +3754,14 @@ def cmd_skill_compact(
         raise typer.Exit(1)
 
     _compact_session_id = os.environ.get("CLAUDE_SESSION_ID", "")
-    compact_text = skill_cache.generate_compact_summary(body)
+
+    # Prefer the author-curated COMPACT_END marker slice when present —
+    # it is deterministic, typically smaller than auto-extraction, and yields
+    # more accurate byte/token savings figures for the user.  Fall back to
+    # heuristic auto-extraction when the marker is absent.
+    marker_compact = skill_cache.extract_compact_from_marker(body)
+    compact_text = marker_compact if marker_compact is not None else skill_cache.generate_compact_summary(body)
+    compact_source = "marker" if marker_compact is not None else "auto"
     skill_cache.store_compact(_compact_session_id, name, compact_text)
 
     body_bytes = len(body.encode())
@@ -3765,16 +3772,20 @@ def cmd_skill_compact(
         "skill_body_recall",
         bytes_saved=saved_bytes,
         tokens_saved=saved_bytes // 4,
-        detail=f"{name[:48]}:compact",
+        detail=f"{name[:48]}:compact:{compact_source}",
     )
 
     if json_output:
         payload: dict[str, object] = {
             "skill_name": name,
             "compact": True,
+            "compact_source": compact_source,
             "source": source_label,
             "text": compact_text,
             "body_bytes": body_bytes,
+            "returned_bytes": returned_bytes,
+            "saved_bytes": saved_bytes,
+            "saved_tokens": saved_bytes // 4,
         }
         if meta is not None:
             payload["output_id"] = meta.output_id

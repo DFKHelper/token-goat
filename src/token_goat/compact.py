@@ -2859,12 +2859,30 @@ def _group_web_entries_by_domain(entries: list[object]) -> list[str]:
     return result
 
 
-def _select_top_skill_entries(skill_history: object) -> list[object]:
+def _select_top_skill_entries(
+    skill_history: object,
+    *,
+    session_started_ts: float = 0.0,
+) -> list[object]:
     """Pick up to :data:`_MAX_ACTIVE_SKILLS` skill loads worth surfacing.
 
-    Returns the most-recently-loaded skills, newest first, filtering out
-    skills not loaded in the last :data:`_SKILL_STALE_THRESHOLD_SECS` to avoid
-    cluttering the manifest with "done" skills that linger in history.
+    Returns the most-recently-loaded skills, newest first.  Any skill entry
+    whose ``ts`` falls within the current session window (i.e. after
+    *session_started_ts* minus a small clock-skew buffer) is included
+    regardless of how long ago it was loaded — a skill loaded at the very
+    start of a 4-hour session is just as load-bearing at hour 3 as it was at
+    hour 0.
+
+    The legacy :data:`_SKILL_STALE_THRESHOLD_SECS` fixed-window filter was
+    dropped because it caused skills to silently vanish from the compaction
+    manifest roughly 30 minutes after they were first loaded, even though the
+    session was still active and the agent still relied on the skill's protocol.
+
+    Filtering rule (first match wins, top priority first):
+    1. Skill was loaded within the current session (ts >= session_started_ts - 60 s).
+    2. Skill was loaded within the last :data:`_SKILL_STALE_THRESHOLD_SECS`
+       (fallback when session_started_ts is 0/unknown).
+    3. Skill is excluded — it pre-dates the session and the staleness window.
 
     When the same skill was loaded multiple times (e.g. loaded, then updated
     on disk, then loaded again with different content_sha), returns only the
@@ -2875,10 +2893,19 @@ def _select_top_skill_entries(skill_history: object) -> list[object]:
         return []
 
     now = time.time()
-    # Filter to recently-loaded skills only
+    # Determine the earliest timestamp we accept.  When session_started_ts is
+    # available (non-zero), use it as the lower bound (with a 60-second grace
+    # buffer for minor clock-skew between the session-start write and the first
+    # skill load).  When not available, fall back to the legacy 30-min window.
+    if session_started_ts > 0.0:
+        cutoff_ts = session_started_ts - 60.0  # 60 s grace for clock-skew
+    else:
+        cutoff_ts = now - _SKILL_STALE_THRESHOLD_SECS
+
+    # Filter to skills loaded within the accepted window.
     recent_skills = [
         entry for entry in skill_history.values()
-        if (now - getattr(entry, "ts", 0.0)) <= _SKILL_STALE_THRESHOLD_SECS
+        if getattr(entry, "ts", 0.0) >= cutoff_ts
     ]
 
     # Deduplicate by skill name: keep only the most-recent content_sha per skill.
@@ -4281,6 +4308,8 @@ def _build_sealed_block(
     raw_skills: dict,
     test_failure_names: list[str] | None = None,
     raw_bash: dict | None = None,
+    *,
+    session_started_ts: float = 0.0,
 ) -> list[str]:
     """Build the above-the-fold sealed block prepended before the main manifest body.
 
@@ -4361,18 +4390,16 @@ def _build_sealed_block(
                 blocker_cmd_word = sanitize_log_str(tok, max_len=30)
                 break
 
-    # Slot (c): ≤2 active skill names (excluding stale skills)
+    # Slot (c): ≤2 active skill names (all skills from the current session).
+    # Use the same session-window filter as _select_top_skill_entries so that
+    # skills loaded earlier in a long session are not silently dropped here
+    # while remaining visible in the main manifest section.
     skill_slot = ""
     if raw_skills:
-        now = time.time()
-        # Filter to recently-loaded skills only
-        recent_skills = [
-            entry for entry in raw_skills.values()
-            if (now - getattr(entry, "ts", 0.0)) <= _SKILL_STALE_THRESHOLD_SECS
-        ]
-        top_skills = heapq.nlargest(
-            2, recent_skills, key=lambda e: getattr(e, "ts", 0.0)
+        _sealed_top = _select_top_skill_entries(
+            raw_skills, session_started_ts=session_started_ts
         )
+        top_skills = _sealed_top[:2]
         names = [sanitize_log_str(getattr(e, "skill_name", ""), max_len=40) for e in top_skills]
         names = [n for n in names if n]
         if names:
@@ -4840,7 +4867,10 @@ def _render(
     else:
         decision_lines = []
 
-    skill_entries = _select_top_skill_entries(raw_skills)
+    _session_started_ts = float(getattr(cache, "started_ts", 0.0) or 0.0)
+    skill_entries = _select_top_skill_entries(
+        raw_skills, session_started_ts=_session_started_ts
+    )
     if skill_entries:
         # Build summary: "ralph ×3, improve ×1 — recall via token-goat skill-body <name>"
         _skill_parts = []
@@ -4848,7 +4878,15 @@ def _render(
             _sname = sanitize_log_str(getattr(_se, "skill_name", ""), max_len=40)
             _src = int(getattr(_se, "run_count", 1))
             _skill_parts.append(f"{_sname} ×{_src}" if _src > 1 else _sname)
-        overflow_skills = len(raw_skills) - len(skill_entries)
+        # Overflow count: how many distinct skill names exist beyond the surfaced
+        # cap.  Compare unique names in the full history (not total entries, which
+        # can be > unique names when the same skill has multiple content_sha rows)
+        # against the number of entries we are about to surface.
+        _unique_skill_names = {
+            getattr(e, "skill_name", "") for e in raw_skills.values()
+            if getattr(e, "skill_name", "")
+        }
+        overflow_skills = max(0, len(_unique_skill_names) - len(skill_entries))
         if overflow_skills > 0:
             _skill_parts.append(f"+{overflow_skills} more")
         _skills_summary = ", ".join(_skill_parts)
@@ -5133,6 +5171,7 @@ def _render(
     # edited files / skills.
     sealed_block = _build_sealed_block(
         edited_clean, blocker_entries, raw_skills, _test_failure_names, raw_bash,
+        session_started_ts=_session_started_ts,
     )
     sealed_tokens = _token_count("\n".join(sealed_block)) if sealed_block else 0
 
