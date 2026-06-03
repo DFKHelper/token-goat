@@ -8264,6 +8264,7 @@ class TestDetectOrchestratorMode:
         result = compact._detect_orchestrator_mode(cache, None, threshold=5)
         assert result is False
 
+    @pytest.mark.slow
     def test_returns_false_when_edited_files_ge_10(self, tmp_data_dir, tmp_path):
         """Returns False when edited_files count >= 10 (not an orchestrator pattern)."""
         repo = make_git_repo(
@@ -8443,6 +8444,7 @@ class TestOrchestratorModeManifest:
 
         assert "**Symbols Accessed:**" not in result
 
+    @pytest.mark.slow
     def test_normal_mode_when_below_threshold(self, tmp_data_dir, tmp_path):
         """When commits < threshold, orchestrator mode is not activated (normal manifest)."""
         import dataclasses as _dc

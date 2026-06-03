@@ -4,7 +4,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 from hook_helpers import run_hook_subprocess as _run_hook
+
+pytestmark = pytest.mark.slow
 
 PROJECT_ROOT = Path(__file__).parent.parent
 

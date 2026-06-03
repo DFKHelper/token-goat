@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from token_goat import cli, paths
@@ -14,6 +15,7 @@ from token_goat import cli, paths
 runner = CliRunner()
 
 
+@pytest.mark.slow
 def test_doctor_exits_zero_and_prints_sections():
     result = subprocess.run(
         [sys.executable, "-m", "token_goat.cli", "doctor"],
@@ -42,6 +44,7 @@ def test_doctor_exits_zero_and_prints_sections():
     assert "fastembed model" in out
 
 
+@pytest.mark.slow
 def test_doctor_via_entry_point():
     """Run via the installed entry point (uv tool run)."""
     result = subprocess.run(

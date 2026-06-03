@@ -12,6 +12,8 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock
 
+import pytest
+
 from token_goat.hooks_read import _build_git_hint
 
 # ---------------------------------------------------------------------------
@@ -70,6 +72,7 @@ class TestGitHintTimeout:
         assert result is not None
         assert "auth.py" in result
 
+    @pytest.mark.slow
     def test_slow_hint_is_skipped_and_stat_recorded(self, tmp_data_dir, tmp_path, monkeypatch):
         """A git lookup exceeding git_hint_max_ms is skipped and records git_hint_timeout."""
         from token_goat import db
@@ -105,6 +108,7 @@ class TestGitHintTimeout:
         assert rows[0]["bytes_saved"] == 0
         assert rows[0]["tokens_saved"] == 0
 
+    @pytest.mark.slow
     def test_zero_max_ms_disables_cap(self, tmp_data_dir, tmp_path, monkeypatch):
         """git_hint_max_ms = 0 disables the timeout cap; slow hints still return."""
         cwd = str(tmp_path)

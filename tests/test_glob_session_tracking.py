@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Unit tests: mark_glob_run / lookup_glob_entry
 # ---------------------------------------------------------------------------
@@ -115,6 +117,7 @@ class TestLookupGlobEntry:
         finally:
             session.reset_session(sid)
 
+    @pytest.mark.slow
     def test_most_recent_entry_returned(self, tmp_data_dir, monkeypatch):
         """Returns the most recent entry when the same pattern is run twice."""
         from token_goat import session

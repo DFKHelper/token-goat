@@ -3,6 +3,7 @@ and the enhanced MUST_PRESERVE sealed block.
 """
 from __future__ import annotations
 
+import subprocess
 import time
 from unittest.mock import MagicMock, patch
 
@@ -888,3 +889,106 @@ class TestSymbolEnrichedKeyFiles:
                 assert comma_count <= 2, (
                     f"Expected at most 2 commas (3 symbols max) but got {comma_count}: {line!r}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: _get_session_commits git timeout and empty repo
+# ---------------------------------------------------------------------------
+
+
+class TestGetSessionCommitsEdgeCases:
+    """Edge cases for _get_session_commits: timeout, empty repo, None cwd."""
+
+    def test_git_command_timeout_returns_empty(self, monkeypatch):
+        """_get_session_commits returns [] when _run_git raises TimeoutExpired."""
+        def _raise_timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired(["git"], 2)
+
+        monkeypatch.setattr("token_goat.compact._util_run_git", _raise_timeout)
+        result = compact._get_session_commits("/some/repo", time.time() - 3600)
+        assert result == [], f"Expected [] on TimeoutExpired, got {result!r}"
+
+    def test_git_oserror_returns_empty(self, monkeypatch):
+        """_get_session_commits returns [] when git is not on PATH (OSError)."""
+        def _raise_oserror(*args, **kwargs):
+            raise OSError("git: command not found")
+
+        monkeypatch.setattr("token_goat.compact._util_run_git", _raise_oserror)
+        result = compact._get_session_commits("/some/repo", time.time() - 3600)
+        assert result == [], f"Expected [] on OSError, got {result!r}"
+
+    def test_zero_session_start_ts_returns_empty(self):
+        """_get_session_commits returns [] when session_start_ts is 0 (invalid)."""
+        # No git call should be made; guard fires immediately.
+        result = compact._get_session_commits("/some/valid/path", 0.0)
+        assert result == []
+
+    def test_none_cwd_returns_empty(self):
+        """_get_session_commits returns [] when cwd is None."""
+        result = compact._get_session_commits(None, time.time() - 3600)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Edge cases: build_manifest with zero files read but cwd set
+# ---------------------------------------------------------------------------
+
+
+class TestBuildManifestZeroFilesRead:
+    """build_manifest edge cases when session has cwd but no activity."""
+
+    def test_session_with_cwd_but_no_files_returns_empty(self, tmp_data_dir):
+        """A session where only cwd is set (no reads, edits, greps) returns ''."""
+        from token_goat import session
+
+        sid = "sess-cwd-only-no-files"
+        cache = session.load(sid)
+        cache.cwd = "/some/project"
+        cache.created_ts = time.time() - 1800
+        session.save(cache)
+
+        # Even with cwd set, a session with zero activity should return empty manifest.
+        result = compact.build_manifest(sid, max_tokens=800)
+        assert result == "", f"Expected empty manifest for zero-activity session, got:\n{result}"
+
+    def test_recent_branch_commits_section_absent_when_orchestrator_returns_empty(
+        self, tmp_data_dir
+    ):
+        """Recent Branch Commits section is absent when _get_recent_commits_for_orchestrator
+        returns [] even for a mature non-young session with file reads."""
+        from token_goat import session
+
+        sid = "sess-empty-branch-commits"
+        session.mark_file_read(sid, "/proj/src/main.py", offset=0, limit=100)
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        cache.created_ts = time.time() - 3600  # mature session
+        session.save(cache)
+
+        with (
+            patch("token_goat.compact._get_session_commits", return_value=[]),
+            patch("token_goat.compact._is_git_repo", return_value=True),
+            patch(
+                "token_goat.compact._get_recent_commits_for_orchestrator",
+                return_value=[],  # git returns nothing (e.g., brand-new repo, no commits)
+            ),
+        ):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        # No branch commits returned → section must be absent
+        assert "Recent Branch Commits" not in result
+
+    def test_build_manifest_does_not_crash_with_nonexistent_cwd(self, tmp_data_dir):
+        """build_manifest is fail-soft when cwd points to a non-existent directory."""
+        from token_goat import session
+
+        sid = "sess-nonexistent-cwd"
+        session.mark_file_read(sid, "/nonexistent/dir/file.py", offset=0, limit=50)
+        cache = session.load(sid)
+        cache.cwd = "/nonexistent/dir/that/does/not/exist"
+        cache.created_ts = time.time() - 1800
+        session.save(cache)
+
+        # Must not raise; git calls will fail gracefully and return None/[].
+        result = compact.build_manifest(sid, max_tokens=600)
+        assert isinstance(result, str), "build_manifest must always return a string"
