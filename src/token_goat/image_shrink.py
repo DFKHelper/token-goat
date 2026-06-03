@@ -249,6 +249,45 @@ def _cache_key(src_path: Path) -> str:
         return hashlib.sha256(f"v{CACHE_KEY_VERSION}|{src_path}".encode()).hexdigest()
 
 
+def _get_source_mtime(src_path: Path) -> float:
+    """Return the source file's mtime, or 0.0 if unreadable."""
+    try:
+        return src_path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _store_source_mtime(cache_path: Path, src_mtime: float) -> None:
+    """Store the source file's mtime in a companion .mtime sidecar file.
+
+    The sidecar is a simple text file containing a single float timestamp.
+    Fail-soft: any IO error is logged but does not block the shrink.
+    """
+    mtime_path = cache_path.with_suffix(cache_path.suffix + ".mtime")
+    try:
+        mtime_path.write_text(f"{src_mtime:.6f}")
+    except OSError as exc:
+        _LOG.debug("_store_source_mtime: failed to write sidecar for %s: %s", cache_path.name, exc)
+
+
+def _load_source_mtime(cache_path: Path) -> float | None:
+    """Load the stored source file's mtime from the companion .mtime sidecar file.
+
+    Returns None if the sidecar does not exist or is unreadable; this signals
+    "cache hit but no mtime record" which is treated as a valid (unverified) cache hit
+    for backwards compatibility with existing cached entries.
+    """
+    mtime_path = cache_path.with_suffix(cache_path.suffix + ".mtime")
+    try:
+        if not mtime_path.exists():
+            return None
+        text = mtime_path.read_text(encoding="utf-8").strip()
+        return float(text)
+    except (OSError, ValueError) as exc:
+        _LOG.debug("_load_source_mtime: failed to read sidecar for %s: %s", cache_path.name, exc)
+        return None
+
+
 def _cache_path_for(src_path: Path) -> Path:
     """Return the base cache path (stem only) for *src_path*.
 
@@ -623,9 +662,35 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
     lossy_suffix = f".{lossy_fmt}" if lossy_fmt != "jpeg" else ".jpg"
     suffixes = [".avif", lossy_suffix] + [s for s in (".webp", ".jpg", ".png") if s not in (".avif", lossy_suffix)]
 
+    # Get the current source file's mtime for validation on cache hit.
+    src_mtime = _get_source_mtime(src_path)
+
     for suffix in suffixes:
         candidate = stem.with_suffix(suffix)
         if candidate.exists():
+            # Check source file mtime for staleness: if the source was updated after
+            # the cache was created, the cached version is stale and needs re-shrinking.
+            # This handles the case where an image file is replaced or modified.
+            stored_mtime = _load_source_mtime(candidate)
+            if stored_mtime is not None and src_mtime != 0.0 and src_mtime > stored_mtime:
+                # Source file mtime changed — cache is stale, invalidate it.
+                _LOG.debug(
+                    "image cache staleness detected: %s mtime=%.2f > stored=%.2f, will re-shrink from %s",
+                    candidate.name, src_mtime, stored_mtime, src_path.name,
+                )
+                try:
+                    candidate.unlink()
+                except OSError as _unlink_exc:
+                    _LOG.debug("failed to unlink stale cache file %s: %s", candidate.name, _unlink_exc)
+                # Also clean up the mtime sidecar
+                try:
+                    mtime_sidecar = candidate.with_suffix(candidate.suffix + ".mtime")
+                    if mtime_sidecar.exists():
+                        mtime_sidecar.unlink()
+                except OSError:
+                    pass
+                continue  # Try next suffix or fall through to re-shrink.
+
             # Before returning a cached image, validate that it's readable.
             # A truncated cache file (partial write from an interrupted shrink)
             # will cause Pillow to raise UnidentifiedImageError or
@@ -816,6 +881,12 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
             savings_pct,
             elapsed,
         )
+
+        # Store the source file's mtime in a sidecar so cache staleness can be detected
+        # on future lookups. This allows us to invalidate the cache if the source
+        # file is modified or replaced.
+        _store_source_mtime(final_path, src_mtime)
+
         return final_path
     except OSError as e:
         elapsed = time.time() - t0
