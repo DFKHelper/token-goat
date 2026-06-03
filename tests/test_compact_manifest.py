@@ -621,3 +621,270 @@ class TestRenderActiveErrorsSection:
 
         # Manifest should NOT contain the Active Errors section
         assert "### Active Errors" not in result
+
+
+# ---------------------------------------------------------------------------
+# Improvement A: Recent Branch Commits (pre-session git context)
+# ---------------------------------------------------------------------------
+
+
+class TestRecentBranchCommits:
+    """Tests for the "Recent Branch Commits" section added in item #38.
+
+    The section fires when the session has fewer than 2 commits AND the session
+    is not "young" (>= 10 min old), providing pre-session branch context.
+    """
+
+    def test_recent_branch_commits_shown_for_read_only_session(self, tmp_data_dir):
+        """Section is shown for a read-only session (no edits, 0 session commits)."""
+        from token_goat import session
+
+        sid = "sess-read-only-branch-ctx"
+        # Read-only session: file read first, then set cwd/age on loaded cache.
+        # This order ensures the CAS merge doesn't overwrite created_ts.
+        session.mark_file_read(sid, "/some/repo/src/main.py", offset=0, limit=100)
+        cache = session.load(sid)
+        cache.cwd = "/some/repo"
+        cache.created_ts = time.time() - 3600  # 1 hour old
+        session.save(cache)
+
+        branch_commits = ["abc1234 feat: add user auth", "def5678 fix: null pointer bug"]
+        with (
+            patch("token_goat.compact._get_session_commits", return_value=[]),
+            patch("token_goat.compact._is_git_repo", return_value=True),
+            patch(
+                "token_goat.compact._get_recent_commits_for_orchestrator",
+                return_value=branch_commits,
+            ),
+        ):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        assert "Recent Branch Commits" in result
+        assert "abc1234" in result
+        assert "feat: add user auth" in result
+
+    def test_recent_branch_commits_shown_when_session_has_zero_commits(self, tmp_data_dir):
+        """Section appears when session has edits but 0 commits so far."""
+        from token_goat import session
+
+        sid = "sess-zero-commits-branch-ctx"
+        # Mark edit first, then load and set cwd/age to avoid CAS merge overwriting
+        session.mark_file_edited(sid, "/proj/src/app.py")
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        cache.created_ts = time.time() - 1800  # 30 min old
+        session.save(cache)
+
+        branch_commits = ["xyz9999 refactor: clean up imports"]
+        with (
+            patch("token_goat.compact._get_session_commits", return_value=[]),
+            patch("token_goat.compact._is_git_repo", return_value=True),
+            patch(
+                "token_goat.compact._get_recent_commits_for_orchestrator",
+                return_value=branch_commits,
+            ),
+        ):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        assert "Recent Branch Commits" in result
+        assert "xyz9999" in result
+
+    def test_recent_branch_commits_suppressed_when_session_has_two_or_more_commits(
+        self, tmp_data_dir
+    ):
+        """Section is suppressed when session already has >= 2 commits (ample context)."""
+        from token_goat import session
+
+        sid = "sess-many-commits-no-branch"
+        session.mark_file_edited(sid, "/proj/src/app.py")
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        cache.created_ts = time.time() - 3600  # 1 hour old — not young
+        session.save(cache)
+
+        session_commits = ["aaa1111 feat: first change", "bbb2222 fix: follow-up"]
+        with (
+            patch("token_goat.compact._get_session_commits", return_value=session_commits),
+            patch("token_goat.compact._is_git_repo", return_value=True),
+            patch(
+                "token_goat.compact._get_recent_commits_for_orchestrator",
+                return_value=["ccc3333 chore: old work"],
+            ),
+        ):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        # Session has 2 commits — branch section should be suppressed
+        assert "Recent Branch Commits" not in result
+        # But session commits should still appear
+        assert "Commits This Session" in result
+        assert "aaa1111" in result
+
+    def test_recent_branch_commits_suppressed_for_young_session(self, tmp_data_dir):
+        """Section is suppressed for young sessions (< 10 min old)."""
+        from token_goat import session
+
+        sid = "sess-young-no-branch-ctx"
+        # Mark file read first, then set cwd/age
+        session.mark_file_read(sid, "/proj/src/main.py", offset=0, limit=50)
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        cache.created_ts = time.time() - 60  # only 1 min old — "young"
+        session.save(cache)
+
+        with (
+            patch("token_goat.compact._get_session_commits", return_value=[]),
+            patch("token_goat.compact._is_git_repo", return_value=True),
+            patch(
+                "token_goat.compact._get_recent_commits_for_orchestrator",
+                return_value=["abc1234 some work"],
+            ),
+        ):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        # Young session — branch context suppressed
+        assert "Recent Branch Commits" not in result
+
+    def test_recent_branch_commits_suppressed_when_not_git_repo(self, tmp_data_dir):
+        """Section is suppressed when cwd is not a git repo."""
+        from token_goat import session
+
+        sid = "sess-no-git-branch-ctx"
+        # Mark file read first, then set cwd/age
+        session.mark_file_read(sid, "/some/non-git-dir/file.py", offset=0, limit=50)
+        cache = session.load(sid)
+        cache.cwd = "/some/non-git-dir"
+        cache.created_ts = time.time() - 3600
+        session.save(cache)
+
+        with (
+            patch("token_goat.compact._get_session_commits", return_value=[]),
+            patch("token_goat.compact._is_git_repo", return_value=False),
+            patch(
+                "token_goat.compact._get_recent_commits_for_orchestrator",
+                return_value=["abc1234 some work"],
+            ) as mock_get,
+        ):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        assert "Recent Branch Commits" not in result
+        mock_get.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Improvement B: Symbol-enriched Key Files entries (item #37)
+# ---------------------------------------------------------------------------
+
+
+class TestSymbolEnrichedKeyFiles:
+    """Tests for inline symbol annotations on 3+ read files in 'Key Files Read'.
+
+    Item #37: Files read 3+ times that have accessed symbols get those symbols
+    annotated inline on the Files entry when their symbol lines were suppressed
+    from the Symbols Accessed section (item #8 suppression).
+    """
+
+    def test_frequently_read_file_gets_inline_symbols(self, tmp_data_dir):
+        """A file read 3+ times with accessed symbols shows top symbols inline."""
+        from token_goat import session
+
+        sid = "sess-symbol-enriched-files"
+        # Read a file 4 times to qualify as "frequently read"
+        for _ in range(4):
+            session.mark_file_read(sid, "/proj/src/auth.py", offset=0, limit=100)
+        # Mark symbols accessed on that file (symbol reads record in symbols_read)
+        session.mark_file_read(sid, "/proj/src/auth.py", symbol="login")
+        session.mark_file_read(sid, "/proj/src/auth.py", symbol="logout")
+        # Load after all marks to get the merged state, then set cwd/age
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        cache.created_ts = time.time() - 1800
+        session.save(cache)
+
+        with (
+            patch("token_goat.compact._get_session_commits", return_value=[]),
+            patch("token_goat.compact._is_git_repo", return_value=False),
+        ):
+            result = compact.build_manifest(sid, max_tokens=800)
+
+        # The Files section should show auth.py with inline symbols
+        assert "auth.py" in result
+        # Symbols should appear (either in Files or Symbols Accessed section)
+        assert "login" in result
+        assert "logout" in result
+
+    def test_file_read_twice_does_not_get_inline_symbols(self, tmp_data_dir):
+        """Files read only 1-2 times do NOT get symbol annotations in Files section.
+
+        Note: both full-file reads and symbol reads increment read_count.  This test
+        uses a single full-file read plus a single symbol read (total = 2 reads) so
+        the file stays below the 3-read threshold for symbol enrichment.
+        """
+        import re
+
+        from token_goat import session
+
+        sid = "sess-low-read-no-syms"
+        # One full-file read + one symbol read = read_count 2 (below the 3-read threshold)
+        session.mark_file_read(sid, "/proj/src/utils.py", offset=0, limit=100)
+        session.mark_file_read(sid, "/proj/src/utils.py", symbol="helper_fn")
+        cache = session.load(sid)
+        # Verify read_count is actually 2
+        entry = cache.files.get(list(cache.files.keys())[0])
+        assert entry is not None
+        assert entry.read_count == 2, f"Expected read_count=2, got {entry.read_count}"
+        cache.cwd = "/proj"
+        cache.created_ts = time.time() - 1800
+        session.save(cache)
+
+        with (
+            patch("token_goat.compact._get_session_commits", return_value=[]),
+            patch("token_goat.compact._is_git_repo", return_value=False),
+        ):
+            result = compact.build_manifest(sid, max_tokens=800)
+
+        # If utils.py appears in the Files section, it should NOT have a symbol annotation
+        if "utils.py" in result:
+            files_match = re.search(r"- → .*utils\.py[^\n]*", result)
+            if files_match:
+                line = files_match.group(0)
+                # A file with only 2 reads should not have read count annotation
+                assert "(read " not in line, f"2-read file should not show read count: {line!r}"
+                # And should not have inline symbol ": helper_fn"
+                assert ": helper_fn" not in line, f"2-read file should not show inline syms: {line!r}"
+
+    def test_inline_symbols_capped_at_three(self, tmp_data_dir):
+        """Inline symbol annotations are capped at 3 symbols per file."""
+        import re
+
+        from token_goat import session
+
+        sid = "sess-symbol-cap-test"
+        # 2 full-file reads + 5 symbol reads = 7 total reads (well above 3-read threshold)
+        for _ in range(2):
+            session.mark_file_read(sid, "/proj/src/models.py", offset=0, limit=100)
+        # Add 5 symbols — should be capped at 3 in inline annotation
+        for sym in ["ModelA", "ModelB", "ModelC", "ModelD", "ModelE"]:
+            session.mark_file_read(sid, "/proj/src/models.py", symbol=sym)
+
+        cache = session.load(sid)
+        cache.cwd = "/proj"
+        cache.created_ts = time.time() - 1800
+        session.save(cache)
+
+        with (
+            patch("token_goat.compact._get_session_commits", return_value=[]),
+            patch("token_goat.compact._is_git_repo", return_value=False),
+        ):
+            result = compact.build_manifest(sid, max_tokens=800)
+
+        # Find the models.py entry and count inline symbols
+        models_match = re.search(r"- → .*models\.py[^\n]*", result)
+        if models_match:
+            line = models_match.group(0)
+            if ": " in line:
+                # Count commas in the symbol list (cap: 3 symbols = at most 2 commas)
+                sym_part = line.split(": ", 1)[1] if ": " in line else ""
+                comma_count = sym_part.count(",")
+                assert comma_count <= 2, (
+                    f"Expected at most 2 commas (3 symbols max) but got {comma_count}: {line!r}"
+                )

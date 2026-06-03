@@ -5560,6 +5560,34 @@ def _render(
             edited_lines.append("### Commits This Session")
             edited_lines.extend(session_commits)
 
+    # ── 1c-bis. Recent Branch Commits — pre-session git context ─────────────
+    # When the session has made fewer than 2 commits (including the case of no
+    # edited files at all), the manifest lacks "what was done before this session"
+    # context.  Surface the last 3 commits from the branch so the compaction LLM
+    # knows the recent work history even at the start of a fresh session or in a
+    # read-only (no edits) session.
+    #
+    # Suppressed when:
+    # - orchestrator mode is active (it has its own recent-commits section)
+    # - the session already has >= 2 session commits (ample in-session context)
+    # - cwd is not a git repo
+    # - age_tier == "young" (< 10 min: the branch history hasn't changed yet)
+    #
+    # Token cost: ~30-50 tokens for 3 commit lines; comes from overall headroom,
+    # not a dedicated budget slice.  Capped at 3 commits to keep cost predictable.
+    _session_commits_for_branch = (
+        session_commits if edited_clean else []  # type: ignore[possibly-undefined]
+    )
+    _need_branch_context = len(_session_commits_for_branch) < 2 and age_tier != "young"
+    recent_branch_commit_lines: list[str] = []
+    if _need_branch_context and cwd and _is_git_repo(cwd):
+        _branch_commits = _get_recent_commits_for_orchestrator(cwd, n=3)
+        if _branch_commits:
+            recent_branch_commit_lines.append("### Recent Branch Commits")
+            recent_branch_commit_lines.extend(
+                f"  {line}" for line in _branch_commits
+            )
+
     # ── 1d. Stale file snapshots ──────────────────────────────────────────────
     stale_lines = _render_section(
         "Outdated File Snapshots",
@@ -5594,7 +5622,7 @@ def _render(
     fixed_text = "\n".join(
         header_lines + pinned_lines + blocker_lines + decision_lines + skill_lines
         + test_failure_lines + dep_change_lines
-        + uncommitted_lines + edited_lines + stale_lines
+        + uncommitted_lines + edited_lines + recent_branch_commit_lines + stale_lines
     )
     fixed_tokens = _token_count(fixed_text) + sealed_tokens
 
@@ -5994,13 +6022,42 @@ def _render(
                 files_used += cost
                 included_top_files.extend(shown)
 
+        # Item #37: Build a lookup of symbol lists for files that have symbols but
+        # whose symbol lines were suppressed from "Symbols Accessed" because they
+        # also appear in "Key Files Read" (item #8 suppression).  When a file is
+        # read 3+ times AND has symbols, annotating the Files entry with the top
+        # symbols recovers that information inline rather than silently dropping it.
+        # Only include symbols not already shown in the Symbols Accessed section
+        # (i.e. files that ARE in _top_files_paths_norm — the suppression set).
+        # Use _rank_symbols_by_recency so the most recently accessed symbols are shown.
+        _symbols_by_norm_path: dict[str, list[str]] = {}
+        for _sym_entry in files_with_symbols_all:
+            _entry_norm = _norm_key(_sym_entry.rel_or_abs)
+            if _entry_norm not in edited_keys:
+                _ranked = _rank_symbols_by_recency(_sym_entry, now_for_scoring)
+                # Deduplicate preserving order (same idiom as sym_formatted loop above).
+                _seen: set[str] = set()
+                _deduped = [s for s in _ranked if not (_seen.__contains__(s) or _seen.add(s))]  # type: ignore[func-returns-value]
+                if _deduped:
+                    _symbols_by_norm_path[_entry_norm] = _deduped
+
         for entry in normal_files:
             ranges_str = _format_ranges(entry.line_ranges)
             # Files read 3+ times get an explicit "(read Nx)" annotation so post-compaction
             # Claude can immediately identify which files received the most attention.
             # Files read once or twice get no annotation — the path alone is sufficient.
             read_annotation = f" (read {entry.read_count}x)" if entry.read_count >= 3 else ""
-            line = f"- → {_short_path(entry.rel_or_abs, max_len=80, project_root=cwd)}{read_annotation}{ranges_str}"
+            # Item #37: Inline top symbols for frequently-read files (3+ reads).
+            # These symbols were suppressed from "Symbols Accessed" by item #8 because
+            # the file is already listed here; recovering them inline preserves the
+            # information without duplication.  Cap at 3 symbols to keep the line short.
+            _sym_suffix = ""
+            if entry.read_count >= 3:
+                _file_syms = _symbols_by_norm_path.get(_norm_key(entry.rel_or_abs), [])
+                if _file_syms:
+                    _top_syms = [sanitize_log_str(s, max_len=50) for s in _file_syms[:3]]
+                    _sym_suffix = ": " + ", ".join(_top_syms)
+            line = f"- → {_short_path(entry.rel_or_abs, max_len=80, project_root=cwd)}{read_annotation}{_sym_suffix}{ranges_str}"
             cost = _token_count(line)
             if files_used + header_cost + cost > files_budget:
                 break
@@ -6208,6 +6265,7 @@ def _render(
         ("test_failures", test_failure_lines,    True),
         ("uncommitted",   uncommitted_lines,     True),
         ("edited",        edited_lines,          True),
+        ("recent_commits", recent_branch_commit_lines, False),
         ("stale",         stale_lines,           False),
         ("most_accessed", most_accessed_lines,   False),
         ("session_goal",  session_goal_lines,    False),
