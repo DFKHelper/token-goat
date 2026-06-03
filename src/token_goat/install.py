@@ -464,7 +464,10 @@ def install_linux_autostart() -> tuple[bool, str]:
             else:
                 _LOG.info("systemctl enable %s ok (%.0fms)", SYSTEMD_SERVICE_NAME, enable_ms)
 
-            return True, f"systemd user service installed: {svc_path}"
+            return True, (
+                f"systemd user service installed: {svc_path} — "
+                f"run `systemctl --user start {SYSTEMD_SERVICE_NAME}` to start immediately"
+            )
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             _LOG.warning("systemctl unavailable or timed out: %s", e)
             return False, f"systemd enable failed: {e}"
@@ -475,6 +478,7 @@ def install_linux_autostart() -> tuple[bool, str]:
     paths.ensure_dir(desktop.parent)
     desktop.write_text(
         "[Desktop Entry]\n"
+        "Version=1.0\n"
         "Type=Application\n"
         "Name=token-goat worker\n"
         f"Exec={exec_str}\n"
@@ -671,7 +675,10 @@ def install_mac_autostart() -> tuple[bool, str]:
         "    <key>RunAtLoad</key>\n"
         "    <true/>\n"
         "    <key>KeepAlive</key>\n"
-        "    <false/>\n"
+        "    <dict>\n"
+        "        <key>SuccessfulExit</key>\n"
+        "        <false/>\n"
+        "    </dict>\n"
         "    <key>StandardOutPath</key>\n"
         f"    <string>{_xml_escape(str(log_dir / 'worker-stdout.log'))}</string>\n"
         "    <key>StandardErrorPath</key>\n"
@@ -703,7 +710,10 @@ def install_mac_autostart() -> tuple[bool, str]:
             _LOG.warning("launchctl load %s failed (exit=%d): %s", LAUNCHD_PLIST_NAME, r.returncode, err)
             return False, f"launchctl load failed: {err}"
         _LOG.info("LaunchAgent installed and loaded: %s", plist_path)
-        return True, f"LaunchAgent installed: {plist_path}"
+        return True, (
+            f"LaunchAgent installed: {plist_path} — "
+            f"run `launchctl list {LAUNCHD_PLIST_NAME}` to confirm it is running"
+        )
     except (FileNotFoundError, subprocess.TimeoutExpired) as e:
         _LOG.warning("launchctl unavailable for %s: %s", LAUNCHD_PLIST_NAME, e)
         return False, f"launchctl unavailable: {e}"

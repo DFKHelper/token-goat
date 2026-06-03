@@ -1433,3 +1433,161 @@ def test_uninstall_linux_update_cron_skips_when_crontab_not_found(monkeypatch):
 
     assert 'not available' in result
     assert 'PATH' in result
+
+
+# ---------------------------------------------------------------------------
+# Linux/macOS autostart: content and reliability improvements
+# ---------------------------------------------------------------------------
+
+
+def test_install_linux_autostart_systemd_message_includes_start_hint(monkeypatch, tmp_path):
+    """After systemd install the return message tells the user how to start immediately."""
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
+    monkeypatch.setattr(install, "_systemd_user_dir", lambda: tmp_path)
+    monkeypatch.setattr(install, "_systemd_service_path", lambda: tmp_path / "token-goat-worker.service")
+    monkeypatch.setattr(install.paths, "ensure_dir", lambda p: None)
+    monkeypatch.setattr(
+        install.paths, "python_runner_argv",
+        lambda *args: ["/usr/bin/python3", "-m", "token_goat.cli", *args],
+    )
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+        return R()
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    ok, msg = install.install_linux_autostart()
+
+    assert ok is True
+    assert "systemctl" in msg
+    assert "--user start" in msg
+    assert install.SYSTEMD_SERVICE_NAME in msg
+
+
+def test_install_linux_autostart_systemd_service_has_restart_directives(monkeypatch, tmp_path):
+    """Systemd service file includes Restart=on-failure and RestartSec=5."""
+    import sys
+
+    svc_path = tmp_path / "token-goat-worker.service"
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
+    monkeypatch.setattr(install, "_systemd_user_dir", lambda: tmp_path)
+    monkeypatch.setattr(install, "_systemd_service_path", lambda: svc_path)
+    monkeypatch.setattr(install.paths, "ensure_dir", lambda p: None)
+    monkeypatch.setattr(
+        install.paths, "python_runner_argv",
+        lambda *args: ["/usr/bin/python3", "-m", "token_goat.cli", *args],
+    )
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+        return R()
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    install.install_linux_autostart()
+
+    content = svc_path.read_text()
+    assert "Restart=on-failure" in content
+    assert "RestartSec=5" in content
+
+
+def test_install_linux_autostart_xdg_desktop_has_version(monkeypatch, tmp_path):
+    """XDG .desktop file includes Version=1.0 per the Desktop Entry spec."""
+    import sys
+
+    desktop_path = tmp_path / "token-goat-worker.desktop"
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
+    monkeypatch.setattr(install, "_xdg_autostart_path", lambda: desktop_path)
+    monkeypatch.setattr(install.paths, "ensure_dir", lambda p: None)
+    monkeypatch.setattr(
+        install.paths, "python_runner_argv",
+        lambda *args: ["/usr/bin/python3", "-m", "token_goat.cli", *args],
+    )
+
+    ok, msg = install.install_linux_autostart()
+
+    assert ok is True
+    content = desktop_path.read_text()
+    assert "Version=1.0" in content
+    assert "X-GNOME-Autostart-enabled=true" in content
+
+
+def test_install_mac_autostart_keepalive_restarts_on_failure(monkeypatch, tmp_path):
+    """macOS LaunchAgent plist uses KeepAlive dict with SuccessfulExit=false (restart on crash)."""
+    import sys
+
+    plist_path = tmp_path / "com.dfkhelper.token-goat-worker.plist"
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(install, "_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(install.paths, "ensure_dir", lambda p: None)
+    monkeypatch.setattr(install.paths, "logs_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(
+        install.paths, "python_runner_argv",
+        lambda *args: ["/usr/bin/python3", "-m", "token_goat.cli", *args],
+    )
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+        return R()
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    ok, msg = install.install_mac_autostart()
+
+    assert ok is True
+    content = plist_path.read_text()
+    # KeepAlive must NOT be a bare <false/> — it should be a dict
+    # with SuccessfulExit=false so launchd restarts on crash but not clean exit.
+    assert "<key>KeepAlive</key>" in content
+    assert "<dict>" in content
+    assert "<key>SuccessfulExit</key>" in content
+    assert "RunAtLoad" in content
+    # Ensure the bare <false/> for KeepAlive is gone
+    keepalive_idx = content.index("<key>KeepAlive</key>")
+    keepalive_block = content[keepalive_idx:keepalive_idx + 120]
+    assert "<false/>" not in keepalive_block or "<dict>" in keepalive_block
+
+
+def test_install_mac_autostart_message_includes_confirm_hint(monkeypatch, tmp_path):
+    """After macOS LaunchAgent install the return message includes a confirmation command."""
+    import sys
+
+    plist_path = tmp_path / "com.dfkhelper.token-goat-worker.plist"
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(install, "_launchd_plist_path", lambda: plist_path)
+    monkeypatch.setattr(install.paths, "ensure_dir", lambda p: None)
+    monkeypatch.setattr(install.paths, "logs_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr(
+        install.paths, "python_runner_argv",
+        lambda *args: ["/usr/bin/python3", "-m", "token_goat.cli", *args],
+    )
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 0
+            stdout = b""
+            stderr = b""
+        return R()
+
+    monkeypatch.setattr(install.subprocess, "run", fake_run)
+
+    ok, msg = install.install_mac_autostart()
+
+    assert ok is True
+    assert "launchctl" in msg
+    assert install.LAUNCHD_PLIST_NAME in msg

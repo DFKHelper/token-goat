@@ -307,6 +307,7 @@ def with_timeout(fn: Callable[[sqlite3.Connection], None], timeout_s: float = 2.
         # Open a temporary connection with the short timeout and execute the operation.
         paths.ensure_dir(paths.global_db_path().parent)
         conn = sqlite3.connect(str(paths.global_db_path()), isolation_level=None, timeout=timeout_s)
+        conn.row_factory = sqlite3.Row  # callers may access result columns by name
         try:
             conn.execute(f"PRAGMA busy_timeout = {timeout_ms}")
             fn(conn)
@@ -773,19 +774,37 @@ def _repair_if_corrupt(conn: sqlite3.Connection, path: Path) -> sqlite3.Connecti
 # Public context managers
 # ---------------------------------------------------------------------------
 
-def _log_session_close(label: str, t0: float, conn: sqlite3.Connection | None) -> None:
-    """Log session duration and close *conn*.
+def _log_session_close(
+    label: str,
+    t0: float,
+    conn: sqlite3.Connection | None,
+    *,
+    checkpoint: bool = False,
+) -> None:
+    """Log session duration, optionally checkpoint WAL, and close *conn*.
 
     Shared by ``open_global`` and ``open_project`` to avoid duplicating the
     identical timing/warning pattern in both finally blocks.  A session that
     took 1 s or more is logged at WARNING so slow DB operations are visible in
     production logs without manual filtering.
+
+    When *checkpoint* is True, a best-effort ``PRAGMA wal_checkpoint(TRUNCATE)``
+    is executed before closing the connection.  This truncates the WAL file back
+    to zero pages after write sessions, supplementing the worker's periodic
+    checkpoint and the ``journal_size_limit`` PRAGMA.  Errors from the checkpoint
+    PRAGMA are suppressed — a failed checkpoint is not fatal; the WAL will be
+    cleaned up by the next successful checkpoint or by the worker's maintenance
+    cycle.  Not set for read-only connections (checkpoint on a read-only
+    connection is a no-op and can raise ``OperationalError`` on some platforms).
     """
     session_ms = (time.monotonic() - t0) * 1000
     if session_ms >= 1000:
         _LOG.warning("%s session slow: %.1fms total", label, session_ms)
     else:
         _LOG.debug("closing %s (session %.1fms)", label, session_ms)
+    if checkpoint and conn is not None:
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     _close_conn(conn)
 
 
@@ -802,7 +821,7 @@ def open_global() -> Iterator[sqlite3.Connection]:
         _LOG.debug("global db ready in %.1fms", (time.monotonic() - t0) * 1000)
         yield conn
     finally:
-        _log_session_close("global db", t0, conn)
+        _log_session_close("global db", t0, conn, checkpoint=True)
 
 
 # Maximum age (seconds) of a writer lock before it is treated as stale.
@@ -860,7 +879,7 @@ def open_project(project_hash: str) -> Iterator[sqlite3.Connection]:
         _LOG.debug("project db ready in %.1fms (hash=%s)", (time.monotonic() - t0) * 1000, project_hash[:8])
         yield conn
     finally:
-        _log_session_close(f"project db {project_hash[:8]}", t0, conn)
+        _log_session_close(f"project db {project_hash[:8]}", t0, conn, checkpoint=True)
 
 
 # ---------------------------------------------------------------------------

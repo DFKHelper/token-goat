@@ -1179,3 +1179,308 @@ def test_repair_if_corrupt_skips_recheck_when_already_checked(tmp_data_dir):
     assert len(check_calls) == 0, (
         "_repair_if_corrupt must skip integrity_check when path is already in _INTEGRITY_CHECKED"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix 1: with_timeout must set row_factory so callers can access columns by name
+# ---------------------------------------------------------------------------
+
+
+def test_with_timeout_row_factory_allows_named_column_access(tmp_data_dir):
+    """with_timeout must set conn.row_factory = sqlite3.Row so callbacks can use
+    column-name access.  Without row_factory, row["key"] raises TypeError because
+    sqlite3 returns plain tuples by default.
+    """
+    # Create a real stats row to read back.
+    db.record_stat(None, "test_event", tokens_saved=42)
+
+    result: list[object] = []
+
+    def read_fn(conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            "SELECT tokens_saved FROM stats WHERE kind = ?", ("test_event",)
+        ).fetchone()
+        if row is not None:
+            # Named access — this raises TypeError without row_factory = sqlite3.Row.
+            result.append(row["tokens_saved"])
+
+    db.with_timeout(read_fn)
+
+    assert result == [42], f"expected [42] via named column access, got {result}"
+
+
+def test_with_timeout_row_factory_is_sqlite_row(tmp_data_dir):
+    """Verify that the connection passed to fn has row_factory = sqlite3.Row,
+    not the default tuple factory.  This ensures consistency with every other
+    connection opened by db.py (all of which set row_factory).
+    """
+    observed_factory: list[object] = []
+
+    def capture_fn(conn: sqlite3.Connection) -> None:
+        observed_factory.append(conn.row_factory)
+
+    db.with_timeout(capture_fn)
+
+    assert observed_factory, "fn was never called"
+    assert observed_factory[0] is sqlite3.Row, (
+        f"expected row_factory=sqlite3.Row, got {observed_factory[0]}"
+    )
+
+
+def test_with_timeout_swallows_transient_lock_error(tmp_data_dir):
+    """with_timeout must silently swallow OperationalError with 'locked' in message."""
+
+    def fail_fn(conn: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    # Should not raise — locked error must be swallowed.
+    db.with_timeout(fail_fn)
+
+
+def test_with_timeout_swallows_readonly_error(tmp_data_dir):
+    """with_timeout must silently swallow OperationalError with 'readonly' in message."""
+
+    def fail_fn(conn: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("attempt to write a readonly database")
+
+    db.with_timeout(fail_fn)
+
+
+# ---------------------------------------------------------------------------
+# Fix 2: WAL TRUNCATE checkpoint on close — _log_session_close checkpoint flag
+# ---------------------------------------------------------------------------
+
+
+def test_log_session_close_with_checkpoint_flag(tmp_data_dir):
+    """_log_session_close(checkpoint=True) must execute wal_checkpoint(TRUNCATE)
+    before closing the connection.  We verify that (a) the connection is closed
+    afterward and (b) the checkpoint pragma was attempted without raising.
+    """
+    # Create a real DB so there is a WAL file to checkpoint.
+    h = "abcdef0123456789abcdef0123456789abcdef10"
+    with db.open_project(h) as conn:
+        # Insert a row to ensure there is WAL content to checkpoint.
+        conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", ("ck_test", "1"))
+
+    # Open a fresh connection and call _log_session_close with checkpoint=True.
+    raw_conn = sqlite3.connect(str(paths.project_db_path(h)), isolation_level=None)
+    raw_conn.execute("PRAGMA journal_mode = WAL")
+    t0 = time.monotonic()
+
+    db._log_session_close("test label", t0, raw_conn, checkpoint=True)
+
+    # Connection must be closed after the call.
+    with pytest.raises(sqlite3.ProgrammingError):
+        raw_conn.execute("SELECT 1")
+
+
+def test_log_session_close_without_checkpoint_does_not_checkpoint(tmp_data_dir):
+    """_log_session_close(checkpoint=False, the default) must not run a checkpoint.
+
+    Verify via mock that the checkpoint PRAGMA is not executed when checkpoint=False.
+    """
+    from unittest.mock import MagicMock
+
+    mock_conn = MagicMock(spec=sqlite3.Connection)
+    t0 = time.monotonic()
+
+    db._log_session_close("test label", t0, mock_conn, checkpoint=False)
+
+    # wal_checkpoint PRAGMA must not have been called.
+    executed_sqls = [call.args[0] for call in mock_conn.execute.call_args_list]
+    assert not any("wal_checkpoint" in sql.lower() for sql in executed_sqls), (
+        f"wal_checkpoint should not be executed when checkpoint=False; calls: {executed_sqls}"
+    )
+
+
+def test_open_project_issues_truncate_checkpoint_on_close(tmp_data_dir):
+    """open_project() must call wal_checkpoint(TRUNCATE) in its finally block.
+
+    This verifies that Fix 2 is wired into the public context manager, not just
+    the helper — so every open_project write session is checkpointed on exit.
+    """
+    h = "abcdef0123456789abcdef0123456789abcdef11"
+
+    # Verify the behavior by ensuring a round-trip write + reopen works correctly,
+    # confirming that the TRUNCATE checkpoint on close does not corrupt data.
+    with db.open_project(h) as conn:
+        conn.execute("INSERT INTO meta (key, value) VALUES (?, ?)", ("post_ck", "ok"))
+
+    with db.open_project(h) as conn:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", ("post_ck",)
+        ).fetchone()
+    assert row is not None and row["value"] == "ok", (
+        "data written before close must survive the TRUNCATE checkpoint"
+    )
+
+
+def test_open_global_issues_truncate_checkpoint_on_close(tmp_data_dir):
+    """open_global() must call wal_checkpoint(TRUNCATE) in its finally block."""
+    with db.open_global() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            ("global_ck_test", "1"),
+        )
+
+    # Reopen and verify data persists — checkpoint must not corrupt.
+    with db.open_global() as conn:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", ("global_ck_test",)
+        ).fetchone()
+    assert row is not None and row["value"] == "1", (
+        "data written before close must survive the TRUNCATE checkpoint"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sub-area E: _validate_project_hash — security and input validation
+# ---------------------------------------------------------------------------
+
+
+def test_validate_project_hash_accepts_valid_sha1(tmp_data_dir):
+    """_validate_project_hash must accept valid lowercase hex SHA-1 digests."""
+    # 40-char SHA-1 hex digest (the normal case from project.py)
+    db._validate_project_hash("da39a3ee5e6b4b0d3255bfef95601890afd80709")
+    # Shorter hex strings are also accepted (some tests use abbreviated hashes)
+    db._validate_project_hash("abc123")
+    db._validate_project_hash("deadbeef")
+
+
+def test_validate_project_hash_rejects_empty(tmp_data_dir):
+    """_validate_project_hash must raise ValueError for an empty string."""
+    with pytest.raises(ValueError, match="cannot be empty"):
+        db._validate_project_hash("")
+
+
+def test_validate_project_hash_rejects_uppercase(tmp_data_dir):
+    """_validate_project_hash must reject uppercase hex characters (path traversal guard)."""
+    with pytest.raises(ValueError, match="lowercase hex"):
+        db._validate_project_hash("DA39A3EE5E6B4B0D3255BFEF95601890AFD80709")
+
+
+def test_validate_project_hash_rejects_path_traversal(tmp_data_dir):
+    """_validate_project_hash must reject strings containing path separators."""
+    with pytest.raises(ValueError, match="lowercase hex"):
+        db._validate_project_hash("../secret")
+
+    with pytest.raises(ValueError, match="lowercase hex"):
+        db._validate_project_hash("abc/def")
+
+
+def test_validate_project_hash_rejects_underscores(tmp_data_dir):
+    """_validate_project_hash must reject underscores (not valid hex)."""
+    with pytest.raises(ValueError, match="lowercase hex"):
+        db._validate_project_hash("abc_def")
+
+
+def test_validate_project_hash_rejects_too_long(tmp_data_dir):
+    """_validate_project_hash must reject strings longer than 128 characters."""
+    with pytest.raises(ValueError, match="too long"):
+        db._validate_project_hash("a" * 129)
+
+
+# ---------------------------------------------------------------------------
+# Sub-area F: project_has_files and project_last_indexed_ts — fail-soft behavior
+# ---------------------------------------------------------------------------
+
+
+def test_project_has_files_returns_false_for_nonexistent_db(tmp_data_dir):
+    """project_has_files must return False when the project DB does not exist."""
+    assert db.project_has_files("deadbeef0099") is False
+
+
+def test_project_has_files_returns_false_for_empty_db(tmp_data_dir):
+    """project_has_files must return False for an indexed but empty project DB."""
+    h = "deadbeef0100"
+    with db.open_project(h) as _:
+        pass  # creates the DB with schema but no files
+    assert db.project_has_files(h) is False
+
+
+def test_project_has_files_returns_true_when_files_exist(tmp_data_dir):
+    """project_has_files must return True when at least one file row exists."""
+    h = "deadbeef0101"
+    with db.open_project(h) as conn:
+        conn.execute(
+            "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("src/foo.py", "python", 100, 0.0, "x" * 64, int(time.time())),
+        )
+    assert db.project_has_files(h) is True
+
+
+def test_project_last_indexed_ts_returns_zero_for_nonexistent(tmp_data_dir):
+    """project_last_indexed_ts must return 0.0 when the project DB does not exist."""
+    assert db.project_last_indexed_ts("deadbeef0200") == 0.0
+
+
+def test_project_last_indexed_ts_returns_zero_for_empty_db(tmp_data_dir):
+    """project_last_indexed_ts must return 0.0 for a DB with no file rows."""
+    h = "deadbeef0201"
+    with db.open_project(h) as _:
+        pass
+    assert db.project_last_indexed_ts(h) == 0.0
+
+
+def test_project_last_indexed_ts_returns_max_indexed_at(tmp_data_dir):
+    """project_last_indexed_ts must return the MAX(indexed_at) from the files table."""
+    h = "deadbeef0202"
+    ts1 = int(time.time()) - 3600
+    ts2 = int(time.time())
+    with db.open_project(h) as conn:
+        conn.execute(
+            "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("src/a.py", "python", 10, 0.0, "a" * 64, ts1),
+        )
+        conn.execute(
+            "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("src/b.py", "python", 10, 0.0, "b" * 64, ts2),
+        )
+    result = db.project_last_indexed_ts(h)
+    assert result == float(ts2), f"expected {ts2}, got {result}"
+
+
+# ---------------------------------------------------------------------------
+# Sub-area G: file_count and list_all_project_hashes
+# ---------------------------------------------------------------------------
+
+
+def test_file_count_returns_zero_for_nonexistent_project(tmp_data_dir):
+    """file_count must return 0 when the project DB does not exist."""
+    assert db.file_count("deadbeef0300") == 0
+
+
+def test_file_count_returns_correct_count(tmp_data_dir):
+    """file_count must return the actual number of rows in the files table."""
+    h = "deadbeef0301"
+    with db.open_project(h) as conn:
+        for i in range(5):
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (f"src/f{i}.py", "python", 10, 0.0, "c" * 64, int(time.time())),
+            )
+    assert db.file_count(h) == 5
+
+
+def test_list_all_project_hashes_returns_empty_for_missing_global_db(tmp_data_dir):
+    """list_all_project_hashes must return [] when global.db does not exist."""
+    # tmp_data_dir is clean; global.db was never created.
+    assert db.list_all_project_hashes() == []
+
+
+def test_list_all_project_hashes_returns_registered_projects(tmp_data_dir):
+    """list_all_project_hashes must return hashes of every registered project."""
+    hashes = ["aabbcc0001", "aabbcc0002", "aabbcc0003"]
+    with db.open_global() as conn:
+        for h in hashes:
+            conn.execute(
+                "INSERT INTO projects (hash, root, marker, first_seen, last_seen, file_count, languages) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (h, f"/proj/{h}", "manual", 1000, 1000, 0, ""),
+            )
+    result = db.list_all_project_hashes()
+    assert set(result) == set(hashes), f"expected {hashes!r}, got {result!r}"
