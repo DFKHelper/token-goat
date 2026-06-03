@@ -27,6 +27,7 @@ __all__ = [
     "_MANIFEST_THIN_THRESHOLD",
     "find_latest_session_id",
     "infer_session_goal",
+    "_enforce_char_budget",
 ]
 
 import hashlib
@@ -3744,6 +3745,127 @@ def _build_manifest_from_cache(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Hard character-budget enforcement (applied after full manifest render)
+# ---------------------------------------------------------------------------
+
+def _enforce_char_budget(manifest: str, max_chars: int) -> str:
+    """Truncate *manifest* to *max_chars* characters with section-aware priority.
+
+    Called by :func:`build_manifest` when ``config.compact_assist.max_manifest_chars``
+    is set and the rendered manifest exceeds the limit.  Truncation preserves the
+    highest-value content first:
+
+    1. The version header + edited files section (always kept — these are the
+       most critical must-preserve items).  If even the header + edited section
+       exceeds the budget, the result is line-truncated from the bottom.
+    2. The symbols section (kept if it fits; truncated to first N lines otherwise).
+    3. The skills section (kept if it fits; truncated to first N lines otherwise).
+    4. All remaining sections (dropped or line-truncated to fit the budget).
+
+    Appends "... (manifest truncated at budget limit)" as the final line so
+    downstream parsers can detect that truncation occurred.
+
+    Returns the original manifest unchanged when ``max_chars <= 0`` (disabled)
+    or when ``len(manifest) <= max_chars`` (already within budget).
+    """
+    if max_chars <= 0 or len(manifest) <= max_chars:
+        return manifest
+
+    _TRUNCATION_SUFFIX = "\n... (manifest truncated at budget limit)"
+    # Reserve space for the truncation suffix itself.
+    suffix_len = len(_TRUNCATION_SUFFIX)
+    available = max_chars - suffix_len
+    if available <= 0:
+        # Budget too small to fit anything — return just the suffix.
+        return _TRUNCATION_SUFFIX.lstrip()
+
+    lines = manifest.splitlines(keepends=False)
+
+    # Classify each line into a named segment group.
+    # Segment names: "header", "edited", "symbols", "skills", "other"
+    def _classify(line: str) -> str:
+        if line.startswith(("**Staged/Uncommitted:**", "**Edited:**", "**Files:**", "**Committed This Session:**")):
+            return "edited"
+        if line.startswith("**Symbols Accessed:**"):
+            return "symbols"
+        if line.startswith("**Skills:**"):
+            return "skills"
+        return None  # type: ignore[return-value]  # None means "keep current segment"
+
+    # Build segments as (name, [line_indices]) preserving document order.
+    segments: list[tuple[str, list[int]]] = []
+    current_seg_name = "header"
+    current_seg_indices: list[int] = []
+
+    for idx, line in enumerate(lines):
+        new_seg = _classify(line)
+        if new_seg is not None and new_seg != current_seg_name:
+            # Start of a new named segment — flush the current one.
+            if current_seg_indices:
+                segments.append((current_seg_name, current_seg_indices))
+            current_seg_name = new_seg
+            current_seg_indices = [idx]
+        else:
+            current_seg_indices.append(idx)
+
+    if current_seg_indices:
+        segments.append((current_seg_name, current_seg_indices))
+
+    # Assemble the output greedily in priority order.
+    # Use a list of line indices to avoid repeated string joins; assemble once at end.
+    _PRIORITY_ORDER = ["header", "edited", "symbols", "skills"]
+
+    kept_indices: list[int] = []
+
+    def _current_result_len() -> int:
+        """Compute exact length of the joined kept lines."""
+        if not kept_indices:
+            return 0
+        # Each line contributes len(line) chars + 1 for the "\n" separator.
+        # Last line also gets one trailing newline from rstrip before suffix join,
+        # but we measure against `available` so use exact join length.
+        return sum(len(lines[i]) for i in kept_indices) + len(kept_indices)  # N lines → N-1 joining "\n" + 1 trailing
+
+    def _add_line_fits(line_idx: int) -> bool:
+        """Return True and add line_idx to kept_indices if it fits in available budget."""
+        line_cost = len(lines[line_idx]) + 1  # +1 for "\n"
+        current_len = _current_result_len()
+        if current_len + line_cost <= available:
+            kept_indices.append(line_idx)
+            return True
+        return False
+
+    # Pass 1: header + edited — always keep, line-by-line until budget exhausted.
+    for seg_name, seg_idxs in segments:
+        if seg_name in ("header", "edited"):
+            for idx in seg_idxs:
+                _add_line_fits(idx)
+
+    # Pass 2: symbols and skills — add line-by-line while budget allows.
+    for seg_name in ("symbols", "skills"):
+        for s_name, s_idxs in segments:
+            if s_name == seg_name:
+                for idx in s_idxs:
+                    if not _add_line_fits(idx):
+                        break  # budget exhausted for this segment
+
+    # Pass 3: remaining segments — add whole segments if they fit.
+    for seg_name, seg_idxs in segments:
+        if seg_name in _PRIORITY_ORDER:
+            continue
+        for idx in seg_idxs:
+            if not _add_line_fits(idx):
+                break
+
+    result_body = "\n".join(lines[i] for i in kept_indices).rstrip()
+    result = result_body + _TRUNCATION_SUFFIX
+    # Safety: final trim to max_chars if still over (shouldn't happen but guards against edge cases).
+    if len(result) > max_chars:
+        result = result[:max_chars - suffix_len].rstrip() + _TRUNCATION_SUFFIX
+    return result
+
+
 def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     """Build a compact session manifest from the session cache.
 
@@ -3855,6 +3977,18 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     delta_line = _format_manifest_delta(prior_counts, current_counts)
     if delta_line:
         full_manifest = delta_line + "\n" + full_manifest
+
+    # Hard char-budget enforcement: apply after delta prepend so the final
+    # emitted length is bounded.  max_manifest_chars=0 disables the cap.
+    _max_chars = cfg.compact_assist.max_manifest_chars
+    if _max_chars > 0 and len(full_manifest) > _max_chars:
+        _original_len = len(full_manifest)
+        full_manifest = _enforce_char_budget(full_manifest, _max_chars)
+        _final_len = len(full_manifest)
+        _LOG.debug(
+            "manifest truncated: %d chars → %d chars (budget: %d)",
+            _original_len, _final_len, _max_chars,
+        )
 
     # Persist the sidecar with the new SHA + fingerprint + counts so the next
     # PreCompact can skip rendering AND compute a delta against current counts.
@@ -4867,6 +5001,7 @@ def _render(
 
     header_lines: list[str] = [
         "## Token-Goat Session Manifest",
+        "manifest_version: 1",
     ]
     _hint_telemetry = _format_hint_telemetry(cache)
     if _hint_telemetry:

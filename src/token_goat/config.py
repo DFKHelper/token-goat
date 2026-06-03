@@ -218,6 +218,7 @@ class _CompactAssistToml(TypedDict, total=False):
     wide_session_threshold: int
     orchestrator_commit_threshold: int
     lazy_skill_injection: bool
+    max_manifest_chars: int
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -466,6 +467,18 @@ class CompactAssistConfig:
     # TOKEN_GOAT_LAZY_SKILL_INJECTION=0) to revert to eager injection (full
     # compact text inlined at manifest-build time).
     lazy_skill_injection: bool = True
+    # Hard character budget for the final manifest string returned by build_manifest().
+    # When the fully assembled manifest exceeds this cap (default 1600 chars ≈ 400
+    # tokens at ~4 chars/token), the manifest is truncated with priority:
+    #   1. version header + edited files section (always kept in full)
+    #   2. symbols section (kept if it fits; truncated to first N lines otherwise)
+    #   3. skills section (kept if it fits; truncated to first N lines otherwise)
+    #   4. remaining sections (dropped when over budget)
+    # A warning line "... (manifest truncated at budget limit)" is appended on
+    # truncation.  Set to 0 to disable the cap (no hard limit beyond max_manifest_tokens).
+    # Valid range: 0 or [400, 16000].  The lower bound of 400 prevents setting a cap
+    # so small that the header + edited files can't fit.
+    max_manifest_chars: int = 1600
 
 
 @dataclass
@@ -1272,6 +1285,9 @@ def load() -> Config:
         ),
         lazy_skill_injection=_validated_bool(
             ca_raw.get("lazy_skill_injection", True), True, "compact_assist.lazy_skill_injection"
+        ),
+        max_manifest_chars=_validated_int(
+            ca_raw.get("max_manifest_chars", 1600), 1600, 0, 16000, "compact_assist.max_manifest_chars"
         ),
     )
 
