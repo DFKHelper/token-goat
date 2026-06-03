@@ -1898,6 +1898,7 @@ def refs(
     target: str,
     limit: int = 50,
     json_output: bool = False,
+    callers: bool = False,
 ) -> None:
     """Show all call-sites that reference a symbol defined in <file>.
 
@@ -1905,10 +1906,19 @@ def refs(
 
         token-goat refs src/token_goat/hints.py::build_hint
         token-goat refs hints.py::build_hint --json
+        token-goat refs hints.py::build_hint --callers
 
     The file part is matched as a substring (``LIKE %file%``), so short
     partial paths work.  Results are printed as ``path:line: context``
     (one per line), which replaces a multi-file ``rg`` search for callers.
+
+    With ``--callers``, results are grouped by file and each reference shows
+    the enclosing function or method name instead of just the raw line::
+
+        index.ts:
+          UserService.hello() at line 11
+
+    This avoids a follow-up ``token-goat scope`` call per reference.
     """
     if "::" not in target:
         typer.echo(
@@ -1940,7 +1950,10 @@ def refs(
     proj = file_target.project
     file_rel = file_target.rel_path
 
-    rows = db.get_symbol_refs(proj.hash, file_rel, symbol_name, limit=limit)
+    if callers:
+        rows = db.get_refs_with_callers(proj.hash, file_rel, symbol_name, limit=limit)
+    else:
+        rows = db.get_symbol_refs(proj.hash, file_rel, symbol_name, limit=limit)
 
     if json_output:
         typer.echo(json.dumps(
@@ -1955,19 +1968,62 @@ def refs(
         return
 
     typer.echo(f"{count} reference{'s' if count != 1 else ''} to {file_rel}::{symbol_name}")
-    use_tty_color = sys.stdout.isatty()
-    for row in rows:
-        path = row["path"]
-        line = row["line"]
-        ctx = str(row["context"] or "").strip()
-        loc = f"{path}:{line}"
-        if ctx:
-            if use_tty_color:
-                typer.echo(f"{loc}: \033[2m{ctx}\033[0m")
+
+    if callers:
+        _render_refs_with_callers(rows)
+    else:
+        use_tty_color = sys.stdout.isatty()
+        for row in rows:
+            path = row["path"]
+            line = row["line"]
+            ctx = str(row["context"] or "").strip()
+            loc = f"{path}:{line}"
+            if ctx:
+                if use_tty_color:
+                    typer.echo(f"{loc}: \033[2m{ctx}\033[0m")
+                else:
+                    typer.echo(f"{loc}: {ctx}")
             else:
-                typer.echo(f"{loc}: {ctx}")
+                typer.echo(loc)
+
+
+def _render_refs_with_callers(rows: list[dict[str, object]]) -> None:
+    """Render ``--callers`` output grouped by file.
+
+    Each file gets a header line, then indented entries of the form::
+
+        src/foo.py:
+          bar() at line 42
+          <module level> at line 10
+
+    When the enclosing function is unknown (module-level code or unindexed
+    scope), the entry reads ``<module level> at line N``.
+    """
+    # Group rows by path, preserving insertion order.
+    from collections import OrderedDict  # noqa: PLC0415
+
+    groups: dict[str, list[dict[str, object]]] = OrderedDict()
+    for row in rows:
+        path = str(row["path"])
+        groups.setdefault(path, []).append(row)
+
+    use_tty_color = sys.stdout.isatty()
+    for path, file_rows in groups.items():
+        if use_tty_color:
+            typer.echo(f"\033[1m{path}\033[0m:")
         else:
-            typer.echo(loc)
+            typer.echo(f"{path}:")
+        for row in file_rows:
+            line = int(row["line"])  # type: ignore[call-overload]
+            caller_name = row.get("caller_name")
+            if caller_name:
+                entry = f"  {caller_name}() at line {line}"
+            else:
+                entry = f"  <module level> at line {line}"
+            if use_tty_color:
+                typer.echo(f"\033[2m{entry}\033[0m")
+            else:
+                typer.echo(entry)
 
 
 # ---------------------------------------------------------------------------

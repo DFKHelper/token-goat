@@ -1558,6 +1558,86 @@ def get_symbol_refs(
         return []
 
 
+def get_refs_with_callers(
+    project_hash: str,
+    file_path: str,
+    symbol_name: str,
+    limit: int = 50,
+) -> list[dict[str, object]]:
+    """Return call-site rows for *symbol_name* with enclosing function resolution.
+
+    Like :func:`get_symbol_refs`, but each row also includes ``"caller_name"``
+    (str | None) and ``"caller_kind"`` (str | None) — the innermost enclosing
+    function or method that contains the reference line.  When a ref is at
+    module level or no enclosing function can be found, both fields are ``None``.
+
+    Resolution is pure SQL: for each ref row we find the deepest symbol in the
+    same file whose ``line <= ref.line <= end_line`` and whose ``kind`` is
+    ``"function"``, ``"async_function"``, ``"method"``, or ``"constructor"``.
+    If multiple symbols share the same start line (overloads, decorators), the
+    one with the highest ``id`` (latest inserted) wins via ``ORDER BY id DESC``.
+
+    Returns an empty list on any DB error (fail-soft).
+    """
+    _FUNCTION_KINDS = ("function", "async_function", "method", "constructor")
+    kinds_placeholders = ",".join("?" * len(_FUNCTION_KINDS))
+
+    query = f"""
+        SELECT
+            r.file_rel  AS path,
+            r.line,
+            r.context,
+            (
+                SELECT s.name
+                FROM symbols s
+                WHERE s.file_rel = r.file_rel
+                  AND s.kind IN ({kinds_placeholders})
+                  AND s.line <= r.line
+                  AND (s.end_line IS NULL OR s.end_line >= r.line)
+                ORDER BY s.line DESC, s.id DESC
+                LIMIT 1
+            ) AS caller_name,
+            (
+                SELECT s.kind
+                FROM symbols s
+                WHERE s.file_rel = r.file_rel
+                  AND s.kind IN ({kinds_placeholders})
+                  AND s.line <= r.line
+                  AND (s.end_line IS NULL OR s.end_line >= r.line)
+                ORDER BY s.line DESC, s.id DESC
+                LIMIT 1
+            ) AS caller_kind
+        FROM refs r
+        WHERE r.symbol_name = ?
+          AND EXISTS (
+              SELECT 1 FROM symbols s
+              WHERE s.name = r.symbol_name
+                AND s.file_rel LIKE ?
+          )
+        ORDER BY r.file_rel, r.line
+        LIMIT ?
+    """
+    params = (*_FUNCTION_KINDS, *_FUNCTION_KINDS, symbol_name, f"%{file_path}%", limit)
+
+    try:
+        with open_project_readonly(project_hash) as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [
+            {
+                "path": str(r["path"]),
+                "line": int(r["line"]),
+                "context": r["context"],
+                "caller_name": r["caller_name"],
+                "caller_kind": r["caller_kind"],
+            }
+            for r in rows
+        ]
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Type definitions query
 # ---------------------------------------------------------------------------

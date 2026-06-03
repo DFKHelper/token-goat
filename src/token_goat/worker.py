@@ -835,7 +835,10 @@ def drain_dirty_queue() -> list[DirtyQueueEntry] | None:
     next call.
 
     Validates each entry is a dict before appending; skips malformed entries
-    with a warning.
+    with a warning.  Binary or non-UTF-8 bytes in the queue file are replaced
+    with the Unicode replacement character (``errors="replace"``), so a corrupt
+    queue file produces malformed JSON lines (which are counted and skipped)
+    rather than raising ``UnicodeDecodeError`` and crashing the worker.
 
     Returns a (possibly empty) list of entries on a successful drain, or
     ``None`` when the drain was *deferred* — the live dirty.txt existed but
@@ -854,7 +857,7 @@ def drain_dirty_queue() -> list[DirtyQueueEntry] | None:
     # Recover entries from a .draining file a previous (crashed) drain abandoned.
     if draining.exists():
         try:
-            raw_lines.extend(draining.read_text(encoding="utf-8").splitlines())
+            raw_lines.extend(draining.read_text(encoding="utf-8", errors="replace").splitlines())
             draining.unlink()
             _LOG.info("recovered %d entries from abandoned .draining file: %s",
                       len(raw_lines), draining.name)
@@ -880,7 +883,7 @@ def drain_dirty_queue() -> list[DirtyQueueEntry] | None:
                 time.sleep(0.05)
         if claimed:
             try:
-                draining_lines = draining.read_text(encoding="utf-8").splitlines()
+                draining_lines = draining.read_text(encoding="utf-8", errors="replace").splitlines()
                 raw_lines.extend(draining_lines)
                 draining.unlink()
                 _LOG.debug("claimed and read %d fresh queue entries", len(draining_lines))
@@ -2430,6 +2433,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
       monopolising the worker's attention.
     """
     _LOG.debug("processing %d dirty queue entries", len(entries))
+    _batch_t0 = time.time()
 
     # Skill cache invalidation: if any dirty entry is a skill body file, purge
     # its cached body so the stale entry is not served to the agent after the
@@ -2492,7 +2496,8 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
         except Exception:  # noqa: BLE001
             _LOG.exception("failed to reindex project %s from dirty queue", ph)
             _record_index_failure(ph, "<project>")
+    _batch_elapsed = time.time() - _batch_t0
     _LOG.debug(
-        "finished processing dirty entries: %d/%d projects reindexed",
-        projects_processed, len(by_project),
+        "finished processing dirty entries: %d/%d projects reindexed (batch dur=%.2fs)",
+        projects_processed, len(by_project), _batch_elapsed,
     )

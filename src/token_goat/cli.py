@@ -1165,6 +1165,15 @@ def refs(
     file: str | None = typer.Option(None, "--file", "-f", help="Only show refs in this file (partial path match)"),
     limit: int = typer.Option(50, "--limit", "-n", help="Cap results (default 50)"),
     as_json: bool = _OPT_JSON,
+    show_callers: bool = typer.Option(
+        False,
+        "--callers",
+        help=(
+            "Resolve enclosing function/method for each reference.  "
+            "Output is grouped by file and shows caller names instead of raw "
+            "line context.  Only available with the <file>::<symbol> format."
+        ),
+    ),
 ) -> None:
     """Show all files and line numbers where SYMBOL is referenced.
 
@@ -1176,19 +1185,40 @@ def refs(
     is used to narrow results to callers of a symbol defined in that specific
     file.  This replaces a multi-file ``rg`` search for callers.
 
+    Add ``--callers`` (requires ``::`` format) to resolve the enclosing
+    function or method name for each reference::
+
+        token-goat refs src/auth.py::login --callers
+
+    Output::
+
+        src/app.py:
+          handle_request() at line 42
+          <module level> at line 10
+
     Example usage::
 
         token-goat refs login
         token-goat refs login --file src/auth.py
         token-goat refs src/auth.py::login
+        token-goat refs src/auth.py::login --callers
         token-goat refs login --json
     """
     # <file>::<symbol> format: delegate to targeted refs lookup.
     if "::" in symbol:
         from . import read_commands  # noqa: PLC0415
 
-        read_commands.refs(symbol, limit=limit, json_output=as_json)
+        read_commands.refs(symbol, limit=limit, json_output=as_json, callers=show_callers)
         return
+
+    if show_callers:
+        typer.echo(
+            "--callers requires the <file>::<symbol> format "
+            "(e.g. 'src/auth.py::login --callers').  "
+            "Plain symbol refs do not resolve enclosing functions.",
+            err=True,
+        )
+        raise typer.Exit(1)
 
     proj = _require_project()
 

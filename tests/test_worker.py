@@ -1452,6 +1452,86 @@ def test_drain_dirty_queue_removes_queue_file(tmp_data_dir):
 
 
 # ---------------------------------------------------------------------------
+# 16d. drain_dirty_queue — corrupt / binary queue file must not crash
+# ---------------------------------------------------------------------------
+
+
+def test_drain_dirty_queue_binary_content_does_not_crash(tmp_data_dir):
+    """A binary (non-UTF-8) dirty.txt must not raise UnicodeDecodeError.
+
+    Regression guard: before the fix, read_text(encoding='utf-8') on a
+    binary-corrupted file raised UnicodeDecodeError, which propagated out of
+    drain_dirty_queue() and crashed the worker daemon loop.
+    """
+    paths.ensure_dirs()
+    p = paths.dirty_queue_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # Write a valid entry followed by a line of raw binary bytes (0x80–0xFF are
+    # invalid in strict UTF-8 and trigger UnicodeDecodeError without errors=replace).
+    valid_line = json.dumps({"path": "src/ok.py", "project_hash": "abc111", "ts": 1.0})
+    p.write_bytes(valid_line.encode("utf-8") + b"\n" + bytes(range(128, 192)) + b"\n")
+
+    entries = worker.drain_dirty_queue()
+
+    # Must not raise — returns a list (possibly only the one valid entry)
+    assert entries is not None
+    assert isinstance(entries, list)
+    valid_paths = {e["path"] for e in entries}
+    assert "src/ok.py" in valid_paths
+
+
+def test_drain_dirty_queue_binary_draining_file_does_not_crash(tmp_data_dir):
+    """A binary .draining recovery file must not raise UnicodeDecodeError.
+
+    Same regression guard as above but exercises the abandoned-.draining
+    recovery path (which uses a separate read_text call).
+    """
+    paths.ensure_dirs()
+    p = paths.dirty_queue_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    draining = p.with_name(p.name + ".draining")
+    valid_line = json.dumps({"path": "recovered.ts", "project_hash": "xyz999", "ts": 2.0})
+    # Mix a valid JSON line with binary garbage
+    draining.write_bytes(valid_line.encode("utf-8") + b"\n" + b"\xff\xfe\x00\x01\n")
+
+    entries = worker.drain_dirty_queue()
+
+    assert entries is not None
+    assert isinstance(entries, list)
+    valid_paths = {e["path"] for e in entries}
+    assert "recovered.ts" in valid_paths
+    assert not draining.exists(), "recovered .draining file must be cleaned up"
+
+
+def test_drain_dirty_queue_mixed_valid_and_non_json_lines(tmp_data_dir):
+    """Lines that are not valid JSON must be skipped; valid lines must survive.
+
+    Verifies the per-line JSONDecodeError handling that predates the
+    UnicodeDecodeError fix, ensuring both guards work together.
+    """
+    paths.ensure_dirs()
+    p = paths.dirty_queue_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    valid = json.dumps({"path": "good.py", "project_hash": "hhh333", "ts": 3.0})
+    p.write_text(
+        valid + "\n"
+        "this is not json at all\n"
+        '{"incomplete": \n'
+        + valid.replace("good.py", "also_good.py") + "\n",
+        encoding="utf-8",
+    )
+
+    entries = worker.drain_dirty_queue()
+
+    assert entries is not None
+    valid_paths = {e["path"] for e in entries}
+    assert "good.py" in valid_paths
+    assert "also_good.py" in valid_paths
+    # The two non-JSON lines must have been silently dropped
+    assert len(valid_paths) == 2
+
+
+# ---------------------------------------------------------------------------
 # 17. run_daemon — hands off to a freshly-installed version
 # ---------------------------------------------------------------------------
 
