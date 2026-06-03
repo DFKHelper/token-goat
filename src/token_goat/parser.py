@@ -81,6 +81,12 @@ LANG_BY_EXT: dict[str, str] = {
     ".ini": "ini",
     ".cfg": "ini",
     ".dockerfile": "dockerfile",
+    ".css": "css",
+    ".scss": "css",
+    ".less": "css",
+    ".sql": "sql",
+    ".pgsql": "sql",
+    ".psql": "sql",
 }
 
 # Files identified by full basename rather than suffix.  Dotfiles like ``.env``
@@ -355,6 +361,8 @@ _EXTRACTOR_REGISTRY: dict[str, Callable[[], Extractor]] = {
     "ini":        _language_importer("ini_idx"),
     "env":        _language_importer("ini_idx", attr="extract_env"),
     "dockerfile": _language_importer("dockerfile_idx"),
+    "css":        _language_importer("css_idx"),
+    "sql":        _language_importer("sql_idx"),
 }
 
 # Cache resolved extractors so each language module is imported at most once.
@@ -656,7 +664,7 @@ def index_file(
         # grammar fix is picked up without manual cache invalidation.
         _result_cache_put(language, content_sha, (symbols, refs, imp_exp, sections))
 
-    if not symbols and language not in ("markdown", "html", "json"):
+    if not symbols and language not in ("markdown", "html", "json", "css", "sql"):
         _LOG.debug(
             "index_file: 0 symbols extracted from %s (language=%s, %d bytes) "
             "— parser may not cover this file's constructs",
