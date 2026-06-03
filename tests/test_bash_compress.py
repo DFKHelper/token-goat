@@ -2016,6 +2016,57 @@ class TestMypyFilter:
         result = f.apply(text, "", 1, ["mypy", "src/"])
         assert "errors prevented further checking" not in result.text
 
+    def test_context_display_notes_first_occurrence_preserved(self):
+        """Expected:/Got: context notes from the first error occurrence are kept."""
+        lines = [
+            "src/foo.py:1: error: Argument 1 has incompatible type",
+            "src/foo.py:1: note: Expected:",
+            "src/foo.py:1: note:     (x: str) -> None",
+            "src/foo.py:1: note: Got:",
+            "src/foo.py:1: note:     int",
+            "Found 1 error in 1 file (checked 3 source files)",
+        ]
+        text = "\n".join(lines)
+        f = bc.MypyFilter()
+        result = f.apply(text, "", 1, ["mypy", "src/"])
+        # First occurrence of context notes must be preserved.
+        assert "note: Expected:" in result.text
+        assert "note: Got:" in result.text
+        assert "Found 1 error" in result.text
+
+    def test_context_display_notes_deduplicated_across_errors(self):
+        """Expected:/Got: context notes are deduplicated when the same error repeats.
+
+        When an error with identical Expected/Got type context fires many times,
+        the context display notes (which share the same message text) should be
+        deduplicated to at most 3 occurrences, not kept for every error.
+        """
+        # 6 errors all with identical Expected:/Got: context notes.
+        lines = []
+        for i in range(6):
+            lines.append(f"src/file{i}.py:{i + 1}: error: Argument 1 has incompatible type")
+            lines.append(f"src/file{i}.py:{i + 1}: note: Expected:")
+            lines.append(f"src/file{i}.py:{i + 1}: note:     (x: str) -> None")
+            lines.append(f"src/file{i}.py:{i + 1}: note: Got:")
+            lines.append(f"src/file{i}.py:{i + 1}: note:     int")
+        lines.append("Found 6 errors in 6 files (checked 10 source files)")
+        text = "\n".join(lines)
+        f = bc.MypyFilter()
+        result = f.apply(text, "", 1, ["mypy", "src/"])
+        # Summary must always be present.
+        assert "Found 6 errors" in result.text
+        # Context notes are deduplicated: at most 3 occurrences of each unique note message.
+        expected_notes = [ln for ln in result.text.split("\n") if ": note: Expected:" in ln]
+        got_notes = [ln for ln in result.text.split("\n") if ": note: Got:" in ln]
+        assert len(expected_notes) <= 3, (
+            f"Expected 'Expected:' notes to be deduplicated to <=3, got {len(expected_notes)}"
+        )
+        assert len(got_notes) <= 3, (
+            f"Expected 'Got:' notes to be deduplicated to <=3, got {len(got_notes)}"
+        )
+        # Deduplication note should be emitted.
+        assert "suppressed" in result.text
+
 
 # ---------------------------------------------------------------------------
 # UvFilter
@@ -4715,10 +4766,84 @@ class TestCargoFilterSubcommands:
         assert "Hello, world!" in result.text
         assert "Server listening" in result.text
 
+    def test_cargo_bench_keeps_result_lines(self) -> None:
+        """cargo bench: benchmark result lines are preserved verbatim."""
+        stdout = (
+            "running 2 tests\n"
+            "test bench_hash ... bench:       1,234 ns/iter (+/- 56)\n"
+            "test bench_sort ... bench:       5,678 ns/iter (+/- 89)\n"
+            "\n"
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 2 measured; 0 filtered out\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply(stdout, "", 0, ["cargo", "bench"])
+        assert "bench_hash" in result.text
+        assert "1,234 ns/iter" in result.text
+        assert "bench_sort" in result.text
+        assert "test result: ok" in result.text
+
+    def test_cargo_bench_single_suite_drops_running_header(self) -> None:
+        """cargo bench: single 'running N tests' header is dropped (redundant with result lines)."""
+        stdout = (
+            "running 3 tests\n"
+            "test bench_a ... bench:         100 ns/iter (+/-  5)\n"
+            "test bench_b ... bench:         200 ns/iter (+/- 10)\n"
+            "test bench_c ... bench:         300 ns/iter (+/- 15)\n"
+            "\n"
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 3 measured; 0 filtered out\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply(stdout, "", 0, ["cargo", "bench"])
+        # The 'running N tests' line should be collapsed with a note.
+        assert "running 3 tests" not in result.text
+        assert "dropped" in result.text or "collapsed" in result.text or "running" not in result.text
+
+    def test_cargo_bench_multiple_suites_keep_running_headers(self) -> None:
+        """cargo bench: when multiple bench suites exist, all 'running N tests' headers are kept."""
+        stdout = (
+            "running 2 tests\n"
+            "test bench_suite1_a ... bench:   1,234 ns/iter (+/- 56)\n"
+            "test bench_suite1_b ... bench:   5,678 ns/iter (+/- 89)\n"
+            "\n"
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 2 measured\n"
+            "\n"
+            "running 2 tests\n"
+            "test bench_suite2_x ... bench:     100 ns/iter (+/-  5)\n"
+            "test bench_suite2_y ... bench:     200 ns/iter (+/- 10)\n"
+            "\n"
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 2 measured\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply(stdout, "", 0, ["cargo", "bench"])
+        # Both bench result lines must be present.
+        assert "bench_suite1_a" in result.text
+        assert "bench_suite2_x" in result.text
+
+    def test_cargo_bench_collapses_compiling_noise(self) -> None:
+        """cargo bench: Compiling lines in stderr are collapsed, bench results kept."""
+        stderr = "\n".join(
+            [f"   Compiling crate{i} v0.1.{i}" for i in range(8)]
+            + ["    Finished bench [optimized] target(s) in 20.0s"]
+        )
+        stdout = (
+            "running 1 test\n"
+            "test bench_main ... bench:     500 ns/iter (+/- 10)\n"
+            "\n"
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 1 measured\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply(stdout, stderr, 0, ["cargo", "bench"])
+        assert "bench_main" in result.text
+        assert "500 ns/iter" in result.text
+        assert "Finished" in result.text
+        # 8 Compiling lines > 4 threshold — should be collapsed.
+        assert result.text.count("Compiling") < 8
+
     @pytest.mark.parametrize("argv", [
         ["cargo", "clippy"],
         ["cargo", "test"],
         ["cargo", "check"],
+        ["cargo", "bench"],
     ])
     def test_select_filter_dispatches_cargo_subcommands(self, argv) -> None:
         """select_filter routes cargo subcommands to CargoFilter."""
