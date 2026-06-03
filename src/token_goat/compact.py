@@ -28,6 +28,7 @@ __all__ = [
     "find_latest_session_id",
     "infer_session_goal",
     "_enforce_char_budget",
+    "detect_harness",
 ]
 
 import hashlib
@@ -35,6 +36,7 @@ import heapq
 import io
 import json
 import math
+import os
 import re
 import time
 from collections.abc import Callable
@@ -88,6 +90,58 @@ def estimate_tokens(text: str) -> int:
     Python process on Windows with no shared module cache.
     """
     return max(1, len(text) // 3 + 1)
+
+
+# ---------------------------------------------------------------------------
+# Harness detection
+# ---------------------------------------------------------------------------
+
+#: Known harness identifiers returned by :func:`detect_harness`.
+_KNOWN_HARNESSES: Final[frozenset[str]] = frozenset(
+    ["claudecode", "codex", "opencode", "generic"]
+)
+
+
+def detect_harness(config_override: str = "auto") -> str:
+    """Detect the active AI harness from environment variables.
+
+    When *config_override* is not ``"auto"``, returns it directly (allows the
+    user to pin the harness via ``[compact_assist] harness = "codex"``).
+
+    Detection order:
+    1. ``CLAUDE_CODE_SESSION_ID`` or ``ANTHROPIC_API_KEY`` → ``"claudecode"``
+    2. ``CODEX_SESSION`` env var present → ``"codex"``
+    3. ``OPENAI_API_KEY`` present without ``ANTHROPIC_API_KEY`` → ``"codex"``
+    4. ``OPENCODE_SESSION`` env var present → ``"opencode"``
+    5. Fallback → ``"generic"``
+
+    Returns one of: ``"claudecode"``, ``"codex"``, ``"opencode"``, ``"generic"``.
+    """
+    if config_override != "auto":
+        if config_override in _KNOWN_HARNESSES:
+            return config_override
+        _LOG.warning(
+            "detect_harness: unknown override %r; falling back to env detection",
+            config_override,
+        )
+
+    # Claude Code: specific session ID env var or Anthropic API key
+    if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("ANTHROPIC_API_KEY"):
+        return "claudecode"
+
+    # Codex: explicit session flag
+    if os.environ.get("CODEX_SESSION"):
+        return "codex"
+
+    # opencode: explicit session flag
+    if os.environ.get("OPENCODE_SESSION"):
+        return "opencode"
+
+    # OpenAI key without Anthropic key → most likely Codex
+    if os.environ.get("OPENAI_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+        return "codex"
+
+    return "generic"
 
 
 def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
@@ -3644,6 +3698,7 @@ def _compact_render_kwargs(cfg: _Config) -> dict[str, Any]:
         "wide_session_threshold": ca.wide_session_threshold,
         "orchestrator_commit_threshold": ca.orchestrator_commit_threshold,
         "lazy_skill_injection": lazy,
+        "harness": detect_harness(ca.harness),
     }
 
 
@@ -3657,6 +3712,7 @@ def _build_manifest_from_cache(
     wide_session_threshold: int = 15,
     orchestrator_commit_threshold: int = 5,
     lazy_skill_injection: bool = True,
+    harness: str = "claudecode",
 ) -> str:
     """Render the manifest from an already-loaded *cache*.
 
@@ -3686,6 +3742,7 @@ def _build_manifest_from_cache(
         wide_session_threshold=wide_session_threshold,
         orchestrator_commit_threshold=orchestrator_commit_threshold,
         lazy_skill_injection=lazy_skill_injection,
+        harness=harness,
     )
     elapsed = time.monotonic() - start
 
@@ -4798,6 +4855,7 @@ def _render(
     wide_session_threshold: int = 15,
     orchestrator_commit_threshold: int = 5,
     lazy_skill_injection: bool = True,
+    harness: str = "claudecode",
 ) -> tuple[str, int]:
     """Build the Markdown session manifest string from *cache* for the PreCompact hook.
 
@@ -6056,6 +6114,49 @@ def _render(
         ("open_questions", open_questions_lines, False),
         ("active_errors", active_errors_lines,  False),
     ]
+
+    # ── Harness-specific section filtering ───────────────────────────────────
+    # Different downstream AI harnesses care about different sections.  Apply
+    # harness-level filtering BEFORE the noise floor and section-cap passes so
+    # that suppressed sections consume no budget at all.
+    #
+    # claudecode (default): no changes — current behaviour unchanged.
+    # codex: skills are not applicable (no skill system); skip skills + decisions.
+    #         Bash history is more relevant to Codex workflows so it is kept.
+    # opencode: inject a ``### harness: opencode`` tag into the header so
+    #           opencode's context.push() machinery can detect and route the
+    #           manifest; otherwise keep all sections.
+    # generic: emit only the minimal set — sealed + header + edited + syms.
+    #          Everything else is stripped to produce the safest possible output
+    #          for unknown consumers.
+    if harness == "codex":
+        _section_groups = [
+            (name, lines, prot)
+            for name, lines, prot in _section_groups
+            if name not in ("skills", "decisions")
+        ]
+        _LOG.debug("_render: codex harness — skipped skills and decisions sections")
+    elif harness == "opencode":
+        # Insert a harness tag as the second line of the header block so opencode's
+        # context.push() machinery can detect and route the manifest correctly.
+        _new_header = list(header_lines)
+        _new_header.insert(1, "### harness: opencode")
+        _section_groups = [
+            (name, _new_header if name == "header" else lines, prot)
+            for name, lines, prot in _section_groups
+        ]
+        _LOG.debug("_render: opencode harness — injected harness tag into header")
+    elif harness == "generic":
+        _GENERIC_KEEP: frozenset[str] = frozenset(
+            ["sealed", "header", "uncommitted", "edited", "syms"]
+        )
+        _section_groups = [
+            (name, lines, prot)
+            for name, lines, prot in _section_groups
+            if name in _GENERIC_KEEP
+        ]
+        _LOG.debug("_render: generic harness — keeping only minimal sections: %s", _GENERIC_KEEP)
+
     # ── Apply noise floor: drop small unprotected sections ───────────────────
     _section_groups = _apply_noise_floor(_section_groups, noise_floor_tokens)
     max_section_lines_cap = max_section_lines

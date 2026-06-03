@@ -219,6 +219,7 @@ class _CompactAssistToml(TypedDict, total=False):
     orchestrator_commit_threshold: int
     lazy_skill_injection: bool
     max_manifest_chars: int
+    harness: str
 
 
 class _BashCompressToml(TypedDict, total=False):
@@ -479,6 +480,15 @@ class CompactAssistConfig:
     # Valid range: 0 or [400, 16000].  The lower bound of 400 prevents setting a cap
     # so small that the header + edited files can't fit.
     max_manifest_chars: int = 1600
+    # Harness type for manifest customisation.  ``"auto"`` (default) detects the
+    # active AI harness from environment variables at manifest-build time and
+    # adjusts section inclusion accordingly:
+    #   * ``"claudecode"`` — current default behaviour (skills + edited + symbols).
+    #   * ``"codex"`` — skip the Active Skills section; expand bash history.
+    #   * ``"opencode"`` — add a ``### harness: opencode`` tag; wrap for opencode context API.
+    #   * ``"generic"`` — minimal output: edited files + symbols only.
+    # Set to any of the named values above to override auto-detection.
+    harness: str = "auto"
 
 
 @dataclass
@@ -1165,6 +1175,27 @@ def _validated_int_list(val: object, default: list[int], name: str) -> list[int]
     return valid
 
 
+_VALID_HARNESS_VALUES: Final[frozenset[str]] = frozenset(
+    ["auto", "claudecode", "codex", "opencode", "generic"]
+)
+
+
+def _validated_harness(val: object) -> str:
+    """Validate the ``compact_assist.harness`` config value.
+
+    Returns *val* unchanged when it is one of the recognised harness strings.
+    Falls back to ``"auto"`` with a WARNING log when the value is unrecognised.
+    """
+    if isinstance(val, str) and val in _VALID_HARNESS_VALUES:
+        return val
+    _LOG.warning(
+        "config: compact_assist.harness=%r is not one of %s; using 'auto'",
+        val,
+        sorted(_VALID_HARNESS_VALUES),
+    )
+    return "auto"
+
+
 def _validated_triggers(val: object, default: list[str]) -> list[str]:
     """Validate a list of hook-trigger strings against ``_VALID_TRIGGERS``.
 
@@ -1289,6 +1320,7 @@ def load() -> Config:
         max_manifest_chars=_validated_int(
             ca_raw.get("max_manifest_chars", 1600), 1600, 0, 16000, "compact_assist.max_manifest_chars"
         ),
+        harness=_validated_harness(ca_raw.get("harness", "auto")),
     )
 
     # Environment override: TOKEN_GOAT_COMPACT_ASSIST=0 / false / no / off disables
