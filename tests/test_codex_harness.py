@@ -339,11 +339,37 @@ def test_normalize_payload_codex_unknown_tool_passes_through():
     assert result["tool_input"] == {"x": 1}
 
 
+def test_normalize_payload_codex_unknown_tool_logs_warning(caplog):
+    """An unrecognised Codex tool name (not a known PascalCase name) must log at WARNING."""
+    import logging
+
+    payload = {"tool_name": "some_future_codex_tool", "tool_input": {"x": 1}}
+    with caplog.at_level(logging.WARNING, logger="token_goat.hooks"):
+        hooks_cli.normalize_payload(payload, harness="codex")
+    assert any(
+        "some_future_codex_tool" in r.message and r.levelno >= logging.WARNING
+        for r in caplog.records
+    ), "expected WARNING log for unknown Codex tool"
+
+
 def test_normalize_payload_codex_already_pascal_read_passes_through():
     """PascalCase tool names not in the Codex map pass through unchanged (e.g. 'Read')."""
     payload = {"tool_name": "Read", "tool_input": {"file_path": "/x.py"}}
     result = hooks_cli.normalize_payload(payload, harness="codex")
     assert result["tool_name"] == "Read"
+
+
+def test_normalize_payload_codex_known_pascal_tool_no_warning(caplog):
+    """A known PascalCase tool passed by Codex must NOT trigger a WARNING — only DEBUG."""
+    import logging
+
+    payload = {"tool_name": "Read", "tool_input": {"file_path": "/x.py"}}
+    with caplog.at_level(logging.WARNING, logger="token_goat.hooks"):
+        hooks_cli.normalize_payload(payload, harness="codex")
+    assert not any(
+        "Read" in r.message and r.levelno >= logging.WARNING
+        for r in caplog.records
+    ), "known PascalCase tool must not produce a WARNING"
 
 
 def test_normalize_payload_codex_preserves_other_fields():

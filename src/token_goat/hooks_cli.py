@@ -147,7 +147,15 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
         # Remap Codex snake_case tool names to token-goat PascalCase internal names.
         mapped = _CODEX_TOOL_NAME_MAP.get(tool_name)
         if mapped is None:
-            _LOG.debug("normalize_payload: unknown Codex tool %r — passing through", tool_name)
+            # Warn at WARNING so operators can see unknown tools in logs rather than
+            # having them silently pass through to handlers that may not recognise them.
+            if tool_name not in _TG_KNOWN_TOOLS:
+                _LOG.warning(
+                    "normalize_payload: unknown Codex tool %r — passing through unrecognised",
+                    tool_name,
+                )
+            else:
+                _LOG.debug("normalize_payload: Codex tool %r already PascalCase — passing through", tool_name)
         else:
             payload = dict(payload)
             payload["tool_name"] = mapped
@@ -159,7 +167,10 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
         # Remap Gemini tool names to token-goat internal names.
         mapped = _GEMINI_TOOL_NAME_MAP.get(tool_name)
         if mapped is None:
-            _LOG.debug("normalize_payload: unknown Gemini tool %r — passing through", tool_name)
+            _LOG.warning(
+                "normalize_payload: unknown Gemini tool %r — passing through unrecognised",
+                tool_name,
+            )
         else:
             payload = dict(payload)
             payload["tool_name"] = mapped
@@ -196,6 +207,15 @@ _HSO_CAMEL_TO_SNAKE: dict[str, str] = {
     "permissionDecisionReason": "permission_decision_reason",
     "hookEventName": "hook_event_name",
 }
+
+
+#: Canonical set of PascalCase tool names that token-goat handlers recognise.
+#: Used by normalize_payload to distinguish known pass-through names (e.g. a
+#: harness that already sends PascalCase) from genuinely unknown tools that
+#: warrant a WARNING so operators can spot mapping gaps.
+_TG_KNOWN_TOOLS: frozenset[str] = frozenset(
+    {"Read", "Write", "Edit", "MultiEdit", "Bash", "Glob", "WebFetch", "Grep", "Skill"}
+)
 
 
 # Codex tool name → token-goat internal tool name.

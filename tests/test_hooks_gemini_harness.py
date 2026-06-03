@@ -105,6 +105,19 @@ def test_normalize_unknown_gemini_tool_passes_through(caplog):
     assert result["tool_input"] == {"x": 1}
 
 
+def test_normalize_unknown_gemini_tool_logs_warning(caplog):
+    """An unrecognised Gemini tool name must log at WARNING so operators can see mapping gaps."""
+    import logging
+
+    payload = {"tool_name": "some_future_gemini_tool", "tool_input": {"x": 1}}
+    with caplog.at_level(logging.WARNING, logger="token_goat.hooks"):
+        normalize_payload(payload, harness="gemini")
+    assert any(
+        "some_future_gemini_tool" in r.message and r.levelno >= logging.WARNING
+        for r in caplog.records
+    ), "expected WARNING log for unknown Gemini tool"
+
+
 def test_normalize_non_dict_payload_returns_empty():
     result = normalize_payload("not a dict", harness="gemini")  # type: ignore[arg-type]
     assert result == {}
@@ -242,3 +255,61 @@ def test_codex_normalize_bash_maps_to_pascal():
     result = normalize_payload(payload, harness="codex")
     assert result["tool_name"] == "Bash"
     assert result["tool_input"] == {"command": "echo hi"}
+
+
+# ---------------------------------------------------------------------------
+# Gemini tool-map alignment: hooks_cli vs install
+# ---------------------------------------------------------------------------
+
+
+def test_gemini_tool_map_hooks_cli_and_install_agree():
+    """hooks_cli._GEMINI_TOOL_NAME_MAP and install._GEMINI_TOOL_TO_TG must map
+    the same source keys to the same target values.
+
+    This is a drift-prevention test: both tables exist in separate modules but
+    must stay in sync.  If a new Gemini tool is added to one, it must appear
+    in both.  The test compares the full key→value mappings so any divergence
+    is immediately visible.
+    """
+    from token_goat.hooks_cli import _GEMINI_TOOL_NAME_MAP
+    from token_goat.install import _GEMINI_TOOL_TO_TG
+
+    # Both maps must cover identical source keys.
+    assert set(_GEMINI_TOOL_NAME_MAP.keys()) == set(_GEMINI_TOOL_TO_TG.keys()), (
+        "Key mismatch between hooks_cli._GEMINI_TOOL_NAME_MAP and install._GEMINI_TOOL_TO_TG.\n"
+        f"Only in hooks_cli: {set(_GEMINI_TOOL_NAME_MAP) - set(_GEMINI_TOOL_TO_TG)}\n"
+        f"Only in install:   {set(_GEMINI_TOOL_TO_TG) - set(_GEMINI_TOOL_NAME_MAP)}"
+    )
+
+    # For every shared key, the target (token-goat PascalCase name) must also match.
+    mismatches = {
+        k: (_GEMINI_TOOL_NAME_MAP[k], _GEMINI_TOOL_TO_TG[k])
+        for k in _GEMINI_TOOL_NAME_MAP
+        if _GEMINI_TOOL_NAME_MAP[k] != _GEMINI_TOOL_TO_TG[k]
+    }
+    assert not mismatches, (
+        "Value mismatch between hooks_cli._GEMINI_TOOL_NAME_MAP and install._GEMINI_TOOL_TO_TG.\n"
+        f"Differing keys: {mismatches}"
+    )
+
+
+def test_gemini_tool_map_all_values_are_known_tools():
+    """Every value in _GEMINI_TOOL_NAME_MAP must be a recognised token-goat tool name."""
+    from token_goat.hooks_cli import _GEMINI_TOOL_NAME_MAP, _TG_KNOWN_TOOLS
+
+    unknown = {v for v in _GEMINI_TOOL_NAME_MAP.values() if v not in _TG_KNOWN_TOOLS}
+    assert not unknown, (
+        f"_GEMINI_TOOL_NAME_MAP maps to unrecognised tool names: {unknown}. "
+        "Add them to _TG_KNOWN_TOOLS if intentional."
+    )
+
+
+def test_codex_tool_map_all_values_are_known_tools():
+    """Every value in _CODEX_TOOL_NAME_MAP must be a recognised token-goat tool name."""
+    from token_goat.hooks_cli import _CODEX_TOOL_NAME_MAP, _TG_KNOWN_TOOLS
+
+    unknown = {v for v in _CODEX_TOOL_NAME_MAP.values() if v not in _TG_KNOWN_TOOLS}
+    assert not unknown, (
+        f"_CODEX_TOOL_NAME_MAP maps to unrecognised tool names: {unknown}. "
+        "Add them to _TG_KNOWN_TOOLS if intentional."
+    )
