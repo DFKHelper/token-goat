@@ -206,6 +206,40 @@ def _close_section_matches(project: Project, rel_path: str, heading: str) -> lis
     return _close_db_matches(project, rel_path, heading, table="sections", column="heading", kind="section")
 
 
+def _close_file_matches(project: Project, file_part: str) -> list[str]:
+    """Return up to :data:`_DIDYOUMEAN_LIMIT` indexed file paths whose basename
+    is a close lexical match for the basename of *file_part*.
+
+    Used to produce "did you mean…?" suggestions when a file lookup returns no
+    match, so the agent can correct a typo without falling back to a full-repo
+    listing.  Matching is basename-only (e.g. ``parsre.py`` → ``parser.py``) but
+    the returned strings are the full ``rel_path`` values so the agent can paste
+    them directly into the next command.
+
+    Returns an empty list when the project DB is unavailable or no close match
+    exists, so the caller's miss message still emits even if suggestions fail.
+    """
+    basename = Path(file_part).name
+    if not basename:
+        return []
+    try:
+        with db.open_project_readonly(project.hash) as conn:
+            rows = conn.execute(
+                "SELECT rel_path FROM files WHERE rel_path IS NOT NULL",
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
+        _LOG.debug("close-file-match query failed for %r: %s", file_part, exc)
+        return []
+    all_rel_paths = [r["rel_path"] for r in rows if r["rel_path"]]
+    # Build a basename→rel_path map; when multiple paths share a basename
+    # the last one wins (arbitrary but deterministic).
+    basename_to_rel: dict[str, str] = {Path(rp).name: rp for rp in all_rel_paths}
+    close_basenames = difflib.get_close_matches(
+        basename, list(basename_to_rel.keys()), n=_DIDYOUMEAN_LIMIT, cutoff=_DIDYOUMEAN_CUTOFF
+    )
+    return [basename_to_rel[b] for b in close_basenames]
+
+
 def _emit_read_error(
     *,
     code: str,
@@ -260,6 +294,10 @@ def _emit_file_not_found_error(
     - Project detected but not yet indexed (``_not_indexed_hint`` returns a hint).
     - Project indexed but the file pattern matched nothing.
 
+    When the project is indexed but the file is not found, close-basename matches
+    from the project's file index are included as "did you mean…?" suggestions so
+    the caller can correct a typo without a full-repo listing.
+
     Extracted from the identical ``if rel is None`` blocks in
     :func:`_run_read_like_command` and :func:`deps`.
     """
@@ -272,13 +310,27 @@ def _emit_file_not_found_error(
         )
     else:
         hint = _not_indexed_hint(current_proj.hash)
-        _emit_read_error(
-            code="project_not_indexed" if hint else "file_not_found",
-            message=hint if hint else f"File not found in any indexed project: {file_part}",
-            json_output=json_output,
-            file_part=file_part,
-            project_hash=current_proj.hash,
-        )
+        if hint:
+            _emit_read_error(
+                code="project_not_indexed",
+                message=hint,
+                json_output=json_output,
+                file_part=file_part,
+                project_hash=current_proj.hash,
+            )
+        else:
+            suggestions = _close_file_matches(current_proj, file_part)
+            base_message = f"File not found in any indexed project: {file_part}"
+            if suggestions and not json_output:
+                base_message = base_message + "\nDid you mean:"
+            _emit_read_error(
+                code="file_not_found",
+                message=base_message,
+                json_output=json_output,
+                candidates=suggestions,
+                file_part=file_part,
+                project_hash=current_proj.hash,
+            )
 
 
 def _collect_dependency_graph(
@@ -1367,6 +1419,7 @@ def outline(
     file: str,
     json_output: bool = False,
     max_depth: int | None = None,
+    quiet: bool = False,
 ) -> None:
     """List symbols in <file> with line ranges, line counts, and docstring hints.
 
@@ -1422,8 +1475,11 @@ def outline(
 
     if not rows_with_depth:
         if json_output:
-            typer.echo(json.dumps({"file": file_rel, "symbols": []}, separators=(",", ":")))
-        else:
+            typer.echo(json.dumps(
+                {"file": file_rel, "symbols": [], "results": [], "total": 0},
+                separators=(",", ":"),
+            ))
+        elif not quiet:
             typer.echo(f"No indexed top-level symbols found for {file_rel}.")
             typer.echo("(Run `token-goat index --full` if this file has not been indexed yet.)")
         return
@@ -1433,8 +1489,11 @@ def outline(
     if not filtered:
         # All symbols exist but none pass the kind + depth filter.
         if json_output:
-            typer.echo(json.dumps({"file": file_rel, "symbols": []}, separators=(",", ":")))
-        else:
+            typer.echo(json.dumps(
+                {"file": file_rel, "symbols": [], "results": [], "total": 0},
+                separators=(",", ":"),
+            ))
+        elif not quiet:
             typer.echo(f"No structural top-level symbols found for {file_rel}.")
         return
 
@@ -1460,10 +1519,14 @@ def outline(
                 "depth": depth,
                 "docstring": doc,
             })
-        typer.echo(json.dumps({"file": file_rel, "symbols": out}, separators=(",", ":")))
+        typer.echo(json.dumps(
+            {"file": file_rel, "symbols": out, "results": out, "total": len(out)},
+            separators=(",", ":"),
+        ))
         return
 
-    typer.echo(f"# Outline: {file_rel}  ({len(filtered)} symbols)")
+    if not quiet:
+        typer.echo(f"# Outline: {file_rel}  ({len(filtered)} symbols)")
     for row, depth in filtered:
         doc = _extract_docstring_first_line(
             source_lines, int(row["line"]), int(row["end_line"]),
@@ -1956,8 +2019,16 @@ def refs(
         rows = db.get_symbol_refs(proj.hash, file_rel, symbol_name, limit=limit)
 
     if json_output:
+        # Unified envelope: query/results/total + file/symbol/refs for backward compat.
         typer.echo(json.dumps(
-            {"file": file_rel, "symbol": symbol_name, "refs": rows},
+            {
+                "query": target,
+                "results": rows,
+                "total": len(rows),
+                "file": file_rel,
+                "symbol": symbol_name,
+                "refs": rows,
+            },
             separators=(",", ":"),
         ))
         return
@@ -2036,6 +2107,7 @@ def changed(
     json_output: bool = False,
     limit: int = 50,
     symbol_mode: bool = False,
+    quiet: bool = False,
 ) -> None:
     """List symbols that changed since *since_ref* (default ``HEAD~5``).
 
@@ -2080,20 +2152,30 @@ def changed(
         file_entries = get_changed_symbols_db(cwd, since_ref=since_ref, limit=limit)
 
         if json_output:
+            # Unified envelope + backward-compat aliases (files/count).
             typer.echo(json.dumps(
-                {"since": since_ref, "count": len(file_entries), "files": file_entries},
+                {
+                    "since": since_ref,
+                    "query": since_ref,
+                    "results": file_entries,
+                    "total": len(file_entries),
+                    "count": len(file_entries),
+                    "files": file_entries,
+                },
                 separators=(",", ":"),
             ))
             return
 
         if not file_entries:
-            typer.echo(f"No symbol changes since {since_ref} (--symbol mode)")
+            if not quiet:
+                typer.echo(f"No symbol changes since {since_ref} (--symbol mode)")
             return
 
         count = len(file_entries)
         noun = "file changed" if count == 1 else "files changed"
-        typer.echo(f"{count} {noun} since {since_ref}")
-        typer.echo("")
+        if not quiet:
+            typer.echo(f"{count} {noun} since {since_ref}")
+            typer.echo("")
 
         for entry in file_entries:
             sym_list = entry["symbols"]
@@ -2108,20 +2190,30 @@ def changed(
     entries = get_changed_symbols(cwd, since_ref=since_ref, limit=limit)
 
     if json_output:
+        # Unified envelope + backward-compat aliases (symbols/count).
         typer.echo(json.dumps(
-            {"since": since_ref, "count": len(entries), "symbols": entries},
+            {
+                "since": since_ref,
+                "query": since_ref,
+                "results": entries,
+                "total": len(entries),
+                "count": len(entries),
+                "symbols": entries,
+            },
             separators=(",", ":"),
         ))
         return
 
     if not entries:
-        typer.echo(f"No symbol changes since {since_ref}")
+        if not quiet:
+            typer.echo(f"No symbol changes since {since_ref}")
         return
 
     count = len(entries)
     noun = "symbol change" if count == 1 else "symbol changes"
-    typer.echo(f"{count} {noun} since {since_ref}")
-    typer.echo("")
+    if not quiet:
+        typer.echo(f"{count} {noun} since {since_ref}")
+        typer.echo("")
 
     # Compute column widths for aligned output.
     file_w = max(len(str(e["file"])) for e in entries)

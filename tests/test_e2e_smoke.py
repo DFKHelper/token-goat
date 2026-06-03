@@ -99,7 +99,9 @@ def test_edit_to_query_end_to_end(filename, content, symbol, tmp_path, tmp_data_
     monkeypatch.chdir(proj_root)
     result = runner.invoke(cli.app, ["symbol", symbol, "--json"])
     assert result.exit_code == 0, result.stdout
-    rows = json.loads(result.stdout)
+    payload = json.loads(result.stdout)
+    # Unified envelope: {"query":..., "results":[...], "total":N}
+    rows = payload["results"] if isinstance(payload, dict) else payload
     assert any(
         r["name"] == symbol and r["file"] == filename for r in rows
     ), f"symbol not queryable after end-to-end flow ({filename}): {result.stdout!r}"
@@ -131,7 +133,9 @@ def test_incremental_edit_propagates_end_to_end(tmp_path, tmp_data_dir, monkeypa
     monkeypatch.chdir(proj_root)
     result = runner.invoke(cli.app, ["symbol", "paint_widget", "--json"])
     assert result.exit_code == 0, result.stdout
-    rows = json.loads(result.stdout)
+    payload = json.loads(result.stdout)
+    # Unified envelope: {"query":..., "results":[...], "total":N}
+    rows = payload["results"] if isinstance(payload, dict) else payload
     assert any(r["name"] == "paint_widget" for r in rows), (
         f"newly-added symbol not queryable after incremental end-to-end flow: {result.stdout!r}"
     )

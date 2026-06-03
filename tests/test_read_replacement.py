@@ -2367,3 +2367,155 @@ class TestReadCommandFullFlag:
         assert result.exit_code == 0, result.output
         data = json.loads(result.output.strip())
         assert "result_69" in data.get("text", "")
+
+
+# ---------------------------------------------------------------------------
+# Fuzzy file matching via partial path (basename or suffix)
+# ---------------------------------------------------------------------------
+
+class TestPartialPathResolution:
+    """Verify that resolve_file_rel and the CLI accept partial paths.
+
+    The endswith-LIKE logic in _resolve_file_rel_db already handles this, but
+    these tests ensure it is exercised end-to-end via the CLI so that a future
+    refactor does not accidentally break partial-path resolution.
+    """
+
+    @staticmethod
+    def _make_nested_project(tmp_path, make_project):
+        """Create a project with src/utils/parser.py inside a subdirectory."""
+        proj_root = tmp_path / "nested"
+        (proj_root / "src" / "utils").mkdir(parents=True)
+        (proj_root / ".git").mkdir(exist_ok=True)
+        (proj_root / "src" / "utils" / "parser.py").write_text(
+            "def parse(text):\n    return text.split()\n", encoding="utf-8"
+        )
+        from token_goat.parser import index_project
+        proj = make_project(proj_root)
+        index_project(proj, full=True)
+        return proj_root, proj
+
+    def test_partial_path_resolves_in_module(self, tmp_path, tmp_data_dir, make_project):
+        """resolve_file_rel matches a partial suffix like 'utils/parser.py'."""
+        proj_root, proj = self._make_nested_project(tmp_path, make_project)
+        rel = read_replacement.resolve_file_rel(proj, "utils/parser.py")
+        assert rel == "src/utils/parser.py"
+
+    def test_bare_basename_resolves_when_unique(self, tmp_path, tmp_data_dir, make_project):
+        """resolve_file_rel matches a bare filename when it is unique in the project."""
+        proj_root, proj = self._make_nested_project(tmp_path, make_project)
+        rel = read_replacement.resolve_file_rel(proj, "parser.py")
+        assert rel == "src/utils/parser.py"
+
+    def test_cli_read_with_partial_path(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """token-goat read 'utils/parser.py::parse' resolves through the partial path."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_nested_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "utils/parser.py::parse"])
+        assert result.exit_code == 0
+        assert "parse" in result.output
+
+    def test_cli_read_with_bare_filename(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """token-goat read 'parser.py::parse' resolves through bare filename."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_nested_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "parser.py::parse"])
+        assert result.exit_code == 0
+        assert "parse" in result.output
+
+
+# ---------------------------------------------------------------------------
+# File-not-found "did you mean?" suggestions
+# ---------------------------------------------------------------------------
+
+class TestFileNotFoundSuggestions:
+    """When a file lookup fails, close-basename matches are surfaced as suggestions.
+
+    This prevents the agent from falling back to a full-repo listing when a
+    single-character typo in the filename caused the miss.
+    """
+
+    @staticmethod
+    def _make_simple_project(tmp_path, make_project):
+        """Create a minimal indexed project with one file: 'reader.py'."""
+        proj_root = tmp_path / "suggest_proj"
+        (proj_root / "src").mkdir(parents=True)
+        (proj_root / ".git").mkdir(exist_ok=True)
+        (proj_root / "src" / "reader.py").write_text(
+            "def read_file(path):\n    return open(path).read()\n", encoding="utf-8"
+        )
+        from token_goat.parser import index_project
+        proj = make_project(proj_root)
+        index_project(proj, full=True)
+        return proj_root, proj
+
+    def test_file_typo_shows_did_you_mean_text(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """Text-mode file miss suggests the correct filename when a typo is detected."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_simple_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+        runner = CliRunner()
+        # 'readre.py' is a 1-char transposition of 'reader.py' (ratio ~0.91)
+        result = runner.invoke(app, ["read", "readre.py::read_file"])
+        combined = result.output + (result.stderr or "")
+        assert "File not found" in combined
+        assert "Did you mean" in combined
+        assert "reader.py" in combined
+
+    def test_file_typo_json_carries_candidates(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """JSON-mode file miss includes 'candidates' with the suggested filenames."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_simple_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "--json", "readre.py::read_file"])
+        payload = json.loads(result.output)
+        assert payload["ok"] is False
+        assert payload["error"]["code"] == "file_not_found"
+        assert "candidates" in payload["error"]
+        # The suggested path should contain 'reader.py'
+        assert any("reader.py" in c for c in payload["error"]["candidates"])
+
+    def test_unrelated_filename_omits_did_you_mean(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """When nothing is similar, 'Did you mean' is not emitted."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        proj_root, _ = self._make_simple_project(tmp_path, make_project)
+        monkeypatch.chdir(proj_root)
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "xyzqq_totally_unrelated.py::foo"])
+        combined = result.output + (result.stderr or "")
+        assert "File not found" in combined
+        assert "Did you mean" not in combined
+
+    def test_close_file_matches_returns_empty_on_db_error(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        """_close_file_matches returns [] and does not raise when DB is missing."""
+        from token_goat import read_commands
+        from token_goat.project import Project
+
+        # A project with a non-existent DB hash should fail gracefully
+        fake_proj = Project(
+            root=tmp_path,
+            marker=".git",
+            hash="deadbeef" * 5,  # 40 hex chars, no real DB
+        )
+        result = read_commands._close_file_matches(fake_proj, "missing.py")
+        assert result == []

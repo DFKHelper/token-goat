@@ -777,6 +777,12 @@ def symbol(
             "(symbol lists file locations, not bodies)."
         ),
     ),
+    quiet: bool = typer.Option(  # noqa: B008
+        False,
+        "--quiet",
+        "-q",
+        help="Suppress non-essential output (count lines, hints). Results only.",
+    ),
 ) -> None:
     """Find a symbol definition by name (function, class, method, type, constant, etc.).
 
@@ -847,17 +853,16 @@ def symbol(
                              substitution is auditable.
         """
         if as_json:
+            # Always emit the unified envelope: {"query":..., "results":[...], "total":N}
+            # plus optional "redirected_from" when a close-match redirect was applied.
+            envelope: dict[str, object] = {
+                "query": name,
+                "results": results,
+                "total": len(results),
+            }
             if redirected_from is not None:
-                # Wrap the result list with an envelope when a redirect was
-                # applied so structured callers can detect and (optionally)
-                # surface the substitution.  Non-redirect callers stay on the
-                # pre-existing bare-list shape — adding the envelope
-                # unconditionally would be a breaking change for anyone who
-                # parses the JSON output today.
-                envelope = {"redirected_from": redirected_from, "results": results}
-                typer.echo(json.dumps(envelope, separators=(",", ":")))
-            else:
-                typer.echo(json.dumps(results, separators=(",", ":")))
+                envelope["redirected_from"] = redirected_from
+            typer.echo(json.dumps(envelope, separators=(",", ":")))
         elif results:
             if redirected_from is not None:
                 marker = f"(redirected from: {redirected_from!r})"
@@ -871,11 +876,12 @@ def symbol(
             # close-match suggestions when we have any. Surfacing suggestions
             # alongside the not-indexed hint is intentionally suppressed —
             # close matches in a half-indexed project would be misleading.
-            typer.echo(not_found_extra if not_found_extra else f"No matches for {name!r}")
-            if close_matches and not not_found_extra:
-                from .render.common import render_list  # noqa: PLC0415
-                typer.echo("Did you mean:")
-                typer.echo(render_list(close_matches, bullet="-"))
+            if not quiet:
+                typer.echo(not_found_extra if not_found_extra else f"No matches for {name!r}")
+                if close_matches and not not_found_extra:
+                    from .render.common import render_list  # noqa: PLC0415
+                    typer.echo("Did you mean:")
+                    typer.echo(render_list(close_matches, bullet="-"))
 
     def _global_query(target: str) -> list[dict]:
         """Run the symbols_global query for *target* and shape the rows.
@@ -1141,7 +1147,10 @@ def ref(
     ]
 
     if as_json:
-        typer.echo(json.dumps(results, separators=(",", ":")))
+        typer.echo(json.dumps(
+            {"query": name, "results": results, "total": len(results)},
+            separators=(",", ":"),
+        ))
     elif results:
         use_tty_color = sys.stdout.isatty()
         for row in results:
@@ -1165,6 +1174,7 @@ def refs(
     file: str | None = typer.Option(None, "--file", "-f", help="Only show refs in this file (partial path match)"),
     limit: int = typer.Option(50, "--limit", "-n", help="Cap results (default 50)"),
     as_json: bool = _OPT_JSON,
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress count/summary lines. Results only."),  # noqa: B008
     show_callers: bool = typer.Option(
         False,
         "--callers",
@@ -1251,7 +1261,10 @@ def refs(
     ]
 
     if as_json:
-        typer.echo(json.dumps(results, separators=(",", ":")))
+        typer.echo(json.dumps(
+            {"query": symbol, "results": results, "total": len(results)},
+            separators=(",", ":"),
+        ))
         return
 
     if not results:
@@ -1259,11 +1272,14 @@ def refs(
 
         hint = read_commands._not_indexed_hint(proj.hash)
         if hint:
-            typer.echo(hint)
+            if not quiet:
+                typer.echo(hint)
         elif file is not None:
-            typer.echo(f"No references to {symbol!r} found in files matching {file!r}")
+            if not quiet:
+                typer.echo(f"No references to {symbol!r} found in files matching {file!r}")
         else:
-            typer.echo(f"No references found for {symbol!r}")
+            if not quiet:
+                typer.echo(f"No references found for {symbol!r}")
         return
 
     use_tty_color = sys.stdout.isatty()
@@ -1488,7 +1504,10 @@ def semantic(
                 }
                 for pr, h in all_hits
             ]
-            typer.echo(json.dumps(out, separators=(",", ":")))
+            typer.echo(json.dumps(
+                {"query": query, "results": out, "total": len(out)},
+                separators=(",", ":"),
+            ))
             return
 
         if not all_hits:
@@ -1534,7 +1553,10 @@ def semantic(
         )
         if json_output:
             note = "(keyword fallback — embeddings not ready)"
-            typer.echo(json.dumps({"fallback": note, "results": fallback}, separators=(",", ":")))
+            typer.echo(json.dumps(
+                {"query": query, "results": fallback, "total": len(fallback), "fallback": note},
+                separators=(",", ":"),
+            ))
             return
         if not fallback:
             typer.echo("(no results)")
@@ -1568,7 +1590,10 @@ def semantic(
             }
             for h in hits
         ]
-        typer.echo(json.dumps(out, separators=(",", ":")))
+        typer.echo(json.dumps(
+            {"query": query, "results": out, "total": len(out)},
+            separators=(",", ":"),
+        ))
         return
 
     if not hits:
@@ -2064,6 +2089,7 @@ def outline(
         help="Maximum nesting depth to include (0 = top-level only; 1 = also methods/nested classes, etc.).",
         min=0,
     ),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress the '# Outline:' header line. Results only."),  # noqa: B008
 ) -> None:
     """List symbols in <file> with line ranges, line counts, and docstring hints.
 
@@ -2076,7 +2102,7 @@ def outline(
     """
     from . import read_commands  # noqa: PLC0415
 
-    read_commands.outline(file, json_output=json_output, max_depth=max_depth)
+    read_commands.outline(file, json_output=json_output, max_depth=max_depth, quiet=quiet)
 
 
 @app.command("exports", rich_help_panel="Core")
@@ -2120,6 +2146,7 @@ def scope(
 def cmd_changed(
     since: str = typer.Option("HEAD~5", "--since", help="Git ref to compare against (commit, branch, tag). Default: HEAD~5."),  # noqa: B008
     json_output: bool = _OPT_JSON,
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress count/summary lines. Results only."),  # noqa: B008
     limit: int = typer.Option(50, "--limit", help="Maximum number of symbol entries to return."),  # noqa: B008
     symbol_mode: bool = typer.Option(False, "--symbol", help="Use the DB index to find symbols that overlap changed line ranges (more reliable than git hunk context). Output grouped by file."),  # noqa: B008
 ) -> None:
@@ -2144,7 +2171,7 @@ def cmd_changed(
     """
     from . import read_commands  # noqa: PLC0415
 
-    read_commands.changed(since_ref=since, json_output=json_output, limit=limit, symbol_mode=symbol_mode)
+    read_commands.changed(since_ref=since, json_output=json_output, limit=limit, symbol_mode=symbol_mode, quiet=quiet)
 
 
 @app.command("blame", rich_help_panel="Core")

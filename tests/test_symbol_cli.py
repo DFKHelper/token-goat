@@ -220,12 +220,16 @@ def test_symbol_json_output_is_valid(indexed_ts_dir, tmp_data_dir, monkeypatch):
     result = runner.invoke(app, ["symbol", "greet", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output.strip())
-    assert isinstance(data, list)
-    assert len(data) >= 1
-    assert data[0]["name"] == "greet"
-    assert data[0]["kind"] == "function"
-    assert "file" in data[0]
-    assert "line" in data[0]
+    # Unified envelope: {"query":..., "results":[...], "total":N}
+    assert isinstance(data, dict)
+    assert data["query"] == "greet"
+    assert "results" in data
+    assert "total" in data
+    assert len(data["results"]) >= 1
+    assert data["results"][0]["name"] == "greet"
+    assert data["results"][0]["kind"] == "function"
+    assert "file" in data["results"][0]
+    assert "line" in data["results"][0]
 
 
 def test_ref_json_output_is_valid(indexed_ts_dir, tmp_data_dir, monkeypatch):
@@ -240,9 +244,11 @@ def test_ref_json_output_is_valid(indexed_ts_dir, tmp_data_dir, monkeypatch):
     result = runner.invoke(app, ["ref", "greet", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output.strip())
-    assert isinstance(data, list)
-    assert len(data) >= 1
-    assert data[0]["name"] == "greet"
+    # Unified envelope: {"query":..., "results":[...], "total":N}
+    assert isinstance(data, dict)
+    assert data["query"] == "greet"
+    assert len(data["results"]) >= 1
+    assert data["results"][0]["name"] == "greet"
 
 
 def test_index_command_prints_summary(indexed_ts_dir, tmp_data_dir, monkeypatch):
@@ -273,9 +279,11 @@ def test_symbol_all_projects_json(indexed_ts_dir, tmp_data_dir, monkeypatch):
     result = runner.invoke(app, ["symbol", "greet", "--all-projects", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output.strip())
-    assert isinstance(data, list)
-    assert len(data) >= 1
-    assert any(r["name"] == "greet" for r in data)
+    # Unified envelope: {"query":..., "results":[...], "total":N}
+    assert isinstance(data, dict)
+    assert data["query"] == "greet"
+    assert len(data["results"]) >= 1
+    assert any(r["name"] == "greet" for r in data["results"])
 
 
 def test_symbol_all_projects_records_bytes_saved(indexed_ts_dir, tmp_data_dir, monkeypatch):
@@ -315,9 +323,11 @@ def test_refs_json_output(indexed_ts_dir, tmp_data_dir, monkeypatch):
     result = runner.invoke(app, ["refs", "greet", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output.strip())
-    assert isinstance(data, list)
-    assert len(data) >= 1
-    first = data[0]
+    # Unified envelope: {"query":..., "results":[...], "total":N}
+    assert isinstance(data, dict)
+    assert data["query"] == "greet"
+    assert len(data["results"]) >= 1
+    first = data["results"][0]
     assert first["symbol"] == "greet"
     assert "file" in first
     assert "line" in first
@@ -368,8 +378,9 @@ def test_refs_file_filter(indexed_ts_dir, tmp_data_dir, monkeypatch):
     result = runner.invoke(app, ["refs", "greet", "--file", "index.ts", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output.strip())
-    assert isinstance(data, list)
-    for row in data:
+    # Unified envelope: {"query":..., "results":[...], "total":N}
+    assert isinstance(data, dict)
+    for row in data["results"]:
         assert "index.ts" in row["file"]
 
 
@@ -385,7 +396,7 @@ def test_refs_limit(indexed_ts_dir, tmp_data_dir, monkeypatch):
     result = runner.invoke(app, ["refs", "greet", "--limit", "1", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output.strip())
-    assert len(data) <= 1
+    assert len(data["results"]) <= 1
 
 
 def test_refs_no_project_is_graceful():
@@ -418,10 +429,12 @@ def test_symbol_refs_flag_json(indexed_ts_dir, tmp_data_dir, monkeypatch):
     result = runner.invoke(app, ["symbol", "greet", "--refs", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output.strip())
-    assert isinstance(data, list)
-    assert len(data) >= 1
-    assert "ref_count" in data[0]
-    assert isinstance(data[0]["ref_count"], int)
+    # Unified envelope: {"query":..., "results":[...], "total":N}
+    assert isinstance(data, dict)
+    assert data["query"] == "greet"
+    assert len(data["results"]) >= 1
+    assert "ref_count" in data["results"][0]
+    assert isinstance(data["results"][0]["ref_count"], int)
 
 
 def test_symbol_refs_flag_plain(indexed_ts_dir, tmp_data_dir, monkeypatch):
@@ -450,6 +463,7 @@ def test_symbol_without_refs_flag_no_ref_count(indexed_ts_dir, tmp_data_dir, mon
     result = runner.invoke(app, ["symbol", "greet", "--json"])
     assert result.exit_code == 0
     data = json.loads(result.output.strip())
-    assert isinstance(data, list)
-    assert len(data) >= 1
-    assert "ref_count" not in data[0]
+    # Unified envelope: {"query":..., "results":[...], "total":N}
+    assert isinstance(data, dict)
+    assert len(data["results"]) >= 1
+    assert "ref_count" not in data["results"][0]

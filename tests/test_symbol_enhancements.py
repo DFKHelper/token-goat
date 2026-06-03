@@ -398,7 +398,7 @@ class TestSymbolJsonCliOutput:
         return cli
 
     def test_json_output_has_symbol_key(self, tmp_path, tmp_data_dir, monkeypatch):
-        """symbol --json output includes 'symbol' key matching the name."""
+        """symbol --json output uses unified envelope and includes 'symbol' key in results."""
         import json
 
         from typer.testing import CliRunner
@@ -408,12 +408,14 @@ class TestSymbolJsonCliOutput:
         result = runner.invoke(cli.app, ["symbol", "hello_world", "--json"])
         assert result.exit_code == 0, result.output
         data = json.loads(result.output.strip())
-        assert isinstance(data, list)
-        assert len(data) >= 1
-        assert data[0].get("symbol") == "hello_world"
+        # Unified envelope: {"query":..., "results":[...], "total":N}
+        assert isinstance(data, dict)
+        assert data["query"] == "hello_world"
+        assert len(data["results"]) >= 1
+        assert data["results"][0].get("symbol") == "hello_world"
 
     def test_json_output_has_snippet_key(self, tmp_path, tmp_data_dir, monkeypatch):
-        """symbol --json output includes 'snippet' key with function body."""
+        """symbol --json output includes 'snippet' key in results with function body."""
         import json
 
         from typer.testing import CliRunner
@@ -423,9 +425,10 @@ class TestSymbolJsonCliOutput:
         result = runner.invoke(cli.app, ["symbol", "hello_world", "--json"])
         assert result.exit_code == 0, result.output
         data = json.loads(result.output.strip())
-        assert isinstance(data, list)
-        assert len(data) >= 1
-        snippet = data[0].get("snippet")
+        # Unified envelope: {"query":..., "results":[...], "total":N}
+        assert isinstance(data, dict)
+        assert len(data["results"]) >= 1
+        snippet = data["results"][0].get("snippet")
         # Snippet should contain the function definition
         assert snippet is not None
         assert "hello_world" in snippet
