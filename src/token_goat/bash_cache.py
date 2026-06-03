@@ -151,12 +151,18 @@ def normalize_command_for_cache_key(cmd: str) -> str:
     1. Strip leading/trailing whitespace
     2. Normalize internal whitespace runs to single spaces
     3. Normalize Windows path separators (backslash to forward slash) inside tokens
+    3.5. Strip redundant ``./`` prefix from path tokens (``./file.py`` → ``file.py``)
+         and trailing ``/`` from non-root path tokens (``src/`` → ``src``).
+         This ensures semantically equivalent path forms share the same cache key,
+         e.g. ``cat ./src/auth.py`` and ``cat src/auth.py`` deduplicate correctly.
     4. Sort single-char flags (e.g., ``-x -q`` → ``-q -x``) for tools like pytest/rg/git
 
     Examples:
-        ``uv run pytest  tests/  -q`` → ``uv run pytest tests/ -q``
+        ``uv run pytest  tests/  -q`` → ``uv run pytest tests -q`` (trailing / stripped)
         ``rg pattern -o -i`` → ``rg pattern -i -o`` (flags sorted)
         ``cd C:\\foo && rg`` → ``cd C:/foo && rg`` (path sep normalized)
+        ``cat ./src/auth.py`` → ``cat src/auth.py`` (dot-slash stripped)
+        ``pytest ./tests/`` → ``pytest tests`` (dot-slash + trailing slash stripped)
 
     *Important:* This normalization is **only** for the cache key, not for the
     actual command executed. The original command is always run.
@@ -176,6 +182,31 @@ def normalize_command_for_cache_key(cmd: str) -> str:
         # Replace backslashes with forward slashes in the token.
         # This catches C:\foo, paths in flags, etc.
         normalized_tokens.append(token.replace('\\', '/'))
+    normalized = ' '.join(normalized_tokens)
+
+    # Step 3.5: Normalize redundant path prefixes / suffixes.
+    # Strip leading ``./`` from tokens that start with it but NOT ``../`` (which
+    # changes the referent).  Also strip a trailing ``/`` from tokens that are not
+    # the filesystem root ``/`` — ``src/`` and ``src`` refer to the same path for
+    # dedup purposes.  Skip flag tokens (starting with ``-``) and shell operators
+    # (``&&``, ``||``, ``|``, ``>``, etc.) so we don't mutate argument values.
+    tokens = normalized.split(' ')
+    normalized_tokens = []
+    for token in tokens:
+        if token.startswith('-') or token in ('&&', '||', '|', '>', '>>', ';', '&'):
+            normalized_tokens.append(token)
+            continue
+        if token:
+            # Strip leading ./  but not ../
+            if token.startswith('./') and not token.startswith('../'):
+                token = token[2:]
+            # Strip trailing / unless the token is just '/' (filesystem root)
+            if token.endswith('/') and token != '/':
+                token = token.rstrip('/')
+            # After stripping "./" the token may be empty — normalise to "." (current dir)
+            if not token:
+                token = '.'
+        normalized_tokens.append(token)
     normalized = ' '.join(normalized_tokens)
 
     # Step 4: Sort single-char flags for common tools.

@@ -363,13 +363,14 @@ class TestNormalizeCommandForCacheKey:
 
     def test_pytest_flag_sorting(self):
         """Single-char flags in pytest commands are sorted."""
-        assert bash_cache.normalize_command_for_cache_key("pytest -x -q tests/") == "pytest -q -x tests/"
-        assert bash_cache.normalize_command_for_cache_key("pytest -q -x tests/") == "pytest -q -x tests/"
-        assert bash_cache.normalize_command_for_cache_key("pytest -v -q tests/") == "pytest -q -v tests/"
+        # Trailing / stripped by step 3.5 path normalization
+        assert bash_cache.normalize_command_for_cache_key("pytest -x -q tests/") == "pytest -q -x tests"
+        assert bash_cache.normalize_command_for_cache_key("pytest -q -x tests/") == "pytest -q -x tests"
+        assert bash_cache.normalize_command_for_cache_key("pytest -v -q tests/") == "pytest -q -v tests"
 
     def test_pytest_with_uv_run(self):
         """pytest via uv run has flags sorted."""
-        assert bash_cache.normalize_command_for_cache_key("uv run pytest -x -q tests/") == "uv run pytest -q -x tests/"
+        assert bash_cache.normalize_command_for_cache_key("uv run pytest -x -q tests/") == "uv run pytest -q -x tests"
 
     def test_rg_flag_sorting(self):
         """Single-char flags in rg commands are sorted (only leading flags before positional args)."""
@@ -396,12 +397,15 @@ class TestNormalizeCommandForCacheKey:
 
     def test_flags_only_before_first_positional(self):
         """Only leading single-char flags are sorted; flags after positional args are not."""
-        # Once we hit "tests/", everything after is kept in order
-        assert bash_cache.normalize_command_for_cache_key("pytest -q -x tests/ -v") == "pytest -q -x tests/ -v"
+        # Trailing / on 'tests/' is stripped (step 3.5).  The -v after the path is not
+        # a leading single-char flag so it stays in place, which is the key assertion.
+        assert bash_cache.normalize_command_for_cache_key("pytest -q -x tests/ -v") == "pytest -q -x tests -v"
 
     def test_ignores_long_flags(self):
         """Long flags (--flag) are not sorted, only single-char flags."""
-        assert bash_cache.normalize_command_for_cache_key("pytest --verbose -q tests/") == "pytest --verbose -q tests/"
+        # Trailing / on 'tests/' is stripped as part of path normalization (step 3.5),
+        # but the key assertion is that --verbose is not re-sorted / moved.
+        assert bash_cache.normalize_command_for_cache_key("pytest --verbose -q tests/") == "pytest --verbose -q tests"
         assert bash_cache.normalize_command_for_cache_key("rg -i --type py") == "rg -i --type py"
 
     def test_no_sorting_for_unknown_tools(self):
@@ -449,6 +453,65 @@ class TestNormalizeCommandForCacheKey:
         normalized_once = bash_cache.normalize_command_for_cache_key(cmd)
         normalized_twice = bash_cache.normalize_command_for_cache_key(normalized_once)
         assert normalized_once == normalized_twice
+
+    def test_dot_slash_prefix_stripped(self):
+        """Leading ./ is removed from path tokens for dedup purposes."""
+        assert bash_cache.normalize_command_for_cache_key("cat ./src/auth.py") == "cat src/auth.py"
+        assert bash_cache.normalize_command_for_cache_key("python ./script.py") == "python script.py"
+        assert bash_cache.normalize_command_for_cache_key("node ./index.js") == "node index.js"
+
+    def test_dot_slash_dedup_produces_same_hash(self):
+        """cat ./file.py and cat file.py must share the same cache key."""
+        h1 = bash_cache.command_hash("cat ./src/auth.py")
+        h2 = bash_cache.command_hash("cat src/auth.py")
+        assert h1 == h2, "dot-slash and no-dot-slash paths should hash identically"
+
+        h3 = bash_cache.command_hash("pytest ./tests/")
+        h4 = bash_cache.command_hash("pytest tests")
+        assert h3 == h4, "pytest ./tests/ and pytest tests should hash identically"
+
+    def test_dot_dot_slash_not_stripped(self):
+        """../parent.py must NOT be normalised — it refers to a different path."""
+        assert bash_cache.normalize_command_for_cache_key("cat ../parent.py") == "cat ../parent.py"
+        h1 = bash_cache.command_hash("cat ../parent.py")
+        h2 = bash_cache.command_hash("cat parent.py")
+        assert h1 != h2, "../ path must not be normalised to the same hash as the bare name"
+
+    def test_trailing_slash_stripped(self):
+        """Trailing / on directory tokens is stripped for dedup purposes."""
+        assert bash_cache.normalize_command_for_cache_key("pytest tests/") == "pytest tests"
+        assert bash_cache.normalize_command_for_cache_key("rg pattern src/") == "rg pattern src"
+
+    def test_filesystem_root_not_stripped(self):
+        """The filesystem root '/' must not be changed."""
+        assert bash_cache.normalize_command_for_cache_key("ls /") == "ls /"
+        assert bash_cache.normalize_command_for_cache_key("ls /etc") == "ls /etc"
+
+    def test_flags_not_affected_by_path_normalisation(self):
+        """Short flags (-q, --verbose) are never mutated by step 3.5."""
+        assert bash_cache.normalize_command_for_cache_key("rg -i ./src/") == "rg -i src"
+        # Flag value is not a positional path token — stays untouched
+        assert bash_cache.normalize_command_for_cache_key("rg --include=./foo") == "rg --include=./foo"
+
+    def test_shell_operators_not_affected(self):
+        """Shell operators (&&, ||, |, >, ;) are left unchanged."""
+        cmd = "cd ./project && pytest ./tests/"
+        result = bash_cache.normalize_command_for_cache_key(cmd)
+        # cd argument ./project -> project; && untouched; pytest ./tests/ -> pytest tests
+        assert result == "cd project && pytest tests"
+
+    def test_bare_dot_slash_becomes_dot(self):
+        """A bare './' argument (current dir) normalises to '.' not an empty string."""
+        assert bash_cache.normalize_command_for_cache_key("ls ./") == "ls ."
+        assert bash_cache.normalize_command_for_cache_key("ls -la ./") == "ls -la ."
+
+    def test_dot_slash_normalisation_is_idempotent(self):
+        """Applying the normalisation twice produces the same result."""
+        cmds = ["cat ./src/auth.py", "pytest ./tests/", "rg -i ./src/", "ls ./"]
+        for cmd in cmds:
+            n1 = bash_cache.normalize_command_for_cache_key(cmd)
+            n2 = bash_cache.normalize_command_for_cache_key(n1)
+            assert n1 == n2, f"Not idempotent: {cmd!r} -> {n1!r} -> {n2!r}"
 
 
 class TestCommandHashCwdScoping:
