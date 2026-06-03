@@ -314,18 +314,28 @@ def _is_system_path(path_str: str) -> bool:
     Windows are classified as system paths and rejected. Notably, /var, /usr,
     /usr/local and application log files are NOT automatically rejected as they
     may be legitimate project resources.
+
+    Paths are normalised to forward slashes before comparison so that Windows
+    paths arriving with backslashes (``C:\\Windows\\...``) and the same path
+    with forward slashes (``C:/Windows/...``) or from WSL (``/mnt/c/Windows/...``)
+    are all treated consistently.
     """
-    path_lower = path_str.lower()
+    # Normalise to lowercase forward-slash form for uniform comparison.
+    path_lower = path_str.lower().replace("\\", "/")
     # POSIX system paths (critical system dirs only)
     if path_lower.startswith(("/etc/", "/sys/", "/proc/", "/dev/")):
         return True
-    # Windows system paths (case-insensitive)
+    # WSL-mounted Windows system paths (e.g. /mnt/c/windows/...)
+    if path_lower.startswith(("/mnt/c/windows/", "/mnt/c/program files", "/mnt/c/programdata/")):
+        return True
+    # Windows system paths — match both backslash and forward-slash forms
+    # after normalisation (backslashes already replaced above).
     return path_lower.startswith(
         (
-            "c:\\windows\\",
-            "c:\\program files",
-            "c:\\programdata\\",
-            "c:\\winnt\\",
+            "c:/windows/",
+            "c:/program files",
+            "c:/programdata/",
+            "c:/winnt/",
         )
     )
 

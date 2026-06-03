@@ -1014,7 +1014,7 @@ def symbol(
             {
                 "file": r["file_rel"],
                 "line": r["line"],
-                "end_line": r.get("end_line"),
+                "end_line": r["end_line"] if "end_line" in r else None,  # noqa: SIM401 – sqlite3.Row has no .get()
                 "kind": r["kind"],
                 "name": r["name"],
                 "signature": r["signature"],

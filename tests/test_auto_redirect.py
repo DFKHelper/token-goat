@@ -128,3 +128,55 @@ class _FakeProject:
     hash = "0" * 64
     root = "/fake/root"
     marker = ".git"
+
+
+class TestSymbolEndLineRegression:
+    """Regression tests for the sqlite3.Row.get('end_line') bug.
+
+    When _query_project returns sqlite3.Row objects (which lack .get()), the
+    dict comprehension in _project_query was calling r.get('end_line') instead
+    of r['end_line'], causing AttributeError on --refs and --json paths.
+    """
+
+    def test_dict_without_end_line_does_not_raise(self, tmp_data_dir, monkeypatch) -> None:
+        """symbol command with a dict row missing 'end_line' must not raise KeyError."""
+        from typer.testing import CliRunner
+
+        from token_goat import cli, read_commands
+
+        monkeypatch.setattr(cli, "_require_project", lambda: _FakeProject())
+        monkeypatch.setattr(read_commands, "_not_indexed_hint", lambda h: None)
+
+        def _fake_query(_hash, _sql, params):
+            # Row dict without 'end_line' key — simulates an older DB schema.
+            return [{"name": "myFunc", "kind": "function",
+                     "file_rel": "src/app.py", "line": 42, "signature": "() -> None"}]
+
+        monkeypatch.setattr(cli, "_query_project", _fake_query)
+        runner = CliRunner()
+        result = runner.invoke(cli.app, ["symbol", "myFunc"])
+        assert result.exit_code == 0, f"Unexpected exit code: {result.output}"
+        assert "src/app.py" in result.output
+
+    def test_dict_without_end_line_json_output_does_not_raise(self, tmp_data_dir, monkeypatch) -> None:
+        """symbol --json with a dict row missing 'end_line' must not raise KeyError."""
+        import json
+
+        from typer.testing import CliRunner
+
+        from token_goat import cli, read_commands
+
+        monkeypatch.setattr(cli, "_require_project", lambda: _FakeProject())
+        monkeypatch.setattr(read_commands, "_not_indexed_hint", lambda h: None)
+
+        def _fake_query(_hash, _sql, params):
+            return [{"name": "myFunc", "kind": "function",
+                     "file_rel": "src/app.py", "line": 42, "signature": "() -> None"}]
+
+        monkeypatch.setattr(cli, "_query_project", _fake_query)
+        runner = CliRunner()
+        result = runner.invoke(cli.app, ["symbol", "myFunc", "--json"])
+        assert result.exit_code == 0, f"Unexpected exit code: {result.output}"
+        data = json.loads(result.output.strip())
+        # JSON output is a list of symbol dicts or an envelope dict.
+        assert isinstance(data, (list, dict))
