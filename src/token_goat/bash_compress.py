@@ -2406,7 +2406,7 @@ class CargoFilter(Filter):
         return build_part if build_part.strip() else bench_out
 
 
-# --- Node package managers (npm / pnpm / yarn) -----------------------------
+# --- Node package managers (npm / pnpm / yarn / bun) -----------------------
 
 _NPM_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏)\s"

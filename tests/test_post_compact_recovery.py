@@ -271,7 +271,7 @@ class TestRecoverySkillChecklist:
     NOTE: commit 6fc1c46 (refactor: collapse skill list to single-line format)
     intentionally dropped the inlined-checklist feature and the per-skill
     bullet structure. The new format is a one-line summary:
-    ``**Skills:** name1, name2 (recall via `token-goat skill-body <name>`)``.
+    ``### Active Skills: name1, name2 (recall via `token-goat skill-body <name>`)``.
     Inlined DoD/Checklist sections, sha8 dedup, and ×N count badges are
     no longer emitted — the agent is pointed at `token-goat skill-body
     <name> --section DoD` to retrieve a section on demand. These tests
@@ -365,7 +365,7 @@ class TestRecoverySkillChecklist:
         )
         assert "ralph" in hint
         # The single-line skill summary stays short.
-        skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+        skill_lines = [ln for ln in hint.splitlines() if "### Active Skills" in ln]
         assert skill_lines, f"Skill summary line missing:\n{hint}"
         assert len(skill_lines[0]) < 400, (
             f"Skill summary line should be tight, got {len(skill_lines[0])} chars"
@@ -375,11 +375,10 @@ class TestRecoverySkillChecklist:
 class TestSkillDedup:
     """Recovery hint emits each loaded skill name exactly once.
 
-    NOTE: commit 6fc1c46 collapsed the per-skill bullet list into a single
-    ``**Skills:** name1, name2`` line and dropped sha8 differentiation and
-    ×N count badges in the process. These tests now verify the simplified
-    contract: each skill name appears exactly once on the summary line
-    regardless of how many times it was loaded.
+    NOTE: The skill section uses a ``### Active Skills: name1, name2`` format
+    (### heading for consistency with the pre-compact manifest) with skill names
+    inline on the header line. These tests verify each skill name appears exactly
+    once on the summary line regardless of how many times it was loaded.
     """
 
     def test_same_sha_three_loads_shows_count_badge(self, tmp_data_dir):
@@ -398,7 +397,7 @@ class TestSkillDedup:
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
         # Single-line summary: ralph appears exactly once.
-        skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+        skill_lines = [ln for ln in hint.splitlines() if "### Active Skills" in ln]
         assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
         assert skill_lines[0].count("ralph") == 1, (
             f"Expected ralph to appear once in summary:\n{skill_lines[0]}"
@@ -423,7 +422,7 @@ class TestSkillDedup:
         assert hint is not None
         # Single-line summary: ralph appears once. The latest body is
         # what `token-goat skill-body ralph` resolves to.
-        skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+        skill_lines = [ln for ln in hint.splitlines() if "### Active Skills" in ln]
         assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
         assert skill_lines[0].count("ralph") == 1, (
             f"Expected ralph to appear once in summary:\n{skill_lines[0]}"
@@ -459,7 +458,7 @@ class TestSkillDedup:
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
         # Single-line summary contains both names exactly once.
-        skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+        skill_lines = [ln for ln in hint.splitlines() if "### Active Skills" in ln]
         assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
         summary = skill_lines[0]
         assert summary.count("ralph") == 1, f"Expected ralph once:\n{summary}"
@@ -484,7 +483,7 @@ class TestSkillDedup:
             hint = hooks_session._build_recovery_hint(sid)
             assert hint is not None
             # Skill summary should NOT flag staleness (1 hour old < 6 hour threshold)
-            skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+            skill_lines = [ln for ln in hint.splitlines() if "### Active Skills" in ln]
             assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
             assert "(stale:" not in skill_lines[0], (
                 f"Recent skill should not be flagged as stale:\n{skill_lines[0]}"
@@ -510,7 +509,7 @@ class TestSkillDedup:
             hint = hooks_session._build_recovery_hint(sid)
             assert hint is not None
             # Skill summary should flag staleness
-            skill_lines = [ln for ln in hint.splitlines() if "**Skills:**" in ln]
+            skill_lines = [ln for ln in hint.splitlines() if "### Active Skills" in ln]
             assert len(skill_lines) == 1, f"Expected 1 skill summary line:\n{hint}"
             assert "(stale: 7h)" in skill_lines[0], (
                 f"Expected staleness flag (stale: 7h) in:\n{skill_lines[0]}"

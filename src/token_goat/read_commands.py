@@ -1252,6 +1252,17 @@ _OUTLINE_INCLUDE_KINDS: frozenset[str] = frozenset({
     "enum", "type_alias", "constructor",
 })
 
+# Kinds treated as depth-1 (nested / member symbols) for --max-depth filtering.
+# Since the DB stores all symbols at parent_id=NULL, we use the kind field to
+# infer logical depth: methods and constructors are depth-1 (inside a class),
+# everything in _OUTLINE_INCLUDE_KINDS is depth-0.
+_OUTLINE_DEPTH1_KINDS: frozenset[str] = frozenset({
+    "method", "constructor",
+})
+
+# All kinds that may be shown at any depth (union of depth-0 and depth-1 kinds).
+_OUTLINE_ALL_KINDS: frozenset[str] = _OUTLINE_INCLUDE_KINDS | _OUTLINE_DEPTH1_KINDS
+
 # Maximum top-level symbols to list; a single file rarely has more than this
 # in practice, but the cap prevents OOM on pathological auto-generated files.
 _OUTLINE_MAX_SYMBOLS: int = 200
@@ -1333,29 +1344,38 @@ def _format_outline_line(
     start_line: int,
     end_line: int,
     docstring_line: str | None,
+    depth: int = 0,
+    show_line_count: bool = True,
 ) -> str:
     """Render one symbol entry for the outline view.
 
-    Format: ``  L1-L2  kind            name  # docstring first line``
+    Format: ``  L1-L2  kind            name  (N lines)  # docstring first line``
 
     The kind column is left-padded to 16 chars so names align regardless
     of kind length (``async_function`` is the longest at 14 chars).
+    Nested symbols are indented by ``depth * 2`` spaces.
     """
+    indent = "  " * depth
     range_str = f"{start_line}-{end_line}"
+    line_count = end_line - start_line + 1
+    count_part = f"  ({line_count} lines)" if show_line_count else ""
     doc_part = f"  # {docstring_line}" if docstring_line else ""
-    return f"  {range_str:<10}  {kind:<16}  {name}{doc_part}"
+    return f"{indent}  {range_str:<10}  {kind:<16}  {name}{count_part}{doc_part}"
 
 
 def outline(
     file: str,
     json_output: bool = False,
+    max_depth: int | None = None,
 ) -> None:
-    """List top-level symbols in <file> with line ranges and docstring hints.
+    """List symbols in <file> with line ranges, line counts, and docstring hints.
 
-    Returns a compact structured list of every top-level (module-level) symbol
-    in the file — kind, name, line range, and the first line of its docstring
-    if one exists.  Body text is omitted, so the output is typically ~5% of
-    the cost of reading the full file.
+    Returns a compact structured list of symbols in the file — kind, name, line
+    range, line count, and the first line of each symbol's docstring if one
+    exists.  By default only top-level symbols are shown.
+
+    Use ``--max-depth N`` (N >= 1) to include nested symbols up to N levels deep
+    (e.g. ``--max-depth 2`` also shows methods inside classes).
 
     Use ``token-goat read <file>::<symbol>`` to retrieve any symbol body.
     """
@@ -1370,19 +1390,37 @@ def outline(
     proj = target.project
     file_rel = target.rel_path
 
+    # Normalise max_depth: None or 0 → top-level only (depth 0); 1 → also
+    # include depth-1 symbols (methods/constructors), etc.
+    # Note: the DB stores all symbols with parent_id=NULL because the indexer
+    # does not write parent FKs.  We infer logical depth from the `kind` field:
+    #   depth 0 — function, async_function, class, interface, struct, …
+    #   depth 1 — method, constructor
+    effective_max_depth = 0 if max_depth is None or max_depth <= 0 else max_depth
+
     with db.open_project_readonly(proj.hash) as conn:
         try:
             rows = conn.execute(
                 "SELECT name, kind, line, end_line "
                 "FROM symbols "
-                "WHERE file_rel = ? AND parent_id IS NULL AND end_line IS NOT NULL "
+                "WHERE file_rel = ? AND end_line IS NOT NULL "
                 "ORDER BY line",
                 (file_rel,),
             ).fetchall()
         except sqlite3.OperationalError:
             rows = []
 
-    if not rows:
+    # Assign logical depth based on kind and apply max_depth filter.
+    def _kind_depth(kind: str) -> int:
+        return 1 if kind in _OUTLINE_DEPTH1_KINDS else 0
+
+    rows_with_depth = [
+        (row, _kind_depth(row["kind"]))
+        for row in rows
+        if row["kind"] in _OUTLINE_ALL_KINDS and _kind_depth(row["kind"]) <= effective_max_depth
+    ]
+
+    if not rows_with_depth:
         if json_output:
             typer.echo(json.dumps({"file": file_rel, "symbols": []}, separators=(",", ":")))
         else:
@@ -1390,13 +1428,10 @@ def outline(
             typer.echo("(Run `token-goat index --full` if this file has not been indexed yet.)")
         return
 
-    filtered = [
-        row for row in rows
-        if row["kind"] in _OUTLINE_INCLUDE_KINDS
-    ][:_OUTLINE_MAX_SYMBOLS]
+    filtered = rows_with_depth[:_OUTLINE_MAX_SYMBOLS]
 
     if not filtered:
-        # All symbols exist but none are structural (e.g. file of constants only).
+        # All symbols exist but none pass the kind + depth filter.
         if json_output:
             typer.echo(json.dumps({"file": file_rel, "symbols": []}, separators=(",", ":")))
         else:
@@ -1411,26 +1446,33 @@ def outline(
 
     if json_output:
         out = []
-        for row in filtered:
+        for row, depth in filtered:
             doc = _extract_docstring_first_line(
                 source_lines, int(row["line"]), int(row["end_line"]),
             ) if source_lines else None
+            line_count = int(row["end_line"]) - int(row["line"]) + 1
             out.append({
                 "name": row["name"],
                 "kind": row["kind"],
                 "start_line": row["line"],
                 "end_line": row["end_line"],
+                "line_count": line_count,
+                "depth": depth,
                 "docstring": doc,
             })
         typer.echo(json.dumps({"file": file_rel, "symbols": out}, separators=(",", ":")))
         return
 
-    typer.echo(f"# Outline: {file_rel}  ({len(filtered)} top-level symbols)")
-    for row in filtered:
+    typer.echo(f"# Outline: {file_rel}  ({len(filtered)} symbols)")
+    for row, depth in filtered:
         doc = _extract_docstring_first_line(
             source_lines, int(row["line"]), int(row["end_line"]),
         ) if source_lines else None
-        typer.echo(_format_outline_line(row["name"], row["kind"], int(row["line"]), int(row["end_line"]), doc))
+        typer.echo(_format_outline_line(
+            row["name"], row["kind"],
+            int(row["line"]), int(row["end_line"]),
+            doc, depth=depth,
+        ))
 
     # Record token savings: outline costs ~5% of a full file read.
     try:
@@ -1439,7 +1481,7 @@ def outline(
             len(_format_outline_line(
                 r["name"], r["kind"], int(r["line"]), int(r["end_line"]), None,
             ).encode())
-            for r in filtered
+            for r, _d in filtered
         )
         saved = max(0, src_bytes - outline_bytes)
         db.record_stat(None, "outline", bytes_saved=saved, tokens_saved=max(1, saved // 3 + 1) if saved > 0 else 0, detail=file_rel)

@@ -243,7 +243,7 @@ class TestRecoveryHintOverflowCount:
 
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        assert "**Skills:**" in hint
+        assert "### Active Skills" in hint
 
         # At most 8 skills shown (ceiling). With 10 unique, "+2 more" expected.
         # (The exact count depends on allocator budget, but with only skills and
@@ -278,7 +278,7 @@ class TestRecoveryHintOverflowCount:
 
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        assert "**Skills:**" in hint
+        assert "### Active Skills" in hint
 
         # 10 unique skills total (8 + ralph + extra-skill); ceiling is 8.
         # Overflow should be +2 (the 2 unique names not shown), not +7 (which

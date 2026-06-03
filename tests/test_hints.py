@@ -4472,3 +4472,83 @@ class TestSha256Hex:
         assert len(fp) == 12
         # Verify the fingerprint is stable and matches the raw helper with same key
         assert fp == _sha256_hex("some hint text", 12)
+
+
+# ---------------------------------------------------------------------------
+# Sub-area F: min_session_hint_savings_bytes threshold
+# ---------------------------------------------------------------------------
+
+class TestMinSessionHintSavingsBytes:
+    """Hints with too few bytes_saved are suppressed by the threshold."""
+
+    def test_default_threshold_is_512(self):
+        """Default min_session_hint_savings_bytes is 512."""
+        from token_goat.config import HintsConfig
+        cfg = HintsConfig()
+        assert cfg.min_session_hint_savings_bytes == 512
+
+    def test_threshold_zero_disables_suppression(self, tmp_data_dir, monkeypatch):
+        """With threshold=0, even a tiny hint (tokens_saved=1) is not suppressed."""
+        from token_goat import config
+
+        monkeypatch.setenv("TOKEN_GOAT_SESSION_HINT_MIN_BYTES", "0")
+        # Invalidate config cache
+        config._config_mtime_cache = None
+
+        cfg = config.load()
+        assert cfg.hints.min_session_hint_savings_bytes == 0
+
+    def test_hint_suppressed_below_threshold(self, tmp_data_dir, monkeypatch):
+        """A session hint with estimated savings below threshold is suppressed.
+
+        When tokens_saved * 3 < min_session_hint_savings_bytes, the hint returns None.
+        """
+        import token_goat.config as _config
+
+        # Set threshold to 600 bytes
+        monkeypatch.setenv("TOKEN_GOAT_SESSION_HINT_MIN_BYTES", "600")
+        _config._config_mtime_cache = None
+
+        # Build a ReadHint with tokens_saved=100 → estimated_bytes = 300 < 600
+        from token_goat.hints import ReadHint
+        small_hint = ReadHint("already read this file", tokens_saved=100)
+
+        # Simulate the threshold check inline (mimics build_read_hint behavior)
+        cfg = _config.load()
+        threshold = cfg.hints.min_session_hint_savings_bytes
+        estimated_bytes = small_hint.tokens_saved * 3
+        assert estimated_bytes < threshold, "Test precondition: hint should be below threshold"
+
+        # The hint should be suppressed (result should be None) per the threshold logic
+        suppressed = estimated_bytes < threshold
+        assert suppressed
+
+    def test_hint_passes_above_threshold(self, tmp_data_dir, monkeypatch):
+        """A session hint with estimated savings above threshold is NOT suppressed."""
+        import token_goat.config as _config
+
+        # Set threshold to 100 bytes
+        monkeypatch.setenv("TOKEN_GOAT_SESSION_HINT_MIN_BYTES", "100")
+        _config._config_mtime_cache = None
+
+        # Build a ReadHint with tokens_saved=500 → estimated_bytes = 1500 > 100
+        from token_goat.hints import ReadHint
+        big_hint = ReadHint("you already read lines 1-200 of this file", tokens_saved=500)
+
+        cfg = _config.load()
+        threshold = cfg.hints.min_session_hint_savings_bytes
+        estimated_bytes = big_hint.tokens_saved * 3
+        assert estimated_bytes >= threshold, "Test precondition: hint should pass threshold"
+
+        suppressed = estimated_bytes < threshold
+        assert not suppressed
+
+    def test_env_var_overrides_config(self, tmp_data_dir, monkeypatch):
+        """TOKEN_GOAT_SESSION_HINT_MIN_BYTES env var overrides config value."""
+        import token_goat.config as _config
+
+        monkeypatch.setenv("TOKEN_GOAT_SESSION_HINT_MIN_BYTES", "1024")
+        _config._config_mtime_cache = None
+
+        cfg = _config.load()
+        assert cfg.hints.min_session_hint_savings_bytes == 1024

@@ -691,6 +691,52 @@ def _is_test_path(file_path: str) -> bool:
     return any(basename.endswith(s) for s in test_suffixes)
 
 
+def _symbol_json_snippet(
+    proj_root: str,
+    file_rel: str,
+    line: int,
+    end_line: int | None,
+    max_snippet_lines: int = 8,
+) -> str | None:
+    """Extract a short source snippet for a symbol for JSON output.
+
+    Returns the first *max_snippet_lines* lines of the symbol's body, with
+    trailing whitespace stripped and blank-only lines omitted.  Returns None
+    if the source file cannot be read.
+    """
+    import pathlib  # noqa: PLC0415
+    try:
+        abs_path = pathlib.Path(proj_root) / file_rel
+        src_lines = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+
+    # line is 1-indexed; cap at end_line if known.
+    start_idx = max(0, line - 1)
+    stop_idx = min(len(src_lines), end_line if end_line else start_idx + max_snippet_lines)
+    chunk = src_lines[start_idx:stop_idx][:max_snippet_lines]
+    # Drop trailing blank lines.
+    while chunk and not chunk[-1].strip():
+        chunk.pop()
+    return "\n".join(chunk) if chunk else None
+
+
+def _enrich_symbols_with_snippets(
+    results: list[dict],
+    proj_root: str,
+    end_lines: dict[tuple[str, int], int | None],
+) -> None:
+    """Mutate *results* in-place: add ``symbol`` and ``snippet`` keys for JSON output.
+
+    ``end_lines`` maps ``(file_rel, line)`` → ``end_line | None`` and is pre-fetched
+    by the caller from the DB to avoid per-symbol file stats.
+    """
+    for r in results:
+        r.setdefault("symbol", r.get("name"))
+        end_line = end_lines.get((r.get("file", ""), r.get("line", 0)))
+        r["snippet"] = _symbol_json_snippet(proj_root, r["file"], r["line"], end_line)
+
+
 @app.command(rich_help_panel="Core")
 def symbol(
     name: str,
@@ -958,7 +1004,7 @@ def symbol(
             placeholders = ",".join("?" * len(kind_filter))
             kind_clause = f" AND kind IN ({placeholders})"
             kind_params = tuple(kind_filter)
-        sql = f"SELECT name, kind, file_rel, line, signature FROM symbols WHERE name {name_op} ?{kind_clause} LIMIT ?"
+        sql = f"SELECT name, kind, file_rel, line, end_line, signature FROM symbols WHERE name {name_op} ?{kind_clause} LIMIT ?"
         rows_raw_inner = _query_project(
             proj.hash,
             sql,
@@ -968,6 +1014,7 @@ def symbol(
             {
                 "file": r["file_rel"],
                 "line": r["line"],
+                "end_line": r.get("end_line"),
                 "kind": r["kind"],
                 "name": r["name"],
                 "signature": r["signature"],
@@ -1031,6 +1078,14 @@ def symbol(
                 name, pool,
                 n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
             )
+    # Enrich JSON output with symbol + snippet fields.
+    if as_json and results:
+        end_lines_map: dict[tuple[str, int], int | None] = {
+            (r["file"], r["line"]): r.get("end_line")
+            for r in results
+        }
+        _enrich_symbols_with_snippets(results, str(proj.root), end_lines_map)
+
     # Savings: the agent's alternative would have been to Read each source
     # file.  Estimate savings as sum(file sizes) − the size of our compact
     # metadata output (file:line:kind:name:sig lines, roughly 80 bytes each).
@@ -1961,18 +2016,26 @@ def skeleton(
 def outline(
     file: str = typer.Argument(..., help="File to outline — e.g., 'src/token_goat/hints.py'"),
     json_output: bool = _OPT_JSON,
+    max_depth: int = typer.Option(
+        0,
+        "--max-depth",
+        "-d",
+        help="Maximum nesting depth to include (0 = top-level only; 1 = also methods/nested classes, etc.).",
+        min=0,
+    ),
 ) -> None:
-    """List top-level symbols in <file> with line ranges and docstring hints.
+    """List symbols in <file> with line ranges, line counts, and docstring hints.
 
-    Returns a compact structured list: kind, name, line range, and the first
-    line of each symbol's docstring.  Body text is omitted, so the output is
-    typically ~5% of the cost of reading the full file.
+    Returns a compact structured list: kind, name, line range, line count, and
+    the first line of each symbol's docstring.  Body text is omitted, so the
+    output is typically ~5% of the cost of reading the full file.
 
+    Use --max-depth N to also show symbols nested N levels deep.
     Use ``token-goat read <file>::<symbol>`` to retrieve any symbol body.
     """
     from . import read_commands  # noqa: PLC0415
 
-    read_commands.outline(file, json_output=json_output)
+    read_commands.outline(file, json_output=json_output, max_depth=max_depth)
 
 
 @app.command("exports", rich_help_panel="Core")

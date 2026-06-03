@@ -895,6 +895,146 @@ class TestNodePackageFilter:
         assert "npm ERR! code ENOENT" in result.text
 
 
+class TestPnpmFilter:
+    """pnpm-specific compression via PnpmFilter."""
+
+    def test_keeps_pnpm_error_line(self):
+        """ERR_PNPM_* error lines must survive compression."""
+        text = (
+            "Packages: +15\n"
+            "ERR_PNPM_NO_MATCHING_VERSION  No matching version found for lodash@99.0\n"
+            "Progress: resolved 10, reused 5, downloaded 0, added 0\n"
+        )
+        f = bc.PnpmFilter()
+        result = f.apply(text, "", 1, ["pnpm", "add", "lodash@99.0"])
+        assert "ERR_PNPM_NO_MATCHING_VERSION" in result.text
+
+    def test_keeps_pnpm_packages_summary(self):
+        """'Packages: +N' summary line is preserved."""
+        text = (
+            "Resolving: 80/80\n"
+            "Packages: +5\n"
+            "node_modules/.pnpm/lodash@4.17.21 OK\n"
+        )
+        f = bc.PnpmFilter()
+        result = f.apply(text, "", 0, ["pnpm", "install"])
+        assert "Packages: +5" in result.text
+
+    def test_drops_pnpm_progress_lines(self):
+        """Resolving N/M progress lines are dropped."""
+        lines = [
+            "Resolving: 100/100",
+            "Downloading: 45/100",
+            "Packages: +1",
+        ]
+        f = bc.PnpmFilter()
+        result = f.apply("\n".join(lines), "", 0, ["pnpm", "add", "react"])
+        # Progress lines collapsed, summary kept
+        assert "Packages: +1" in result.text
+
+    def test_pnpm_already_up_to_date(self):
+        """'Already up to date' is a meaningful output line."""
+        text = "Already up to date\n"
+        f = bc.PnpmFilter()
+        result = f.apply(text, "", 0, ["pnpm", "install"])
+        assert "Already up to date" in result.text
+
+
+class TestYarnFilter:
+    """yarn-specific compression via YarnFilter."""
+
+    def test_keeps_yarn_error_line(self):
+        """'error <message>' lines must survive compression."""
+        text = (
+            "yarn add v1.22.19\n"
+            "[1/4] Resolving packages...\n"
+            "error An unexpected error occurred: 'ENOENT: no such file'\n"
+            "info Visit https://yarnpkg.com/en/docs/cli/add for docs\n"
+        )
+        f = bc.YarnFilter()
+        result = f.apply(text, "", 1, ["yarn", "add", "missing-pkg"])
+        assert "error An unexpected error occurred" in result.text
+
+    def test_keeps_yarn_success_summary(self):
+        """'success' summary line is preserved."""
+        text = (
+            "yarn add v1.22.19\n"
+            "[1/4] Resolving packages...\n"
+            "[2/4] Fetching packages...\n"
+            "[3/4] Linking dependencies...\n"
+            "[4/4] Building fresh packages...\n"
+            "success Saved 3 new dependencies.\n"
+            "Done in 2.5s.\n"
+        )
+        f = bc.YarnFilter()
+        result = f.apply(text, "", 0, ["yarn", "add", "react"])
+        assert "success Saved 3 new dependencies." in result.text
+
+    def test_drops_yarn_fetch_body_lines(self):
+        """Individual package fetch lines inside [2/4] phase are collapsed."""
+        text = "\n".join([
+            "yarn install v1.22.19",
+            "[1/4] Resolving packages...",
+            "[2/4] Fetching packages...",
+            "  fetch lodash@4.17.21",
+            "  fetch react@18.2.0",
+            "  fetch react-dom@18.2.0",
+            "[3/4] Linking dependencies...",
+            "Done in 1.5s.",
+        ])
+        f = bc.YarnFilter()
+        result = f.apply(text, "", 0, ["yarn", "install"])
+        # Fetch body lines collapsed
+        assert "fetch lodash" not in result.text
+        # Phase headers and summary kept
+        assert "Done in 1.5s." in result.text
+
+    def test_yarn_done_in_kept(self):
+        """'Done in Xs.' summary line is preserved."""
+        text = "yarn install v1.22.19\nDone in 1.2s.\n"
+        f = bc.YarnFilter()
+        result = f.apply(text, "", 0, ["yarn", "install"])
+        assert "Done in 1.2s." in result.text
+
+
+class TestBunFilter:
+    """bun-specific compression via BunFilter."""
+
+    def test_keeps_bun_error_line(self):
+        """'error:' prefix lines must survive compression."""
+        text = (
+            "bun add v1.0.0\n"
+            "⠋ Resolving dependencies...\n"
+            "error: No package 'nonexistent-pkg@9.9.9' found\n"
+        )
+        f = bc.BunFilter()
+        result = f.apply(text, "", 1, ["bun", "add", "nonexistent-pkg@9.9.9"])
+        assert "error: No package" in result.text
+
+    def test_keeps_bun_packages_summary(self):
+        """'N packages installed' summary is preserved."""
+        text = (
+            "bun add v1.0.0\n"
+            "3 packages installed\n"
+        )
+        f = bc.BunFilter()
+        result = f.apply(text, "", 0, ["bun", "add", "react", "vue", "svelte"])
+        assert "3 packages installed" in result.text
+
+    def test_drops_bun_progress_lines(self):
+        """Per-package download/resolution progress is dropped."""
+        # Bun install progress: "  lodash@4.17.21" download status lines
+        text = "\n".join([
+            "bun add v1.0.0",
+            "  lodash@4.17.21",
+            "  react@18.2.0",
+            "2 packages installed",
+        ])
+        f = bc.BunFilter()
+        result = f.apply(text, "", 0, ["bun", "install"])
+        assert "2 packages installed" in result.text
+
+
 # ---------------------------------------------------------------------------
 # Docker filter
 # ---------------------------------------------------------------------------
@@ -6217,7 +6357,7 @@ class TestSwiftLintFilter:
 # ---------------------------------------------------------------------------
 
 
-class TestBunFilter:
+class TestBunFilter2:
     """Tests for BunFilter (Bun JS runtime compression)."""
 
     def _f(self) -> bc.BunFilter:

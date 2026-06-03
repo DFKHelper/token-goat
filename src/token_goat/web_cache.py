@@ -37,8 +37,11 @@ from __future__ import annotations
 
 __all__ = [
     "DEFAULT_MAX_TOTAL_BYTES",
+    "JSON_STRING_TRUNCATE_CHARS",
     "OUTPUT_FILENAME_RE",
     "WebOutputMeta",
+    "_compress_json_body",
+    "_is_json_response",
     "evict_old_entries",
     "find_cached_for_url",
     "get_output_size",
@@ -214,6 +217,67 @@ def output_id_for(session_id: str, url: str, ts: float | None = None) -> str:
     return build_output_id(session_id, url_hash(url), ts)
 
 
+# Maximum length for string values in compressed JSON responses.  Values longer
+# than this are truncated with a "(…N more chars)" suffix.
+JSON_STRING_TRUNCATE_CHARS: int = 200
+
+# Maximum bytes for a JSON body that will be run through the JSON compressor.
+# Beyond this we fall back to the standard tail-preserve strategy to avoid
+# spending excessive time deserializing huge JSON blobs.
+_JSON_COMPRESS_MAX_INPUT_BYTES: int = 1 * 1024 * 1024  # 1 MB
+
+
+def _is_json_response(body: str, content_type: str | None) -> bool:
+    """Return True when the response body should be treated as JSON.
+
+    Two signals are accepted:
+    1. ``content_type`` contains "application/json" (case-insensitive).
+    2. The body's first non-whitespace character is ``{`` or ``[`` (a heuristic
+       that catches JSON APIs that forget to set the content-type header).
+    """
+    if content_type and "application/json" in content_type.lower():
+        return True
+    stripped = body.lstrip()
+    return bool(stripped) and stripped[0] in ("{", "[")
+
+
+def _compress_json_body(body: str, max_string_chars: int = JSON_STRING_TRUNCATE_CHARS) -> str:
+    """Parse *body* as JSON and return a compacted form suitable for caching.
+
+    Every string value in the JSON tree that exceeds *max_string_chars* is
+    truncated to that length with a ``(…N more chars)`` suffix so the key
+    structure is preserved but long embedded data (base64 blobs, HTML fragments,
+    large text fields) does not inflate the cache entry.
+
+    On any parse error the original body is returned unchanged so callers are
+    unaffected by malformed JSON.
+    """
+    import json  # noqa: PLC0415
+
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return body
+
+    def _truncate(obj: object, depth: int = 0) -> object:
+        if isinstance(obj, str):
+            if len(obj) > max_string_chars:
+                remainder = len(obj) - max_string_chars
+                return obj[:max_string_chars] + f"(…{remainder} more chars)"
+            return obj
+        if isinstance(obj, dict):
+            return {k: _truncate(v, depth + 1) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_truncate(item, depth + 1) for item in obj]
+        return obj
+
+    try:
+        compressed = _truncate(data)
+        return json.dumps(compressed, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return body
+
+
 def store_output(
     session_id: str,
     url: str,
@@ -251,6 +315,17 @@ def store_output(
 
         # Strip ANSI sequences before storing to save space and improve readability.
         cleaned_body = strip_ansi(body)
+
+        # Content-type routing: JSON responses get key-preserving string truncation
+        # before the standard tail-preserve truncation.  Only applied when the
+        # original body is within the compressor's input budget so we do not spend
+        # excessive time deserializing very large JSON blobs.
+        if _is_json_response(cleaned_body, content_type):
+            input_bytes = len(cleaned_body.encode("utf-8", errors="replace"))
+            if input_bytes <= _JSON_COMPRESS_MAX_INPUT_BYTES:
+                cleaned_body = _compress_json_body(cleaned_body)
+                _LOG.debug("web_cache: applied JSON compressor for url_hash=%s", url_hash(url))
+
         body_bytes = len(body.encode("utf-8", errors="replace"))
         stored, truncated = truncate_tail_preserve(
             cleaned_body, _MAX_STORED_BYTES, marker_template=_TRUNC_MARKER,

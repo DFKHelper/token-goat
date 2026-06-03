@@ -288,3 +288,144 @@ class _FakeProject:
     hash = "0" * 64
     root = "/fake/root"
     marker = ".git"
+
+
+# ---------------------------------------------------------------------------
+# Sub-area B: symbol --json structured output with snippet
+# ---------------------------------------------------------------------------
+
+class TestSymbolJsonSnippet:
+    """Unit tests for _symbol_json_snippet helper."""
+
+    def test_returns_first_lines_of_function(self, tmp_path):
+        """Snippet contains the function definition line."""
+        from token_goat.cli import _symbol_json_snippet
+
+        src = "def greet(name):\n    return f'hello {name}'\n\n\ndef other():\n    pass\n"
+        f = tmp_path / "sample.py"
+        f.write_text(src, encoding="utf-8")
+        snippet = _symbol_json_snippet(str(tmp_path), "sample.py", line=1, end_line=2)
+        assert snippet is not None
+        assert "def greet" in snippet
+        assert "return" in snippet
+
+    def test_missing_file_returns_none(self, tmp_path):
+        """Returns None when source file does not exist."""
+        from token_goat.cli import _symbol_json_snippet
+
+        result = _symbol_json_snippet(str(tmp_path), "nonexistent.py", line=1, end_line=5)
+        assert result is None
+
+    def test_caps_at_max_snippet_lines(self, tmp_path):
+        """Snippet does not exceed max_snippet_lines."""
+        from token_goat.cli import _symbol_json_snippet
+
+        lines = [f"line_{i} = {i}\n" for i in range(50)]
+        f = tmp_path / "big.py"
+        f.write_text("".join(lines), encoding="utf-8")
+        snippet = _symbol_json_snippet(str(tmp_path), "big.py", line=1, end_line=50, max_snippet_lines=5)
+        assert snippet is not None
+        assert snippet.count("\n") < 5  # ≤ 5 lines means ≤ 4 newlines inside
+
+
+class TestEnrichSymbolsWithSnippets:
+    """Unit tests for _enrich_symbols_with_snippets helper."""
+
+    def test_adds_symbol_key(self, tmp_path):
+        """Enrichment adds a 'symbol' key mirroring 'name'."""
+        from token_goat.cli import _enrich_symbols_with_snippets
+
+        results = [{"name": "foo", "file": "nonexistent.py", "line": 1}]
+        _enrich_symbols_with_snippets(results, str(tmp_path), {})
+        assert results[0].get("symbol") == "foo"
+
+    def test_adds_snippet_from_source(self, tmp_path):
+        """Enrichment extracts a snippet from the source file."""
+        from token_goat.cli import _enrich_symbols_with_snippets
+
+        src = "def compute(x):\n    return x * 2\n"
+        (tmp_path / "calc.py").write_text(src, encoding="utf-8")
+        results = [{"name": "compute", "file": "calc.py", "line": 1}]
+        end_lines = {("calc.py", 1): 2}
+        _enrich_symbols_with_snippets(results, str(tmp_path), end_lines)
+        assert "def compute" in (results[0].get("snippet") or "")
+
+    def test_snippet_none_for_missing_file(self, tmp_path):
+        """snippet is None when the source file does not exist."""
+        from token_goat.cli import _enrich_symbols_with_snippets
+
+        results = [{"name": "missing_fn", "file": "ghost.py", "line": 5}]
+        _enrich_symbols_with_snippets(results, str(tmp_path), {})
+        assert results[0].get("snippet") is None
+
+
+class TestSymbolJsonCliOutput:
+    """Integration tests: symbol --json CLI output includes symbol + snippet."""
+
+    def _setup_fake_project(self, tmp_path, monkeypatch):
+        """Set up fake project with a source file."""
+        import pathlib
+
+        from token_goat import cli, read_commands
+
+        src = "def hello_world():\n    return 'hello'\n"
+        src_file = tmp_path / "greet.py"
+        src_file.write_text(src, encoding="utf-8")
+
+        class FakeProject:
+            hash = "a" * 64
+            root = pathlib.Path(str(tmp_path))
+            marker = ".git"
+
+        fake_row = {
+            "name": "hello_world",
+            "kind": "function",
+            "file_rel": "greet.py",
+            "line": 1,
+            "end_line": 2,
+            "signature": "()",
+        }
+
+        class _FakeRow(dict):
+            pass
+
+        def _fake_query(_hash, sql, params):
+            return [_FakeRow(fake_row)]
+
+        monkeypatch.setattr(cli, "_require_project", lambda: FakeProject())
+        monkeypatch.setattr(cli, "_query_project", _fake_query)
+        monkeypatch.setattr(read_commands, "_not_indexed_hint", lambda h: None)
+        return cli
+
+    def test_json_output_has_symbol_key(self, tmp_path, tmp_data_dir, monkeypatch):
+        """symbol --json output includes 'symbol' key matching the name."""
+        import json
+
+        from typer.testing import CliRunner
+        cli = self._setup_fake_project(tmp_path, monkeypatch)
+
+        runner = CliRunner()
+        result = runner.invoke(cli.app, ["symbol", "hello_world", "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output.strip())
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        assert data[0].get("symbol") == "hello_world"
+
+    def test_json_output_has_snippet_key(self, tmp_path, tmp_data_dir, monkeypatch):
+        """symbol --json output includes 'snippet' key with function body."""
+        import json
+
+        from typer.testing import CliRunner
+        cli = self._setup_fake_project(tmp_path, monkeypatch)
+
+        runner = CliRunner()
+        result = runner.invoke(cli.app, ["symbol", "hello_world", "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output.strip())
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        snippet = data[0].get("snippet")
+        # Snippet should contain the function definition
+        assert snippet is not None
+        assert "hello_world" in snippet

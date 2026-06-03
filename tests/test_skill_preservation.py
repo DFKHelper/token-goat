@@ -598,7 +598,7 @@ class TestRecoveryHintSkills:
         session.mark_skill_loaded(sid, "ralph", "oid1", "sha1", 25_000, False)
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        assert "**Skills:**" in hint
+        assert "### Active Skills" in hint
         assert "ralph" in hint
         # The single-line summary points the agent at the recall command.
         assert "token-goat skill-body <name>" in hint
@@ -622,7 +622,7 @@ class TestRecoveryHintSkills:
         )
         hint = hooks_session._build_recovery_hint(sid)
         assert hint is not None
-        assert "**Skills:**" in hint
+        assert "### Active Skills" in hint
         assert "ralph" in hint
         # The --section tip points the agent at how to fetch the DoD body.
         assert "--section DoD" in hint
@@ -648,7 +648,7 @@ class TestRecoveryHintSkills:
         session.mark_file_read(sid, "/tmp/foo.py", 0, 20)
         hint = hooks_session._build_recovery_hint(sid)
         if hint is not None:
-            assert "**Skills:**" not in hint
+            assert "### Active Skills" not in hint
 
 
 # ---------------------------------------------------------------------------

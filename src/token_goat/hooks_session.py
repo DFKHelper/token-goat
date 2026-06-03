@@ -811,7 +811,12 @@ def _build_recovery_hint(session_id: str) -> str | None:
         dropped = len(all_unique_names - shown_names)
         suffix = f", +{dropped} more" if dropped > 0 else ""
         skill_str = ", ".join(skill_parts) + suffix
-        line = f"**Skills:** {skill_str} (recall via `token-goat skill-body <name>`)"
+        # Use ### heading for consistency with the pre-compact manifest format
+        # (compact.py uses "### Active Skills").  Inline colon form keeps the
+        # skill names on the same line as the header so downstream consumers
+        # can extract them with a single line scan.
+        skill_header = "### Active Skills"
+        line = f"{skill_header}: {skill_str} (recall via `token-goat skill-body <name>`)"
         sections.append(line)
 
     # 0.5. Active blockers — failed bash commands within the blocker window.
@@ -828,8 +833,10 @@ def _build_recovery_hint(session_id: str) -> str | None:
             resume_anchor = f"re-run {blocker_anchor}"
 
     # 1. Recently-touched files — the agent will likely want these back.
+    # Use ### heading for consistency with the pre-compact manifest format
+    # (compact.py uses "### Files Edited" for the equivalent section).
     if files_keep:
-        lines = ["**Files**:"]
+        lines = ["### Edited Files"]
         for entry in files_keep:
             sym_count = len(entry.symbols_read)
             if sym_count > 3:

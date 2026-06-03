@@ -841,6 +841,25 @@ def _build_read_hint_inner(
             cwd=cwd,
         )
         if hint is not None:
+            # Apply minimum-savings threshold: suppress re-read dedup hints where
+            # the estimated bytes saved is below the configured floor.
+            # Only applies to dedup hints (tokens_saved > 0); suggestion hints
+            # (tokens_saved == 0) are never suppressed by this threshold since
+            # they fire on large-file / index-miss paths regardless of prior read.
+            if hint.tokens_saved > 0:
+                try:
+                    from . import config as _cfg  # noqa: PLC0415
+                    _min_bytes = _cfg.load().hints.min_session_hint_savings_bytes
+                except Exception:  # noqa: BLE001
+                    _min_bytes = 0
+                if _min_bytes > 0:
+                    estimated_bytes_saved = hint.tokens_saved * 3
+                    if estimated_bytes_saved < _min_bytes:
+                        _LOG.debug(
+                            "build_read_hint: suppressing hint for %s (bytes_saved=%d < threshold=%d)",
+                            fname, estimated_bytes_saved, _min_bytes,
+                        )
+                        return None
             _LOG.debug(
                 "build_read_hint: cache hint for %s lines %d-%d (tokens_saved=%d)",
                 fname, req_start, req_end, hint.tokens_saved,

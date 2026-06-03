@@ -292,3 +292,120 @@ class TestOutlineCliSmoke:
         assert result.exit_code == 0, result.output
         data = json.loads(result.output.strip())
         assert "symbols" in data
+
+
+# ---------------------------------------------------------------------------
+# Sub-area A: line counts and --max-depth
+# ---------------------------------------------------------------------------
+
+class TestOutlineLineCount:
+    """Verify that outline emits line counts per symbol."""
+
+    def test_text_output_shows_line_count(self, tmp_path, tmp_data_dir, make_project, capsys, monkeypatch):
+        """outline text output includes '(N lines)' for each symbol."""
+        content = (
+            'def short():\n'       # 1
+            '    pass\n'           # 2
+            '\n'                   # 3
+            'class Big:\n'         # 4
+            '    def m(self):\n'   # 5
+            '        pass\n'       # 6
+            '\n'                   # 7
+            '    def n(self):\n'   # 8
+            '        pass\n'       # 9
+        )
+        proj_root, proj = _make_outline_project(tmp_path, tmp_data_dir, make_project, content)
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import outline
+        outline(str(proj_root / "sample.py"))
+        out = capsys.readouterr().out
+
+        # short() spans lines 1-2 → 2 lines; Big spans 4-9 → 6 lines
+        assert "lines)" in out, f"Expected '(N lines)' in output, got:\n{out}"
+
+    def test_json_output_has_line_count_field(self, tmp_path, tmp_data_dir, make_project, capsys, monkeypatch):
+        """JSON output includes a 'line_count' key for each symbol."""
+        content = (
+            'def alpha():\n'
+            '    return 1\n'
+            '\n'
+            'def beta():\n'
+            '    return 2\n'
+        )
+        proj_root, proj = _make_outline_project(tmp_path, tmp_data_dir, make_project, content)
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import outline
+        outline(str(proj_root / "sample.py"), json_output=True)
+        out = capsys.readouterr().out
+        data = json.loads(out.strip())
+        assert len(data["symbols"]) >= 1
+        for sym in data["symbols"]:
+            assert "line_count" in sym, f"Missing line_count in symbol: {sym}"
+            assert sym["line_count"] == sym["end_line"] - sym["start_line"] + 1
+
+
+class TestOutlineMaxDepth:
+    """Verify --max-depth flag limits or expands nesting."""
+
+    def test_default_depth_zero_excludes_methods(self, tmp_path, tmp_data_dir, make_project, capsys, monkeypatch):
+        """Default depth (0) only shows top-level symbols, not methods."""
+        content = (
+            'class MyClass:\n'
+            '    def method_one(self):\n'
+            '        pass\n'
+            '    def method_two(self):\n'
+            '        pass\n'
+        )
+        proj_root, proj = _make_outline_project(tmp_path, tmp_data_dir, make_project, content)
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import outline
+        outline(str(proj_root / "sample.py"), max_depth=0)
+        out = capsys.readouterr().out
+
+        assert "MyClass" in out
+        assert "method_one" not in out
+        assert "method_two" not in out
+
+    def test_max_depth_one_includes_methods(self, tmp_path, tmp_data_dir, make_project, capsys, monkeypatch):
+        """max_depth=1 includes methods (depth 1) inside classes."""
+        content = (
+            'class MyClass:\n'
+            '    def method_one(self):\n'
+            '        pass\n'
+            '    def method_two(self):\n'
+            '        pass\n'
+        )
+        proj_root, proj = _make_outline_project(tmp_path, tmp_data_dir, make_project, content)
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import outline
+        outline(str(proj_root / "sample.py"), max_depth=1)
+        out = capsys.readouterr().out
+
+        assert "MyClass" in out
+        assert "method_one" in out
+        assert "method_two" in out
+
+    def test_max_depth_json_has_depth_field(self, tmp_path, tmp_data_dir, make_project, capsys, monkeypatch):
+        """JSON output with max_depth includes a 'depth' field for each symbol."""
+        content = (
+            'class Container:\n'
+            '    def run(self):\n'
+            '        pass\n'
+        )
+        proj_root, proj = _make_outline_project(tmp_path, tmp_data_dir, make_project, content)
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import outline
+        outline(str(proj_root / "sample.py"), json_output=True, max_depth=1)
+        out = capsys.readouterr().out
+        data = json.loads(out.strip())
+        assert "symbols" in data
+        names = {s["name"]: s["depth"] for s in data["symbols"]}
+        assert "Container" in names
+        assert names["Container"] == 0
+        if "run" in names:
+            assert names["run"] == 1

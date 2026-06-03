@@ -516,3 +516,144 @@ class TestGzipCompression:
         cache_dir = web_cache._web_outputs_dir()
         gz_path = Path(cache_dir) / (entry.output_id + ".gz")
         assert not gz_path.exists(), "When compress_bodies=False in config, .gz must not be created"
+
+
+# ---------------------------------------------------------------------------
+# Sub-area D: content-type routing — JSON compressor
+# ---------------------------------------------------------------------------
+
+class TestIsJsonResponse:
+    """_is_json_response detects JSON via content-type or body prefix."""
+
+    def test_json_content_type_returns_true(self):
+        from token_goat.web_cache import _is_json_response
+        assert _is_json_response("{}", "application/json") is True
+
+    def test_json_content_type_with_charset(self):
+        from token_goat.web_cache import _is_json_response
+        assert _is_json_response("{}", "application/json; charset=utf-8") is True
+
+    def test_object_body_without_content_type(self):
+        from token_goat.web_cache import _is_json_response
+        assert _is_json_response('{"key": "val"}', None) is True
+
+    def test_array_body_without_content_type(self):
+        from token_goat.web_cache import _is_json_response
+        assert _is_json_response('[{"a": 1}]', None) is True
+
+    def test_html_body_returns_false(self):
+        from token_goat.web_cache import _is_json_response
+        assert _is_json_response("<html></html>", "text/html") is False
+
+    def test_plain_text_returns_false(self):
+        from token_goat.web_cache import _is_json_response
+        assert _is_json_response("just text", None) is False
+
+    def test_whitespace_before_brace_detected(self):
+        from token_goat.web_cache import _is_json_response
+        assert _is_json_response('   {"a": 1}', None) is True
+
+
+class TestCompressJsonBody:
+    """_compress_json_body preserves keys but truncates long string values."""
+
+    def test_short_strings_are_preserved(self):
+        import json
+
+        from token_goat.web_cache import _compress_json_body
+        body = json.dumps({"name": "Alice", "age": 30})
+        result = _compress_json_body(body, max_string_chars=200)
+        data = json.loads(result)
+        assert data["name"] == "Alice"
+        assert data["age"] == 30
+
+    def test_long_string_is_truncated(self):
+        import json
+
+        from token_goat.web_cache import _compress_json_body
+        long_val = "X" * 500
+        body = json.dumps({"data": long_val, "name": "Bob"})
+        result = _compress_json_body(body, max_string_chars=200)
+        data = json.loads(result)
+        # data key preserved, string truncated
+        assert "data" in data
+        assert len(data["data"]) < len(long_val)
+        assert "more chars" in data["data"]
+        # Short string preserved
+        assert data["name"] == "Bob"
+
+    def test_nested_objects_have_strings_truncated(self):
+        import json
+
+        from token_goat.web_cache import _compress_json_body
+        body = json.dumps({"outer": {"inner": "A" * 300}})
+        result = _compress_json_body(body, max_string_chars=50)
+        data = json.loads(result)
+        assert "more chars" in data["outer"]["inner"]
+
+    def test_list_values_truncated(self):
+        import json
+
+        from token_goat.web_cache import _compress_json_body
+        body = json.dumps(["short", "B" * 300])
+        result = _compress_json_body(body, max_string_chars=100)
+        data = json.loads(result)
+        assert data[0] == "short"
+        assert "more chars" in data[1]
+
+    def test_invalid_json_returned_unchanged(self):
+        from token_goat.web_cache import _compress_json_body
+        not_json = "this is not json {broken}"
+        result = _compress_json_body(not_json)
+        assert result == not_json
+
+    def test_non_string_values_preserved(self):
+        import json
+
+        from token_goat.web_cache import _compress_json_body
+        body = json.dumps({"count": 42, "flag": True, "nothing": None, "pi": 3.14})
+        result = _compress_json_body(body)
+        data = json.loads(result)
+        assert data["count"] == 42
+        assert data["flag"] is True
+        assert data["nothing"] is None
+
+
+class TestStoreOutputJsonRouting:
+    """store_output applies JSON compressor when content-type is JSON."""
+
+    def test_json_response_has_string_values_truncated(self, tmp_data_dir):
+        """store_output compresses long JSON string values before caching."""
+        import json
+
+        from token_goat import web_cache
+
+        big_json = json.dumps({"key": "V" * 1000, "short": "ok"})
+        meta = web_cache.store_output(
+            "sess-json-1", "https://api.example.com/data", big_json, 200,
+            content_type="application/json",
+        )
+        assert meta is not None
+        body = web_cache.load_output(meta.output_id)
+        assert body is not None
+        # The stored body should have the long value truncated
+        data = json.loads(body)
+        assert "more chars" in data["key"]
+        # Short value preserved
+        assert data["short"] == "ok"
+
+    def test_html_response_not_json_compressed(self, tmp_data_dir):
+        """HTML responses bypass the JSON compressor (stored as-is)."""
+        from token_goat import web_cache
+
+        html = "<html><body>" + "X" * 500 + "</body></html>"
+        meta = web_cache.store_output(
+            "sess-html-1", "https://example.com/page", html, 200,
+            content_type="text/html",
+        )
+        assert meta is not None
+        body = web_cache.load_output(meta.output_id)
+        assert body is not None
+        # HTML body should NOT have JSON truncation markers
+        assert "more chars" not in body
+        assert "X" * 100 in body  # content preserved

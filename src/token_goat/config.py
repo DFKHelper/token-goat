@@ -71,6 +71,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_SKILL_COMPRESS",
     "TOKEN_GOAT_LAZY_SKILL_INJECTION",
     "TOKEN_GOAT_SERVE_DIFF_ON_REREAD",
+    "TOKEN_GOAT_SESSION_HINT_MIN_BYTES",
 )
 
 
@@ -320,6 +321,7 @@ class _HintsToml(TypedDict, total=False):
     serve_diff_on_reread: bool
     backoff_thresholds: list[int]
     git_hint_max_ms: int
+    min_session_hint_savings_bytes: int
 
 
 class _WebFetchToml(TypedDict, total=False):
@@ -890,6 +892,15 @@ class HintsConfig:
     # Maximum wall-clock time (ms) for git-history hint lookup. 0 disables the cap.
     # When exceeded, the hint is skipped and git_hint_timeout stat is recorded.
     git_hint_max_ms: int = 50
+    # Minimum bytes-saved threshold for session re-read hints.  When the estimated
+    # bytes saved by suppressing a re-read is below this value, the hint is not
+    # emitted — the hint cost (~12-25 tokens ≈ 36-75 bytes) would exceed the saving.
+    # Default 512 bytes (≈170 tokens saved floor).  Set to 0 to disable the threshold
+    # (always emit hints regardless of savings).  Override via
+    # ``TOKEN_GOAT_SESSION_HINT_MIN_BYTES`` env var or
+    # ``[hints] min_session_hint_savings_bytes = N`` in config.toml.
+    # Clamped to [0, 1_000_000].
+    min_session_hint_savings_bytes: int = 512
 
 
 @dataclass
@@ -1576,6 +1587,10 @@ def load() -> Config:
         git_hint_max_ms=_validated_int(
             hints_raw.get("git_hint_max_ms", 50), 50, 0, 10000, "hints.git_hint_max_ms"
         ),
+        min_session_hint_savings_bytes=_validated_int(
+            hints_raw.get("min_session_hint_savings_bytes", 512), 512, 0, 1_000_000,
+            "hints.min_session_hint_savings_bytes",
+        ),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
     _apply_env_enable(hints_cfg, "json_sidecar", _ENV_HINT_JSON_SIDECAR, "hints.json_sidecar")
@@ -1590,6 +1605,11 @@ def load() -> Config:
     )
     hints_cfg.grep_dedup_min_matches = _env_int(
         _ENV_GREP_DEDUP_MIN_MATCHES, hints_cfg.grep_dedup_min_matches, 0, 100000, "hints.grep_dedup_min_matches"
+    )
+    hints_cfg.min_session_hint_savings_bytes = _env_int(
+        "TOKEN_GOAT_SESSION_HINT_MIN_BYTES",
+        hints_cfg.min_session_hint_savings_bytes,
+        0, 1_000_000, "hints.min_session_hint_savings_bytes"
     )
 
     wf_raw: _WebFetchToml = cast("_WebFetchToml", raw.get("webfetch", {}))

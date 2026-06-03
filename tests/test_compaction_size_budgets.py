@@ -93,9 +93,9 @@ class TestRecoveryHintBudget:
             f"hint header changed: {hint[:80]!r}"
         )
         # All three sections should fire since each is saturated past its floor.
-        # Headers were trimmed for token savings; assert on the concept (markdown
-        # bold header for each section kind) rather than the verbose old wording.
-        assert "**Files**" in hint
+        # Files section uses ### heading (consistent with manifest format);
+        # Bash/Web still use ** bold format.
+        assert ("### Edited Files" in hint or "**Files**" in hint)
         assert "**Bash**" in hint
         assert "**Web**" in hint
         # Truncation tail signal must appear for at least one section.
@@ -123,7 +123,7 @@ class TestRecoveryHintBudget:
         hint = hooks_session._build_recovery_hint(sid)
 
         assert hint is not None
-        assert "**Files**" in hint
+        assert ("### Edited Files" in hint or "**Files**" in hint)
         assert "**Bash**" not in hint, (
             "bash section rendered despite no bash history"
         )
