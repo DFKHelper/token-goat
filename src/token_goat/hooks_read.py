@@ -549,10 +549,20 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
     Looks up the per-project git commit index for recent commits touching the
     file and formats them as a short bullet list.  Fail-soft: any exception
     (missing index, git absent, non-project file) returns None silently.
+
+    The operation is bounded by ``[hints] git_hint_max_ms`` (default 50 ms).
+    When the SQLite lookup exceeds this wall-clock threshold the hint is
+    skipped and a ``git_hint_timeout`` stat event is recorded so operators
+    can observe how often the cap fires.  Set ``git_hint_max_ms = 0`` to
+    disable the cap and always wait.
     """
     try:
+        from . import config as _cfg_mod  # noqa: PLC0415
+        from . import db as _db  # noqa: PLC0415
         from . import git_history  # noqa: PLC0415
         from .project import find_project  # noqa: PLC0415
+
+        _max_ms: int = _cfg_mod.load().hints.git_hint_max_ms
 
         cwd_path = validate_cwd(cwd, caller="pre-read-git-hint")
         if cwd_path is None:
@@ -565,7 +575,30 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
             rel_path = abs_file.relative_to(proj.root).as_posix()
         except ValueError:
             return None
-        return git_history.build_hint(proj.hash, rel_path)
+
+        _t0 = time.monotonic()
+        result = git_history.build_hint(proj.hash, rel_path)
+        _elapsed_ms = (time.monotonic() - _t0) * 1000.0
+
+        if _max_ms > 0 and _elapsed_ms > _max_ms:
+            # Hint took too long — skip it this read and record an event so
+            # operators can observe the cap via `token-goat stats`.
+            _LOG.debug(
+                "git-history hint: skipped (%.1f ms > %d ms cap) for %s",
+                _elapsed_ms,
+                _max_ms,
+                sanitize_log_str(file_path),
+            )
+            _db.record_stat(
+                None,
+                "git_hint_timeout",
+                bytes_saved=0,
+                tokens_saved=0,
+                detail=sanitize_log_str(file_path),
+            )
+            return None
+
+        return result
     except (OSError, ValueError, AttributeError):
         # OSError: DB/git access failures
         # ValueError: path validation or conversion failures

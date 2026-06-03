@@ -319,6 +319,7 @@ class _HintsToml(TypedDict, total=False):
     grep_dedup_min_matches: int
     serve_diff_on_reread: bool
     backoff_thresholds: list[int]
+    git_hint_max_ms: int
 
 
 class _WebFetchToml(TypedDict, total=False):
@@ -847,6 +848,13 @@ class HintsConfig:
             Default [1, 3, 10, 30] fires on the 2nd, 4th, 11th, and 31st reads,
             cutting hint volume by ~70% on heavily-used files. Set to [] to
             disable backoff (emit on every re-read, original behaviour).
+        git_hint_max_ms: Maximum wall-clock time in milliseconds allowed for
+            computing a git-history hint during pre-read. If the operation
+            (SQLite lookup in the commit index) takes longer than this threshold,
+            the hint is skipped for this read and a ``git_hint_timeout`` stat is
+            recorded. Default 50 ms. Set to 0 to disable the timeout cap (always
+            wait). Override via ``[hints] git_hint_max_ms = N`` in config.toml.
+            Clamped to [0, 10000].
     """
 
     suppress_after_ignored: int = 5
@@ -879,6 +887,9 @@ class HintsConfig:
     # Set to [] to disable backoff (emit on every re-read).
     # Override via [hints] backoff_thresholds = [1, 3, 10, 30] in config.toml.
     backoff_thresholds: list[int] = field(default_factory=lambda: [1, 3, 10, 30])
+    # Maximum wall-clock time (ms) for git-history hint lookup. 0 disables the cap.
+    # When exceeded, the hint is skipped and git_hint_timeout stat is recorded.
+    git_hint_max_ms: int = 50
 
 
 @dataclass
@@ -1533,6 +1544,9 @@ def load() -> Config:
             hints_raw.get("backoff_thresholds", [1, 3, 10, 30]),
             [1, 3, 10, 30],
             "hints.backoff_thresholds",
+        ),
+        git_hint_max_ms=_validated_int(
+            hints_raw.get("git_hint_max_ms", 50), 50, 0, 10000, "hints.git_hint_max_ms"
         ),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
