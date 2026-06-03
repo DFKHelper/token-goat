@@ -23,6 +23,7 @@ __all__ = [
     "set_hooks_stderr_log_override",
     "image_cache_dir",
     "is_safe_rel_path",
+    "is_wsl",
     "locks_dir",
     "logs_dir",
     "models_dir",
@@ -93,6 +94,25 @@ def hooks_stderr_log_path() -> Path:
     if _hooks_stderr_log_override is not None:
         return _hooks_stderr_log_override
     return logs_dir() / "hooks-stderr.log"
+
+
+def is_wsl() -> bool:
+    """Return True when running inside Windows Subsystem for Linux (WSL).
+
+    WSL processes report ``sys.platform == "linux"`` but may benefit from
+    Windows-specific guidance (e.g. data-directory locations, doctor output).
+    Detection uses the environment variables that the WSL kernel injector
+    populates for every Linux process inside a WSL distro:
+
+    * ``WSL_DISTRO_NAME`` — set by WSL 2 (and WSL 1 on recent builds) to the
+      distribution name (e.g. ``Ubuntu``).
+    * ``WSL_INTEROP`` — socket path written by WSL 2 for Win32 interop; absent
+      in WSL 1 and in plain Linux containers, so it is checked second.
+
+    Both checks are purely env-var reads (no file I/O, no subprocess) so the
+    function is safe to call on the hot hook path.
+    """
+    return bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"))
 
 
 def python_runner_argv(*subcommand: str) -> list[str]:

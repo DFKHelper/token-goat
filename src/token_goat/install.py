@@ -534,6 +534,10 @@ def install_linux_update_cron() -> tuple[bool, str]:
     if sys.platform == "win32":
         return True, "Windows: skipped"
 
+    if not shutil.which("crontab"):
+        _LOG.info("crontab not found in PATH; skipping cron install")
+        return False, "crontab not available (not found in PATH)"
+
     cron_line = f"0 3 * * 0 uv tool upgrade token-goat {CRON_JOB_MARKER}"
     try:
         r = subprocess.run(
@@ -579,6 +583,9 @@ def uninstall_linux_update_cron() -> str:
 
     if sys.platform == "win32":
         return "n/a (Windows)"
+
+    if not shutil.which("crontab"):
+        return "crontab not available (not found in PATH)"
 
     try:
         r = subprocess.run(

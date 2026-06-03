@@ -750,6 +750,7 @@ def test_install_linux_update_cron_adds_entry(monkeypatch):
     """install_linux_update_cron writes a cron entry idempotently."""
     import sys
     monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/" + name)
 
     written = {}
 
@@ -777,6 +778,7 @@ def test_install_linux_update_cron_deduplicates(monkeypatch):
     """install_linux_update_cron does not add duplicate entries."""
     import sys
     monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/" + name)
 
     existing_cron = f"0 3 * * 0 uv tool upgrade token-goat {install.CRON_JOB_MARKER}\n"
     written = {}
@@ -802,6 +804,7 @@ def test_uninstall_linux_update_cron_removes_entry(monkeypatch):
     """uninstall_linux_update_cron strips the marker line from crontab."""
     import sys
     monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(install.shutil, "which", lambda name: "/usr/bin/" + name)
 
     existing = (
         "0 0 * * * /usr/bin/true\n"
@@ -1400,3 +1403,33 @@ def test_hook_registry_startup_assertion_catches_drift():
     one_missing = all_evts - {"post-skill"}
     with pytest.raises(ImportError, match="post-skill"):
         hook_registry.assert_typer_subcommands_aligned(one_missing)
+
+
+# ---------------------------------------------------------------------------
+# install_linux_update_cron: crontab availability check
+# ---------------------------------------------------------------------------
+
+
+def test_install_linux_update_cron_skips_when_crontab_not_found(monkeypatch):
+    """install_linux_update_cron returns a clear message when crontab is absent."""
+    import sys  # noqa: PLC0415
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setattr(install.shutil, 'which', lambda name: None if name == 'crontab' else '/usr/bin/' + name)
+
+    ok, msg = install.install_linux_update_cron()
+
+    assert ok is False
+    assert 'not available' in msg
+    assert 'PATH' in msg
+
+
+def test_uninstall_linux_update_cron_skips_when_crontab_not_found(monkeypatch):
+    """uninstall_linux_update_cron returns a clear message when crontab is absent."""
+    import sys  # noqa: PLC0415
+    monkeypatch.setattr(sys, 'platform', 'linux')
+    monkeypatch.setattr(install.shutil, 'which', lambda name: None if name == 'crontab' else '/usr/bin/' + name)
+
+    result = install.uninstall_linux_update_cron()
+
+    assert 'not available' in result
+    assert 'PATH' in result

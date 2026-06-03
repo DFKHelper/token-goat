@@ -886,3 +886,43 @@ class TestPathHelperConsistency:
     def test_locks_dir_matches_inline(self, tmp_data_dir) -> None:
         """locks_dir() must equal data_dir() / 'locks'."""
         assert paths.locks_dir() == paths.data_dir() / "locks"
+
+
+# ---------------------------------------------------------------------------
+# is_wsl() detection
+# ---------------------------------------------------------------------------
+
+
+def test_is_wsl_returns_false_when_no_wsl_env(monkeypatch):
+    """is_wsl() returns False when neither WSL_DISTRO_NAME nor WSL_INTEROP is set."""
+    monkeypatch.delenv('WSL_DISTRO_NAME', raising=False)
+    monkeypatch.delenv('WSL_INTEROP', raising=False)
+    assert paths.is_wsl() is False
+
+
+def test_is_wsl_returns_true_when_wsl_distro_name_set(monkeypatch):
+    """is_wsl() returns True when WSL_DISTRO_NAME is set (WSL 1/2)."""
+    monkeypatch.setenv('WSL_DISTRO_NAME', 'Ubuntu')
+    monkeypatch.delenv('WSL_INTEROP', raising=False)
+    assert paths.is_wsl() is True
+
+
+def test_is_wsl_returns_true_when_wsl_interop_set(monkeypatch):
+    """is_wsl() returns True when WSL_INTEROP is set (WSL 2 interop socket)."""
+    monkeypatch.delenv('WSL_DISTRO_NAME', raising=False)
+    monkeypatch.setenv('WSL_INTEROP', '/run/WSL/1_interop')
+    assert paths.is_wsl() is True
+
+
+def test_is_wsl_returns_true_when_both_set(monkeypatch):
+    """is_wsl() returns True when both WSL env vars are present."""
+    monkeypatch.setenv('WSL_DISTRO_NAME', 'Debian')
+    monkeypatch.setenv('WSL_INTEROP', '/run/WSL/2_interop')
+    assert paths.is_wsl() is True
+
+
+def test_is_wsl_ignores_empty_string(monkeypatch):
+    """is_wsl() treats empty-string env var values as falsy (not WSL)."""
+    monkeypatch.setenv('WSL_DISTRO_NAME', '')
+    monkeypatch.delenv('WSL_INTEROP', raising=False)
+    assert paths.is_wsl() is False
