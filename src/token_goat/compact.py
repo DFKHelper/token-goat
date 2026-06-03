@@ -267,11 +267,47 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
             sorted_syms = sorted(symbol_access_raw.items(), key=itemgetter(1), reverse=True)
             top_symbols = [sym for sym, _ in sorted_syms[:3]]
 
-        # --- Signal 3: Recent git commit messages (from bash history) ---
+        # --- Signal 3: Recent git commit messages and bash work patterns ---
         recent_commits: list[str] = []
+        # Classify bash commands to infer the dominant work mode.
+        # Each category gets a counter; the most frequent wins if no commit message is found.
+        work_mode_counts: dict[str, int] = {
+            "testing": 0,
+            "linting": 0,
+            "type-checking": 0,
+            "building": 0,
+            "reviewing": 0,
+        }
+        _BASH_WORK_PATTERNS: list[tuple[str, str]] = [
+            # Testing
+            ("pytest", "testing"),
+            ("python -m pytest", "testing"),
+            ("uv run pytest", "testing"),
+            ("npm test", "testing"),
+            ("cargo test", "testing"),
+            # Linting / formatting
+            ("ruff", "linting"),
+            ("flake8", "linting"),
+            ("eslint", "linting"),
+            ("prettier", "linting"),
+            # Type checking
+            ("mypy", "type-checking"),
+            ("pyright", "type-checking"),
+            ("tsc", "type-checking"),
+            # Building / dependency management
+            ("uv sync", "building"),
+            ("pip install", "building"),
+            ("npm install", "building"),
+            ("cargo build", "building"),
+            # Code review / inspection
+            ("git diff", "reviewing"),
+            ("git log", "reviewing"),
+            ("git show", "reviewing"),
+        ]
         for entry in bash_hist.values():
             cmd = getattr(entry, "cmd_preview", "").strip()
-            if cmd.lower().startswith("git commit"):
+            cmd_lower = cmd.lower()
+            if cmd_lower.startswith("git commit"):
                 # Extract commit message via -m flag or similar
                 # Pattern: git commit -m "message" or git commit ... -m "message"
                 m = _re.search(r'-m\s+["\']([^"\']+)["\']', cmd)
@@ -279,7 +315,18 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
                     msg = m.group(1).strip()
                     if msg:
                         recent_commits.append(msg[:60])  # truncate long messages
+            else:
+                for prefix, mode in _BASH_WORK_PATTERNS:
+                    if cmd_lower.startswith(prefix) or f" {prefix}" in cmd_lower:
+                        work_mode_counts[mode] += 1
+                        break
         recent_commits = recent_commits[:2]  # keep last 2 commits
+
+        # Pick dominant work mode (if any mode has >= 2 occurrences it adds signal).
+        dominant_mode = ""
+        max_mode_count = max(work_mode_counts.values(), default=0)
+        if max_mode_count >= 2:
+            dominant_mode = max(work_mode_counts, key=lambda k: work_mode_counts[k])
 
         # --- Build the goal sentence ---
         parts: list[str] = []
@@ -296,6 +343,9 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
         if recent_commits and len(" ".join(parts)) < max_tokens * 2:
             intent = recent_commits[0]
             parts.append(f"Recent work: {intent}.")
+        elif dominant_mode and not recent_commits and len(" ".join(parts)) < max_tokens * 2:
+            # No commit messages but a dominant bash work pattern gives useful context.
+            parts.append(f"Session activity: {dominant_mode}.")
 
         goal = " ".join(parts)
 
