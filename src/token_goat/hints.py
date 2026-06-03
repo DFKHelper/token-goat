@@ -2046,7 +2046,7 @@ def _require_cache(
             return None
 
     into a single call.  Callers that need additional post-load checks (e.g.
-    :func:`_build_glob_dedup_hint_inner` which also tests
+    :func:`build_glob_dedup_hint` which also tests
     ``cache.is_glob_history_empty()``) call this first, then apply their own
     guard on the returned cache.
     """
@@ -2501,117 +2501,9 @@ def build_bash_dedup_hint(
     * the previous output is older than :data:`STALE_READ_AGE_SECONDS`
       (same staleness boundary used by the read-dedup path: above that
       window the model's context has likely scrolled past the old result)
-    """
-    return _build_bash_dedup_hint_inner(
-        session_id=session_id, command=command, cache=cache, cwd=cwd,
-    )
 
-
-# Minimum output size before the bash dedup hint fires. Default 200 bytes (~50 tokens);
-# a short hint costs ~12 tokens, netting ~38 tokens saved. Configurable via
-# hints.bash_dedup_min_bytes or TOKEN_GOAT_BASH_DEDUP_MIN_BYTES env var.
-# When below threshold, dedup hint is suppressed and the command re-runs.
-_BASH_DEDUP_MIN_BYTES: int = 200  # fallback default; use _get_bash_dedup_min_bytes() at runtime
-# Below this threshold use a compact one-liner hint to keep net savings positive.
-_BASH_DEDUP_LIGHT_MAX_BYTES: int = 999
-# At this size suggest --grep filtering; the output is large enough that loading
-# it whole when only a snippet is needed wastes significant context.
-_BASH_DEDUP_GREP_SUGGEST_BYTES: int = 5000
-
-# Maximum length for a command string in a hint before it's truncated with ellipsis.
-# Commands often contain long argument lists (e.g., test paths) that don't add
-# clarity to the dedup hint; this cap ensures the hint stays focused on the
-# subcommand and key args while staying within token budget.
-_MAX_BASH_COMMAND_DISPLAY_LEN: int = 60
-
-
-def _format_bash_command_for_hint(command: str) -> str:
-    """Format a bash command for display in a dedup hint with intelligent truncation.
-
-    - Sanitizes newlines/CRs (injection defence)
-    - Extracts the main command/subcommand for clarity
-    - Truncates long argument lists to stay concise
-    - Shows enough context for the agent to understand what ran
-
-    Examples:
-        "pytest tests/auth/test_login.py::test_valid_password"
-        -> "pytest tests/auth/test_login.py::test_valid…" (if too long)
-
-        "find /srv/data -name '*.log' -type f -mtime +30"
-        -> "find /srv/data -name '*.log'…"
-
-        "uv run ruff check --fix src/"
-        -> "uv run ruff check --fix src/"
-    """
-    # First sanitize for injection safety
-    safe = _sanitize_hint_path(command)
-
-    # If already short, return as-is
-    if len(safe) <= _MAX_BASH_COMMAND_DISPLAY_LEN:
-        return safe
-
-    # For longer commands, greedily include parts until we hit the limit
-    parts = safe.split()
-    if not parts:
-        return safe
-
-    result_parts: list[str] = []
-    current_len = 0
-
-    for part in parts:
-        # Calculate length if we add this part (accounting for space separator)
-        sep = " " if result_parts else ""
-        candidate_len = current_len + len(sep) + len(part)
-
-        # Stop if adding this part would exceed limit
-        if candidate_len > _MAX_BASH_COMMAND_DISPLAY_LEN:
-            break
-
-        result_parts.append(part)
-        current_len = candidate_len
-
-    result = " ".join(result_parts)
-
-    # Append ellipsis if truncated
-    if result != safe:
-        result = result + "…"
-
-    return result
-
-
-def _get_first_line_preview(output_text: str, max_len: int = 60) -> str | None:
-    """Extract the first non-empty line from bash output for display in a hint.
-
-    Returns None if the output is empty or contains only whitespace.
-    Truncates lines longer than *max_len* with an ellipsis.
-    Sanitizes for injection safety.
-    """
-    if not output_text:
-        return None
-    for line in output_text.splitlines():
-        stripped = line.strip()
-        if stripped:
-            # Sanitize the line for hint-text injection safety
-            safe = _sanitize_hint_path(stripped)
-            # Truncate if needed
-            if len(safe) > max_len:
-                safe = safe[:max_len] + "…"
-            return safe
-    return None
-
-
-def _build_bash_dedup_hint_inner(
-    *,
-    session_id: str,
-    command: str,
-    cache: session.SessionCache | None,
-    cwd: str | None = None,
-) -> ReadHint | None:
-    """Inner implementation; may raise.
-
-    Imported lazily so the hot pre-read path does not pay the bash_cache
-    import cost on every Read invocation — bash_cache is only needed when
-    we are actually about to dispatch a Bash dedup.
+    Never raises; the ``@_failsoft_hint`` decorator catches any unexpected
+    exception and returns ``None`` (the pre-Bash path must stay fail-soft).
     """
     if not _check_dedup_preconditions(
         session_id=session_id,
@@ -2735,6 +2627,99 @@ def _build_bash_dedup_hint_inner(
     return _emit_json_sidecar(
         result, "bash_dedup", command=cmd_short, bytes_size=total_bytes, age_s=int(age), wasted=tokens_avoided,
     )
+
+
+# Minimum output size before the bash dedup hint fires. Default 200 bytes (~50 tokens);
+# a short hint costs ~12 tokens, netting ~38 tokens saved. Configurable via
+# hints.bash_dedup_min_bytes or TOKEN_GOAT_BASH_DEDUP_MIN_BYTES env var.
+# When below threshold, dedup hint is suppressed and the command re-runs.
+_BASH_DEDUP_MIN_BYTES: int = 200  # fallback default; use _get_bash_dedup_min_bytes() at runtime
+# Below this threshold use a compact one-liner hint to keep net savings positive.
+_BASH_DEDUP_LIGHT_MAX_BYTES: int = 999
+# At this size suggest --grep filtering; the output is large enough that loading
+# it whole when only a snippet is needed wastes significant context.
+_BASH_DEDUP_GREP_SUGGEST_BYTES: int = 5000
+
+# Maximum length for a command string in a hint before it's truncated with ellipsis.
+# Commands often contain long argument lists (e.g., test paths) that don't add
+# clarity to the dedup hint; this cap ensures the hint stays focused on the
+# subcommand and key args while staying within token budget.
+_MAX_BASH_COMMAND_DISPLAY_LEN: int = 60
+
+
+def _format_bash_command_for_hint(command: str) -> str:
+    """Format a bash command for display in a dedup hint with intelligent truncation.
+
+    - Sanitizes newlines/CRs (injection defence)
+    - Extracts the main command/subcommand for clarity
+    - Truncates long argument lists to stay concise
+    - Shows enough context for the agent to understand what ran
+
+    Examples:
+        "pytest tests/auth/test_login.py::test_valid_password"
+        -> "pytest tests/auth/test_login.py::test_valid…" (if too long)
+
+        "find /srv/data -name '*.log' -type f -mtime +30"
+        -> "find /srv/data -name '*.log'…"
+
+        "uv run ruff check --fix src/"
+        -> "uv run ruff check --fix src/"
+    """
+    # First sanitize for injection safety
+    safe = _sanitize_hint_path(command)
+
+    # If already short, return as-is
+    if len(safe) <= _MAX_BASH_COMMAND_DISPLAY_LEN:
+        return safe
+
+    # For longer commands, greedily include parts until we hit the limit
+    parts = safe.split()
+    if not parts:
+        return safe
+
+    result_parts: list[str] = []
+    current_len = 0
+
+    for part in parts:
+        # Calculate length if we add this part (accounting for space separator)
+        sep = " " if result_parts else ""
+        candidate_len = current_len + len(sep) + len(part)
+
+        # Stop if adding this part would exceed limit
+        if candidate_len > _MAX_BASH_COMMAND_DISPLAY_LEN:
+            break
+
+        result_parts.append(part)
+        current_len = candidate_len
+
+    result = " ".join(result_parts)
+
+    # Append ellipsis if truncated
+    if result != safe:
+        result = result + "…"
+
+    return result
+
+
+def _get_first_line_preview(output_text: str, max_len: int = 60) -> str | None:
+    """Extract the first non-empty line from bash output for display in a hint.
+
+    Returns None if the output is empty or contains only whitespace.
+    Truncates lines longer than *max_len* with an ellipsis.
+    Sanitizes for injection safety.
+    """
+    if not output_text:
+        return None
+    for line in output_text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            # Sanitize the line for hint-text injection safety
+            safe = _sanitize_hint_path(stripped)
+            # Truncate if needed
+            if len(safe) > max_len:
+                safe = safe[:max_len] + "…"
+            return safe
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2910,28 +2895,8 @@ def build_grep_dedup_hint(
       (:data:`_GREP_DEDUP_MIN_RESULT_COUNT` matches)
     * the previous run is older than :data:`STALE_READ_AGE_SECONDS`
 
-    Never raises; any unexpected exception is caught and the hint is
-    suppressed (the pre-Grep path must stay fail-soft).
-    """
-    return _build_grep_dedup_hint_inner(
-        session_id=session_id, pattern=pattern, path=path, cache=cache,
-    )
-
-
-def _build_grep_dedup_hint_inner(
-    *,
-    session_id: str,
-    pattern: str,
-    path: str | None,
-    cache: session.SessionCache | None,
-) -> ReadHint | None:
-    """Inner implementation of :func:`build_grep_dedup_hint`; may raise.
-
-    Walks the session ``greps`` list in reverse-chronological order looking
-    for a prior entry with the same ``(pattern, path)`` pair.  The list is
-    typically short (well under 100 entries even in long sessions); a linear
-    scan in reverse is cheap and avoids the cost of indexing by pattern up
-    front, which would not pay back for the common case of distinct patterns.
+    Never raises; the ``@_failsoft_hint`` decorator catches any unexpected
+    exception and returns ``None`` (the pre-Grep path must stay fail-soft).
     """
     cache = _require_cache(session_id, cache)
     if cache is None:
@@ -3096,26 +3061,8 @@ def build_glob_dedup_hint(
     * the previous result count was below :data:`_GLOB_DEDUP_MIN_RESULT_COUNT`
     * the previous run is older than :data:`STALE_READ_AGE_SECONDS`
 
-    Never raises; any unexpected exception is caught and the hint is suppressed
-    (the pre-Glob path must stay fail-soft).
-    """
-    return _build_glob_dedup_hint_inner(
-        session_id=session_id, pattern=pattern, path=path, cache=cache,
-    )
-
-
-def _build_glob_dedup_hint_inner(
-    *,
-    session_id: str,
-    pattern: str,
-    path: str | None,
-    cache: session.SessionCache | None,
-) -> ReadHint | None:
-    """Inner implementation of :func:`build_glob_dedup_hint`; may raise.
-
-    Delegates lookup to :func:`session.lookup_glob_entry` which walks the
-    glob_history list in reverse-chronological order for the matching
-    ``(pattern, path)`` pair.
+    Never raises; the ``@_failsoft_hint`` decorator catches any unexpected
+    exception and returns ``None`` (the pre-Glob path must stay fail-soft).
     """
     cache = _require_cache(session_id, cache)
     if cache is None or cache.is_glob_history_empty():
@@ -3206,23 +3153,9 @@ def build_web_dedup_hint(
     * the previous fetch is older than :data:`STALE_READ_AGE_SECONDS`
       (above that window the page content is likely to have changed and a
       re-fetch is legitimate)
-    """
-    return _build_web_dedup_hint_inner(
-        session_id=session_id, url=url, cache=cache,
-    )
 
-
-def _build_web_dedup_hint_inner(
-    *,
-    session_id: str,
-    url: str,
-    cache: session.SessionCache | None,
-) -> ReadHint | None:
-    """Inner implementation; may raise.
-
-    Imported lazily so the hot path does not pay the web_cache import cost
-    on every WebFetch invocation — web_cache is only needed when we are
-    actually about to dispatch a dedup.
+    Never raises; the ``@_failsoft_hint`` decorator catches any unexpected
+    exception and returns ``None`` (the pre-WebFetch path must stay fail-soft).
     """
     if not _check_dedup_preconditions(
         session_id=session_id,
