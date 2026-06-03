@@ -3617,15 +3617,32 @@ def _compact_render_kwargs(cfg: _Config) -> dict[str, Any]:
 
     Used by the three public ``build_manifest*`` entry points so the field
     list lives in exactly one place.
+
+    ``lazy_skill_injection`` is derived from two sources:
+
+    * ``[skill_preservation] inline_snippets`` (the user-facing knob added in
+      iteration 9): ``True`` (default) means "inline snippets eagerly", which
+      maps to ``lazy_skill_injection=False``.  Set to ``False`` to revert to
+      recall-command-only behaviour (``lazy_skill_injection=True``).
+    * ``[compact_assist] lazy_skill_injection``: the legacy low-level override
+      for advanced users.  When ``[skill_preservation] inline_snippets`` is
+      ``True`` (the default), this legacy key is effectively overridden because
+      the skill-preservation setting takes precedence.  The legacy key only has
+      independent effect when ``inline_snippets=False``.
     """
     ca = cfg.compact_assist
+    sp = cfg.skill_preservation
+    # inline_snippets=True (default) → eager snippet injection → lazy_skill_injection=False.
+    # inline_snippets=False → recall-command-only → fall back to the compact_assist
+    # setting (lazy_skill_injection defaults to True).
+    lazy = False if sp.inline_snippets else ca.lazy_skill_injection
     return {
         "edited_dir_group_threshold": ca.edited_dir_group_threshold,
         "max_section_lines": ca.max_section_lines,
         "noise_floor_tokens": ca.noise_floor_tokens,
         "wide_session_threshold": ca.wide_session_threshold,
         "orchestrator_commit_threshold": ca.orchestrator_commit_threshold,
-        "lazy_skill_injection": ca.lazy_skill_injection,
+        "lazy_skill_injection": lazy,
     }
 
 

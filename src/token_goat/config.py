@@ -248,6 +248,7 @@ class _SkillPreservationToml(TypedDict, total=False):
     truncation_budget_tokens: int
     compress_bodies: bool
     compress_min_bytes: int
+    inline_snippets: bool
 
 
 class _ImageShrinkToml(TypedDict, total=False):
@@ -575,6 +576,16 @@ class SkillPreservationConfig:
             this threshold are stored as plain text (compression overhead not
             worth it for small files).  Default 16 384 (16 KB).
             Valid range: 1 024 – 10 485 760 (1 KB – 10 MB).
+        inline_snippets: When ``True`` (default), the compaction manifest
+            inlines a compact snippet for each cached skill directly into the
+            ``### Active Skills`` section instead of emitting only a
+            ``token-goat skill-body`` recall command.  For skills with a
+            ``<!-- COMPACT_END -->`` marker the curated compact section is
+            used; for skills without a marker a heuristic extract of the first
+            heading and all CRITICAL/MUST/NEVER/RULE lines is inlined instead.
+            Set to ``False`` to revert to recall-command-only behaviour (saves
+            ~150–200 tokens per skill at manifest-build time but requires the
+            agent to fetch the snippet manually after compaction).
     """
 
     enabled: bool = True
@@ -584,6 +595,7 @@ class SkillPreservationConfig:
     truncation_budget_tokens: int = 800
     compress_bodies: bool = True
     compress_min_bytes: int = 16 * 1024
+    inline_snippets: bool = True
 
 
 @dataclass
@@ -1340,6 +1352,9 @@ def load() -> Config:
             sp_raw.get("compress_min_bytes", 16 * 1024), 16 * 1024, 1024, 10 * 1024 * 1024,
             "skill_preservation.compress_min_bytes",
         ),
+        inline_snippets=_validated_bool(
+            sp_raw.get("inline_snippets", True), True, "skill_preservation.inline_snippets",
+        ),
     )
     _apply_env_disable(sp, "enabled", _ENV_SKILL_PRESERVATION, "skill_preservation")
     _apply_env_disable(sp, "orphan_sweep_enabled", _ENV_ORPHAN_SWEEP, "skill_preservation.orphan_sweep_enabled")
@@ -1666,6 +1681,7 @@ def save(config: Config) -> None:
             "truncation_budget_tokens": sp.truncation_budget_tokens,
             "compress_bodies": sp.compress_bodies,
             "compress_min_bytes": sp.compress_min_bytes,
+            "inline_snippets": sp.inline_snippets,
         },
         "image_shrink": {
             "prefer_avif": is_cfg.prefer_avif,

@@ -310,48 +310,62 @@ class TestPostSkillHookCompactPipeline:
 # ---------------------------------------------------------------------------
 
 def _eager_config() -> config.Config:
-    """Return a Config with lazy_skill_injection=False (eager mode)."""
+    """Return a Config with lazy_skill_injection=False (eager mode, old API)."""
     cfg = config.Config()
     cfg.compact_assist.lazy_skill_injection = False
     return cfg
 
 
+def _lazy_config() -> config.Config:
+    """Return a Config with inline_snippets=False (recall-command-only mode).
+
+    With inline_snippets=True (the default), build_manifest uses eager snippet
+    injection.  Tests that verify the recall-pointer format must opt out by
+    using this helper to obtain a config where inline_snippets is False.
+    """
+    cfg = config.Config()
+    cfg.skill_preservation.inline_snippets = False
+    return cfg
+
+
 class TestManifestCompactIntegration:
-    """compact.build_manifest embeds skills as lazy recall pointers by default,
-    and as full compact text when lazy_skill_injection=False."""
+    """compact.build_manifest inlines skill compact snippets by default (inline_snippets=True),
+    and shows recall-command-only pointers when inline_snippets=False."""
 
     def _load_skill_via_hook(self, session_id: str, skill_name: str, body: str) -> None:
         """Fire the hook and register the skill in the session cache."""
         fire_skill_hook(session_id, skill_name, body)
 
-    # ── Lazy injection (default) ──────────────────────────────────────────────
+    # ── Recall-only mode (inline_snippets=False) ─────────────────────────────
 
     def test_lazy_injection_shows_recall_pointer(self, tmp_data_dir):
-        """Default (lazy) mode: manifest shows name + token count + recall command, not inline text."""
+        """inline_snippets=False: manifest shows name + token count + recall command, not inline text."""
         sid = "integ-lazy-pointer"
         self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
-        m = compact.build_manifest(sid, max_tokens=800)
+        with unittest.mock.patch("token_goat.compact._load_config", return_value=_lazy_config()):
+            m = compact.build_manifest(sid, max_tokens=800)
         assert "**Skills:**" in m
         assert "ralph" in m
-        # Lazy format: recall pointer present.
+        # Recall format: recall pointer present.
         assert "token-goat skill-body ralph --compact" in m
-        # Eager format: key-rules heading must NOT be present in lazy mode.
+        # Eager format: key-rules heading must NOT be present in recall-only mode.
         assert "ralph key-rules:" not in m
 
     def test_lazy_injection_shows_token_count(self, tmp_data_dir):
-        """Lazy mode: recall pointer includes a token count estimate for the cached compact."""
+        """inline_snippets=False: recall pointer includes a token count estimate for the cached compact."""
         sid = "integ-lazy-tokcount"
         self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
 
-        m = compact.build_manifest(sid, max_tokens=800)
+        with unittest.mock.patch("token_goat.compact._load_config", return_value=_lazy_config()):
+            m = compact.build_manifest(sid, max_tokens=800)
         # The line should look like: "- ralph (NNN tokens) → `token-goat skill-body ralph --compact`"
         assert "ralph" in m
         assert "tokens)" in m  # "(NNN tokens)" must appear
         assert "token-goat skill-body ralph --compact" in m
 
     def test_lazy_injection_no_compact_cached_still_shows_recall(self, tmp_data_dir):
-        """Lazy mode: when no compact is cached, manifest still shows the recall command."""
+        """inline_snippets=False: when no compact is cached, manifest still shows the recall command."""
         sid = "integ-lazy-no-compact"
         small_body = "# TinySkill\n\n" + ("word " * 60)
         assert len(small_body.encode()) < 4000
@@ -363,7 +377,8 @@ class TestManifestCompactIntegration:
             meta.body_bytes, meta.truncated,
         )
 
-        m = compact.build_manifest(sid, max_tokens=600)
+        with unittest.mock.patch("token_goat.compact._load_config", return_value=_lazy_config()):
+            m = compact.build_manifest(sid, max_tokens=600)
         assert "**Skills:**" in m
         assert "tiny-skill" in m
         # Even without a compact, the recall command is listed (no token count).
@@ -372,12 +387,13 @@ class TestManifestCompactIntegration:
         assert "tiny-skill key-rules:" not in m
 
     def test_lazy_injection_multiple_skills_all_get_pointers(self, tmp_data_dir):
-        """Lazy mode: both loaded skills appear as recall pointers, no inline text."""
+        """inline_snippets=False: both loaded skills appear as recall pointers, no inline text."""
         sid = "integ-lazy-two-skills"
         self._load_skill_via_hook(sid, "ralph", _RALPH_SKILL_BODY)
         self._load_skill_via_hook(sid, "improve", _IMPROVE_SKILL_BODY)
 
-        m = compact.build_manifest(sid, max_tokens=1200)
+        with unittest.mock.patch("token_goat.compact._load_config", return_value=_lazy_config()):
+            m = compact.build_manifest(sid, max_tokens=1200)
         assert "ralph" in m
         assert "improve" in m
         # Both get recall pointers.
@@ -784,3 +800,106 @@ class TestLazySkillInjectionConfig:
         assert "ralph key-rules:" in m
         # Lazy pointer must NOT dominate (the recall command may still appear in the header line).
         assert "CRITICAL" in m or "MUST" in m
+
+
+# ---------------------------------------------------------------------------
+# inline_snippets config key — [skill_preservation] section
+# ---------------------------------------------------------------------------
+
+class TestInlineSnippetsConfig:
+    """[skill_preservation] inline_snippets controls whether compact snippets are
+    inlined directly into the compaction manifest or emitted as recall commands."""
+
+    def _load_skill(self, session_id: str, skill_name: str, body: str) -> None:
+        fire_skill_hook(session_id, skill_name, body)
+
+    # ── Config defaults ───────────────────────────────────────────────────────
+
+    def test_config_default_inline_snippets_is_true(self):
+        """SkillPreservationConfig defaults inline_snippets to True."""
+        cfg = config.SkillPreservationConfig()
+        assert cfg.inline_snippets is True
+
+    def test_config_toml_inline_snippets_false(self, tmp_data_dir):
+        """config.load() honours inline_snippets=false in [skill_preservation] TOML."""
+        from token_goat import paths
+        cfg_path = paths.config_path()
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(
+            "[skill_preservation]\ninline_snippets = false\n",
+            encoding="utf-8",
+        )
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+        loaded = config.load()
+        assert loaded.skill_preservation.inline_snippets is False
+        cfg_path.unlink(missing_ok=True)
+        cfg_mod._config_mtime_cache = None
+
+    # ── COMPACT_END marker extraction ─────────────────────────────────────────
+
+    def test_inline_snippets_true_inlines_compact_end_section(self, tmp_data_dir):
+        """With inline_snippets=True (default), a skill with <!-- COMPACT_END --> gets
+        its curated compact section inlined in the manifest, not just a recall pointer."""
+        sid = "inline-marker-skill"
+        self._load_skill(sid, "ralph", _RALPH_SKILL_BODY)
+
+        # Default config has inline_snippets=True — no mocking needed.
+        m = compact.build_manifest(sid, max_tokens=800)
+
+        # Compact section (above COMPACT_END) should be inlined.
+        assert "ralph key-rules:" in m
+        # CRITICAL/MUST lines from the compact section should be present.
+        assert "CRITICAL" in m or "MUST" in m
+        # Detail section below the marker must NOT appear.
+        assert "Phase 1" not in m
+        assert "Anti-shortcut Guards" not in m
+
+    # ── Heuristic fallback (no COMPACT_END marker) ────────────────────────────
+
+    def test_inline_snippets_true_inlines_heuristic_extract_for_no_marker_skill(self, tmp_data_dir):
+        """With inline_snippets=True, a skill without <!-- COMPACT_END --> gets
+        CRITICAL/MUST lines extracted and inlined (heuristic fallback path)."""
+        sid = "inline-no-marker-skill"
+        self._load_skill(sid, "improve", _IMPROVE_SKILL_BODY)
+
+        m = compact.build_manifest(sid, max_tokens=800)
+
+        assert "improve" in m
+        # Auto-extracted compact's key-rules should be inlined.
+        assert "improve key-rules:" in m or "CRITICAL" in m or "MUST" in m
+
+    # ── Config flag disables inlining ─────────────────────────────────────────
+
+    def test_inline_snippets_false_reverts_to_recall_command_only(self, tmp_data_dir):
+        """With inline_snippets=False, the manifest shows only the recall command
+        and does NOT inline any compact text."""
+        sid = "inline-disabled-skill"
+        self._load_skill(sid, "ralph", _RALPH_SKILL_BODY)
+
+        with unittest.mock.patch("token_goat.compact._load_config", return_value=_lazy_config()):
+            m = compact.build_manifest(sid, max_tokens=800)
+
+        assert "**Skills:**" in m
+        assert "ralph" in m
+        # Recall-only: pointer present.
+        assert "token-goat skill-body ralph --compact" in m
+        # No inline key-rules when inline_snippets=False.
+        assert "ralph key-rules:" not in m
+
+    def test_inline_snippets_false_in_skill_preservation_overrides_default(self, tmp_data_dir):
+        """Setting [skill_preservation] inline_snippets=false makes _compact_render_kwargs
+        return lazy_skill_injection=True (recall-only) even though compact_assist does not
+        change."""
+        from token_goat.compact import _compact_render_kwargs
+
+        cfg = config.Config()
+        assert cfg.skill_preservation.inline_snippets is True  # default
+        # Default: inline_snippets=True → lazy=False (eager).
+        kwargs_default = _compact_render_kwargs(cfg)
+        assert kwargs_default["lazy_skill_injection"] is False
+
+        cfg.skill_preservation.inline_snippets = False
+        # inline_snippets=False → fall back to compact_assist.lazy_skill_injection (True by default).
+        kwargs_disabled = _compact_render_kwargs(cfg)
+        assert kwargs_disabled["lazy_skill_injection"] is True
