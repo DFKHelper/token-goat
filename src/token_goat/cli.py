@@ -7714,6 +7714,134 @@ def cmd_clean(
                 typer.echo(f"{prefix}cleared {len(files)} file(s) ({mb:.1f} MB) — sessions")
 
 
+@app.command("config-get", rich_help_panel="Core")
+def cmd_config_get(
+    file: str = typer.Argument(..., help="Path to a TOML, YAML, JSON, or INI file (e.g. pyproject.toml)."),  # noqa: B008
+    key: str = typer.Argument(..., help="Dot-notation key to extract (e.g. project.version, tool.ruff.line-length)."),  # noqa: B008
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Extract a single value from a TOML, YAML, JSON, or INI config file.
+
+    Reads the file, resolves *key* using dot-notation, and prints just that
+    value — not the surrounding context.  Returns exit code 2 on a missing
+    key or unsupported file format.
+
+    Examples::
+
+        token-goat config-get pyproject.toml project.version
+        token-goat config-get pyproject.toml tool.ruff.line-length
+        token-goat config-get package.json devDependencies.typescript
+        token-goat config-get .env.yaml database.host
+        token-goat config-get setup.cfg metadata.name
+
+    For arrays the value is emitted as a JSON array.  For objects it is a
+    JSON object.  Scalars are printed bare (no surrounding quotes) unless
+    *--json* is passed, in which case scalars are also JSON-encoded.
+    """
+    import configparser  # noqa: PLC0415
+    import tomllib  # noqa: PLC0415
+
+    path = Path(file)
+    if not path.exists():
+        _error(f"file not found: {file}")
+        raise typer.Exit(2)
+
+    suffix = path.suffix.lower()
+
+    # ------------------------------------------------------------------
+    # Parse the file into a plain nested dict
+    # ------------------------------------------------------------------
+    data: object
+    try:
+        if suffix == ".toml":
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        elif suffix in {".yaml", ".yml"}:
+            try:
+                import yaml  # type: ignore[import-untyped]  # noqa: PLC0415
+            except ImportError:
+                _error("PyYAML is not installed; install it with: pip install pyyaml")
+                raise typer.Exit(2) from None
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        elif suffix == ".json":
+            data = json.loads(path.read_text(encoding="utf-8"))
+        elif suffix in {".ini", ".cfg"}:
+            parser = configparser.ConfigParser()
+            parser.read(str(path), encoding="utf-8")
+            # Convert ConfigParser to a nested dict; DEFAULT section excluded.
+            data = {s: dict(parser.items(s)) for s in parser.sections()}
+        else:
+            _error(
+                f"unsupported file format: {suffix!r}; "
+                "supported: .toml, .yaml/.yml, .json, .ini/.cfg"
+            )
+            raise typer.Exit(2)
+    except (OSError, UnicodeDecodeError) as exc:
+        _error(f"could not read {file}: {exc}")
+        raise typer.Exit(2) from None
+    except Exception as exc:  # noqa: BLE001
+        _error(f"parse error in {file}: {exc}")
+        raise typer.Exit(2) from None
+
+    # ------------------------------------------------------------------
+    # Resolve dot-notation key
+    # ------------------------------------------------------------------
+    parts = [p for p in key.split(".") if p]
+    if not parts:
+        _error(f"empty key: {key!r}")
+        raise typer.Exit(2)
+
+    target: object = data
+    for part in parts:
+        if isinstance(target, dict):
+            if part not in target:
+                _error(f"key not found: {key!r} (missing segment: {part!r})")
+                raise typer.Exit(2)
+            target = target[part]
+        elif isinstance(target, list):
+            try:
+                idx = int(part)
+            except ValueError:
+                _error(f"key not found: {key!r} (segment {part!r} is not an integer index into a list)")
+                raise typer.Exit(2) from None
+            try:
+                target = target[idx]
+            except IndexError:
+                _error(f"key not found: {key!r} (index {idx} out of range)")
+                raise typer.Exit(2) from None
+        else:
+            _error(f"key not found: {key!r} (cannot descend into {type(target).__name__} at segment {part!r})")
+            raise typer.Exit(2)
+
+    # ------------------------------------------------------------------
+    # Emit
+    # ------------------------------------------------------------------
+    if json_output or isinstance(target, (dict, list)):
+        typer.echo(json.dumps(target, ensure_ascii=False))
+    else:
+        # Scalars: print bare so scripts can consume without stripping quotes.
+        typer.echo(str(target) if target is not None else "null")
+
+
+@app.command("version", rich_help_panel="Core")
+def cmd_version(
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Print the installed token-goat version.
+
+    Equivalent to ``token-goat --version`` but works as a subcommand so it
+    can be composed in scripts::
+
+        token-goat version
+        token-goat version --json
+    """
+    from . import __version__  # noqa: PLC0415
+
+    if json_output:
+        typer.echo(json.dumps({"version": __version__}, ensure_ascii=False))
+    else:
+        typer.echo(__version__)
+
+
 # ---------------------------------------------------------------------------
 # Hook-registry startup assertion
 # ---------------------------------------------------------------------------

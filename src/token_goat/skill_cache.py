@@ -34,6 +34,7 @@ __all__ = [
     "SkillMeta",
     "content_hash",
     "evict_old_entries",
+    "find_cross_session_entry",
     "invalidate_for_path",
     "extract_checklist_section",
     "extract_compact_from_marker",
@@ -643,6 +644,56 @@ def _sweep_skill_orphans() -> None:
         _LOG.info("_sweep_skill_orphans: removed %d stale compact file(s)", compact_removed)
 
 
+def find_cross_session_entry(skill_name: str, content_sha: str) -> SkillMeta | None:
+    """Search for an existing body entry with the same *skill_name* and *content_sha*.
+
+    Scans all sidecar files in the skills cache directory and returns the first
+    :class:`SkillMeta` whose ``skill_name`` and ``content_sha`` match the
+    requested values AND whose body file still exists on disk.  Returns ``None``
+    when no such entry is found.
+
+    This is the cross-session dedup probe used by :func:`store_output`: when the
+    same skill body (same SHA) was already cached in an earlier session, the new
+    session reuses the existing file rather than writing a duplicate.  The
+    returned ``SkillMeta.output_id`` points at the *original* session's file so
+    :func:`load_output` works without any path indirection.
+
+    Fail-soft: any I/O error during the scan is logged and skipped.  Returns
+    ``None`` in all error cases so the caller falls back to the normal write path.
+    """
+    name = _safe_skill_name(skill_name)
+    if not name or not content_sha:
+        return None
+
+    cache_dir = _skill_outputs_dir()
+    if not cache_dir.is_dir():
+        return None
+
+    try:
+        for entry in list_outputs():
+            oid = entry.get("output_id")
+            if not oid:
+                continue
+            meta = read_sidecar(oid)
+            if meta is None:
+                continue
+            if meta.skill_name != name or meta.content_sha != content_sha:
+                continue
+            # Verify the body file is still present on disk.
+            body_path = cache_dir / f"{oid}.txt"
+            gz_path = cache_dir / f"{oid}.gz"
+            if body_path.exists() or gz_path.exists():
+                _LOG.debug(
+                    "find_cross_session_entry: hit for skill=%s sha=%s id=%s",
+                    name, content_sha[:8], oid,
+                )
+                return meta
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("find_cross_session_entry: scan error: %s", exc)
+
+    return None
+
+
 def store_output(
     session_id: str,
     skill_name: str,
@@ -659,6 +710,14 @@ def store_output(
     the function opportunistically evicts the oldest files until the total
     store size is back under ``max_total_bytes``.
 
+    **Cross-session dedup:** when another session has already cached the same
+    skill body (same *skill_name* and content SHA), this function skips the disk
+    write and returns a :class:`SkillMeta` pointing at the existing entry.  The
+    body file is only written once per unique ``(name, sha)`` pair across the
+    entire cache lifetime.  This saves disk I/O on the hot path where a long-lived
+    install accumulates the same ralph/improve/etc. skill body across hundreds of
+    sessions.
+
     Rejects invalid skill names (returns ``None`` without writing) to keep the
     filesystem layout safe from injection attacks.
     """
@@ -674,6 +733,33 @@ def store_output(
 
     with safe_cache_op("store_output", log=_LOG):
         sha = content_hash(body)
+
+        # Cross-session dedup: avoid writing the same body bytes twice when the
+        # same skill (same SHA) was already cached in an earlier session.  The
+        # existing entry's output_id is reused so load_output works without any
+        # path indirection.  The caller (hooks_skill) will still call
+        # write_sidecar to record the new session's timestamp alongside the
+        # existing body file.
+        cross_session_hit = find_cross_session_entry(name, sha)
+        if cross_session_hit is not None:
+            _LOG.debug(
+                "skill_cache: cross-session dedup hit for skill=%s sha=%s "
+                "(existing id=%s); skipping disk write",
+                name, sha[:8], cross_session_hit.output_id,
+            )
+            # Return a fresh SkillMeta with the caller-supplied source_path and
+            # an updated timestamp so the sidecar written by the caller reflects
+            # the current session load, not the original session's metadata.
+            return SkillMeta(
+                output_id=cross_session_hit.output_id,
+                skill_name=name,
+                content_sha=sha,
+                body_bytes=cross_session_hit.body_bytes,
+                ts=time.time(),
+                truncated=cross_session_hit.truncated,
+                source_path=source_path or cross_session_hit.source_path,
+            )
+
         out_id = output_id_for(session_id, name, sha)
         stored, truncated = truncate_tail_preserve(
             body, _MAX_STORED_BYTES, marker_template=_TRUNC_MARKER,
