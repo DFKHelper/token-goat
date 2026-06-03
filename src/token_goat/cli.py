@@ -1541,6 +1541,23 @@ def cmd_map(
             "Example: --since HEAD~1, --since main, --since v1.0.0"
         ),
     ),
+    filter_glob: str | None = typer.Option(  # noqa: B008
+        None,
+        "--filter",
+        help=(
+            "Limit output to files whose path matches this glob pattern. "
+            "Example: --filter '*.py', --filter 'src/**/*.ts'. "
+            "Applied after all other filtering."
+        ),
+    ),
+    since_minutes: int | None = typer.Option(  # noqa: B008
+        None,
+        "--since-minutes",
+        help=(
+            "Show only files modified in the last N minutes (based on filesystem mtime). "
+            "Example: --since-minutes 30. Useful for seeing what changed recently."
+        ),
+    ),
 ) -> None:
     """Generate a PageRank-ranked, token-budgeted overview of the current project.
 
@@ -1549,6 +1566,9 @@ def cmd_map(
 
     Use --since <ref> to show only files changed since a git ref (branch,
     commit, tag).  Example: --since HEAD~1 or --since main.
+
+    Use --filter GLOB to limit output to files matching a glob pattern.
+    Use --since-minutes N to show only files modified in the last N minutes.
     """
     from . import repomap  # noqa: PLC0415
 
@@ -1567,8 +1587,8 @@ def cmd_map(
         raise typer.Exit(1)
 
     _LOG.info(
-        "map start: project=%s budget=%d format=%s compact=%s full=%s top=%s since=%s",
-        proj.root.name, budget, fmt, compact, full, top, since,
+        "map start: project=%s budget=%d format=%s compact=%s full=%s top=%s since=%s filter=%s since_minutes=%s",
+        proj.root.name, budget, fmt, compact, full, top, since, filter_glob, since_minutes,
     )
     t0 = time.monotonic()
     # Savings baseline: total indexed source bytes in the project.
@@ -1624,6 +1644,51 @@ def cmd_map(
             typer.echo(text)
             return
 
+        # --since-minutes: show only files modified in the last N minutes by mtime
+        if since_minutes is not None:
+            if since_minutes <= 0:
+                _error("--since-minutes must be a positive integer")
+                raise typer.Exit(1)
+            import fnmatch  # noqa: PLC0415
+            cutoff = time.time() - since_minutes * 60
+            recent_files: list[str] = []
+            try:
+                for rel_path_str, _info in (repomap._load_and_rank(proj) or type("_empty", (), {"ranked": []})()).ranked:  # type: ignore[attr-defined]
+                    abs_path = proj.root / rel_path_str
+                    try:
+                        mtime = abs_path.stat().st_mtime
+                    except OSError:
+                        continue
+                    if mtime >= cutoff and (filter_glob is None or fnmatch.fnmatch(rel_path_str, filter_glob)):
+                        recent_files.append(rel_path_str)
+            except Exception:  # noqa: BLE001
+                pass
+            elapsed = time.monotonic() - t0
+            _LOG.info(
+                "map complete: project=%s since_minutes=%d files=%d dur=%.3fs",
+                proj.root.name, since_minutes, len(recent_files), elapsed,
+            )
+            header = (
+                f"# {proj.root.name} — {len(recent_files)} file(s) modified in last {since_minutes}m"
+            )
+            if filter_glob:
+                header += f" (filter: {filter_glob})"
+            header += "\n"
+            if recent_files:
+                body = header + "".join(f"  {p}\n" for p in recent_files)
+            else:
+                body = header + "(no recently modified files found)\n"
+            _record_lookup_stat(
+                "map_lookup",
+                f"budget={budget},mode=since_minutes,minutes={since_minutes}",
+                len(recent_files),
+                scope="project",
+                project_hash=proj.hash,
+                bytes_saved=max(0, _map_proj_total - len(body.encode())),
+            )
+            typer.echo(body)
+            return
+
         if fmt == "json":
             data = repomap.build_map_json(proj)
             elapsed = time.monotonic() - t0
@@ -1663,8 +1728,29 @@ def cmd_map(
             compact=True if compact else None,
             full=full,
         )
+
+        # --filter GLOB: post-filter output lines to only include lines whose
+        # path matches the glob pattern.  Lines without a recognizable path
+        # (headers, blank lines, footers) are kept verbatim so the output
+        # retains its structure.
+        if filter_glob is not None:
+            import fnmatch  # noqa: PLC0415
+            filtered_lines = []
+            for ln in text.splitlines(keepends=True):
+                stripped = ln.strip()
+                # Keep non-file lines (headers start with #, blank lines, etc.)
+                if not stripped or stripped.startswith("#") or stripped.startswith("[token-goat"):
+                    filtered_lines.append(ln)
+                    continue
+                # Extract relative path: first whitespace-delimited token on
+                # file-entry lines (the path is always the first word).
+                candidate = stripped.split()[0] if stripped.split() else ""
+                if fnmatch.fnmatch(candidate, filter_glob):
+                    filtered_lines.append(ln)
+            text = "".join(filtered_lines)
+
         elapsed = time.monotonic() - t0
-        _LOG.info("map complete: project=%s dur=%.3fs", proj.root.name, elapsed)
+        _LOG.info("map complete: project=%s dur=%.3fs filter=%s", proj.root.name, elapsed, filter_glob)
         # Adoption telemetry: count map calls so token-goat stats can show
         # how often agents reach for the ranked overview instead of recursive
         # ls + multiple Reads.  result_count = number of file-entry lines
@@ -1672,7 +1758,7 @@ def cmd_map(
         file_lines = sum(1 for line in text.splitlines() if "[" in line)
         _record_lookup_stat(
             "map_lookup",
-            f"budget={budget},mode=text,compact={compact},full={full}",
+            f"budget={budget},mode=text,compact={compact},full={full},filter={filter_glob}",
             file_lines,
             scope="project",
             project_hash=proj.hash,
@@ -2921,11 +3007,21 @@ def stats(
     json_output: bool = _OPT_JSON,
     by_project: bool = typer.Option(False, "--by-project", help="Show per-project breakdown table"),
     top: int = typer.Option(10, "--top", help="Number of projects to show with --by-project"),
+    since: int | None = typer.Option(  # noqa: B008
+        None,
+        "--since",
+        help=(
+            "Show data for the last N days only. Equivalent to --window N. "
+            "Example: --since 7 for last 7 days, --since 1 for today."
+        ),
+    ),
 ) -> None:
     """Show cumulative token savings."""
     from . import cli_stats  # noqa: PLC0415
 
-    cli_stats.stats(window=window, json_output=json_output, by_project=by_project, top=top)
+    # --since is a friendlier alias for --window; it takes precedence when both are specified.
+    effective_window = since if since is not None else window
+    cli_stats.stats(window=effective_window, json_output=json_output, by_project=by_project, top=top)
 
 
 @app.command(rich_help_panel="Core")
@@ -3378,7 +3474,7 @@ def cmd_bash_output(
 
 @app.command("web-output", rich_help_panel="Core")
 def cmd_web_output(
-    output_id: str | None = typer.Argument(None, help="ID returned by the post-fetch hook or `web-history`. Omit when using --from-session."),
+    output_id: str | None = typer.Argument(None, help="ID returned by the post-fetch hook or `web-history`. Omit when using --from-session or --list."),
     head: int = _OPT_HEAD,
     tail: int = _OPT_TAIL,
     grep: str | None = _OPT_GREP,
@@ -3392,6 +3488,14 @@ def cmd_web_output(
         "--from-session",
         help=(
             "List all web outputs cached during SESSION_ID instead of retrieving a specific entry. "
+            "When set, the output_id argument is not required."
+        ),
+    ),
+    list_all: bool = typer.Option(  # noqa: B008
+        False,
+        "--list",
+        help=(
+            "List all cached web outputs (URL, age, size). "
             "When set, the output_id argument is not required."
         ),
     ),
@@ -3417,9 +3521,38 @@ def cmd_web_output(
 
     Use ``--from-session SESSION_ID`` to list all web outputs cached during a
     specific session without needing to know their IDs in advance.
+
+    Use ``--list`` to list all cached web outputs (URL, age, size).
     """
     from . import web_cache  # noqa: PLC0415
     from .cache_common import safe_session_fragment  # noqa: PLC0415
+
+    if list_all:
+        # Global listing mode: show all cached web outputs regardless of session.
+        all_entries = web_cache.list_outputs()
+        if not all_entries:
+            typer.echo("(no web outputs cached)")
+            return
+        if json_output:
+            out_list: list[dict[str, object]] = []
+            for e in all_entries:
+                row = dict(e)
+                sidecar = web_cache.read_sidecar(str(e["output_id"]))
+                if sidecar is not None:
+                    row.update({"url_preview": sidecar.url_preview, "status_code": sidecar.status_code})
+                out_list.append(row)
+            typer.echo(json.dumps(out_list, ensure_ascii=False, separators=(",", ":")))
+            return
+        now = time.time()
+        for e in all_entries:
+            oid = str(e["output_id"])
+            size = int(e.get("size_bytes", 0))  # type: ignore[arg-type]
+            age = int(now - float(e.get("mtime", now)))  # type: ignore[arg-type]
+            sidecar = web_cache.read_sidecar(oid)
+            url_str = sidecar.url_preview if sidecar is not None else "(no sidecar)"
+            status_str = f" status={sidecar.status_code}" if sidecar is not None and sidecar.status_code is not None else ""
+            typer.echo(f"{oid}  {size:>10,}B  {_format_age(age)}{status_str}  {url_str}")
+        return
 
     if from_session is not None:
         # Listing mode: show all web outputs whose ID starts with the session fragment.
@@ -3451,7 +3584,7 @@ def cmd_web_output(
         return
 
     if output_id is None:
-        _error("output_id is required unless --from-session is specified")
+        _error("output_id is required unless --from-session or --list is specified")
         raise typer.Exit(2)
 
     _run_output_recall_command(

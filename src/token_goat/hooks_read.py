@@ -77,6 +77,35 @@ from .util import sanitize_surrogates as _sanitize_surrogates
 # by compact_assist for consistency.
 _ENV_BASH_COMPRESS = "TOKEN_GOAT_BASH_COMPRESS"
 
+# File extensions that are known to be binary (non-text) content.  Pre-read
+# hints (session hints, diff hints, structured-file hints) are skipped for
+# these files because token-goat never indexes them and the hints would be
+# meaningless noise.  Image extensions are handled separately by the shrink
+# path; this set covers non-image binaries.
+_BINARY_EXTENSIONS: frozenset[str] = frozenset([
+    # Archives
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".zst", ".lz4",
+    # Compiled / object code
+    ".so", ".dylib", ".dll", ".exe", ".pyd", ".pyc", ".pyo", ".o", ".a",
+    ".lib", ".obj", ".wasm",
+    # Databases / binary blobs
+    ".db", ".sqlite", ".sqlite3", ".parquet", ".feather", ".npy", ".npz",
+    ".arrow", ".pb", ".bin", ".dat",
+    # Media (non-image)
+    ".mp3", ".mp4", ".wav", ".ogg", ".flac", ".aac", ".m4a",
+    ".avi", ".mov", ".mkv", ".webm",
+    # Fonts
+    ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    # PDF / office
+    ".pdf", ".docx", ".xlsx", ".pptx", ".odt",
+    # Misc
+    ".class", ".jar", ".war",
+])
+
+# Files larger than this threshold (in bytes) are skipped for pre-read hints.
+# Token-goat does not index such files and any hint would be useless overhead.
+_LARGE_FILE_HINT_SKIP_BYTES: int = 10 * 1024 * 1024  # 10 MB
+
 
 def _safe_split_argv(cmd: str) -> list[str]:
     """Split a shell command string into an argv list, safely handling metacharacters.
@@ -106,6 +135,26 @@ def _safe_split_argv(cmd: str) -> list[str]:
     except ValueError:
         # Unbalanced quotes or other shlex parse error — fall back to whitespace split.
         return cmd.split()
+
+
+def _is_binary_or_large_file(file_path: str) -> bool:
+    """Return True when hints should be skipped for *file_path*.
+
+    Skips when:
+    - The file extension is in :data:`_BINARY_EXTENSIONS` (non-text binary).
+    - The file size exceeds :data:`_LARGE_FILE_HINT_SKIP_BYTES` (10 MB).
+
+    Both checks are best-effort: stat failures are silently ignored (fail-soft).
+    Images are handled by the shrink path and are excluded here.
+    """
+    ext = Path(file_path).suffix.lower()
+    if ext in _BINARY_EXTENSIONS:
+        return True
+    try:
+        size = Path(file_path).stat().st_size
+        return size >= _LARGE_FILE_HINT_SKIP_BYTES
+    except OSError:
+        return False
 
 
 def _bash_compress_enabled() -> bool:
@@ -2225,6 +2274,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
     shrink_response = _try_shrink_image(file_path, tool_input)
     if shrink_response:
         return shrink_response
+
+    # Skip all hint logic for binary files and very large unindexed files.
+    # These files are never indexed by token-goat so session hints, diff hints,
+    # and structured-file hints would all be meaningless overhead.
+    if _is_binary_or_large_file(file_path):
+        _LOG.debug("pre-read: skipping hints for binary/large file %s", sanitize_log_str(file_path))
+        return CONTINUE()
 
     if not session_id:
         _LOG.debug("pre-read: no session_id; skipping hint for %s", sanitize_log_str(file_path))
