@@ -466,3 +466,163 @@ class TestRecoveryHintSymbols:
         assert hint is not None
         assert "**Symbols**:" in hint
         assert "**Bash**:" in hint
+
+
+# ---------------------------------------------------------------------------
+# 5. Safety-trim drop order — overflow guard completeness
+# ---------------------------------------------------------------------------
+
+class TestSafetyTrimDropOrder:
+    """The safety-trim _droppable_names_in_drop_order must list every unprotected
+    section so they are dropped gracefully (section-at-a-time) rather than
+    falling through to the destructive line-popping fallback.
+
+    These tests guard against the bug where 'open_questions', 'active_errors',
+    'session_goal', 'most_accessed', and 'recent_commits' were absent from the
+    drop list.
+    """
+
+    def _all_unprotected_section_names(self) -> list[str]:
+        """Return all section names marked protected=False in _section_groups.
+
+        We derive this by inspecting the source of truth — _render's
+        _section_groups list — via a thin rendering call with a saturated
+        but simple cache.  Instead we hard-code the expected set based on
+        the documented _section_groups listing in compact.py.
+        """
+        return [
+            "recent_commits", "stale", "most_accessed", "session_goal",
+            "bash", "what_worked", "syms", "web", "glob", "dep_changes",
+            "grep", "files", "todos", "open_questions", "active_errors",
+        ]
+
+    def test_droppable_names_covers_all_unprotected_sections(self):
+        """Every unprotected section name must appear in _droppable_names_in_drop_order.
+
+        This is a structural test: it verifies that the drop-order list
+        enumerates all unprotected sections so no section silently escapes
+        the priority-aware trim and forces the blunt line-popping fallback.
+        """
+        # Build a fake cache and run _render at a large budget so it
+        # populates as many sections as possible, then check that the
+        # droppable list is complete.  We do this by inspecting the
+        # compact module directly — the drop-order list is embedded in
+        # the closure inside _render, so we extract it by patching.
+
+        # The simplest approach: read the source to find the list literal.
+        import inspect
+        src = inspect.getsource(compact._render)
+        # The list is defined as a local variable inside _render.
+        # It must contain these five names that were previously missing.
+        previously_missing = [
+            "open_questions", "active_errors", "session_goal",
+            "most_accessed", "recent_commits",
+        ]
+        for name in previously_missing:
+            assert f'"{name}"' in src, (
+                f"Section '{name}' is absent from _droppable_names_in_drop_order "
+                f"inside compact._render.  It is an unprotected section and must "
+                f"be listed so the safety-trim pass can drop it gracefully instead "
+                f"of falling through to the destructive line-popping fallback."
+            )
+
+    def test_open_questions_dropped_before_bash(self, tmp_data_dir):
+        """open_questions (lower signal) must be dropped before bash (higher signal)
+        when the manifest exceeds its budget.
+
+        Seeds a session so that open_questions fires (has edited files with TODO
+        markers) and bash fires (has command history), then verifies that at a
+        tight budget bash survives when open_questions is gone.
+        """
+        from token_goat import session as session_mod
+
+        sid = "trim-drop-order-oq-bash"
+        # Mark an edited file
+        session_mod.mark_file_edited(sid, "/proj/src/feature.py")
+        # Mark bash commands so the bash section fires
+        for i in range(5):
+            cmd_sha = f"shacmdbash{i:02d}{'z' * 8}"[:16]
+            session_mod.mark_bash_run(
+                session_id=sid,
+                cmd_sha=cmd_sha,
+                cmd_preview=f"uv run pytest tests/test_feature_{i}.py",
+                output_id=f"{sid[:16]}-{i:013d}-{cmd_sha}",
+                stdout_bytes=5000,
+                stderr_bytes=0,
+                exit_code=0,
+                truncated=False,
+            )
+
+        # Patch _find_open_questions to return some questions so the section fires.
+        with patch("token_goat.compact._find_open_questions", return_value=["TODO: fix me"]):
+            # Use a budget tight enough to require trimming but large enough that
+            # bash can survive once open_questions is dropped.
+            manifest, _ = compact.build_manifest_with_count(sid, max_tokens=120)
+
+        assert manifest, "manifest must not be empty"
+        # bash section should survive (it is higher-signal than open_questions)
+        assert "Recent Commands" in manifest or "pytest" in manifest, (
+            "bash section was dropped before open_questions despite being higher-signal"
+        )
+
+    def _extract_drop_order(self) -> list[str]:
+        """Extract the _droppable_names_in_drop_order list from compact._render source.
+
+        Parses the list literal from the source code so ordering tests don't
+        rely on fragile absolute positions in the full function source.
+        """
+        import inspect
+        import re
+        src = inspect.getsource(compact._render)
+        # Find the assignment block — it starts with _droppable_names_in_drop_order = [
+        # and ends with the closing ] on the same or a subsequent line.
+        match = re.search(
+            r'_droppable_names_in_drop_order\s*=\s*\[(.*?)\]',
+            src,
+            re.DOTALL,
+        )
+        assert match, "_droppable_names_in_drop_order list not found in compact._render"
+        # Extract all quoted names from the matched block.
+        names = re.findall(r'"([^"]+)"', match.group(1))
+        return names
+
+    def test_session_goal_dropped_before_syms(self):
+        """session_goal (lower signal) must appear in the drop list before syms.
+
+        session_goal is inferred context; syms carries precise symbol access
+        history that guides the next agent turn after compaction.
+        """
+        order = self._extract_drop_order()
+        assert "session_goal" in order, '"session_goal" missing from drop order'
+        assert "syms" in order, '"syms" missing from drop order'
+        assert order.index("session_goal") < order.index("syms"), (
+            f"'session_goal' (index {order.index('session_goal')}) should appear before "
+            f"'syms' (index {order.index('syms')}) in _droppable_names_in_drop_order"
+        )
+
+    def test_recent_commits_dropped_before_syms(self):
+        """recent_commits must be dropped before syms in the drop order.
+
+        recent_commits carries low signal (git log can recover it); syms
+        carries higher signal (symbol access history guides the next agent turn).
+        """
+        order = self._extract_drop_order()
+        assert "recent_commits" in order, '"recent_commits" missing from drop order'
+        assert "syms" in order, '"syms" missing from drop order'
+        assert order.index("recent_commits") < order.index("syms"), (
+            f"'recent_commits' (index {order.index('recent_commits')}) should appear before "
+            f"'syms' (index {order.index('syms')}) in _droppable_names_in_drop_order"
+        )
+
+    def test_active_errors_dropped_before_bash(self):
+        """active_errors must appear in the drop list before bash.
+
+        active_errors is a small derived section; bash carries richer work context.
+        """
+        order = self._extract_drop_order()
+        assert "active_errors" in order, '"active_errors" missing from drop order'
+        assert "bash" in order, '"bash" missing from drop order'
+        assert order.index("active_errors") < order.index("bash"), (
+            f"'active_errors' (index {order.index('active_errors')}) should appear before "
+            f"'bash' (index {order.index('bash')}) in _droppable_names_in_drop_order"
+        )

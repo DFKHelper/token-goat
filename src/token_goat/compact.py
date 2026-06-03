@@ -6439,8 +6439,29 @@ def _render(
         # How many items to keep when truncating a section before wholesale drop.
         _SECTION_TRUNCATE_KEEP: int = 3
 
+        # All unprotected section names in lowest-signal-first order.
+        # Sections omitted here fall through to the destructive line-popping
+        # fallback, which is much blunter — always list every unprotected section.
+        # Drop order rationale:
+        #   open_questions — cheapest to recover (grep edited files)
+        #   todos          — fresh on disk from task list
+        #   active_errors  — small, recoverable from bash history
+        #   session_goal   — inferred; other sections imply the same intent
+        #   files          — read-only context, implied by syms
+        #   grep           — investigation history
+        #   glob           — directory scan history
+        #   web            — reference material URLs
+        #   most_accessed  — symbol access counts, secondary signal
+        #   recent_commits — git context, recoverable via `git log`
+        #   syms           — symbol details per file
+        #   what_worked    — curated "tests were green" pointer
+        #   dep_changes    — recoverable from `git diff`
+        #   bash           — work context (high value, drop late)
+        #   stale          — outdated snapshot warnings (small, kept late)
         _droppable_names_in_drop_order = [
-            "todos", "files", "grep", "glob", "web",
+            "open_questions", "todos", "active_errors", "session_goal",
+            "files", "grep", "glob", "web",
+            "most_accessed", "recent_commits",
             "syms", "what_worked", "dep_changes", "bash", "stale",
         ]
         _live_groups = list(_section_groups)

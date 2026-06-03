@@ -189,9 +189,21 @@ def doctor(  # noqa: C901
     typer.echo("\ntoken-goat doctor\n")
 
     # ------------------------------------------------------------------
+    # 0. Platform
+    # ------------------------------------------------------------------
+    typer.echo("Platform")
+    if sys.platform == "win32":
+        ok("OS", f"Windows (sys.platform={sys.platform})")
+    elif sys.platform == "darwin":
+        ok("OS", f"macOS (sys.platform={sys.platform})")
+    else:
+        ok("OS", f"Linux/POSIX (sys.platform={sys.platform})")
+    ok("WSL", "yes" if paths.is_wsl() else "no")
+
+    # ------------------------------------------------------------------
     # 1. Versions
     # ------------------------------------------------------------------
-    typer.echo("Versions")
+    typer.echo("\nVersions")
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     if sys.version_info < (3, 11):  # noqa: UP036
         flag("Python", f"{py_ver} — minimum supported is 3.11; upgrade to avoid compatibility issues")
