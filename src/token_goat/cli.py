@@ -5624,8 +5624,9 @@ def _compact_hint_watch(
     def _build(sid: str) -> str:
         cfg = config_mod.load().compact_assist
         base_tokens = int(max_tokens) if max_tokens > 0 else int(cfg.max_manifest_tokens)
-        raw_multiplier = getattr(cfg, "auto_trigger_multiplier", 1.0)
-        multiplier = float(raw_multiplier) if isinstance(raw_multiplier, (int, float)) else 1.0
+        multiplier = compact_mod.get_auto_trigger_multiplier(
+            config_explicit_multiplier=cfg.auto_trigger_multiplier
+        )
         effective_tokens = (
             int(base_tokens * multiplier)
             if trigger == "auto" and multiplier > 1.0
@@ -5845,8 +5846,9 @@ def compact_hint(
     # when trigger == "auto".  This makes the preview faithful out of the box
     # without forcing the caller to look up the config value first.
     base_tokens = int(max_tokens) if max_tokens > 0 else int(cfg.max_manifest_tokens)
-    raw_multiplier = getattr(cfg, "auto_trigger_multiplier", 1.0)
-    multiplier = float(raw_multiplier) if isinstance(raw_multiplier, (int, float)) else 1.0
+    multiplier = compact_mod.get_auto_trigger_multiplier(
+        config_explicit_multiplier=cfg.auto_trigger_multiplier
+    )
     if trigger == "auto" and multiplier > 1.0:
         effective_tokens = int(base_tokens * multiplier)
     else:

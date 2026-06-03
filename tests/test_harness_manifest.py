@@ -490,3 +490,55 @@ class TestAutoFallbackToGeneric:
         if result:
             # generic harness: no bash section
             assert "**Recent Commands:**" not in result
+
+
+class TestAutoTriggerMultiplierPerHarness:
+    """Test per-harness default multipliers for auto_trigger_multiplier."""
+
+    def test_claudecode_default_multiplier(self) -> None:
+        """Claude Code harness gets 2.0x default multiplier."""
+        multiplier = compact.get_auto_trigger_multiplier(
+            config_explicit_multiplier=2.0,
+            harness="claudecode",
+        )
+        assert multiplier == 2.0
+
+    def test_codex_default_multiplier(self) -> None:
+        """Codex harness gets 1.5x default multiplier."""
+        multiplier = compact.get_auto_trigger_multiplier(
+            config_explicit_multiplier=2.0,
+            harness="codex",
+        )
+        assert multiplier == 1.5
+
+    def test_opencode_default_multiplier(self) -> None:
+        """opencode harness gets 2.5x default multiplier."""
+        multiplier = compact.get_auto_trigger_multiplier(
+            config_explicit_multiplier=2.0,
+            harness="opencode",
+        )
+        assert multiplier == 2.5
+
+    def test_generic_default_multiplier(self) -> None:
+        """Generic harness gets 1.0x default multiplier."""
+        multiplier = compact.get_auto_trigger_multiplier(
+            config_explicit_multiplier=2.0,
+            harness="generic",
+        )
+        assert multiplier == 1.0
+
+    def test_explicit_config_override_takes_precedence(self) -> None:
+        """User-set config value overrides harness default."""
+        multiplier = compact.get_auto_trigger_multiplier(
+            config_explicit_multiplier=3.5,
+            harness="codex",
+        )
+        assert multiplier == 3.5
+
+    def test_multiplier_clamped_to_max(self) -> None:
+        """Multiplier is clamped to [1.0, 10.0]."""
+        multiplier = compact.get_auto_trigger_multiplier(
+            config_explicit_multiplier=25.0,
+            harness="claudecode",
+        )
+        assert multiplier == 10.0

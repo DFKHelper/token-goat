@@ -1079,8 +1079,10 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     # moment is net-positive — every preserved fact saves a subsequent re-read.
     # Manual /compact, by contrast, fires while the agent still has headroom, so
     # we skip the multiplier to avoid wasting tokens the user might use elsewhere.
-    raw_multiplier = getattr(cfg, "auto_trigger_multiplier", 1.0)
-    multiplier = float(raw_multiplier) if isinstance(raw_multiplier, (int, float)) else 1.0
+    # Use get_auto_trigger_multiplier to select per-harness defaults if not explicitly set.
+    multiplier = compact_mod.get_auto_trigger_multiplier(
+        config_explicit_multiplier=cfg.auto_trigger_multiplier
+    )
     if trigger == "auto" and multiplier > 1.0:
         pre_clamp_tokens = int(base_tokens * multiplier)
         _LOG.info(

@@ -29,6 +29,7 @@ __all__ = [
     "infer_session_goal",
     "_enforce_char_budget",
     "detect_harness",
+    "get_auto_trigger_multiplier",
 ]
 
 import hashlib
@@ -101,6 +102,19 @@ _KNOWN_HARNESSES: Final[frozenset[str]] = frozenset(
     ["claudecode", "codex", "opencode", "generic"]
 )
 
+#: Per-harness default multipliers for auto_trigger_multiplier.
+#: These are used when the user has not explicitly set a multiplier in config.
+#: - claudecode: 2.0x — large context window, aggressive auto-compaction benefits from larger manifests
+#: - codex: 1.5x — moderate context, less aggressive compaction
+#: - opencode: 2.5x — can handle more context via output.context.push()
+#: - generic: 1.0x — unknown harness, minimal boost
+_HARNESS_MULTIPLIER_DEFAULTS: Final[dict[str, float]] = {
+    "claudecode": 2.0,
+    "codex": 1.5,
+    "opencode": 2.5,
+    "generic": 1.0,
+}
+
 
 def detect_harness(config_override: str = "auto") -> str:
     """Detect the active AI harness from environment variables.
@@ -142,6 +156,51 @@ def detect_harness(config_override: str = "auto") -> str:
         return "codex"
 
     return "generic"
+
+
+def get_auto_trigger_multiplier(
+    config_explicit_multiplier: float | None = None,
+    harness: str | None = None,
+    is_config_default: bool | None = None,
+) -> float:
+    """Get the effective auto_trigger_multiplier for the detected harness.
+
+    When the user has not explicitly configured auto_trigger_multiplier (is still
+    at the default 2.0), applies per-harness defaults. When the user has explicitly
+    set a value, that value is always used.
+
+    Args:
+        config_explicit_multiplier: The multiplier value from config
+            (CompactAssistConfig.auto_trigger_multiplier). Should always be provided.
+        harness: The detected harness name (e.g., "claudecode"). If None,
+            detect_harness() is called to determine it.
+        is_config_default: When True, treat the config_explicit_multiplier as the
+            default value (so per-harness defaults apply). When False, treat it as
+            user-configured (so the value is used as-is). When None (default), auto-detect:
+            if config_explicit_multiplier == 2.0 (the hardcoded default in config.py),
+            assume it's the default and apply per-harness logic. Otherwise, assume the
+            user set it explicitly.
+
+    Returns:
+        The effective multiplier value (clamped to [1.0, 10.0]).
+    """
+    # Determine if the config value is the default or user-configured
+    if is_config_default is None:
+        # Auto-detect: 2.0 is the hardcoded default in CompactAssistConfig
+        is_config_default = (config_explicit_multiplier == 2.0)
+
+    # If the user explicitly set a non-default value, use it
+    if not is_config_default and config_explicit_multiplier is not None:
+        return max(1.0, min(10.0, config_explicit_multiplier))
+
+    # The user did not configure it (still at default), so use per-harness defaults
+    # Determine the harness if not provided
+    if harness is None:
+        harness = detect_harness()
+
+    # Look up the per-harness default
+    default_multiplier = _HARNESS_MULTIPLIER_DEFAULTS.get(harness, 1.0)
+    return max(1.0, min(10.0, default_multiplier))
 
 
 def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
