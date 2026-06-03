@@ -33,6 +33,14 @@ What is NOT extracted
 * Anonymous operations (``{ users { id } }``).
 * Inline fragments (``... on User { id }``).
 
+Imports:
+* ``# import FragmentName from "other.graphql"`` — the ``graphql-tag`` /
+  ``graphql-code-generator`` ``#import`` pragma (a comment-based convention
+  widely used in Apollo and Relay projects).  The path string becomes an
+  :class:`ImpExp` entry with ``kind="import"``.  Because ``#`` is also
+  used for ordinary GraphQL line comments, only lines whose first non-space
+  token after ``#`` is the literal word ``import`` are matched.
+
 Design choices
 --------------
 Pure-regex scanner, no tree-sitter.  GraphQL grammars in the tree-sitter
@@ -41,7 +49,9 @@ with Python 3.11–3.13).  The regex approach covers real-world GraphQL patterns
 with zero native-extension dependencies.
 
 Comment stripping runs as a pre-pass (``#`` line comments only — GraphQL has no
-block-comment syntax) to avoid false positives inside comments.
+block-comment syntax) to avoid false positives inside comments.  Import
+extraction runs BEFORE comment stripping because ``#import`` pragmas are
+represented as comments in the source text and would be erased by the pre-pass.
 """
 from __future__ import annotations
 
@@ -111,6 +121,28 @@ _SCHEMA_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
+# Import pragma extraction
+# ---------------------------------------------------------------------------
+
+# ``# import FragmentName from "path.graphql"``
+# This is the graphql-tag / graphql-code-generator ``#import`` pragma.  It
+# looks like a comment but carries a cross-file dependency.  The format is
+# broadly:
+#   # import <identifier(s)> from "<path>"
+# but in practice the "from" keyword and identifiers are often omitted and only
+# the path matters for the dependency graph.  We match both forms:
+#   # import "path.graphql"                  (path-only)
+#   # import FragName from "path.graphql"    (with from-clause)
+# Single and double quotes both accepted.
+_GRAPHQL_IMPORT_RE = re.compile(
+    r"""^[ \t]*\#[ \t]*import\b   # the pragma marker
+        (?:[^"'\n]*)?              # optional identifiers / from-clause
+        ['"]([^'"]+)['"]          # the path in quotes
+    """,
+    re.MULTILINE | re.VERBOSE,
+)
+
+# ---------------------------------------------------------------------------
 # Caps
 # ---------------------------------------------------------------------------
 
@@ -131,18 +163,28 @@ _KIND_MAP: dict[str, str] = {
 def extract(
     source: bytes, rel_path: str
 ) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
-    """Extract GraphQL symbols and sections from *source*.
+    """Extract GraphQL symbols, imports, and sections from *source*.
 
     The return signature matches every other language extractor:
-    ``(symbols, refs, imports, sections)``.  Refs and imports are always empty
-    for GraphQL — there is no cross-file call-site model in schema files (SDL
-    ``@import`` directives are tool-specific and not standardised).
+    ``(symbols, refs, imports, sections)``.  ``# import`` pragmas (the
+    ``graphql-tag`` / Apollo convention) are returned as :class:`ImpExp`
+    entries with ``kind="import"``.  Import extraction runs on the *raw* text
+    before comment stripping so the pragma lines are not erased.
     """
     text = common.decode_source_text(source, _LOG, "graphql_idx")
     if text is None:
         return [], [], [], []
 
     try:
+        # Extract imports BEFORE stripping comments — #import pragmas live in
+        # comment-like lines and would be erased by the pre-pass.
+        imp_exp: list[ImpExp] = []
+        for m in _GRAPHQL_IMPORT_RE.finditer(text):
+            path = m.group(1).strip()
+            if path:
+                line = text[: m.start()].count("\n") + 1
+                imp_exp.append(ImpExp(kind="import", target=path, line=line))
+
         stripped = _strip_comments(text)
         total_lines = text.count("\n") + 1
 
@@ -205,7 +247,7 @@ def extract(
         sections.sort(key=lambda s: s.line)
         common.assign_flat_end_lines(sections, total_lines)
 
-        return symbols, [], [], sections
+        return symbols, [], imp_exp, sections
 
     except (re.error, UnicodeDecodeError, AttributeError, IndexError, OverflowError) as exc:
         _LOG.debug("graphql_idx: parse failed for %s: %s", rel_path, exc, exc_info=True)

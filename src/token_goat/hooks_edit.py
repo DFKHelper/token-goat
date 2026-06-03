@@ -27,7 +27,7 @@ from .hooks_common import (
     CONTINUE,
     HookPayload,
     HookResponse,
-    get_session_context,
+    get_hook_context,
     get_tool_input,
     sanitize_log_str,
     update_session,
@@ -443,43 +443,84 @@ def _pre_snapshot_imports(
     return t
 
 
+def _extract_edited_paths(tool_input: dict) -> list[str]:
+    """Return all file paths affected by an Edit, Write, or MultiEdit tool call.
+
+    For Edit/Write tools the ``tool_input`` has a single ``file_path`` key.
+    For MultiEdit the ``tool_input`` has an ``edits`` list where each element
+    is a dict containing a ``file_path`` key (one per hunk).  This helper
+    normalises both shapes into a flat list of unique, non-empty path strings
+    so callers do not need to branch on tool type.
+
+    Returns an empty list when neither key is present (degenerate payload).
+    """
+    # Single-file tools: Edit and Write
+    single = tool_input.get("file_path")
+    if isinstance(single, str) and single:
+        return [single]
+
+    # MultiEdit: edits is a list of {"file_path": ..., "old_string": ..., "new_string": ...}
+    edits = tool_input.get("edits")
+    if isinstance(edits, list):
+        seen: set[str] = set()
+        paths: list[str] = []
+        for item in edits:
+            if not isinstance(item, dict):
+                continue
+            fp = item.get("file_path")
+            if isinstance(fp, str) and fp and fp not in seen:
+                seen.add(fp)
+                paths.append(fp)
+        return paths
+
+    return []
+
+
 def post_edit(payload: HookPayload) -> HookResponse:
     """Post-edit hook: record edited files and queue for incremental re-indexing.
 
-    Two-part hook action:
-    1. Records the edited file to the session cache (for compaction manifest and recovery).
-    2. Enqueues the file to the dirty-queue and nudges the worker daemon if stale.
+    Handles Edit, Write, and MultiEdit tool calls.  For MultiEdit (which carries
+    an ``edits`` array with one entry per hunk), every unique file path is
+    recorded and enqueued, so the session cache and dirty-queue stay in sync
+    even when a single tool call touches several files.
+
+    Three-part hook action:
+    1. Records each edited file to the session cache (for compaction manifest and recovery).
+    2. Enqueues each file to the dirty-queue and nudges the worker daemon if stale.
     3. For .py files, pre-snapshots locally imported modules in a background thread
        so the diff-aware re-read hint can fire immediately if those files are read next.
 
-    The worker then re-indexes only the changed file, avoiding full-project reindexing.
+    The worker then re-indexes only the changed files, avoiding full-project reindexing.
     Always returns CONTINUE() per fail-soft hook pattern; failures are logged but never raised.
     """
     from . import session  # noqa: PLC0415
 
-    session_id, cwd = get_session_context(payload)
+    session_id, cwd = get_hook_context(payload)
     tool_input = get_tool_input(payload)
-    file_path = tool_input.get("file_path")
+    file_paths = _extract_edited_paths(tool_input)
 
-    if session_id and file_path:
-        if _edit_succeeded(payload, file_path):
-            def _record_edit(cache):  # noqa: ARG001
-                session.mark_file_edited(session_id, file_path, cache=cache)
-            update_session(session_id, _record_edit)
-        else:
-            _LOG.debug(
-                "post-edit: file %s not recorded (edit did not succeed)",
-                sanitize_log_str(file_path),
-            )
+    if not file_paths:
+        _LOG.debug("post-edit: no file_path(s) in payload; nothing to enqueue")
+        return CONTINUE()
 
-    if file_path:
+    for file_path in file_paths:
+        if session_id:
+            if _edit_succeeded(payload, file_path):
+                def _record_edit(cache, _fp=file_path):  # noqa: ARG001
+                    session.mark_file_edited(session_id, _fp, cache=cache)
+                update_session(session_id, _record_edit)
+            else:
+                _LOG.debug(
+                    "post-edit: file %s not recorded (edit did not succeed)",
+                    sanitize_log_str(file_path),
+                )
+
         _LOG.debug("post-edit: enqueuing %s for reindex", sanitize_log_str(file_path))
         _enqueue_for_reindex(file_path, cwd)
-        _nudge_worker_if_down()
+
         # Item 17: predictive pre-snapshot for Python imports
         if session_id and file_path.endswith(".py"):
             _pre_snapshot_imports(session_id, file_path, cwd)
-    else:
-        _LOG.debug("post-edit: no file_path in payload; nothing to enqueue")
 
+    _nudge_worker_if_down()
     return CONTINUE()

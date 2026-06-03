@@ -127,6 +127,68 @@ class TestCssSections:
         assert ".real" in names
 
 
+class TestCssImports:
+    def test_css_import_double_quote(self):
+        src = b'@import "variables.css";\n.btn { color: red; }\n'
+        _, _, imps, _ = css_idx.extract(src, "style.css")
+        targets = [i.target for i in imps]
+        assert "variables.css" in targets
+
+    def test_css_import_single_quote(self):
+        src = b"@import 'reset.css';\n"
+        _, _, imps, _ = css_idx.extract(src, "style.css")
+        targets = [i.target for i in imps]
+        assert "reset.css" in targets
+
+    def test_css_import_url_form(self):
+        src = b'@import url("fonts.css");\n'
+        _, _, imps, _ = css_idx.extract(src, "style.css")
+        targets = [i.target for i in imps]
+        assert "fonts.css" in targets
+
+    def test_scss_use_directive(self):
+        src = b'@use "sass:math";\n@use "mixins/flex";\n'
+        _, _, imps, _ = css_idx.extract(src, "main.scss")
+        targets = [i.target for i in imps]
+        assert "sass:math" in targets
+        assert "mixins/flex" in targets
+
+    def test_scss_forward_directive(self):
+        src = b'@forward "components/button";\n'
+        _, _, imps, _ = css_idx.extract(src, "_index.scss")
+        targets = [i.target for i in imps]
+        assert "components/button" in targets
+
+    def test_import_kind_is_import(self):
+        src = b'@import "base.css";\n'
+        _, _, imps, _ = css_idx.extract(src, "style.css")
+        assert all(i.kind == "import" for i in imps)
+
+    def test_import_line_number(self):
+        src = b"/* preamble */\n@import 'vars.css';\n"
+        _, _, imps, _ = css_idx.extract(src, "style.css")
+        assert any(i.line == 2 for i in imps)
+
+    def test_multiple_imports(self):
+        src = b'@import "reset.css";\n@import "vars.css";\n@import "components.css";\n'
+        _, _, imps, _ = css_idx.extract(src, "style.css")
+        targets = {i.target for i in imps}
+        assert targets == {"reset.css", "vars.css", "components.css"}
+
+    def test_no_import_in_plain_css(self):
+        src = b".btn { color: red; }\n#header { margin: 0; }\n"
+        _, _, imps, _ = css_idx.extract(src, "style.css")
+        assert imps == []
+
+    def test_import_inside_comment_not_extracted(self):
+        """@import inside a block comment must not produce an import edge."""
+        src = b'/* @import "should-not-appear.css"; */\n@import "real.css";\n'
+        _, _, imps, _ = css_idx.extract(src, "style.css")
+        targets = [i.target for i in imps]
+        assert "should-not-appear.css" not in targets
+        assert "real.css" in targets
+
+
 class TestCssEdgeCases:
     def test_empty_file(self):
         symbols, refs, imps, sections = css_idx.extract(b"", "empty.css")

@@ -210,6 +210,60 @@ class TestGraphqlSections:
         assert "Real" in names
 
 
+class TestGraphqlImports:
+    def test_import_pragma_double_quote(self):
+        """# import pragma with double quotes should produce an import edge."""
+        src = b'# import UserFields from "fragments/user.graphql"\ntype Query { users: [User] }\n'
+        _, _, imps, _ = graphql_idx.extract(src, "query.graphql")
+        targets = [i.target for i in imps]
+        assert "fragments/user.graphql" in targets
+
+    def test_import_pragma_single_quote(self):
+        src = b"# import PostFields from 'fragments/post.graphql'\n"
+        _, _, imps, _ = graphql_idx.extract(src, "query.graphql")
+        targets = [i.target for i in imps]
+        assert "fragments/post.graphql" in targets
+
+    def test_import_pragma_path_only(self):
+        """Path-only form (no from-clause) should also be recognised."""
+        src = b'# import "fragments/common.graphql"\n'
+        _, _, imps, _ = graphql_idx.extract(src, "query.graphql")
+        targets = [i.target for i in imps]
+        assert "fragments/common.graphql" in targets
+
+    def test_import_kind_is_import(self):
+        src = b'# import UserFields from "user.graphql"\n'
+        _, _, imps, _ = graphql_idx.extract(src, "query.graphql")
+        assert all(i.kind == "import" for i in imps)
+
+    def test_import_line_number(self):
+        src = b"# comment\n# import UserFields from \"user.graphql\"\n"
+        _, _, imps, _ = graphql_idx.extract(src, "query.graphql")
+        assert any(i.line == 2 for i in imps)
+
+    def test_multiple_imports(self):
+        src = (
+            b'# import UserFields from "fragments/user.graphql"\n'
+            b'# import PostFields from "fragments/post.graphql"\n'
+            b"query GetAll { users { ...UserFields } }\n"
+        )
+        _, _, imps, _ = graphql_idx.extract(src, "query.graphql")
+        targets = {i.target for i in imps}
+        assert "fragments/user.graphql" in targets
+        assert "fragments/post.graphql" in targets
+
+    def test_ordinary_comment_not_extracted_as_import(self):
+        """Regular # comments that don't start with 'import' must not produce edges."""
+        src = b"# This is a normal comment\ntype Query { id: ID }\n"
+        _, _, imps, _ = graphql_idx.extract(src, "schema.graphql")
+        assert imps == []
+
+    def test_no_imports_in_plain_schema(self):
+        src = b"type User { id: ID! name: String }\ntype Query { user: User }\n"
+        _, _, imps, _ = graphql_idx.extract(src, "schema.graphql")
+        assert imps == []
+
+
 class TestGraphqlEdgeCases:
     def test_empty_file(self):
         symbols, refs, imps, sections = graphql_idx.extract(b"", "empty.graphql")
@@ -398,6 +452,67 @@ class TestProtoSections:
         names = [s.name for s in symbols]
         assert "Ghost" not in names
         assert "Visible" in names
+
+
+class TestProtoImports:
+    def test_simple_import(self):
+        src = b'import "other.proto";\nmessage Foo { int32 id = 1; }\n'
+        _, _, imps, _ = proto_idx.extract(src, "test.proto")
+        targets = [i.target for i in imps]
+        assert "other.proto" in targets
+
+    def test_import_single_quote(self):
+        src = b"import 'google/protobuf/timestamp.proto';\n"
+        _, _, imps, _ = proto_idx.extract(src, "test.proto")
+        targets = [i.target for i in imps]
+        assert "google/protobuf/timestamp.proto" in targets
+
+    def test_public_import(self):
+        src = b'import public "base.proto";\n'
+        _, _, imps, _ = proto_idx.extract(src, "test.proto")
+        targets = [i.target for i in imps]
+        assert "base.proto" in targets
+
+    def test_weak_import(self):
+        src = b'import weak "optional.proto";\n'
+        _, _, imps, _ = proto_idx.extract(src, "test.proto")
+        targets = [i.target for i in imps]
+        assert "optional.proto" in targets
+
+    def test_import_kind_is_import(self):
+        src = b'import "other.proto";\n'
+        _, _, imps, _ = proto_idx.extract(src, "test.proto")
+        assert all(i.kind == "import" for i in imps)
+
+    def test_import_line_number(self):
+        src = b'syntax = "proto3";\nimport "deps.proto";\n'
+        _, _, imps, _ = proto_idx.extract(src, "test.proto")
+        assert any(i.line == 2 for i in imps)
+
+    def test_multiple_imports(self):
+        src = (
+            b'syntax = "proto3";\n'
+            b'import "google/protobuf/timestamp.proto";\n'
+            b'import "google/protobuf/empty.proto";\n'
+            b"message Req { }\n"
+        )
+        _, _, imps, _ = proto_idx.extract(src, "test.proto")
+        targets = {i.target for i in imps}
+        assert "google/protobuf/timestamp.proto" in targets
+        assert "google/protobuf/empty.proto" in targets
+
+    def test_no_imports_when_none(self):
+        src = b'syntax = "proto3";\nmessage Foo { int32 id = 1; }\n'
+        _, _, imps, _ = proto_idx.extract(src, "test.proto")
+        assert imps == []
+
+    def test_import_inside_comment_not_extracted(self):
+        """import statements inside comments must not produce import edges."""
+        src = b'// import "ghost.proto";\nimport "real.proto";\n'
+        _, _, imps, _ = proto_idx.extract(src, "test.proto")
+        targets = [i.target for i in imps]
+        assert "ghost.proto" not in targets
+        assert "real.proto" in targets
 
 
 class TestProtoEdgeCases:

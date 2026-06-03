@@ -16,6 +16,12 @@ Symbols:
 * ``proto_oneof``     — ``oneof Name`` field groups (inside a message).
 * ``proto_extend``    — ``extend Name`` extension blocks.
 
+Imports:
+* Each ``import "other.proto";`` statement produces an :class:`ImpExp` with
+  ``kind="import"`` and ``target`` set to the raw path string from the
+  directive (e.g. ``"google/protobuf/timestamp.proto"``).  These entries feed
+  the PageRank cross-reference graph and are surfaced by ``token-goat imports``.
+
 Sections:
 Each symbol also becomes a Section so ``token-goat section`` can slice the
 definition body.  End-lines are assigned by the flat algorithm (content up to
@@ -24,7 +30,7 @@ the next section header, or EOF for the last one).
 What is NOT extracted
 ---------------------
 * Field names (``required int32 id = 1;``) — too fine-grained.
-* ``option`` and ``import`` statements.
+* ``option`` statements.
 * ``package`` declarations.
 * Nested messages / enums — only top-level definitions are indexed to avoid
   flooding the symbol table.  A nested ``message Address`` inside ``message
@@ -108,6 +114,14 @@ _ONEOF_RE = re.compile(
     re.MULTILINE,
 )
 
+# ``import "path/to/other.proto";`` — file-level import directive.
+# Both double and single quotes are accepted.  The ``weak`` and ``public``
+# modifiers are allowed before the path string.
+_IMPORT_RE = re.compile(
+    r'^import\s+(?:weak\s+|public\s+)?["\']([^"\']+)["\']',
+    re.MULTILINE,
+)
+
 # ---------------------------------------------------------------------------
 # Caps
 # ---------------------------------------------------------------------------
@@ -125,12 +139,11 @@ _KIND_MAP: dict[str, str] = {
 def extract(
     source: bytes, rel_path: str
 ) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
-    """Extract Protocol Buffer symbols and sections from *source*.
+    """Extract Protocol Buffer symbols, imports, and sections from *source*.
 
     The return signature matches every other language extractor:
-    ``(symbols, refs, imports, sections)``.  Refs and imports are always empty
-    for .proto files — cross-file dependencies come from ``import`` directives
-    which are file-level, not symbol-level.
+    ``(symbols, refs, imports, sections)``.  ``import "..."`` directives are
+    returned as :class:`ImpExp` entries with ``kind="import"``.
     """
     text = common.decode_source_text(source, _LOG, "proto_idx")
     if text is None:
@@ -141,6 +154,7 @@ def extract(
         total_lines = text.count("\n") + 1
 
         symbols: list[Symbol] = []
+        imp_exp: list[ImpExp] = []
         sections: list[Section] = []
         seen: set[tuple[str, int]] = set()
 
@@ -155,6 +169,14 @@ def extract(
             seen.add(key)
             symbols.append(Symbol(name=name, kind=kind, line=line))
             sections.append(Section(heading=name, level=1, line=line))
+
+        # import "path/to/file.proto" — extract before stripping comments
+        # (imports appear at top of file, rarely inside comments)
+        for m in _IMPORT_RE.finditer(stripped):
+            path = m.group(1).strip()
+            if path:
+                line = stripped[: m.start()].count("\n") + 1
+                imp_exp.append(ImpExp(kind="import", target=path, line=line))
 
         # Top-level: message / enum / service
         for m in _TOP_LEVEL_RE.finditer(stripped):
@@ -190,7 +212,7 @@ def extract(
         sections.sort(key=lambda s: s.line)
         common.assign_flat_end_lines(sections, total_lines)
 
-        return symbols, [], [], sections
+        return symbols, [], imp_exp, sections
 
     except (re.error, UnicodeDecodeError, AttributeError, IndexError, OverflowError) as exc:
         _LOG.debug("proto_idx: parse failed for %s: %s", rel_path, exc, exc_info=True)

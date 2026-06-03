@@ -17,6 +17,14 @@ Symbols:
 * ``css_rule``      — general ``@rule`` names not covered above
   (``@media``, ``@layer``, ``@font-face``, ``@supports``, etc.).
 
+Imports:
+* ``@import "path"`` / ``@import url("path")`` — CSS / Less file imports.
+* ``@use "path"`` — Sass module system import (SCSS).
+* ``@forward "path"`` — Sass module re-export (SCSS).
+  Each directive produces an :class:`ImpExp` with ``kind="import"`` and
+  ``target`` set to the resolved path string.  These entries feed the PageRank
+  cross-reference graph and are surfaced by ``token-goat imports``.
+
 Sections:
 Each symbol also becomes a Section so ``token-goat section`` can slice the
 block body.  End-lines are assigned by the flat algorithm (content up to the
@@ -137,6 +145,25 @@ _ID_SELECTOR_RE = re.compile(
 )
 
 # ---------------------------------------------------------------------------
+# Import extraction
+# ---------------------------------------------------------------------------
+
+# CSS ``@import "path"`` / ``@import url("path")``
+# SCSS ``@use "path"`` / ``@forward "path"``
+# Matches both quoted strings and url() forms, strips optional layer/with
+# modifiers.  Single or double quotes accepted.
+# WHY three distinct patterns collapsed into one: ``@import``, ``@use``, and
+# ``@forward`` all introduce a cross-file dependency; tooling (PageRank,
+# ``token-goat imports``) should see all three as import edges.
+_CSS_IMPORT_RE = re.compile(
+    r"""^[ \t]*@(?:import|use|forward)\s+          # directive keyword
+        (?:url\()?                                  # optional url( wrapper
+        ['"]([^'"]+)['"]                            # the path in quotes
+    """,
+    re.MULTILINE | re.VERBOSE,
+)
+
+# ---------------------------------------------------------------------------
 # Caps
 # ---------------------------------------------------------------------------
 
@@ -147,13 +174,13 @@ _MAX_HEADING_LEN: int = 120
 def extract(
     source: bytes, rel_path: str
 ) -> tuple[list[Symbol], list[Ref], list[ImpExp], list[Section]]:
-    """Extract CSS / SCSS / Less symbols and sections from *source*.
+    """Extract CSS / SCSS / Less symbols, imports, and sections from *source*.
 
     The return signature matches every other language extractor in
     ``token_goat.languages``: ``(symbols, refs, imports, sections)``.
-    Refs and imports are always empty for CSS — there is no cross-file
-    call-site model in pure CSS (``@import`` exists but is a file reference,
-    not a symbol reference).
+    ``@import``, ``@use``, and ``@forward`` directives are returned as
+    :class:`ImpExp` entries with ``kind="import"``, feeding the PageRank
+    cross-reference graph used by ``token-goat imports``.
     """
     text = common.decode_source_text(source, _LOG, "css_idx")
     if text is None:
@@ -165,6 +192,7 @@ def extract(
         total_lines = len(lines)
 
         symbols: list[Symbol] = []
+        imp_exp: list[ImpExp] = []
         sections: list[Section] = []
         seen: set[tuple[str, int]] = set()
 
@@ -179,6 +207,13 @@ def extract(
             seen.add(key)
             symbols.append(Symbol(name=name, kind=kind, line=line))
             sections.append(Section(heading=name, level=1, line=line))
+
+        # @import / @use / @forward — extract import edges
+        for m in _CSS_IMPORT_RE.finditer(stripped):
+            path = m.group(1).strip()
+            if path:
+                line = stripped[: m.start()].count("\n") + 1
+                imp_exp.append(ImpExp(kind="import", target=path, line=line))
 
         # @keyframes
         for m in _KEYFRAMES_RE.finditer(stripped):
@@ -237,7 +272,7 @@ def extract(
         sections.sort(key=lambda s: s.line)
         common.assign_flat_end_lines(sections, total_lines)
 
-        return symbols, [], [], sections
+        return symbols, [], imp_exp, sections
 
     except (re.error, UnicodeDecodeError, AttributeError, IndexError, OverflowError) as exc:
         _LOG.debug("css_idx: parse failed for %s: %s", rel_path, exc, exc_info=True)
