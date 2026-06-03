@@ -61,8 +61,10 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_WEB_CACHE_MAX_FILES",
     "TOKEN_GOAT_WEB_CACHE_MAX_BYTES",
     "TOKEN_GOAT_WEB_COMPRESS",
+    "TOKEN_GOAT_BASH_CACHE_MIN_BYTES",
     "TOKEN_GOAT_BASH_CACHE_MAX_FILES",
     "TOKEN_GOAT_BASH_CACHE_MAX_BYTES",
+    "TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT",
     "TOKEN_GOAT_WORKER_WATCHDOG",
     "TOKEN_GOAT_HOOK_WATCHDOG_MS",
     "TOKEN_GOAT_COMPRESS_PROFILE",
@@ -106,8 +108,10 @@ _ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHO
 _ENV_WEB_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_FILES"  # integer override (file count)
 _ENV_WEB_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_BYTES"  # integer override (bytes)
 _ENV_WEB_COMPRESS: Final[str] = "TOKEN_GOAT_WEB_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable body gzip
+_ENV_BASH_CACHE_MIN_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MIN_BYTES"  # integer override (min bytes to cache)
 _ENV_BASH_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_FILES"  # integer override (file count)
-_ENV_BASH_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES"  # integer override (bytes)
+_ENV_BASH_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES"  # integer override (total bytes)
+_ENV_BASH_CACHE_MAX_BYTES_PER_OUTPUT: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT"  # integer override (max per single output)
 _ENV_WORKER_WATCHDOG: Final[str] = "TOKEN_GOAT_WORKER_WATCHDOG"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_COMPRESS_PROFILE: Final[str] = "TOKEN_GOAT_COMPRESS_PROFILE"  # "auto"|"aggressive"|"balanced"|"minimal"
 _ENV_SKILL_COMPRESS: Final[str] = "TOKEN_GOAT_SKILL_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable body gzip
@@ -230,8 +234,10 @@ class _BashCompressToml(TypedDict, total=False):
     max_lines: int
     max_bytes: int
     timeout_seconds: int
+    cache_min_bytes: int
     cache_max_file_count: int
     cache_max_bytes: int
+    cache_max_bytes_per_output: int
 
 
 class _SessionBriefToml(TypedDict, total=False):
@@ -515,11 +521,18 @@ class BashCompressConfig:
             Default 600 s covers ``npm install`` on a fresh ``node_modules``;
             raise for longer-running builds (e.g. ``terraform apply`` on a
             large stack).
+        cache_min_bytes: Minimum output size (bytes) to cache. Outputs smaller
+            than this are not stored to disk. Default 0 disables the filter.
+            Set to 1024 or higher to skip tiny outputs and save cache space.
         cache_max_file_count: Maximum number of cached bash-output body files
             before oldest-first eviction fires (default 4096, matching web cache).
             Override via ``TOKEN_GOAT_BASH_CACHE_MAX_FILES`` env var.
         cache_max_bytes: Maximum total bytes for the bash-output cache directory
             (default 16 MiB).  Override via ``TOKEN_GOAT_BASH_CACHE_MAX_BYTES``.
+        cache_max_bytes_per_output: Maximum size per single bash output file
+            (default 50 MB). Outputs larger than this are not cached, preventing
+            one huge build log from filling the entire cache directory.
+            Override via ``TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT`` env var.
     """
 
     enabled: bool = True
@@ -527,8 +540,10 @@ class BashCompressConfig:
     max_lines: int = 1000
     max_bytes: int = 64 * 1024
     timeout_seconds: int = 600
+    cache_min_bytes: int = 0
     cache_max_file_count: int = 4096
     cache_max_bytes: int = 16 * 1024 * 1024
+    cache_max_bytes_per_output: int = 50 * 1024 * 1024
 
 
 @dataclass
@@ -1350,6 +1365,9 @@ def load() -> Config:
         timeout_seconds=_validated_int(
             bc_raw.get("timeout_seconds", 600), 600, 5, 7200, "bash_compress.timeout_seconds"
         ),
+        cache_min_bytes=_validated_int(
+            bc_raw.get("cache_min_bytes", 0), 0, 0, 100 * 1024 * 1024, "bash_compress.cache_min_bytes"
+        ),
         cache_max_file_count=_validated_int(
             bc_raw.get("cache_max_file_count", 4096), 4096, 1, 1_000_000, "bash_compress.cache_max_file_count"
         ),
@@ -1357,14 +1375,24 @@ def load() -> Config:
             bc_raw.get("cache_max_bytes", 16 * 1024 * 1024),
             16 * 1024 * 1024, 1024, 4 * 1024 * 1024 * 1024, "bash_compress.cache_max_bytes",
         ),
+        cache_max_bytes_per_output=_validated_int(
+            bc_raw.get("cache_max_bytes_per_output", 50 * 1024 * 1024),
+            50 * 1024 * 1024, 1024, 4 * 1024 * 1024 * 1024, "bash_compress.cache_max_bytes_per_output",
+        ),
     )
     _apply_env_disable(bc, "enabled", _ENV_BASH_COMPRESS, "bash_compress")
     # Apply env overrides for bash output cache caps
+    bc.cache_min_bytes = _env_int(
+        _ENV_BASH_CACHE_MIN_BYTES, bc.cache_min_bytes, 0, 4 * 1024 * 1024 * 1024, "bash_compress.cache_min_bytes"
+    )
     bc.cache_max_file_count = _env_int(
         _ENV_BASH_CACHE_MAX_FILES, bc.cache_max_file_count, 1, 1_000_000, "bash_compress.cache_max_file_count"
     )
     bc.cache_max_bytes = _env_int(
         _ENV_BASH_CACHE_MAX_BYTES, bc.cache_max_bytes, 1024, 4 * 1024 * 1024 * 1024, "bash_compress.cache_max_bytes"
+    )
+    bc.cache_max_bytes_per_output = _env_int(
+        _ENV_BASH_CACHE_MAX_BYTES_PER_OUTPUT, bc.cache_max_bytes_per_output, 1024, 4 * 1024 * 1024 * 1024, "bash_compress.cache_max_bytes_per_output"
     )
 
     sb_raw: _SessionBriefToml = cast("_SessionBriefToml", raw.get("session_brief", {}))

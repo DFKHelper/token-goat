@@ -27,6 +27,8 @@ from __future__ import annotations
 __all__ = [
     "DEFAULT_MAX_TOTAL_BYTES",
     "DEFAULT_MAX_FILE_COUNT",
+    "DEFAULT_MIN_CACHE_BYTES",
+    "DEFAULT_MAX_CACHE_BYTES",
     "OUTPUT_FILENAME_RE",
     "BashOutputMeta",
     "command_hash",
@@ -86,6 +88,17 @@ DEFAULT_MAX_TOTAL_BYTES: int = 16 * 1024 * 1024
 #: to hook cold-start.  4 096 entries × average 1 KB = 4 MB, well within the
 #: byte cap, so file-count eviction rarely fires unless entries are tiny.
 DEFAULT_MAX_FILE_COUNT: int = 4096
+#: Minimum output size (bytes) to cache.  Outputs smaller than this are not stored
+#: to disk, saving I/O and cache space.  A 200-byte output is ~50 tokens, and
+#: a dedup hint costs ~12 tokens, so the saving is ~38 tokens.  Default 0 disables
+#: the filter (all outputs cached). Set to 1024 or higher to skip tiny outputs.
+#: Configurable via [bash_compress] cache_min_bytes in config.toml.
+DEFAULT_MIN_CACHE_BYTES: int = 0
+#: Maximum output size (bytes) to cache per single bash output.  Outputs larger than
+#: this are not stored (to prevent one massive build log from filling the cache).
+#: Default 50 MB. Configurable via [bash_compress] cache_max_bytes_per_output in config.toml.
+#: Note: This is per-output cap; total directory cap is DEFAULT_MAX_TOTAL_BYTES.
+DEFAULT_MAX_CACHE_BYTES: int = 50 * 1024 * 1024
 
 # OUTPUT_FILENAME_RE is imported from cache_common — shared with web_cache.
 
@@ -338,18 +351,28 @@ def store_output(
     cwd: str | None = None,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     max_file_count: int = DEFAULT_MAX_FILE_COUNT,
+    min_cache_bytes: int = DEFAULT_MIN_CACHE_BYTES,
+    max_cache_bytes: int = DEFAULT_MAX_CACHE_BYTES,
 ) -> BashOutputMeta | None:
     """Write *stdout* + *stderr* to the cache and return descriptive metadata.
 
-    Returns ``None`` on any I/O error so the calling hook can degrade silently.
-    Output larger than ``_MAX_STORED_BYTES`` is tail-preserved (head truncated)
-    because failing test output is typically at the bottom.  After the write the
-    function opportunistically evicts the oldest files until the total store size
-    is back under ``max_total_bytes`` and the file count is at or under
-    ``max_file_count``; the eviction is best-effort and a failed pass simply
-    leaves the directory slightly over budget — the next call will try again.
-    *cwd* is included in the cache key so commands from different projects do
-    not share entries.
+    Returns ``None`` on any I/O error so the calling hook can degrade silently,
+    OR when output size is below *min_cache_bytes* or above *max_cache_bytes*
+    (size threshold filtering).  Output larger than ``_MAX_STORED_BYTES`` is
+    tail-preserved (head truncated) because failing test output is typically at
+    the bottom.  After the write the function opportunistically evicts the oldest
+    files until the total store size is back under ``max_total_bytes`` and the
+    file count is at or under ``max_file_count``; the eviction is best-effort
+    and a failed pass simply leaves the directory slightly over budget — the next
+    call will try again. *cwd* is included in the cache key so commands from
+    different projects do not share entries.
+
+    Size thresholds:
+        min_cache_bytes: Do not cache outputs smaller than this (default 1 KB).
+            Saves disk space and cache pollution for tiny outputs.
+        max_cache_bytes: Do not cache outputs larger than this per-file cap
+            (default 50 MB). Prevents a single huge build log from filling the
+            entire cache directory.
     """
     # Strip ANSI/VT100 escape sequences before storing so cached content is
     # always clean text.  Tools like lefthook, delta, eza, and pytest emit
@@ -359,14 +382,30 @@ def store_output(
 
     meta: BashOutputMeta | None = None
     with safe_cache_op("store_output", log=_LOG):
+        stdout_bytes = len(stdout.encode("utf-8", errors="replace"))
+        stderr_bytes = len(stderr.encode("utf-8", errors="replace"))
+        total = stdout_bytes + stderr_bytes
+
+        # Check size thresholds: do not cache if below min or above max.
+        # Returns None silently so the caller knows not to write the sidecar.
+        if total < min_cache_bytes:
+            _LOG.debug(
+                "bash_cache: output too small (%d bytes < min %d); skipping cache",
+                total, min_cache_bytes,
+            )
+            return None
+        if total > max_cache_bytes:
+            _LOG.debug(
+                "bash_cache: output too large (%d bytes > max %d); skipping cache",
+                total, max_cache_bytes,
+            )
+            return None
+
         out_id = output_id_for(session_id, command, cwd=cwd)
         path = safe_join_output_id(out_id, _bash_outputs_dir, "bash_cache")
         if path is None:
             return None
 
-        stdout_bytes = len(stdout.encode("utf-8", errors="replace"))
-        stderr_bytes = len(stderr.encode("utf-8", errors="replace"))
-        total = stdout_bytes + stderr_bytes
         truncated = False
         body_parts: list[str] = []
 

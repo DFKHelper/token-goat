@@ -3296,8 +3296,13 @@ def post_bash(payload: HookPayload) -> HookResponse:
         cwd=cwd,
         max_total_bytes=_bc_cfg.cache_max_bytes,
         max_file_count=_bc_cfg.cache_max_file_count,
+        min_cache_bytes=_bc_cfg.cache_min_bytes,
+        max_cache_bytes=_bc_cfg.cache_max_bytes_per_output,
     )
     if meta is None:
+        # Output was not cached due to size threshold (too small or too large).
+        # Record a stat so we can see how often this happens.
+        record_cached_stat("bash_output_too_small", sanitize_log_str(display_cmd, max_len=200), bytes_saved=0)
         return CONTINUE()
     bash_cache.write_sidecar(meta)
 

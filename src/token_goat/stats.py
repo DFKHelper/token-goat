@@ -184,6 +184,13 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # it gets its own user-visible bucket rather than folding into HINT.
     "bash_dedup_hint": SOURCE_BASH,
     "bash_output_cached": SOURCE_BASH,
+    # bash_output_too_small: fired by post_bash when an output is skipped from
+    # caching because it falls below min_cache_bytes or above max_cache_bytes
+    # (size threshold filtering). bytes_saved / tokens_saved are always 0.
+    # The row exists to measure threshold-induced cache misses and tune the
+    # min/max values based on real session data.  Only surfaces in `token-goat
+    # stats` when [stats] record_zero_savings = true.
+    "bash_output_too_small": SOURCE_BASH,
     # bash_output_recall: fired by cmd_bash_output when the agent calls
     # `token-goat bash-output` to retrieve a cached output.  saved_bytes =
     # full_output − returned_slice; zero for an unsliced full recall (honest).

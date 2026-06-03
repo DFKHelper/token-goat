@@ -211,6 +211,49 @@ class TestStoreAndLoad:
         body = bash_cache.load_output(meta.output_id)
         assert body is not None and "output here" in body
 
+    def test_output_below_min_threshold_not_cached(self, tmp_data_dir):
+        """Output smaller than min_cache_bytes is not cached."""
+        # Small output (500 bytes) with min_cache_bytes=1024 should not be cached.
+        meta = bash_cache.store_output(
+            "sess-min-threshold", "echo hi", "X" * 500, "", 0,
+            min_cache_bytes=1024,
+        )
+        assert meta is None, "Output below min_cache_bytes should not be cached"
+
+    def test_output_above_max_threshold_not_cached(self, tmp_data_dir):
+        """Output larger than max_cache_bytes is not cached."""
+        # Large output (100 MB) with max_cache_bytes=50MB should not be cached.
+        # Using a smaller size for test speed.
+        large_output = "X" * (60 * 1024 * 1024)
+        meta = bash_cache.store_output(
+            "sess-max-threshold", "cat huge.log", large_output, "", 0,
+            max_cache_bytes=50 * 1024 * 1024,
+        )
+        assert meta is None, "Output above max_cache_bytes should not be cached"
+
+    def test_output_within_threshold_is_cached(self, tmp_data_dir):
+        """Output between min and max thresholds IS cached normally."""
+        # Output (2 KB) between min (1 KB) and max (50 MB) should be cached.
+        meta = bash_cache.store_output(
+            "sess-within-threshold", "ls -la", "X" * 2048, "", 0,
+            min_cache_bytes=1024,
+            max_cache_bytes=50 * 1024 * 1024,
+        )
+        assert meta is not None, "Output within thresholds should be cached"
+        body = bash_cache.load_output(meta.output_id)
+        assert body is not None and len(body) > 0
+
+    def test_threshold_zero_min_caches_all(self, tmp_data_dir):
+        """With min_cache_bytes=0, even tiny outputs are cached."""
+        # With min threshold disabled (0), even 100 bytes should cache.
+        meta = bash_cache.store_output(
+            "sess-min-zero", "true", "X" * 100, "", 0,
+            min_cache_bytes=0,
+        )
+        assert meta is not None, "With min=0, all outputs should cache"
+        body = bash_cache.load_output(meta.output_id)
+        assert body is not None
+
 
 class TestPostBashHook:
     def test_small_output_skipped(self, tmp_data_dir):
