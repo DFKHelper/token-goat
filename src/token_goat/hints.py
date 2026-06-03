@@ -2673,7 +2673,10 @@ def _build_bash_dedup_hint_inner(
             _record_bash_dedup_emitted(cache, dedup_key)
         if cache is not None:
             _record_dedup_hint_emitted(cache, cmd_sha, "bash_dedup", fp_key)
-        return ReadHint(_apply_terse(hint_text), tokens_avoided)
+        result = ReadHint(_apply_terse(hint_text), tokens_avoided)
+        return _emit_json_sidecar(
+            result, "bash_dedup", command=cmd_short, bytes_size=total_bytes, age_s=int(age), wasted=tokens_avoided,
+        )
 
     grep_suffix = " (add --grep PATTERN to filter)" if total_bytes >= _BASH_DEDUP_GREP_SUGGEST_BYTES else ""
 
@@ -2696,7 +2699,10 @@ def _build_bash_dedup_hint_inner(
         _record_bash_dedup_emitted(cache, dedup_key)
     if cache is not None:
         _record_dedup_hint_emitted(cache, cmd_sha, "bash_dedup", fp_key)
-    return ReadHint(_apply_terse(hint_text), tokens_avoided)
+    result = ReadHint(_apply_terse(hint_text), tokens_avoided)
+    return _emit_json_sidecar(
+        result, "bash_dedup", command=cmd_short, bytes_size=total_bytes, age_s=int(age), wasted=tokens_avoided,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2809,12 +2815,15 @@ def build_bash_cache_hit_hint(
     except Exception:  # noqa: BLE001 — fail-soft: preview must never break the hint
         pass
 
-    return ReadHint(
+    result = ReadHint(
         _apply_terse(
             f"Command cached {age_str} ago: {total_bytes:,}B{exit_str}, ~{tokens_avoided}t. "
             f"Use `token-goat bash-output {short_id}` to read without re-running.{preview_text}"
         ),
         tokens_avoided,
+    )
+    return _emit_json_sidecar(
+        result, "bash_cache_hit", command=command, bytes_size=total_bytes, age_s=int(age), wasted=tokens_avoided,
     )
 
 
@@ -2959,11 +2968,14 @@ def _build_grep_dedup_hint_inner(
         path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
         # Curator: record emission keyed on the pattern (grep has no file path).
         _record_dedup_hint_emitted(cache, f"grep:{pattern}", "grep_dedup", fp_key)
-        return ReadHint(
+        result = ReadHint(
             _apply_terse(
                 f"Grep `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} matches, ~{tokens_avoided}t."
             ),
             tokens_avoided,
+        )
+        return _emit_json_sidecar(
+            result, "grep_dedup", pattern=pattern, path=path, result_count=entry.result_count, age_s=int(age), wasted=tokens_avoided,
         )
     return None
 
@@ -3122,11 +3134,14 @@ def _build_glob_dedup_hint_inner(
     path_str = f" in `{_sanitize_hint_path(path)}`" if path else ""
     # Curator: record emission keyed on the pattern (glob has no file path).
     _record_dedup_hint_emitted(cache, f"glob:{pattern}", "glob_dedup", fp_key)
-    return ReadHint(
+    result = ReadHint(
         _apply_terse(
             f"Glob `{pattern_short}`{path_str} ({int(age)}s): {entry.result_count} results, ~{tokens_avoided}t."
         ),
         tokens_avoided,
+    )
+    return _emit_json_sidecar(
+        result, "glob_dedup", pattern=pattern, path=path, result_count=entry.result_count, age_s=int(age), wasted=tokens_avoided,
     )
 
 
@@ -3257,12 +3272,15 @@ def _build_web_dedup_hint_inner(
         recall_str = f"`token-goat web-output {short_id}`"
     else:
         recall_str = f"id={short_id}"
-    return ReadHint(
+    result = ReadHint(
         _apply_terse(
             f"URL ({int(age)}s): {entry.body_bytes:,}B{status_str}{content_type_str}, ~{tokens_avoided}t. "
             f"{recall_str}{grep_suffix}"
         ),
         tokens_avoided,
+    )
+    return _emit_json_sidecar(
+        result, "web_dedup", url=url, bytes_size=entry.body_bytes, age_s=int(age), wasted=tokens_avoided,
     )
 
 
@@ -3369,12 +3387,15 @@ def build_web_cache_hit_hint(
 
     short_id = _cc.short_output_id(meta.output_id)
     age_str = f"{int(age // 3600)}h" if age >= 3600 else f"{int(age // 60)}m"
-    return ReadHint(
+    result = ReadHint(
         _apply_terse(
             f"URL cached {age_str} ago: {meta.body_bytes:,}B{status_str}{content_type_str}, ~{tokens_avoided}t. "
             f"Use `token-goat web-output {short_id}` to read without re-fetching."
         ),
         tokens_avoided,
+    )
+    return _emit_json_sidecar(
+        result, "web_cache_hit", url=url, bytes_size=meta.body_bytes, age_s=int(age), wasted=tokens_avoided,
     )
 
 

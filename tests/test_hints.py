@@ -2919,6 +2919,162 @@ class TestJsonSidecar:
         assert "line" not in payload
         assert payload["added"] == 2
 
+    def test_all_dedup_hints_have_consistent_sidecars(self, tmp_data_dir, monkeypatch):
+        """All dedup hint types emit JSON sidecars with consistent structure."""
+        import json as _json
+
+        from token_goat import bash_cache, web_cache
+        from token_goat import config as _config
+        from token_goat.hints import (
+            build_bash_dedup_hint,
+            build_glob_dedup_hint,
+            build_grep_dedup_hint,
+            build_web_dedup_hint,
+        )
+
+        monkeypatch.setenv("TOKEN_GOAT_HINT_JSON_SIDECAR", "1")
+        _config._config_mtime_cache = None  # type: ignore[attr-defined]
+
+        sid = "s_dedup_sidecars"
+
+        # Record bash command
+        cmd = "pytest tests/"
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            sid, cmd_sha, cmd, f"out_{cmd_sha[:8]}",
+            stdout_bytes=2000, stderr_bytes=0,
+            exit_code=0, truncated=False,
+        )
+
+        # Record grep pattern
+        session.mark_grep(
+            sid, pattern="test_", path="src/", result_count=12,
+        )
+
+        # Record glob pattern
+        session.mark_glob_run(
+            sid, pattern="*.py", path="src/", result_count=25,
+        )
+
+        # Record web URL
+        url = "https://example.com/docs.html"
+        url_sha = web_cache.url_hash(url)
+        session.mark_web_fetch(
+            sid, url_sha, url, f"web_{url_sha[:8]}",
+            body_bytes=5000, status_code=200, truncated=False,
+        )
+
+        # Test bash_dedup_hint
+        bash_hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert bash_hint is not None
+        bash_first, _, _ = str(bash_hint).partition("\n")
+        bash_payload = _json.loads(bash_first)
+        assert bash_payload["hint"] == "bash_dedup"
+        assert "command" in bash_payload
+        assert "bytes_size" in bash_payload
+        assert "wasted" in bash_payload
+
+        # Test grep_dedup_hint
+        grep_hint = build_grep_dedup_hint(session_id=sid, pattern="test_", path="src/")
+        assert grep_hint is not None
+        grep_first, _, _ = str(grep_hint).partition("\n")
+        grep_payload = _json.loads(grep_first)
+        assert grep_payload["hint"] == "grep_dedup"
+        assert "pattern" in grep_payload
+        assert "result_count" in grep_payload
+
+        # Test glob_dedup_hint
+        glob_hint = build_glob_dedup_hint(session_id=sid, pattern="*.py", path="src/")
+        assert glob_hint is not None
+        glob_first, _, _ = str(glob_hint).partition("\n")
+        glob_payload = _json.loads(glob_first)
+        assert glob_payload["hint"] == "glob_dedup"
+        assert "pattern" in glob_payload
+        assert "result_count" in glob_payload
+
+        # Test web_dedup_hint
+        web_hint = build_web_dedup_hint(session_id=sid, url=url)
+        assert web_hint is not None
+        web_first, _, _ = str(web_hint).partition("\n")
+        web_payload = _json.loads(web_first)
+        assert web_payload["hint"] == "web_dedup"
+        assert "url" in web_payload
+        assert "bytes_size" in web_payload
+
+    def test_sidecar_json_parseable_for_all_hint_types(self, tmp_data_dir, monkeypatch):
+        """JSON sidecars are valid JSON and parseable by json.loads() for new dedup hints."""
+        import json as _json
+
+        from token_goat import bash_cache, web_cache
+        from token_goat import config as _config
+        from token_goat.hints import (
+            build_bash_dedup_hint,
+            build_glob_dedup_hint,
+            build_grep_dedup_hint,
+            build_web_dedup_hint,
+        )
+
+        monkeypatch.setenv("TOKEN_GOAT_HINT_JSON_SIDECAR", "1")
+        _config._config_mtime_cache = None  # type: ignore[attr-defined]
+
+        sid = "s_json_parse_test"
+
+        # Test bash dedup
+        cmd = "echo test"
+        cmd_sha = bash_cache.command_hash(cmd)
+        session.mark_bash_run(
+            sid, cmd_sha, cmd, f"out_{cmd_sha[:8]}",
+            stdout_bytes=2500, stderr_bytes=0,
+            exit_code=0, truncated=False,
+        )
+        hint = build_bash_dedup_hint(session_id=sid, command=cmd)
+        assert hint is not None
+        first_line, _, _ = str(hint).partition("\n")
+        payload = _json.loads(first_line)  # Should not raise
+        assert "hint" in payload
+        assert payload["hint"] == "bash_dedup"
+        assert "command" in payload
+        assert "wasted" in payload
+
+        # Test grep dedup
+        session.mark_grep(sid, pattern="test_pattern", path="src/", result_count=15)
+        hint = build_grep_dedup_hint(session_id=sid, pattern="test_pattern", path="src/")
+        assert hint is not None
+        first_line, _, _ = str(hint).partition("\n")
+        payload = _json.loads(first_line)  # Should not raise
+        assert "hint" in payload
+        assert payload["hint"] == "grep_dedup"
+        assert "pattern" in payload
+        assert "result_count" in payload
+
+        # Test glob dedup
+        session.mark_glob_run(sid, pattern="*.py", path="src/", result_count=30)
+        hint = build_glob_dedup_hint(session_id=sid, pattern="*.py", path="src/")
+        assert hint is not None
+        first_line, _, _ = str(hint).partition("\n")
+        payload = _json.loads(first_line)  # Should not raise
+        assert "hint" in payload
+        assert payload["hint"] == "glob_dedup"
+        assert "pattern" in payload
+        assert "result_count" in payload
+
+        # Test web dedup
+        url = "https://docs.example.com/api.html"
+        url_sha = web_cache.url_hash(url)
+        session.mark_web_fetch(
+            sid, url_sha, url, f"web_{url_sha[:8]}",
+            body_bytes=3000, status_code=200, truncated=False,
+        )
+        hint = build_web_dedup_hint(session_id=sid, url=url)
+        assert hint is not None
+        first_line, _, _ = str(hint).partition("\n")
+        payload = _json.loads(first_line)  # Should not raise
+        assert "hint" in payload
+        assert payload["hint"] == "web_dedup"
+        assert "url" in payload
+        assert "bytes_size" in payload
+        assert "wasted" in payload
+
 
 # ---------------------------------------------------------------------------
 # TestDedupStaleStat — bash/web dedup stale-suppression telemetry
