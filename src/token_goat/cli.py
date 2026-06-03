@@ -2091,6 +2091,7 @@ def cmd_changed(
     since: str = typer.Option("HEAD~5", "--since", help="Git ref to compare against (commit, branch, tag). Default: HEAD~5."),  # noqa: B008
     json_output: bool = _OPT_JSON,
     limit: int = typer.Option(50, "--limit", help="Maximum number of symbol entries to return."),  # noqa: B008
+    symbol_mode: bool = typer.Option(False, "--symbol", help="Use the DB index to find symbols that overlap changed line ranges (more reliable than git hunk context). Output grouped by file."),  # noqa: B008
 ) -> None:
     """List symbols that changed since a git ref — replaces full diff reads.
 
@@ -2099,15 +2100,21 @@ def cmd_changed(
     deduplicated by (file, symbol) and line counts are summed across multiple
     hunks touching the same symbol.
 
+    Use ``--symbol`` to query the tree-sitter DB instead of git hunk context
+    for more reliable symbol identification — output is grouped by file:
+    ``src/auth.py: login(), logout() — 2 symbols changed``.
+
     Examples::
 
         token-goat changed
         token-goat changed --since HEAD~10
         token-goat changed --since main --json
+        token-goat changed --symbol
+        token-goat changed --symbol --since HEAD~3 --json
     """
     from . import read_commands  # noqa: PLC0415
 
-    read_commands.changed(since_ref=since, json_output=json_output, limit=limit)
+    read_commands.changed(since_ref=since, json_output=json_output, limit=limit, symbol_mode=symbol_mode)
 
 
 @app.command("blame", rich_help_panel="Core")

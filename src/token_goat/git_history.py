@@ -42,6 +42,7 @@ __all__ = [
     "find_commits_for_file",
     "build_hint",
     "get_changed_symbols",
+    "get_changed_symbols_db",
     "blame_symbol",
 ]
 
@@ -358,6 +359,10 @@ def build_hint(project_hash: str, rel_path: str) -> str | None:
 #   @@ -old_start[,old_count] +new_start[,new_count] @@ [optional context]
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@ ?(.*)$")
 
+# Extended regex that also captures the new-file start line and count.
+# Groups: (new_start, new_count_or_none, context)
+_HUNK_RANGE_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@ ?(.*)$")
+
 # Regex matching a +++ b/<file> line (new-file side of a diff header).
 _FILE_RE = re.compile(r"^\+\+\+ b/(.+)$")
 
@@ -489,6 +494,133 @@ def _get_changed_symbols_inner(
 
     # Sort by file then symbol for stable, scannable output.
     result.sort(key=lambda r: (str(r["file"]), str(r["symbol"])))
+    return result
+
+
+def get_changed_symbols_db(
+    repo_root: str | Path,
+    since_ref: str = "HEAD~1",
+    limit: int = 50,
+) -> list[dict[str, object]]:
+    """Return symbols changed between *since_ref* and HEAD, resolved via the DB index.
+
+    Unlike :func:`get_changed_symbols` (which relies on git's hunk-context text),
+    this function queries the tree-sitter symbol index for symbols whose line ranges
+    overlap each changed hunk.  Results are grouped by file and typically more
+    reliable for languages where git's hunk context is absent or imprecise.
+
+    Returns a list of per-file dicts, one per changed file that has indexed symbols::
+
+        [
+            {
+                "file": "src/token_goat/hints.py",
+                "symbols": ["build_hint", "format_hint"],
+                "symbol_count": 2,
+            },
+            ...
+        ]
+
+    *symbol_count* equals ``len(symbols)``.  Results are ordered by file path.
+    The list is capped at *limit* file entries (not symbol entries).
+
+    Fail-soft: returns ``[]`` on any error.  Never raises.
+    """
+    try:
+        return _get_changed_symbols_db_inner(str(repo_root), since_ref, limit)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("get_changed_symbols_db failed", exc_info=True)
+        return []
+
+
+def _get_changed_symbols_db_inner(
+    repo_root: str,
+    since_ref: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    """Inner implementation — may raise; caller catches."""
+    from . import db as _db  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    raw = _run_git(
+        ["diff", "--unified=0", f"{since_ref}..HEAD"],
+        cwd=Path(repo_root),
+        timeout=30,
+    )
+    if not raw:
+        return []
+
+    # Parse hunk headers to build: file -> list of (new_start, new_end) line ranges.
+    # new_end is inclusive; a hunk with count 0 means a pure deletion (no new lines),
+    # so we still record the insertion point as a 1-line range for overlap queries.
+    file_ranges: dict[str, list[tuple[int, int]]] = {}
+    current_file: str | None = None
+
+    for line in raw.splitlines():
+        m_file = _FILE_RE.match(line)
+        if m_file:
+            current_file = m_file.group(1)
+            continue
+        if current_file is None:
+            continue
+        m_hunk = _HUNK_RANGE_RE.match(line)
+        if not m_hunk:
+            continue
+        new_start = int(m_hunk.group(1))
+        new_count_str = m_hunk.group(2)
+        # When count is absent, git means "1 line"; count "0" means pure deletion.
+        new_count = 1 if new_count_str is None else int(new_count_str)
+        # A hunk with new_count=0 is a pure deletion — use the surrounding line.
+        new_end = max(new_start, new_start + new_count - 1)
+        if current_file not in file_ranges:
+            file_ranges[current_file] = []
+        file_ranges[current_file].append((new_start, new_end))
+
+    if not file_ranges:
+        return []
+
+    # Resolve the project to get its DB.
+    project = find_project(repo_root)
+    if project is None:
+        _LOG.debug("get_changed_symbols_db: no project found at %s", repo_root)
+        return []
+
+    result: list[dict[str, object]] = []
+
+    try:
+        with _db.open_project_readonly(project.hash) as conn:
+            for file_rel, ranges in sorted(file_ranges.items()):
+                if len(result) >= limit:
+                    break
+                # Build a WHERE clause that checks overlap for any of the ranges.
+                # Symbol overlaps range if: sym_start <= range_end AND sym_end >= range_start
+                # (sym_end may be NULL for top-level assignments — exclude those).
+                where_parts: list[str] = []
+                params: list[object] = [file_rel]
+                for rng_start, rng_end in ranges:
+                    where_parts.append("(line <= ? AND end_line >= ?)")
+                    params.extend([rng_end, rng_start])
+
+                where_clause = " OR ".join(where_parts)
+                rows = conn.execute(
+                    f"SELECT DISTINCT name FROM symbols "  # noqa: S608
+                    f"WHERE file_rel = ? AND end_line IS NOT NULL AND ({where_clause}) "
+                    f"ORDER BY line",
+                    params,
+                ).fetchall()
+
+                if not rows:
+                    continue
+
+                symbol_names = [str(r["name"]) for r in rows]
+                result.append({
+                    "file": file_rel,
+                    "symbols": symbol_names,
+                    "symbol_count": len(symbol_names),
+                })
+    except Exception:  # noqa: BLE001
+        _LOG.debug("get_changed_symbols_db: DB query failed", exc_info=True)
+        return []
+
     return result
 
 

@@ -1979,6 +1979,7 @@ def changed(
     since_ref: str = "HEAD~5",
     json_output: bool = False,
     limit: int = 50,
+    symbol_mode: bool = False,
 ) -> None:
     """List symbols that changed since *since_ref* (default ``HEAD~5``).
 
@@ -1987,22 +1988,67 @@ def changed(
     Results are deduplicated by (file, symbol) and line counts are summed
     across multiple hunks touching the same symbol.
 
-    Output format (text)::
+    When *symbol_mode* is True, queries the tree-sitter DB instead of git
+    hunk context for more reliable symbol identification.  Output is grouped
+    by file: ``src/auth.py: login(), logout() — 2 symbols changed``.
+
+    Output format (text, default)::
 
         3 symbol changes since HEAD~5
 
         src/token_goat/hints.py      build_hint           +12 -3
         src/token_goat/cli.py        _extract_diff_symbols  +5 -1
 
+    Output format (text, --symbol)::
+
+        2 files changed since HEAD~1
+
+        src/token_goat/hints.py: build_hint(), format_hint() — 2 symbols changed
+        src/token_goat/cli.py: cmd_changed() — 1 symbol changed
+
     Output format (JSON)::
 
         {"since": "HEAD~5", "count": 2, "symbols": [...]}
+
+    Output format (JSON, --symbol)::
+
+        {"since": "HEAD~1", "count": 2, "files": [...]}
     """
     import os as _os  # noqa: PLC0415
 
+    cwd = _os.getcwd()
+
+    if symbol_mode:
+        from .git_history import get_changed_symbols_db  # noqa: PLC0415
+
+        file_entries = get_changed_symbols_db(cwd, since_ref=since_ref, limit=limit)
+
+        if json_output:
+            typer.echo(json.dumps(
+                {"since": since_ref, "count": len(file_entries), "files": file_entries},
+                separators=(",", ":"),
+            ))
+            return
+
+        if not file_entries:
+            typer.echo(f"No symbol changes since {since_ref} (--symbol mode)")
+            return
+
+        count = len(file_entries)
+        noun = "file changed" if count == 1 else "files changed"
+        typer.echo(f"{count} {noun} since {since_ref}")
+        typer.echo("")
+
+        for entry in file_entries:
+            sym_list = entry["symbols"]
+            sym_count = entry["symbol_count"]
+            sym_noun = "symbol changed" if sym_count == 1 else "symbols changed"
+            sym_display = ", ".join(f"{s}()" for s in sym_list)  # type: ignore[union-attr]
+            typer.echo(f"  {entry['file']}: {sym_display} — {sym_count} {sym_noun}")
+        return
+
     from .git_history import get_changed_symbols  # noqa: PLC0415
 
-    cwd = _os.getcwd()
     entries = get_changed_symbols(cwd, since_ref=since_ref, limit=limit)
 
     if json_output:

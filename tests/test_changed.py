@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import make_git_repo
@@ -301,3 +301,317 @@ class TestReadCommandsChanged:
         # "1 symbol change" not "1 symbol changes"
         assert "1 symbol change since" in out
         assert "1 symbol changes" not in out
+
+
+# ---------------------------------------------------------------------------
+# Helpers for DB-backed (--symbol) mode tests
+# ---------------------------------------------------------------------------
+
+
+def _make_db_diff(entries: list[tuple[str, int, int]]) -> str:
+    """Build a minimal unified diff for DB-mode tests: (file, new_start, new_count) tuples."""
+    lines: list[str] = []
+    current_file: str | None = None
+    for file, new_start, new_count in entries:
+        if file != current_file:
+            lines.append(f"--- a/{file}")
+            lines.append(f"+++ b/{file}")
+            current_file = file
+        lines.append(f"@@ -1,1 +{new_start},{new_count} @@")
+    return "\n".join(lines) + "\n"
+
+
+def _make_fake_project(root: str = "/fake/repo") -> MagicMock:
+    """Return a minimal fake Project object."""
+    fake_proj = MagicMock()
+    fake_proj.hash = "deadbeef" * 5
+    fake_proj.root = Path(root)
+    return fake_proj
+
+
+def _make_conn_ctx(rows_by_file: dict[str, list[str]]) -> MagicMock:
+    """Return a context manager mock for open_project_readonly.
+
+    *rows_by_file* maps file_rel -> list of symbol names to return from fetchall().
+    Each call to conn.execute().fetchall() cycles through the files in order.
+    """
+    conn_mock = MagicMock()
+
+    # Build a queue of fetchall() results, one per file queried.
+    result_queue = list(rows_by_file.values())
+    call_index = [0]
+
+    def fake_fetchall() -> list[MagicMock]:
+        idx = call_index[0]
+        call_index[0] += 1
+        if idx >= len(result_queue):
+            return []
+        names = result_queue[idx]
+        rows = []
+        for name in names:
+            row = MagicMock()
+            row.__getitem__ = lambda self, key, n=name: n if key == "name" else None
+            rows.append(row)
+        return rows
+
+    conn_mock.execute.return_value.fetchall.side_effect = fake_fetchall
+    conn_ctx = MagicMock()
+    conn_ctx.__enter__ = lambda s: conn_mock
+    conn_ctx.__exit__ = MagicMock(return_value=False)
+    return conn_ctx
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for get_changed_symbols_db
+# ---------------------------------------------------------------------------
+
+
+class TestGetChangedSymbolsDb:
+    """Unit tests — mock git and DB so no real repo or index is needed."""
+
+    def test_basic_returns_file_grouped_symbols(self):
+        from token_goat.git_history import get_changed_symbols_db
+
+        diff = _make_db_diff([("src/auth.py", 10, 5)])
+        fake_proj = _make_fake_project()
+        conn_ctx = _make_conn_ctx({"src/auth.py": ["login", "logout"]})
+
+        with (
+            patch("token_goat.git_history._run_git", return_value=diff),
+            patch("token_goat.project.find_project", return_value=fake_proj),
+            patch("token_goat.db.open_project_readonly", return_value=conn_ctx),
+        ):
+            result = get_changed_symbols_db("/fake/repo", since_ref="HEAD~1")
+
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["file"] == "src/auth.py"
+        assert entry["symbols"] == ["login", "logout"]
+        assert entry["symbol_count"] == 2
+
+    def test_multiple_files(self):
+        from token_goat.git_history import get_changed_symbols_db
+
+        diff = _make_db_diff([
+            ("src/a.py", 1, 3),
+            ("src/b.py", 20, 2),
+        ])
+        fake_proj = _make_fake_project()
+        conn_ctx = _make_conn_ctx({
+            "src/a.py": ["func_a"],
+            "src/b.py": ["func_b", "helper"],
+        })
+
+        with (
+            patch("token_goat.git_history._run_git", return_value=diff),
+            patch("token_goat.project.find_project", return_value=fake_proj),
+            patch("token_goat.db.open_project_readonly", return_value=conn_ctx),
+        ):
+            result = get_changed_symbols_db("/fake/repo")
+
+        files = [r["file"] for r in result]
+        assert "src/a.py" in files
+        assert "src/b.py" in files
+        b_entry = next(r for r in result if r["file"] == "src/b.py")
+        assert b_entry["symbol_count"] == 2
+
+    def test_empty_diff_returns_empty(self):
+        from token_goat.git_history import get_changed_symbols_db
+
+        with patch("token_goat.git_history._run_git", return_value=""):
+            result = get_changed_symbols_db("/fake/repo")
+        assert result == []
+
+    def test_git_error_returns_empty(self):
+        from token_goat.git_history import get_changed_symbols_db
+
+        with patch("token_goat.git_history._run_git", return_value=None):
+            result = get_changed_symbols_db("/fake/repo")
+        assert result == []
+
+    def test_no_project_returns_empty(self):
+        from token_goat.git_history import get_changed_symbols_db
+
+        diff = _make_db_diff([("src/x.py", 1, 1)])
+        with (
+            patch("token_goat.git_history._run_git", return_value=diff),
+            patch("token_goat.project.find_project", return_value=None),
+        ):
+            result = get_changed_symbols_db("/not/a/project")
+        assert result == []
+
+    def test_file_with_no_indexed_symbols_excluded(self):
+        """Files where no DB symbols overlap the changed range are omitted."""
+        from token_goat.git_history import get_changed_symbols_db
+
+        diff = _make_db_diff([("src/unindexed.py", 5, 3)])
+        fake_proj = _make_fake_project()
+        conn_ctx = _make_conn_ctx({"src/unindexed.py": []})
+
+        with (
+            patch("token_goat.git_history._run_git", return_value=diff),
+            patch("token_goat.project.find_project", return_value=fake_proj),
+            patch("token_goat.db.open_project_readonly", return_value=conn_ctx),
+        ):
+            result = get_changed_symbols_db("/fake/repo")
+
+        assert result == []
+
+    def test_limit_caps_file_count(self):
+        from token_goat.git_history import get_changed_symbols_db
+
+        diff = _make_db_diff([(f"src/f{i}.py", 1, 1) for i in range(10)])
+        fake_proj = _make_fake_project()
+        conn_ctx = _make_conn_ctx({f"src/f{i}.py": [f"sym{i}"] for i in range(10)})
+
+        with (
+            patch("token_goat.git_history._run_git", return_value=diff),
+            patch("token_goat.project.find_project", return_value=fake_proj),
+            patch("token_goat.db.open_project_readonly", return_value=conn_ctx),
+        ):
+            result = get_changed_symbols_db("/fake/repo", limit=3)
+
+        assert len(result) <= 3
+
+    def test_pure_deletion_hunk_handled(self):
+        """A hunk with count=0 (pure deletion) should not crash."""
+        from token_goat.git_history import get_changed_symbols_db
+
+        # @@ -5,3 +5,0 @@ — pure deletion, new_count=0
+        diff = "--- a/src/x.py\n+++ b/src/x.py\n@@ -5,3 +5,0 @@\n"
+        fake_proj = _make_fake_project()
+        conn_ctx = _make_conn_ctx({"src/x.py": []})
+
+        with (
+            patch("token_goat.git_history._run_git", return_value=diff),
+            patch("token_goat.project.find_project", return_value=fake_proj),
+            patch("token_goat.db.open_project_readonly", return_value=conn_ctx),
+        ):
+            result = get_changed_symbols_db("/fake/repo")
+        assert isinstance(result, list)
+
+    def test_results_sorted_by_file(self):
+        from token_goat.git_history import get_changed_symbols_db
+
+        diff = _make_db_diff([
+            ("src/z.py", 1, 1),
+            ("src/a.py", 1, 1),
+        ])
+        fake_proj = _make_fake_project()
+        conn_ctx = _make_conn_ctx({
+            "src/z.py": ["z_func"],
+            "src/a.py": ["a_func"],
+        })
+
+        with (
+            patch("token_goat.git_history._run_git", return_value=diff),
+            patch("token_goat.project.find_project", return_value=fake_proj),
+            patch("token_goat.db.open_project_readonly", return_value=conn_ctx),
+        ):
+            result = get_changed_symbols_db("/fake/repo")
+
+        files = [r["file"] for r in result]
+        assert files == sorted(files)
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for read_commands.changed(symbol_mode=True)
+# ---------------------------------------------------------------------------
+
+
+class TestReadCommandsChangedSymbolMode:
+    """Unit tests for the --symbol output path in read_commands.changed()."""
+
+    def _make_file_entries(self) -> list[dict]:
+        return [
+            {"file": "src/auth.py", "symbols": ["login", "logout"], "symbol_count": 2},
+            {"file": "src/utils.py", "symbols": ["helper"], "symbol_count": 1},
+        ]
+
+    def test_text_output_symbol_mode(self, capsys: pytest.CaptureFixture[str]):
+        from token_goat.read_commands import changed
+
+        with (
+            patch("token_goat.git_history.get_changed_symbols_db", return_value=self._make_file_entries()),
+            patch("os.getcwd", return_value="/fake/repo"),
+        ):
+            changed(since_ref="HEAD~1", json_output=False, symbol_mode=True)
+        out = capsys.readouterr().out
+
+        assert "2 files changed since HEAD~1" in out
+        assert "src/auth.py" in out
+        assert "login()" in out
+        assert "logout()" in out
+        assert "2 symbols changed" in out
+        assert "src/utils.py" in out
+        assert "helper()" in out
+        assert "1 symbol changed" in out
+
+    def test_json_output_symbol_mode(self, capsys: pytest.CaptureFixture[str]):
+        from token_goat.read_commands import changed
+
+        with (
+            patch("token_goat.git_history.get_changed_symbols_db", return_value=self._make_file_entries()),
+            patch("os.getcwd", return_value="/fake/repo"),
+        ):
+            changed(since_ref="HEAD~1", json_output=True, symbol_mode=True)
+        out = capsys.readouterr().out
+        data = json.loads(out)
+
+        assert data["since"] == "HEAD~1"
+        assert data["count"] == 2
+        assert "files" in data
+        assert len(data["files"]) == 2
+
+    def test_no_changes_symbol_mode(self, capsys: pytest.CaptureFixture[str]):
+        from token_goat.read_commands import changed
+
+        with (
+            patch("token_goat.git_history.get_changed_symbols_db", return_value=[]),
+            patch("os.getcwd", return_value="/fake/repo"),
+        ):
+            changed(since_ref="HEAD~1", json_output=False, symbol_mode=True)
+        out = capsys.readouterr().out
+        assert "No symbol changes since HEAD~1" in out
+        assert "--symbol mode" in out
+
+    def test_no_changes_json_symbol_mode(self, capsys: pytest.CaptureFixture[str]):
+        from token_goat.read_commands import changed
+
+        with (
+            patch("token_goat.git_history.get_changed_symbols_db", return_value=[]),
+            patch("os.getcwd", return_value="/fake/repo"),
+        ):
+            changed(since_ref="HEAD~1", json_output=True, symbol_mode=True)
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["count"] == 0
+        assert data["files"] == []
+
+    def test_singular_noun_one_file(self, capsys: pytest.CaptureFixture[str]):
+        from token_goat.read_commands import changed
+
+        entries = [{"file": "src/x.py", "symbols": ["foo"], "symbol_count": 1}]
+        with (
+            patch("token_goat.git_history.get_changed_symbols_db", return_value=entries),
+            patch("os.getcwd", return_value="/fake/repo"),
+        ):
+            changed(since_ref="HEAD~1", json_output=False, symbol_mode=True)
+        out = capsys.readouterr().out
+        assert "1 file changed since" in out
+        assert "1 files changed" not in out
+
+    def test_symbol_mode_false_uses_hunk_mode(self, capsys: pytest.CaptureFixture[str]):
+        """Ensure symbol_mode=False still routes to the git hunk-based path."""
+        from token_goat.read_commands import changed
+
+        hunk_entries = [{"file": "src/x.py", "symbol": "foo", "lines_added": 3, "lines_removed": 1}]
+        with (
+            patch("token_goat.git_history.get_changed_symbols", return_value=hunk_entries),
+            patch("os.getcwd", return_value="/fake/repo"),
+        ):
+            changed(since_ref="HEAD~1", json_output=False, symbol_mode=False)
+        out = capsys.readouterr().out
+        # Hunk mode output format: "N symbol change(s) since ..."
+        assert "symbol change" in out
+        assert "foo" in out

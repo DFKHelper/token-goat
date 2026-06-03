@@ -28,6 +28,7 @@ package fails to import if any registry event lacks a registered subcommand.
 from __future__ import annotations
 
 __all__ = [
+    "CANONICAL_TOOLS",
     "HOOK_EVENTS",
     "HookEvent",
     "all_events",
@@ -43,6 +44,21 @@ from dataclasses import dataclass
 from typing import Literal
 
 Harness = Literal["claude", "codex", "both"]
+
+#: Canonical PascalCase tool names that token-goat handlers recognise.
+#: This is the single source of truth referenced by:
+#:   - ``hooks_cli._TG_KNOWN_TOOLS`` (imports this set)
+#:   - the harness-specific tool-name maps in ``hooks_cli`` (Codex, Gemini)
+#:   - the embedded ``TOOL_TO_TG`` tables in ``bridges`` (opencode, openclaw)
+#:   - ``tests/test_tool_name_registry.py`` (cross-harness consistency check)
+#:
+#: When adding a new tool: update this set, then update each harness map that
+#: should cover it.  The cross-harness tests will fail fast if a map's values
+#: reference a name not in this set (typo guard) or if a harness's declared
+#: coverage expectation drifts.
+CANONICAL_TOOLS: frozenset[str] = frozenset(
+    {"Read", "Write", "Edit", "MultiEdit", "Bash", "Glob", "WebFetch", "Grep", "Skill"}
+)
 
 
 @dataclass(frozen=True)

@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Final, Literal, ParamSpec, TypeVar, cast
 
 from . import paths
+from .hook_registry import CANONICAL_TOOLS
 from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
 from .util import configure_stdout_encoding, get_logger, sanitize_surrogates
 
@@ -213,9 +214,8 @@ _HSO_CAMEL_TO_SNAKE: dict[str, str] = {
 #: Used by normalize_payload to distinguish known pass-through names (e.g. a
 #: harness that already sends PascalCase) from genuinely unknown tools that
 #: warrant a WARNING so operators can spot mapping gaps.
-_TG_KNOWN_TOOLS: frozenset[str] = frozenset(
-    {"Read", "Write", "Edit", "MultiEdit", "Bash", "Glob", "WebFetch", "Grep", "Skill"}
-)
+#: Source of truth: hook_registry.CANONICAL_TOOLS — imported above.
+_TG_KNOWN_TOOLS: frozenset[str] = CANONICAL_TOOLS
 
 
 # Codex tool name → token-goat internal tool name.
