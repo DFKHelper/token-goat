@@ -502,6 +502,14 @@ def _make_file_entry(path: str, read_count: int = 1):
 class TestBuildManifestEdited:
     """build_manifest produces an 'Edited files' section when edited_files is set."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_data_dir(self, tmp_data_dir):
+        """Point data_dir at a fresh temp dir so bash_outputs/ is empty.
+
+        Without this, build_manifest → _render_active_errors_section globs the
+        real bash_outputs/ dir (thousands of .json files) on every test.
+        """
+
     def test_edited_files_section_present(self, tmp_data_dir):
         from token_goat.compact import build_manifest
 

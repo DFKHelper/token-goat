@@ -292,6 +292,15 @@ class TestFormatRanges:
 class TestRenderManifest:
     """Tests for compact._render and build_manifest edge cases."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_data_dir(self, tmp_data_dir):
+        """Point data_dir at a fresh temp dir so bash_outputs/ is empty.
+
+        Without this, _render_active_errors_section globs the real bash_outputs/
+        dir (which can have thousands of .json files) on every test, adding ~4 s
+        each.  An empty temp dir returns immediately.
+        """
+
     def _empty_cache(self) -> SessionCache:
         return SessionCache(session_id="s0", started_ts=0.0, last_activity_ts=0.0)
 

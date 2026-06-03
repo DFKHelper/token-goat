@@ -336,6 +336,14 @@ class TestSkillCompactAll:
 class TestSectionBudgetSafetyMargin:
     """_render uses a 15% safety margin when calling _section_budgets."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_data_dir(self, tmp_data_dir):
+        """Point data_dir at a fresh temp dir so bash_outputs/ is empty.
+
+        Without this, _render → _render_active_errors_section globs the real
+        bash_outputs/ dir (thousands of .json files) on every test.
+        """
+
     def test_safety_factor_applied(self):
         """The sec_budget_max passed to _section_budgets is 85% of max_tokens."""
         from token_goat.compact import _section_budgets

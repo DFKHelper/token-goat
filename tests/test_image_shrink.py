@@ -542,12 +542,23 @@ def _make_config_with_avif(prefer_avif: bool = True, avif_quality: int = 60) -> 
 class TestAvifEncoding:
     """Tests for AVIF output path in shrink()."""
 
+    @pytest.fixture(scope="class")
+    def large_jpeg_src(self, tmp_path_factory):
+        """Create a large JPEG once per class; reused by multiple tests.
+
+        The source image is only *read* by shrink() — cache writes go to the
+        per-test tmp_data_dir — so sharing the source across tests is safe and
+        avoids re-encoding a 1600×1200 JPEG for each test method.
+        """
+        tmp = tmp_path_factory.mktemp("avif_enc_src")
+        return _make_large_jpeg(tmp)
+
     def test_avif_supported_returns_bool(self):
         """avif_supported() must return a bool regardless of Pillow build."""
         result = image_shrink.avif_supported()
         assert isinstance(result, bool)
 
-    def test_avif_output_when_available(self, tmp_data_dir, tmp_path, monkeypatch):
+    def test_avif_output_when_available(self, tmp_data_dir, large_jpeg_src, monkeypatch):
         """When AVIF is supported and prefer_avif=True, large image → .avif output."""
         if not image_shrink.avif_supported():
             pytest.skip("AVIF not available in this Pillow build")
@@ -565,7 +576,7 @@ class TestAvifEncoding:
 
         monkeypatch.setattr(_config_mod, "load", _fake_load)
 
-        p = _make_large_jpeg(tmp_path)
+        p = large_jpeg_src
         result = image_shrink.shrink(p)
 
         assert result is not None
@@ -631,7 +642,7 @@ class TestAvifEncoding:
             f"AVIF ({avif_size}B) should be smaller than JPEG ({jpeg_size}B) at equivalent quality"
         )
 
-    def test_fallback_to_webp_when_avif_unavailable(self, tmp_data_dir, tmp_path, monkeypatch):
+    def test_fallback_to_webp_when_avif_unavailable(self, tmp_data_dir, large_jpeg_src, monkeypatch):
         """When AVIF is not available, prefer_avif=True falls back to WebP."""
         # Monkeypatch avif_supported to return False regardless of actual Pillow build.
         image_shrink.avif_supported.cache_clear()
@@ -647,7 +658,7 @@ class TestAvifEncoding:
         monkeypatch.setattr(_config_mod, "load", _fake_load)
         monkeypatch.delenv("TOKEN_GOAT_IMAGE_FORMAT", raising=False)
 
-        p = _make_large_jpeg(tmp_path)
+        p = large_jpeg_src
         result = image_shrink.shrink(p)
 
         assert result is not None
@@ -656,7 +667,7 @@ class TestAvifEncoding:
             f"Expected WebP or JPEG fallback when AVIF unavailable; got {result.suffix}"
         )
 
-    def test_prefer_avif_false_skips_avif(self, tmp_data_dir, tmp_path, monkeypatch):
+    def test_prefer_avif_false_skips_avif(self, tmp_data_dir, large_jpeg_src, monkeypatch):
         """prefer_avif=False always uses WebP/JPEG even when AVIF is available."""
         image_shrink.avif_supported.cache_clear()
 
@@ -670,7 +681,7 @@ class TestAvifEncoding:
         monkeypatch.setattr(_config_mod, "load", _fake_load)
         monkeypatch.delenv("TOKEN_GOAT_IMAGE_FORMAT", raising=False)
 
-        p = _make_large_jpeg(tmp_path)
+        p = large_jpeg_src
         result = image_shrink.shrink(p)
 
         assert result is not None
@@ -904,9 +915,19 @@ class TestImageSummary:
 class TestSourceMtimeTracking:
     """Source file mtime is tracked in a sidecar to detect stale cache entries."""
 
-    def test_source_mtime_stored_on_shrink(self, tmp_data_dir, tmp_path):
+    @pytest.fixture(scope="class")
+    def large_jpeg_src(self, tmp_path_factory):
+        """Create a large JPEG once per class for tests that only *read* the source.
+
+        Tests that overwrite or delete the source (e.g. test_rewritten_source_bypasses_cache)
+        must create their own copy instead of using this shared fixture.
+        """
+        tmp = tmp_path_factory.mktemp("mtime_src")
+        return _make_large_jpeg(tmp)
+
+    def test_source_mtime_stored_on_shrink(self, tmp_data_dir, large_jpeg_src):
         """When an image is shrunk, its source mtime is stored in a .mtime sidecar."""
-        p = _make_large_jpeg(tmp_path)
+        p = large_jpeg_src
         src_mtime = p.stat().st_mtime
 
         result = image_shrink.shrink(p)
@@ -952,10 +973,10 @@ class TestSourceMtimeTracking:
             f"got {result1} and {result2}"
         )
 
-    def test_unmodified_source_hits_cache(self, tmp_data_dir, tmp_path):
+    def test_unmodified_source_hits_cache(self, tmp_data_dir, large_jpeg_src):
         """When the source file is unmodified (same mtime), the cached version is returned."""
 
-        p = _make_large_jpeg(tmp_path)
+        p = large_jpeg_src
         original_mtime = p.stat().st_mtime
 
         # First shrink
@@ -999,9 +1020,9 @@ class TestSourceMtimeTracking:
             "shrink() must return None when source file is deleted (should_shrink fails)"
         )
 
-    def test_mtime_sidecar_format(self, tmp_data_dir, tmp_path):
+    def test_mtime_sidecar_format(self, tmp_data_dir, large_jpeg_src):
         """The .mtime sidecar contains a single line with a float timestamp."""
-        p = _make_large_jpeg(tmp_path)
+        p = large_jpeg_src
         p_mtime = p.stat().st_mtime
 
         result = image_shrink.shrink(p)

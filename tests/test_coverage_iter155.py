@@ -494,6 +494,15 @@ class TestImageShrinkExifTransposeAttributeErrorSuppressed:
 class TestCompactSanitizeLogStr:
     """build_manifest strips newlines from symbol names and file paths."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_data_dir(self, tmp_data_dir):
+        """Point data_dir at a fresh temp dir so bash_outputs/ is empty.
+
+        Without this, build_manifest → _render_active_errors_section globs the
+        real bash_outputs/ dir (thousands of .json files) on every test, adding
+        ~4 s each.  An empty temp dir returns immediately.
+        """
+
     def _make_session(self, path, symbols=None, edited=None):
         """Return a minimal SessionCache-like object."""
         import time

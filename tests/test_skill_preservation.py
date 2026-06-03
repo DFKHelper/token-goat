@@ -656,6 +656,19 @@ class TestRecoveryHintSkills:
 # ---------------------------------------------------------------------------
 
 class TestSkillPreservationConfig:
+    @pytest.fixture(autouse=True)
+    def _isolate_config(self, tmp_path, monkeypatch):
+        """Point config_path at a non-existent file and clear the mtime cache.
+
+        Prevents tests from reading the real user config.toml, which would make
+        assertions about default values fragile if the user customises their config.
+        """
+        from token_goat import paths as _paths
+        monkeypatch.setattr(_paths, "config_path", lambda: tmp_path / "config.toml")
+        config._config_mtime_cache = None
+        yield
+        config._config_mtime_cache = None
+
     def test_defaults(self, monkeypatch):
         monkeypatch.delenv("TOKEN_GOAT_SKILL_PRESERVATION", raising=False)
         cfg = config.load()

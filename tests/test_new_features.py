@@ -187,6 +187,14 @@ class TestGitHistoryParse:
 
 
 class TestCompactStaleAndCold:
+    @pytest.fixture(autouse=True)
+    def _isolate_data_dir(self, tmp_data_dir):
+        """Point data_dir at a fresh temp dir so bash_outputs/ is empty.
+
+        Without this, _render → _render_active_errors_section globs the real
+        bash_outputs/ dir (thousands of .json files) on every test.
+        """
+
     def _make_cache(
         self,
         *,

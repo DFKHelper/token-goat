@@ -138,7 +138,7 @@ def test_subagent_stop_git_failure_without_redundant_try_except(caplog, tmp_path
 # ---------------------------------------------------------------------------
 
 
-def test_post_skill_legitimate_error_handling_preserved(caplog, tmp_path):
+def test_post_skill_legitimate_error_handling_preserved(caplog, tmp_path, tmp_data_dir):
     """post_skill should still handle session record errors gracefully (not removed)."""
     caplog.set_level(logging.DEBUG)
 
