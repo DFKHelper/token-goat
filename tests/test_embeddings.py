@@ -730,3 +730,237 @@ def test_load_chunk_hashes_large_project_filtered(tmp_data_dir):
     assert len(result) == 10
     for file_rel, _s, _e in result:
         assert file_rel in target_rels
+
+
+# ---------------------------------------------------------------------------
+# Tests for new file-type embedding coverage (SQL, GraphQL, Proto, CSS, Makefile)
+# ---------------------------------------------------------------------------
+
+def test_code_symbol_kinds_includes_new_file_types():
+    """_CODE_SYMBOL_KINDS includes domain-specific kinds from new indexers."""
+    from token_goat.embeddings import _CODE_SYMBOL_KINDS  # noqa: PLC0415
+
+    # SQL kinds (sql_idx.py)
+    assert "sql_table" in _CODE_SYMBOL_KINDS
+    assert "sql_view" in _CODE_SYMBOL_KINDS
+    assert "sql_function" in _CODE_SYMBOL_KINDS
+    assert "sql_trigger" in _CODE_SYMBOL_KINDS
+
+    # GraphQL kinds (graphql_idx.py)
+    assert "graphql_type" in _CODE_SYMBOL_KINDS
+    assert "graphql_input" in _CODE_SYMBOL_KINDS
+    assert "graphql_query" in _CODE_SYMBOL_KINDS
+    assert "graphql_mutation" in _CODE_SYMBOL_KINDS
+
+    # Proto kinds (proto_idx.py)
+    assert "proto_message" in _CODE_SYMBOL_KINDS
+    assert "proto_service" in _CODE_SYMBOL_KINDS
+    assert "proto_enum" in _CODE_SYMBOL_KINDS
+
+    # CSS kinds (css_idx.py)
+    assert "css_class" in _CODE_SYMBOL_KINDS
+    assert "css_keyframes" in _CODE_SYMBOL_KINDS
+
+    # Makefile kinds (makefile_idx.py)
+    assert "makefile_target" in _CODE_SYMBOL_KINDS
+    assert "makefile_define" in _CODE_SYMBOL_KINDS
+
+
+def test_window_langs_includes_new_file_types():
+    """_WINDOW_LANGS includes SQL, GraphQL, Proto, CSS, and Makefile for window fallback."""
+    from token_goat.embeddings import _WINDOW_LANGS  # noqa: PLC0415
+
+    # Original languages preserved
+    assert "typescript" in _WINDOW_LANGS
+    assert "python" in _WINDOW_LANGS
+    assert "go" in _WINDOW_LANGS
+
+    # New language additions
+    assert "sql" in _WINDOW_LANGS
+    assert "graphql" in _WINDOW_LANGS
+    assert "proto" in _WINDOW_LANGS
+    assert "css" in _WINDOW_LANGS
+    assert "makefile" in _WINDOW_LANGS
+
+
+def test_extract_chunks_sql_file(tmp_path, tmp_data_dir, make_project):
+    """extract_chunks_for_file extracts chunks from a SQL schema file."""
+    from token_goat.parser import index_project  # noqa: PLC0415
+
+    proj_root = tmp_path / "sql_proj"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    sql_content = """\
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE posts (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    title TEXT NOT NULL,
+    body TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE FUNCTION get_user_posts(user_id INTEGER)
+RETURNS TABLE(title TEXT, created_at TIMESTAMPTZ) AS $$
+    SELECT title, created_at FROM posts WHERE user_id = $1;
+$$ LANGUAGE SQL;
+"""
+    (proj_root / "schema.sql").write_text(sql_content, encoding="utf-8")
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    with db.open_project(proj.hash) as conn:
+        chunks = extract_chunks_for_file(proj, conn, "schema.sql")
+
+    assert len(chunks) >= 1, "expected at least one chunk from SQL schema file"
+    kinds = {c.kind for c in chunks}
+    # Should have section or sql_table / sql_function kinds
+    assert kinds & {
+        "section", "sql_table", "sql_function", "sql_view", "sql_trigger", "window",
+    }, f"unexpected kinds: {kinds}"
+
+
+def test_extract_chunks_graphql_file(tmp_path, tmp_data_dir, make_project):
+    """extract_chunks_for_file extracts chunks from a GraphQL schema file."""
+    from token_goat.parser import index_project  # noqa: PLC0415
+
+    proj_root = tmp_path / "gql_proj"
+    proj_root.mkdir()
+    (proj_root / ".git").mkdir()
+    gql_content = """\
+type User {
+  id: ID!
+  email: String!
+  posts: [Post!]!
+}
+
+type Post {
+  id: ID!
+  title: String!
+  body: String
+  author: User!
+}
+
+type Query {
+  user(id: ID!): User
+  posts: [Post!]!
+}
+
+type Mutation {
+  createPost(title: String!, body: String): Post!
+}
+"""
+    (proj_root / "schema.graphql").write_text(gql_content, encoding="utf-8")
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    with db.open_project(proj.hash) as conn:
+        chunks = extract_chunks_for_file(proj, conn, "schema.graphql")
+
+    assert len(chunks) >= 1, "expected at least one chunk from GraphQL schema file"
+    kinds = {c.kind for c in chunks}
+    assert kinds & {
+        "section", "graphql_type", "graphql_query", "graphql_mutation", "window",
+    }, f"unexpected kinds: {kinds}"
+
+
+def test_semantic_default_k_is_8():
+    """semantic_search default k is 8, not 5."""
+    import inspect  # noqa: PLC0415
+
+    sig = inspect.signature(emb.semantic_search)
+    assert sig.parameters["k"].default == 8
+
+
+def test_cli_semantic_default_k_is_8(ts_project, monkeypatch):
+    """CLI token-goat semantic default k returns up to 8 results."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from token_goat import cli  # noqa: PLC0415
+
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
+    emb.index_project_embeddings(ts_project)
+
+    monkeypatch.chdir(ts_project.root)
+    # Query without -k; the default should be 8 (not 5).
+    # Use --max-distance 99 so the stub model's uniform distances don't filter all results.
+    result = CliRunner().invoke(
+        cli.app,
+        ["semantic", "greet hello user service", "--max-distance", "99", "--full"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    # Verify the CLI option default is 8 by inspecting the command params
+    from typer.testing import CliRunner as _R  # noqa: F811, PLC0415 — re-import for clarity
+    help_result = _R().invoke(cli.app, ["semantic", "--help"], catch_exceptions=False)
+    assert "8" in help_result.output, "default k=8 should appear in --help output"
+
+
+def test_cli_semantic_compact_output_includes_kind(ts_project, monkeypatch):
+    """token-goat semantic compact output includes [kind] tag per result."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from token_goat import cli  # noqa: PLC0415
+
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
+    emb.index_project_embeddings(ts_project)
+
+    monkeypatch.chdir(ts_project.root)
+    result = CliRunner().invoke(
+        cli.app,
+        ["semantic", "greet hello", "-k", "3", "--max-distance", "99"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    # Compact output format: "file:line [kind]  snippet"
+    # Every non-empty result line should contain "[" and "]" for the kind bracket.
+    result_lines = [
+        ln for ln in result.output.splitlines()
+        if ln.strip() and not ln.startswith("(")
+    ]
+    assert result_lines, f"expected result lines, got: {result.output!r}"
+    for ln in result_lines:
+        assert "[" in ln and "]" in ln, (
+            f"compact output line missing [kind] bracket: {ln!r}"
+        )
+
+
+def test_cli_semantic_compact_output_first_line_snippet(ts_project, monkeypatch):
+    """Compact output shows the first non-blank line of the chunk, not a flat slice."""
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from token_goat import cli  # noqa: PLC0415
+
+    monkeypatch.setattr(emb, "embed_texts", _stub_embed)
+    emb.index_project_embeddings(ts_project)
+
+    monkeypatch.chdir(ts_project.root)
+    # Pick an exact-match query so we control which chunk surfaces first
+    with db.open_project(ts_project.hash) as conn:
+        row = conn.execute(
+            "SELECT text, file_rel, start_line FROM chunks LIMIT 1"
+        ).fetchone()
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["semantic", row["text"], "-k", "1", "--max-distance", "99"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    # The snippet in compact output should be the first non-blank line of the chunk,
+    # not a newline-flattened slice.  Find the expected first line.
+    expected_first = next(
+        (ln.strip() for ln in row["text"].splitlines() if ln.strip()),
+        "",
+    )[:120]
+    assert expected_first, "chunk text must have at least one non-blank line"
+    assert expected_first in result.output, (
+        f"expected first chunk line {expected_first!r} in output:\n{result.output}"
+    )

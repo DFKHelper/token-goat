@@ -439,18 +439,25 @@ def _try_shrink_image(
         shrink_response["file_path"] = str(shrunken)
         _src_b = img_stats["src_bytes"]
         _out_b = img_stats["out_bytes"]
-        # Omit the "→ N bytes" suffix when the compression ratio is modest (< 4x):
-        # the saved bytes are small enough that the extra token cost of printing
-        # the output size isn't worth it.  Keep the suffix only when savings are
-        # dramatic (original >= 4× larger), where it visually confirms the win.
-        if _out_b > 0 and _src_b / _out_b >= 4:
-            _size_str = f"{_src_b:,} → {_out_b:,} bytes"
-        else:
-            _size_str = f"{_src_b:,} bytes"
+        # Always show before→after sizes and the percentage reduction so the
+        # agent understands what happened at a glance without opening the file.
+        # Example: "2.3 MB → 180 KB (saving ~92%)"
+        _savings_pct = (
+            100.0 * img_stats["bytes_saved"] / _src_b if _src_b > 0 else 0.0
+        )
+
+        def _fmt_bytes(n: int) -> str:
+            """Format bytes as KB or MB with one decimal place."""
+            if n >= 1_000_000:
+                return f"{n / 1_000_000:.1f} MB"
+            if n >= 1_000:
+                return f"{n / 1_000:.0f} KB"
+            return f"{n} B"
+
+        _size_str = f"{_fmt_bytes(_src_b)} → {_fmt_bytes(_out_b)} (saving ~{_savings_pct:.0f}%)"
         note = (
             f"Note: image auto-shrunk by token-goat "
-            f"({_size_str}, "
-            f"~{img_stats['bytes_saved']:,} bytes saved). "
+            f"({_size_str}). "
             f"Original: {file_path}"
         )
         if img_summary:

@@ -51,7 +51,9 @@ class TestPreReadHookLargeImage:
         hso = result.get("hookSpecificOutput", {})
         ctx = hso.get("additionalContext", "")
         assert "token-goat" in ctx
-        assert "bytes" in ctx
+        # New format: "X MB → Y KB (saving ~Z%)" — verify sizes and % are present.
+        assert "→" in ctx
+        assert "saving ~" in ctx
 
 
 # ---------------------------------------------------------------------------
@@ -136,57 +138,100 @@ class TestPreReadHookGarbage:
 
 
 # ---------------------------------------------------------------------------
-# Item A21: image note drops "→ N bytes" suffix when compression ratio < 4x
+# Item A21: shrink hint always shows before→after sizes with % savings
 # ---------------------------------------------------------------------------
 
 
+def _fmt_bytes(n: int) -> str:
+    """Mirror the _fmt_bytes helper in hooks_read._try_shrink_image."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f} MB"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f} KB"
+    return f"{n} B"
+
+
 class TestShrinkNoteRatioFormat:
-    """The shrink note uses a conditional format: when original >= 4× larger
-    than the shrunken output, emit 'A → B bytes'; otherwise just 'A bytes'."""
+    """The shrink hint always shows 'X MB → Y KB (saving ~Z%)' regardless of ratio.
+
+    This replaced the old conditional format that only showed the output size
+    for >= 4× compression ratios. The new format gives the agent full context
+    at a glance without reading the file.
+    """
 
     def _build_note(self, src_bytes: int, out_bytes: int, bytes_saved: int, file_path: str) -> str:
         """Re-implement the note-building logic from _try_shrink_image for unit tests."""
-        if out_bytes > 0 and src_bytes / out_bytes >= 4:
-            size_str = f"{src_bytes:,} → {out_bytes:,} bytes"
-        else:
-            size_str = f"{src_bytes:,} bytes"
+        savings_pct = (
+            100.0 * bytes_saved / src_bytes if src_bytes > 0 else 0.0
+        )
+        size_str = f"{_fmt_bytes(src_bytes)} → {_fmt_bytes(out_bytes)} (saving ~{savings_pct:.0f}%)"
         return (
             f"Note: image auto-shrunk by token-goat "
-            f"({size_str}, "
-            f"~{bytes_saved:,} bytes saved). "
+            f"({size_str}). "
             f"Original: {file_path}"
         )
 
-    def test_high_ratio_includes_arrow(self):
-        """When src/out >= 4, the note must include '→ N bytes'."""
-        note = self._build_note(40_000, 9_000, 31_000, "/tmp/big.jpg")
-        assert "→" in note, "Expected arrow for 4.4x compression ratio"
-        assert "40,000 → 9,000 bytes" in note
+    def test_high_ratio_shows_before_after_and_percent(self):
+        """High compression ratio: shows both sizes and the % savings."""
+        note = self._build_note(4_000_000, 180_000, 3_820_000, "/tmp/big.jpg")
+        assert "→" in note
+        # 4MB → 180KB, saving ~96%
+        assert "4.0 MB" in note
+        assert "180 KB" in note
+        assert "saving ~96%" in note
 
-    def test_low_ratio_omits_arrow(self):
-        """When src/out < 4, the note must omit '→ N bytes' to save tokens."""
-        note = self._build_note(10_000, 4_000, 6_000, "/tmp/small.jpg")
-        assert "→" not in note, "Arrow must be omitted for 2.5x ratio"
-        assert "10,000 bytes" in note
-        assert "4,000" not in note  # output size must NOT appear
+    def test_low_ratio_also_shows_before_after_and_percent(self):
+        """Even modest compression ratio: shows both sizes and the % savings."""
+        note = self._build_note(200_000, 100_000, 100_000, "/tmp/small.jpg")
+        assert "→" in note
+        assert "200 KB" in note
+        assert "100 KB" in note
+        assert "saving ~50%" in note
 
-    def test_exactly_4x_ratio_includes_arrow(self):
-        """At exactly 4x ratio, the arrow must appear (boundary: >= 4)."""
-        note = self._build_note(20_000, 5_000, 15_000, "/tmp/exact.jpg")
-        assert "→" in note, "Arrow must appear at exactly 4x ratio"
+    def test_sub_kb_shown_as_bytes(self):
+        """Values below 1000 bytes are shown as 'N B'."""
+        note = self._build_note(500, 200, 300, "/tmp/tiny.jpg")
+        assert "500 B" in note
+        assert "200 B" in note
 
-    def test_bytes_saved_always_present(self):
-        """bytes_saved annotation must appear regardless of the compression ratio."""
-        note_high = self._build_note(40_000, 9_000, 31_000, "/tmp/big.jpg")
-        note_low = self._build_note(10_000, 4_000, 6_000, "/tmp/small.jpg")
-        assert "bytes saved" in note_high
-        assert "bytes saved" in note_low
+    def test_percentage_included_for_any_ratio(self):
+        """Percentage savings is included regardless of the ratio."""
+        note_small = self._build_note(10_000, 4_000, 6_000, "/tmp/a.jpg")
+        note_large = self._build_note(40_000, 9_000, 31_000, "/tmp/b.jpg")
+        assert "saving ~" in note_small
+        assert "saving ~" in note_large
 
-    def test_zero_out_bytes_falls_back_to_src_only(self):
-        """Division-by-zero guard: when out_bytes == 0, only src_bytes is shown."""
+    def test_zero_out_bytes_shows_100_percent(self):
+        """When out_bytes is 0, savings pct computes to 100%."""
         note = self._build_note(10_000, 0, 10_000, "/tmp/zero.jpg")
-        assert "→" not in note
-        assert "10,000 bytes" in note
+        assert "saving ~100%" in note
+
+    def test_original_path_included(self):
+        """Original file path always appears in the hint."""
+        note = self._build_note(200_000, 80_000, 120_000, "/home/user/photo.png")
+        assert "Original: /home/user/photo.png" in note
+
+
+class TestShrinkHintPercentOnRealImage:
+    """Integration test: the live hook response for a large image includes
+    the before→after sizes and % savings in the additionalContext."""
+
+    def test_large_jpeg_hint_contains_percent_and_arrow(self, tmp_data_dir, tmp_path):
+        src = _make_large_jpeg(tmp_path)
+
+        payload = {
+            "session_id": "img_pct1",
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+        }
+        result = hooks_cli.dispatch("pre-read", payload)
+
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "")
+        # Must contain arrow (before→after) and percent
+        assert "→" in ctx, f"Expected '→' in hint: {ctx!r}"
+        assert "saving ~" in ctx, f"Expected 'saving ~N%' in hint: {ctx!r}"
+        assert "%" in ctx, f"Expected percentage in hint: {ctx!r}"
 
 
 # ---------------------------------------------------------------------------

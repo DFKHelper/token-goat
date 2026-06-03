@@ -71,14 +71,44 @@ MAX_CHUNK_CHARS = 8000
 # keeping chunk count manageable for large files (a 1 k-line file → ~10 chunks).
 WINDOW_LINES = 100
 
-# Symbol kinds worth chunking
+# Symbol kinds worth chunking.
+# Includes both "universal" code kinds (function, class, …) and the
+# domain-specific kinds introduced by the structured-file indexers so that
+# symbol-based chunks (Pass 1) are produced for SQL tables, GraphQL types,
+# Proto messages, CSS rules, and Makefile targets in addition to source code.
 _CODE_SYMBOL_KINDS = frozenset({
+    # Universal code kinds
     "function", "method", "class", "interface",
     "trait", "type", "enum", "impl", "abi_export",
+    # SQL schema kinds (sql_idx.py)
+    "sql_table", "sql_view", "sql_function", "sql_procedure",
+    "sql_trigger", "sql_type", "sql_schema", "sql_index",
+    # GraphQL schema/document kinds (graphql_idx.py)
+    "graphql_type", "graphql_input", "graphql_interface", "graphql_enum",
+    "graphql_union", "graphql_scalar", "graphql_directive", "graphql_fragment",
+    "graphql_query", "graphql_mutation", "graphql_subscription", "graphql_extend",
+    "graphql_schema",
+    # Protocol Buffer kinds (proto_idx.py)
+    "proto_message", "proto_enum", "proto_service", "proto_rpc",
+    "proto_oneof", "proto_extend",
+    # CSS / SCSS / Less kinds (css_idx.py)
+    "css_class", "css_id", "css_keyframes", "css_mixin", "css_atrule",
+    "css_custom_property",
+    # Makefile kinds (makefile_idx.py)
+    "makefile_target", "makefile_define",
 })
 
-# Languages that get sliding-window fallback
-_WINDOW_LANGS = frozenset({"typescript", "javascript", "python", "go", "rust"})
+# Languages that get sliding-window fallback.
+# The window pass (Pass 3 in extract_chunks_for_file) covers lines not captured
+# by any symbol or section — module-level imports, constants, inline comments,
+# variable declarations, etc.  Adding SQL, GraphQL, Proto, CSS, and Makefile
+# ensures that preamble content (e.g. SQL SET commands, CSS custom-property
+# declarations outside of rule-sets, Makefile variable assignments) is embedded
+# alongside the structured symbols extracted by Pass 1.
+_WINDOW_LANGS = frozenset({
+    "typescript", "javascript", "python", "go", "rust",
+    "sql", "graphql", "proto", "css", "makefile",
+})
 
 # ---------------------------------------------------------------------------
 # Search-time tunables (re-ranking, filtering, threshold)
@@ -954,7 +984,7 @@ def semantic_search(
     project: Project,
     query: str,
     *,
-    k: int = 5,
+    k: int = 8,
     model_name: str = DEFAULT_MODEL,
     max_distance: float | None = DEFAULT_DISTANCE_THRESHOLD,
     boost_verbatim: bool = True,
@@ -983,7 +1013,7 @@ def semantic_search(
         project: Project metadata (root, hash, etc.).
         query: Natural language or code snippet to search for. Examples: 'rate limit retry',
                'async/await boundary', 'null guard'.
-        k: Number of top results to return (default 5).
+        k: Number of top results to return (default 8).
         model_name: Embedding model (default: BAAI/bge-small-en-v1.5).
         max_distance: Drop hits with effective distance above this threshold.
             Set to ``None`` to disable threshold filtering (return up to k

@@ -1571,3 +1571,122 @@ class TestProgressiveJpeg:
         assert b"\xff\xc2" in data, (
             "Expected SOF2 marker (0xFF 0xC2) for progressive JPEG output"
         )
+
+
+# ---------------------------------------------------------------------------
+# WEBP input support — .webp source files are shrunk like any other image
+# ---------------------------------------------------------------------------
+
+class TestWebpInputSupport:
+    """WEBP is a recognised image extension and a first-class input format.
+
+    Pillow reads WebP natively.  The lossy-input threshold (100 KB) applies
+    because WebP files are already lossy-compressed — a re-encode only pays
+    off when the source is genuinely large.
+
+    These tests complement the output-format tests (TestPngToJpeg,
+    TestWebpCompressionRatio) which verify the *output* format; here we verify
+    that a .webp *source* file flows through the full shrink pipeline correctly.
+    """
+
+    def test_webp_recognised_as_image_path(self):
+        """is_image_path() must return True for .webp files."""
+        assert image_shrink.is_image_path("photo.webp") is True
+        assert image_shrink.is_image_path("BANNER.WEBP") is True  # case-insensitive
+
+    def test_webp_uses_lossy_threshold(self):
+        """format_threshold() for .webp must equal SIZE_THRESHOLD_BYTES (100 KB),
+        the same as JPEG/AVIF (lossy producer formats that are already efficient
+        below 100 KB and would not benefit from re-encoding)."""
+        assert image_shrink.format_threshold("image.webp") == image_shrink.SIZE_THRESHOLD_BYTES
+        assert image_shrink.format_threshold(Path("path/to/image.webp")) == image_shrink.SIZE_THRESHOLD_BYTES
+
+    def test_small_webp_not_shrunk(self, tmp_data_dir, tmp_path):
+        """A .webp file below the lossy threshold (100 KB) must not be shrunk."""
+        pytest.importorskip("PIL")
+        from PIL import Image
+
+        # 50×50 WebP is well under 100 KB.
+        p = tmp_path / "small.webp"
+        img = Image.new("RGB", (50, 50), (128, 64, 32))
+        img.save(p, "WEBP", quality=80)
+
+        assert p.stat().st_size < image_shrink.SIZE_THRESHOLD_BYTES, (
+            f"Fixture is not small enough: {p.stat().st_size} bytes"
+        )
+        assert image_shrink.should_shrink(p) is False
+        assert image_shrink.shrink(p) is None
+
+    def test_large_webp_is_shrunk(self, tmp_data_dir, tmp_path):
+        """A .webp file above the lossy threshold (100 KB) must be shrunk and
+        the result must exist, be smaller, and fit within MAX_LONG_EDGE.
+
+        Lossless WebP is used as the source format to guarantee the file
+        exceeds 100 KB — lossy WebP at high resolution can still be under
+        threshold after encoding, but lossless always exceeds it.
+        """
+        pytest.importorskip("PIL")
+        import random
+
+        from PIL import Image
+
+        # Create a 1200×900 lossless WebP: guaranteed > 100 KB for random pixels.
+        p = tmp_path / "large.webp"
+        img = Image.new("RGB", (1200, 900))
+        img.putdata([
+            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            for _ in range(1200 * 900)
+        ])
+        img.save(p, "WEBP", lossless=True)
+
+        if p.stat().st_size <= image_shrink.SIZE_THRESHOLD_BYTES:
+            pytest.skip("Could not synthesize a large-enough WebP for this test")
+
+        assert image_shrink.should_shrink(p) is True
+
+        result = image_shrink.shrink(p)
+        assert result is not None, "shrink() must return a path for a large WebP"
+        assert result.exists(), "Shrunken path must exist on disk"
+        assert result.stat().st_size < p.stat().st_size, (
+            f"Shrunken file ({result.stat().st_size} B) must be smaller than source ({p.stat().st_size} B)"
+        )
+
+        from PIL import Image as _PIL
+        with _PIL.open(result) as out_img:
+            assert max(out_img.size) <= image_shrink.MAX_LONG_EDGE, (
+                f"Long edge {max(out_img.size)} exceeds MAX_LONG_EDGE {image_shrink.MAX_LONG_EDGE}"
+            )
+
+    def test_webp_in_image_extensions_set(self):
+        """.webp must be in IMAGE_EXTENSIONS so the hook fires for WebP files."""
+        assert ".webp" in image_shrink.IMAGE_EXTENSIONS
+
+    def test_large_webp_stats_for_correct(self, tmp_data_dir, tmp_path):
+        """stats_for() must report meaningful savings when a large WebP is shrunk."""
+        pytest.importorskip("PIL")
+        import random
+
+        from PIL import Image
+
+        p = tmp_path / "stats_test.webp"
+        img = Image.new("RGB", (1200, 900))
+        img.putdata([
+            (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            for _ in range(1200 * 900)
+        ])
+        img.save(p, "WEBP", lossless=True)
+
+        if p.stat().st_size <= image_shrink.SIZE_THRESHOLD_BYTES:
+            pytest.skip("Could not synthesize a large-enough WebP for this test")
+
+        result = image_shrink.shrink(p)
+        if result is None:
+            pytest.skip("shrink() returned None (possibly WEBP unsupported in this build)")
+
+        stats = image_shrink.stats_for(p, result)
+        assert stats["src_bytes"] > 0
+        assert stats["out_bytes"] > 0
+        assert stats["bytes_saved"] > 0, (
+            f"Expected bytes_saved > 0 for large WebP; got stats={stats}"
+        )
+        assert stats["out_width"] > 0 and stats["out_height"] > 0

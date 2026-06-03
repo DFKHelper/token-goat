@@ -1320,7 +1320,7 @@ def _keyword_fallback_hits(
 @app.command(rich_help_panel="Core")
 def semantic(
     query: str = typer.Argument(...),
-    k: int = typer.Option(5, "-k", help="Top-k results"),
+    k: int = typer.Option(8, "-k", help="Top-k results"),
     json_output: bool = _OPT_JSON,
     max_distance: float = typer.Option(
         -1.0,
@@ -1467,8 +1467,11 @@ def semantic(
 
         for proj_root, h in all_hits:
             if compact:
-                snippet = h.text.replace("\n", " ")[:100]
-                typer.echo(f"[{proj_root}] {h.file_rel}:{h.start_line}  {snippet}")
+                first_line = next(
+                    (ln.strip() for ln in h.text.splitlines() if ln.strip()),
+                    h.text.replace("\n", " ")[:120],
+                )[:120]
+                typer.echo(f"[{proj_root}] {h.file_rel}:{h.start_line} [{h.kind}]  {first_line}")
             else:
                 preview = h.text.replace("\n", " ")[:120]
                 typer.echo(
@@ -1544,8 +1547,15 @@ def semantic(
 
     if compact:
         for h in hits:
-            snippet = h.text.replace("\n", " ")[:100]
-            typer.echo(f"{h.file_rel}:{h.start_line}  {snippet}")
+            # Show the first non-blank line as the snippet — it carries the
+            # function/class/rule signature rather than a flat 100-char slice
+            # of potentially mid-body text.  Falls back to a flat slice if the
+            # first line is blank (rare, but guard-worthy).
+            first_line = next(
+                (ln.strip() for ln in h.text.splitlines() if ln.strip()),
+                h.text.replace("\n", " ")[:120],
+            )[:120]
+            typer.echo(f"{h.file_rel}:{h.start_line} [{h.kind}]  {first_line}")
     else:
         for h in hits:
             preview = h.text.replace("\n", " ")[:120]
