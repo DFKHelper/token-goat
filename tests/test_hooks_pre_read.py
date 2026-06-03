@@ -1183,6 +1183,43 @@ class TestUnchangedFileHint:
             ctx = result["hookSpecificOutput"].get("additionalContext", "")
             assert "unchanged" not in ctx.lower()
 
+    def test_unchanged_hint_includes_sha_prefix(self, tmp_data_dir, tmp_path):
+        """Unchanged-file hint must include a SHA prefix so the agent can verify the claim.
+
+        The hint text should contain 'sha:' followed by 8 hex characters so
+        the agent can cross-check against its own computation rather than
+        relying on the hint blindly.
+        """
+        import hashlib
+        import re
+
+        from token_goat import snapshots
+        from token_goat.hints import build_unchanged_file_hint
+
+        sid = "unchanged-sha-prefix"
+        fpath = self._make_file(tmp_path, "sha_check.py")
+        with open(fpath, "rb") as _f:
+            content = _f.read()
+
+        expected_sha = hashlib.sha256(content).hexdigest()[:8]
+
+        session.mark_file_read(sid, fpath, offset=None, limit=None)
+        snapshots.store(sid, fpath, content)
+        session.set_snapshot_sha(sid, fpath, hashlib.sha256(content).hexdigest())
+        session.mark_file_edited(sid, fpath)
+
+        hint = build_unchanged_file_hint(session_id=sid, file_path=fpath)
+        assert hint is not None, "unchanged hint should fire"
+        hint_text = str(hint)
+        # Hint must contain 'sha:' followed by exactly the first 8 hex chars.
+        assert f"sha:{expected_sha}" in hint_text, (
+            f"Expected 'sha:{expected_sha}' in hint text but got: {hint_text!r}"
+        )
+        # Verify it looks like a real hex prefix (8 lowercase hex chars).
+        assert re.search(r"sha:[0-9a-f]{8}", hint_text), (
+            f"sha prefix should be 8 lowercase hex chars, got: {hint_text!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Curator: ignored-hint counting via _check_ignored_hint

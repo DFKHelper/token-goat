@@ -3483,10 +3483,11 @@ def _build_unchanged_file_hint_inner(
     safe_path = _sanitize_hint_path(file_path)
     age_s = int(snapshot_age)
     full_tokens = _est_tokens_from_chars(len(current_bytes))
+    sha_prefix = current_sha[:8]
 
     prose = ReadHint(
         _apply_terse(
-            f"`{fname}` unchanged since your edit ({age_s}s ago, ~{full_tokens}t). "
+            f"`{fname}` unchanged since your edit ({age_s}s ago, sha:{sha_prefix}, ~{full_tokens}t). "
             f"Content already in context from Edit result. "
             f"Re-read only if you need line numbers. "
             f"For a symbol use `token-goat read \"{safe_path}::Symbol\"`."
@@ -3497,7 +3498,7 @@ def _build_unchanged_file_hint_inner(
     cache.record_hint_emitted("unchanged_file")
     return _emit_json_sidecar(
         prose, "unchanged_since_edit",
-        file=safe_path, age_s=age_s, wasted=full_tokens,
+        file=safe_path, age_s=age_s, wasted=full_tokens, sha=sha_prefix,
     )
 
 
