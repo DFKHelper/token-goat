@@ -2186,8 +2186,10 @@ def cmd_recent(
 ) -> None:
     """Show the N most recently edited/accessed files (session + git commits) with their symbols.
 
-    Merges session-edited files (highest priority) with files from recent git
-    commits, deduplicates by path, and shows the symbol names touched in each file.
+    Merges three sources in priority order: session-edited files (highest priority),
+    session-read files (marked "read this session" — already in context), then files
+    from recent git commits.  Deduplicates by path and shows the symbol names touched
+    in each file.
 
     Examples::
 

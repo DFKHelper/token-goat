@@ -1508,6 +1508,23 @@ def _detect_orchestrator_mode(
         return False
 
 
+def _get_current_branch(repo_root: str | None) -> str | None:
+    """Return the current git branch name, or ``None`` on detached HEAD / non-repo.
+
+    Uses ``git symbolic-ref --short HEAD`` which exits non-zero on detached HEAD
+    (where HEAD points directly to a commit SHA, not a branch ref).  Returns None
+    in that case and on any other failure (git absent, not a repo, etc.) so callers
+    can omit the branch line rather than showing an unhelpful error.
+    """
+    if not repo_root:
+        return None
+    out = _run_git(["symbolic-ref", "--short", "HEAD"], repo_root, timeout=3)
+    if not out:
+        return None
+    branch = out.strip()
+    return branch if branch else None
+
+
 def _get_recent_commits_for_orchestrator(repo_root: str | None, n: int = 10) -> list[str]:
     """Return the last *n* git commits as oneline strings for the orchestrator manifest.
 
@@ -5166,10 +5183,21 @@ def _render(
         noise_skipped,
     )
 
+    # Get cwd early so it can be used for the branch line and diff/commits sections.
+    cwd = getattr(cache, "cwd", None)
+    created_ts = getattr(cache, "created_ts", 0.0)
+
     header_lines: list[str] = [
         "## Token-Goat Session Manifest",
         "manifest_version: 1",
     ]
+    # Add the current git branch to orient the compaction LLM about which
+    # feature branch or context is active.  Omitted gracefully on detached HEAD
+    # or when the working directory is not a git repo.
+    _branch = _get_current_branch(cwd) if cwd else None
+    if _branch:
+        header_lines.append(f"branch: {_branch}")
+
     _hint_telemetry = _format_hint_telemetry(cache)
     if _hint_telemetry:
         header_lines.append(_hint_telemetry)
@@ -5192,10 +5220,6 @@ def _render(
     _session_stats = _format_session_stats(cache)
     if _session_stats:
         header_lines.append(_session_stats)
-
-    # Get cwd early so it can be used by both diff summary and commits section.
-    cwd = getattr(cache, "cwd", None)
-    created_ts = getattr(cache, "created_ts", 0.0)
 
     # ── 0. Current Blockers — failed commands from the last 60 min ───────────
     # Built before everything else so it appears at the top of the manifest.

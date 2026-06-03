@@ -2846,12 +2846,14 @@ def recent(
 ) -> None:
     """Show the N most recently edited/accessed files from this session and recent git commits.
 
-    Merges two sources:
-    - Session edited files (files modified by Write/Edit/MultiEdit this session)
-    - Recent git commits' changed files (from the indexed git history)
+    Merges three sources in priority order:
+    1. Session edited files (files modified by Write/Edit/MultiEdit this session)
+    2. Session read files (files read via Read/Grep/token-goat read this session, not yet edited)
+    3. Recent git commits' changed files (from the indexed git history)
 
-    Session edits are listed first; git-history files fill the remainder up to *n*.
-    Files are deduplicated by path (session edit wins when both sources mention the same file).
+    Session edits are listed first; session reads fill the next slots (marked "read this
+    session" so the agent knows it already has these in context); git-history files fill
+    the remainder up to *n*.  Files are deduplicated by path (highest-priority source wins).
 
     For each file, shows the symbol names that were surgically accessed this session
     (from ``symbol_access_counts``) or, as a fallback, the structural symbols indexed
@@ -2861,14 +2863,18 @@ def recent(
 
         src/token_goat/hints.py  (edited this session)
           build_high_frequency_hint, dedup_hints
+        src/token_goat/session.py  (read this session)
+          SessionCache, FileEntry
         src/token_goat/compact.py  (1 commit ago)
           _render, build_manifest
 
     Output format (JSON)::
 
         {"files": [
-          {"path": "src/token_goat/hints.py", "source": "session",
+          {"path": "src/token_goat/hints.py", "source": "edited this session",
            "symbols": ["build_high_frequency_hint", "dedup_hints"]},
+          {"path": "src/token_goat/session.py", "source": "read this session",
+           "symbols": ["SessionCache", "FileEntry"]},
           ...
         ]}
     """
@@ -2879,7 +2885,7 @@ def recent(
     cwd = _os.getcwd()
     proj = _project.find_project(Path(cwd))
 
-    # Load session cache for edited_files and symbol_access_counts.
+    # Load session cache for edited_files, files (reads), and symbol_access_counts.
     sess: session.SessionCache | None = None
     if session_id:
         sess = session.load(session_id)
@@ -2901,12 +2907,40 @@ def recent(
                 rel = raw_path
             session_entries.append((rel, "edited this session"))
 
-    # --- Source 2: recent git commits ---
+    # --- Source 2: session read files (files read but not edited this session) ---
+    # sess.files tracks every Read/Grep/token-goat read call.  Files already in
+    # edited_files are skipped here (they'll appear under "edited this session").
+    # Sort by most-recently read so the most relevant reads appear first.
+    edited_paths_normalized: set[str] = set()
+    if sess is not None:
+        for raw_path in sess.edited_files:
+            edited_paths_normalized.add(Path(raw_path).as_posix().lower())
+
+    session_read_entries: list[tuple[str, str, float]] = []  # (rel_path, label, last_read_ts)
+    if sess is not None and hasattr(sess, "files"):
+        for _key, file_entry in sess.files.items():
+            raw_path = file_entry.rel_or_abs
+            # Skip files that were also edited — they are already in Source 1.
+            if Path(raw_path).as_posix().lower() in edited_paths_normalized:
+                continue
+            if proj is not None:
+                try:
+                    rel = Path(raw_path).relative_to(proj.root).as_posix()
+                except ValueError:
+                    rel = raw_path
+            else:
+                rel = raw_path
+            session_read_entries.append((rel, "read this session", file_entry.last_read_ts))
+
+    # Sort by most-recently read first so the freshest context appears at the top.
+    session_read_entries.sort(key=lambda x: x[2], reverse=True)
+
+    # --- Source 3: recent git commits ---
     git_entries: list[tuple[str, str]] = []
     if proj is not None:
         git_entries = _get_recent_git_files(proj.hash, n * 2)
 
-    # --- Merge: session first, then git, deduplicate by path, cap at n ---
+    # --- Merge: session edits first, session reads second, git fills remainder ---
     seen: set[str] = set()
     merged: list[tuple[str, str]] = []  # (file_rel, source_label)
 
@@ -2916,6 +2950,11 @@ def recent(
             merged.append((rel, label))
         if len(merged) >= n:
             break
+
+    for rel, label, _ts in session_read_entries:
+        if rel not in seen and len(merged) < n:
+            seen.add(rel)
+            merged.append((rel, label))
 
     for rel, label in git_entries:
         if rel not in seen and len(merged) < n:

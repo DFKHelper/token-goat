@@ -992,3 +992,135 @@ class TestBuildManifestZeroFilesRead:
         # Must not raise; git calls will fail gracefully and return None/[].
         result = compact.build_manifest(sid, max_tokens=600)
         assert isinstance(result, str), "build_manifest must always return a string"
+
+
+# ---------------------------------------------------------------------------
+# Manifest header: git branch name
+# ---------------------------------------------------------------------------
+
+
+class TestManifestBranchHeader:
+    """Verify the manifest header includes 'branch: <name>' when on a named branch."""
+
+    def test_branch_line_included_when_on_named_branch(self, tmp_data_dir):
+        """Manifest header contains 'branch: main' when git reports 'main'."""
+        from token_goat import session
+
+        sid = "sess-branch-main"
+        session.mark_file_read(sid, "src/token_goat/cli.py", offset=0, limit=50)
+        cache = session.load(sid)
+        cache.cwd = "/some/project"
+        cache.created_ts = time.time() - 600
+        session.save(cache)
+
+        with patch("token_goat.compact._get_current_branch", return_value="main"):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        assert "branch: main" in result
+
+    def test_branch_line_included_for_feature_branch(self, tmp_data_dir):
+        """Manifest header contains the feature branch name, not just 'main'."""
+        from token_goat import session
+
+        sid = "sess-branch-feature"
+        session.mark_file_read(sid, "src/token_goat/cli.py", offset=0, limit=50)
+        cache = session.load(sid)
+        cache.cwd = "/some/project"
+        cache.created_ts = time.time() - 600
+        session.save(cache)
+
+        with patch("token_goat.compact._get_current_branch", return_value="feat/add-recent-reads"):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        assert "branch: feat/add-recent-reads" in result
+
+    def test_branch_line_absent_on_detached_head(self, tmp_data_dir):
+        """Manifest header omits the branch line when _get_current_branch returns None."""
+        from token_goat import session
+
+        sid = "sess-branch-detached"
+        session.mark_file_read(sid, "src/token_goat/cli.py", offset=0, limit=50)
+        cache = session.load(sid)
+        cache.cwd = "/some/project"
+        cache.created_ts = time.time() - 600
+        session.save(cache)
+
+        with patch("token_goat.compact._get_current_branch", return_value=None):
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        assert "branch:" not in result
+
+    def test_branch_line_absent_when_no_cwd(self, tmp_data_dir):
+        """Manifest header omits branch when cache has no cwd."""
+        from token_goat import session
+
+        sid = "sess-branch-no-cwd"
+        session.mark_file_read(sid, "src/token_goat/cli.py", offset=0, limit=50)
+        cache = session.load(sid)
+        cache.cwd = None
+        cache.created_ts = time.time() - 600
+        session.save(cache)
+
+        # _get_current_branch should not be called with None
+        with patch("token_goat.compact._get_current_branch") as mock_branch:
+            result = compact.build_manifest(sid, max_tokens=600)
+
+        mock_branch.assert_not_called()
+        assert "branch:" not in result
+
+
+# ---------------------------------------------------------------------------
+# _get_current_branch unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetCurrentBranch:
+    """Unit tests for _get_current_branch."""
+
+    def test_returns_branch_name(self):
+        from token_goat.compact import _get_current_branch
+
+        with patch("token_goat.compact._run_git", return_value="main\n"):
+            result = _get_current_branch("/some/repo")
+
+        assert result == "main"
+
+    def test_returns_feature_branch_name(self):
+        from token_goat.compact import _get_current_branch
+
+        with patch("token_goat.compact._run_git", return_value="feat/my-feature\n"):
+            result = _get_current_branch("/some/repo")
+
+        assert result == "feat/my-feature"
+
+    def test_returns_none_on_detached_head(self):
+        """git symbolic-ref exits non-zero on detached HEAD; _run_git returns None."""
+        from token_goat.compact import _get_current_branch
+
+        with patch("token_goat.compact._run_git", return_value=None):
+            result = _get_current_branch("/some/repo")
+
+        assert result is None
+
+    def test_returns_none_when_no_repo_root(self):
+        from token_goat.compact import _get_current_branch
+
+        result = _get_current_branch(None)
+        assert result is None
+
+    def test_returns_none_on_empty_output(self):
+        """Empty string output (edge case) yields None rather than empty string."""
+        from token_goat.compact import _get_current_branch
+
+        with patch("token_goat.compact._run_git", return_value=""):
+            result = _get_current_branch("/some/repo")
+
+        assert result is None
+
+    def test_strips_trailing_newline(self):
+        from token_goat.compact import _get_current_branch
+
+        with patch("token_goat.compact._run_git", return_value="develop\n"):
+            result = _get_current_branch("/some/repo")
+
+        assert result == "develop"

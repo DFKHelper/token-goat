@@ -1345,6 +1345,15 @@ def doctor(  # noqa: C901
         from . import config as _config  # noqa: PLC0415
 
         cfg = _config.load()
+        # Show the config file path so users know where to put their config.toml.
+        _config_path = paths.config_path()
+        if _config_path.exists():
+            ok("config file", str(_config_path))
+        else:
+            ok(
+                "config file",
+                f"{_config_path} (not present — all defaults active; create this file to customise)",
+            )
         # compact_assist: master switch + the auto-trigger multiplier added in run 1 iter 3.
         ok("compact_assist.enabled", str(cfg.compact_assist.enabled).lower())
         ok(

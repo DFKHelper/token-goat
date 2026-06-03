@@ -9,15 +9,30 @@ from unittest.mock import MagicMock, patch
 # ---------------------------------------------------------------------------
 
 
+def _make_file_entry(rel_or_abs: str, last_read_ts: float = 1000.0) -> MagicMock:
+    """Return a minimal FileEntry-like mock."""
+    entry = MagicMock()
+    entry.rel_or_abs = rel_or_abs
+    entry.last_read_ts = last_read_ts
+    return entry
+
+
 def _make_session_cache(
     edited_files: dict[str, int] | None = None,
     symbol_access_counts: dict[str, int] | None = None,
+    files: dict | None = None,
 ) -> MagicMock:
-    """Return a minimal SessionCache-like mock for testing."""
+    """Return a minimal SessionCache-like mock for testing.
+
+    ``files`` mirrors session.SessionCache.files: a dict keyed by normalised
+    path where each value is a FileEntry-like object with ``rel_or_abs`` and
+    ``last_read_ts`` attributes.
+    """
     cache = MagicMock()
     cache.unavailable = False
     cache.edited_files = edited_files or {}
     cache.symbol_access_counts = symbol_access_counts or {}
+    cache.files = files or {}
     return cache
 
 
@@ -345,3 +360,168 @@ class TestRecent:
 
         out = capsys.readouterr().out
         assert "No recently" in out
+
+    # ------------------------------------------------------------------
+    # Tests for the "read this session" tier (session.files integration)
+    # ------------------------------------------------------------------
+
+    def test_read_files_appear_with_read_label(self, capsys):
+        """Files in sess.files (read but not edited) show 'read this session'."""
+        from token_goat.read_commands import recent
+
+        sess = _make_session_cache(
+            edited_files={},
+            files={
+                "src/token_goat/session.py": _make_file_entry("src/token_goat/session.py", 1000.0),
+            },
+        )
+
+        with (
+            self._patch_project(),
+            patch("token_goat.session.load", return_value=sess),
+            patch("token_goat.read_commands._get_recent_git_files", return_value=[]),
+            patch("token_goat.read_commands._symbols_for_file", return_value=[]),
+        ):
+            recent(n=5, session_id="test-session")
+
+        out = capsys.readouterr().out
+        assert "session.py" in out
+        assert "read this session" in out
+
+    def test_read_files_between_edited_and_git(self, capsys):
+        """Priority order: edited > read > git."""
+        from token_goat.read_commands import recent
+
+        sess = _make_session_cache(
+            edited_files={"src/edited.py": 1},
+            files={
+                "src/read_only.py": _make_file_entry("src/read_only.py", 999.0),
+            },
+        )
+
+        with (
+            self._patch_project(),
+            patch("token_goat.session.load", return_value=sess),
+            patch("token_goat.read_commands._get_recent_git_files",
+                  return_value=[("src/git_file.py", "1 commit ago")]),
+            patch("token_goat.read_commands._symbols_for_file", return_value=[]),
+        ):
+            recent(n=10, session_id="test-session")
+
+        out = capsys.readouterr().out
+        lines = [line for line in out.strip().splitlines() if line and not line.startswith("  ")]
+        # edited.py must come before read_only.py must come before git_file.py
+        idx_edited = next(i for i, line in enumerate(lines) if "edited.py" in line)
+        idx_read = next(i for i, line in enumerate(lines) if "read_only.py" in line)
+        idx_git = next(i for i, line in enumerate(lines) if "git_file.py" in line)
+        assert idx_edited < idx_read < idx_git
+
+    def test_edited_files_not_duplicated_in_read_tier(self, capsys):
+        """A file that was both edited and is in sess.files appears only once (as 'edited')."""
+        from token_goat.read_commands import recent
+
+        sess = _make_session_cache(
+            edited_files={"src/hints.py": 2},
+            files={
+                "src/hints.py": _make_file_entry("src/hints.py", 1500.0),
+                "src/other.py": _make_file_entry("src/other.py", 1000.0),
+            },
+        )
+
+        with (
+            self._patch_project(),
+            patch("token_goat.session.load", return_value=sess),
+            patch("token_goat.read_commands._get_recent_git_files", return_value=[]),
+            patch("token_goat.read_commands._symbols_for_file", return_value=[]),
+        ):
+            recent(n=10, session_id="test-session")
+
+        out = capsys.readouterr().out
+        # hints.py appears exactly once and as 'edited', not 'read'
+        assert out.count("hints.py") == 1
+        assert "edited this session" in out
+        # read this session appears for other.py only
+        assert "other.py" in out
+        assert "read this session" in out
+
+    def test_read_files_sorted_by_recency(self, capsys):
+        """Most recently read file appears first among read-tier entries."""
+        from token_goat.read_commands import recent
+
+        sess = _make_session_cache(
+            edited_files={},
+            files={
+                "src/older.py": _make_file_entry("src/older.py", 500.0),
+                "src/newer.py": _make_file_entry("src/newer.py", 2000.0),
+            },
+        )
+
+        with (
+            self._patch_project(),
+            patch("token_goat.session.load", return_value=sess),
+            patch("token_goat.read_commands._get_recent_git_files", return_value=[]),
+            patch("token_goat.read_commands._symbols_for_file", return_value=[]),
+        ):
+            recent(n=10, session_id="test-session")
+
+        out = capsys.readouterr().out
+        lines = [line for line in out.strip().splitlines() if "read this session" in line]
+        assert len(lines) == 2
+        # newer.py (ts=2000) should appear before older.py (ts=500)
+        assert lines.index(next(line for line in lines if "newer.py" in line)) < \
+               lines.index(next(line for line in lines if "older.py" in line))
+
+    def test_read_files_in_json_output(self, capsys):
+        """JSON output includes 'read this session' entries with correct source field."""
+        from token_goat.read_commands import recent
+
+        sess = _make_session_cache(
+            edited_files={},
+            files={
+                "src/compact.py": _make_file_entry("src/compact.py", 1000.0),
+            },
+        )
+
+        with (
+            self._patch_project(),
+            patch("token_goat.session.load", return_value=sess),
+            patch("token_goat.read_commands._get_recent_git_files", return_value=[]),
+            patch("token_goat.read_commands._symbols_for_file", return_value=["_render"]),
+        ):
+            recent(n=5, session_id="test-session", json_output=True)
+
+        raw = capsys.readouterr().out.strip()
+        data = json.loads(raw)
+        files = data["files"]
+        assert len(files) == 1
+        assert files[0]["source"] == "read this session"
+        assert "_render" in files[0]["symbols"]
+
+    def test_read_files_dedup_vs_git(self, capsys):
+        """A file in sess.files that also appears in git history appears only once (as 'read')."""
+        from token_goat.read_commands import recent
+
+        sess = _make_session_cache(
+            edited_files={},
+            files={
+                "src/parser.py": _make_file_entry("src/parser.py", 1000.0),
+            },
+        )
+
+        with (
+            self._patch_project(),
+            patch("token_goat.session.load", return_value=sess),
+            patch("token_goat.read_commands._get_recent_git_files",
+                  return_value=[
+                      ("src/parser.py", "1 commit ago"),  # duplicate
+                      ("src/other.py", "1 commit ago"),
+                  ]),
+            patch("token_goat.read_commands._symbols_for_file", return_value=[]),
+        ):
+            recent(n=10, session_id="test-session")
+
+        out = capsys.readouterr().out
+        # parser.py should appear exactly once and as 'read this session', not git
+        assert out.count("parser.py") == 1
+        assert "read this session" in out
+        assert "src/other.py" in out

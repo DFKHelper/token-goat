@@ -493,6 +493,41 @@ class TestDoctorConfigurationSection:
         assert "internal.example.com" not in result.stdout
         assert "leak.example.com" not in result.stdout
 
+    def test_configuration_section_shows_config_file_path_when_absent(self, tmp_data_dir, monkeypatch):
+        """Doctor must print the config file path even when the file does not exist.
+
+        Users need to know WHERE to create config.toml.  When the file is absent
+        the line must still appear and include a hint that defaults are active.
+        """
+        from token_goat import paths as _paths
+
+        # Point config_path at a nonexistent file so we exercise the "not present" branch.
+        monkeypatch.setattr(_paths, "config_path", lambda: tmp_data_dir / "config.toml")
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "config file" in result.stdout
+        assert "config.toml" in result.stdout
+
+    def test_configuration_section_shows_config_file_path_when_present(self, tmp_data_dir, monkeypatch):
+        """Doctor must show the path when the config file exists, without saying 'not present'."""
+        from token_goat import paths as _paths
+
+        config_file = tmp_data_dir / "config.toml"
+        config_file.write_text("[compact_assist]\nmin_events = 5\n", encoding="utf-8")
+        monkeypatch.setattr(_paths, "config_path", lambda: config_file)
+
+        result = runner.invoke(cli.app, ["doctor"])
+        assert result.exit_code == 0, result.stdout
+        assert "config file" in result.stdout
+        assert str(config_file) in result.stdout
+        # The "not present" phrase must NOT appear on the config file line itself.
+        for line in result.stdout.splitlines():
+            if "config file" in line:
+                assert "not present" not in line, (
+                    f"config file line incorrectly shows 'not present': {line!r}"
+                )
+
 
 class TestDoctorInstallationStatus:
     """Cover the Installation section that surfaces hook-install status.

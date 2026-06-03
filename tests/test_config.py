@@ -900,3 +900,126 @@ class TestValidatedNumeric:
     def test_float_boundary_values_accepted(self) -> None:
         assert self._vf(0.0, 1.0, 0.0, 2.0) == 0.0
         assert self._vf(2.0, 1.0, 0.0, 2.0) == 2.0
+
+
+class TestConfigTypeValidationEndToEnd:
+    """Type-validation tests via the full config.load() path.
+
+    Exercises that wrong-type TOML values (e.g. ``auto_trigger_multiplier = "banana"``)
+    fall back to the compiled default and do NOT crash, rather than propagating a
+    bad value to callers.  These are end-to-end: the TOML is written to a temp
+    file, ``config.load()`` parses it, and the resulting Config is checked.
+    """
+
+    def _load_from_toml(self, toml_text: str, tmp_path, monkeypatch):
+        """Write *toml_text* to a temp config file, load it, return the Config."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        cfg_mod._config_mtime_cache = None
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(toml_text, encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        try:
+            return cfg_mod.load()
+        finally:
+            cfg_mod._config_mtime_cache = None
+
+    def test_auto_trigger_multiplier_string_falls_back_to_default(self, tmp_path, monkeypatch):
+        """``auto_trigger_multiplier = "banana"`` must use default 2.0, not crash."""
+        cfg = self._load_from_toml(
+            '[compact_assist]\nauto_trigger_multiplier = "banana"\n',
+            tmp_path,
+            monkeypatch,
+        )
+        assert cfg.compact_assist.auto_trigger_multiplier == 2.0
+
+    def test_auto_trigger_multiplier_bool_falls_back_to_default(self, tmp_path, monkeypatch):
+        """TOML booleans must be rejected for float fields; default 2.0 returned."""
+        cfg = self._load_from_toml(
+            "[compact_assist]\nauto_trigger_multiplier = true\n",
+            tmp_path,
+            monkeypatch,
+        )
+        assert cfg.compact_assist.auto_trigger_multiplier == 2.0
+
+    def test_auto_trigger_multiplier_out_of_range_falls_back_to_default(self, tmp_path, monkeypatch):
+        """A value outside [1.0, 10.0] must use the default, not clamp silently."""
+        cfg = self._load_from_toml(
+            "[compact_assist]\nauto_trigger_multiplier = 99.9\n",
+            tmp_path,
+            monkeypatch,
+        )
+        assert cfg.compact_assist.auto_trigger_multiplier == 2.0
+
+    def test_min_events_string_falls_back_to_default(self, tmp_path, monkeypatch):
+        """``min_events = "lots"`` must use default 3, not crash."""
+        cfg = self._load_from_toml(
+            '[compact_assist]\nmin_events = "lots"\n',
+            tmp_path,
+            monkeypatch,
+        )
+        assert cfg.compact_assist.min_events == 3
+
+    def test_max_manifest_tokens_bool_falls_back_to_default(self, tmp_path, monkeypatch):
+        """Bool where int is expected must be rejected cleanly."""
+        cfg = self._load_from_toml(
+            "[compact_assist]\nmax_manifest_tokens = false\n",
+            tmp_path,
+            monkeypatch,
+        )
+        assert cfg.compact_assist.max_manifest_tokens == 400
+
+    def test_watchdog_ms_string_falls_back_to_default(self, tmp_path, monkeypatch):
+        """``watchdog_ms = "fast"`` must use default 5000."""
+        cfg = self._load_from_toml(
+            '[hooks]\nwatchdog_ms = "fast"\n',
+            tmp_path,
+            monkeypatch,
+        )
+        assert cfg.hooks.watchdog_ms == 5000
+
+    def test_enabled_int_coerced_to_bool(self, tmp_path, monkeypatch):
+        """``enabled = 0`` (TOML integer) must coerce to False without a warning."""
+        cfg = self._load_from_toml(
+            "[compact_assist]\nenabled = 0\n",
+            tmp_path,
+            monkeypatch,
+        )
+        assert cfg.compact_assist.enabled is False
+
+    def test_enabled_string_falls_back_to_default(self, tmp_path, monkeypatch):
+        """``enabled = "yes"`` (string, not TOML bool) must use default True."""
+        cfg = self._load_from_toml(
+            '[compact_assist]\nenabled = "yes"\n',
+            tmp_path,
+            monkeypatch,
+        )
+        assert cfg.compact_assist.enabled is True
+
+    def test_bad_type_values_log_warning(self, tmp_path, monkeypatch, caplog):
+        """Wrong-type TOML values must emit a WARNING-level log entry."""
+        import logging
+
+
+        with caplog.at_level(logging.WARNING, logger="token_goat.config"):
+            self._load_from_toml(
+                '[compact_assist]\nauto_trigger_multiplier = "banana"\n',
+                tmp_path,
+                monkeypatch,
+            )
+        # At least one warning must mention the field name and the bad value.
+        warns = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("auto_trigger_multiplier" in r.getMessage() for r in warns), (
+            f"Expected a WARNING about 'auto_trigger_multiplier'; got: {[r.getMessage() for r in warns]}"
+        )
+
+    def test_valid_toml_overrides_are_applied(self, tmp_path, monkeypatch):
+        """Well-typed TOML values are applied, not silently defaulted."""
+        cfg = self._load_from_toml(
+            "[compact_assist]\nmin_events = 7\nauto_trigger_multiplier = 3.5\n",
+            tmp_path,
+            monkeypatch,
+        )
+        assert cfg.compact_assist.min_events == 7
+        assert cfg.compact_assist.auto_trigger_multiplier == 3.5
