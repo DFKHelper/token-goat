@@ -87,6 +87,9 @@ LANG_BY_EXT: dict[str, str] = {
     ".sql": "sql",
     ".pgsql": "sql",
     ".psql": "sql",
+    ".graphql": "graphql",
+    ".gql": "graphql",
+    ".proto": "proto",
 }
 
 # Files identified by full basename rather than suffix.  Dotfiles like ``.env``
@@ -98,6 +101,13 @@ LANG_BY_EXT: dict[str, str] = {
 LANG_BY_BASENAME: dict[str, str] = {
     ".env": "env",
     ".envrc": "env",
+    ".env.example": "env_file",
+    ".env.sample": "env_file",
+    ".env.local": "env_file",
+    ".env.test": "env_file",
+    ".env.development": "env_file",
+    ".env.production": "env_file",
+    ".env.staging": "env_file",
     "dockerfile": "dockerfile",
     "containerfile": "dockerfile",
 }
@@ -360,9 +370,12 @@ _EXTRACTOR_REGISTRY: dict[str, Callable[[], Extractor]] = {
     "yaml":       _language_importer("yaml_idx"),
     "ini":        _language_importer("ini_idx"),
     "env":        _language_importer("ini_idx", attr="extract_env"),
+    "env_file":   _language_importer("env_idx"),
     "dockerfile": _language_importer("dockerfile_idx"),
     "css":        _language_importer("css_idx"),
     "sql":        _language_importer("sql_idx"),
+    "graphql":    _language_importer("graphql_idx"),
+    "proto":      _language_importer("proto_idx"),
 }
 
 # Cache resolved extractors so each language module is imported at most once.
