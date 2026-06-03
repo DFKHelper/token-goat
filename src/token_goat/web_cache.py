@@ -53,8 +53,6 @@ __all__ = [
     "write_sidecar",
 ]
 
-import contextlib
-import gzip
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -67,6 +65,7 @@ from .cache_common import (
     evict_cache_dir,
     get_cache_dir,
     list_cache_outputs,
+    load_blob_gz,
     load_output_meta_stat,
     load_output_text,
     load_sidecar_json,
@@ -76,6 +75,7 @@ from .cache_common import (
     short_content_hash,
     sidecar_path_for,
     store_blob,
+    store_blob_gz,
     truncate_tail_preserve,
     write_sidecar_metadata,
 )
@@ -102,15 +102,6 @@ _TRUNC_MARKER = "[token-goat: web output truncated; stored {n} of {total} bytes]
 # JSON response payloads, error bodies) sits at the bottom while the head is
 # typically navigation chrome that the agent rarely needs.
 _MAX_STORED_BYTES: int = 2 * 1024 * 1024
-
-# File extension appended to gzip-compressed web output files.  The cache
-# reader checks for the ``.gz`` variant first so decompression is transparent.
-_GZ_SUFFIX: str = ".gz"
-
-# gzip compression level (1-9).  Level 6 balances speed and ratio well for
-# HTML/JSON text (typical 70-85% reduction on large doc pages).
-_GZ_LEVEL: int = 6
-
 
 @dataclass
 class WebOutputMeta:
@@ -142,63 +133,13 @@ def _web_outputs_dir() -> Path:
 
 
 def _store_blob_gz(output_id: str, text: str) -> Path | None:
-    """Write *text* gzip-compressed to the web_outputs cache directory.
-
-    Writes the compressed body as ``output_id.gz`` AND an empty ``output_id.txt``
-    stub file.  The stub ensures the entry is discoverable by :func:`list_outputs`
-    and subject to the normal LRU eviction machinery (which scans for ``.txt``
-    files).  :func:`load_output` checks for the ``.gz`` sibling first so callers
-    transparently receive the decompressed text.
-
-    Returns the ``.gz`` path on success, or ``None`` on I/O error.
-    """
-    from . import paths as _paths  # noqa: PLC0415
-
-    with safe_cache_op("_store_blob_gz", log=_LOG):
-        out_dir = _web_outputs_dir()
-        gz_path = out_dir / (output_id + _GZ_SUFFIX)
-        try:
-            raw_bytes = text.encode("utf-8", errors="replace")
-            compressed = gzip.compress(raw_bytes, compresslevel=_GZ_LEVEL)
-            _paths.atomic_write_bytes(gz_path, compressed)
-            _LOG.debug(
-                "_store_blob_gz: wrote %s (%d bytes raw -> %d compressed)",
-                gz_path.name, len(raw_bytes), len(compressed),
-            )
-        except OSError as exc:
-            _LOG.debug("_store_blob_gz: failed to write %s: %s", output_id, exc)
-            return None
-
-        # Write an empty .txt stub so list_outputs() / evict_old_entries() can
-        # discover and manage this entry through the standard cache machinery.
-        stub_result = store_blob(output_id, "", _web_outputs_dir, "web_cache")
-        if stub_result is None:
-            _LOG.debug("_store_blob_gz: stub write failed for %s", output_id)
-            # Clean up the gz file so we don't leave an orphaned compressed file.
-            with contextlib.suppress(OSError):
-                gz_path.unlink()
-            return None
-
-        return gz_path
-    return None  # safe_cache_op suppressed an exception
+    """Delegate to :func:`cache_common.store_blob_gz` for the web_outputs directory."""
+    return store_blob_gz(output_id, text, _web_outputs_dir, "web_cache")
 
 
 def _load_blob_gz(output_id: str) -> str | None:
-    """Return the decompressed text for a gzip-compressed web output, or ``None``.
-
-    Checks for ``output_id.gz`` in the web_outputs directory.  Returns ``None``
-    when no ``.gz`` file exists so :func:`load_output` can fall back to plain text.
-    """
-    out_dir = _web_outputs_dir()
-    gz_path = out_dir / (output_id + _GZ_SUFFIX)
-    if not gz_path.is_file():
-        return None
-    try:
-        with gzip.open(gz_path, "rb") as fh:
-            return fh.read().decode("utf-8", errors="replace")
-    except (OSError, gzip.BadGzipFile) as exc:
-        _LOG.debug("_load_blob_gz: failed to decompress %s: %s", gz_path.name, exc)
-        return None
+    """Delegate to :func:`cache_common.load_blob_gz` for the web_outputs directory."""
+    return load_blob_gz(output_id, _web_outputs_dir, "web_cache")
 
 
 _DEFAULT_PORTS: dict[str, int] = {"http": 80, "https": 443}

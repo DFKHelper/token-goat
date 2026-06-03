@@ -15,11 +15,13 @@ from token_goat.cache_common import (
     build_output_id,
     evict_cache_dir,
     get_cache_dir,
+    load_blob_gz,
     load_sidecar_json,
     safe_cache_op,
     safe_session_fragment,
     short_content_hash,
     sidecar_path_for,
+    store_blob_gz,
     truncate_tail_preserve,
 )
 
@@ -1229,3 +1231,53 @@ class TestSafeCacheOp:
 
         assert _store(fail=False) == 42
         assert _store(fail=True) is None
+
+
+class TestStoreBlobGz:
+    """store_blob_gz and load_blob_gz shared gzip cache helpers."""
+
+    def test_roundtrip(self, tmp_path: Path) -> None:
+        """Text written via store_blob_gz is recovered via load_blob_gz."""
+        def dir_fn() -> Path:
+            return tmp_path
+
+        body = "Hello, world!\nLine two.\n"
+        result = store_blob_gz("test-id-0001", body, dir_fn, "test_cache")
+        assert result is not None
+        assert result.suffix == ".gz"
+        assert result.exists()
+
+        # .txt stub should also exist for eviction discovery
+        assert (tmp_path / "test-id-0001.txt").exists()
+
+        recovered = load_blob_gz("test-id-0001", dir_fn, "test_cache")
+        assert recovered == body
+
+    def test_missing_returns_none(self, tmp_path: Path) -> None:
+        """load_blob_gz returns None when no .gz file exists."""
+        def dir_fn() -> Path:
+            return tmp_path
+
+        result = load_blob_gz("nonexistent-id", dir_fn, "test_cache")
+        assert result is None
+
+    def test_unicode_roundtrip(self, tmp_path: Path) -> None:
+        """Unicode content including multi-byte characters survives the gz roundtrip."""
+        def dir_fn() -> Path:
+            return tmp_path
+
+        body = "Skill: émoji \U0001f410 content\nLine 2\n"
+        store_blob_gz("uni-id-0001", body, dir_fn, "test_cache")
+        recovered = load_blob_gz("uni-id-0001", dir_fn, "test_cache")
+        assert recovered == body
+
+    def test_corrupt_gz_returns_none(self, tmp_path: Path) -> None:
+        """load_blob_gz returns None when the .gz file is corrupted."""
+        def dir_fn() -> Path:
+            return tmp_path
+
+        gz_path = tmp_path / "bad-id-0001.gz"
+        gz_path.write_bytes(b"not valid gzip data")
+
+        result = load_blob_gz("bad-id-0001", dir_fn, "test_cache")
+        assert result is None

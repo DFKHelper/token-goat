@@ -194,7 +194,7 @@ def dedup_hints(
         # Normalize hint text: strip whitespace, convert to lowercase for comparison.
         normalized = item.text.strip().lower()
         # Compute content hash: first 8 hex chars of SHA256.
-        content_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+        content_hash = _sha256_hex(normalized, 8)
 
         # Check if this content has been seen before.
         prior_summary = session_cache.get_hint_content_summary(content_hash)
@@ -348,6 +348,20 @@ _MAX_HINT_PATH_LEN = 300
 _MAX_GREP_PATTERN_DISPLAY_LEN = 60
 
 
+def _sha256_hex(text: str, length: int = 12) -> str:
+    """Return the first *length* hex characters of the SHA-256 of *text*.
+
+    Single low-level helper that removes the repeated inline pattern::
+
+        hashlib.sha256(x.encode("utf-8")).hexdigest()[:N]
+
+    used across multiple hint-related functions.  *length* defaults to 12
+    (the width used by :func:`_hint_fingerprint`) but callers can pass 8 for
+    the shorter content-dedup hashes used in hint-body and grep-result tracking.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
+
+
 def _hint_fingerprint(hint_text: str, path: str = "") -> str:
     """Return a stable SHA256 fingerprint (first 12 hex chars) of hint text + path.
 
@@ -362,8 +376,7 @@ def _hint_fingerprint(hint_text: str, path: str = "") -> str:
     and token overhead in session JSON (fingerprints stored in hints_seen set).
     """
     key = f"{path}|{hint_text}" if path else hint_text
-    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
-    return digest[:12]
+    return _sha256_hex(key)
 
 
 def _sanitize_hint_path(p: str) -> str:

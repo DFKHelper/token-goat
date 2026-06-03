@@ -1717,7 +1717,7 @@ def subagent_stop(payload: HookPayload) -> HookResponse:
 
         from . import paths as _paths  # noqa: PLC0415
 
-        sidecar_dir = _paths.ensure_dir(_paths.data_dir() / "sessions")
+        sidecar_dir = _paths.ensure_dir(_paths.sessions_dir())
         sidecar_path = sidecar_dir / _SUBAGENT_HALLUCINATION_SIDECAR
         record = _json.dumps({
             "ts": _time.time(),

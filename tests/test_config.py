@@ -851,3 +851,52 @@ class TestValidatedIntListSortedAscending:
         cfg = cfg_mod.load()
         assert cfg.bash_compress.cache_min_bytes == 0
         cfg_mod._config_mtime_cache = None  # cleanup
+
+
+class TestValidatedNumeric:
+    """_validated_numeric shared helper for int and float validation."""
+
+    def _vi(self, val, default, lo, hi, name="test.field"):
+        from token_goat.config import _validated_int
+        return _validated_int(val, default, lo, hi, name)
+
+    def _vf(self, val, default, lo, hi, name="test.field"):
+        from token_goat.config import _validated_float
+        return _validated_float(val, default, lo, hi, name)
+
+    def test_int_valid_value(self) -> None:
+        assert self._vi(5, 3, 0, 10) == 5
+
+    def test_int_coerces_from_string(self) -> None:
+        assert self._vi("7", 3, 0, 10) == 7
+
+    def test_int_coerces_from_float(self) -> None:
+        assert self._vi(4.9, 3, 0, 10) == 4
+
+    def test_int_rejects_bool(self) -> None:
+        assert self._vi(True, 3, 0, 10) == 3
+
+    def test_int_rejects_out_of_range(self) -> None:
+        assert self._vi(99, 3, 0, 10) == 3
+
+    def test_int_rejects_non_numeric_string(self) -> None:
+        assert self._vi("bad", 3, 0, 10) == 3
+
+    def test_int_rejects_list(self) -> None:
+        assert self._vi([1, 2], 3, 0, 10) == 3
+
+    def test_float_valid_value(self) -> None:
+        assert self._vf(1.5, 1.0, 0.0, 2.0) == 1.5
+
+    def test_float_coerces_from_string(self) -> None:
+        assert self._vf("0.8", 1.0, 0.0, 2.0) == 0.8
+
+    def test_float_rejects_bool(self) -> None:
+        assert self._vf(False, 1.0, 0.0, 2.0) == 1.0
+
+    def test_float_rejects_out_of_range(self) -> None:
+        assert self._vf(5.0, 1.0, 0.0, 2.0) == 1.0
+
+    def test_float_boundary_values_accepted(self) -> None:
+        assert self._vf(0.0, 1.0, 0.0, 2.0) == 0.0
+        assert self._vf(2.0, 1.0, 0.0, 2.0) == 2.0

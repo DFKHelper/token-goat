@@ -1086,6 +1086,52 @@ class Config:
 # Validation helpers
 # ---------------------------------------------------------------------------
 
+def _validated_numeric(
+    val: object,
+    default: int | float,
+    lo: int | float,
+    hi: int | float,
+    name: str,
+    *,
+    kind: type,
+    type_name: str,
+) -> int | float:
+    """Coerce *val* to a numeric type within ``[lo, hi]``, returning *default* on failure.
+
+    Shared implementation for :func:`_validated_int` and :func:`_validated_float`.
+    Both functions have identical structure: type-guard, bool-rejection, conversion,
+    range-check, and fallback.  They differ only in which converter is applied
+    (``int`` vs ``float``) and which label appears in log messages.
+
+    Parameters
+    ----------
+    kind:
+        The converter callable — ``int`` or ``float``.
+    type_name:
+        Human-readable type label for log messages — ``"int"`` or ``"float"``.
+    """
+    if not isinstance(val, (int, float, str)):
+        _LOG.warning("config: %s=%r is not an %s; using default %s", name, val, type_name, default)
+        return default
+    try:
+        # bool is a subclass of int; treat it as invalid since TOML true/false
+        # is not a sensible value for a numeric config field.
+        if isinstance(val, bool):
+            _LOG.warning("config: %s=%r is not an %s; using default %s", name, val, type_name, default)
+            return default
+        v = kind(val)
+        if not lo <= v <= hi:
+            _LOG.warning(
+                "config: %s=%r out of range [%s, %s]; using default %s",
+                name, val, lo, hi, default,
+            )
+            return default
+        return v
+    except (TypeError, ValueError):
+        _LOG.warning("config: %s=%r is not an %s; using default %s", name, val, type_name, default)
+        return default
+
+
 def _validated_int(val: object, default: int, lo: int, hi: int, name: str) -> int:
     """Coerce *val* to an ``int`` within ``[lo, hi]``, returning *default* on failure.
 
@@ -1094,23 +1140,7 @@ def _validated_int(val: object, default: int, lo: int, hi: int, name: str) -> in
     back to *default* with a ``WARNING`` log entry that includes the key name
     and the bad value, making misconfigured TOML easy to diagnose.
     """
-    if not isinstance(val, (int, float, str)):
-        _LOG.warning("config: %s=%r is not an int; using default %d", name, val, default)
-        return default
-    try:
-        # bool is a subclass of int; treat it as invalid since TOML true/false
-        # is not a sensible value for an integer config field.
-        if isinstance(val, bool):
-            _LOG.warning("config: %s=%r is not an int; using default %d", name, val, default)
-            return default
-        v = int(val)
-        if not lo <= v <= hi:
-            _LOG.warning("config: %s=%r out of range [%d, %d]; using default %d", name, val, lo, hi, default)
-            return default
-        return v
-    except (TypeError, ValueError):
-        _LOG.warning("config: %s=%r is not an int; using default %d", name, val, default)
-        return default
+    return int(_validated_numeric(val, default, lo, hi, name, kind=int, type_name="int"))
 
 
 def _validated_float(val: object, default: float, lo: float, hi: float, name: str) -> float:
@@ -1121,21 +1151,7 @@ def _validated_float(val: object, default: float, lo: float, hi: float, name: st
     rejected explicitly because ``True``/``False`` are technically convertible
     via ``float()`` but never sensible as a TOML multiplier value.
     """
-    if not isinstance(val, (int, float, str)):
-        _LOG.warning("config: %s=%r is not a float; using default %s", name, val, default)
-        return default
-    try:
-        if isinstance(val, bool):
-            _LOG.warning("config: %s=%r is not a float; using default %s", name, val, default)
-            return default
-        v = float(val)
-        if not lo <= v <= hi:
-            _LOG.warning("config: %s=%r out of range [%s, %s]; using default %s", name, val, lo, hi, default)
-            return default
-        return v
-    except (TypeError, ValueError):
-        _LOG.warning("config: %s=%r is not a float; using default %s", name, val, default)
-        return default
+    return float(_validated_numeric(val, default, lo, hi, name, kind=float, type_name="float"))
 
 
 def _validated_bool(val: object, default: bool, name: str) -> bool:

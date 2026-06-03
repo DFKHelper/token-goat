@@ -861,3 +861,28 @@ class TestEnsureDirRaceTolerance:
         # Creating a directory at a path occupied by a file must still surface.
         with pytest.raises((FileExistsError, NotADirectoryError, OSError)):
             paths.ensure_dir(blocker / "child")
+
+
+class TestPathHelperConsistency:
+    """Verify that named path helpers return the same value as inline data_dir() / name patterns.
+
+    These tests guard against callers that inline the path construction instead
+    of using the dedicated helper — the helpers must stay in sync with what
+    callers expect.
+    """
+
+    def test_sessions_dir_matches_inline(self, tmp_data_dir) -> None:
+        """sessions_dir() must equal data_dir() / 'sessions'."""
+        assert paths.sessions_dir() == paths.data_dir() / "sessions"
+
+    def test_sentinels_dir_matches_inline(self, tmp_data_dir) -> None:
+        """sentinels_dir() must equal data_dir() / 'sentinels'."""
+        assert paths.sentinels_dir() == paths.data_dir() / "sentinels"
+
+    def test_image_cache_dir_matches_inline(self, tmp_data_dir) -> None:
+        """image_cache_dir() must equal data_dir() / 'images'."""
+        assert paths.image_cache_dir() == paths.data_dir() / "images"
+
+    def test_locks_dir_matches_inline(self, tmp_data_dir) -> None:
+        """locks_dir() must equal data_dir() / 'locks'."""
+        assert paths.locks_dir() == paths.data_dir() / "locks"

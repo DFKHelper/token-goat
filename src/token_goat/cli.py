@@ -2945,7 +2945,7 @@ def cost(
     from . import session as session_mod  # noqa: PLC0415
     from . import stats as stats_mod  # noqa: PLC0415
 
-    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir = _paths.sessions_dir()
 
     if session is not None:
         # Resolve session ID (full, short, or most recent)
@@ -4826,7 +4826,7 @@ def cmd_decision(
     from . import paths as _paths  # noqa: PLC0415
     from . import session as session_mod  # noqa: PLC0415
 
-    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir = _paths.sessions_dir()
 
     def _resolve_session_id(raw: str) -> str | None:
         """Resolve full / short / empty session id against the on-disk cache."""
@@ -4940,7 +4940,7 @@ def cmd_pinned(
     from . import paths as _paths  # noqa: PLC0415
     from . import session as session_mod  # noqa: PLC0415
 
-    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir = _paths.sessions_dir()
 
     def _resolve_session_id(raw: str) -> str | None:
         if raw and len(raw) >= 32:
@@ -5061,7 +5061,7 @@ def cmd_resume(
         try:
             from . import paths as _paths  # noqa: PLC0415
 
-            sessions_dir = _paths.data_dir() / "sessions"
+            sessions_dir = _paths.sessions_dir()
             for f in sessions_dir.glob(f"{session_id}*.json"):
                 candidate = f.stem  # strip .json
                 resolved_id = candidate
@@ -5133,7 +5133,7 @@ def cmd_recovery(
         resolved_id = session_id
     else:
         try:
-            sessions_dir = _paths.data_dir() / "sessions"
+            sessions_dir = _paths.sessions_dir()
             for f in sessions_dir.glob(f"{session_id}*.json"):
                 resolved_id = f.stem
                 break
@@ -6931,7 +6931,7 @@ def _load_session_summaries(
 
     from . import paths as _paths  # noqa: PLC0415
 
-    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir = _paths.sessions_dir()
     if not sessions_dir.exists():
         return []
 
@@ -7036,7 +7036,7 @@ def cmd_sessions_show(
 
     from . import paths as _paths  # noqa: PLC0415
 
-    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir = _paths.sessions_dir()
     if not sessions_dir.exists():
         _error("no sessions directory found")
         raise typer.Exit(1)
@@ -7329,7 +7329,7 @@ def cmd_clean(
         _clear_dir(_paths.data_dir() / "web_outputs", "web")
 
     if sessions:
-        sess_dir = _paths.data_dir() / "sessions"
+        sess_dir = _paths.sessions_dir()
         if not sess_dir.exists():
             typer.echo(f"{prefix}skipped — sessions dir does not exist")
         else:

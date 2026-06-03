@@ -15,7 +15,9 @@ from token_goat.hints import (
     _est_tokens_from_chars,
     _est_tokens_from_lines,
     _get_indexed_symbols_and_line_count,
+    _hint_fingerprint,
     _line_count,
+    _sha256_hex,
     build_bash_dedup_hint,
     build_read_hint,
 )
@@ -4439,3 +4441,34 @@ class TestTestFileHint:
 
         assert hint is not None
         assert "cache_common.py" in hint.text
+
+
+class TestSha256Hex:
+    """_sha256_hex shared hash helper."""
+
+    def test_default_length_is_12(self) -> None:
+        result = _sha256_hex("hello")
+        assert len(result) == 12
+        assert result.isalnum()  # hex chars
+
+    def test_explicit_length(self) -> None:
+        for n in (8, 12, 16, 32, 64):
+            result = _sha256_hex("test", n)
+            assert len(result) == n
+
+    def test_deterministic(self) -> None:
+        assert _sha256_hex("abc") == _sha256_hex("abc")
+
+    def test_different_inputs_differ(self) -> None:
+        assert _sha256_hex("foo") != _sha256_hex("bar")
+
+    def test_empty_string(self) -> None:
+        result = _sha256_hex("", 8)
+        assert len(result) == 8
+
+    def test_hint_fingerprint_uses_sha256_hex(self) -> None:
+        """_hint_fingerprint delegates to _sha256_hex so the outputs are consistent."""
+        fp = _hint_fingerprint("some hint text")
+        assert len(fp) == 12
+        # Verify the fingerprint is stable and matches the raw helper with same key
+        assert fp == _sha256_hex("some hint text", 12)

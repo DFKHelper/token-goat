@@ -146,7 +146,7 @@ def _nudge_worker_if_down() -> None:
             return
 
         # Check restart throttle to prevent restart loops on persistent failures.
-        sentinel = paths.data_dir() / "sentinels" / "last_worker_restart"
+        sentinel = paths.sentinels_dir() / "last_worker_restart"
         throttle_secs = getattr(worker, "WORKER_RESTART_THROTTLE_SECS", 30.0)
         try:
             import time  # noqa: PLC0415

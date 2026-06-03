@@ -1339,7 +1339,7 @@ def _cleanup_old_sessions() -> int:
     """
     from . import paths as _paths  # noqa: PLC0415
 
-    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir = _paths.sessions_dir()
     if not sessions_dir.is_dir():
         return 0
     max_age = _SESSION_RETENTION_DAYS * 86400

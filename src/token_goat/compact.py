@@ -2127,7 +2127,7 @@ def find_latest_session_id() -> str | None:
     to look up their current session ID manually.
     """
     try:
-        sessions_dir = paths.data_dir() / "sessions"
+        sessions_dir = paths.sessions_dir()
         if not sessions_dir.is_dir():
             return None
         candidates = list(sessions_dir.glob("*.json"))

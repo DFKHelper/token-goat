@@ -34,7 +34,6 @@ from __future__ import annotations
 __all__ = ["post_bash", "post_read", "pre_read", "_safe_split_argv"]
 
 import contextlib
-import hashlib
 import re as _re
 import shlex as _shlex
 import time
@@ -558,7 +557,6 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
     """
     try:
         from . import config as _cfg_mod  # noqa: PLC0415
-        from . import db as _db  # noqa: PLC0415
         from . import git_history  # noqa: PLC0415
         from .project import find_project  # noqa: PLC0415
 
@@ -589,13 +587,7 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
                 _max_ms,
                 sanitize_log_str(file_path),
             )
-            _db.record_stat(
-                None,
-                "git_hint_timeout",
-                bytes_saved=0,
-                tokens_saved=0,
-                detail=sanitize_log_str(file_path),
-            )
+            record_cached_stat("git_hint_timeout", sanitize_log_str(file_path))
             return None
 
         return result
@@ -2397,18 +2389,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
                             _diff_fp,
                             sanitize_log_str(file_path),
                         )
-                        try:
-                            from . import db as _db_diff  # noqa: PLC0415
-
-                            _db_diff.record_stat(
-                                None,
-                                "diff_hint_backoff_suppressed",
-                                bytes_saved=0,
-                                tokens_saved=0,
-                                detail=sanitize_log_str(file_path, max_len=512),
-                            )
-                        except Exception:  # noqa: BLE001 — fail-soft; never block the agent
-                            _LOG.debug("diff_hint_backoff_suppressed: stat record failed", exc_info=True)
+                        record_cached_stat(
+                            "diff_hint_backoff_suppressed",
+                            sanitize_log_str(file_path, max_len=512),
+                        )
                     else:
                         # New fingerprint — mark seen and emit.
                         cache.mark_hint_seen(_diff_fp)
@@ -2435,17 +2419,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 cache.record_hint_suppressed("session_hint_suppressed")
                 # Record to the stats DB as a zero-saving suppression event so
                 # ``token-goat stats`` can show the per-file cooldown savings.
-                try:
-                    from . import db as _db_mod  # noqa: PLC0415
-                    _db_mod.record_stat(
-                        None,
-                        "session_hint_suppressed",
-                        bytes_saved=0,
-                        tokens_saved=0,
-                        detail=sanitize_log_str(file_path, max_len=512),
-                    )
-                except Exception:  # noqa: BLE001 — fail-soft; never block the agent
-                    _LOG.debug("session_hint_suppressed: stat record failed", exc_info=True)
+                record_cached_stat(
+                    "session_hint_suppressed",
+                    sanitize_log_str(file_path, max_len=512),
+                )
             else:
                 # Exponential-backoff suppression: emit the session hint only at
                 # specific read_count thresholds so heavily-used files do not
@@ -2476,17 +2453,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
                             _bo_thresholds,
                         )
                         cache.record_hint_suppressed("hint_backoff_suppressed")
-                        try:
-                            from . import db as _db_mod_bo  # noqa: PLC0415
-                            _db_mod_bo.record_stat(
-                                None,
-                                "hint_backoff_suppressed",
-                                bytes_saved=0,
-                                tokens_saved=0,
-                                detail=sanitize_log_str(file_path, max_len=512),
-                            )
-                        except Exception:  # noqa: BLE001 — fail-soft; never block the agent
-                            _LOG.debug("hint_backoff_suppressed: stat record failed", exc_info=True)
+                        record_cached_stat(
+                            "hint_backoff_suppressed",
+                            sanitize_log_str(file_path, max_len=512),
+                        )
                 if not _backoff_active:
                     hint = build_read_hint(
                         session_id=session_id,
@@ -2859,7 +2829,8 @@ def post_read(payload: HookPayload) -> HookResponse:
                     # Normalize: strip whitespace and compute SHA256 of result content
                     normalized = output_text.strip()
                     if normalized:
-                        result_hash = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+                        from .hints import _sha256_hex  # noqa: PLC0415
+                        result_hash = _sha256_hex(normalized, 8)
                         if cache is not None:
                             cache.record_grep_result_hash(result_hash, pattern)
                             _LOG.debug(

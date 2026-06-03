@@ -15,6 +15,7 @@ __all__ = [
     "find_markdown_boundary",
     "get_cache_dir",
     "list_cache_outputs",
+    "load_blob_gz",
     "load_output_meta_stat",
     "load_output_text",
     "load_sidecar_json",
@@ -26,10 +27,12 @@ __all__ = [
     "short_output_id",
     "sidecar_path_for",
     "store_blob",
+    "store_blob_gz",
     "truncate_tail_preserve",
     "write_sidecar_metadata",
 ]
 
+import gzip
 import hashlib
 import json
 import logging
@@ -39,7 +42,7 @@ import stat as _stat_module
 import sys
 import time
 from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -794,3 +797,87 @@ def list_cache_outputs(cache_dir_fn: Callable[[], Path]) -> list[OutputStatDict]
 
     results.sort(key=lambda r: r["mtime"], reverse=True)
     return results
+
+
+# Default gzip compression level used by both web_cache and skill_cache.  Level 6
+# balances speed and ratio well for text content (HTML, JSON, Markdown).
+_GZ_SUFFIX: str = ".gz"
+_GZ_LEVEL: int = 6
+
+
+def store_blob_gz(
+    output_id: str,
+    text: str,
+    cache_dir_fn: Callable[[], Path],
+    log_name: str,
+) -> Path | None:
+    """Write *text* gzip-compressed to the cache directory identified by *cache_dir_fn*.
+
+    Writes the compressed body as ``output_id.gz`` AND an empty ``output_id.txt``
+    stub file.  The stub ensures the entry is discoverable by :func:`list_outputs`
+    and subject to the normal LRU eviction machinery (which scans for ``.txt``
+    files).  :func:`load_blob_gz` checks for the ``.gz`` sibling first so callers
+    transparently receive the decompressed text.
+
+    Returns the ``.gz`` path on success, or ``None`` on I/O error.
+
+    This is the shared implementation used by both :mod:`web_cache` and
+    :mod:`skill_cache`; callers differ only in which directory function they pass.
+    """
+    from . import paths as _paths  # noqa: PLC0415
+
+    _log = get_logger(log_name)
+    with safe_cache_op("store_blob_gz", log=_log):
+        out_dir = cache_dir_fn()
+        gz_path = out_dir / (output_id + _GZ_SUFFIX)
+        try:
+            raw_bytes = text.encode("utf-8", errors="replace")
+            compressed = gzip.compress(raw_bytes, compresslevel=_GZ_LEVEL)
+            _paths.atomic_write_bytes(gz_path, compressed)
+            _log.debug(
+                "store_blob_gz: wrote %s (%d bytes raw -> %d compressed)",
+                gz_path.name, len(raw_bytes), len(compressed),
+            )
+        except OSError as exc:
+            _log.debug("store_blob_gz: failed to write %s: %s", output_id, exc)
+            return None
+
+        # Write an empty .txt stub so list_outputs() / evict_old_entries() can
+        # discover and manage this entry through the standard cache machinery.
+        stub_result = store_blob(output_id, "", cache_dir_fn, log_name)
+        if stub_result is None:
+            _log.debug("store_blob_gz: stub write failed for %s", output_id)
+            # Clean up the gz file so we don't leave an orphaned compressed file.
+            with suppress(OSError):
+                gz_path.unlink()
+            return None
+
+        return gz_path
+    return None  # safe_cache_op suppressed an exception
+
+
+def load_blob_gz(
+    output_id: str,
+    cache_dir_fn: Callable[[], Path],
+    log_name: str,
+) -> str | None:
+    """Return the decompressed text for a gzip-compressed cache entry, or ``None``.
+
+    Checks for ``output_id.gz`` in the directory returned by *cache_dir_fn*.
+    Returns ``None`` when no ``.gz`` file exists so the caller can fall back to
+    plain-text loading.
+
+    This is the shared implementation used by both :mod:`web_cache` and
+    :mod:`skill_cache`; callers differ only in which directory function they pass.
+    """
+    _log = get_logger(log_name)
+    out_dir = cache_dir_fn()
+    gz_path = out_dir / (output_id + _GZ_SUFFIX)
+    if not gz_path.is_file():
+        return None
+    try:
+        with gzip.open(gz_path, "rb") as fh:
+            return fh.read().decode("utf-8", errors="replace")
+    except (OSError, gzip.BadGzipFile) as exc:
+        _log.debug("load_blob_gz: failed to decompress %s: %s", gz_path.name, exc)
+        return None
