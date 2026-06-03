@@ -47,6 +47,7 @@ __all__ = [
     "emit_if_new_hint",
     "extract_tool_response_text",
     "get_effective_watchdog_ms",
+    "get_hook_context",
     "get_session_context",
     "get_tool_input",
     "is_real_int",
@@ -277,6 +278,38 @@ def get_session_context(payload: HookPayload) -> tuple[str | None, str | None]:
         LOG.debug("get_session_context: session_id absent from payload (tool=%s)", sanitize_opt(payload.get("tool_name")))
     if cwd is None:
         LOG.debug("get_session_context: cwd absent from payload (tool=%s)", sanitize_opt(payload.get("tool_name")))
+    return session_id, cwd
+
+
+def get_hook_context(payload: HookPayload) -> tuple[str | None, str | None]:
+    """Return ``(session_id, cwd)`` or ``(None, None)`` when *session_id* is absent.
+
+    Strict variant of :func:`get_session_context`: returns ``(None, None)`` when
+    ``session_id`` is missing, because a session context without a session ID is
+    unusable for any cache/hint operation.  ``cwd`` is returned as-is (may be
+    ``None``) when a session ID is present, so callers that need ``cwd`` can still
+    distinguish "no session" from "session present but cwd unknown".
+
+    Typical usage eliminates the three-line guard pattern that appeared in every
+    hook handler::
+
+        # Before:
+        session_id, _cwd = get_session_context(payload)
+        if not session_id:
+            _LOG.debug("post-X: no session_id; ...")
+            return CONTINUE()
+
+        # After:
+        session_id, _cwd = get_hook_context(payload)
+        if session_id is None:
+            return CONTINUE()
+
+    The ``get_session_context`` call inside this helper already emits the
+    DEBUG-level ``session_id absent`` log, so callers do not need to repeat it.
+    """
+    session_id, cwd = get_session_context(payload)
+    if session_id is None:
+        return None, None
     return session_id, cwd
 
 

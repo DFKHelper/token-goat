@@ -52,6 +52,7 @@ from .hooks_common import (
     deny_redirect,
     emit_if_new_hint,
     extract_tool_response_text,
+    get_hook_context,
     get_session_context,
     get_tool_input,
     is_real_int,
@@ -1481,8 +1482,8 @@ def _handle_grep_result_content_dedup(payload: HookPayload) -> HookResponse | No
 
     Returns ``None`` when no result-content hit is available.
     """
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
+    session_id, _cwd = get_hook_context(payload)
+    if session_id is None:
         return None
 
     cache = load_session_safe(session_id)
@@ -1596,8 +1597,8 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
     """
     session = _get_session()
 
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
+    session_id, _cwd = get_hook_context(payload)
+    if session_id is None:
         return None
 
     tool_input = get_tool_input(payload)
@@ -1824,8 +1825,8 @@ def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
     from . import session as _sess  # noqa: PLC0415
     from .hints import _hint_fingerprint  # noqa: PLC0415
 
-    session_id, cwd = get_session_context(payload)
-    if not session_id:
+    session_id, cwd = get_hook_context(payload)
+    if session_id is None:
         return None
 
     tool_input = get_tool_input(payload)
@@ -1886,8 +1887,8 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
         return None
     pattern, path = args
 
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
+    session_id, _cwd = get_hook_context(payload)
+    if session_id is None:
         return None
 
     # Check for a cached result in bash_cache (item 19).
@@ -2825,8 +2826,8 @@ def post_read(payload: HookPayload) -> HookResponse:
 
     Returns CONTINUE() after recording; never modifies tool input/output.
     """
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
+    session_id, _cwd = get_hook_context(payload)
+    if session_id is None:
         return CONTINUE()
 
     session = _get_session()

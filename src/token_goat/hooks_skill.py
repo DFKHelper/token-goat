@@ -32,7 +32,7 @@ from .hooks_common import (
     CONTINUE,
     HookPayload,
     HookResponse,
-    get_session_context,
+    get_hook_context,
     get_tool_input,
     record_cached_stat,
     sanitize_log_str,
@@ -203,9 +203,8 @@ def post_skill(payload: HookPayload) -> HookResponse:
         _LOG.debug("post-skill: disabled by config; skipping capture")
         return CONTINUE()
 
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
-        _LOG.debug("post-skill: no session_id; skill not cached")
+    session_id, _cwd = get_hook_context(payload)
+    if session_id is None:
         return CONTINUE()
 
     tool_input = get_tool_input(payload)

@@ -25,7 +25,7 @@ from .hooks_common import (
     HookPayload,
     HookResponse,
     deny_redirect,
-    get_session_context,
+    get_hook_context,
     get_tool_input,
     is_real_int,
     record_cached_stat,
@@ -416,9 +416,8 @@ def post_fetch(payload: HookPayload) -> HookResponse:
     if tool_name != "WebFetch":
         return CONTINUE()
 
-    session_id, _cwd = get_session_context(payload)
-    if not session_id:
-        _LOG.debug("post-fetch: no session_id; output not cached")
+    session_id, _cwd = get_hook_context(payload)
+    if session_id is None:
         return CONTINUE()
 
     tool_input = get_tool_input(payload)
