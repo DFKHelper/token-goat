@@ -14,7 +14,7 @@ runner = CliRunner()
 
 def _fake_cache_dir(tmp_path: Path, name: str, *, file_count: int = 3, age_days: float = 10.0) -> Path:
     cache = tmp_path / name
-    cache.mkdir(parents=True)
+    cache.mkdir(parents=True, exist_ok=True)
     old_mtime = time.time() - age_days * 86400
     for i in range(file_count):
         f = cache / f"file{i}.txt"

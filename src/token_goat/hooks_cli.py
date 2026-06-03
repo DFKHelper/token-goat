@@ -627,7 +627,12 @@ _HANDLER_CACHE: dict[str, Callable[[HookPayload], HookResponse]] = {}
 
 
 def _resolve_handler(event: str) -> Callable[[HookPayload], HookResponse] | None:
-    """Return the ``fail_soft``-wrapped handler for *event*, importing it lazily."""
+    """Return the ``fail_soft``-wrapped handler for *event*, importing it lazily.
+
+    Returns None (not raises) on import or attribute errors so the dispatcher
+    can fall through to the CONTINUE safety net rather than surfacing an
+    unhandled ImportError or AttributeError to the caller.
+    """
     cached = _HANDLER_CACHE.get(event)
     if cached is not None:
         return cached
@@ -637,8 +642,18 @@ def _resolve_handler(event: str) -> Callable[[HookPayload], HookResponse] | None
     submodule_name, attr_name = lookup
     import importlib  # noqa: PLC0415
 
-    submodule = importlib.import_module(f".{submodule_name}", package=__package__)
-    bare_handler = cast(Callable[[HookPayload], HookResponse], getattr(submodule, attr_name))
+    try:
+        submodule = importlib.import_module(f".{submodule_name}", package=__package__)
+        bare_handler = cast(Callable[[HookPayload], HookResponse], getattr(submodule, attr_name))
+    except (ImportError, AttributeError) as exc:
+        _LOG.error(
+            "_resolve_handler: failed to load %s.%s for event %r: %s",
+            submodule_name,
+            attr_name,
+            event,
+            exc,
+        )
+        return None
     wrapped = fail_soft(bare_handler)
     _HANDLER_CACHE[event] = wrapped
     return wrapped

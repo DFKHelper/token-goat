@@ -1182,6 +1182,8 @@ def _validated_int_list(val: object, default: list[int], name: str) -> list[int]
     Returns a fresh list copy of ``default`` when *val* is not a list at all.
     Empty lists are accepted as a meaningful value (disables the feature).
     Non-negative integers only; negative entries are dropped with a warning.
+    The returned list is always sorted in ascending order; if the input is
+    provided out of order a WARNING is logged and the sorted result is used.
     """
     if not isinstance(val, list):
         _LOG.warning("config: %s must be a list of integers; using default %s", name, default)
@@ -1198,6 +1200,16 @@ def _validated_int_list(val: object, default: list[int], name: str) -> list[int]
             invalid.append(item)
     if invalid:
         _LOG.warning("config: %s contained invalid entries (ignored): %s", name, invalid)
+    # Enforce sorted-ascending contract: the thresholds are documented as sorted
+    # and callers may rely on ascending order for bisect / iteration.
+    if valid != sorted(valid):
+        _LOG.warning(
+            "config: %s must be sorted in ascending order; got %s — using sorted: %s",
+            name,
+            valid,
+            sorted(valid),
+        )
+        valid = sorted(valid)
     return valid
 
 

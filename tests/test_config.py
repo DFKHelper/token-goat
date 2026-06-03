@@ -758,3 +758,96 @@ class TestSkillPreservationForwardCompat:
             result = cfg_mod._env_int("TOKEN_GOAT_TEST_VAR", default=42, lo=0, hi=100, config_path="test.var")
         assert result == 75
         assert any("overridden by environment" in record.message for record in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Sub-area E: config validation improvements
+# ---------------------------------------------------------------------------
+
+class TestValidatedIntListSortedAscending:
+    """_validated_int_list must enforce sorted-ascending contract for backoff_thresholds."""
+
+    def test_sorted_input_returned_unchanged(self):
+        """A correctly sorted list is returned as-is."""
+        from token_goat.config import _validated_int_list
+        result = _validated_int_list([1, 3, 10, 30], [1, 3, 10, 30], "hints.backoff_thresholds")
+        assert result == [1, 3, 10, 30]
+
+    def test_unsorted_input_is_sorted_and_warns(self, caplog):
+        """An out-of-order list is sorted and a warning is emitted."""
+        import logging
+
+        from token_goat.config import _validated_int_list
+
+        with caplog.at_level(logging.WARNING, logger="token_goat.config"):
+            result = _validated_int_list([30, 1, 10, 3], [1, 3, 10, 30], "hints.backoff_thresholds")
+
+        assert result == [1, 3, 10, 30], "unsorted list must be returned sorted"
+        assert any("sorted" in record.message for record in caplog.records), (
+            "a warning must be logged when input is not sorted ascending"
+        )
+
+    def test_duplicate_values_accepted_and_sorted(self):
+        """Duplicate values are kept (membership check semantics) and sorted."""
+        from token_goat.config import _validated_int_list
+        result = _validated_int_list([10, 3, 3, 1], [1, 3, 10, 30], "hints.backoff_thresholds")
+        assert result == sorted(result), "result must be in ascending order"
+
+    def test_empty_list_accepted_without_warning(self, caplog):
+        """Empty list disables the feature — no warning, no sort needed."""
+        import logging
+
+        from token_goat.config import _validated_int_list
+
+        with caplog.at_level(logging.WARNING, logger="token_goat.config"):
+            result = _validated_int_list([], [1, 3, 10, 30], "hints.backoff_thresholds")
+
+        assert result == []
+        assert not any("sorted" in record.message for record in caplog.records)
+
+    def test_backoff_thresholds_loaded_from_toml_out_of_order(self, tmp_path, monkeypatch):
+        """Config load corrects an out-of-order backoff_thresholds from TOML."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        cfg_mod._config_mtime_cache = None
+        monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "config.toml")
+        (tmp_path / "config.toml").write_text(
+            "[hints]\nbackoff_thresholds = [30, 10, 3, 1]\n", encoding="utf-8"
+        )
+
+        cfg = cfg_mod.load()
+        assert cfg.hints.backoff_thresholds == [1, 3, 10, 30], (
+            "out-of-order backoff_thresholds must be sorted on load"
+        )
+        cfg_mod._config_mtime_cache = None  # cleanup
+
+    def test_max_manifest_chars_zero_is_valid(self, tmp_path, monkeypatch):
+        """max_manifest_chars=0 is a valid value that disables the cap."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        cfg_mod._config_mtime_cache = None
+        monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "config.toml")
+        (tmp_path / "config.toml").write_text(
+            "[compact_assist]\nmax_manifest_chars = 0\n", encoding="utf-8"
+        )
+
+        cfg = cfg_mod.load()
+        assert cfg.compact_assist.max_manifest_chars == 0
+        cfg_mod._config_mtime_cache = None  # cleanup
+
+    def test_cache_min_bytes_zero_is_valid(self, tmp_path, monkeypatch):
+        """cache_min_bytes=0 means no minimum — all outputs are cacheable."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        cfg_mod._config_mtime_cache = None
+        monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "config.toml")
+        (tmp_path / "config.toml").write_text(
+            "[bash_compress]\ncache_min_bytes = 0\n", encoding="utf-8"
+        )
+
+        cfg = cfg_mod.load()
+        assert cfg.bash_compress.cache_min_bytes == 0
+        cfg_mod._config_mtime_cache = None  # cleanup

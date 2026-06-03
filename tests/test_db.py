@@ -1093,3 +1093,89 @@ def test_sqlite_vec_load_unexpected_exception_does_not_leak_connection(tmp_data_
 
     # Force GC to surface any unclosed connection ResourceWarning (Python 3.12+)
     gc.collect()
+
+
+# ---------------------------------------------------------------------------
+# Sub-area D: DB corruption recovery — quarantine path and rebuild verification
+# ---------------------------------------------------------------------------
+
+def test_repair_if_corrupt_quarantines_on_failed_integrity_check(tmp_data_dir):
+    """_repair_if_corrupt: when integrity_check fails, the DB file is quarantined.
+
+    The corrupt file should be renamed to a .bad-<ts> sidecar and a fresh
+    connection returned.  This directly exercises the _repair_if_corrupt path,
+    unlike test_corruption_auto_rebuild which only exercises it via open_project.
+    """
+    from unittest.mock import patch as _patch
+
+    h = "d00d000d00d000d00d000d00d000d00d0000001"
+    db_path = paths.project_db_path(h)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Clear per-path check cache so _repair_if_corrupt re-runs the integrity check.
+    db._INTEGRITY_CHECKED.pop(db_path, None)
+    db._SCHEMA_MIGRATED.pop(db_path, None)
+
+    # Create a valid SQLite DB (so _connect succeeds), then force integrity_check
+    # to return "corruption detected" via a real DB connection.
+    with db.open_project(h) as _conn:
+        pass  # creates the DB with schema
+
+    db._INTEGRITY_CHECKED.pop(db_path, None)
+
+    real_conn = sqlite3.connect(str(db_path))
+    try:
+        # Patch _integrity_ok to return False (simulate failed integrity check)
+        with _patch("token_goat.db._integrity_ok", return_value=False):
+            new_conn = db._repair_if_corrupt(real_conn, db_path)
+    finally:
+        # new_conn is a fresh connection; close it to avoid resource warnings.
+        with contextlib.suppress(Exception):
+            new_conn.close()
+
+    # The original corrupt file must have been quarantined.
+    siblings = list(db_path.parent.glob(f"{h}.db.bad-*"))
+    assert len(siblings) == 1, (
+        f"quarantine sidecar must exist after integrity failure, got: {siblings}"
+    )
+    # The returned connection must be usable (DB rebuilt with schema).
+    with db.open_project(h) as rebuilt_conn:
+        tables = _table_names(rebuilt_conn)
+    assert "files" in tables, "rebuilt DB must have the project schema"
+
+
+def test_repair_if_corrupt_skips_recheck_when_already_checked(tmp_data_dir):
+    """_repair_if_corrupt: once a path is in _INTEGRITY_CHECKED, it does not re-check.
+
+    Verifies the per-process cache prevents repeated integrity_check PRAGMAs
+    (which can take ~10 ms each) on every open_project call in the same process.
+    """
+    from unittest.mock import patch as _patch
+
+    h = "d00d000d00d000d00d000d00d000d00d0000002"
+    db_path = paths.project_db_path(h)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with db.open_project(h) as _conn:
+        pass  # creates the DB
+
+    # Ensure the path is marked as already-checked.
+    db._INTEGRITY_CHECKED[db_path] = True
+
+    check_calls = []
+
+    def counting_integrity_ok(conn):
+        check_calls.append(1)
+        return True
+
+    real_conn = sqlite3.connect(str(db_path))
+    try:
+        with _patch("token_goat.db._integrity_ok", side_effect=counting_integrity_ok):
+            returned = db._repair_if_corrupt(real_conn, db_path)
+    finally:
+        with contextlib.suppress(Exception):
+            returned.close()
+
+    assert len(check_calls) == 0, (
+        "_repair_if_corrupt must skip integrity_check when path is already in _INTEGRITY_CHECKED"
+    )

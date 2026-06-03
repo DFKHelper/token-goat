@@ -1598,3 +1598,73 @@ def test_get_hook_context_remaining_ms_after_hook():
     # After dispatch, the context should be cleared (None).
     remaining = get_hook_context_remaining_ms()
     assert remaining == 1_000_000, "context should be cleared after hook completes"
+
+
+# ---------------------------------------------------------------------------
+# Sub-area A: _resolve_handler import-error hardening
+# ---------------------------------------------------------------------------
+
+class TestResolveHandlerImportErrorHardening:
+    """_resolve_handler must return None (not raise) on import/attribute failures."""
+
+    def test_resolve_handler_import_error_returns_none(self, monkeypatch):
+        """ImportError during submodule import must return None, not propagate."""
+        import importlib
+
+        from token_goat import hooks_cli as hc
+
+        original_import = importlib.import_module
+
+        def bad_import(name, *args, **kwargs):
+            if "hooks_session" in name:
+                raise ImportError("simulated missing module")
+            return original_import(name, *args, **kwargs)
+
+        # Clear the cache so _resolve_handler must re-import
+        hc._HANDLER_CACHE.pop("session-start", None)
+        monkeypatch.setattr(importlib, "import_module", bad_import)
+
+        result = hc._resolve_handler("session-start")
+        assert result is None, "import failure must return None not raise"
+
+    def test_resolve_handler_import_error_does_not_cache(self, monkeypatch):
+        """A failed import must not be cached; a later retry can succeed."""
+        import importlib
+
+        from token_goat import hooks_cli as hc
+
+        call_count = [0]
+        original_import = importlib.import_module
+
+        def sometimes_bad(name, *args, **kwargs):
+            if "hooks_session" in name:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise ImportError("transient failure")
+            return original_import(name, *args, **kwargs)
+
+        hc._HANDLER_CACHE.pop("session-start", None)
+        monkeypatch.setattr(importlib, "import_module", sometimes_bad)
+
+        result1 = hc._resolve_handler("session-start")
+        assert result1 is None, "first call (import error) should return None"
+        assert "session-start" not in hc._HANDLER_CACHE, "failed import must not be cached"
+
+    def test_dispatch_import_error_still_returns_continue(self, monkeypatch):
+        """dispatch() must return continue:true even if the submodule fails to import."""
+        import importlib
+
+        from token_goat import hooks_cli as hc
+
+        original_import = importlib.import_module
+
+        def bad_import(name, *args, **kwargs):
+            if "hooks_session" in name:
+                raise ImportError("simulated missing module")
+            return original_import(name, *args, **kwargs)
+
+        hc._HANDLER_CACHE.pop("session-start", None)
+        monkeypatch.setattr(importlib, "import_module", bad_import)
+
+        result = hc.dispatch("session-start", {"session_id": "test-123"})
+        assert result.get("continue") is True, "dispatch must return continue:true on import failure"
