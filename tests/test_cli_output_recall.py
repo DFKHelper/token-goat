@@ -324,3 +324,276 @@ def test_apply_grep_cap_truncates() -> None:
     assert result == lines[:10]
     assert "--grep-max 0" in footer
     assert "30" in footer
+
+
+# ---------------------------------------------------------------------------
+# Tests for _extract_body_section
+# ---------------------------------------------------------------------------
+
+def test_extract_body_section_basic() -> None:
+    """_extract_body_section returns a named ATX section."""
+    from token_goat.cli import _extract_body_section  # noqa: PLC0415
+
+    body = "# Intro\nsome text\n## Installation\ninstall stuff\n## Usage\nuse it"
+    result = _extract_body_section(body, "Installation")
+    assert result is not None
+    assert "## Installation" in result
+    assert "install stuff" in result
+    # Must not bleed into the next section
+    assert "## Usage" not in result
+    assert "use it" not in result
+
+
+def test_extract_body_section_case_insensitive() -> None:
+    """_extract_body_section matches headings case-insensitively."""
+    from token_goat.cli import _extract_body_section  # noqa: PLC0415
+
+    body = "## Configuration\nconfig text\n## Other\nother"
+    result = _extract_body_section(body, "configuration")
+    assert result is not None
+    assert "config text" in result
+
+
+def test_extract_body_section_not_found_returns_none() -> None:
+    """_extract_body_section returns None when heading is absent."""
+    from token_goat.cli import _extract_body_section  # noqa: PLC0415
+
+    body = "## Intro\ntext\n## Usage\nmore text"
+    assert _extract_body_section(body, "Nonexistent") is None
+
+
+def test_extract_body_section_ordinal() -> None:
+    """_extract_body_section Heading#2 selects the second occurrence."""
+    from token_goat.cli import _extract_body_section  # noqa: PLC0415
+
+    body = "## Example\nfirst\n## Example\nsecond\n## Other\nthird"
+    first = _extract_body_section(body, "Example")
+    second = _extract_body_section(body, "Example#2")
+    assert first is not None and "first" in first
+    assert second is not None and "second" in second
+    assert "first" not in second
+
+
+def test_extract_body_section_ordinal_out_of_range() -> None:
+    """_extract_body_section returns None when ordinal exceeds occurrences."""
+    from token_goat.cli import _extract_body_section  # noqa: PLC0415
+
+    body = "## Example\nonly one"
+    assert _extract_body_section(body, "Example#2") is None
+
+
+def test_extract_body_section_last_section_reaches_eof() -> None:
+    """The last section in a document extends to end-of-file."""
+    from token_goat.cli import _extract_body_section  # noqa: PLC0415
+
+    body = "## First\nfirst text\n## Last\nlast text"
+    result = _extract_body_section(body, "Last")
+    assert result is not None
+    assert "last text" in result
+
+
+def test_extract_body_section_subsection_stops_at_same_level() -> None:
+    """A section ends when a heading of the same level appears."""
+    from token_goat.cli import _extract_body_section  # noqa: PLC0415
+
+    body = "# Top\n## Sub1\nsub one content\n### Nested\nnested content\n## Sub2\nsub two"
+    result = _extract_body_section(body, "Sub1")
+    assert result is not None
+    assert "sub one content" in result
+    assert "Nested" in result   # ## Sub1 captures ### Nested below it
+    assert "Sub2" not in result
+
+
+# ---------------------------------------------------------------------------
+# Tests for _compile_grep_pattern (regex support)
+# ---------------------------------------------------------------------------
+
+def test_compile_grep_pattern_valid_regex() -> None:
+    """_compile_grep_pattern compiles valid regex patterns."""
+    from token_goat.cli import _compile_grep_pattern  # noqa: PLC0415
+
+    pat = _compile_grep_pattern(r"def \w+", case_sensitive=False)
+    assert pat.search("def my_function:")
+    assert not pat.search("class MyClass:")
+
+
+def test_compile_grep_pattern_invalid_regex_falls_back_to_literal() -> None:
+    """_compile_grep_pattern treats invalid regex as a literal string."""
+    from token_goat.cli import _compile_grep_pattern  # noqa: PLC0415
+
+    # "[unclosed" is invalid regex but a valid literal string
+    pat = _compile_grep_pattern("[unclosed", case_sensitive=True)
+    assert pat.search("[unclosed bracket here")
+    assert not pat.search("something else")
+
+
+def test_compile_grep_pattern_case_insensitive() -> None:
+    """_compile_grep_pattern with case_sensitive=False matches regardless of case."""
+    from token_goat.cli import _compile_grep_pattern  # noqa: PLC0415
+
+    pat = _compile_grep_pattern("TODO", case_sensitive=False)
+    assert pat.search("todo: fix this")
+    assert pat.search("TODO: fix this")
+    assert pat.search("Todo: fix this")
+
+
+def test_compile_grep_pattern_case_sensitive() -> None:
+    """_compile_grep_pattern with case_sensitive=True is exact."""
+    from token_goat.cli import _compile_grep_pattern  # noqa: PLC0415
+
+    pat = _compile_grep_pattern("TODO", case_sensitive=True)
+    assert pat.search("TODO: fix this")
+    assert not pat.search("todo: fix this")
+
+
+# ---------------------------------------------------------------------------
+# Tests for --grep regex support in _run_output_recall_command
+# ---------------------------------------------------------------------------
+
+def test_grep_regex_pattern_matches(capsys: pytest.CaptureFixture[str]) -> None:
+    """--grep with a real regex pattern filters by regex (not literal)."""
+    body = "def my_func():\n    pass\nclass MyClass:\n    def method(self):\n        pass\n"
+    cache = _make_cache_module(body=body)
+    with patch("token_goat.db.record_stat"):
+        _run_output_recall_command(
+            output_id="x",
+            head=0,
+            tail=0,
+            grep=r"def \w+",
+            full=False,
+            json_output=False,
+            cache_module=cache,
+            stat_kind="bash_output_recall",
+            not_found_msg="not found",
+        )
+    out = capsys.readouterr().out
+    assert "def my_func" in out
+    assert "def method" in out
+    assert "class MyClass" not in out
+
+
+def test_grep_invalid_regex_treated_as_literal(capsys: pytest.CaptureFixture[str]) -> None:
+    """--grep with an invalid regex pattern falls back to literal matching."""
+    body = "line with [special chars\nnormal line\nanother [special chars line\n"
+    cache = _make_cache_module(body=body)
+    with patch("token_goat.db.record_stat"):
+        _run_output_recall_command(
+            output_id="x",
+            head=0,
+            tail=0,
+            grep="[special chars",
+            full=False,
+            json_output=False,
+            cache_module=cache,
+            stat_kind="bash_output_recall",
+            not_found_msg="not found",
+        )
+    out = capsys.readouterr().out
+    assert "line with [special chars" in out
+    assert "another [special chars line" in out
+    assert "normal line" not in out
+
+
+# ---------------------------------------------------------------------------
+# Tests for --section in _run_output_recall_command
+# ---------------------------------------------------------------------------
+
+def test_section_extracts_named_section(capsys: pytest.CaptureFixture[str]) -> None:
+    """--section returns only the named markdown section."""
+    body = "# Root\nroot content\n## Installation\nrun pip install\n## Usage\nrun it\n"
+    cache = _make_cache_module(body=body)
+    with patch("token_goat.db.record_stat"):
+        _run_output_recall_command(
+            output_id="x",
+            head=0,
+            tail=0,
+            grep=None,
+            full=False,
+            json_output=False,
+            cache_module=cache,
+            stat_kind="web_output_recall",
+            not_found_msg="not found",
+            section="Installation",
+        )
+    out = capsys.readouterr().out
+    assert "run pip install" in out
+    assert "## Installation" in out
+    assert "## Usage" not in out
+    assert "root content" not in out
+
+
+def test_section_not_found_exits_with_error(capsys: pytest.CaptureFixture[str]) -> None:
+    """--section with a missing heading emits an error and exits 1."""
+    import click  # noqa: PLC0415
+
+    body = "## Intro\nsome text\n"
+    cache = _make_cache_module(body=body)
+    with patch("token_goat.db.record_stat"), pytest.raises(click.exceptions.Exit) as exc:
+        _run_output_recall_command(
+            output_id="x",
+            head=0,
+            tail=0,
+            grep=None,
+            full=False,
+            json_output=False,
+            cache_module=cache,
+            stat_kind="web_output_recall",
+            not_found_msg="not found",
+            section="Nonexistent",
+        )
+    assert exc.value.exit_code == 1
+
+
+def test_section_combined_with_grep(capsys: pytest.CaptureFixture[str]) -> None:
+    """--section and --grep can be combined: section first, then grep."""
+    body = (
+        "## Installation\n"
+        "run: pip install foo\n"
+        "run: pip install bar\n"
+        "note: you also need baz\n"
+        "## Usage\n"
+        "run: foo --help\n"
+    )
+    cache = _make_cache_module(body=body)
+    with patch("token_goat.db.record_stat"):
+        _run_output_recall_command(
+            output_id="x",
+            head=0,
+            tail=0,
+            grep="pip install",
+            full=False,
+            json_output=False,
+            cache_module=cache,
+            stat_kind="web_output_recall",
+            not_found_msg="not found",
+            section="Installation",
+        )
+    out = capsys.readouterr().out
+    assert "pip install foo" in out
+    assert "pip install bar" in out
+    # grep filters out non-matching lines within the section
+    assert "note: you also need baz" not in out
+    # Usage section was never included
+    assert "foo --help" not in out
+
+
+def test_section_in_json_output_includes_section_field(capsys: pytest.CaptureFixture[str]) -> None:
+    """JSON output includes a 'section' key when --section is used."""
+    body = "## API\napi content\n## Other\nother content\n"
+    cache = _make_cache_module(body=body)
+    with patch("token_goat.db.record_stat"):
+        _run_output_recall_command(
+            output_id="x",
+            head=0,
+            tail=0,
+            grep=None,
+            full=False,
+            json_output=True,
+            cache_module=cache,
+            stat_kind="web_output_recall",
+            not_found_msg="not found",
+            section="API",
+        )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["section"] == "API"
+    assert "api content" in payload["text"]

@@ -29,6 +29,7 @@ import builtins
 import contextlib
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -3196,11 +3197,102 @@ _GREP_MAX_DEFAULT = 20
 # it reads the default at registration time and does not mutate the objects.
 _OPT_HEAD: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)")  # noqa: B008
 _OPT_TAIL: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)")  # noqa: B008
-_OPT_GREP: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching the substring (case-insensitive by default; see --case-sensitive)")  # noqa: B008
+_OPT_GREP: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching a regex pattern (case-insensitive by default; see --case-sensitive; falls back to literal match if the pattern is not valid regex)")  # noqa: B008
 _OPT_GREP_MAX: int = typer.Option(_GREP_MAX_DEFAULT, "--grep-max", help="Max matching lines to show with --grep (0 = no cap)")  # noqa: B008
 _OPT_CASE_SENSITIVE: bool = typer.Option(False, "--case-sensitive", help="Make --grep matching case-sensitive")  # noqa: B008
 _OPT_FULL: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)")  # noqa: B008
 _OPT_HEAD_TAIL: bool = typer.Option(False, "--head-tail", help="Emit first+last 20 lines with an omission marker instead of full body")  # noqa: B008
+_OPT_SECTION: str | None = typer.Option(None, "--section", "-s", help="Extract a specific markdown/HTML section by heading text (case-insensitive; use Heading#2 for the second occurrence)")  # noqa: B008
+
+
+# ---------------------------------------------------------------------------
+# Section extraction for cached output bodies (no DB required)
+# ---------------------------------------------------------------------------
+
+# ATX heading pattern: 1-6 # characters at the start of a line followed by
+# the heading text.  Used by _extract_body_section to find headings in cached
+# text bodies (HTML pages rendered as markdown, documentation, etc.).
+_BODY_ATX_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+
+
+def _extract_body_section(body: str, heading: str) -> str | None:
+    """Extract a markdown section by heading from a raw text body.
+
+    This is a lightweight in-memory variant of ``read_section`` that operates
+    on arbitrary cached text (web pages, bash output with embedded docs, etc.)
+    without requiring the file to be DB-indexed.
+
+    Supports ordinal suffixes: ``Heading#2`` selects the second occurrence of
+    a heading named ``Heading`` (1-based).  Without an ordinal the first
+    occurrence is returned.
+
+    Returns the section text (including the heading line) or ``None`` when the
+    heading is not found.
+    """
+    # Parse ordinal suffix (``Heading#2`` -> ``Heading``, 2).
+    base_heading, ordinal = _parse_body_section_ordinal(heading)
+    target_lower = base_heading.lower()
+
+    lines = body.splitlines()
+    # Collect (line_index, level) for every ATX heading matching the target.
+    matches: list[tuple[int, int]] = []
+    for idx, line in enumerate(lines):
+        m = _BODY_ATX_RE.match(line)
+        if m and m.group(2).strip().lower() == target_lower:
+            matches.append((idx, len(m.group(1))))
+
+    if not matches:
+        return None
+
+    # Apply ordinal selection.
+    occ = (ordinal or 1) - 1  # convert to 0-based index
+    if occ >= len(matches):
+        return None
+    start_idx, level = matches[occ]
+
+    # Find the end of the section: the next heading at the same or higher level
+    # (fewer or equal number of # symbols), or end of document.
+    end_idx = len(lines)
+    for idx in range(start_idx + 1, len(lines)):
+        m = _BODY_ATX_RE.match(lines[idx])
+        if m and len(m.group(1)) <= level:
+            end_idx = idx
+            break
+
+    return "\n".join(lines[start_idx:end_idx])
+
+
+def _parse_body_section_ordinal(heading: str) -> tuple[str, int | None]:
+    """Split ``Heading#N`` into ``("Heading", N)``.
+
+    Returns ``(heading, None)`` when no valid ordinal suffix is present.
+    """
+    if "#" not in heading:
+        return heading, None
+    base, _, ordinal_str = heading.rpartition("#")
+    if not base or not ordinal_str:
+        return heading, None
+    try:
+        ordinal = int(ordinal_str)
+    except ValueError:
+        return heading, None
+    if ordinal < 1:
+        return heading, None
+    return base, ordinal
+
+
+def _compile_grep_pattern(pattern: str, *, case_sensitive: bool) -> re.Pattern[str]:
+    """Compile *pattern* as a regex, falling back to ``re.escape`` on invalid syntax.
+
+    This lets agents pass either regex patterns (``"def \\w+"`` ) or plain
+    literal strings (``"TODO"``), both of which work correctly — invalid regex
+    patterns are treated as literals rather than raising an error.
+    """
+    flags = 0 if case_sensitive else re.IGNORECASE
+    try:
+        return re.compile(pattern, flags)
+    except re.error:
+        return re.compile(re.escape(pattern), flags)
 
 
 def _apply_recall_filters(
@@ -3224,22 +3316,20 @@ def _apply_recall_filters(
         lines: Source lines (already split on newlines).
         head:  Return first N lines (0 = no limit).
         tail:  Return last N lines (0 = no limit).
-        grep:  Substring filter; ``None`` or ``""`` = no filter.  Case-insensitive
+        grep:  Regex pattern filter; ``None`` or ``""`` = no filter.  Invalid
+               regex patterns are treated as literal strings.  Case-insensitive
                by default; pass ``case_sensitive=True`` for exact matching.
         full:  When True, skip the smart-default elision even if no explicit
                slice flags were passed.
-        case_sensitive: When True, apply grep as an exact-case substring match.
+        case_sensitive: When True, apply grep as a case-sensitive match.
 
     Returns:
         Filtered list of lines; caller joins with ``"\\n"`` for output.
     """
     slicing_requested = bool(grep) or head > 0 or tail > 0
     if grep:
-        if case_sensitive:
-            lines = [ln for ln in lines if grep in ln]
-        else:
-            _lc = grep.lower()
-            lines = [ln for ln in lines if _lc in ln.lower()]
+        _pat = _compile_grep_pattern(grep, case_sensitive=case_sensitive)
+        lines = [ln for ln in lines if _pat.search(ln)]
     if head > 0:
         lines = lines[:head]
     if tail > 0:
@@ -3323,6 +3413,7 @@ def _run_output_recall_command(
     head_tail: bool = False,
     grep_max: int = _GREP_MAX_DEFAULT,
     case_sensitive: bool = False,
+    section: str | None = None,
 ) -> None:
     """Shared implementation for bash-output and web-output recall commands.
 
@@ -3341,6 +3432,10 @@ def _run_output_recall_command(
             cap fires.  ``0`` means no cap.
         case_sensitive: When True, apply ``--grep`` as a case-sensitive match
             (default is case-insensitive).
+        section: When set, extract only the named markdown/HTML section from
+            the body before applying any other filters.  Supports ordinal
+            suffixes (``Heading#2``).  Emits an error and exits with code 1
+            when the heading is not found.
     """
     from . import db as _db  # noqa: PLC0415
 
@@ -3370,14 +3465,28 @@ def _run_output_recall_command(
         _error(not_found_msg)
         raise typer.Exit(1)
 
-    # Resolve grep matching key once (case-folded or raw) so the check is
-    # applied consistently across both the line filter and the JSON match count.
-    _grep_key = grep if (grep and case_sensitive) else (grep.lower() if grep else None)
+    # --section: narrow the body to a single markdown section before any other
+    # filters are applied.  Allows agents to jump directly to e.g.
+    # "## Installation" in a large documentation page, avoiding the cost of
+    # returning the entire cached body.
+    if section:
+        extracted = _extract_body_section(body, section)
+        if extracted is None:
+            _error(f"section not found in cached output: {section!r}")
+            raise typer.Exit(1)
+        body = extracted
+
+    # Compile the grep regex once (with fallback to literal on invalid syntax)
+    # so the pattern is applied consistently across the line filter and the
+    # JSON match count.
+    _grep_pat: re.Pattern[str] | None = (
+        _compile_grep_pattern(grep, case_sensitive=case_sensitive) if grep else None
+    )
 
     def _grep_matches(line: str) -> bool:
-        if _grep_key is None:
+        if _grep_pat is None:
             return True
-        return _grep_key in (line if case_sensitive else line.lower())
+        return bool(_grep_pat.search(line))
 
     lines = body.splitlines()
     _slicing_requested = grep or head > 0 or tail > 0 or head_tail
@@ -3449,6 +3558,8 @@ def _run_output_recall_command(
             "numbered_lines": numbered,
             "total_lines": len(original_lines),
         }
+        if section:
+            payload["section"] = section
         if grep:
             payload["match_count"] = len([ln for ln in original_lines if _grep_matches(ln)])
         payload.update(meta)
@@ -3498,6 +3609,7 @@ def cmd_bash_output(
     case_sensitive: bool = _OPT_CASE_SENSITIVE,
     full: bool = _OPT_FULL,
     head_tail: bool = _OPT_HEAD_TAIL,
+    section: str | None = _OPT_SECTION,
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Retrieve a sliced view of a cached Bash output.
@@ -3509,13 +3621,17 @@ def cmd_bash_output(
 
     By default (no flags), large outputs are trimmed to the first
     30 lines and last 80 lines with an elision marker.  Pass ``--full`` to
-    get everything.  Combine ``--head``, ``--tail``, and ``--grep`` to
-    narrow further; those flags suppress the smart default automatically.
-    ``--grep`` is case-insensitive by default; add ``--case-sensitive`` for
-    exact matching.  Use ``--head-tail`` to get just the first+last 20 lines
-    (useful for large outputs where you only need the gist).  Use ``--grep-max N``
-    to cap the number of matching lines returned (default 20; 0 = no cap).
-    JSON mode includes the full path and stored byte size.
+    get everything.  Combine ``--head``, ``--tail``, ``--grep``, and
+    ``--section`` to narrow further; those flags suppress the smart default
+    automatically.  ``--grep`` accepts regex patterns (falls back to literal
+    on invalid syntax) and is case-insensitive by default; add
+    ``--case-sensitive`` for exact matching.  ``--section HEADING`` extracts a
+    specific markdown section by heading text (case-insensitive; supports
+    ``Heading#2`` for the second occurrence).  Use ``--head-tail`` to get just
+    the first+last 20 lines (useful for large outputs where you only need the
+    gist).  Use ``--grep-max N`` to cap the number of matching lines returned
+    (default 20; 0 = no cap).  JSON mode includes the full path and stored
+    byte size.
     """
     from . import bash_cache  # noqa: PLC0415
 
@@ -3532,6 +3648,7 @@ def cmd_bash_output(
         head_tail=head_tail,
         grep_max=grep_max,
         case_sensitive=case_sensitive,
+        section=section,
     )
 
 
@@ -3545,6 +3662,7 @@ def cmd_web_output(
     case_sensitive: bool = _OPT_CASE_SENSITIVE,
     full: bool = _OPT_FULL,
     head_tail: bool = _OPT_HEAD_TAIL,
+    section: str | None = _OPT_SECTION,
     json_output: bool = _OPT_JSON,
     from_session: str | None = typer.Option(  # noqa: B008
         None,
@@ -3572,15 +3690,18 @@ def cmd_web_output(
 
     By default (no flags), large outputs are trimmed to the first
     30 lines and last 80 lines with an elision marker.  Pass ``--full`` to
-    get everything.  Combine ``--head``, ``--tail``, and ``--grep`` to
-    narrow further; those flags suppress the smart default automatically.
-    ``--grep`` is case-insensitive by default; add ``--case-sensitive`` for
-    exact matching.  Use ``--head-tail`` to get just the first+last 20 lines
-    (useful for large documentation pages where you only need the gist).
-    Use ``--grep-max N`` to cap the number of matching lines returned
-    (default 20; 0 = no cap).  JSON mode includes the full path, stored byte
-    size, status code, and a 1-based ``numbered_lines`` list anchored to the
-    original body.
+    get everything.  Combine ``--head``, ``--tail``, ``--grep``, and
+    ``--section`` to narrow further; those flags suppress the smart default
+    automatically.  ``--grep`` accepts regex patterns (falls back to literal
+    on invalid syntax) and is case-insensitive by default; add
+    ``--case-sensitive`` for exact matching.  ``--section HEADING`` extracts a
+    specific markdown section by heading text (case-insensitive; supports
+    ``Heading#2`` for the second occurrence of the same heading).  Use
+    ``--head-tail`` to get just the first+last 20 lines (useful for large
+    documentation pages where you only need the gist).  Use ``--grep-max N``
+    to cap the number of matching lines returned (default 20; 0 = no cap).
+    JSON mode includes the full path, stored byte size, status code, and a
+    1-based ``numbered_lines`` list anchored to the original body.
 
     Use ``--from-session SESSION_ID`` to list all web outputs cached during a
     specific session without needing to know their IDs in advance.
@@ -3663,6 +3784,7 @@ def cmd_web_output(
         head_tail=head_tail,
         grep_max=grep_max,
         case_sensitive=case_sensitive,
+        section=section,
     )
 
 
