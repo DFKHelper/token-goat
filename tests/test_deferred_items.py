@@ -577,6 +577,52 @@ class TestResumePacket:
         assert "45" in out and "49" in out  # tail
         assert "omitted" in out
 
+    def test_cmd_resume_writes_resume_packet_stat_with_zero_savings(self, tmp_data_dir):
+        """CLI 'resume' must record a resume_packet stat with bytes_saved=0.
+
+        resume_packet is an adoption-tracking stat — it signals how often the
+        resume workflow is used, not a realized token saving.  The bytes_saved
+        must always be 0 to avoid inflating the total-savings figure in
+        `token-goat stats`.  This test verifies that contract is enforced at
+        the CLI level, not just documented in stats.py.
+        """
+        import uuid
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from token_goat import db as _db
+
+        sid = str(uuid.uuid4())
+        self._make_session(sid)
+
+        recorded_stats: list[dict] = []
+
+        def capture_stat(project_hash, kind, *, bytes_saved=0, tokens_saved=0, detail=None):
+            recorded_stats.append({
+                "kind": kind,
+                "bytes_saved": bytes_saved,
+                "tokens_saved": tokens_saved,
+            })
+
+        runner = CliRunner()
+        with patch.object(_db, "record_stat", side_effect=capture_stat):
+            result = runner.invoke(app, ["resume", sid])
+
+        assert result.exit_code == 0, result.output
+
+        resume_rows = [r for r in recorded_stats if r["kind"] == "resume_packet"]
+        assert len(resume_rows) == 1, (
+            "CLI 'resume' must write exactly one resume_packet stat row"
+        )
+        assert resume_rows[0]["bytes_saved"] == 0, (
+            "resume_packet is adoption telemetry — bytes_saved must be 0, "
+            "not inflated by the packet size"
+        )
+        assert resume_rows[0]["tokens_saved"] == 0, (
+            "resume_packet is adoption telemetry — tokens_saved must be 0"
+        )
+
     def test_head_tail_short_list_no_gap(self):
         """_head_tail returns full content when list fits within head+tail."""
         from token_goat.resume import _head_tail

@@ -866,6 +866,23 @@ class TestKindToSource:
         for kind, src in stats._KIND_TO_SOURCE.items():
             assert src in valid, f"kind {kind!r} maps to unknown source {src!r}"
 
+    def test_session_cache_lock_timeout_maps_to_other(self):
+        """session_cache_lock_timeout is operational telemetry — SOURCE_OTHER bucket."""
+        from token_goat.stats import SOURCE_OTHER, kind_to_source
+        assert kind_to_source("session_cache_lock_timeout") == SOURCE_OTHER
+
+    def test_structured_file_hint_maps_to_hint(self):
+        """structured_file_hint is an advisory hint — SOURCE_HINT bucket."""
+        from token_goat.stats import SOURCE_HINT, kind_to_source
+        assert kind_to_source("structured_file_hint") == SOURCE_HINT
+        # Overhead row inherits the same bucket via the _overhead suffix strip.
+        assert kind_to_source("structured_file_hint_overhead") == SOURCE_HINT
+
+    def test_resume_packet_maps_to_compact(self):
+        """resume_packet is a post-compact recovery adoption signal."""
+        from token_goat.stats import SOURCE_COMPACT, kind_to_source
+        assert kind_to_source("resume_packet") == SOURCE_COMPACT
+
 
 class TestBySourceAggregation:
     """summarize() rolls by_kind into the four user-facing source buckets."""

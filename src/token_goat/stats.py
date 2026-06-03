@@ -101,10 +101,16 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # suppression rate visible in ``token-goat stats``.
     "session_hint_suppressed": SOURCE_HINT,
     "diff_hint": SOURCE_HINT,
-    # structured_file_hint: per-config-file (.toml/.yaml/.json/.ini/Dockerfile)
-    # hint emitted by hooks_read.handle_pre_read_structured.  Same prevention
-    # mechanism as session_hint (steer the agent toward `token-goat section`)
-    # so it shares the bucket.
+    # structured_file_hint: advisory hint for large structured files
+    # (.toml/.yaml/.json/.ini/.csv/Dockerfile/etc.) emitted by
+    # hooks_read.handle_pre_read_structured.  Always bytes_saved=0 because the
+    # hint is navigational — it steers the agent toward `token-goat section` or
+    # jq/yq rather than claiming a realized saving.  Adoption-tracking shape:
+    # like symbol_lookup/map_lookup, the row only surfaces in `token-goat stats`
+    # when [stats] record_zero_savings = true.  When record_zero_savings is False
+    # (the default), record_hint_stat_pair skips both the savings row and the
+    # _overhead row (line 539 of hooks_common.py), so no net-negative overhead
+    # appears.  The overhead only shows when record_zero_savings=True is opted in.
     "structured_file_hint": SOURCE_HINT,
     # predictive_prefetch_hit: attribution row written when a diff_hint fires
     # against a snapshot that was captured speculatively by post_edit (kind=
@@ -226,6 +232,14 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # web_dedup_stale: fired by build_web_dedup_hint when a prior fetch
     # entry exists but is age-stale.  Parallel to bash_dedup_stale.
     "web_dedup_stale": SOURCE_WEB,
+    # session_cache_lock_timeout: operational telemetry fired by the session
+    # cache writer (session.py) when it cannot acquire the per-session write
+    # lock within the timeout window (consecutive_lock_timeouts counter).
+    # bytes_saved / tokens_saved are always 0; the row exists so operators can
+    # detect contention on the session cache file (e.g., two concurrent hook
+    # processes racing on the same session).  Falls into SOURCE_OTHER because
+    # it is not a token-saving event but a reliability health signal.
+    "session_cache_lock_timeout": SOURCE_OTHER,
 }
 
 

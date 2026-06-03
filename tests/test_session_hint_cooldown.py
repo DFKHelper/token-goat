@@ -134,6 +134,52 @@ class TestPerFileHintCooldown:
 
         assert "session_hint_suppressed" in suppress_calls
 
+    def test_pre_read_writes_session_hint_suppressed_to_db(self, tmp_data_dir) -> None:
+        """When the per-file cooldown fires, record_cached_stat writes a DB row.
+
+        This test verifies the suppression stat reaches the stats DB (not just the
+        in-memory session cache).  The code path is:
+        cooldown active → record_hint_suppressed() + record_cached_stat() → db.record_stat().
+        """
+        from unittest.mock import patch
+
+        from token_goat import db, hooks_read
+
+        cache = _make_session_cache()
+        file_key = session_mod._normalize_path("/fake/src/bar.py")
+        cache.mark_session_hint_emitted(file_key)
+
+        written_kinds: list[str] = []
+
+        original_record_stat = db.record_stat
+
+        def capture_stat(project_hash, kind, **kwargs):
+            written_kinds.append(kind)
+            return original_record_stat(project_hash, kind, **kwargs)
+
+        with (
+            patch("token_goat.hooks_read._try_shrink_image", return_value=None),
+            patch("token_goat.hooks_read._try_diff_hint", return_value=None),
+            patch("token_goat.hooks_read._try_diff_serve", return_value=None),
+            patch("token_goat.hooks_read._build_git_hint", return_value=None),
+            patch("token_goat.hooks_read._try_unchanged_file_hint", return_value=None),
+            patch("token_goat.session.load", return_value=cache),
+            patch("token_goat.hooks_read._get_session", return_value=session_mod),
+            patch("token_goat.db.record_stat", side_effect=capture_stat),
+        ):
+            payload = {
+                "tool_name": "Read",
+                "session_id": cache.session_id,
+                "cwd": "/fake",
+                "tool_input": {"file_path": "/fake/src/bar.py"},
+            }
+            hooks_read.pre_read(payload)
+
+        assert "session_hint_suppressed" in written_kinds, (
+            "session_hint_suppressed stat must be written to the stats DB "
+            "when the per-file cooldown suppresses a hint"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test 2: hint range display capped at _MAX_CACHED_RANGES_DISPLAY

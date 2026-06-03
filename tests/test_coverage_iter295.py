@@ -603,7 +603,20 @@ class TestCheckDedupPreconditions:
 
 
 class TestCheckEntryStatelessness:
-    """Direct unit tests for hints._check_entry_staleness."""
+    """Direct unit tests for hints._check_entry_staleness.
+
+    NOTE: The string "test_stale" used as stale_reason_key in these tests is a
+    test-only key chosen to be recognisable in the global stats DB.  Historical
+    test runs (before monkeypatching was added to all stale-path tests) wrote
+    ~190 "test_stale" rows to the production DB — those rows are harmless but
+    should not appear on new installs.  Going forward, any test that exercises
+    the stale branch MUST either:
+    (a) use monkeypatch.setattr(_hints, "_record_dedup_stale", lambda *a, **kw: None)
+        to avoid any DB write, OR
+    (b) use the tmp_data_dir fixture to redirect the DB to a temp directory.
+    Tests that only exercise non-stale entries (age < threshold) are safe without
+    either guard because the stale branch is never reached.
+    """
 
     def _make_entry(self, ts: float) -> object:
         """Create a minimal object with a .ts attribute."""
@@ -667,6 +680,43 @@ class TestCheckEntryStatelessness:
         )
         # Age should be approximately entry_age
         assert abs(age - entry_age) < 2  # within 2 seconds
+
+    def test_stale_branch_calls_record_dedup_stale_with_correct_key(self, monkeypatch) -> None:
+        """_check_entry_staleness forwards the stale_reason_key to _record_dedup_stale.
+
+        This ensures the stat kind written to the DB matches what the caller provides,
+        and verifies the stale branch is exercised correctly without polluting the
+        production stats DB (monkeypatch guards the DB write).
+        """
+        import token_goat.hints as _hints
+        from token_goat.hints import _check_entry_staleness
+
+        recorded_calls: list[tuple[str, str]] = []
+
+        def capture_dedup_stale(kind: str, detail: str) -> None:
+            recorded_calls.append((kind, detail))
+
+        monkeypatch.setattr(_hints, "_record_dedup_stale", capture_dedup_stale)
+
+        now = time.time()
+        entry = self._make_entry(now - 7200)  # 2h old — always stale
+
+        is_stale, _ = _check_entry_staleness(
+            entry,
+            cache=None,
+            log_label="test_caller",
+            stale_reason_key="bash_dedup_stale",
+            detail="ls -la",
+        )
+
+        assert is_stale is True
+        assert len(recorded_calls) == 1, "_record_dedup_stale must be called exactly once"
+        assert recorded_calls[0][0] == "bash_dedup_stale", (
+            "stale_reason_key must be forwarded as the stat kind"
+        )
+        assert recorded_calls[0][1] == "ls -la", (
+            "detail must be forwarded to _record_dedup_stale"
+        )
 
 
 class TestCheckDedupMinThreshold:

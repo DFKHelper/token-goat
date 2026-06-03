@@ -619,6 +619,42 @@ def test_record_hint_stat_pair_counts_utf8_bytes(monkeypatch):
         assert overhead_kwargs["bytes_saved"] == -len(hint_text.encode("utf-8"))
 
 
+def test_structured_file_hint_no_overhead_by_default(monkeypatch, tmp_path):
+    """structured_file_hint is always tokens_saved=0 (advisory).
+
+    By default (record_zero_savings=False), record_hint_stat_pair must write no
+    DB rows at all — neither a savings row nor an overhead row.  This ensures the
+    stat is net-neutral rather than net-negative in default installations.
+
+    The overhead only appears when record_zero_savings=True is explicitly opted in,
+    which is documented in stats.py's structured_file_hint comment.
+    """
+    from unittest.mock import patch
+
+    from token_goat import config as _config
+    from token_goat.hints import ReadHint
+    from token_goat.hooks_common import record_hint_stat_pair
+
+    with patch("token_goat.db.record_stat") as mock_record_stat:
+        mock_config = _config.Config()
+        # Confirm record_zero_savings is False by default (the default constructor).
+        assert mock_config.stats.record_zero_savings is False
+        monkeypatch.setattr(_config, "load", lambda: mock_config)
+
+        # Simulate what build_structured_file_hint returns: tokens_saved=0.
+        hint = ReadHint(
+            "📄 large json (120KB) — use `token-goat read \"file.json::Key.path\"` or jq",
+            0,
+        )
+        record_hint_stat_pair("structured_file_hint", hint, "file.json")
+
+        # Zero-saving hints must not write any rows when record_zero_savings=False.
+        assert mock_record_stat.call_count == 0, (
+            "structured_file_hint (tokens_saved=0) must not write saving or overhead rows "
+            "when record_zero_savings=False; overhead only appears when opted in"
+        )
+
+
 def _quiet_hours_at(hhmm: str, quiet_hours: str) -> bool:
     """Call _is_quiet_hours with a fake current time given as 'HH:MM'."""
     import datetime
