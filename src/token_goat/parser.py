@@ -47,6 +47,8 @@ _LOG = get_logger("parser")
 LANG_BY_EXT: dict[str, str] = {
     ".ts": "typescript",
     ".tsx": "typescript",
+    ".mts": "typescript",
+    ".cts": "typescript",
     ".js": "javascript",
     ".jsx": "javascript",
     ".mjs": "javascript",
@@ -90,6 +92,7 @@ LANG_BY_EXT: dict[str, str] = {
     ".graphql": "graphql",
     ".gql": "graphql",
     ".proto": "proto",
+    ".mk": "makefile",
 }
 
 # Files identified by full basename rather than suffix.  Dotfiles like ``.env``
@@ -110,6 +113,10 @@ LANG_BY_BASENAME: dict[str, str] = {
     ".env.staging": "env_file",
     "dockerfile": "dockerfile",
     "containerfile": "dockerfile",
+    "makefile": "makefile",
+    "gnumakefile": "makefile",
+    "makefile.am": "makefile",
+    "makefile.in": "makefile",
 }
 # Frozenset view of LANG_BY_BASENAME (already-lowercase keys) — see the
 # matching declaration above ``_KNOWN_EXTENSIONS`` for why this is precomputed.
@@ -376,6 +383,7 @@ _EXTRACTOR_REGISTRY: dict[str, Callable[[], Extractor]] = {
     "sql":        _language_importer("sql_idx"),
     "graphql":    _language_importer("graphql_idx"),
     "proto":      _language_importer("proto_idx"),
+    "makefile":   _language_importer("makefile_idx"),
 }
 
 # Cache resolved extractors so each language module is imported at most once.
