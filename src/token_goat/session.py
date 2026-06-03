@@ -4255,7 +4255,15 @@ def get_snapshot_sha(
 
 
 def cleanup_stale(max_age_hours: float = 24.0) -> int:
-    """Delete session cache files older than max_age_hours. Returns count removed."""
+    """Delete session cache files older than max_age_hours. Returns count removed.
+
+    Also removes companion sidecar files (``.json.lock``, ``.json.flock``) that
+    were left behind by the cross-process lock mechanism.  These sidecars share
+    the same stem as their session JSON and accumulate when a session's JSON is
+    deleted (or when a crash left an unreleased lock file).  Removing them here
+    prevents the sessions directory from growing without bound over long-running
+    installations.
+    """
     removed = 0
     sessions_dir = paths.session_cache_path("dummy").parent
     if not sessions_dir.exists():
@@ -4288,8 +4296,30 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
             if st.st_mtime < cutoff:
                 f.unlink()
                 removed += 1
+                # Remove companion lock/flock sidecars for this session so they
+                # do not accumulate after the session JSON is gone.
+                for sidecar_suffix in (".json.lock", ".json.flock"):
+                    sidecar = f.with_suffix(sidecar_suffix)
+                    with contextlib.suppress(OSError):
+                        sidecar.unlink(missing_ok=True)
         except OSError as e:
             _LOG.debug("cleanup_stale: could not remove %s: %s", f.name, e)
+
+    # Also sweep orphaned lock/flock sidecars whose corresponding .json was
+    # removed in a prior run (or never existed).  These are safe to delete
+    # because a live hook process will recreate the sidecar atomically on its
+    # next save — missing sidecar → lock attempt proceeds normally.
+    for sidecar_suffix in ("*.json.lock", "*.json.flock"):
+        for sidecar in sessions_dir.glob(sidecar_suffix):
+            stem = sidecar.name.split(".json.")[0]  # e.g. "abc-123" from "abc-123.json.lock"
+            if not _SESSION_ID_RE.match(stem):
+                continue
+            corresponding_json = sessions_dir / f"{stem}.json"
+            if not corresponding_json.exists():
+                with contextlib.suppress(OSError):
+                    sidecar.unlink(missing_ok=True)
+                    _LOG.debug("cleanup_stale: removed orphaned sidecar %s", sidecar.name)
+
     _LOG.info(
         "cleanup_stale: examined=%d removed=%d (max_age_hours=%.1f)",
         examined, removed, max_age_hours,

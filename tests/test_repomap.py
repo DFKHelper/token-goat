@@ -1334,3 +1334,272 @@ def test_build_map_top_n_zero_invalid():
     # Since build_map checks "if top_n > 0", it will skip the top_n path
     # and fall through to normal build_map, which is fine.
     pass
+
+
+# ---------------------------------------------------------------------------
+# New indexer kind priority and tags (sql, graphql, proto, css, makefile, etc.)
+# ---------------------------------------------------------------------------
+
+
+def test_kind_priority_covers_sql_kinds():
+    """All SQL indexer symbol kinds must have an explicit priority (not fallback 99)."""
+    sql_kinds = [
+        "sql_table", "sql_view", "sql_function", "sql_procedure",
+        "sql_type", "sql_trigger", "sql_index", "sql_schema",
+    ]
+    for kind in sql_kinds:
+        assert kind in repomap.KIND_PRIORITY, f"{kind!r} missing from KIND_PRIORITY"
+        # schema-level kinds (table, view, type, schema) should rank at 0 or 1
+        # to appear before generic symbols in a file summary.
+        if kind in ("sql_table", "sql_schema"):
+            assert repomap.KIND_PRIORITY[kind] <= 1, (
+                f"{kind} priority {repomap.KIND_PRIORITY[kind]} too low — should be 0 or 1"
+            )
+
+
+def test_kind_priority_covers_graphql_kinds():
+    """GraphQL indexer kinds must have explicit priorities."""
+    graphql_kinds = [
+        "graphql_type", "graphql_interface", "graphql_input",
+        "graphql_enum", "graphql_union", "graphql_scalar", "graphql_extend",
+    ]
+    for kind in graphql_kinds:
+        assert kind in repomap.KIND_PRIORITY, f"{kind!r} missing from KIND_PRIORITY"
+
+
+def test_kind_priority_covers_proto_kinds():
+    """Protocol Buffers indexer kinds must have explicit priorities."""
+    proto_kinds = ["proto_message", "proto_enum", "proto_service"]
+    for kind in proto_kinds:
+        assert kind in repomap.KIND_PRIORITY, f"{kind!r} missing from KIND_PRIORITY"
+        assert repomap.KIND_PRIORITY[kind] <= 2, (
+            f"{kind} priority {repomap.KIND_PRIORITY[kind]} too low — messages/services should rank high"
+        )
+
+
+def test_kind_priority_covers_css_kinds():
+    """CSS/SCSS indexer kinds must have explicit priorities."""
+    css_kinds = ["css_selector", "css_rule", "css_var", "css_keyframe", "css_mixin"]
+    for kind in css_kinds:
+        assert kind in repomap.KIND_PRIORITY, f"{kind!r} missing from KIND_PRIORITY"
+
+
+def test_kind_priority_covers_make_docker_kinds():
+    """Makefile and Dockerfile indexer kinds must have explicit priorities."""
+    assert "makefile_target" in repomap.KIND_PRIORITY
+    assert "dockerfile_stage" in repomap.KIND_PRIORITY
+
+
+def test_kind_tag_covers_all_new_kinds():
+    """Every kind in KIND_PRIORITY must have a matching short tag in _KIND_TAG."""
+    for kind in repomap.KIND_PRIORITY:
+        assert kind in repomap._KIND_TAG, (
+            f"{kind!r} is in KIND_PRIORITY but has no short tag in _KIND_TAG — "
+            "add a 1-4 char tag to avoid raw kind names in map output"
+        )
+
+
+def test_kind_tag_sql_short_form():
+    """SQL kind tags must be abbreviated, not the raw kind string."""
+    assert repomap._KIND_TAG["sql_table"] == "tbl"
+    assert repomap._KIND_TAG["sql_view"] == "view"
+    assert repomap._KIND_TAG["sql_procedure"] == "proc"
+    assert repomap._KIND_TAG["sql_trigger"] == "trig"
+
+
+def test_kind_tag_graphql_proto_short_form():
+    """GraphQL and proto kind tags must be abbreviated."""
+    assert repomap._KIND_TAG["proto_message"] == "msg"
+    assert repomap._KIND_TAG["proto_service"] == "svc"
+    assert repomap._KIND_TAG["graphql_extend"] == "ext"
+
+
+def test_render_summary_new_kinds_use_short_tags():
+    """render_summary must emit short tags for new indexer kinds, not raw kind strings."""
+    s = repomap.FileSummary(
+        rel_path="schema.sql",
+        language="sql",
+        rank=0.5,
+        top_symbols=[
+            ("sql_table", "users"),
+            ("sql_view", "active_users"),
+            ("sql_function", "get_user"),
+        ],
+        top_sections=[],
+        line_count=80,
+    )
+    text = repomap.render_summary(s)
+    # Short tags must appear
+    assert "tbl:" in text
+    assert "view:" in text
+    # Raw kind strings must NOT appear
+    assert "sql_table:" not in text
+    assert "sql_view:" not in text
+    assert "sql_function:" not in text
+
+
+def test_render_summary_graphql_kinds_short_tags():
+    """GraphQL kinds must render with short tags in file summaries."""
+    s = repomap.FileSummary(
+        rel_path="schema.graphql",
+        language="graphql",
+        rank=0.3,
+        top_symbols=[
+            ("graphql_type", "User"),
+            ("graphql_interface", "Node"),
+            ("graphql_enum", "Status"),
+        ],
+        top_sections=[],
+        line_count=60,
+    )
+    text = repomap.render_summary(s)
+    assert "ty:" in text or "iface:" in text or "enum:" in text
+    assert "graphql_type:" not in text
+    assert "graphql_interface:" not in text
+
+
+# ---------------------------------------------------------------------------
+# Compact summary extension-count format for polyglot projects
+# ---------------------------------------------------------------------------
+
+
+def test_build_compact_file_summary_default_format():
+    """Default format (no ext counts) produces the legacy 'N files indexed.' line."""
+    files: list[tuple[str, object]] = [
+        ("src/a.py", {}), ("src/b.py", {}), ("src/c.py", {}),
+    ]
+    line = repomap._build_compact_file_summary(files, 3, top_n=2)  # type: ignore[arg-type]
+    assert line.startswith("3 files indexed. Top modules:")
+    assert "a.py" in line or "b.py" in line
+
+
+def test_build_compact_file_summary_ext_counts_single_extension():
+    """include_ext_counts with a single extension emits just that extension count."""
+    files: list[tuple[str, object]] = [
+        ("src/a.py", {}), ("src/b.py", {}), ("src/c.py", {}),
+    ]
+    line = repomap._build_compact_file_summary(
+        files, 3, top_n=2, include_ext_counts=True,  # type: ignore[arg-type]
+    )
+    assert line.startswith("3 files:")
+    assert ".py" in line
+    # Should show count
+    assert "3 .py" in line
+
+
+def test_build_compact_file_summary_ext_counts_polyglot():
+    """include_ext_counts with mixed extensions shows top extensions by count."""
+    files: list[tuple[str, object]] = [
+        ("src/a.py", {}), ("src/b.py", {}), ("src/c.py", {}),
+        ("src/d.ts", {}), ("src/e.ts", {}),
+        ("db/schema.sql", {}),
+    ]
+    line = repomap._build_compact_file_summary(
+        files, 6, top_n=2, include_ext_counts=True,  # type: ignore[arg-type]
+    )
+    assert line.startswith("6 files:")
+    assert ".py" in line
+    assert ".ts" in line
+    assert ".sql" in line
+    # Counts must appear
+    assert "3 .py" in line
+    assert "2 .ts" in line
+    assert "1 .sql" in line
+
+
+def test_build_compact_file_summary_ext_counts_collapses_many_types():
+    """When > 4 extension types, surplus types collapse into '+N more types'."""
+    files: list[tuple[str, object]] = [
+        ("a.py", {}), ("b.ts", {}), ("c.sql", {}), ("d.graphql", {}),
+        ("e.proto", {}), ("f.css", {}),
+    ]
+    line = repomap._build_compact_file_summary(
+        files, 6, top_n=2, include_ext_counts=True,  # type: ignore[arg-type]
+    )
+    assert "+2 more types" in line or "+1 more types" in line, (
+        f"Expected '+N more types' for 6 distinct extensions, got: {line!r}"
+    )
+
+
+def test_build_compact_file_summary_ext_counts_format_has_top_modules():
+    """Extension-count format still shows top module names after the ext counts."""
+    files: list[tuple[str, object]] = [
+        ("src/main.py", {}), ("src/helper.ts", {}),
+    ]
+    line = repomap._build_compact_file_summary(
+        files, 2, top_n=1, include_ext_counts=True,  # type: ignore[arg-type]
+    )
+    # Should include "Top:" section
+    assert "Top:" in line
+
+
+def test_build_map_polyglot_compact_summary_uses_ext_counts(tmp_path, tmp_data_dir, make_project):
+    """A polyglot project over the compact threshold should emit the extension-count format."""
+    from token_goat.parser import index_project
+
+    proj_root = tmp_path / "polyglot_compact"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    (proj_root / ".git").mkdir()
+
+    py_pad = "# padding to clear min-lines threshold\n" * 6
+    ts_pad = "// padding to clear min-lines threshold\n" * 6
+    # Create enough files to exceed default compact_file_threshold (50)
+    # Using Python and TypeScript to make it polyglot
+    for i in range(30):
+        (src / f"mod_{i:03d}.py").write_text(
+            f"{py_pad}def fn_{i}():\n    pass\n",
+        )
+    for i in range(25):
+        (src / f"mod_{i:03d}.ts").write_text(
+            f"{ts_pad}export function fn{i}(): void {{}}\n",
+        )
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    text = repomap.build_map(
+        proj,
+        budget_tokens=300,
+        compact=True,
+        compact_file_threshold=50,
+    )
+
+    # Polyglot project (Python + TypeScript) must use the extension-count format
+    # rather than the legacy "files indexed. Top modules:" format
+    assert "files:" in text, (
+        f"Expected extension-count format 'N files:' for polyglot project;\ngot:\n{text[:500]}"
+    )
+    assert ".py" in text
+    assert ".ts" in text
+
+
+def test_build_map_monolingual_compact_summary_uses_legacy_format(tmp_path, tmp_data_dir, make_project):
+    """A single-language project over the compact threshold keeps the legacy format."""
+    from token_goat.parser import index_project
+
+    proj_root = tmp_path / "mono_compact"
+    src = proj_root / "src"
+    src.mkdir(parents=True)
+    (proj_root / ".git").mkdir()
+
+    pad = "# padding to clear min-lines threshold\n" * 6
+    for i in range(60):
+        (src / f"mod_{i:03d}.py").write_text(
+            f"{pad}def fn_{i}():\n    pass\n",
+        )
+
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    text = repomap.build_map(
+        proj,
+        budget_tokens=300,
+        compact=True,
+        compact_file_threshold=50,
+    )
+
+    # Single-language: must still use the legacy "files indexed. Top modules:" format
+    assert "files indexed. Top modules:" in text, (
+        f"Expected legacy format for mono-language project; got:\n{text[:500]}"
+    )

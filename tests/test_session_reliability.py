@@ -4,12 +4,15 @@ Covers:
 - Session JSON atomic writes (already in place via paths.atomic_write_text)
 - Session file size cap (_trim_session_for_size / _get_session_max_bytes)
 - Stale session cleanup at SessionStart (hooks_session calling cleanup_stale)
+- Corruption recovery: load() returns fresh session + logs WARNING on bad JSON
+- Stale sidecar cleanup: cleanup_stale() removes orphaned .json.lock/.json.flock
 - Config corrupt TOML fallback (already handled; regression test)
 - _session_file_lock context manager (fcntl on POSIX, sidecar on Windows)
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -542,3 +545,166 @@ class TestSessionFileLock:
         assert sorted(final) == list(range(n_threads)), (
             f"expected {list(range(n_threads))}, got {sorted(final)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Corruption recovery — WARNING log + fresh session
+# ---------------------------------------------------------------------------
+
+class TestCorruptionRecovery:
+    """load() returns a fresh empty session and logs a WARNING on corrupt JSON.
+
+    The feature is already implemented in session.load(); these tests close the
+    test gap by verifying:
+    1. The return value is a usable fresh SessionCache (not an exception).
+    2. A WARNING-level log is emitted so operators can detect corrupt files.
+    3. The original corrupt file is preserved (archived) for forensics.
+    """
+
+    def _write_session_file(self, tmp_data_dir, session_id: str, content: str) -> None:
+        p = session.paths.session_cache_path(session_id)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+
+    def test_corrupt_json_returns_fresh_session(self, tmp_data_dir):
+        """load() with corrupt JSON returns a fresh SessionCache, not an exception."""
+        sid = "corrupt-recovery-basic"
+        self._write_session_file(tmp_data_dir, sid, "not-valid-json!!!{[")
+        cache = session.load(sid)
+        assert cache.session_id == sid
+        assert cache.files == {}
+        assert cache.greps == []
+        assert not cache.unavailable
+
+    def test_corrupt_json_logs_warning(self, tmp_data_dir, caplog):
+        """load() emits a WARNING when the session file contains malformed JSON."""
+        sid = "corrupt-recovery-warn"
+        self._write_session_file(tmp_data_dir, sid, "{broken json]")
+        with caplog.at_level(logging.WARNING, logger="token_goat.session"):
+            session.load(sid)
+        assert any(
+            "corrupt" in r.message.lower() or "corrupted" in r.message.lower()
+            for r in caplog.records
+        ), f"Expected a WARNING about corruption; got: {[r.message for r in caplog.records]}"
+
+    def test_truncated_json_returns_fresh_session(self, tmp_data_dir):
+        """Truncated JSON (simulating a crash mid-write) returns a fresh session."""
+        sid = "corrupt-recovery-truncated"
+        self._write_session_file(tmp_data_dir, sid, '{"session_id": "abc", "files": {')
+        cache = session.load(sid)
+        assert cache.session_id == sid
+        assert cache.files == {}
+
+    def test_corrupt_file_is_archived(self, tmp_data_dir):
+        """A corrupt session file is renamed to .json.corrupt.* for forensic analysis."""
+        sid = "corrupt-recovery-archive"
+        p = session.paths.session_cache_path(sid)
+        self._write_session_file(tmp_data_dir, sid, "!!!garbage!!!")
+        session.load(sid)
+        # The .corrupt sidecar should exist
+        corrupt_files = list(p.parent.glob(f"{sid}.json.corrupt.*"))
+        assert corrupt_files, (
+            f"Expected a .corrupt archive file next to {p.name}; "
+            f"found: {list(p.parent.iterdir())}"
+        )
+
+    def test_valid_but_wrong_schema_returns_fresh_session(self, tmp_data_dir):
+        """Valid JSON with a schema_version mismatch returns a fresh session (not a crash)."""
+        sid = "corrupt-schema-mismatch"
+        # Write a session with a schema_version far in the future
+        wrong_schema = json.dumps({
+            "schema_version": 9999,
+            "session_id": sid,
+            "started_ts": time.time(),
+            "last_activity_ts": time.time(),
+            "files": {},
+        })
+        self._write_session_file(tmp_data_dir, sid, wrong_schema)
+        cache = session.load(sid)
+        assert cache.session_id == sid
+        assert cache.files == {}
+
+
+# ---------------------------------------------------------------------------
+# Stale sidecar cleanup — cleanup_stale removes orphaned .json.lock / .json.flock
+# ---------------------------------------------------------------------------
+
+class TestStaleSidecarCleanup:
+    """cleanup_stale() removes companion lock/flock sidecars alongside stale JSON files.
+
+    When a session JSON is removed by cleanup_stale, its companion sidecar files
+    (.json.lock, .json.flock) must also be removed so they do not accumulate.
+    A second sweep handles orphaned sidecars whose JSON was already gone.
+    """
+
+    def _sessions_dir(self, tmp_data_dir):
+        return session.paths.session_cache_path("dummy").parent
+
+    def _old_mtime(self):
+        return time.time() - 9 * 24 * 3600  # 9 days ago
+
+    def test_cleanup_removes_lock_sidecar_with_stale_json(self, tmp_data_dir):
+        """When a stale session JSON is removed, its .json.lock is also removed."""
+        sid = "stale-with-lock"
+        s = session.load(sid)
+        session.save(s)
+        p = session.paths.session_cache_path(sid)
+        lock_path = p.with_suffix(".json.lock")
+        lock_path.write_text("99999", encoding="utf-8")
+        # Age both files to 9 days
+        old_t = self._old_mtime()
+        os.utime(p, (old_t, old_t))
+        os.utime(lock_path, (old_t, old_t))
+
+        session.cleanup_stale(max_age_hours=168.0)
+
+        assert not p.exists(), "Stale session JSON should have been removed"
+        assert not lock_path.exists(), "Stale .json.lock sidecar should have been removed"
+
+    def test_cleanup_removes_flock_sidecar_with_stale_json(self, tmp_data_dir):
+        """When a stale session JSON is removed, its .json.flock is also removed."""
+        sid = "stale-with-flock"
+        s = session.load(sid)
+        session.save(s)
+        p = session.paths.session_cache_path(sid)
+        flock_path = p.with_suffix(".json.flock")
+        flock_path.write_text("", encoding="utf-8")
+        old_t = self._old_mtime()
+        os.utime(p, (old_t, old_t))
+        os.utime(flock_path, (old_t, old_t))
+
+        session.cleanup_stale(max_age_hours=168.0)
+
+        assert not p.exists(), "Stale session JSON should have been removed"
+        assert not flock_path.exists(), "Stale .json.flock sidecar should have been removed"
+
+    def test_cleanup_removes_orphaned_lock_when_json_already_gone(self, tmp_data_dir):
+        """cleanup_stale removes an orphaned .json.lock whose .json was already deleted."""
+        sessions_dir = self._sessions_dir(tmp_data_dir)
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        # Plant a lock sidecar with no corresponding .json
+        orphan_sid = "orphan-lock-session"
+        orphan_lock = sessions_dir / f"{orphan_sid}.json.lock"
+        orphan_lock.write_text("99999", encoding="utf-8")
+        assert not (sessions_dir / f"{orphan_sid}.json").exists(), "Pre-condition: no JSON"
+
+        session.cleanup_stale(max_age_hours=168.0)
+
+        assert not orphan_lock.exists(), (
+            "Orphaned .json.lock (no corresponding .json) should have been removed"
+        )
+
+    def test_cleanup_keeps_lock_sidecar_for_active_session(self, tmp_data_dir):
+        """cleanup_stale does NOT remove a lock sidecar belonging to a recent (active) session."""
+        sid = "active-with-lock"
+        s = session.load(sid)
+        session.save(s)
+        p = session.paths.session_cache_path(sid)
+        lock_path = p.with_suffix(".json.lock")
+        lock_path.write_text("99999", encoding="utf-8")
+        # Both files are recent (within the 7-day cutoff) — do not age them
+
+        session.cleanup_stale(max_age_hours=168.0)
+
+        assert p.exists(), "Active session JSON must not be removed"
+        assert lock_path.exists(), "Lock sidecar for active session must not be removed"

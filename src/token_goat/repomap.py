@@ -356,6 +356,37 @@ KIND_PRIORITY: dict[str, int] = {
     "heading": 1,        # for markdown/html
     "liquid_schema": 1,  # for shopify themes
     "abi_export": 5,
+    # SQL indexer kinds — schema definitions are the most useful orientation targets
+    "sql_table": 0,
+    "sql_view": 1,
+    "sql_function": 2,
+    "sql_procedure": 2,
+    "sql_type": 1,
+    "sql_trigger": 3,
+    "sql_index": 4,
+    "sql_schema": 0,
+    # GraphQL indexer kinds
+    "graphql_type": 0,
+    "graphql_interface": 0,
+    "graphql_input": 1,
+    "graphql_enum": 1,
+    "graphql_union": 1,
+    "graphql_scalar": 2,
+    "graphql_extend": 3,
+    # Protocol Buffers kinds
+    "proto_message": 0,
+    "proto_enum": 1,
+    "proto_service": 0,
+    # CSS/SCSS/Less kinds — selectors and variables are the most useful targets
+    "css_selector": 2,
+    "css_rule": 3,
+    "css_var": 4,
+    "css_keyframe": 3,
+    "css_mixin": 2,
+    # Makefile / Dockerfile kinds
+    "makefile_target": 2,
+    "makefile_define": 3,
+    "dockerfile_stage": 2,
 }
 
 # Short tags emitted in the dense text format instead of full kind names.
@@ -376,6 +407,37 @@ _KIND_TAG: Final[dict[str, str]] = {
     "heading": "h",
     "liquid_schema": "lqs",
     "abi_export": "abi",
+    # SQL indexer kinds
+    "sql_table": "tbl",
+    "sql_view": "view",
+    "sql_function": "fn",
+    "sql_procedure": "proc",
+    "sql_type": "ty",
+    "sql_trigger": "trig",
+    "sql_index": "idx",
+    "sql_schema": "schema",
+    # GraphQL indexer kinds
+    "graphql_type": "ty",
+    "graphql_interface": "iface",
+    "graphql_input": "input",
+    "graphql_enum": "enum",
+    "graphql_union": "union",
+    "graphql_scalar": "scalar",
+    "graphql_extend": "ext",
+    # Protocol Buffers kinds
+    "proto_message": "msg",
+    "proto_enum": "enum",
+    "proto_service": "svc",
+    # CSS/SCSS/Less kinds
+    "css_selector": "sel",
+    "css_rule": "rule",
+    "css_var": "var",
+    "css_keyframe": "kf",
+    "css_mixin": "mix",
+    # Makefile / Dockerfile kinds
+    "makefile_target": "tgt",
+    "makefile_define": "def",
+    "dockerfile_stage": "stage",
 }
 
 # Budget below which build_map switches to "compact" mode automatically:
@@ -906,10 +968,12 @@ def _build_compact_file_summary(
     total: int,
     *,
     top_n: int = 3,
+    include_ext_counts: bool = False,
 ) -> str:
     """Return the 1-line file-list preamble used when compact mode suppresses the full list.
 
-    Format: ``"N files indexed. Top modules: a.py, b.py, c.py (+M more)\\n"``
+    Format (default): ``"N files indexed. Top modules: a.py, b.py, c.py (+M more)\\n"``
+    Format (ext counts): ``"N files: 15 .py, 8 .ts, 4 .sql (+2 more types). Top: a.py, b.py, c.py\\n"``
 
     *ranked* is the full PageRank-sorted list; we take the top ``top_n``
     basenames.  *total* is the total map-worthy file count (== len(ranked)).
@@ -919,6 +983,12 @@ def _build_compact_file_summary(
     with larger budgets can pass higher values to expose more head-of-rank
     files for orientation without dropping into the full per-file detail
     rendering — adding 5 extra basenames costs roughly 10 additional tokens.
+
+    ``include_ext_counts`` adds a file-type breakdown before the top modules
+    list, e.g. ``"5 .py, 3 .ts, 2 .sql"``. This is more information-dense for
+    heterogeneous polyglot projects where knowing the file-type mix matters as
+    much as knowing the top module names.  At most 4 extension types are shown
+    before collapsing the rest into ``"+N more types"``.
     """
     from pathlib import Path as _Path  # noqa: PLC0415
 
@@ -929,7 +999,26 @@ def _build_compact_file_summary(
     modules_str = ", ".join(top)
     if rest > 0:
         modules_str += f" (+{rest} more)"
-    return f"{total} files indexed. Top modules: {modules_str}\n"
+
+    if not include_ext_counts:
+        return f"{total} files indexed. Top modules: {modules_str}\n"
+
+    # Build extension counts for the type-breakdown prefix.
+    ext_counts: Counter[str] = Counter()
+    for rel, _ in ranked:
+        suffix = _Path(rel).suffix.lower()
+        ext_counts[suffix if suffix else "(no ext)"] += 1
+    _MAX_EXT_COLS = 4
+    ext_ranked = ext_counts.most_common()
+    if len(ext_ranked) <= _MAX_EXT_COLS:
+        ext_parts = [f"{c} {e}" for e, c in ext_ranked]
+        ext_str = ", ".join(ext_parts)
+    else:
+        top_ext = ext_ranked[:_MAX_EXT_COLS]
+        rest_types = len(ext_ranked) - _MAX_EXT_COLS
+        ext_parts = [f"{c} {e}" for e, c in top_ext]
+        ext_str = ", ".join(ext_parts) + f" (+{rest_types} more types)"
+    return f"{total} files: {ext_str}. Top: {modules_str}\n"
 
 
 def build_map(
@@ -1054,8 +1143,14 @@ def build_map(
             top_n = 8
         else:
             top_n = 12
+        # Use extension-count format for polyglot projects (multiple languages)
+        # to give a more information-dense orientation snapshot.  Single-language
+        # projects keep the module-names-only format since extension counts
+        # add no orientation value when every file has the same suffix.
+        include_ext_counts = len(lang_set) > 1
         summary_line = _build_compact_file_summary(
             data.ranked, len(data.ranked), top_n=top_n,
+            include_ext_counts=include_ext_counts,
         )
         out.append(summary_line)
         used += estimate_tokens(summary_line)
