@@ -905,7 +905,40 @@ def symbol(
                     name, pool,
                     n=_SYMBOL_DIDYOUMEAN_LIMIT, cutoff=_SYMBOL_DIDYOUMEAN_CUTOFF,
                 )
-        _record_lookup_stat("symbol_lookup", name, len(results), scope="all_projects")
+        # Savings for all_projects: aggregate file sizes across results' source files.
+        # Each result's project_hash is available from _global_query output.
+        _sym_bytes_saved = 0
+        if results:
+            results_by_proj: dict[str, list[str]] = {}
+            for r in results:
+                proj_hash = r.get("project") or ""
+                # Extract project hash from the project root in results.
+                # We need to map back to project hash for _sum_file_sizes.
+                # For now, use best-effort aggregation across all projects.
+                if proj_hash not in results_by_proj:
+                    results_by_proj[proj_hash] = []
+                results_by_proj[proj_hash].append(r.get("file", ""))
+            # Compute total file bytes by summing across projects
+            _sym_file_total = 0
+            for proj_root, file_rels in results_by_proj.items():
+                # Look up project hash from root
+                try:
+                    _db_tmp = _lazy_import("db")
+                    with _db_tmp.open_global() as gconn:
+                        ph_row = gconn.execute(
+                            "SELECT hash FROM projects WHERE root = ?", (proj_root,)
+                        ).fetchone()
+                    if ph_row:
+                        proj_hash_val = ph_row["hash"]
+                        _sym_file_total += _sum_file_sizes(proj_hash_val, file_rels)
+                except Exception:  # noqa: BLE001
+                    pass
+            _sym_output_bytes = max(80 * len(results), len(json.dumps(results, separators=(",", ":")).encode()))
+            _sym_bytes_saved = max(0, _sym_file_total - _sym_output_bytes)
+        _record_lookup_stat(
+            "symbol_lookup", name, len(results), scope="all_projects",
+            bytes_saved=_sym_bytes_saved,
+        )
         _emit_results(results, close_matches=close, redirected_from=redirected)
         return
 
@@ -1325,8 +1358,35 @@ def semantic(
         all_hits.sort(key=lambda x: x[1].distance)
         all_hits = all_hits[:k]
 
+        # Savings for all_projects: aggregate file sizes across results' source files.
+        _sem_bytes_saved = 0
+        if all_hits:
+            results_by_proj: dict[str, list[str]] = {}
+            for proj_root, h in all_hits:
+                if proj_root not in results_by_proj:
+                    results_by_proj[proj_root] = []
+                results_by_proj[proj_root].append(h.file_rel)
+            # Compute total file bytes by summing across projects
+            _sem_file_total = 0
+            for proj_root, file_rels in results_by_proj.items():
+                # Look up project hash from root
+                try:
+                    _db_tmp = _lazy_import("db")
+                    with _db_tmp.open_global() as gconn:
+                        ph_row = gconn.execute(
+                            "SELECT hash FROM projects WHERE root = ?", (proj_root,)
+                        ).fetchone()
+                    if ph_row:
+                        proj_hash_val = ph_row["hash"]
+                        _sem_file_total += _sum_file_sizes(proj_hash_val, file_rels)
+                except Exception:  # noqa: BLE001
+                    pass
+            _sem_output_bytes = sum(len(h.text.encode()) for _, h in all_hits)
+            _sem_bytes_saved = max(0, _sem_file_total - _sem_output_bytes)
+
         _record_lookup_stat(
             "semantic_search", query, len(all_hits), scope="all_projects",
+            bytes_saved=_sem_bytes_saved,
         )
 
         if json_output:
