@@ -87,14 +87,22 @@ def test_find_glob():
 
 
 # ---------------------------------------------------------------------------
-# 8. sudo cat /etc/passwd → read, target=/etc/passwd (strips sudo)
+# 8. sudo prefix stripping with system path guard
 # ---------------------------------------------------------------------------
 
 
 def test_sudo_prefix_stripped():
+    # sudo prefix is stripped, but /etc/passwd is a system path and rejected
     intent = parse("sudo cat /etc/passwd")
+    assert intent.kind == "unknown"
+    assert "system path" in intent.reason
+
+
+def test_sudo_prefix_stripped_project_file():
+    # sudo prefix is stripped, and project files are still treated as reads
+    intent = parse("sudo cat src/main.py")
     assert intent.kind == "read"
-    assert intent.target_path == "/etc/passwd"
+    assert intent.target_path == "src/main.py"
 
 
 # ---------------------------------------------------------------------------
@@ -744,3 +752,124 @@ def test_powershell_get_content_last_alias():
     assert intent.target_path == "foo.txt"
     assert intent.offset is None
     assert intent.limit == 5
+
+
+# ---------------------------------------------------------------------------
+# 20. Interactive pagers (less, more) — marked as interactive but still tracked
+# ---------------------------------------------------------------------------
+
+
+def test_less_interactive_pager():
+    intent = parse("less src/main.rs")
+    assert intent.kind == "read"
+    assert intent.target_path == "src/main.rs"
+    assert intent.is_interactive_pager is True
+
+
+def test_more_interactive_pager():
+    intent = parse("more /var/log/syslog")
+    assert intent.kind == "read"
+    assert intent.target_path == "/var/log/syslog"
+    assert intent.is_interactive_pager is True
+
+
+def test_less_with_flags():
+    intent = parse("less -N file.txt")
+    assert intent.kind == "read"
+    assert intent.target_path == "file.txt"
+    assert intent.is_interactive_pager is True
+
+
+# ---------------------------------------------------------------------------
+# 21. grep/rg read-equivalents (trivial patterns matching everything)
+# ---------------------------------------------------------------------------
+
+
+def test_grep_empty_pattern_is_read_equivalent():
+    # grep "" file.txt matches everything in file.txt → treat as read
+    intent = parse('grep "" src/main.py')
+    assert intent.kind == "read"
+    assert intent.target_path == "src/main.py"
+
+
+def test_rg_dot_pattern_is_read_equivalent():
+    # rg "." file.txt matches every line → treat as read
+    intent = parse('rg "." README.md')
+    assert intent.kind == "read"
+    assert intent.target_path == "README.md"
+
+
+def test_grep_nontrivial_pattern_is_grep():
+    # grep with a real pattern remains a grep
+    intent = parse('grep "TODO" src/main.py')
+    assert intent.kind == "grep"
+    assert intent.pattern == "TODO"
+
+
+def test_rg_nontrivial_pattern_is_grep():
+    # rg with a real pattern remains a grep
+    intent = parse('rg "error" logs/')
+    assert intent.kind == "grep"
+    assert intent.pattern == "error"
+
+
+# ---------------------------------------------------------------------------
+# 22. System path guard — reject /etc, /sys, C:\Windows, etc.
+# ---------------------------------------------------------------------------
+
+
+def test_cat_etc_hosts_rejected():
+    # cat /etc/hosts is not a project file → unknown
+    intent = parse("cat /etc/hosts")
+    assert intent.kind == "unknown"
+    assert "system path" in intent.reason
+
+
+def test_cat_windows_system32_rejected():
+    # cat C:\Windows\System32\config\... is not a project file
+    # Note: shlex.split with posix=True treats backslashes as escapes,
+    # so the path becomes C:WindowsSystem32... without backslashes.
+    # In a real Windows shell, the path would have backslashes. This test
+    # verifies the guard works when the path is properly formed.
+    intent = parse('cat "C:\\Windows\\System32\\drivers\\etc\\hosts"')
+    assert intent.kind == "unknown"
+    assert "system path" in intent.reason
+
+
+def test_cat_etc_passwd_rejected():
+    intent = parse("cat /etc/passwd")
+    assert intent.kind == "unknown"
+    assert "system path" in intent.reason
+
+
+def test_cat_sys_rejected():
+    intent = parse("cat /sys/devices/pci0000:00/0000:00:00.0/uevent")
+    assert intent.kind == "unknown"
+    assert "system path" in intent.reason
+
+
+def test_cat_program_files_rejected():
+    intent = parse('cat "C:\\Program Files\\Python\\python.exe"')
+    assert intent.kind == "unknown"
+    assert "system path" in intent.reason
+
+
+def test_cat_project_file_accepted():
+    # cat src/main.py (a relative path) should still be treated as a read
+    intent = parse("cat src/main.py")
+    assert intent.kind == "read"
+    assert intent.target_path == "src/main.py"
+
+
+def test_less_etc_logs_rejected():
+    # less /etc/something should reject system paths too
+    intent = parse("less /etc/sudoers")
+    assert intent.kind == "unknown"
+    assert "system path" in intent.reason
+
+
+def test_grep_empty_on_system_path_rejected():
+    # grep "" /etc/hosts should still reject as system path
+    intent = parse('grep "" /etc/hostname')
+    assert intent.kind == "unknown"
+    assert "system path" in intent.reason

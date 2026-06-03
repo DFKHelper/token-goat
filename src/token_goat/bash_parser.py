@@ -125,6 +125,10 @@ class BashIntent:
             downstream filter searched for.  Captured for debug logging; not
             currently used by session tracking but available for future
             "what did the agent actually see?" surfaces.
+        is_interactive_pager: ``True`` for interactive pagers like ``less`` and
+            ``more`` — the output is not a full structured file read and should
+            not be redirected to the Read tool. A session hint is still emitted
+            but the file is not marked as fully read.
     """
 
     kind: BashIntentKind
@@ -135,6 +139,7 @@ class BashIntent:
     reason: str | None = None
     filtered: bool = False
     filter_pattern: str | None = None
+    is_interactive_pager: bool = False
 
 
 # Commands whose primary effect is reading a file into stdout without modifying it.
@@ -173,6 +178,11 @@ READ_BINS = frozenset(
         "gc",
     ]
 )
+
+# Interactive pagers that should emit a session hint but NOT be redirected to
+# the Read tool, since the user interaction (scrolling, searching) produces
+# non-deterministic output for the agent.
+INTERACTIVE_PAGER_BINS = frozenset(["less", "more"])
 
 # Subset of READ_BINS where the target file comes *last* (after the script expression)
 # and where an in-place edit flag changes the operation from read to write.
@@ -293,6 +303,31 @@ def _looks_like_path(token: str) -> bool:
     treated as a path; a bare identifier like ``ls`` or ``git`` is not.
     """
     return bool(_PATH_LIKE_RE.search(token))
+
+
+def _is_system_path(path_str: str) -> bool:
+    """Return True when *path_str* is a system/OS path unlikely to be a project file.
+
+    Guards against treating ``cat /etc/hosts``, ``cat /etc/passwd``,
+    ``cat C:\\Windows\\System32\\...`` as project-file reads. Paths under
+    /etc, /sys, /proc, /dev on POSIX and C:\\Windows, C:\\Program Files on
+    Windows are classified as system paths and rejected. Notably, /var, /usr,
+    /usr/local and application log files are NOT automatically rejected as they
+    may be legitimate project resources.
+    """
+    path_lower = path_str.lower()
+    # POSIX system paths (critical system dirs only)
+    if path_lower.startswith(("/etc/", "/sys/", "/proc/", "/dev/")):
+        return True
+    # Windows system paths (case-insensitive)
+    return path_lower.startswith(
+        (
+            "c:\\windows\\",
+            "c:\\program files",
+            "c:\\programdata\\",
+            "c:\\winnt\\",
+        )
+    )
 
 
 def _parse_sed_script(script: str) -> tuple[int | None, int | None]:
@@ -621,10 +656,24 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
             reason="`type <name>` without a path-like argument is the POSIX builtin",
         )
 
+    # System path guard: reject reads of /etc, /sys, /proc, C:\Windows, etc.
+    # These are not project files and should not trigger session tracking or
+    # image-shrink logic.
+    if _is_system_path(target_path):
+        return BashIntent(
+            kind="unknown",
+            reason=f"system path {target_path} is not a project file",
+        )
+
+    # Interactive pagers: flag as interactive but still return a read intent
+    # so the file can be marked in session tracking, but set is_interactive_pager
+    # so the hook does not redirect to Read tool.
     intent = _build_read_intent(target_path)
     if intent.kind == "read":
         intent.offset = offset
         intent.limit = limit
+        if binary in INTERACTIVE_PAGER_BINS:
+            intent.is_interactive_pager = True
     return intent
 
 
@@ -733,9 +782,16 @@ def _parse_grep(binary: str, args: list[str]) -> BashIntent:
     as the pattern, which is the normal form for ``rg <pattern> [path]`` and
     ``grep <pattern> [file...]``.  Returns ``BashIntent(kind="unknown")`` when
     no pattern can be identified (e.g. ``grep -h`` alone).
+
+    Special case: ``grep "" <file>`` or ``rg "." <file>`` (trivial patterns that
+    match everything) are treated as read-equivalents — the pattern matches
+    the entire file, so it's semantically a full file read. In this case, the
+    second positional argument (the file path) is returned as a read intent
+    instead of a grep intent.
     """
     i = 0
     pattern: str | None = None
+    target_path: str | None = None
     while i < len(args):
         a = args[i]
         if a in ("-e", "--regexp", "-f", "--file") and i + 1 < len(args):
@@ -751,10 +807,24 @@ def _parse_grep(binary: str, args: list[str]) -> BashIntent:
             continue
         if pattern is None:
             pattern = a
+        elif target_path is None:
+            target_path = a
         i += 1
 
     if pattern is None:
         return BashIntent(kind="unknown")
+
+    # Detect read-equivalents: empty pattern or "." matches everything,
+    # so if we found a target file, treat it as a read, not a search.
+    if target_path and pattern in ("", "."):
+        # System path guard: reject system paths as project files
+        if _is_system_path(target_path):
+            return BashIntent(
+                kind="unknown",
+                reason=f"system path {target_path} is not a project file",
+            )
+        return _build_read_intent(target_path)
+
     return BashIntent(kind="grep", pattern=pattern)
 
 
