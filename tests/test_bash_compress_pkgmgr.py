@@ -71,6 +71,68 @@ class TestUvFilterFreezeList:
         assert "dropped" in result.lower() or "Downloading" not in result
 
 
+class TestUvFilterDownloadedPastTense:
+    """UvFilter drops 'Downloaded' (past tense) progress lines from uv output."""
+
+    UV = bc.UvFilter()
+
+    def test_downloaded_past_tense_dropped(self) -> None:
+        """'Downloaded X.whl (N KB)' lines are dropped alongside 'Downloading'."""
+        lines = [
+            "Resolved 5 packages in 123ms",
+            "  Downloaded requests 2.31.0 (96 KB)",
+            "  Downloaded certifi 2024.2.2 (164 KB)",
+            "  Downloaded urllib3 2.0.0 (87 KB)",
+            "Installed 5 packages in 0.5s",
+        ]
+        out = "\n".join(lines)
+        result = _apply(self.UV, stdout=out, argv=["uv", "sync"])
+        # Downloaded (past tense) lines must be dropped
+        assert "Downloaded requests" not in result
+        assert "Downloaded certifi" not in result
+        # Summary lines must be preserved
+        assert "Resolved 5 packages" in result
+        assert "Installed 5 packages" in result
+
+    def test_mixed_downloading_downloaded_all_dropped(self) -> None:
+        """Both present- and past-tense download lines are dropped in one pass."""
+        lines = [
+            "Resolved 10 packages in 500ms",
+            "   Downloading serde 1.0.197 (50 KB)",
+            "   Downloaded tokio 1.36.0 (456 KB)",
+            "   Fetching metadata for hyper",
+            "   Downloaded hyper 1.2.0 (200 KB)",
+            "  + serde==1.0.197",
+            "  + tokio==1.36.0",
+            "  + hyper==1.2.0",
+            "Installed 3 packages in 1.2s",
+        ]
+        out = "\n".join(lines)
+        result = _apply(self.UV, stdout=out, argv=["uv", "add", "hyper"])
+        assert "Downloading serde" not in result
+        assert "Downloaded tokio" not in result
+        assert "Downloaded hyper" not in result
+        assert "Fetching metadata" not in result
+        # Summary lines preserved
+        assert "Resolved 10 packages" in result
+        assert "Installed 3 packages" in result
+
+    def test_savings_significant_with_many_downloads(self) -> None:
+        """Large uv sync with many downloaded packages achieves >50% byte savings."""
+        lines = (
+            ["Resolved 30 packages in 2.3s"]
+            + [f"  Downloaded package-{i} 1.{i}.0 (100 KB)" for i in range(25)]
+            + [f"  + package-{i}==1.{i}.0" for i in range(25)]
+            + ["Installed 25 packages in 3.1s"]
+        )
+        out = "\n".join(lines)
+        f = self.UV
+        result = f.apply(out, "", 0, ["uv", "sync"])
+        assert len(result.text.encode()) < len(out.encode()) * 0.5
+        assert "Resolved 30 packages" in result.text
+        assert "Installed 25 packages" in result.text
+
+
 # ---------------------------------------------------------------------------
 # CondaFilter
 # ---------------------------------------------------------------------------

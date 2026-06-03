@@ -723,6 +723,63 @@ class TestPytestFilter:
         assert "collapsed" in result.text
         assert "20 passed" in result.text
 
+    def test_drops_test_session_starts_header(self):
+        """The '= test session starts =' header is dropped — it is constant and adds no signal."""
+        text = (
+            "= test session starts =\n"
+            "collected 10 items\n"
+            "..........\n"
+            "= 10 passed in 1.5s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 0, ["pytest"])
+        assert "test session starts" not in result.text
+        # Useful signal is preserved
+        assert "10 passed" in result.text
+        assert "collected 10 items" in result.text
+
+    def test_session_starts_drop_increases_savings(self):
+        """Dropping '= test session starts =' increases byte savings on small passing runs."""
+        # A minimal passing run: banner + session start + dots + summary
+        text = (
+            "platform linux -- Python 3.12.0, pytest-8.1.0, pluggy-1.4.0\n"
+            "rootdir: /home/user/project\n"
+            "configfile: pyproject.toml\n"
+            "= test session starts =\n"
+            "collected 5 items\n"
+            ".....\n"
+            "= 5 passed in 0.5s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 0, ["pytest"])
+        # The compressed output should be much smaller than the input
+        assert len(result.text.encode()) < len(text.encode()) * 0.5
+        # No noise lines in output
+        assert "test session starts" not in result.text
+        assert "platform linux" not in result.text
+
+    def test_session_starts_with_failures_summary_preserved(self):
+        """Dropping '= test session starts =' header does NOT affect failure sections."""
+        text = (
+            "= test session starts =\n"
+            "collected 3 items\n"
+            "..F\n"
+            "= FAILURES =\n"
+            "_______ test_bad _______\n"
+            "E   AssertionError: wrong value\n"
+            "= short test summary info =\n"
+            "FAILED tests/test_x.py::test_bad - AssertionError\n"
+            "= 1 failed, 2 passed in 0.3s =\n"
+        )
+        f = bc.PytestFilter()
+        result = f.apply(text, "", 1, ["pytest"])
+        # Session starts header dropped
+        assert "test session starts" not in result.text
+        # All failure signal preserved
+        assert "AssertionError: wrong value" in result.text
+        assert "FAILED tests/test_x.py::test_bad" in result.text
+        assert "1 failed, 2 passed" in result.text
+
 
 # ---------------------------------------------------------------------------
 # Jest filter
@@ -781,6 +838,35 @@ class TestCargoFilter:
         result = f.apply("", stderr, 1, ["cargo", "build"])
         assert "error[E0308]" in result.text
         assert "mismatched types" in result.text
+
+    def test_drops_downloaded_progress_lines(self):
+        """'Downloaded' (past tense) lines are dropped alongside 'Downloading'."""
+        stderr = (
+            "   Downloaded serde v1.0.197\n"
+            "   Downloaded serde_derive v1.0.197\n"
+            "   Downloading tokio v1.36.0\n"
+            "   Compiling my-project v0.1.0\n"
+            "    Finished dev [unoptimized] target(s) in 3.2s\n"
+        )
+        f = bc.CargoFilter()
+        result = f.apply("", stderr, 0, ["cargo", "build"])
+        assert "Downloaded serde" not in result.text
+        assert "Downloading tokio" not in result.text
+        # Non-progress lines preserved
+        assert "Compiling my-project" in result.text
+        assert "Finished" in result.text
+
+    def test_build_savings_significant_on_large_output(self):
+        """Cargo build with many Compiling + Downloaded lines achieves >50% savings."""
+        stderr_lines = (
+            [f"   Downloaded crate-{i} v1.{i}.0" for i in range(30)]
+            + [f"   Compiling crate-{i} v1.{i}.0" for i in range(30)]
+            + ["    Finished dev [unoptimized + debuginfo] target(s) in 45.0s"]
+        )
+        stderr = "\n".join(stderr_lines)
+        f = bc.CargoFilter()
+        result = f.apply("", stderr, 0, ["cargo", "build"])
+        assert len(result.text.encode()) < len(stderr.encode()) * 0.5
 
 
 # ---------------------------------------------------------------------------

@@ -1748,6 +1748,12 @@ class PytestFilter(Filter):
                 in_slow_section = "slowest" in line and "durations" in line
                 in_warnings_section = "warnings summary" in line
                 in_cov_table = False
+                # Drop the constant "= test session starts =" header — it appears
+                # on every run and provides no debugging signal to the agent.
+                # All other section headers (FAILURES, short test summary, final
+                # pass/fail tally) are preserved verbatim.
+                if "test session starts" in line:
+                    continue
                 kept.append(line)
                 continue
 
@@ -2173,7 +2179,7 @@ _CARGO_COMPILING_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*Compiling\s+\S+\s+v\S+"
 )
 _CARGO_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*(Downloading|Fetching|Updating|Documenting|Building)\s+\S"
+    r"^\s*(Downloading|Downloaded|Fetching|Updating|Documenting|Building)\s+\S"
 )
 _CARGO_CHECKING_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*Checking\s+\S+\s+v\S+"
@@ -4863,9 +4869,12 @@ def _compress_git_log_enhanced(stdout: str, stderr: str, argv: list[str]) -> str
 
     if is_oneline:
         lines = [ln for ln in stdout.split("\n") if ln.strip()]
-        if len(lines) > 20:
-            elided = len(lines) - 20
-            kept_lines = lines[:20] + [f"[token-goat: +{elided} more commits]"]
+        # --oneline output is already maximally compact (~50 bytes/line); use a
+        # higher cap of 50 lines before collapsing (vs 10 for full-format logs).
+        _ONELINE_CAP = 50
+        if len(lines) > _ONELINE_CAP:
+            elided = len(lines) - _ONELINE_CAP
+            kept_lines = lines[:_ONELINE_CAP] + [f"[token-goat: +{elided} more commits]"]
         else:
             kept_lines = lines
         out = "\n".join(kept_lines)
@@ -8160,7 +8169,7 @@ class PythonFilter(Filter):
 
 #: uv per-package download/fetch progress lines: "   Downloading foo-1.0 (2.3 MB)"
 _UV_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*(Downloading|Fetching)\s+\S"
+    r"^\s*(Downloading|Downloaded|Fetching)\s+\S"
 )
 #: uv per-package install/uninstall diff lines: "   + foo==1.0" / "   - foo==1.0"
 _UV_DIFF_LINE_RE: Final[re.Pattern[str]] = re.compile(

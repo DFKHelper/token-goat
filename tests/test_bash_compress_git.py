@@ -43,20 +43,46 @@ class TestGitLogFilterOneline:
         for i in range(10):
             assert f"Short commit message {i}" in result
 
-    def test_long_oneline_truncated_to_20(self) -> None:
-        text = self._make_oneline(50)
+    def test_long_oneline_truncated_to_50(self) -> None:
+        """--oneline cap is 50 lines (vs 10 for full-format); 80 commits → +30 elided."""
+        text = self._make_oneline(80)
         f = bc.GitLogFilter()
         result = _apply(f, text, ["git", "log", "--oneline"])
         assert "+30 more commits" in result
         assert "abc0000ef" in result  # first commit kept
-        assert "abc0049ef" not in result  # last commit elided
+        assert "abc0079ef" not in result  # last commit elided (beyond cap)
 
     def test_oneline_autodetected_without_flag(self) -> None:
-        """Heuristic: if every line starts with a short hash it is oneline format."""
-        text = self._make_oneline(35)
+        """Heuristic: if every line starts with a short hash it is oneline format.
+        Uses 60 commits to exceed the 50-line --oneline cap."""
+        text = self._make_oneline(60)
         f = bc.GitLogFilter()
         result = _apply(f, text, ["git", "log"])
         assert "more commits" in result
+
+    def test_oneline_49_lines_passthrough(self) -> None:
+        """49 oneline commits (below the 50-cap) pass through without truncation."""
+        text = self._make_oneline(49)
+        f = bc.GitLogFilter()
+        result = _apply(f, text, ["git", "log", "--oneline"])
+        # All 49 commits should appear with no truncation marker
+        assert "more commits" not in result
+        for i in range(49):
+            assert f"Short commit message {i}" in result
+
+    def test_oneline_exactly_50_passthrough(self) -> None:
+        """Exactly 50 oneline commits should pass through without truncation."""
+        text = self._make_oneline(50)
+        f = bc.GitLogFilter()
+        result = _apply(f, text, ["git", "log", "--oneline"])
+        assert "more commits" not in result
+
+    def test_oneline_51_lines_truncated(self) -> None:
+        """51 oneline commits (just above the 50-cap) triggers truncation."""
+        text = self._make_oneline(51)
+        f = bc.GitLogFilter()
+        result = _apply(f, text, ["git", "log", "--oneline"])
+        assert "+1 more commits" in result
 
 
 class TestGitLogFilterFullFormat:
