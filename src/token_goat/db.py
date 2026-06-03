@@ -52,6 +52,7 @@ __all__ = [
     "open_project",
     "open_project_readonly",
     "project_has_files",
+    "project_last_indexed_ts",
     "project_writer_lock",
     "record_stat",
     "touch_project_last_seen",
@@ -1167,6 +1168,34 @@ def project_has_files(project_hash: str) -> bool:
     except (sqlite3.Error, OSError) as e:
         _LOG.debug("project_is_indexed(%s…) failed: %s", project_hash[:8], e)
         return False
+
+
+def project_last_indexed_ts(project_hash: str) -> float:
+    """Return the Unix timestamp of the most-recently-indexed file in *project_hash*.
+
+    Queries ``MAX(indexed_at)`` from the ``files`` table of the project DB.
+    Returns 0.0 when the project has no indexed files, the DB does not exist,
+    or any error occurs (fail-soft — callers treat 0.0 as "never indexed").
+
+    Intended for freshness checks that want to know how stale the index is
+    relative to wall-clock time, e.g.::
+
+        age_hours = (time.time() - db.project_last_indexed_ts(proj.hash)) / 3600
+
+    The underlying column is ``INTEGER NOT NULL`` (Unix epoch seconds at
+    index time), so the returned float is second-precision.
+    """
+    try:
+        with open_project_readonly(project_hash) as conn:
+            row = conn.execute("SELECT MAX(indexed_at) FROM files").fetchone()
+            if row is None or row[0] is None:
+                return 0.0
+            return float(row[0])
+    except FileNotFoundError:
+        return 0.0  # DB does not exist yet — normal for un-indexed projects
+    except (sqlite3.Error, OSError) as e:
+        _LOG.debug("project_last_indexed_ts(%s…) failed: %s", project_hash[:8], e)
+        return 0.0
 
 
 def list_all_project_hashes() -> list[str]:

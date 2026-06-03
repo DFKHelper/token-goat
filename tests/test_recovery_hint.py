@@ -536,3 +536,345 @@ class TestRecoveryHintIntegration:
         # but if it appears it should mention the edited file
         if "### Pending Work" in hint:
             assert "worker.py" in hint or "db.py" in hint
+
+
+# ---------------------------------------------------------------------------
+# 6. Task list section in recovery hint
+# ---------------------------------------------------------------------------
+
+
+class TestRecoveryHintTaskList:
+    """Tests that pending/in-progress tasks appear in the recovery hint."""
+
+    def test_pending_task_appears_in_hint(self, tmp_data_dir, tmp_path, monkeypatch):
+        """A pending task is rendered in the recovery hint via ### TODOs."""
+        sid = "hint-task-1"
+        session.mark_file_edited(sid, "/proj/src/hooks.py")
+
+        # Stub out _load_task_list to return a pending task.
+        from token_goat import compact as compact_mod
+
+        monkeypatch.setattr(
+            compact_mod,
+            "_load_task_list",
+            lambda session_id: [{"id": "t1", "subject": "Fix the hook handler", "status": "pending"}],
+        )
+
+        hint = _build_recovery_hint(sid)
+        assert hint is not None
+        assert "Fix the hook handler" in hint
+
+    def test_in_progress_task_appears_in_hint(self, tmp_data_dir, monkeypatch):
+        """An in-progress task is rendered with the [→] prefix."""
+        sid = "hint-task-2"
+        session.mark_file_edited(sid, "/proj/src/db.py")
+
+        from token_goat import compact as compact_mod
+
+        monkeypatch.setattr(
+            compact_mod,
+            "_load_task_list",
+            lambda session_id: [{"id": "t2", "subject": "Add index freshness check", "status": "in_progress"}],
+        )
+
+        hint = _build_recovery_hint(sid)
+        assert hint is not None
+        assert "Add index freshness check" in hint
+        # in_progress tasks use the [→] marker
+        assert "[→]" in hint
+
+    def test_completed_tasks_excluded_from_hint(self, tmp_data_dir, monkeypatch):
+        """Completed tasks must not appear in the recovery hint."""
+        sid = "hint-task-3"
+        session.mark_file_edited(sid, "/proj/src/db.py")
+
+        from token_goat import compact as compact_mod
+
+        monkeypatch.setattr(
+            compact_mod,
+            "_load_task_list",
+            lambda session_id: [
+                {"id": "t3a", "subject": "Old finished task", "status": "completed"},
+                {"id": "t3b", "subject": "Active pending task", "status": "pending"},
+            ],
+        )
+
+        hint = _build_recovery_hint(sid)
+        assert hint is not None
+        assert "Old finished task" not in hint
+        assert "Active pending task" in hint
+
+    def test_no_tasks_section_absent(self, tmp_data_dir, monkeypatch):
+        """When there are no pending/in-progress tasks, no ### TODOs section is emitted."""
+        sid = "hint-task-4"
+        session.mark_file_edited(sid, "/proj/src/cli.py")
+
+        from token_goat import compact as compact_mod
+
+        monkeypatch.setattr(
+            compact_mod,
+            "_load_task_list",
+            lambda session_id: [],
+        )
+
+        hint = _build_recovery_hint(sid)
+        # The hint may still be non-None (other sections exist), but must not have TODOs
+        if hint is not None:
+            assert "### TODOs" not in hint
+
+    def test_task_load_error_does_not_break_hint(self, tmp_data_dir, monkeypatch):
+        """If _load_task_list raises, the recovery hint still returns cleanly."""
+        sid = "hint-task-5"
+        session.mark_file_edited(sid, "/proj/src/session.py")
+
+        from token_goat import compact as compact_mod
+
+        def _boom(session_id: str) -> list:
+            raise RuntimeError("simulated task-load failure")
+
+        monkeypatch.setattr(compact_mod, "_load_task_list", _boom)
+
+        # Must not raise; hint may be None or a string but never propagates the error.
+        hint = _build_recovery_hint(sid)
+        assert hint is None or isinstance(hint, str)
+
+
+# ---------------------------------------------------------------------------
+# 7. Index freshness hint in session_start
+# ---------------------------------------------------------------------------
+
+
+class TestIndexFreshnessHint:
+    """Tests for _index_stale_hint and its integration in session_start."""
+
+    def test_fresh_index_returns_none(self, tmp_data_dir, tmp_path, monkeypatch):
+        """When the index was updated within the stale window, _index_stale_hint returns None."""
+        import time
+
+        from token_goat.hooks_session import _index_stale_hint
+        from token_goat.project import Project
+
+        proj = Project(root=tmp_path, hash="fakehash0001", marker="pyproject.toml")
+
+        # Simulate a very recently indexed project (5 minutes ago).
+        monkeypatch.setattr(
+            "token_goat.db.project_last_indexed_ts",
+            lambda project_hash: time.time() - 300,
+        )
+
+        hint = _index_stale_hint(proj)
+        assert hint is None
+
+    def test_stale_index_returns_hint(self, tmp_data_dir, tmp_path, monkeypatch):
+        """When the index is older than the stale threshold, a hint string is returned."""
+        import time
+
+        from token_goat.hooks_session import _index_stale_hint
+        from token_goat.project import Project
+
+        proj = Project(root=tmp_path, hash="fakehash0002", marker="pyproject.toml")
+
+        # Simulate an index that is 2 hours old (well past the 1-hour default).
+        monkeypatch.setattr(
+            "token_goat.db.project_last_indexed_ts",
+            lambda project_hash: time.time() - 7200,
+        )
+
+        hint = _index_stale_hint(proj)
+        assert hint is not None
+        assert "stale" in hint.lower()
+        assert "token-goat index" in hint
+
+    def test_stale_hint_shows_age_in_hours(self, tmp_data_dir, tmp_path, monkeypatch):
+        """The stale hint shows the age in human-readable hours."""
+        import time
+
+        from token_goat.hooks_session import _index_stale_hint
+        from token_goat.project import Project
+
+        proj = Project(root=tmp_path, hash="fakehash0003", marker="pyproject.toml")
+
+        monkeypatch.setattr(
+            "token_goat.db.project_last_indexed_ts",
+            lambda project_hash: time.time() - 3 * 3600,  # 3 hours ago
+        )
+
+        hint = _index_stale_hint(proj)
+        assert hint is not None
+        assert "3h ago" in hint
+
+    def test_never_indexed_returns_none(self, tmp_data_dir, tmp_path, monkeypatch):
+        """When project_last_indexed_ts returns 0.0 (never indexed), no stale hint fires."""
+        from token_goat.hooks_session import _index_stale_hint
+        from token_goat.project import Project
+
+        proj = Project(root=tmp_path, hash="fakehash0004", marker="pyproject.toml")
+
+        monkeypatch.setattr(
+            "token_goat.db.project_last_indexed_ts",
+            lambda project_hash: 0.0,
+        )
+
+        hint = _index_stale_hint(proj)
+        # Never-indexed projects trigger auto-indexing; no stale hint needed.
+        assert hint is None
+
+    def test_stale_threshold_env_override(self, tmp_data_dir, tmp_path, monkeypatch):
+        """TOKEN_GOAT_INDEX_STALE_SECS env var overrides the default stale threshold."""
+        import time
+
+        from token_goat.hooks_session import _index_stale_hint
+        from token_goat.project import Project
+
+        proj = Project(root=tmp_path, hash="fakehash0005", marker="pyproject.toml")
+
+        # Index is 10 minutes old — fresh by the default (3600s) but stale
+        # when the threshold is set to 300s via env var.
+        monkeypatch.setenv("TOKEN_GOAT_INDEX_STALE_SECS", "300")
+        monkeypatch.setattr(
+            "token_goat.db.project_last_indexed_ts",
+            lambda project_hash: time.time() - 600,
+        )
+
+        hint = _index_stale_hint(proj)
+        assert hint is not None
+        assert "stale" in hint.lower()
+
+    def test_db_error_returns_none(self, tmp_data_dir, tmp_path, monkeypatch):
+        """When db.project_last_indexed_ts raises, _index_stale_hint returns None (fail-soft)."""
+        from token_goat.hooks_session import _index_stale_hint
+        from token_goat.project import Project
+
+        proj = Project(root=tmp_path, hash="fakehash0006", marker="pyproject.toml")
+
+        def _boom(project_hash: str) -> float:
+            raise OSError("simulated db error")
+
+        monkeypatch.setattr("token_goat.db.project_last_indexed_ts", _boom)
+
+        hint = _index_stale_hint(proj)
+        assert hint is None
+
+    def test_stale_hint_in_session_start_additional_context(
+        self, tmp_data_dir, tmp_path, monkeypatch
+    ):
+        """When the index is stale, session_start injects the hint into additionalContext."""
+        import time
+
+        from token_goat import db, worker
+        from token_goat.hooks_session import session_start
+        from token_goat.project import find_project
+
+        proj_root = tmp_path / "stalerepo"
+        proj_root.mkdir()
+        (proj_root / ".git").mkdir()
+        (proj_root / "pyproject.toml").write_text("[project]\nname='test'\n")
+        proj = find_project(proj_root)
+        assert proj is not None
+
+        monkeypatch.setattr(db, "touch_project_last_seen", lambda *_: None)
+        monkeypatch.setattr(db, "project_has_files", lambda *_: True)  # already indexed
+        monkeypatch.setattr(worker, "ensure_running", lambda: 99999)
+
+        # Simulate a 2-hour-old index.
+        monkeypatch.setattr(
+            db, "project_last_indexed_ts", lambda project_hash: time.time() - 7200
+        )
+
+        payload = {"session_id": "stale-hint-session", "cwd": str(proj_root)}
+        result = session_start(payload)
+
+        assert result.get("continue") is True
+        hso = result.get("hookSpecificOutput", {})
+        additional = hso.get("additionalContext", "")
+        assert "stale" in additional.lower()
+        assert "token-goat index" in additional
+
+    def test_fresh_index_no_stale_hint_in_session_start(
+        self, tmp_data_dir, tmp_path, monkeypatch
+    ):
+        """When the index is fresh, session_start must NOT inject a stale hint."""
+        import time
+
+        from token_goat import db, worker
+        from token_goat.hooks_session import session_start
+        from token_goat.project import find_project
+
+        proj_root = tmp_path / "freshrepo"
+        proj_root.mkdir()
+        (proj_root / ".git").mkdir()
+        (proj_root / "pyproject.toml").write_text("[project]\nname='test'\n")
+        proj = find_project(proj_root)
+        assert proj is not None
+
+        monkeypatch.setattr(db, "touch_project_last_seen", lambda *_: None)
+        monkeypatch.setattr(db, "project_has_files", lambda *_: True)
+        monkeypatch.setattr(worker, "ensure_running", lambda: 99999)
+
+        # Index is only 5 minutes old — well within the stale window.
+        monkeypatch.setattr(
+            db, "project_last_indexed_ts", lambda project_hash: time.time() - 300
+        )
+
+        payload = {"session_id": "fresh-hint-session", "cwd": str(proj_root)}
+        result = session_start(payload)
+
+        assert result.get("continue") is True
+        hso = result.get("hookSpecificOutput", {})
+        additional = hso.get("additionalContext", "")
+        assert "stale" not in additional.lower()
+
+
+# ---------------------------------------------------------------------------
+# 8. db.project_last_indexed_ts
+# ---------------------------------------------------------------------------
+
+
+class TestProjectLastIndexedTs:
+    """Tests for db.project_last_indexed_ts."""
+
+    def test_returns_zero_for_nonexistent_db(self, tmp_data_dir):
+        """Returns 0.0 when the project DB does not exist."""
+        from token_goat import db
+
+        # Valid lowercase hex SHA-1 digest that points to no actual DB.
+        result = db.project_last_indexed_ts("0" * 40)
+        assert result == 0.0
+
+    def test_returns_zero_for_empty_project(self, tmp_data_dir, tmp_path):
+        """Returns 0.0 when project DB exists but has no files (fresh DB)."""
+        from token_goat import db
+
+        proj_hash = "a" * 40
+        # Open the project DB to create it (DDL only, no files inserted).
+        with db.open_project(proj_hash):
+            pass
+
+        result = db.project_last_indexed_ts(proj_hash)
+        assert result == 0.0
+
+    def test_returns_max_indexed_at(self, tmp_data_dir, tmp_path):
+        """Returns the maximum indexed_at timestamp across all files."""
+        import time
+
+        from token_goat import db
+
+        proj_hash = "b" * 40
+        ts_old = int(time.time()) - 7200  # 2 hours ago
+        ts_new = int(time.time()) - 3600  # 1 hour ago
+
+        # Schema: rel_path TEXT PK, language TEXT, size INTEGER, line_count, mtime, content_sha256, indexed_at
+        with db.open_project(proj_hash) as conn:
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at)"
+                " VALUES (?,?,?,?,?,?)",
+                ("src/a.py", "python", 100, 1000.0, "sha1" + "x" * 59, ts_old),
+            )
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at)"
+                " VALUES (?,?,?,?,?,?)",
+                ("src/b.py", "python", 200, 2000.0, "sha2" + "x" * 59, ts_new),
+            )
+
+        result = db.project_last_indexed_ts(proj_hash)
+        assert result == float(ts_new)

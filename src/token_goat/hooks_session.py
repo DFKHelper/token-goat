@@ -819,6 +819,25 @@ def _build_recovery_hint(session_id: str) -> str | None:
         line = f"{skill_header}: {skill_str} (recall via `token-goat skill-body <name>`)"
         sections.append(line)
 
+    # 0.25. Active task list — pending and in-progress tasks from Claude's
+    # TaskList (``~/.claude/tasks/<session_id>/``).  After compaction the agent
+    # loses awareness of open tasks; surfacing them here restores the "what was
+    # I working on?" thread without requiring a full /compact-recall cycle.
+    # Reuses compact.py's ``_load_task_list`` + ``_render_tasks_section`` so
+    # the format is identical to the pre-compact manifest's ### TODOs section.
+    try:
+        from . import compact as _compact_tasks  # noqa: PLC0415
+        _raw_tasks = _compact_tasks._load_task_list(session_id)
+        if _raw_tasks:
+            _task_lines = _compact_tasks._render_tasks_section(
+                _raw_tasks,
+                edited_paths=set(raw_edited.keys()),
+            )
+            if _task_lines:
+                sections.append("\n".join(_task_lines))
+    except Exception:  # noqa: BLE001 — never break the hint on task errors
+        pass
+
     # 0.5. Active blockers — failed bash commands within the blocker window.
     # The post-compact agent's most-load-bearing question is "what was failing?";
     # surfacing it with an error preview from the cached output gives a
@@ -1456,6 +1475,61 @@ def _auto_index_if_needed(proj: Project) -> None:
         _LOG.exception("auto-index spawn failed")
 
 
+# How old (in seconds) the index must be before we emit a stale-index hint.
+# Default: 1 hour.  Overridable via ``TOKEN_GOAT_INDEX_STALE_SECS`` env var.
+_INDEX_STALE_SECS: int = 3600
+
+
+def _index_stale_hint(proj: Project) -> str | None:
+    """Return a stale-index hint string when the project index is more than
+    :data:`_INDEX_STALE_SECS` seconds old, or ``None`` when the index is fresh
+    or the age cannot be determined.
+
+    The hint is a single line such as::
+
+        Index may be stale (last indexed 3h ago) — run `token-goat index` to refresh.
+
+    Designed to be appended to the session-start ``additionalContext`` so agents
+    know when symbol results may be outdated without having to diagnose stale
+    results after the fact.
+
+    Fail-soft: any error returns ``None`` so a broken DB never blocks startup.
+    """
+    import os as _os  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+
+    try:
+        stale_secs = int(_os.environ.get("TOKEN_GOAT_INDEX_STALE_SECS", _INDEX_STALE_SECS))
+    except (ValueError, TypeError):
+        stale_secs = _INDEX_STALE_SECS
+
+    try:
+        from . import db as _db  # noqa: PLC0415
+
+        last_ts = _db.project_last_indexed_ts(proj.hash)
+        if last_ts == 0.0:
+            # Never indexed — auto-indexing handles this; no stale hint needed.
+            return None
+        age = _time.time() - last_ts
+        if age <= stale_secs:
+            return None
+
+        # Format the age in a human-readable way.
+        if age < 3600:
+            age_str = f"{int(age / 60)}m ago"
+        elif age < 86400:
+            age_str = f"{int(age / 3600)}h ago"
+        else:
+            age_str = f"{int(age / 86400)}d ago"
+
+        return (
+            f"Index may be stale (last indexed {age_str})"
+            " — run `token-goat index` to refresh."
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _build_startup_context(proj: Project) -> str | None:
     """Build additionalContext from project memory for the session-start response.
 
@@ -1566,12 +1640,24 @@ def session_start(payload: HookPayload) -> HookResponse:
     # Inject project memory facts for the new session (non-compact only —
     # compact sessions preserve prior context and don't need a re-injection).
     mem_ctx: str | None = None
+    stale_hint: str | None = None
     if proj is not None:
         mem_ctx = _build_startup_context(proj)
+        stale_hint = _index_stale_hint(proj)
+
+    # Merge project memory and stale-index hint into a single additionalContext
+    # string.  Either or both may be absent; if the stale hint fires without
+    # any memory content it is still surfaced on its own.
+    additional_ctx_parts: list[str] = []
+    if mem_ctx:
+        additional_ctx_parts.append(mem_ctx)
+    if stale_hint:
+        additional_ctx_parts.append(stale_hint)
+    combined_mem: str | None = "\n\n".join(additional_ctx_parts) if additional_ctx_parts else None
 
     # Combine brief (systemMessage) and project memory (additionalContext) into
     # a single response.  Either or both may be absent.
-    if brief or mem_ctx:
+    if brief or combined_mem:
         resp: HookResponse = {
             "continue": True,
             "hookSpecificOutput": {
@@ -1580,10 +1666,10 @@ def session_start(payload: HookPayload) -> HookResponse:
         }
         if brief:
             resp["systemMessage"] = brief
-        if mem_ctx:
+        if combined_mem:
             hso = resp.get("hookSpecificOutput")
             if isinstance(hso, dict):
-                hso["additionalContext"] = mem_ctx
+                hso["additionalContext"] = combined_mem
         return resp
 
     return CONTINUE()

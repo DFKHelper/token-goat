@@ -1,7 +1,6 @@
 """Tests for paths.safe_join — the canonical user-controlled path-join helper."""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -99,22 +98,72 @@ def test_safe_join_rejects_dotdot_windows(base: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Absolute path rejection
+# Absolute path rejection — platform-neutral
+#
+# Both POSIX absolute paths ("/etc/passwd") and Windows drive-rooted paths
+# ("C:\\Windows\\System32") are rejected on every platform:
+#
+#   * Windows fragments ("C:\\...") contain a colon and are caught by the
+#     colon guard before Path resolution even runs.
+#   * POSIX fragments ("/etc/passwd") escape the base directory after
+#     resolve() and are caught by the relative_to() traversal guard; on
+#     Windows, Path("/etc/passwd").resolve() resolves relative to the CWD
+#     drive root, which is still outside *base*.
+#
+# Neither test needs a platform skip — removing the old @skipif decorators
+# makes both run on Windows and Linux CI, giving genuine cross-platform
+# coverage.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX absolute path test")
 def test_safe_join_rejects_posix_absolute(base: Path) -> None:
-    """A POSIX absolute path as fragment must be rejected."""
+    """A POSIX absolute path as fragment must be rejected on any platform."""
     with pytest.raises(ValueError):
         paths.safe_join(base, "/etc/passwd")
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows absolute path test")
 def test_safe_join_rejects_windows_absolute(base: Path) -> None:
-    """A Windows drive-rooted path as fragment must be rejected."""
+    """A Windows drive-rooted path as fragment must be rejected on any platform.
+
+    The colon guard fires before path resolution, so this is rejected on Linux
+    and macOS too — the fragment never reaches Path.resolve().
+    """
     with pytest.raises(ValueError):
         paths.safe_join(base, "C:\\Windows\\System32")
+
+
+# ---------------------------------------------------------------------------
+# Absolute path rejection — parametrized across common attack patterns
+#
+# Covers both path-separator styles and both platforms in a single test body,
+# so that any future regression fails for every variant simultaneously on
+# every CI platform rather than being hidden by a skipif guard.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        # POSIX absolute paths
+        "/etc/passwd",
+        "/root/.ssh/id_rsa",
+        "//server/share",
+        # Windows drive-letter paths (colon guard fires first)
+        "C:/Windows/System32",
+        "C:\\Windows\\System32",
+        "D:/secret/file.txt",
+        "c:/lower/case/drive",
+        # Windows long-path prefix (contains backslash + colon)
+        "\\\\?\\C:\\Windows",
+        # UNC paths (escape base via traversal guard or colon-free but still absolute)
+        "\\\\server\\share\\file",
+        "//server/share/file",
+    ],
+)
+def test_safe_join_rejects_absolute_paths(base: Path, fragment: str) -> None:
+    """Absolute and UNC fragments are rejected regardless of OS or separator style."""
+    with pytest.raises(ValueError):
+        paths.safe_join(base, fragment)
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +187,53 @@ def test_safe_join_rejects_codex_style_session_id(base: Path) -> None:
     """Codex-style ``<uuid>:<counter>`` session IDs are rejected."""
     with pytest.raises(ValueError, match="colon"):
         paths.safe_join(base, "01abc123-def4-5678-90ab-cdef01234567:1")
+
+
+# ---------------------------------------------------------------------------
+# Colon rejection — parametrized
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "session:abc",
+        "uuid:1",
+        "C:/evil",
+        "D:\\secret",
+        "normal:colon",
+        "a:b:c",
+    ],
+)
+def test_safe_join_rejects_colon_parametrized(base: Path, fragment: str) -> None:
+    """Any fragment containing a colon is rejected with a clear error message."""
+    with pytest.raises(ValueError, match="colon"):
+        paths.safe_join(base, fragment)
+
+
+# ---------------------------------------------------------------------------
+# UNC path rejection (documented behavior)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "\\\\server\\share",
+        "\\\\server\\share\\nested\\file",
+        "//server/share",
+        "//server/share/nested/file",
+    ],
+)
+def test_safe_join_rejects_unc_paths(base: Path, fragment: str) -> None:
+    """UNC-style network paths (``\\\\server\\share``, ``//server/share``) are rejected.
+
+    UNC paths either contain a colon (if ``\\\\?\\C:\\...`` style) or escape the
+    base directory via the traversal guard (the resolved candidate is not under
+    *base*).  Both cases raise ``ValueError`` consistently on every platform.
+    """
+    with pytest.raises(ValueError):
+        paths.safe_join(base, fragment)
 
 
 # ---------------------------------------------------------------------------
