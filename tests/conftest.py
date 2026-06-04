@@ -191,16 +191,27 @@ def tmp_data_dir(tmp_path):
     - compact._manifest_sha_written_this_process: set that gates sidecar
       re-reads; if a test writes a manifest for "sid-1" the entry persists
       into the next test's context, corrupting the sidecar cache-hit check.
+    - compact git-related caches (keyed by cwd/project_root): stale entries
+      from tests in other modules running on the same xdist worker can
+      populate these with data from a different tmp_path, corrupting
+      uncommitted-changes or diff-stat sections of the manifest.
     """
     from token_goat import compact as _compact_mod
     from token_goat import session as _session_mod
 
-    _session_mod._proc_load_cache.clear()
-    _compact_mod._manifest_sha_written_this_process.clear()
+    def _clear_caches() -> None:
+        _session_mod._proc_load_cache.clear()
+        _compact_mod._manifest_sha_written_this_process.clear()
+        _compact_mod._diff_stat_summary_cache.clear()
+        _compact_mod._uncommitted_changes_cache.clear()
+        _compact_mod._is_git_repo_cache.clear()
+        _compact_mod._whole_diff_cache.clear()
+        _compact_mod._blocker_preview_cache.clear()
+
+    _clear_caches()
     with patch.object(paths, 'data_dir', return_value=tmp_path):
         yield tmp_path
-    _session_mod._proc_load_cache.clear()
-    _compact_mod._manifest_sha_written_this_process.clear()
+    _clear_caches()
 
 
 @pytest.fixture(autouse=True)
