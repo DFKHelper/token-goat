@@ -36,12 +36,15 @@ are inspected for filter/limit cmdlets:
   records ``filter_pattern``.  Output is a subset of source lines, so the
   read must not be treated as a full read for dedup purposes.
 * ``Where-Object`` / ``?`` / ``where`` — predicate filter; same treatment.
-  When the predicate is ``{ $_ -match 'pat' }`` the pattern is captured.
+  When the predicate is ``{ $_ -match 'pat' }`` or ``{ $_ -notmatch 'pat' }``
+  (and similar comparison operators) the pattern is captured.
 * ``Select-Object -First N`` / ``select -First N`` — head-like slice; sets
   ``offset=1, limit=N`` if no limit was already specified.
 * ``Select-Object -Last N`` — tail-like slice; sets ``limit=N`` with no offset.
 * ``Out-String`` / formatting stages — passthrough; the source ``Get-Content``
   is still recognised as a full read.
+* ``Sort-Object``, ``ForEach-Object``, ``Tee-Object``, ``Measure-Object``,
+  ``Group-Object``, ``ConvertTo-*`` — passthrough; all source lines consumed.
 
 Line-range extraction
 ---------------------
@@ -236,9 +239,18 @@ _PS_FILTER_CMDLETS = frozenset(
 # "head N" of a pipeline.  ``select`` is the standard alias.
 _PS_LIMIT_CMDLETS = frozenset(["select-object", "select"])
 
-# PowerShell formatting / display cmdlets — pure passthrough for our purposes.
-# Their presence in a pipeline does *not* change the read classification; the
-# agent still consumes the full source-file content via Get-Content.
+# PowerShell formatting / display / transform cmdlets — pure passthrough for our
+# purposes.  Their presence in a pipeline does *not* change the read
+# classification; the agent still consumes the full source-file content via
+# Get-Content.
+#
+# ``Sort-Object`` / ``sort`` re-orders lines but does not reduce their count.
+# ``ForEach-Object`` / ``%`` / ``foreach`` iterates every line — still a full
+# read.  ``Tee-Object`` / ``tee`` copies the stream to a file *and* passes it
+# downstream — the source file is read in full.  ``Measure-Object`` / ``measure``
+# aggregates statistics but reads every line.  ``ConvertTo-*`` serialises to
+# another format — all source lines are consumed.  ``Group-Object`` / ``group``
+# groups but does not drop lines.
 _PS_PASSTHROUGH_CMDLETS = frozenset(
     [
         "out-string",
@@ -250,6 +262,26 @@ _PS_PASSTHROUGH_CMDLETS = frozenset(
         "fl",
         "write-host",
         "write-output",
+        # Ordering / aggregation (all lines consumed)
+        "sort-object",
+        "sort",
+        "measure-object",
+        "measure",
+        "group-object",
+        "group",
+        # Iteration (every line visited)
+        "foreach-object",
+        "%",
+        "foreach",
+        # Tee — copies stream, does not narrow it
+        "tee-object",
+        "tee",
+        # Serialisation — all source lines consumed
+        "convertto-json",
+        "convertto-csv",
+        "convertto-html",
+        "convertto-xml",
+        "convertto-string",
     ]
 )
 
@@ -258,10 +290,14 @@ _PS_PASSTHROUGH_CMDLETS = frozenset(
 # which PowerShell accepts due to partial-name parameter matching.
 _PS_PATTERN_FLAGS = frozenset(["-pattern", "-pat", "-p"])
 
-# Regex extracts the pattern from a Where-Object script block:
-# ``{ $_ -match 'pat' }`` or ``{ $_ -like '*pat*' }``.  Single or double quotes.
+# Regex extracts the pattern from a Where-Object script block.  Handles the
+# positive comparison operators (``-match``, ``-like``, ``-imatch``,
+# ``-cmatch``) and the negation operators (``-notmatch``, ``-notlike``,
+# ``-inotmatch``, ``-cnotmatch``).  Both narrow the result to a subset of
+# lines — a ``-notmatch`` filter still marks the read as partial since the
+# agent only sees lines that do *not* match.  Single or double quotes accepted.
 _PS_WHERE_MATCH_RE = re.compile(
-    r"\$_\s*-(?:match|like|imatch|cmatch)\s+(['\"])([^'\"]+)\1"
+    r"\$_\s*-(?:(?:c|i)?(?:not)?match|(?:not)?like)\s+(['\"])([^'\"]+)\1"
 )
 
 # Pattern-search tools.  All of these put the search pattern as the first
@@ -742,20 +778,33 @@ def _parse_powershell_read(binary: str, args: list[str]) -> BashIntent:
     must be accepted.
 
     Recognises ``-TotalCount N`` / ``-First N`` / ``-Head N`` as head-style
-    limits and ``-Tail N`` / ``-Last N`` as tail-style limits.  Stream flags
-    like ``-Raw`` and ``-Wait`` are simply skipped.
+    limits and ``-Tail N`` / ``-Last N`` as tail-style limits.
+
+    Multi-file reads (``gc file1.txt file2.txt``) populate ``target_paths``
+    in the returned intent, matching the behaviour of POSIX ``cat f1 f2``.
+
+    ``-Wait`` is the PowerShell equivalent of ``tail -f``: it streams new lines
+    as they are appended continuously.  Like ``less`` / ``more``, this is
+    treated as an interactive pager read — the session hint fires but the file
+    is not marked fully read because output is unbounded and non-deterministic.
     """
-    target_path: str | None = None
+    target_paths: list[str] = []
     limit: int | None = None
     offset: int | None = None
     is_tail = False
+    is_wait = False
     i = 0
     while i < len(args):
         a = args[i]
         lower = a.lower()
+        # ``-Wait`` — continuous file-follow mode (like ``tail -f``).
+        if lower == "-wait":
+            is_wait = True
+            i += 1
+            continue
         # ``-Path foo.txt`` / ``-LiteralPath foo.txt`` consumes the next token.
         if lower in _PS_PATH_FLAGS and i + 1 < len(args):
-            target_path = args[i + 1]
+            target_paths.append(args[i + 1])
             i += 2
             continue
         # PowerShell also accepts the inline ``-Path=foo.txt`` form.
@@ -763,7 +812,7 @@ def _parse_powershell_read(binary: str, args: list[str]) -> BashIntent:
             stem = lower.split("=", 1)[0]
             value_str = a.split("=", 1)[1]
             if stem in _PS_PATH_FLAGS and value_str:
-                target_path = value_str
+                target_paths.append(value_str)
                 i += 1
                 continue
             if stem in _PS_HEAD_FLAGS:
@@ -796,25 +845,34 @@ def _parse_powershell_read(binary: str, args: list[str]) -> BashIntent:
             # Skip unknown PowerShell flags (e.g. ``-Raw``, ``-Encoding utf8``).
             # Flag-with-arg shapes are heuristically detected: if the next
             # token does not itself start with ``-`` and we haven't yet found
-            # a path, treat the next token as the flag's value rather than as
-            # the positional path.  This avoids ``-Encoding utf8 file.txt``
+            # any paths, treat the next token as the flag's value rather than
+            # as a positional path.  This avoids ``-Encoding utf8 file.txt``
             # being parsed as ``target=utf8``.
             if (
                 i + 1 < len(args)
                 and not args[i + 1].startswith("-")
-                and target_path is None
+                and not target_paths
                 and lower in {"-encoding", "-delimiter", "-stream", "-readcount"}
             ):
                 i += 2
                 continue
             i += 1
             continue
-        if target_path is None:
-            target_path = a
+        # Positional path argument.  Multiple positional args are allowed so
+        # ``gc file1.txt file2.txt`` collects both files, matching ``cat f1 f2``.
+        target_paths.append(a)
         i += 1
 
-    if target_path is None:
+    if not target_paths:
         return BashIntent(kind="unknown", reason=f"{binary} command is missing a file path")
+
+    # Filter system paths (same guard as the POSIX read path).
+    valid_paths = [p for p in target_paths if not _is_system_path(p)]
+    if not valid_paths:
+        return BashIntent(
+            kind="unknown",
+            reason=f"{binary}: all file paths are system paths",
+        )
 
     # ``-TotalCount N`` is equivalent to ``head -n N``; record offset=1 so
     # session tracking knows which slice was consumed.  ``-Tail N`` mirrors
@@ -822,10 +880,18 @@ def _parse_powershell_read(binary: str, args: list[str]) -> BashIntent:
     if limit is not None and not is_tail:
         offset = 1
 
-    intent = _build_read_intent(target_path)
+    intent = _build_read_intent(valid_paths[0])
     if intent.kind == "read":
         intent.offset = offset
         intent.limit = limit
+        # ``-Wait`` is a continuous live-tail: mark as interactive pager so the
+        # hook emits a hint but does not redirect to the Read tool or mark the
+        # file as fully read.
+        if is_wait:
+            intent.is_interactive_pager = True
+        # Multi-file: populate target_paths when more than one file was given.
+        if len(valid_paths) > 1:
+            intent.target_paths = valid_paths
     return intent
 
 

@@ -1054,3 +1054,150 @@ class TestGetContentAdditionalCoverage:
         """gc alias with no file argument must return kind='unknown'."""
         intent = parse("gc")
         assert intent.kind == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# 29. PowerShell Get-Content — new capabilities: -Wait, multi-file, expanded
+#     passthrough cmdlets, and notmatch/notlike Where-Object operators
+# ---------------------------------------------------------------------------
+class TestGetContentNewCapabilities:
+    """Covers -Wait (interactive pager), multi-file reads, expanded passthrough
+    cmdlets, and negation operators in Where-Object predicates."""
+
+    # -Wait flag (continuous tail-f mode) -----------------------------------
+
+    def test_get_content_wait_is_interactive_pager(self):
+        """-Wait streams continuously — must be treated as an interactive pager."""
+        intent = parse("Get-Content app.log -Wait")
+        assert intent.kind == "read"
+        assert intent.target_path == "app.log"
+        assert intent.is_interactive_pager is True
+
+    def test_gc_wait_is_interactive_pager(self):
+        """gc alias with -Wait must also be marked interactive."""
+        intent = parse("gc service.log -Wait")
+        assert intent.kind == "read"
+        assert intent.target_path == "service.log"
+        assert intent.is_interactive_pager is True
+
+    def test_get_content_wait_no_limit(self):
+        """-Wait with no count flag: no limit, interactive, full path captured."""
+        intent = parse("Get-Content C:/logs/app.log -Wait")
+        assert intent.kind == "read"
+        assert intent.target_path == "C:/logs/app.log"
+        assert intent.limit is None
+        assert intent.is_interactive_pager is True
+
+    def test_get_content_without_wait_not_pager(self):
+        """Plain Get-Content without -Wait must not be an interactive pager."""
+        intent = parse("Get-Content app.log")
+        assert intent.kind == "read"
+        assert intent.is_interactive_pager is False
+
+    # Multi-file reads -------------------------------------------------------
+
+    def test_get_content_two_files_positional(self):
+        """gc file1.txt file2.txt — both paths must appear in target_paths."""
+        intent = parse("gc file1.txt file2.txt")
+        assert intent.kind == "read"
+        assert intent.target_path == "file1.txt"
+        assert intent.target_paths == ["file1.txt", "file2.txt"]
+
+    def test_get_content_three_files(self):
+        """Get-Content with three positional files collects all three."""
+        intent = parse("Get-Content a.log b.log c.log")
+        assert intent.kind == "read"
+        assert intent.target_path == "a.log"
+        assert intent.target_paths == ["a.log", "b.log", "c.log"]
+
+    def test_get_content_single_file_target_paths_is_none(self):
+        """Single-file Get-Content must leave target_paths as None (compat)."""
+        intent = parse("Get-Content only.txt")
+        assert intent.kind == "read"
+        assert intent.target_path == "only.txt"
+        assert intent.target_paths is None
+
+    # Expanded passthrough cmdlets -------------------------------------------
+
+    def test_sort_object_is_passthrough(self):
+        """Sort-Object does not narrow the stream; source is a full read."""
+        intent = parse("Get-Content data.txt | Sort-Object")
+        assert intent.kind == "read"
+        assert intent.target_path == "data.txt"
+        assert intent.filtered is False
+
+    def test_sort_alias_is_passthrough(self):
+        """``sort`` alias for Sort-Object must also be a passthrough."""
+        intent = parse("gc data.txt | sort")
+        assert intent.kind == "read"
+        assert intent.filtered is False
+
+    def test_foreach_object_is_passthrough(self):
+        """ForEach-Object visits every line — source is a full read."""
+        intent = parse("Get-Content file.txt | ForEach-Object { $_ }")
+        assert intent.kind == "read"
+        assert intent.target_path == "file.txt"
+        assert intent.filtered is False
+
+    def test_foreach_percent_alias_is_passthrough(self):
+        """``%`` alias for ForEach-Object must be treated as passthrough."""
+        intent = parse("gc file.txt | % { $_ }")
+        assert intent.kind == "read"
+        assert intent.filtered is False
+
+    def test_tee_object_is_passthrough(self):
+        """Tee-Object copies the stream without narrowing it."""
+        intent = parse("Get-Content src.txt | Tee-Object -FilePath copy.txt")
+        assert intent.kind == "read"
+        assert intent.target_path == "src.txt"
+        assert intent.filtered is False
+
+    def test_measure_object_is_passthrough(self):
+        """Measure-Object reads all lines to compute statistics."""
+        intent = parse("Get-Content data.csv | Measure-Object -Line")
+        assert intent.kind == "read"
+        assert intent.filtered is False
+
+    def test_convertto_json_is_passthrough(self):
+        """ConvertTo-Json serialises all source content — full read."""
+        intent = parse("Get-Content config.txt | ConvertTo-Json")
+        assert intent.kind == "read"
+        assert intent.target_path == "config.txt"
+        assert intent.filtered is False
+
+    def test_group_object_is_passthrough(self):
+        """Group-Object groups all lines — full read."""
+        intent = parse("gc events.log | Group-Object")
+        assert intent.kind == "read"
+        assert intent.filtered is False
+
+    # Where-Object negation operators ----------------------------------------
+
+    def test_where_notmatch_sets_filtered_and_captures_pattern(self):
+        """-notmatch still narrows to non-matching lines — filtered=True."""
+        intent = parse("gc app.log | ? { $_ -notmatch 'DEBUG' }")
+        assert intent.kind == "read"
+        assert intent.target_path == "app.log"
+        assert intent.filtered is True
+        assert intent.filter_pattern == "DEBUG"
+
+    def test_where_notlike_sets_filtered_and_captures_pattern(self):
+        """-notlike is a negation filter — filtered=True, pattern captured."""
+        intent = parse("Get-Content log.txt | ? { $_ -notlike '*TRACE*' }")
+        assert intent.kind == "read"
+        assert intent.filtered is True
+        assert intent.filter_pattern == "*TRACE*"
+
+    def test_where_cnotmatch_sets_filtered(self):
+        """-cnotmatch (case-sensitive negation) must be detected as filtered."""
+        intent = parse("gc file.txt | ? { $_ -cnotmatch 'Error' }")
+        assert intent.kind == "read"
+        assert intent.filtered is True
+        assert intent.filter_pattern == "Error"
+
+    def test_where_inotmatch_sets_filtered(self):
+        """-inotmatch (case-insensitive negation) must be detected as filtered."""
+        intent = parse("gc file.txt | ? { $_ -inotmatch 'warning' }")
+        assert intent.kind == "read"
+        assert intent.filtered is True
+        assert intent.filter_pattern == "warning"
