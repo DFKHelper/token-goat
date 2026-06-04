@@ -2025,6 +2025,53 @@ def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
     )
 
 
+def _handle_bash_grep_dedup(payload: HookPayload) -> HookResponse | None:
+    """Return a pattern-level dedup hint when a Bash grep command repeats a prior search.
+
+    Handles ``rg``, ``grep``, ``ag``, and other pattern-search tools invoked via
+    the Bash tool.  Unlike :func:`_handle_bash_dedup` (which requires an identical
+    command string), this fires on the same *pattern* even when the command differs
+    slightly (e.g. ``rg "TODO" src/`` vs ``rg "TODO" tests/`` if both paths were
+    searched in the same session).
+
+    Works by parsing the Bash command via :mod:`bash_parser` to extract
+    ``(pattern, path)`` and then delegating to :func:`~hints.build_grep_dedup_hint`
+    — the same builder used by the native Grep tool path.
+
+    Returns ``None`` when:
+
+    * the command is not a grep-family invocation
+    * no prior session Grep with the same pattern/path exists
+    * the prior result falls below the minimum-match dedup threshold
+    * the prior result is older than the stale-age threshold
+    """
+    from .hints import build_grep_dedup_hint  # noqa: PLC0415
+
+    command = _get_bash_command_from_payload(payload)
+    if command is None:
+        return None
+
+    from . import bash_parser  # noqa: PLC0415
+
+    intent = bash_parser.parse(command)
+    if intent.kind != "grep" or not intent.pattern:
+        return None
+
+    pattern = intent.pattern
+    # target_path from _parse_grep is the search root/file argument.
+    path = intent.target_path
+
+    return run_dedup_hint(
+        payload,
+        builder=lambda sid, cache: build_grep_dedup_hint(
+            session_id=sid, pattern=pattern, path=path, cache=cache,
+        ),
+        stat_kind="grep_dedup_hint",
+        detail=sanitize_log_str(pattern, max_len=200),
+        log_label="pre-read",
+    )
+
+
 def _estimate_recovery_context_bytes(cache: object) -> int:
     """Estimate bytes of context the recovery hint prevents from being re-read.
 
@@ -2234,6 +2281,16 @@ def pre_read(payload: HookPayload) -> HookResponse:
         cache_hit = _handle_bash_cache_hit(payload)
         if cache_hit is not None:
             return cache_hit
+
+        # Pattern-level grep dedup: fires for rg/grep/ag/ack commands when the
+        # same search pattern has already been run in this session.  Distinct from
+        # _handle_bash_dedup (exact-command hash) — this matches by pattern even
+        # when flags or paths differ slightly.  Must run before read-equivalent
+        # dispatch so that ``rg "TODO" src/`` after a prior ``rg "TODO"`` gets
+        # the same advisory as a repeated native Grep tool call.
+        bash_grep_dedup = _handle_bash_grep_dedup(payload)
+        if bash_grep_dedup is not None:
+            return bash_grep_dedup
 
         read_payload = _handle_bash_read_equivalent(payload)
         if read_payload:
@@ -3293,6 +3350,38 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # bytes (\udcXX) in stdout/stderr that crash utf-8 serialisation downstream.
     stdout = _sanitize_surrogates(stdout)
     stderr = _sanitize_surrogates(stderr)
+
+    # Grep-pattern session recording: when the Bash command is a grep-family
+    # invocation (rg, grep, ag, ack, …), record the pattern and path in
+    # session.greps so that subsequent pre-Grep and pre-Bash grep dedup hints
+    # can fire.  Uses stdout line count as a cheap result_count estimate since
+    # the harness only delivers raw text, not a structured match count.
+    if session_id:
+        try:
+            from . import bash_parser as _bp  # noqa: PLC0415
+            _grep_intent = _bp.parse(display_cmd)
+            if _grep_intent.kind == "grep" and _grep_intent.pattern:
+                _sess = _get_session()
+                _gc = _sess.safe_load(session_id, caller="post_bash_grep")
+                if _gc is not None:
+                    _grep_result_count = sum(
+                        1 for _ln in stdout.splitlines() if _ln.strip()
+                    ) if stdout else 0
+                    _sess.mark_grep(
+                        session_id,
+                        _grep_intent.pattern,
+                        _grep_intent.target_path,
+                        _grep_result_count,
+                        cache=_gc,
+                    )
+                    with contextlib.suppress(Exception):
+                        _sess.save(_gc)
+                    _LOG.debug(
+                        "post-bash: recorded grep pattern=%r path=%r result_count=%d",
+                        _grep_intent.pattern, _grep_intent.target_path, _grep_result_count,
+                    )
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: grep session record failed", exc_info=True)
 
     # Binary output detection: if the output contains a high proportion of null
     # bytes it is almost certainly binary data (compiled artifact, compressed

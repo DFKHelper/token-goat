@@ -80,6 +80,30 @@ class TestGetCredentials:
         ):
             gdrive.get_credentials()
 
+    def test_error_message_contains_exact_creds_path(self, tmp_data_dir):
+        """GDriveCredsUnavailable message must include the exact credentials path so
+        users know where to look after running ``token-goat gdrive-auth``."""
+        with (
+            patch("google.auth.default", side_effect=Exception("no ADC")),
+            pytest.raises(gdrive.GDriveCredsUnavailable) as exc_info,
+        ):
+            gdrive.get_credentials()
+        msg = str(exc_info.value)
+        assert "token-goat gdrive-auth" in msg
+        # Path must be platform-aware and present in the error message so users
+        # can immediately see where to look.
+        assert str(paths.gdrive_creds_path()) in msg
+
+    def test_error_message_mentions_adc_alternative(self, tmp_data_dir):
+        """Error message must mention gcloud ADC as an alternative auth path."""
+        with (
+            patch("google.auth.default", side_effect=Exception("no ADC")),
+            pytest.raises(gdrive.GDriveCredsUnavailable) as exc_info,
+        ):
+            gdrive.get_credentials()
+        msg = str(exc_info.value)
+        assert "gcloud auth application-default login" in msg
+
     def test_returns_adc_creds_when_available(self, tmp_data_dir):
         fake_creds = MagicMock()
         with patch("google.auth.default", return_value=(fake_creds, "proj")):

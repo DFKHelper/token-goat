@@ -1005,3 +1005,52 @@ def test_jq_multi_file_target_paths():
 def test_yq_nontrivial_filter_is_unknown():
     intent = parse("yq '.metadata.name' pod.yaml")
     assert intent.kind == "unknown"
+
+
+# ---------------------------------------------------------------------------
+# 28. PowerShell Get-Content — additional flag aliases and filter operators
+# ---------------------------------------------------------------------------
+class TestGetContentAdditionalCoverage:
+    """Covers -Head alias and Where-Object -like/-imatch operators not previously tested."""
+
+    def test_get_content_head_flag_alias(self):
+        """-Head N is an alias for -TotalCount N and -First N; records offset=1, limit=N."""
+        intent = parse("Get-Content foo.py -Head 15")
+        assert intent.kind == "read"
+        assert intent.target_path == "foo.py"
+        assert intent.offset == 1
+        assert intent.limit == 15
+
+    def test_gc_head_flag_alias(self):
+        """gc alias with -Head N must work identically to Get-Content -Head N."""
+        intent = parse("gc foo.py -Head 5")
+        assert intent.kind == "read"
+        assert intent.target_path == "foo.py"
+        assert intent.offset == 1
+        assert intent.limit == 5
+
+    def test_where_object_like_operator_captured(self):
+        """Where-Object { $_ -like '...' } must set filtered=True and capture pattern."""
+        intent = parse("gc foo.txt | ? { $_ -like '*needle*' }")
+        assert intent.kind == "read"
+        assert intent.target_path == "foo.txt"
+        assert intent.filtered is True
+        assert intent.filter_pattern == "*needle*"
+
+    def test_where_object_imatch_operator_captured(self):
+        """Where-Object { $_ -imatch '...' } (case-insensitive match) must be captured."""
+        intent = parse("Get-Content foo.txt | ? { $_ -imatch 'ErrorLevel' }")
+        assert intent.kind == "read"
+        assert intent.target_path == "foo.txt"
+        assert intent.filtered is True
+        assert intent.filter_pattern == "ErrorLevel"
+
+    def test_get_content_no_args_is_unknown(self):
+        """Get-Content with no file argument must return kind='unknown'."""
+        intent = parse("Get-Content")
+        assert intent.kind == "unknown"
+
+    def test_gc_no_args_is_unknown(self):
+        """gc alias with no file argument must return kind='unknown'."""
+        intent = parse("gc")
+        assert intent.kind == "unknown"

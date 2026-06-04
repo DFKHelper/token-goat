@@ -179,10 +179,13 @@ def get_credentials() -> _GoogleCredentials:
     if creds is not None:
         _LOG.debug("using stored OAuth credentials for Drive access")
         return creds
+    creds_path = paths.gdrive_creds_path()
     raise GDriveCredsUnavailable(
-        "No Google Drive credentials. Run `token-goat gdrive-auth` once, "
-        "or set up gcloud Application Default Credentials via "
-        "`gcloud auth application-default login`."
+        "No Google Drive credentials available. To authenticate, run:\n"
+        "  token-goat gdrive-auth\n"
+        f"This stores OAuth tokens at: {creds_path}\n"
+        "Alternatively, use Application Default Credentials:\n"
+        "  gcloud auth application-default login"
     )
 
 

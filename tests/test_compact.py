@@ -5341,6 +5341,214 @@ class TestManifestTODOs:
         assert "+5 more" in result
 
 
+class TestTop5GuaranteedMin:
+    """Guarantee: the top-_TOP_FILES_GUARANTEED_MIN most-accessed files always appear
+    in the manifest, even when the files-section budget is exhausted by other sections."""
+
+    def test_top5_files_appear_despite_tight_budget(self, tmp_data_dir):
+        """The top-5 files by importance appear even with a tiny max_tokens budget.
+
+        This tests the protected files_core section: when the manifest is built
+        with many sections competing for a tight token budget, the most-accessed
+        files survive because they are in the protected files_core block.
+        """
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
+        sid = "top5-guarantee-tight-budget"
+        # Create 20 read files with varying read counts.
+        # Files 0-4 have the highest read counts and should always appear.
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(20):
+                # Files 0-4 read many more times than files 5-19
+                read_count = 10 - i if i < 5 else 1
+                for _ in range(read_count):
+                    cache = session.mark_file_read(
+                        sid, f"/proj/src/file_{i:02d}.py", offset=0, limit=50, cache=cache
+                    )
+        _session_mod.save(cache)
+
+        # Use a very small budget to force pressure; top-5 files should still appear.
+        result = compact.build_manifest(sid, max_tokens=60)
+
+        # The most-accessed files (file_00 through file_04) must appear.
+        for i in range(5):
+            assert f"file_{i:02d}.py" in result, (
+                f"file_{i:02d}.py missing from manifest despite being in top-5; "
+                f"manifest={result!r}"
+            )
+
+    def test_top5_guaranteed_with_many_edited_files(self, tmp_data_dir):
+        """Top-5 read files appear even when many edited files dominate the manifest.
+
+        When 10+ files are edited the key-files budget is reduced to 4 slots,
+        but the guarantee overrides that reduction for the first 5 entries.
+        """
+        import token_goat.session as _session_mod  # noqa: PLC0415
+
+        sid = "top5-guarantee-many-edits"
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            # 10 edited files → dynamic max_key_files = 4, but guarantee gives us 5
+            for i in range(10):
+                cache = session.mark_file_edited(sid, f"/proj/src/edit_{i:02d}.py", cache=cache)
+            # 8 read files; first 5 should always appear
+            for i in range(8):
+                read_count = 5 - i if i < 5 else 1
+                for _ in range(max(1, read_count)):
+                    cache = session.mark_file_read(
+                        sid, f"/proj/src/read_{i:02d}.py", offset=0, limit=50, cache=cache
+                    )
+        _session_mod.save(cache)
+
+        result = compact.build_manifest(sid, max_tokens=2000)
+
+        # The top-5 read files by importance must appear (not be cut off at 4).
+        for i in range(5):
+            assert f"read_{i:02d}.py" in result, (
+                f"read_{i:02d}.py missing from manifest (10-edit session with top-5 guarantee); "
+                f"manifest={result!r}"
+            )
+
+    def test_fewer_than_5_files_all_appear(self, tmp_data_dir):
+        """When fewer than 5 files are read, all of them appear (no budget issues)."""
+        sid = "top5-guarantee-few-files"
+        session.mark_file_read(sid, "/proj/src/alpha.py", offset=0, limit=100)
+        session.mark_file_read(sid, "/proj/src/beta.py", offset=0, limit=100)
+        session.mark_file_edited(sid, "/proj/src/gamma.py")
+
+        result = compact.build_manifest(sid, max_tokens=200)
+
+        # Both read files must appear (they're in the guarantee pool).
+        assert "alpha.py" in result
+        assert "beta.py" in result
+
+    def test_top5_const_is_5(self):
+        """_TOP_FILES_GUARANTEED_MIN equals 5 as documented."""
+        assert compact._TOP_FILES_GUARANTEED_MIN == 5
+
+
+class TestTodosProtected:
+    """Tests that the TODOs section survives budget pressure.
+
+    The TaskList state is critical pre-compact information: the compaction LLM
+    must see pending tasks so it knows what work is still in-progress after
+    the compact.  The 'todos' section is now protected=True in _section_groups.
+    """
+
+    def test_todos_survive_tight_budget(self, tmp_data_dir, monkeypatch, tmp_path):
+        """TODOs section survives even with a very tight max_tokens budget."""
+        import json
+
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+
+        sid = "todos-protected-tight-budget"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        (task_dir / "1.json").write_text(
+            json.dumps({"id": "1", "subject": "Critical pending task", "status": "pending"}),
+            encoding="utf-8",
+        )
+
+        _populate_session(sid, files=3, greps=2, edits=1)
+
+        # Use a budget that is tight enough to drop unprotected sections (grep,
+        # files-rest, etc.) but not so tight that the last-resort line-popper
+        # strips individual lines from protected sections.  180 tokens is well
+        # below the typical 400-token default but still above the ~100-token
+        # floor needed to fit all protected sections with their content lines.
+        result = compact.build_manifest(sid, max_tokens=180)
+
+        assert "**TODOs:**" in result, (
+            "TODOs section was dropped under budget pressure — it should be protected; "
+            f"manifest={result!r}"
+        )
+        assert "Critical pending task" in result
+
+    def test_todos_survive_with_many_other_sections(self, tmp_data_dir, monkeypatch, tmp_path):
+        """TODOs survive when many other sections compete for budget."""
+        import json
+
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+
+        sid = "todos-survive-busy-session"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        for i, (subj, status) in enumerate([
+            ("Implement feature X", "in_progress"),
+            ("Write tests for Y", "pending"),
+            ("Update docs", "pending"),
+        ]):
+            (task_dir / f"{i}.json").write_text(
+                json.dumps({"id": str(i), "subject": subj, "status": status}),
+                encoding="utf-8",
+            )
+
+        # Heavy session: many files, greps, and edits to fill up the budget.
+        _populate_session(sid, files=8, greps=5, edits=3)
+
+        result = compact.build_manifest(sid, max_tokens=200)
+
+        assert "**TODOs:**" in result, (
+            "TODOs section missing from busy-session manifest; "
+            f"manifest={result!r}"
+        )
+        # At least one task must appear.
+        assert any(subj in result for subj in ["Implement feature X", "Write tests for Y", "Update docs"])
+
+    def test_in_progress_task_survives(self, tmp_data_dir, monkeypatch, tmp_path):
+        """An in-progress task (the most critical status) always survives compaction."""
+        import json
+
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+
+        sid = "todos-in-progress-survives"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        (task_dir / "1.json").write_text(
+            json.dumps({"id": "1", "subject": "Refactor auth module", "status": "in_progress"}),
+            encoding="utf-8",
+        )
+
+        _populate_session(sid)
+
+        result = compact.build_manifest(sid, max_tokens=200)
+
+        assert "**TODOs:**" in result
+        assert "Refactor auth module" in result
+        # In-progress tasks use the [→] marker.
+        assert "[→]" in result
+
+    def test_completed_tasks_still_excluded(self, tmp_data_dir, monkeypatch, tmp_path):
+        """Completed tasks are not shown even though the section is now protected."""
+        import json
+
+        from token_goat import paths
+
+        monkeypatch.setattr(paths, "claude_config_dir", lambda: tmp_path)
+
+        sid = "todos-completed-excluded"
+        task_dir = tmp_path / "tasks" / sid
+        task_dir.mkdir(parents=True)
+        (task_dir / "1.json").write_text(
+            json.dumps({"id": "1", "subject": "Already done task", "status": "completed"}),
+            encoding="utf-8",
+        )
+
+        _populate_session(sid)
+
+        result = compact.build_manifest(sid)
+
+        # Completed tasks should never appear — filtering happens before render.
+        assert "Already done task" not in result
+
+
 class TestMinLinesSuppressionRegression:
     """Regression tests: Cold Outputs and Directory Scans suppress single-entry sections
     (min_lines=2); Web Fetches renders at min_lines=1 because a single fetched URL is
@@ -7624,7 +7832,12 @@ class TestNoiseFloor:
         result, _ = compact._render(cache, sid, 400, noise_floor_tokens=10000)
 
         assert ("**Staged/Uncommitted:**" in result or "**Edited:**" in result), f"Got: {result}"  # protected — always survives
-        assert "**Files:**" not in result   # should be dropped: token count < 10000
+        # The top-_TOP_FILES_GUARANTEED_MIN files are now in the protected files_core
+        # section and always survive noise-floor pruning.  With only 2 read files,
+        # both land in files_core so **Files:** (the shared header) persists.
+        # The non-protected "files" (rest) section is empty here (< 5 files), so
+        # verifying noise-floor by checking "**Files:**" is no longer reliable.
+        # Instead verify that the symbols section (unprotected, small) is dropped.
         assert "**Symbols Accessed:**" not in result    # should be dropped: token count < 10000
 
 

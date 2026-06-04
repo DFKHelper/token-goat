@@ -880,7 +880,7 @@ def _parse_grep(binary: str, args: list[str]) -> BashIntent:
             )
         return _build_read_intent(target_path)
 
-    return BashIntent(kind="grep", pattern=pattern)
+    return BashIntent(kind="grep", pattern=pattern, target_path=target_path)
 
 
 def _apply_powershell_pipeline_filters(

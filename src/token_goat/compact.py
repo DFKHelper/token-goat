@@ -25,6 +25,7 @@ __all__ = [
     "_score_manifest_breakdown",
     "_parse_manifest_sections",
     "_MANIFEST_THIN_THRESHOLD",
+    "_TOP_FILES_GUARANTEED_MIN",
     "find_latest_session_id",
     "infer_session_goal",
     "_enforce_char_budget",
@@ -404,6 +405,12 @@ _MANIFEST_TIMEOUT_SECS: Final[float] = 8.0
 # file read in a long session would blow the token budget.  10 covers the handful of
 # core files a typical feature or bug-fix session touches.
 _MAX_FILES_READ: Final[int] = 10
+# Guaranteed minimum of top-ranked key files that always appear in the manifest,
+# regardless of section budget.  In long sessions the "Key Files Read" section may
+# exhaust its budget before the most-accessed files are emitted.  The top-5 by
+# importance_score are always included so the compaction LLM never loses the core
+# working set — even when 50+ files have been read and the budget is tight.
+_TOP_FILES_GUARANTEED_MIN: Final[int] = 5
 # Maximum files that show per-symbol detail in the manifest.  Fewer than _MAX_FILES_READ
 # because symbol lists are verbose (one line each); limiting to 8 keeps the symbols
 # section from dominating a 400-token budget and crowding out the edited-files section.
@@ -5162,7 +5169,14 @@ def _render(
         _dynamic_max_files = 6
     else:
         _dynamic_max_files = _MAX_FILES_READ
-    max_key_files = _dynamic_max_files + (2 if age_tier == "mature" else 0)
+    # The guaranteed-minimum floor must be respected even when dynamic_max_files
+    # is reduced by a high edited-file count.  Without this, heapq.nlargest
+    # returns fewer entries than the guarantee requires, leaving the guarantee
+    # logic with nothing extra to add.
+    max_key_files = max(
+        _dynamic_max_files + (2 if age_tier == "mature" else 0),
+        _TOP_FILES_GUARANTEED_MIN,
+    )
     top_files = heapq.nlargest(
         max_key_files,
         key_files_candidates,
@@ -6009,8 +6023,16 @@ def _render(
                 glob_used = 0
 
     # ── 5. Key files read — up to 30 % of remaining budget ───────────────────
+    # Output is split into two groups:
+    #   files_core_lines — top-_TOP_FILES_GUARANTEED_MIN files (protected: always survive)
+    #   files_lines      — remaining files beyond the guarantee (unprotected: dropped on pressure)
+    # This guarantees the most-accessed files always appear in the manifest regardless
+    # of budget or safety-trim pressure.  In long sessions (50+ files) the compaction
+    # LLM must know which files received the most attention even when the overall
+    # manifest token budget is nearly exhausted by edited/blocker/skills sections.
     files_budget = sec_budgets["files"]
     files_lines: list[str] = []
+    files_core_lines: list[str] = []
     files_used = 0
     from .session import FileEntry as _FileEntry  # noqa: PLC0415
     included_top_files: list[_FileEntry] = []
@@ -6041,10 +6063,13 @@ def _render(
                 hot_line_text += f" +{overflow} more"
             hot_line = f"- → {hot_line_text}"
             cost = _token_count(hot_line)
-            if files_used + header_cost + cost <= files_budget:
-                files_entries_for_section.append(hot_line)
-                files_used += cost
-                included_top_files.extend(shown)
+            # Always include the consolidated hot-files line: hot files represent
+            # the most-accessed files in the session and must not be silently dropped
+            # when the files_budget is tight.  (Budget will be reclaimed via the
+            # safety-trim pass if the manifest exceeds max_tokens.)
+            files_entries_for_section.append(hot_line)
+            files_used += cost
+            included_top_files.extend(shown)
 
         # Item #37: Build a lookup of symbol lists for files that have symbols but
         # whose symbol lines were suppressed from "Symbols Accessed" because they
@@ -6083,17 +6108,39 @@ def _render(
                     _sym_suffix = ": " + ", ".join(_top_syms)
             line = f"- → {_short_path(entry.rel_or_abs, max_len=80, project_root=cwd)}{read_annotation}{_sym_suffix}{ranges_str}"
             cost = _token_count(line)
-            if files_used + header_cost + cost > files_budget:
+            # Guaranteed minimum: the first _TOP_FILES_GUARANTEED_MIN entries always
+            # get included regardless of files_budget.  Hot files (added before this
+            # loop) count toward the guarantee so the counter is never double-counted.
+            total_included = len(included_top_files)
+            within_guarantee = total_included < _TOP_FILES_GUARANTEED_MIN
+            if not within_guarantee and files_used + header_cost + cost > files_budget:
                 break
             files_entries_for_section.append(line)
             files_used += cost
             included_top_files.append(entry)
 
-        # Only emit header if we have entries to show
+        # Split the assembled entries into a protected "core" block (top-N files)
+        # and an unprotected "rest" block.  The header is shared: if both blocks
+        # have content we only emit one "**Files:**" heading by attaching it to
+        # the core block.  If only rest-files exist (no core entries), the header
+        # goes with the rest block (normal unprotected path).
         if files_entries_for_section:
-            files_lines.append(header)
-            files_lines.extend(files_entries_for_section)
+            # Core entries: header + up to _TOP_FILES_GUARANTEED_MIN bullet lines.
+            # Because hot_files produces a single consolidated line that represents
+            # many files, count the individual file objects in included_top_files to
+            # determine how many bullet lines belong in the core block.  The
+            # guarantee is per-entry in the *list* (bullets 1..N), not per FileEntry.
+            core_entry_count = min(_TOP_FILES_GUARANTEED_MIN, len(files_entries_for_section))
+            core_entries = files_entries_for_section[:core_entry_count]
+            rest_entries = files_entries_for_section[core_entry_count:]
+            # Emit core (protected) with the shared header.
+            files_core_lines.append(header)
+            files_core_lines.extend(core_entries)
             files_used += header_cost
+            # Emit rest (unprotected) — no second header needed; it continues the
+            # same logical section in the manifest.
+            if rest_entries:
+                files_lines.extend(rest_entries)
 
     # ── 6b. TODOs — pending/in-progress TaskList entries (no budget slice) ──────
     # TaskList state is persisted by the harness at ~/.claude/tasks/<session_id>/.
@@ -6213,7 +6260,8 @@ def _render(
             if _in_subsection:
                 _edited_subsections.append(_el)
         edited_lines = _merged_section_lines + _edited_subsections
-        files_lines = []  # suppressed — merged into edited_lines
+        files_lines = []       # suppressed — merged into edited_lines
+        files_core_lines = []  # suppressed — merged into edited_lines
 
     # ── Legend — only list markers that actually appear above ─────────────────
     has_edit = bool(edited_clean)
@@ -6268,19 +6316,19 @@ def _render(
     #
     # Drop order (lowest signal → highest):
     #   1. open_questions — TODO/FIXME/WHY comments in edited files (cheap to recover)
-    #   2. todos       — TaskList entries (usually fresh from disk; cheap to recover)
-    #   3. files       — Key Files Read (read-only context, already implied by syms)
-    #   4. grep        — Investigation history (least load-bearing)
-    #   5. glob        — Directory scan history
-    #   6. web         — Reference material URLs
-    #   7. syms        — Symbol detail per file
-    #   8. what_worked — Curated "tests were green" pointer
-    #   9. dep_changes — Dependency changes (recoverable from git diff)
-    #  10. bash        — Command history (current work context — only drop under extreme pressure)
-    #  11. stale       — Outdated snapshot warnings (small, useful — kept above bash)
-    #  12. test_failures — Recent test failures (high value for active fix cycles)
+    #   2. files       — Key Files Read (read-only context, already implied by syms)
+    #   3. grep        — Investigation history (least load-bearing)
+    #   4. glob        — Directory scan history
+    #   5. web         — Reference material URLs
+    #   6. syms        — Symbol detail per file
+    #   7. what_worked — Curated "tests were green" pointer
+    #   8. dep_changes — Dependency changes (recoverable from git diff)
+    #   9. bash        — Command history (current work context — only drop under extreme pressure)
+    #  10. stale       — Outdated snapshot warnings (small, useful — kept above bash)
+    #  11. test_failures — Recent test failures (high value for active fix cycles)
     # Protected (never wholesale-dropped):
-    #   sealed, header, blockers, decisions, skills, uncommitted, edited, legend.
+    #   sealed, header, blockers, decisions, skills, uncommitted, edited, todos, legend.
+    #   (todos is protected so the compaction LLM always sees pending tasks.)
     # Section order (inverted pyramid — most critical first):
     #   sealed/header/pinned/blockers/decisions — framing and active failures
     #   test_failures/uncommitted/edited        — must-preserve work-in-progress
@@ -6289,8 +6337,10 @@ def _render(
     #   bash/what_worked                        — command history
     #   syms                                    — symbol details per file
     #   web/glob/dep_changes/grep               — reference / search history
-    #   files                                   — key files read (broader context)
-    #   todos/open_questions/active_errors      — pending issues
+    #   todos                                   — pending tasks (protected, before files so
+    #                                             line-popper pops files before tasks)
+    #   files_core/files                        — key files read (broader context)
+    #   open_questions/active_errors            — pending issues
     #   skills                                  — active skill recall hints (last,
     #                                             but protected so never dropped;
     #                                             positioned after edited so edited
@@ -6315,8 +6365,18 @@ def _render(
         ("glob",          glob_lines,            False),
         ("dep_changes",   dep_change_lines,      False),
         ("grep",          grep_lines,            False),
+        # TODOs appear before the files sections so they survive last-resort line-popping:
+        # the line-popper pops from the bottom of the assembled body, so higher
+        # placement = later removal.  Protected=True means todos are never wholesale-dropped
+        # by the priority-drop pass; the placement also protects them from the line-popper.
+        # Pending tasks are higher-value pre-compact context than "files read" because
+        # the task state is not embedded in conversation history and cannot be recovered
+        # after a compact without re-querying the harness's task API.
+        ("todos",         todo_lines,            True),
+        # files_core: protected top-_TOP_FILES_GUARANTEED_MIN entries — always survive
+        # files: remaining entries beyond the guarantee — dropped under pressure
+        ("files_core",    files_core_lines,      True),
         ("files",         files_lines,           False),
-        ("todos",         todo_lines,            False),
         ("open_questions", open_questions_lines, False),
         ("active_errors", active_errors_lines,  False),
         ("skills",        skill_lines,           True),
@@ -6433,11 +6493,11 @@ def _render(
     # section entirely.
     #
     # Drop order (lowest signal → highest):
-    #   todos → files → grep → glob → web → syms → what_worked → dep_changes
-    #   → bash → stale
+    #   open_questions → active_errors → session_goal → files → grep → glob
+    #   → web → syms → what_worked → dep_changes → bash → stale
     # Protected sections (sealed, header, blockers, decisions, skills,
-    # uncommitted, edited) and the legend are never wholesale-dropped — they
-    # carry the highest post-compact recovery signal.  As a final fallback when
+    # uncommitted, edited, todos) and the legend are never wholesale-dropped —
+    # they carry the highest post-compact recovery signal.  As a final fallback when
     # wholesale drops are exhausted, the tail is line-trimmed but the legend
     # (last line) is pinned in place so marker explanations always survive.
     if token_count > max_tokens:
@@ -6484,7 +6544,6 @@ def _render(
         # fallback, which is much blunter — always list every unprotected section.
         # Drop order rationale:
         #   open_questions — cheapest to recover (grep edited files)
-        #   todos          — fresh on disk from task list
         #   active_errors  — small, recoverable from bash history
         #   session_goal   — inferred; other sections imply the same intent
         #   files          — read-only context, implied by syms
@@ -6498,8 +6557,11 @@ def _render(
         #   dep_changes    — recoverable from `git diff`
         #   bash           — work context (high value, drop late)
         #   stale          — outdated snapshot warnings (small, kept late)
+        # Note: "todos" is NOT in this list because it is protected (True) in
+        # _section_groups — the compaction LLM must see active tasks so it knows
+        # what work is still pending after the compact.
         _droppable_names_in_drop_order = [
-            "open_questions", "todos", "active_errors", "session_goal",
+            "open_questions", "active_errors", "session_goal",
             "files", "grep", "glob", "web",
             "most_accessed", "recent_commits",
             "syms", "what_worked", "dep_changes", "bash", "stale",
