@@ -92,7 +92,13 @@ def test_is_worker_alive_stale_heartbeat(tmp_data_dir):
 
 
 def test_write_pid_calls_atomic_write_text(tmp_data_dir, monkeypatch):
-    """_write_pid() must delegate to paths.atomic_write_text, not write_text."""
+    """_write_pid() must delegate to paths.atomic_write_text, not write_text.
+
+    Since the format changed to JSON, verify the call carries our PID and uses
+    the correct path without asserting on the exact serialisation format.
+    """
+    import json
+
     calls: list[tuple[object, str]] = []
 
     def _spy(path, content):
@@ -103,7 +109,10 @@ def test_write_pid_calls_atomic_write_text(tmp_data_dir, monkeypatch):
 
     assert len(calls) == 1
     assert calls[0][0] == paths.worker_pid_path()
-    assert calls[0][1] == str(os.getpid())
+    # Content must be valid JSON containing our PID.
+    data = json.loads(calls[0][1])
+    assert data["pid"] == os.getpid()
+    assert "interpreter" in data
 
 
 def test_heartbeat_calls_atomic_write_text(tmp_data_dir, monkeypatch):

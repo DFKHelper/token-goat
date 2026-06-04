@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, TypedDict, cast
 
@@ -515,7 +515,7 @@ def is_worker_alive() -> bool:
     if not pid_path.exists():
         return False
     try:
-        pid = int(pid_path.read_text(encoding="utf-8").strip())
+        pid, _interp = _read_pid_info(pid_path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return False
 
@@ -549,9 +549,55 @@ def is_worker_alive() -> bool:
     return _is_process_recent(pid)
 
 
+def _read_pid_info(pid_text: str) -> tuple[int, str | None]:
+    """Parse the worker PID file content and return ``(pid, interpreter_or_None)``.
+
+    Accepts two formats:
+
+    * **Legacy** — a bare integer string (``"12345"`` or ``"12345\\n"``).  Returns
+      ``(pid, None)`` for backward compatibility with PID files written by older
+      versions of token-goat.
+
+    * **JSON** — ``{"pid": N, "started_at": "...", "interpreter": "/path", "version": "..."}``.
+      Returns ``(pid, interpreter_path)`` so callers can display which Python
+      executable owns the worker slot.
+
+    Raises ``ValueError`` on malformed input so callers can fall through to the
+    "pid file unreadable" branch.
+    """
+    text = pid_text.strip()
+    if text.startswith("{"):
+        data = json.loads(text)
+        pid = int(data["pid"])
+        interpreter = data.get("interpreter") or None
+        return pid, interpreter
+    # Legacy plain-integer format
+    return int(text), None
+
+
 def _write_pid() -> None:
-    """Write the current process ID to the worker PID file for liveness tracking."""
-    paths.atomic_write_text(paths.worker_pid_path(), str(os.getpid()))
+    """Write the current process ID to the worker PID file for liveness tracking.
+
+    The PID file is written as a JSON object so that startup guards can compare
+    the running interpreter path against a concurrent process and surface the
+    conflict to users via ``token-goat doctor``.  The format is backward-
+    compatible: :func:`_read_pid_info` accepts both the new JSON form and the
+    legacy plain-integer format written by older versions.
+    """
+    import importlib.metadata as _meta  # noqa: PLC0415
+
+    try:
+        version = _meta.version("token-goat")
+    except _meta.PackageNotFoundError:
+        version = "unknown"
+
+    payload = json.dumps({
+        "pid": os.getpid(),
+        "started_at": datetime.now(tz=UTC).isoformat(),
+        "interpreter": sys.executable,
+        "version": version,
+    })
+    paths.atomic_write_text(paths.worker_pid_path(), payload)
 
 
 def _heartbeat() -> None:
@@ -1961,7 +2007,7 @@ def _live_worker_pid() -> int | None:
     (indicating PID recycling).
     """
     try:
-        pid = int(paths.worker_pid_path().read_text(encoding="utf-8").strip())
+        pid, _interp = _read_pid_info(paths.worker_pid_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
 
@@ -2036,7 +2082,8 @@ def ensure_running() -> int | None:
     """
     if is_worker_alive():
         try:
-            return int(paths.worker_pid_path().read_text(encoding="utf-8").strip())
+            pid, _interp = _read_pid_info(paths.worker_pid_path().read_text(encoding="utf-8"))
+            return pid
         except (OSError, ValueError) as e:
             _LOG.debug("worker is alive but pid file unreadable: %s", e)
             return None

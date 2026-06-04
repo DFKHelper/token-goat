@@ -839,3 +839,215 @@ def test_watchdog_launch_fn_exception_does_not_crash_watchdog(tmp_data_dir):
 
     assert not wd.is_alive(), "watchdog should stop after max_retries even when launch_fn raises"
     assert call_count[0] >= 1, "launch_fn should have been called at least once"
+
+
+# ---------------------------------------------------------------------------
+# JSON PID file format and cross-interpreter startup guard
+# ---------------------------------------------------------------------------
+
+
+def test_read_pid_info_legacy_plain_int():
+    """_read_pid_info parses the legacy plain-integer PID file format."""
+    pid, interpreter = worker._read_pid_info("12345")
+    assert pid == 12345
+    assert interpreter is None
+
+
+def test_read_pid_info_legacy_plain_int_with_newline():
+    """_read_pid_info handles a trailing newline in the legacy format."""
+    pid, interpreter = worker._read_pid_info("98765\n")
+    assert pid == 98765
+    assert interpreter is None
+
+
+def test_read_pid_info_json_format():
+    """_read_pid_info parses the new JSON PID file format and returns interpreter path."""
+    import json
+    payload = json.dumps({
+        "pid": 42,
+        "started_at": "2026-06-03T12:00:00",
+        "interpreter": "/usr/bin/python3",
+        "version": "1.0.1",
+    })
+    pid, interpreter = worker._read_pid_info(payload)
+    assert pid == 42
+    assert interpreter == "/usr/bin/python3"
+
+
+def test_read_pid_info_json_missing_interpreter():
+    """_read_pid_info returns None for interpreter when the key is absent from JSON."""
+    import json
+    payload = json.dumps({"pid": 7, "started_at": "2026-06-03T12:00:00"})
+    pid, interpreter = worker._read_pid_info(payload)
+    assert pid == 7
+    assert interpreter is None
+
+
+def test_read_pid_info_malformed_raises_value_error():
+    """_read_pid_info raises ValueError on completely malformed input."""
+    import pytest
+    with pytest.raises(ValueError):
+        worker._read_pid_info("not-a-number")
+
+
+def test_write_pid_writes_json_format(tmp_data_dir):
+    """_write_pid() writes a JSON object containing pid and interpreter."""
+    import json
+    worker._write_pid()
+    pid_path = worker.paths.worker_pid_path()
+    assert pid_path.exists(), "PID file must exist after _write_pid()"
+    raw = pid_path.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert data["pid"] == os.getpid()
+    assert "interpreter" in data
+    assert data["interpreter"] == sys.executable
+    assert "started_at" in data
+    assert "version" in data
+
+
+def test_write_pid_readable_by_read_pid_info(tmp_data_dir):
+    """_read_pid_info can round-trip a PID file written by _write_pid()."""
+    worker._write_pid()
+    raw = worker.paths.worker_pid_path().read_text(encoding="utf-8")
+    pid, interpreter = worker._read_pid_info(raw)
+    assert pid == os.getpid()
+    assert interpreter == sys.executable
+
+
+def test_run_daemon_exits_when_live_pid_holds_slot(tmp_data_dir):
+    """run_daemon exits immediately (returns without starting the loop) when another live
+    worker holds the claim slot.
+
+    This is the cross-interpreter duplicate guard: even if the competing process
+    was started from a different Python executable, it already holds the O_EXCL
+    claim file and the current process must not start a second main loop.
+    """
+    # Simulate another worker winning the claim slot by patching
+    # _try_claim_worker_slot to return None (the "already claimed" path).
+    loop_entered = threading.Event()
+
+    original_drain = worker.drain_dirty_queue
+
+    def _spy_drain():
+        loop_entered.set()
+        return original_drain()
+
+    with (
+        patch.object(worker, "_try_claim_worker_slot", return_value=None),
+        patch.object(worker, "drain_dirty_queue", _spy_drain),
+    ):
+        daemon.run_daemon()
+
+    assert not loop_entered.is_set(), (
+        "run_daemon must not enter the main loop when the claim slot is already held"
+    )
+
+
+def test_run_daemon_logs_interpreter_when_slot_held(tmp_data_dir, caplog):
+    """run_daemon logs the competing interpreter path (WARNING level) when the slot is held
+    and the PID file contains JSON with an interpreter field.
+
+    This verifies the cross-interpreter duplicate-daemon diagnostic.
+    """
+    import json
+    import logging
+
+    # Write a JSON PID file with a fake interpreter path.
+    fake_pid = os.getpid()  # use a known-live PID so psutil.pid_exists is happy
+    fake_exe = "/fake/python/bin/pythonw.exe"
+    pid_payload = json.dumps({
+        "pid": fake_pid,
+        "started_at": "2026-06-03T00:00:00",
+        "interpreter": fake_exe,
+        "version": "1.0.0",
+    })
+    # Ensure the locks dir exists and write the fake PID file.
+    pid_path = worker.paths.worker_pid_path()
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(pid_payload, encoding="utf-8")
+
+    with (
+        patch.object(worker, "_try_claim_worker_slot", return_value=None),
+        caplog.at_level(logging.WARNING, logger="token_goat.worker"),
+    ):
+        daemon.run_daemon()
+
+    # The WARNING must mention the competing interpreter.
+    warning_lines = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(fake_exe in msg for msg in warning_lines), (
+        f"Expected a WARNING mentioning {fake_exe!r}; got: {warning_lines}"
+    )
+
+
+def test_run_daemon_exits_cleanly_on_pid_race_window(tmp_data_dir):
+    """run_daemon exits if the PID file contains a different PID after _write_pid() —
+    detecting a theoretically-impossible but defensively-guarded startup race.
+
+    The O_EXCL claim file prevents two workers from reaching _write_pid() simultaneously,
+    but the post-write verification is a belt-and-suspenders guard that makes the
+    invariant testable.
+    """
+    loop_entered = threading.Event()
+
+    # Patch _write_pid to write a DIFFERENT PID than os.getpid()
+    def _fake_write_pid():
+        # Write PID 1 (init/systemd — always present, never us).
+        import json as _json  # noqa: PLC0415
+        payload = _json.dumps({
+            "pid": 1,
+            "started_at": "2026-06-03T00:00:00",
+            "interpreter": "/other/python",
+            "version": "1.0.0",
+        })
+        worker.paths.atomic_write_text(worker.paths.worker_pid_path(), payload)
+
+    original_drain = worker.drain_dirty_queue
+
+    def _spy_drain():
+        loop_entered.set()
+        return original_drain()
+
+    with (
+        patch.object(worker, "_try_claim_worker_slot", return_value=3),
+        patch.object(worker, "_write_pid", _fake_write_pid),
+        patch.object(worker, "_clear_pid"),
+        patch.object(worker, "_heartbeat"),
+        patch.object(worker, "_register_autostart"),
+        patch.object(daemon, "_install_signal_handlers"),
+        patch.object(worker, "cleanup_on_startup", return_value={}),
+        patch.object(worker, "drain_dirty_queue", _spy_drain),
+        patch("os.close"),
+    ):
+        daemon.run_daemon()
+
+    assert not loop_entered.is_set(), (
+        "run_daemon must exit before the main loop when the PID file does not match our PID"
+    )
+
+
+def test_run_daemon_proceeds_when_pid_matches(tmp_data_dir):
+    """run_daemon enters the main loop normally when the PID file contains our own PID."""
+    stop = threading.Event()
+    stop.set()
+
+    with (
+        patch.object(worker, "_try_claim_worker_slot", return_value=3),
+        patch.object(worker, "_clear_pid"),
+        patch.object(worker, "_write_pid", lambda: worker.paths.atomic_write_text(
+            worker.paths.worker_pid_path(),
+            __import__("json").dumps({
+                "pid": os.getpid(),
+                "started_at": "2026-06-03T00:00:00",
+                "interpreter": sys.executable,
+                "version": "1.0.0",
+            })
+        )),
+        patch.object(worker, "_heartbeat"),
+        patch.object(worker, "_register_autostart"),
+        patch.object(daemon, "_install_signal_handlers"),
+        patch.object(worker, "cleanup_on_startup", return_value={}),
+        patch.object(worker, "drain_dirty_queue", return_value=[]),
+        patch("os.close"),
+    ):
+        daemon.run_daemon(stop_event=stop)
+    # Test passes if run_daemon completes without error (the stop event exits it)

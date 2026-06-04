@@ -41,11 +41,18 @@ _PID_UNKNOWN = -1
 
 
 def _read_pid_from_file() -> int:
-    """Return the PID written by the worker, or _PID_UNKNOWN if unavailable."""
+    """Return the PID written by the worker, or _PID_UNKNOWN if unavailable.
+
+    Handles both the legacy plain-integer format (``"12345"``) and the current
+    JSON format written by :func:`token_goat.worker._write_pid`:
+    ``{"pid": N, "started_at": "...", "interpreter": "...", "version": "..."}``.
+    """
     from . import paths  # noqa: PLC0415
+    from . import worker as _w  # noqa: PLC0415
 
     try:
-        return int(paths.worker_pid_path().read_text(encoding="utf-8").strip())
+        pid, _interp = _w._read_pid_info(paths.worker_pid_path().read_text(encoding="utf-8"))
+        return pid
     except (OSError, ValueError):
         return _PID_UNKNOWN
 
@@ -433,7 +440,25 @@ def run_daemon(stop_event=None) -> None:
 
     claim_fd = _worker._try_claim_worker_slot()
     if claim_fd is None:
-        _LOG.info("another worker holds the slot; exiting")
+        # Read the PID file to surface the conflicting interpreter — this is the
+        # cross-interpreter duplicate guard.  Two workers started from different
+        # Python executables (e.g. project venv vs system Python) share the same
+        # data directory and therefore contend for the same claim file.  Logging
+        # the PID + interpreter of the winner lets the user immediately identify
+        # the duplicate via `token-goat doctor` or the log file.
+        try:
+            from . import paths as _paths  # noqa: PLC0415
+            _pid_text = _paths.worker_pid_path().read_text(encoding="utf-8")
+            _pid, _exe = _worker._read_pid_info(_pid_text)
+            if _exe:
+                _LOG.warning(
+                    "another token-goat worker is already running (PID %d, interpreter %s); exiting",
+                    _pid, _exe,
+                )
+            else:
+                _LOG.info("another worker holds the slot (PID %d); exiting", _pid)
+        except (OSError, ValueError):
+            _LOG.info("another worker holds the slot; exiting")
         return
 
     # Belt-and-suspenders: ensure the PID file is removed even if the process is
@@ -447,6 +472,28 @@ def run_daemon(stop_event=None) -> None:
     try:
         _worker._clear_pid()
         _worker._write_pid()
+
+        # Post-write race guard: re-read the PID file and verify it contains
+        # OUR PID.  If another process raced and overwrote it between our
+        # _try_claim_worker_slot (which is the authoritative mutex) and
+        # _write_pid, exit rather than running two main loops.  This is
+        # belt-and-suspenders — _try_claim_worker_slot already uses O_EXCL
+        # so this case should be theoretically impossible, but the verification
+        # costs one file-read and makes the invariant explicit and testable.
+        try:
+            from . import paths as _paths  # noqa: PLC0415
+            _written_text = _paths.worker_pid_path().read_text(encoding="utf-8")
+            _written_pid, _written_exe = _worker._read_pid_info(_written_text)
+            if _written_pid != os.getpid():
+                _LOG.error(
+                    "PID file contains PID %d after write but our PID is %d; "
+                    "another process won the startup race — exiting",
+                    _written_pid, os.getpid(),
+                )
+                return
+        except (OSError, ValueError) as _e:
+            _LOG.warning("could not verify PID file after write: %s; continuing", _e)
+
         _worker._heartbeat()
         _worker._register_autostart()
 

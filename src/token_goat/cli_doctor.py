@@ -770,9 +770,15 @@ def doctor(  # noqa: C901
     hb_path = paths.worker_heartbeat_path()
     if pid_path.exists():
         try:
-            pid_val = int(pid_path.read_text(encoding="utf-8").strip())
+            from . import worker as _worker_pid  # noqa: PLC0415
+            pid_val, pid_interpreter = _worker_pid._read_pid_info(
+                pid_path.read_text(encoding="utf-8")
+            )
             if psutil.pid_exists(pid_val):
-                ok("pid file", f"present (PID {pid_val})")
+                _pid_label = f"PID {pid_val}"
+                if pid_interpreter:
+                    _pid_label += f", interpreter {pid_interpreter}"
+                ok("pid file", f"present ({_pid_label})")
                 if hb_path.exists():
                     # Derive the doctor's freshness threshold from the
                     # worker's authoritative formula rather than a hard-coded
@@ -796,7 +802,10 @@ def doctor(  # noqa: C901
                 else:
                     flag("heartbeat", "missing", warn=True)
             else:
-                flag("pid file", f"present but PID {pid_val} not alive", warn=True)
+                _dead_label = f"present but PID {pid_val} not alive"
+                if pid_interpreter:
+                    _dead_label += f" (interpreter {pid_interpreter})"
+                flag("pid file", _dead_label, warn=True)
                 # Heartbeat age is meaningful even for zombie workers: a very
                 # recent heartbeat suggests the process just exited cleanly,
                 # while a stale heartbeat (>5 min) with a dead PID strongly
