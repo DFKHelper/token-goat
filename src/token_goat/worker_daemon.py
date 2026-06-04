@@ -641,6 +641,8 @@ def kill_duplicate_daemon() -> str:
         return f"No running worker found (pid file unreadable: {exc})."
 
     if not _pid_is_alive(pid):
+        with contextlib.suppress(OSError):
+            pid_path.unlink()
         return "No running worker found."
 
     if worker_interp is None:

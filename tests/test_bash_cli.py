@@ -257,6 +257,94 @@ class TestSmartDefaultWebOutput:
 
 
 # ---------------------------------------------------------------------------
+# --section flag for bash-output and web-output
+# ---------------------------------------------------------------------------
+
+
+def _seed_sectioned_bash(session_id: str = "sec-bash") -> str:
+    body = (
+        "## Build\n"
+        "building project\n"
+        "build succeeded\n"
+        "## Tests\n"
+        "running pytest\n"
+        "5 passed\n"
+        "## Deploy\n"
+        "pushing image\n"
+    )
+    meta = bash_cache.store_output(session_id, "make all", body, "", 0)
+    assert meta is not None
+    bash_cache.write_sidecar(meta)
+    return meta.output_id
+
+
+def _seed_sectioned_web(session_id: str = "sec-web") -> str:
+    body = (
+        "## Install\n"
+        "pip install foo\n"
+        "## Usage\n"
+        "foo --help\n"
+        "## Changelog\n"
+        "1.2.0 released\n"
+    )
+    meta = web_cache.store_output(session_id, "https://docs.example.com/", body, 200)
+    assert meta is not None
+    web_cache.write_sidecar(meta)
+    return meta.output_id
+
+
+class TestSectionFlagBashOutput:
+    def test_section_extracts_named_section(self, tmp_data_dir):
+        oid = _seed_sectioned_bash()
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", oid, "--section", "Tests"])
+        assert result.exit_code == 0
+        assert "running pytest" in result.stdout
+        assert "5 passed" in result.stdout
+        assert "building project" not in result.stdout
+        assert "pushing image" not in result.stdout
+
+    def test_section_not_found_exits_error(self, tmp_data_dir):
+        oid = _seed_sectioned_bash()
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", oid, "--section", "Nonexistent"])
+        assert result.exit_code != 0
+
+    def test_section_combined_with_grep(self, tmp_data_dir):
+        oid = _seed_sectioned_bash()
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-output", oid, "--section", "Build", "--grep", "succeeded"])
+        assert result.exit_code == 0
+        assert "build succeeded" in result.stdout
+        assert "building project" not in result.stdout
+
+
+class TestSectionFlagWebOutput:
+    def test_section_extracts_named_section(self, tmp_data_dir):
+        oid = _seed_sectioned_web()
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-output", oid, "--section", "Usage"])
+        assert result.exit_code == 0
+        assert "foo --help" in result.stdout
+        assert "pip install foo" not in result.stdout
+        assert "1.2.0 released" not in result.stdout
+
+    def test_section_not_found_exits_error(self, tmp_data_dir):
+        oid = _seed_sectioned_web()
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-output", oid, "--section", "Nonexistent"])
+        assert result.exit_code != 0
+
+    def test_section_combined_with_grep(self, tmp_data_dir):
+        oid = _seed_sectioned_web()
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-output", oid, "--section", "Changelog", "--grep", "1.2"])
+        assert result.exit_code == 0
+        assert "1.2.0 released" in result.stdout
+        assert "pip install" not in result.stdout
+
+
+# ---------------------------------------------------------------------------
 # bash_output_recall stat recording
 # ---------------------------------------------------------------------------
 
