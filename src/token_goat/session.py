@@ -481,6 +481,11 @@ def _session_file_lock_windows(path: Path) -> Generator[None, None, None]:
         deadline_ms = _SESSION_FILE_LOCK_TIMEOUT_MS
         elapsed_ms = 0
 
+        # A stale flock is one held longer than 10× the timeout (2 s at defaults).
+        # Legitimate lock holders complete well within the 200 ms timeout; anything
+        # older is from a crashed process and is safe to evict.
+        stale_threshold_secs = _SESSION_FILE_LOCK_TIMEOUT_MS * 10 / 1000.0
+
         while elapsed_ms < deadline_ms:
             try:
                 fd = os.open(str(sidecar), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -488,6 +493,16 @@ def _session_file_lock_windows(path: Path) -> Generator[None, None, None]:
                 acquired = True
                 break
             except (FileExistsError, OSError):
+                # Check for a stale sidecar left by a crashed process before sleeping.
+                try:
+                    if time.time() - sidecar.stat().st_mtime > stale_threshold_secs:
+                        sidecar.unlink(missing_ok=True)
+                        _LOG.debug(
+                            "_session_file_lock: evicted stale flock for %s", path.name
+                        )
+                        continue
+                except OSError:
+                    pass
                 time.sleep(_SESSION_FILE_LOCK_POLL_MS / 1000.0)
                 elapsed_ms += _SESSION_FILE_LOCK_POLL_MS
 

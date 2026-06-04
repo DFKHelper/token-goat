@@ -495,6 +495,32 @@ class TestSessionFileLock:
         # Cleanup: we held the fake sidecar so our code did NOT take it.
         sidecar.unlink(missing_ok=True)
 
+    def test_stale_flock_is_evicted_and_lock_acquired(self, tmp_path, monkeypatch):
+        """A stale .flock sidecar (from a crashed process) is removed and the lock acquired."""
+        import os
+
+        monkeypatch.setattr(session, "_IS_WINDOWS", True)
+        # Set a short timeout so the test runs fast; stale threshold = 10× timeout.
+        monkeypatch.setattr(session, "_SESSION_FILE_LOCK_TIMEOUT_MS", 200)
+        monkeypatch.setattr(session, "_SESSION_FILE_LOCK_POLL_MS", 10)
+
+        target = tmp_path / "stale_flock_test.json"
+        sidecar = target.with_suffix(target.suffix + ".flock")
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        # Create a sidecar that is 3 seconds old (well past the 2 s stale threshold).
+        sidecar.write_text("crashed-holder", encoding="utf-8")
+        old_mtime = os.path.getmtime(str(sidecar)) - 3.0
+        os.utime(str(sidecar), (old_mtime, old_mtime))
+
+        body_ran: list[bool] = []
+        with session._session_file_lock(target):
+            body_ran.append(True)
+            # The stale sidecar should have been evicted; our lock is now held via a new sidecar.
+            assert sidecar.exists(), "lock holder's own sidecar must exist during body"
+
+        assert body_ran == [True], "body must execute after evicting stale flock"
+        assert not sidecar.exists(), "sidecar must be released after body"
+
     def test_lock_released_on_exception(self, tmp_path, monkeypatch):
         """Lock is released even when the body raises an exception (Windows path)."""
         monkeypatch.setattr(session, "_IS_WINDOWS", True)
