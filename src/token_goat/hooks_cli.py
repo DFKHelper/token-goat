@@ -435,6 +435,13 @@ def read_payload(input_file: Path | None = None) -> HookPayload:
     except json.JSONDecodeError as e:
         _LOG.warning("failed to decode JSON payload: %s", e)
         return {}
+    except UnicodeDecodeError as e:
+        # Raised by read_text(encoding="utf-8") on files containing non-UTF-8
+        # bytes (e.g. a binary file accidentally sent as the hook payload, or a
+        # file written in a legacy encoding).  Return {} so the dispatcher can
+        # fall through to the CONTINUE safety net rather than crashing.
+        _LOG.warning("hook payload file contains non-UTF-8 bytes: %s", e)
+        return {}
     except OSError as e:
         _LOG.warning("failed to read payload from file: %s", e)
         return {}

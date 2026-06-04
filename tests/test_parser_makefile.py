@@ -1,6 +1,8 @@
 """Tests for the Makefile language extractor and basename dispatch."""
 from __future__ import annotations
 
+import pytest
+
 from token_goat.languages import makefile_idx
 
 # ---------------------------------------------------------------------------
@@ -222,50 +224,26 @@ class TestMakefileBasenameDispatch:
 class TestParserExtensionMappings:
     """Verify extension and basename entries in the parser's lookup tables."""
 
-    def test_mts_mapped_to_typescript(self):
+    @pytest.mark.parametrize("ext,expected_lang", [
+        (".mts", "typescript"),
+        (".cts", "typescript"),
+        (".mk", "makefile"),
+        (".css", "css"),
+        (".scss", "css"),
+        (".less", "css"),
+        (".sql", "sql"),
+        (".graphql", "graphql"),
+        (".gql", "graphql"),
+        (".proto", "proto"),
+    ])
+    def test_ext_mapped_to_language(self, ext, expected_lang):
         from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".mts"] == "typescript"
+        assert LANG_BY_EXT[ext] == expected_lang
 
-    def test_cts_mapped_to_typescript(self):
-        from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".cts"] == "typescript"
-
-    def test_mk_mapped_to_makefile(self):
-        from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".mk"] == "makefile"
-
-    def test_makefile_basename_mapped(self):
+    @pytest.mark.parametrize("basename,expected_lang", [
+        ("makefile", "makefile"),
+        ("gnumakefile", "makefile"),
+    ])
+    def test_basename_mapped_to_language(self, basename, expected_lang):
         from token_goat.parser import LANG_BY_BASENAME
-        assert LANG_BY_BASENAME["makefile"] == "makefile"
-
-    def test_gnumakefile_basename_mapped(self):
-        from token_goat.parser import LANG_BY_BASENAME
-        assert LANG_BY_BASENAME["gnumakefile"] == "makefile"
-
-    def test_css_mapped(self):
-        from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".css"] == "css"
-
-    def test_scss_mapped(self):
-        from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".scss"] == "css"
-
-    def test_less_mapped(self):
-        from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".less"] == "css"
-
-    def test_sql_mapped(self):
-        from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".sql"] == "sql"
-
-    def test_graphql_mapped(self):
-        from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".graphql"] == "graphql"
-
-    def test_gql_mapped(self):
-        from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".gql"] == "graphql"
-
-    def test_proto_mapped(self):
-        from token_goat.parser import LANG_BY_EXT
-        assert LANG_BY_EXT[".proto"] == "proto"
+        assert LANG_BY_BASENAME[basename] == expected_lang

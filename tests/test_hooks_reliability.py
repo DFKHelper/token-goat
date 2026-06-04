@@ -471,6 +471,151 @@ class TestRollLogIfOversized:
 
 
 # ---------------------------------------------------------------------------
+# 6. read_payload — Unicode and encoding robustness
+# ---------------------------------------------------------------------------
+
+
+class TestReadPayloadEncoding:
+    """read_payload must return {} (not crash) for all malformed / non-UTF-8 input."""
+
+    def test_non_utf8_file_returns_empty_dict(self, tmp_path):
+        """A file with invalid UTF-8 bytes must yield {} without raising UnicodeDecodeError.
+
+        Regression guard for the gap where read_text(encoding='utf-8') raised
+        UnicodeDecodeError that was not caught by the existing OSError handler.
+        """
+        from token_goat.hooks_cli import read_payload
+
+        bad_file = tmp_path / "payload.json"
+        # Write raw bytes that are invalid in UTF-8 (0xFF 0xFE is a UTF-16 BOM
+        # — not valid UTF-8 and a realistic payload an operator might accidentally send).
+        bad_file.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81")
+
+        result = read_payload(input_file=bad_file)
+        assert result == {}, f"Expected empty dict for non-UTF-8 file, got {result!r}"
+
+    def test_non_utf8_file_logs_warning(self, tmp_path, caplog):
+        """The UnicodeDecodeError path must log a WARNING (not silently discard)."""
+        import logging
+
+        from token_goat.hooks_cli import read_payload
+
+        bad_file = tmp_path / "payload.json"
+        bad_file.write_bytes(b"\xff\xfe binary garbage")
+
+        caplog.set_level(logging.WARNING, logger="token_goat.hooks")
+        read_payload(input_file=bad_file)
+
+        warning_texts = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("non-UTF-8" in msg or "utf-8" in msg.lower() for msg in warning_texts), (
+            f"Expected a WARNING about non-UTF-8 bytes; got: {warning_texts}"
+        )
+
+    def test_valid_utf8_file_still_parses_correctly(self, tmp_path):
+        """Ensure the UnicodeDecodeError handler does not affect normal valid payloads."""
+        from token_goat.hooks_cli import read_payload
+
+        payload_file = tmp_path / "payload.json"
+        payload_file.write_text(
+            '{"session_id": "abc", "tool_name": "Read", "cwd": "/projects"}',
+            encoding="utf-8",
+        )
+
+        result = read_payload(input_file=payload_file)
+        assert result.get("session_id") == "abc"
+        assert result.get("tool_name") == "Read"
+
+    def test_utf8_with_multibyte_chars_parses_correctly(self, tmp_path):
+        """Multibyte UTF-8 characters (e.g. CJK, emoji) must not trigger the error handler."""
+        from token_goat.hooks_cli import read_payload
+
+        payload_file = tmp_path / "payload.json"
+        # Snowman (U+2603) and Japanese character — both valid UTF-8 multibyte sequences.
+        payload_file.write_text(
+            '{"tool_name": "Read", "note": "雪 ☃"}',
+            encoding="utf-8",
+        )
+
+        result = read_payload(input_file=payload_file)
+        assert result.get("tool_name") == "Read"
+        assert "☃" in result.get("note", "")
+
+    def test_empty_bytes_file_returns_empty_dict(self, tmp_path):
+        """A zero-byte file must return {} (not crash)."""
+        from token_goat.hooks_cli import read_payload
+
+        empty_file = tmp_path / "empty.json"
+        empty_file.write_bytes(b"")
+
+        result = read_payload(input_file=empty_file)
+        assert result == {}, f"Expected empty dict for empty file, got {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# 7. fail_soft coverage — all EVENTS entries resolve and return continue:true
+# ---------------------------------------------------------------------------
+
+
+class TestFailSoftCoverage:
+    """Every registered hook event must resolve to a callable returning continue:True.
+
+    This is an architectural invariant: the fail_soft decorator is applied
+    centrally via _resolve_handler() (lazy-import path) or directly via
+    @fail_soft on pre_compact. All EVENTS entries must be callable and must
+    return continue:True even when their submodule raises.
+    """
+
+    def test_all_events_are_callable(self):
+        """Every entry in hooks_cli.EVENTS must be callable."""
+        from token_goat import hooks_cli
+
+        for event_name, handler in hooks_cli.EVENTS.items():
+            assert callable(handler), (
+                f"hooks_cli.EVENTS[{event_name!r}] is not callable: {handler!r}"
+            )
+
+    def test_pre_compact_is_fail_soft_wrapped(self):
+        """pre_compact is decorated with @fail_soft directly (not via _resolve_handler).
+
+        Verify that hooks_cli.EVENTS['pre-compact'] and hooks_cli.pre_compact
+        are the same object and that they return continue:True on exception.
+        """
+        from token_goat import hooks_cli
+
+        # Should be the @fail_soft-wrapped function registered at module load time.
+        assert hooks_cli.EVENTS.get("pre-compact") is hooks_cli.pre_compact, (
+            "EVENTS['pre-compact'] must be the same object as hooks_cli.pre_compact"
+        )
+
+    def test_pre_compact_fail_soft_catches_exception(self, monkeypatch):
+        """pre_compact returns continue:True even if the manifest build raises."""
+        from token_goat import hooks_cli
+
+        # Patch the compact module to raise so we can verify @fail_soft catches it.
+        monkeypatch.setattr(
+            "token_goat.compact.build_manifest",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("manifest failure")),
+        )
+
+        result = hooks_cli.pre_compact({"session_id": "test-fail-compact", "cwd": "/tmp"})
+        assert result.get("continue") is True, (
+            f"pre_compact must return continue:True on exception; got {result!r}"
+        )
+
+    def test_registry_events_match_events_dict_keys(self):
+        """Every event in hook_registry.HOOK_EVENTS must have an entry in hooks_cli.EVENTS."""
+        from token_goat import hook_registry, hooks_cli
+
+        registry_names = {e.name for e in hook_registry.HOOK_EVENTS}
+        events_names = set(hooks_cli.EVENTS.keys())
+
+        missing_from_events = registry_names - events_names
+        assert not missing_from_events, (
+            f"These registry events have no entry in hooks_cli.EVENTS: {missing_from_events}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # 6. get_tool_input — degenerate payload safety
 # ---------------------------------------------------------------------------
 

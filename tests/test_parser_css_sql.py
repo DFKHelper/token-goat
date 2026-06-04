@@ -1,6 +1,8 @@
 """Tests for the CSS and SQL language extractors."""
 from __future__ import annotations
 
+import pytest
+
 from token_goat.languages import css_idx, sql_idx
 
 # ---------------------------------------------------------------------------
@@ -423,58 +425,24 @@ class TestSqlEdgeCases:
 
 
 class TestParserDispatch:
-    def test_css_extension_dispatches_to_css(self, tmp_path, tmp_data_dir):
+    @pytest.mark.parametrize("filename,content,expected_lang,expected_symbol", [
+        ("style.css", ".btn { color: red; }\n", "css", ".btn"),
+        ("theme.scss", "@mixin flex-center { display: flex; }\n", "css", "@mixin flex-center"),
+        ("schema.sql", "CREATE TABLE accounts (id INT);\n", "sql", "accounts"),
+        ("styles.less", "#main { color: black; }\n", "css", "#main"),
+    ])
+    def test_extension_dispatches(
+        self, tmp_path, tmp_data_dir, filename, content, expected_lang, expected_symbol
+    ):
         from token_goat import parser
         from token_goat.project import Project, canonicalize, project_hash
 
-        css_file = tmp_path / "style.css"
-        css_file.write_text(".btn { color: red; }\n", encoding="utf-8")
+        src_file = tmp_path / filename
+        src_file.write_text(content, encoding="utf-8")
         root = canonicalize(tmp_path)
         proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, css_file)
+        result = parser.index_file(proj, src_file)
         assert result is not None
-        assert result.language == "css"
+        assert result.language == expected_lang
         names = [s.name for s in result.symbols]
-        assert ".btn" in names
-
-    def test_scss_extension_dispatches_to_css(self, tmp_path, tmp_data_dir):
-        from token_goat import parser
-        from token_goat.project import Project, canonicalize, project_hash
-
-        scss_file = tmp_path / "theme.scss"
-        scss_file.write_text("@mixin flex-center { display: flex; }\n", encoding="utf-8")
-        root = canonicalize(tmp_path)
-        proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, scss_file)
-        assert result is not None
-        assert result.language == "css"
-        names = [s.name for s in result.symbols]
-        assert "@mixin flex-center" in names
-
-    def test_sql_extension_dispatches_to_sql(self, tmp_path, tmp_data_dir):
-        from token_goat import parser
-        from token_goat.project import Project, canonicalize, project_hash
-
-        sql_file = tmp_path / "schema.sql"
-        sql_file.write_text("CREATE TABLE accounts (id INT);\n", encoding="utf-8")
-        root = canonicalize(tmp_path)
-        proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, sql_file)
-        assert result is not None
-        assert result.language == "sql"
-        names = [s.name for s in result.symbols]
-        assert "accounts" in names
-
-    def test_less_extension_dispatches_to_css(self, tmp_path, tmp_data_dir):
-        from token_goat import parser
-        from token_goat.project import Project, canonicalize, project_hash
-
-        less_file = tmp_path / "styles.less"
-        less_file.write_text("#main { color: black; }\n", encoding="utf-8")
-        root = canonicalize(tmp_path)
-        proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, less_file)
-        assert result is not None
-        assert result.language == "css"
-        names = [s.name for s in result.symbols]
-        assert "#main" in names
+        assert expected_symbol in names

@@ -7,6 +7,7 @@ Covers:
 from __future__ import annotations
 
 import logging
+from unittest.mock import patch
 
 import pytest
 from conftest import fire_skill_hook
@@ -128,17 +129,17 @@ class TestCrossSessionDedup:
 
     def test_dedup_meta_has_updated_timestamp(self):
         """The dedup meta carries a fresh ts (>= original), not the original session's ts."""
-        import time
-
         body = "# Timestamped skill\n\n" + "ts content. " * 200
 
-        meta_a = skill_cache.store_output("sess-ts-aaa", "ts-skill", body)
-        assert meta_a is not None
-        skill_cache.write_sidecar(meta_a)
+        # Patch time.time so the second store_output call returns a strictly later
+        # timestamp without incurring a real sleep.
+        _times = iter([1_000_000.0, 1_000_001.0])
+        with patch("token_goat.skill_cache.time.time", side_effect=lambda: next(_times)):
+            meta_a = skill_cache.store_output("sess-ts-aaa", "ts-skill", body)
+            assert meta_a is not None
+            skill_cache.write_sidecar(meta_a)
 
-        time.sleep(0.01)  # ensure clock advances at least 10ms
-
-        meta_b = skill_cache.store_output("sess-ts-bbb", "ts-skill", body)
+            meta_b = skill_cache.store_output("sess-ts-bbb", "ts-skill", body)
         assert meta_b is not None
         assert meta_b.ts >= meta_a.ts, (
             f"Dedup meta ts ({meta_b.ts}) should be >= original ts ({meta_a.ts})"

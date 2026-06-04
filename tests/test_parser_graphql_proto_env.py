@@ -1,6 +1,8 @@
 """Tests for the GraphQL, Proto, and ENV language extractors."""
 from __future__ import annotations
 
+import pytest
+
 from token_goat.languages import env_idx, graphql_idx, proto_idx
 
 # ---------------------------------------------------------------------------
@@ -674,84 +676,56 @@ class TestEnvExtractor:
 
 
 class TestParserDispatch:
-    def test_graphql_extension_dispatches(self, tmp_path, tmp_data_dir):
-        from token_goat import parser
-        from token_goat.project import Project, canonicalize, project_hash
-
-        gql_file = tmp_path / "schema.graphql"
-        gql_file.write_text("type User { id: ID! name: String }\n", encoding="utf-8")
-        root = canonicalize(tmp_path)
-        proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, gql_file)
-        assert result is not None
-        assert result.language == "graphql"
-        names = [s.name for s in result.symbols]
-        assert "User" in names
-
-    def test_gql_extension_dispatches(self, tmp_path, tmp_data_dir):
-        from token_goat import parser
-        from token_goat.project import Project, canonicalize, project_hash
-
-        gql_file = tmp_path / "queries.gql"
-        gql_file.write_text("query GetUser($id: ID!) { user(id: $id) { name } }\n", encoding="utf-8")
-        root = canonicalize(tmp_path)
-        proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, gql_file)
-        assert result is not None
-        assert result.language == "graphql"
-
-    def test_proto_extension_dispatches(self, tmp_path, tmp_data_dir):
-        from token_goat import parser
-        from token_goat.project import Project, canonicalize, project_hash
-
-        proto_file = tmp_path / "user.proto"
-        proto_file.write_text(
+    @pytest.mark.parametrize("filename,content,expected_lang,expected_symbol", [
+        (
+            "schema.graphql",
+            "type User { id: ID! name: String }\n",
+            "graphql",
+            "User",
+        ),
+        (
+            "queries.gql",
+            "query GetUser($id: ID!) { user(id: $id) { name } }\n",
+            "graphql",
+            "GetUser",
+        ),
+        (
+            "user.proto",
             'syntax = "proto3";\nmessage User { int32 id = 1; }\n',
-            encoding="utf-8",
-        )
+            "proto",
+            "User",
+        ),
+        (
+            ".env.example",
+            "DATABASE_URL=postgres://localhost/mydb\nPORT=3000\n",
+            "env_file",
+            "DATABASE_URL",
+        ),
+        (
+            ".env.sample",
+            "API_KEY=your_key_here\n",
+            "env_file",
+            "API_KEY",
+        ),
+        (
+            ".env.local",
+            "OVERRIDE=true\n",
+            "env_file",
+            "OVERRIDE",
+        ),
+    ])
+    def test_extension_dispatches(
+        self, tmp_path, tmp_data_dir, filename, content, expected_lang, expected_symbol
+    ):
+        from token_goat import parser
+        from token_goat.project import Project, canonicalize, project_hash
+
+        src_file = tmp_path / filename
+        src_file.write_text(content, encoding="utf-8")
         root = canonicalize(tmp_path)
         proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, proto_file)
+        result = parser.index_file(proj, src_file)
         assert result is not None
-        assert result.language == "proto"
+        assert result.language == expected_lang
         names = [s.name for s in result.symbols]
-        assert "User" in names
-
-    def test_env_example_dispatches(self, tmp_path, tmp_data_dir):
-        from token_goat import parser
-        from token_goat.project import Project, canonicalize, project_hash
-
-        env_file = tmp_path / ".env.example"
-        env_file.write_text("DATABASE_URL=postgres://localhost/mydb\nPORT=3000\n", encoding="utf-8")
-        root = canonicalize(tmp_path)
-        proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, env_file)
-        assert result is not None
-        assert result.language == "env_file"
-        names = [s.name for s in result.symbols]
-        assert "DATABASE_URL" in names
-        assert "PORT" in names
-
-    def test_env_sample_dispatches(self, tmp_path, tmp_data_dir):
-        from token_goat import parser
-        from token_goat.project import Project, canonicalize, project_hash
-
-        env_file = tmp_path / ".env.sample"
-        env_file.write_text("API_KEY=your_key_here\n", encoding="utf-8")
-        root = canonicalize(tmp_path)
-        proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, env_file)
-        assert result is not None
-        assert result.language == "env_file"
-
-    def test_env_local_dispatches(self, tmp_path, tmp_data_dir):
-        from token_goat import parser
-        from token_goat.project import Project, canonicalize, project_hash
-
-        env_file = tmp_path / ".env.local"
-        env_file.write_text("OVERRIDE=true\n", encoding="utf-8")
-        root = canonicalize(tmp_path)
-        proj = Project(root=root, hash=project_hash(root), marker=".git")
-        result = parser.index_file(proj, env_file)
-        assert result is not None
-        assert result.language == "env_file"
+        assert expected_symbol in names
