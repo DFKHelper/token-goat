@@ -648,3 +648,114 @@ class TestWebOutputFromSession:
         runner = CliRunner()
         result = runner.invoke(app, ["web-output"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# bash-history display: command truncation and exit code format
+# ---------------------------------------------------------------------------
+
+class TestBashHistoryDisplay:
+    """bash-history truncates long commands to 100 chars and shows [exit:N]."""
+
+    def _seed_cmd(self, command: str, exit_code: int = 0, session_id: str = "hist-disp") -> str:
+        meta = bash_cache.store_output(
+            session_id, command, "output line\n" * 100, "", exit_code,
+        )
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+        return meta.output_id
+
+    def test_long_command_truncated_to_100_chars(self, tmp_data_dir):
+        """Commands longer than 100 chars are truncated with '…' in text output."""
+        long_cmd = "rg " + "A" * 120  # well over 100 chars
+        oid = self._seed_cmd(long_cmd)
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-history"])
+        assert result.exit_code == 0
+        # Find the line for our entry
+        lines = [ln for ln in result.stdout.splitlines() if oid in ln]
+        assert len(lines) == 1, f"expected exactly one line with oid, got: {result.stdout}"
+        line = lines[0]
+        # Extract the command portion (after the age column)
+        # The display is: oid  size  age  [exit:N]  cmd
+        # Command must end with '…' and not exceed 100 display chars of the original command
+        assert "…" in line
+        # The preview shown should not exceed 100 chars (plus the appended '…')
+        # Find position of the preview by splitting on the last '  ' block before the cmd
+        after_age = line.split("s ago")[-1].strip()
+        # Strip exit code if present
+        if after_age.startswith("[exit:"):
+            after_age = after_age.split("]", 1)[-1].strip()
+        assert len(after_age) <= 101  # 100 chars + '…'
+
+    def test_short_command_not_truncated(self, tmp_data_dir):
+        """Commands under 100 chars are shown in full without truncation."""
+        short_cmd = "pytest -v tests/"
+        oid = self._seed_cmd(short_cmd, session_id="hist-short")
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-history"])
+        assert result.exit_code == 0
+        lines = [ln for ln in result.stdout.splitlines() if oid in ln]
+        assert len(lines) == 1
+        assert short_cmd in lines[0]
+        # No truncation marker for a short command
+        assert "…" not in lines[0] or short_cmd in lines[0]
+
+    def test_exit_code_shown_for_nonzero(self, tmp_data_dir):
+        """Non-zero exit codes appear as [exit:N] in the history line."""
+        oid = self._seed_cmd("npm test", exit_code=1, session_id="hist-fail")
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-history"])
+        assert result.exit_code == 0
+        lines = [ln for ln in result.stdout.splitlines() if oid in ln]
+        assert len(lines) == 1
+        assert "[exit:1]" in lines[0]
+
+    def test_exit_code_zero_shown(self, tmp_data_dir):
+        """Zero exit code is also shown as [exit:0]."""
+        oid = self._seed_cmd("make build", exit_code=0, session_id="hist-pass")
+        runner = CliRunner()
+        result = runner.invoke(app, ["bash-history"])
+        assert result.exit_code == 0
+        lines = [ln for ln in result.stdout.splitlines() if oid in ln]
+        assert len(lines) == 1
+        assert "[exit:0]" in lines[0]
+
+
+# ---------------------------------------------------------------------------
+# web-history display: content_type in JSON output
+# ---------------------------------------------------------------------------
+
+class TestWebHistoryContentType:
+    """web-history JSON output includes content_type from sidecar."""
+
+    def _seed_web(self, url: str, content_type: str | None, session_id: str = "wh-ct") -> str:
+        meta = web_cache.store_output(
+            session_id, url, "body content " * 200, 200,
+            content_type=content_type,
+        )
+        assert meta is not None
+        web_cache.write_sidecar(meta)
+        return meta.output_id
+
+    def test_json_includes_content_type(self, tmp_data_dir):
+        """web-history --json includes content_type field when available."""
+        oid = self._seed_web("https://api.example.com/data", "application/json")
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-history", "--json"])
+        assert result.exit_code == 0
+        rows = json.loads(result.stdout)
+        row = next((r for r in rows if r["output_id"] == oid), None)
+        assert row is not None, "expected entry for stored web output"
+        assert row.get("content_type") == "application/json"
+
+    def test_json_content_type_none_when_not_provided(self, tmp_data_dir):
+        """web-history --json shows content_type as null when not stored."""
+        oid = self._seed_web("https://example.com/page", None, session_id="wh-no-ct")
+        runner = CliRunner()
+        result = runner.invoke(app, ["web-history", "--json"])
+        assert result.exit_code == 0
+        rows = json.loads(result.stdout)
+        row = next((r for r in rows if r["output_id"] == oid), None)
+        assert row is not None
+        assert row.get("content_type") is None

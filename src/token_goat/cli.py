@@ -4030,7 +4030,7 @@ def cmd_web_history(
     from . import web_cache  # noqa: PLC0415
 
     def _json_fields(s: object) -> dict[str, object]:
-        return {"url_preview": s.url_preview, "status_code": s.status_code, "truncated": s.truncated}  # type: ignore[attr-defined]  # s typed as object; web_cache sidecar dataclass at runtime
+        return {"url_preview": s.url_preview, "status_code": s.status_code, "truncated": s.truncated, "content_type": s.content_type}  # type: ignore[attr-defined]  # s typed as object; web_cache sidecar dataclass at runtime
 
     def _fmt(oid: str, size: int, age: int, s: object) -> str:
         url_str = s.url_preview if s is not None else "(no sidecar)"  # type: ignore[attr-defined]  # s typed as object; web sidecar dataclass at runtime
@@ -4111,9 +4111,15 @@ def cmd_bash_history(
         return {"cmd_preview": s.cmd_preview, "exit_code": s.exit_code, "truncated": s.truncated}  # type: ignore[attr-defined]  # s typed as object; bash_cache sidecar dataclass at runtime
 
     def _fmt(oid: str, size: int, age: int, s: object) -> str:
-        cmd_str = s.cmd_preview if s is not None else "(no sidecar)"  # type: ignore[attr-defined]  # same — bash sidecar dataclass
-        exit_str = f" exit={s.exit_code}" if s is not None and s.exit_code is not None else ""  # type: ignore[attr-defined]  # same
-        return f"{oid}  {size:>10,}B  {age:>6}s ago{exit_str}  {cmd_str}"
+        if s is not None:
+            preview = s.cmd_preview  # type: ignore[attr-defined]  # same — bash sidecar dataclass
+            if len(preview) > 100:
+                preview = preview[:100] + "…"
+            exit_str = f" [exit:{s.exit_code}]" if s.exit_code is not None else ""  # type: ignore[attr-defined]  # same
+        else:
+            preview = "(no sidecar)"
+            exit_str = ""
+        return f"{oid}  {size:>10,}B  {age:>6}s ago{exit_str}  {preview}"
 
     _run_history_listing_command(
         bash_cache,

@@ -480,6 +480,7 @@ def read_sidecar(output_id: str) -> WebOutputMeta | None:
             ),
             ts=float(data.get("ts", 0.0)),
             truncated=bool(data.get("truncated", False)),
+            content_type=(str(data["content_type"]) if isinstance(data.get("content_type"), str) else None),
         )
     except (TypeError, ValueError):
         return None

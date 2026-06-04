@@ -209,6 +209,9 @@ def extract(
         symbols.sort(key=lambda s: s.line)
 
         common.assign_flat_end_lines(sections, total_lines)
+        # Propagate computed end_lines to Symbol objects so that
+        # ``token-goat scope`` can match enclosing SQL definitions.
+        common.propagate_section_end_lines_to_symbols(symbols, sections)
 
         return symbols, [], [], sections
 

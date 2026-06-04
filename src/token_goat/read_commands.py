@@ -1576,8 +1576,23 @@ _SCOPE_MAX_IMPORTS: int = 15
 # enclose a line if it appears before it, but for enclosing scope we want the
 # function/class/method nesting chain.
 _SCOPE_ENCLOSING_KINDS: frozenset[str] = frozenset({
+    # Standard code constructs (Python, TypeScript, Go, Rust, Java, etc.)
     "function", "async_function", "method", "class", "interface",
     "struct", "trait", "enum", "constructor",
+    # CSS / SCSS / Less — selectors, mixins, keyframes, and @rules are
+    # block-scoped constructs agents navigate inside.
+    "css_selector", "css_mixin", "css_keyframe", "css_rule",
+    # SQL — only statement-body kinds (functions, procedures, triggers have
+    # procedural bodies).  Tables and views are definition containers that
+    # agents frequently navigate inside too.
+    "sql_function", "sql_procedure", "sql_trigger",
+    "sql_table", "sql_view",
+    # GraphQL — all definition blocks have a body.
+    "graphql_type", "graphql_interface", "graphql_input", "graphql_enum",
+    "graphql_union", "graphql_fragment", "graphql_query",
+    "graphql_mutation", "graphql_subscription", "graphql_extend",
+    # Makefile — targets and define blocks are procedural scopes.
+    "makefile_target", "makefile_define",
 })
 
 

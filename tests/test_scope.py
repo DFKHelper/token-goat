@@ -399,3 +399,481 @@ class TestScopeImportsTruncation:
         assert len(data["imports"]) <= _SCOPE_MAX_IMPORTS
         assert "imports_truncated" in data
         assert data["imports_truncated"] > 0
+
+
+# ---------------------------------------------------------------------------
+# scope() — CSS file type
+# ---------------------------------------------------------------------------
+
+class TestScopeCss:
+    """scope works for CSS / SCSS files (css_selector, css_mixin, css_rule)."""
+
+    def test_css_selector_enclosing(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope inside a CSS selector body reports the enclosing selector."""
+        content = (
+            ".btn-primary {\n"
+            "    background: blue;\n"
+            "    color: white;\n"
+            "}\n"
+            "\n"
+            ".btn-secondary {\n"
+            "    background: gray;\n"
+            "}\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "styles.css"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "styles.css") + ":2", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        assert "enclosing" in data
+        # The selector enclosing line 2 should be present
+        assert len(data["enclosing"]) >= 1
+        kinds = {e["kind"] for e in data["enclosing"]}
+        assert kinds & {"css_selector"}
+        names = {e["name"] for e in data["enclosing"]}
+        assert ".btn-primary" in names
+
+    def test_css_selector_enclosing_text_output(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope text output inside a CSS selector shows the selector name."""
+        content = (
+            ".hero {\n"
+            "    font-size: 2rem;\n"
+            "}\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "main.css"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "main.css") + ":2")
+        out = capsys.readouterr().out
+        assert ".hero" in out
+
+    def test_css_mixin_enclosing(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope inside a SCSS mixin body reports the mixin as enclosing."""
+        content = (
+            "@mixin flex-center {\n"
+            "    display: flex;\n"
+            "    align-items: center;\n"
+            "    justify-content: center;\n"
+            "}\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "mixins.scss"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "mixins.scss") + ":3", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        assert len(data["enclosing"]) >= 1
+        kinds = {e["kind"] for e in data["enclosing"]}
+        assert "css_mixin" in kinds
+        names = {e["name"] for e in data["enclosing"]}
+        assert "@mixin flex-center" in names
+
+    def test_css_module_level_no_enclosing(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope at the first line of a CSS file (before any rule) is module level."""
+        content = (
+            "\n"
+            ".foo { color: red; }\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "empty.css"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "empty.css") + ":1", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        # Line 1 is before the selector — empty enclosing or no matching enclosing
+        assert "enclosing" in data
+
+
+# ---------------------------------------------------------------------------
+# scope() — SQL file type
+# ---------------------------------------------------------------------------
+
+class TestScopeSql:
+    """scope works for SQL files (sql_function, sql_procedure, sql_table)."""
+
+    def test_sql_function_enclosing(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope inside a SQL function body reports the function as enclosing."""
+        content = (
+            "CREATE OR REPLACE FUNCTION get_user(uid INT)\n"
+            "RETURNS TABLE AS $$\n"
+            "BEGIN\n"
+            "    RETURN QUERY SELECT * FROM users WHERE id = uid;\n"
+            "END;\n"
+            "$$ LANGUAGE plpgsql;\n"
+            "\n"
+            "CREATE TABLE orders (\n"
+            "    id SERIAL PRIMARY KEY,\n"
+            "    user_id INT\n"
+            ");\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "schema.sql"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "schema.sql") + ":4", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        assert "enclosing" in data
+        assert len(data["enclosing"]) >= 1
+        kinds = {e["kind"] for e in data["enclosing"]}
+        assert "sql_function" in kinds
+        names = {e["name"] for e in data["enclosing"]}
+        assert "get_user" in names
+
+    def test_sql_table_enclosing(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope inside a CREATE TABLE body reports the table as enclosing."""
+        content = (
+            "CREATE TABLE users (\n"
+            "    id SERIAL PRIMARY KEY,\n"
+            "    email TEXT NOT NULL,\n"
+            "    created_at TIMESTAMP DEFAULT NOW()\n"
+            ");\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "migration.sql"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "migration.sql") + ":3", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        assert "enclosing" in data
+        assert len(data["enclosing"]) >= 1
+        kinds = {e["kind"] for e in data["enclosing"]}
+        assert "sql_table" in kinds
+        names = {e["name"] for e in data["enclosing"]}
+        assert "users" in names
+
+    def test_sql_json_structure(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope --json for SQL has correct key structure."""
+        content = (
+            "CREATE TABLE products (\n"
+            "    id INT PRIMARY KEY,\n"
+            "    name TEXT\n"
+            ");\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "db.sql"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "db.sql") + ":2", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        assert "file" in data
+        assert "line" in data
+        assert data["line"] == 2
+        assert "enclosing" in data
+        assert "imports" in data
+        # Each enclosing entry must have required keys
+        for entry in data["enclosing"]:
+            assert "name" in entry
+            assert "kind" in entry
+            assert "start_line" in entry
+            assert "end_line" in entry
+
+
+# ---------------------------------------------------------------------------
+# scope() — GraphQL file type
+# ---------------------------------------------------------------------------
+
+class TestScopeGraphql:
+    """scope works for GraphQL files (graphql_type, graphql_query, etc.)."""
+
+    def test_graphql_type_enclosing(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope inside a GraphQL type body reports the type as enclosing."""
+        content = (
+            "type User {\n"
+            "  id: ID!\n"
+            "  email: String!\n"
+            "  createdAt: String\n"
+            "}\n"
+            "\n"
+            "type Query {\n"
+            "  user(id: ID!): User\n"
+            "}\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "schema.graphql"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "schema.graphql") + ":3", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        assert "enclosing" in data
+        assert len(data["enclosing"]) >= 1
+        kinds = {e["kind"] for e in data["enclosing"]}
+        assert "graphql_type" in kinds
+        names = {e["name"] for e in data["enclosing"]}
+        assert "User" in names
+
+    def test_graphql_query_enclosing(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope inside a named GraphQL query body reports the query as enclosing."""
+        content = (
+            "query GetUser($id: ID!) {\n"
+            "  user(id: $id) {\n"
+            "    id\n"
+            "    email\n"
+            "  }\n"
+            "}\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "operations.graphql"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "operations.graphql") + ":3", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        assert len(data["enclosing"]) >= 1
+        kinds = {e["kind"] for e in data["enclosing"]}
+        assert "graphql_query" in kinds
+        names = {e["name"] for e in data["enclosing"]}
+        assert "GetUser" in names
+
+    def test_graphql_text_output_shows_type_name(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope text output inside a GraphQL type shows the type name."""
+        content = (
+            "type Product {\n"
+            "  id: ID!\n"
+            "  price: Float!\n"
+            "}\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "product.graphql"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "product.graphql") + ":2")
+        out = capsys.readouterr().out
+        assert "Product" in out
+
+
+# ---------------------------------------------------------------------------
+# scope() — Makefile file type
+# ---------------------------------------------------------------------------
+
+class TestScopeMakefile:
+    """scope works for Makefile files (makefile_target, makefile_define)."""
+
+    def test_makefile_target_enclosing(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope inside a Makefile recipe reports the target as enclosing."""
+        content = (
+            "build:\n"
+            "\tgo build -o bin/app ./...\n"
+            "\n"
+            "test:\n"
+            "\tgo test ./...\n"
+            "\n"
+            "clean:\n"
+            "\trm -rf bin/\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "Makefile"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "Makefile") + ":5", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        assert "enclosing" in data
+        assert len(data["enclosing"]) >= 1
+        kinds = {e["kind"] for e in data["enclosing"]}
+        assert "makefile_target" in kinds
+        names = {e["name"] for e in data["enclosing"]}
+        assert "test" in names
+
+    def test_makefile_define_enclosing(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope inside a Makefile define block reports the define as enclosing."""
+        content = (
+            "define BUILD_CMD\n"
+            "go build -v \\\n"
+            "  -ldflags=\"-s -w\" \\\n"
+            "  ./...\n"
+            "endef\n"
+            "\n"
+            "build:\n"
+            "\t$(BUILD_CMD)\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "Makefile"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "Makefile") + ":3", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        assert len(data["enclosing"]) >= 1
+        kinds = {e["kind"] for e in data["enclosing"]}
+        assert "makefile_define" in kinds
+        names = {e["name"] for e in data["enclosing"]}
+        assert "BUILD_CMD" in names
+
+    def test_makefile_text_output_shows_target_name(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope text output inside a Makefile recipe shows the target name."""
+        content = (
+            "install:\n"
+            "\tnpm install\n"
+            "\tnpm run build\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "Makefile"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "Makefile") + ":2")
+        out = capsys.readouterr().out
+        assert "install" in out
+
+    def test_makefile_module_level_before_first_target(
+        self, tmp_path, tmp_data_dir, make_project, monkeypatch, capsys
+    ):
+        """scope at a line before any target in a Makefile is module level."""
+        content = (
+            "CC = gcc\n"
+            "\n"
+            "build:\n"
+            "\t$(CC) -o app main.c\n"
+        )
+        proj_root, proj = _make_scope_project(
+            tmp_path, tmp_data_dir, make_project, content, "Makefile"
+        )
+        monkeypatch.chdir(proj_root)
+
+        from token_goat.read_commands import scope
+        scope(str(proj_root / "Makefile") + ":1", json_output=True)
+        out = capsys.readouterr().out
+
+        data = json.loads(out.strip())
+        # Line 1 is a variable assignment before any target
+        assert "enclosing" in data
+        # No target encloses line 1 — should be empty or contain no target kind
+        makefile_kinds = {
+            e["kind"] for e in data["enclosing"]
+            if e["kind"] in ("makefile_target", "makefile_define")
+        }
+        assert len(makefile_kinds) == 0
+
+
+# ---------------------------------------------------------------------------
+# scope() — end_line propagation unit test
+# ---------------------------------------------------------------------------
+
+class TestScopeEndLinePropagation:
+    """Unit tests for propagate_section_end_lines_to_symbols helper."""
+
+    def test_propagate_copies_end_line(self):
+        """end_line from sections is copied to matching symbols."""
+        from token_goat.languages.common import propagate_section_end_lines_to_symbols
+        from token_goat.parser import Section, Symbol
+
+        symbols = [
+            Symbol(name="foo", kind="css_selector", line=1),
+            Symbol(name="bar", kind="css_selector", line=5),
+        ]
+        sections = [
+            Section(heading="foo", level=1, line=1, end_line=4),
+            Section(heading="bar", level=1, line=5, end_line=8),
+        ]
+
+        propagate_section_end_lines_to_symbols(symbols, sections)
+
+        assert symbols[0].end_line == 4
+        assert symbols[1].end_line == 8
+
+    def test_propagate_skips_none_section_end_line(self):
+        """Symbols are not modified when the matching section end_line is None."""
+        from token_goat.languages.common import propagate_section_end_lines_to_symbols
+        from token_goat.parser import Section, Symbol
+
+        sym = Symbol(name="foo", kind="css_selector", line=1)
+        sec = Section(heading="foo", level=1, line=1, end_line=None)
+
+        propagate_section_end_lines_to_symbols([sym], [sec])
+
+        assert sym.end_line is None
+
+    def test_propagate_skips_already_set_symbol(self):
+        """Symbols whose end_line is already set are not overwritten."""
+        from token_goat.languages.common import propagate_section_end_lines_to_symbols
+        from token_goat.parser import Section, Symbol
+
+        sym = Symbol(name="foo", kind="function", line=1, end_line=99)
+        sec = Section(heading="foo", level=1, line=1, end_line=10)
+
+        propagate_section_end_lines_to_symbols([sym], [sec])
+
+        # end_line should remain the original 99, not overwritten by section's 10
+        assert sym.end_line == 99
+
+    def test_propagate_no_matching_section(self):
+        """Symbols without a matching section keep end_line=None."""
+        from token_goat.languages.common import propagate_section_end_lines_to_symbols
+        from token_goat.parser import Section, Symbol
+
+        sym = Symbol(name="orphan", kind="css_selector", line=10)
+        sec = Section(heading="other", level=1, line=5, end_line=9)
+
+        propagate_section_end_lines_to_symbols([sym], [sec])
+
+        assert sym.end_line is None

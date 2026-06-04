@@ -657,3 +657,81 @@ class TestStoreOutputJsonRouting:
         # HTML body should NOT have JSON truncation markers
         assert "more chars" not in body
         assert "X" * 100 in body  # content preserved
+
+
+class TestSidecarContentType:
+    """content_type is stored in the sidecar JSON and round-tripped by read_sidecar."""
+
+    def test_content_type_preserved_in_sidecar_round_trip(self, tmp_data_dir):
+        """read_sidecar returns the content_type that was stored by store_output."""
+        meta = web_cache.store_output(
+            "sess-ct-1",
+            "https://api.example.com/data",
+            '{"key": "value"}' * 200,
+            200,
+            content_type="application/json",
+        )
+        assert meta is not None
+        assert meta.content_type == "application/json"
+        web_cache.write_sidecar(meta)
+        loaded = web_cache.read_sidecar(meta.output_id)
+        assert loaded is not None
+        assert loaded.content_type == "application/json"
+
+    def test_content_type_html_round_trip(self, tmp_data_dir):
+        """read_sidecar preserves text/html content_type."""
+        body = "<html><body>" + "X" * 2000 + "</body></html>"
+        meta = web_cache.store_output(
+            "sess-ct-2",
+            "https://example.com/page",
+            body,
+            200,
+            content_type="text/html; charset=utf-8",
+        )
+        assert meta is not None
+        assert meta.content_type == "text/html; charset=utf-8"
+        web_cache.write_sidecar(meta)
+        loaded = web_cache.read_sidecar(meta.output_id)
+        assert loaded is not None
+        assert loaded.content_type == "text/html; charset=utf-8"
+
+    def test_content_type_none_when_not_provided(self, tmp_data_dir):
+        """read_sidecar returns None for content_type when not stored."""
+        meta = web_cache.store_output(
+            "sess-ct-3",
+            "https://example.com/unknown",
+            "some body content " * 200,
+            200,
+        )
+        assert meta is not None
+        assert meta.content_type is None
+        web_cache.write_sidecar(meta)
+        loaded = web_cache.read_sidecar(meta.output_id)
+        assert loaded is not None
+        assert loaded.content_type is None
+
+    def test_content_type_absent_in_old_sidecar_returns_none(self, tmp_data_dir):
+        """Older sidecars without a content_type field are tolerated (field defaults to None)."""
+        import json
+
+        # Write a sidecar JSON manually without the content_type key (simulates old format)
+        meta = web_cache.store_output(
+            "sess-ct-4",
+            "https://legacy.example.com/",
+            "legacy body " * 200,
+            200,
+            content_type="text/plain",
+        )
+        assert meta is not None
+        # Write sidecar and then patch out content_type from the JSON
+        web_cache.write_sidecar(meta)
+        from token_goat.web_cache import sidecar_meta_path
+        p = sidecar_meta_path(meta.output_id)
+        assert p is not None and p.exists()
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data.pop("content_type", None)
+        p.write_text(json.dumps(data), encoding="utf-8")
+
+        loaded = web_cache.read_sidecar(meta.output_id)
+        assert loaded is not None
+        assert loaded.content_type is None  # gracefully defaults to None

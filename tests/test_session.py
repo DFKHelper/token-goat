@@ -2258,6 +2258,53 @@ class TestLegacyHighCapSessionLoad:
         loaded = session.load(sid)
         assert len(loaded.bash_history) <= session.BASH_HISTORY_MAX
 
+    def test_bash_history_cap_300_entries_save_load(self, tmp_data_dir):
+        """Creating 300 bash_history entries and round-tripping through save/load
+        must leave at most BASH_HISTORY_MAX entries in the loaded cache.
+
+        Regression guard: verifies that the FIFO eviction applied by
+        mark_bash_run() is respected end-to-end through the JSON serialization
+        and deserialization cycle, regardless of how many entries were added
+        in a single batch.
+        """
+        import unittest.mock  # noqa: PLC0415
+
+        sid = "bash-cap-300-roundtrip"
+        n = 300
+        cache = None
+        with unittest.mock.patch.object(session, "save", return_value=None):
+            for i in range(n):
+                cache = session.mark_bash_run(
+                    sid,
+                    f"sha{i:04d}",
+                    f"pytest tests/test_batch_{i}.py",
+                    f"out-{i}",
+                    stdout_bytes=500,
+                    stderr_bytes=0,
+                    exit_code=0,
+                    truncated=False,
+                    cache=cache,
+                )
+        # Flush the final in-memory state to disk in one write.
+        if cache is not None:
+            session.save(cache)
+        loaded = session.load(sid)
+        # Cap enforcement: at most BASH_HISTORY_MAX entries must survive.
+        assert len(loaded.bash_history) <= session.BASH_HISTORY_MAX, (
+            f"Expected <= {session.BASH_HISTORY_MAX} bash_history entries after "
+            f"inserting {n}; got {len(loaded.bash_history)}"
+        )
+        # The most recent entry must be present (FIFO evicts oldest, not newest).
+        last_preview = f"pytest tests/test_batch_{n - 1}.py"
+        assert any(
+            last_preview in e.cmd_preview for e in loaded.bash_history.values()
+        ), f"Most recent entry '{last_preview}' missing from loaded bash_history"
+        # The oldest entry must have been evicted.
+        first_preview = "pytest tests/test_batch_0.py"
+        assert all(
+            first_preview not in e.cmd_preview for e in loaded.bash_history.values()
+        ), f"Oldest entry '{first_preview}' should have been evicted but is still present"
+
 
 class TestSessionSchemaMigration:
     """Schema migration for older session JSON files missing new fields."""

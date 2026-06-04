@@ -271,6 +271,9 @@ def extract(
         # Sort sections by line then assign end_lines.
         sections.sort(key=lambda s: s.line)
         common.assign_flat_end_lines(sections, total_lines)
+        # Propagate computed end_lines to Symbol objects so that
+        # ``token-goat scope`` can match enclosing CSS blocks.
+        common.propagate_section_end_lines_to_symbols(symbols, sections)
 
         return symbols, [], imp_exp, sections
 

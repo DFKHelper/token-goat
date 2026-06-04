@@ -26,6 +26,7 @@ __all__ = [
     "merge_extra_symbols",
     "offset_to_line",
     "parse_source",
+    "propagate_section_end_lines_to_symbols",
     "safe_regex_parse",
     "scan_flat_headers",
     "sym_kind_str",
@@ -839,6 +840,47 @@ def assign_flat_end_lines(sections: list[Section], total_lines: int) -> None:
             sec.end_line = max(sec.line, total_lines)
 
 
+def propagate_section_end_lines_to_symbols(
+    symbols: list,
+    sections: list,
+) -> None:
+    """Copy computed ``end_line`` values from *sections* into the parallel *symbols* list.
+
+    Flat extractors (CSS, SQL, GraphQL, Makefile, …) build a 1-to-1 list of
+    :class:`~token_goat.parser.Symbol` and :class:`~token_goat.parser.Section`
+    objects for each definition, then call :func:`assign_flat_end_lines` to
+    compute section end-lines.  Without this helper the corresponding
+    :class:`Symbol` objects keep ``end_line=None``, which prevents the
+    ``token-goat scope`` command from matching them (the query filters on
+    ``end_line IS NOT NULL AND line <= target AND end_line >= target``).
+
+    The mapping is done by ``(name, line)`` key rather than list index so it
+    is safe to call even when the two lists have different orderings (e.g.
+    after a secondary ``symbols.sort()`` pass).
+
+    Parameters
+    ----------
+    symbols:
+        :class:`~token_goat.parser.Symbol` list whose ``end_line`` fields are
+        to be populated.  Modified in-place.
+    sections:
+        :class:`~token_goat.parser.Section` list that has already had end-lines
+        assigned (typically via :func:`assign_flat_end_lines`).  Read-only.
+    """
+    # Build a lookup from (heading, start_line) → end_line.
+    # In the flat extractors the section heading equals the symbol name and the
+    # section line equals the symbol line, so this mapping is injective.
+    end_by_key: dict[tuple[str, int], int] = {}
+    for sec in sections:
+        if sec.end_line is not None:
+            end_by_key[(sec.heading, sec.line)] = sec.end_line
+
+    for sym in symbols:
+        key = (sym.name, sym.line)
+        if sym.end_line is None and key in end_by_key:
+            sym.end_line = end_by_key[key]
+
+
 def scan_flat_headers(
     source: bytes,
     log: logging.Logger,
@@ -945,6 +987,7 @@ def scan_flat_headers(
 
     if emit_sections:
         assign_flat_end_lines(sections, len(lines))
+        propagate_section_end_lines_to_symbols(symbols, sections)
 
     return symbols, sections
 

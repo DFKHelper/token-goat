@@ -183,6 +183,9 @@ def extract(
         # Sort sections by line then assign end-lines using the flat algorithm.
         sections.sort(key=lambda s: s.line)
         common.assign_flat_end_lines(sections, total_lines)
+        # Propagate computed end_lines to Symbol objects so that
+        # ``token-goat scope`` can match enclosing Makefile targets.
+        common.propagate_section_end_lines_to_symbols(symbols, sections)
 
         return symbols, [], [], sections
 
