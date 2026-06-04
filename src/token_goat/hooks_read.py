@@ -3416,18 +3416,23 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     # 0-indexed (same convention as the native Read tool payload).
                     _raw_offset = _read_intent.offset
                     _norm_offset = (_raw_offset - 1) if _raw_offset is not None else None
-                    _sess.mark_file_read(
-                        session_id,
-                        _read_intent.target_path,
-                        _norm_offset,
-                        _read_intent.limit,
-                        cache=_rc,
-                    )
+                    # For multi-file reads (gc f1 f2 …) mark every path.
+                    # target_paths is populated for >1 file; fall back to
+                    # the singular target_path for single-file reads.
+                    _all_paths = _read_intent.target_paths or [_read_intent.target_path]
+                    for _path in _all_paths:
+                        _sess.mark_file_read(
+                            session_id,
+                            _path,
+                            _norm_offset,
+                            _read_intent.limit,
+                            cache=_rc,
+                        )
                     with contextlib.suppress(Exception):
                         _sess.save(_rc)
                     _LOG.debug(
-                        "post-bash: recorded read-equivalent path=%r offset=%s limit=%s",
-                        _read_intent.target_path, _norm_offset, _read_intent.limit,
+                        "post-bash: recorded read-equivalent paths=%r offset=%s limit=%s",
+                        _all_paths, _norm_offset, _read_intent.limit,
                     )
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: read-equivalent session record failed", exc_info=True)

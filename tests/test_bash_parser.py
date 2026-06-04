@@ -720,6 +720,20 @@ def test_powershell_get_content_literalpath_equals_form():
     assert intent.target_path == "foo.txt"
 
 
+def test_powershell_get_content_literalpath_with_spaces():
+    """Get-Content -LiteralPath 'my file.txt' must extract the spaced path correctly."""
+    intent = parse('Get-Content -LiteralPath "my file with spaces.txt"')
+    assert intent.kind == "read"
+    assert intent.target_path == "my file with spaces.txt"
+
+
+def test_powershell_get_content_path_with_spaces():
+    """Get-Content path with spaces in double-quotes parses correctly."""
+    intent = parse('Get-Content "path/to/my file.txt"')
+    assert intent.kind == "read"
+    assert intent.target_path == "path/to/my file.txt"
+
+
 def test_powershell_get_content_totalcount_equals_form():
     intent = parse("Get-Content -Path=foo.txt -TotalCount=50")
     assert intent.kind == "read"

@@ -254,3 +254,47 @@ class TestGetContentFlagParsing:
         # -Include after path: *.txt is the include arg, so target_paths should be None
         # (single file) — important that foo.txt is preserved
         assert intent.target_paths is None
+
+
+class TestMultiFileGetContentTracking:
+    """Regression: post_bash must mark ALL files in a multi-file Get-Content read.
+
+    Before the fix, ``gc f1.txt f2.txt`` only recorded ``f1.txt`` (target_path)
+    while ``f2.txt`` (in target_paths) was silently dropped, so the "already
+    read" hint never fired on a repeat access of the second file.
+    """
+
+    def test_multi_file_all_paths_marked(self, tmp_data_dir):
+        """``gc f1.py f2.py`` must record BOTH paths in session files."""
+        sid = "pgc-multi-1"
+        payload = {
+            "session_id": sid,
+            "tool_name": "Bash",
+            "tool_input": {"command": "gc src/a.py src/b.py"},
+            "tool_response": {"stdout": "content\n", "stderr": "", "exit_code": 0},
+        }
+        from token_goat import hooks_cli, session
+
+        hooks_cli.post_bash(payload)
+        cache = session.load(sid)
+        read_paths = {entry.rel_or_abs for entry in cache.files.values()}
+        assert "src/a.py" in read_paths, "first file must be tracked"
+        assert "src/b.py" in read_paths, (
+            "second file must be tracked — regression for multi-file mark_file_read gap"
+        )
+
+    def test_single_file_still_works(self, tmp_data_dir):
+        """Single-file Get-Content still records the path after the multi-file fix."""
+        sid = "pgc-multi-2"
+        payload = {
+            "session_id": sid,
+            "tool_name": "Bash",
+            "tool_input": {"command": "Get-Content src/only.py"},
+            "tool_response": {"stdout": "content\n", "stderr": "", "exit_code": 0},
+        }
+        from token_goat import hooks_cli, session
+
+        hooks_cli.post_bash(payload)
+        cache = session.load(sid)
+        read_paths = {entry.rel_or_abs for entry in cache.files.values()}
+        assert "src/only.py" in read_paths
