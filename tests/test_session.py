@@ -456,6 +456,29 @@ class TestCleanupStale:
         after_cleanup = session.load("old")
         assert after_cleanup.files == {}
 
+    def test_cleanup_stale_removes_orphaned_tmp_files(self, tmp_data_dir):
+        """cleanup_stale removes .tmp files older than max_age_hours."""
+        import os
+
+        sessions_dir = session.paths.session_cache_path("dummy").parent
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create an old orphaned .tmp file (pattern: <session-id>.json.<tid>.<ns>.tmp)
+        old_tmp = sessions_dir / "orphan-abc123.json.140000.1000000.tmp"
+        old_tmp.write_text("{}", encoding="utf-8")
+        old_mtime = time.time() - 48 * 3600
+        os.utime(old_tmp, (old_mtime, old_mtime))
+
+        # Create a recent .tmp file — should NOT be removed
+        new_tmp = sessions_dir / "recent-def456.json.140001.2000000.tmp"
+        new_tmp.write_text("{}", encoding="utf-8")
+
+        session.cleanup_stale(max_age_hours=24.0)
+
+        assert not old_tmp.exists(), "old orphaned .tmp should be removed"
+        assert new_tmp.exists(), "recent .tmp should be kept"
+        new_tmp.unlink(missing_ok=True)
+
 
 class TestUpdateReadCount:
     """Read count increments."""

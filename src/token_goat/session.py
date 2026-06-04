@@ -4320,6 +4320,27 @@ def cleanup_stale(max_age_hours: float = 24.0) -> int:
                     sidecar.unlink(missing_ok=True)
                     _LOG.debug("cleanup_stale: removed orphaned sidecar %s", sidecar.name)
 
+    # Sweep orphaned .tmp files left by atomic_write_text() after a hard kill
+    # (SIGKILL / power cut) between the temp-file creation and the rename.
+    # The temp name pattern is: <session-id>.json.<thread-id>.<monotonic-ns>.tmp
+    # Restrict by age to avoid clobbering a temp file that is actively being
+    # written in another thread.
+    _TMP_RE = re.compile(r"^([a-zA-Z0-9_-]+)\.json\.\d+\.\d+\.tmp$")
+    for tmp_file in sessions_dir.glob("*.json.*.tmp"):
+        m = _TMP_RE.match(tmp_file.name)
+        if m is None:
+            continue
+        try:
+            st = os.lstat(tmp_file)
+        except OSError:
+            continue
+        if _stat_module.S_ISLNK(st.st_mode):
+            continue
+        if st.st_mtime < cutoff:
+            with contextlib.suppress(OSError):
+                tmp_file.unlink(missing_ok=True)
+                _LOG.debug("cleanup_stale: removed orphaned tmp file %s", tmp_file.name)
+
     _LOG.info(
         "cleanup_stale: examined=%d removed=%d (max_age_hours=%.1f)",
         examined, removed, max_age_hours,
