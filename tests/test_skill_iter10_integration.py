@@ -300,6 +300,14 @@ class TestInstallSkillCommandDocumentation:
             "CLAUDE_MD_CONTENT must mention skill-section command"
         )
 
+    def test_claude_md_content_mentions_get_content(self):
+        """CLAUDE_MD_CONTENT mentions PowerShell Get-Content as a read equivalent."""
+        from token_goat.install import CLAUDE_MD_CONTENT
+
+        assert "Get-Content" in CLAUDE_MD_CONTENT, (
+            "CLAUDE_MD_CONTENT must mention PowerShell Get-Content"
+        )
+
     def test_skill_md_content_has_skill_body(self):
         """SKILL_MD_CONTENT includes skill-body command documentation."""
         from token_goat.install import SKILL_MD_CONTENT
@@ -338,6 +346,14 @@ class TestInstallSkillCommandDocumentation:
 
         assert "skill-section" in SKILL_MD_CONTENT, (
             "SKILL_MD_CONTENT must mention skill-section command"
+        )
+
+    def test_skill_md_content_mentions_get_content(self):
+        """SKILL_MD_CONTENT mentions PowerShell Get-Content as a read equivalent."""
+        from token_goat.install import SKILL_MD_CONTENT
+
+        assert "Get-Content" in SKILL_MD_CONTENT, (
+            "SKILL_MD_CONTENT must mention PowerShell Get-Content"
         )
 
     def test_claude_md_skill_commands_have_one_line_descriptions(self):

@@ -174,6 +174,7 @@ def test_patch_codex_agents_md_creates_file(patched_home):
     assert install.CODEX_AGENTS_BEGIN in content
     assert install.CODEX_AGENTS_END in content
     assert "token-goat" in content
+    assert "Get-Content" in content
 
 
 # ---------------------------------------------------------------------------
