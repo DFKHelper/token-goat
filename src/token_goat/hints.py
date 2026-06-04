@@ -3471,7 +3471,15 @@ def _build_unchanged_file_hint_inner(
     if len(current_bytes) < _UNCHANGED_MIN_BYTES:
         return None
 
-    current_sha = _hashlib.sha256(current_bytes).hexdigest()
+    # For files larger than the truncation threshold, the stored snapshot holds
+    # only the first SNAPSHOT_TRUNCATE_BYTES (plus a sentinel).  Recompute the
+    # comparison SHA over the same truncated prefix so the "unchanged" check
+    # stays consistent: both sides hash the same number of bytes.  For smaller
+    # files (below the threshold) nothing changes — we hash the full content.
+    compare_bytes = current_bytes
+    if len(current_bytes) > snapshots.SNAPSHOT_TRUNCATE_BYTES:
+        compare_bytes = current_bytes[:snapshots.SNAPSHOT_TRUNCATE_BYTES]
+    current_sha = _hashlib.sha256(compare_bytes).hexdigest()
     if current_sha != stored_sha:
         # Content changed on disk since the snapshot — let diff-hint handle it.
         return None

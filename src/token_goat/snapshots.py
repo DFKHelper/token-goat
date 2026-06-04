@@ -40,6 +40,7 @@ from __future__ import annotations
 __all__ = [
     "MAX_SNAPSHOT_BYTES",
     "MAX_SNAPSHOTS_PER_SESSION",
+    "SNAPSHOT_TRUNCATE_BYTES",
     "SnapshotResult",
     "cleanup_session",
     "load",
@@ -79,6 +80,19 @@ _VALID_KINDS: frozenset[str] = frozenset({_KIND_READ, _KIND_PREDICTIVE})
 # bytes we will never use.  256 KB covers nearly every source file (a 10K LoC
 # file averages ~300 KB at 30 chars/line).
 MAX_SNAPSHOT_BYTES: int = 256 * 1024
+
+# Truncation threshold.  Files larger than this are stored truncated to this
+# many bytes (with a ``<truncated at NNN bytes>`` marker appended) rather than
+# skipped entirely.  This lets diff hints fire for the first 50 KB of large
+# files — the portion where most edits concentrate — without storing the full
+# 200–256 KB in the snapshot dir.  Files larger than MAX_SNAPSHOT_BYTES still
+# skip as before; only files in the range (SNAPSHOT_TRUNCATE_BYTES,
+# MAX_SNAPSHOT_BYTES] are affected.
+SNAPSHOT_TRUNCATE_BYTES: int = 50 * 1024
+
+# Sentinel appended to truncated snapshots so the diff hint and
+# symbol_changed_since_read can recognise that the stored bytes are partial.
+_TRUNCATED_MARKER: bytes = b"\n<snapshot truncated at %d bytes>\n"
 
 # Per-session ceiling on snapshot count.  Above this the oldest snapshot is
 # evicted when a new one is taken.  150 covers any realistic session — even
@@ -227,12 +241,35 @@ def store(
     Any unrecognised kind falls back to ``"read"`` so the on-disk format
     cannot be poisoned by a future caller passing an arbitrary string.
     """
-    if len(content) > MAX_SNAPSHOT_BYTES:
+    orig_len = len(content)
+    if orig_len > MAX_SNAPSHOT_BYTES:
         _LOG.debug(
             "snapshots: skipping oversized file (%d bytes > %d cap): %s",
-            len(content), MAX_SNAPSHOT_BYTES, sanitize_log_str(file_path),
+            orig_len, MAX_SNAPSHOT_BYTES, sanitize_log_str(file_path),
         )
         return None
+    # Truncation: files larger than SNAPSHOT_TRUNCATE_BYTES but still within
+    # MAX_SNAPSHOT_BYTES are stored truncated so the snapshot dir does not
+    # accumulate very large files for every big source file read this session.
+    # The truncated snapshot is sufficient for the diff-hint path: most edits
+    # concentrate at the top of a file and the first 50 KB covers the majority
+    # of them.  A sentinel line is appended so callers can detect truncation.
+    #
+    # Note on SHA semantics: the SHA stored in SnapshotResult (and later in the
+    # session cache) is the SHA of the *stored* (truncated) bytes, not of the
+    # original file.  The unchanged-file hint path (build_unchanged_file_hint)
+    # reads the current file and truncates to SNAPSHOT_TRUNCATE_BYTES before
+    # comparing, so the semantics stay consistent: "unchanged" means the first
+    # SNAPSHOT_TRUNCATE_BYTES of the file have not changed, which is the
+    # relevant invariant for a truncated snapshot anyway.
+    if orig_len > SNAPSHOT_TRUNCATE_BYTES:
+        marker = _TRUNCATED_MARKER % orig_len
+        content = content[:SNAPSHOT_TRUNCATE_BYTES] + marker
+        _LOG.debug(
+            "snapshots: truncating %d-byte file to %d bytes (threshold=%d): %s",
+            orig_len, len(content), SNAPSHOT_TRUNCATE_BYTES,
+            sanitize_log_str(file_path),
+        )
     p = snapshot_path(session_id, file_path)
     if p is None:
         return None
@@ -431,7 +468,16 @@ def symbol_changed_since_read(
     """
     if not session_id or not file_path or not symbol_name:
         return False
-    snapshot_bytes = load(session_id, file_path)
+    # Use the integrity-gated load path when a snapshot SHA has been recorded
+    # for this session + file pair.  This prevents a corrupted or tampered
+    # snapshot from driving a misleading "symbol changed" warning.  Fall back to
+    # the unverified load for legacy snapshots that pre-date SHA recording.
+    try:
+        from . import session as _session  # noqa: PLC0415 — deferred to avoid circular import
+        expected_sha = _session.get_snapshot_sha(session_id, file_path)
+    except Exception:  # noqa: BLE001 — sha lookup must never block the caller
+        expected_sha = None
+    snapshot_bytes = load(session_id, file_path, expected_sha=expected_sha)
     if snapshot_bytes is None:
         return False
     try:

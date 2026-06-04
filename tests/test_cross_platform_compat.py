@@ -268,7 +268,9 @@ class TestWSLProjectHashConsistency:
         win = r"C:\foo\bar.py"
         assert _norm(wsl) == _norm(win)
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="project_hash canonicalization is Windows-specific")
+    @pytest.mark.skipif(
+        sys.platform != "win32", reason="project_hash canonicalization is Windows-specific"
+    )
     def test_project_hash_identical_wsl_and_windows(self) -> None:
         """project_hash(canonicalize()) is identical for all Windows shell forms."""
         from token_goat.project import canonicalize, project_hash
@@ -348,7 +350,8 @@ class TestPythonVersionCompatibility:
         import ast
 
         src_dir = Path(__file__).parent.parent / "src" / "token_goat"
-        python_files = list(src_dir.glob("*.py"))
+        # Include both top-level source and the languages/ subdirectory.
+        python_files = list(src_dir.glob("*.py")) + list((src_dir / "languages").glob("*.py"))
         assert len(python_files) > 0, "Expected source files in src/token_goat"
 
         match_stmts_found = []
@@ -357,7 +360,7 @@ class TestPythonVersionCompatibility:
                 tree = ast.parse(py_file.read_text(encoding="utf-8", errors="replace"))
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Match):
-                        match_stmts_found.append(f"{py_file.name}:{node.lineno}")
+                        match_stmts_found.append(f"{py_file.parent.name}/{py_file.name}:{node.lineno}")
             except SyntaxError:
                 pass  # Syntax errors are caught by other tests/CI
 
@@ -393,14 +396,17 @@ class TestPythonVersionCompatibility:
 
         Files with no annotations (e.g. __main__.py, short utility entry points)
         are excluded since the import is unnecessary there.
+
+        Covers both src/token_goat/*.py and src/token_goat/languages/*.py.
         """
         import ast
 
         src_dir = Path(__file__).parent.parent / "src" / "token_goat"
         # Exclude files that legitimately have no annotations.
         excluded = {"__init__.py", "__main__.py"}
+        # Include both top-level source and the languages/ subdirectory.
         python_files = [
-            f for f in src_dir.glob("*.py")
+            f for f in (list(src_dir.glob("*.py")) + list((src_dir / "languages").glob("*.py")))
             if f.name not in excluded
         ]
         missing = []
@@ -430,11 +436,143 @@ class TestPythonVersionCompatibility:
                 for node in ast.walk(tree)
             )
             if has_annotations and "from __future__ import annotations" not in text:
-                missing.append(py_file.name)
+                # Report as "languages/foo.py" or "foo.py" for clarity.
+                is_lang = py_file.parent.name == "languages"
+                rel = f"languages/{py_file.name}" if is_lang else py_file.name
+                missing.append(rel)
 
         assert missing == [], (
             "These annotated source files are missing 'from __future__ import annotations': "
             + ", ".join(sorted(missing))
+        )
+
+    def test_no_type_alias_statements_in_source(self) -> None:
+        """No Python 3.12+ ``type X = ...`` type alias statements in source.
+
+        ``type X = ...`` (``ast.TypeAlias``) was added in Python 3.12.
+        token-goat requires Python >=3.11, so this syntax would be a
+        compat regression on the minimum supported version.
+        Covers both src/token_goat/*.py and src/token_goat/languages/*.py.
+        """
+        import ast
+
+        src_dir = Path(__file__).parent.parent / "src" / "token_goat"
+        python_files = (
+            list(src_dir.glob("*.py")) + list((src_dir / "languages").glob("*.py"))
+        )
+        assert len(python_files) > 0, "Expected source files in src/token_goat"
+
+        found = []
+        for py_file in python_files:
+            try:
+                tree = ast.parse(py_file.read_text(encoding="utf-8", errors="replace"))
+                for node in ast.walk(tree):
+                    if type(node).__name__ == "TypeAlias":
+                        rel = (
+                            f"languages/{py_file.name}"
+                            if py_file.parent.name == "languages"
+                            else py_file.name
+                        )
+                        found.append(f"{rel}:{node.lineno}")  # type: ignore[attr-defined]
+            except SyntaxError:
+                pass
+
+        assert found == [], (
+            "Found Python 3.12+ 'type X = ...' alias statements (incompatible with 3.11): "
+            + ", ".join(found)
+        )
+
+    def test_no_deprecated_stdlib_imports_in_source(self) -> None:
+        """No imports of stdlib modules removed in Python 3.12 or 3.13.
+
+        Modules removed in 3.12: distutils
+        Modules removed in 3.13: aifc, cgi, chunk (audio module), imghdr, mailcap,
+            msilib, nis, nntplib, ossaudiodev, pipes, sndhdr, sunau, telnetlib, uu, xdrlib
+
+        Note: ``chunk`` as a Python *identifier* (variable name) is fine — this
+        test checks only ``import chunk`` / ``from chunk import ...`` statements.
+        Covers both src/token_goat/*.py and src/token_goat/languages/*.py.
+        """
+        import ast
+
+        removed_312 = {"distutils"}
+        removed_313 = {
+            "aifc", "cgi", "chunk", "imghdr", "mailcap", "msilib", "nis",
+            "nntplib", "ossaudiodev", "pipes", "sndhdr", "sunau", "telnetlib",
+            "uu", "xdrlib",
+        }
+        deprecated_modules = removed_312 | removed_313
+
+        src_dir = Path(__file__).parent.parent / "src" / "token_goat"
+        python_files = (
+            list(src_dir.glob("*.py")) + list((src_dir / "languages").glob("*.py"))
+        )
+
+        bad_imports: list[str] = []
+        for py_file in python_files:
+            try:
+                tree = ast.parse(py_file.read_text(encoding="utf-8", errors="replace"))
+            except SyntaxError:
+                continue
+            rel = (
+                f"languages/{py_file.name}"
+                if py_file.parent.name == "languages"
+                else py_file.name
+            )
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        top = alias.name.split(".")[0]
+                        if top in deprecated_modules:
+                            bad_imports.append(f"{rel}:{node.lineno}: import {alias.name}")
+                elif isinstance(node, ast.ImportFrom):
+                    mod = (node.module or "").split(".")[0]
+                    if mod in deprecated_modules:
+                        bad_imports.append(f"{rel}:{node.lineno}: from {node.module} import ...")
+
+        assert bad_imports == [], (
+            "Found imports of stdlib modules removed in Python 3.12/3.13: "
+            + "; ".join(bad_imports)
+        )
+
+    def test_tomllib_not_imported_via_try_except_fallback(self) -> None:
+        """No file imports tomllib via a try/except fallback to tomli.
+
+        token-goat requires Python >=3.11 where tomllib is always in stdlib.
+        A try/except that falls back to ``import tomli as tomllib`` would be
+        dead code and is a signal that the version floor was accidentally lowered.
+        Covers all of src/token_goat/ including languages/ and cli.py.
+        """
+        import ast
+
+        src_dir = Path(__file__).parent.parent / "src" / "token_goat"
+        python_files = (
+            list(src_dir.glob("*.py")) + list((src_dir / "languages").glob("*.py"))
+        )
+
+        fallbacks: list[str] = []
+        for py_file in python_files:
+            try:
+                tree = ast.parse(py_file.read_text(encoding="utf-8", errors="replace"))
+            except SyntaxError:
+                continue
+            rel = (
+                f"languages/{py_file.name}"
+                if py_file.parent.name == "languages"
+                else py_file.name
+            )
+            for node in ast.walk(tree):
+                # Catch ``from tomli import ...`` or ``import tomli``
+                if isinstance(node, ast.ImportFrom) and (node.module or "") == "tomli":
+                    fallbacks.append(f"{rel}:{node.lineno}: from tomli import ...")
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == "tomli":
+                            fallbacks.append(f"{rel}:{node.lineno}: import tomli")
+
+        assert fallbacks == [], (
+            "Found tomli (pre-3.11 fallback) imports — use tomllib (stdlib) directly: "
+            + "; ".join(fallbacks)
         )
 
 

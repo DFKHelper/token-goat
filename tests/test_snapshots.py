@@ -1,6 +1,7 @@
 """Tests for the per-session file-content snapshot store + diff-aware re-read."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from hook_helpers import assert_continue as _assert_continue
@@ -712,3 +713,203 @@ class TestSnapshotContentHashDedup:
         # Must not raise; falls through to write.
         r2 = snapshots.store(sid, fp, content)
         assert r2 is not None
+
+
+# ---------------------------------------------------------------------------
+# Truncation
+# ---------------------------------------------------------------------------
+
+class TestSnapshotTruncation:
+    """Files between SNAPSHOT_TRUNCATE_BYTES and MAX_SNAPSHOT_BYTES are stored
+    truncated so the snapshot dir stays small while diff hints still fire on
+    the prefix (C4.1 — size cap with partial-snapshot fallback).
+    """
+
+    def test_small_file_stored_verbatim(self, tmp_data_dir):
+        """Files at or below SNAPSHOT_TRUNCATE_BYTES are stored unchanged."""
+        content = b"x" * snapshots.SNAPSHOT_TRUNCATE_BYTES
+        sid = "trunc-small-01"
+        fp = "/proj/small.py"
+        r = snapshots.store(sid, fp, content)
+        assert r is not None
+        loaded = snapshots.load(sid, fp)
+        # Full content must be stored; no truncation marker.
+        assert loaded == content
+
+    def test_large_file_truncated_with_marker(self, tmp_data_dir):
+        """A file above SNAPSHOT_TRUNCATE_BYTES but below MAX_SNAPSHOT_BYTES
+        is stored truncated and the truncation marker is appended.
+        """
+        orig_len = snapshots.SNAPSHOT_TRUNCATE_BYTES + 1024
+        content = b"A" * orig_len
+        sid = "trunc-large-01"
+        fp = "/proj/large.py"
+        r = snapshots.store(sid, fp, content)
+        assert r is not None, "large file should be stored (truncated, not skipped)"
+        loaded = snapshots.load(sid, fp)
+        assert loaded is not None
+        # Stored bytes must be smaller than the original.
+        assert len(loaded) < orig_len
+        # Prefix must be the first SNAPSHOT_TRUNCATE_BYTES bytes.
+        assert loaded[:snapshots.SNAPSHOT_TRUNCATE_BYTES] == content[:snapshots.SNAPSHOT_TRUNCATE_BYTES]
+        # Truncation marker must mention the original byte count.
+        assert str(orig_len).encode() in loaded, (
+            f"truncation marker should embed original length {orig_len!r}"
+        )
+
+    def test_truncated_snapshot_integrity_check_consistent(self, tmp_data_dir):
+        """Integrity check passes when expected_sha matches the truncated bytes.
+
+        The SHA stored in SnapshotResult (and later in the session) is the SHA
+        of the *stored* (truncated+marker) bytes.  load() with that expected_sha
+        must succeed — verifying the round-trip is internally consistent.
+        """
+        orig_len = snapshots.SNAPSHOT_TRUNCATE_BYTES + 512
+        content = b"B" * orig_len
+        sid = "trunc-integ-01"
+        fp = "/proj/trunc_integ.py"
+        r = snapshots.store(sid, fp, content)
+        assert r is not None
+        # Passing the stored sha must succeed (on-disk bytes == truncated bytes).
+        loaded = snapshots.load(sid, fp, expected_sha=r.content_sha)
+        assert loaded is not None, "load with matching sha should succeed for truncated snapshot"
+        # Passing the SHA of the *original* content must fail: the integrity
+        # check compares against the stored (truncated) bytes, not the original.
+        original_sha = hashlib.sha256(content).hexdigest()
+        # The original SHA only fails when it differs from the truncated SHA,
+        # which is always the case when the file is actually truncated.
+        if original_sha != r.content_sha:
+            bad_load = snapshots.load(sid, fp, expected_sha=original_sha)
+            assert bad_load is None, (
+                "load with original (untruncated) sha should fail — "
+                "the stored bytes are truncated and have a different hash"
+            )
+
+    def test_oversized_file_still_skipped(self, tmp_data_dir):
+        """Files above MAX_SNAPSHOT_BYTES are still skipped entirely (not truncated).
+
+        The truncation path only handles files in the range
+        (SNAPSHOT_TRUNCATE_BYTES, MAX_SNAPSHOT_BYTES].
+        """
+        content = b"Z" * (snapshots.MAX_SNAPSHOT_BYTES + 1)
+        sid = "trunc-over-01"
+        fp = "/proj/toobig.py"
+        r = snapshots.store(sid, fp, content)
+        assert r is None, "files above MAX_SNAPSHOT_BYTES must still return None"
+        assert snapshots.load(sid, fp) is None
+
+
+# ---------------------------------------------------------------------------
+# symbol_changed_since_read integrity gate
+# ---------------------------------------------------------------------------
+
+class TestSymbolChangedIntegrity:
+    """symbol_changed_since_read must use the integrity-gated load path so a
+    corrupted or tampered snapshot cannot produce a misleading stale-symbol
+    warning.
+    """
+
+    def test_symbol_changed_returns_true_when_changed(self, tmp_data_dir):
+        """Basic sanity: returns True when the symbol body differs."""
+        body = "def foo():\n    return 1\n"
+        filler = "# filler\n" * 20
+        old_text = filler + body
+        sid = "sym-integ-01"
+        fp = "/proj/sym_test.py"
+        snapshots.store(sid, fp, old_text.encode())
+        # Symbol is at lines 21-22 (1-based) in the original.
+        result = snapshots.symbol_changed_since_read(
+            session_id=sid,
+            file_path=fp,
+            symbol_name="foo",
+            current_start_line=21,
+            current_end_line=22,
+            current_text="def foo():\n    return 99\n",
+        )
+        assert result is True
+
+    def test_symbol_changed_returns_false_when_unchanged(self, tmp_data_dir):
+        """Returns False when the symbol body is identical in the snapshot."""
+        body = "def bar():\n    pass\n"
+        filler = "# filler\n" * 10
+        text = filler + body
+        sid = "sym-integ-02"
+        fp = "/proj/sym_unch.py"
+        snapshots.store(sid, fp, text.encode())
+        result = snapshots.symbol_changed_since_read(
+            session_id=sid,
+            file_path=fp,
+            symbol_name="bar",
+            current_start_line=11,
+            current_end_line=12,
+            current_text=body,
+        )
+        assert result is False
+
+    def test_symbol_changed_suppressed_on_corrupted_snapshot(self, tmp_data_dir):
+        """When the snapshot SHA is recorded but the on-disk bytes are corrupted,
+        the integrity-gated load discards the snapshot and returns False (no
+        false stale-symbol warning) rather than comparing against wrong bytes.
+
+        This is the correctness regression guard: without the integrity gate,
+        a tampered snapshot could cause symbol_changed_since_read to claim a
+        symbol changed when it did not, or vice versa.
+        """
+        body = "def baz():\n    return 42\n"
+        filler = "# filler\n" * 20
+        orig_text = filler + body
+        sid = "sym-integ-corrupt-01"
+        fp = "/proj/sym_corrupt.py"
+
+        result = snapshots.store(sid, fp, orig_text.encode())
+        assert result is not None
+        # Record the sha in the session so the integrity gate activates.
+        session.set_snapshot_sha(sid, fp, result.content_sha)
+
+        # Tamper with the snapshot: write completely different content to disk.
+        snap_path = snapshots.snapshot_path(sid, fp)
+        assert snap_path is not None
+        corrupted = b"GARBAGE DATA " * 50
+        snap_path.write_bytes(corrupted)
+
+        # With the integrity gate, the load must fail and return False (no
+        # misleading stale-symbol warning based on corrupted bytes).
+        changed = snapshots.symbol_changed_since_read(
+            session_id=sid,
+            file_path=fp,
+            symbol_name="baz",
+            current_start_line=21,
+            current_end_line=22,
+            current_text=body,
+        )
+        assert changed is False, (
+            "symbol_changed_since_read must return False when the snapshot "
+            "is corrupted — the integrity gate should discard the bad bytes "
+            "rather than comparing against them and emitting a false warning"
+        )
+
+    def test_symbol_changed_without_recorded_sha_uses_legacy_path(self, tmp_data_dir):
+        """When no SHA is recorded in the session (legacy snapshot), the
+        integrity check is skipped and the snapshot bytes are used directly.
+
+        This preserves backward compatibility: old snapshots that pre-date
+        SHA recording still drive symbol-change detection.
+        """
+        body = "def legacy():\n    return 0\n"
+        filler = "# filler\n" * 10
+        old_text = filler + body
+        sid = "sym-legacy-01"
+        fp = "/proj/sym_legacy.py"
+        snapshots.store(sid, fp, old_text.encode())
+        # Note: we deliberately do NOT call session.set_snapshot_sha() here.
+
+        # Symbol is unchanged — should return False via the unverified path.
+        result = snapshots.symbol_changed_since_read(
+            session_id=sid,
+            file_path=fp,
+            symbol_name="legacy",
+            current_start_line=11,
+            current_end_line=12,
+            current_text=body,
+        )
+        assert result is False
