@@ -356,6 +356,27 @@ class TestInstallSkillCommandDocumentation:
             "SKILL_MD_CONTENT must mention PowerShell Get-Content"
         )
 
+    def test_routing_table_includes_powershell_row(self):
+        """_ROUTING_ROWS base list must include a PowerShell Get-Content row."""
+        from token_goat.install import _ROUTING_ROWS
+
+        has_ps_row = any("PowerShell" in str(row) or "Get-Content" in str(row) for row in _ROUTING_ROWS)
+        assert has_ps_row, (
+            "_ROUTING_ROWS must include a PowerShell Get-Content routing row; "
+            "all three install content strings derive from this table"
+        )
+
+    def test_all_three_routing_tables_have_get_content(self):
+        """CLAUDE_MD, SKILL_MD, and CODEX_AGENTS_MD must all include Get-Content."""
+        from token_goat.install import CLAUDE_MD_CONTENT, CODEX_AGENTS_MD_CONTENT, SKILL_MD_CONTENT
+
+        for name, content in (
+            ("CLAUDE_MD_CONTENT", CLAUDE_MD_CONTENT),
+            ("SKILL_MD_CONTENT", SKILL_MD_CONTENT),
+            ("CODEX_AGENTS_MD_CONTENT", CODEX_AGENTS_MD_CONTENT),
+        ):
+            assert "Get-Content" in content, f"{name} is missing the PowerShell Get-Content row"
+
     def test_claude_md_skill_commands_have_one_line_descriptions(self):
         """Each skill command in CLAUDE_MD_CONTENT is followed by a brief description."""
         from token_goat.install import CLAUDE_MD_CONTENT
