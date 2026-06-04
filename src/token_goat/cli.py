@@ -5784,6 +5784,7 @@ def cmd_worker(
     daemon: bool = typer.Option(False, "--daemon", help="Run as background daemon (otherwise interactive)"),
     status: bool = typer.Option(False, "--status", help="Show worker status and exit"),
     check: bool = typer.Option(False, "--check", help="Check for a running worker and report its interpreter; exit 1 if a duplicate (different interpreter) is detected"),  # noqa: B008
+    kill_duplicate: bool = typer.Option(False, "--kill-duplicate", help="Kill a running worker whose interpreter differs from the current Python executable"),  # noqa: B008
 ) -> None:
     """Internal: background worker daemon. Should be invoked by the SessionStart watchdog, not directly.
 
@@ -5796,6 +5797,13 @@ def cmd_worker(
     timeout fires.  Direct unit tests of ``worker_daemon.run_daemon``
     do not go through this entry point, so they remain unaffected.
     """
+    if kill_duplicate:
+        from . import worker_daemon as _wd  # noqa: PLC0415
+
+        result = _wd.kill_duplicate_daemon()
+        typer.echo(result)
+        return
+
     if check:
         from . import paths as _paths  # noqa: PLC0415
         from . import worker as _worker_mod  # noqa: PLC0415
@@ -5844,6 +5852,24 @@ def cmd_worker(
         pid_str = f" (pid {info['pid']})" if info["pid"] is not None else ""
         state = "running" if info["running"] else "stopped"
         typer.echo(f"Worker: {state}{pid_str}")
+        if info.get("interpreter"):
+            typer.echo(f"Interpreter: {info['interpreter']}")
+        if info.get("started_at") and info["running"]:
+            # Compute uptime from started_at ISO timestamp.
+            try:
+                import datetime as _dt  # noqa: PLC0415
+                started = _dt.datetime.fromisoformat(str(info["started_at"]))
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=_dt.UTC)
+                now = _dt.datetime.now(tz=_dt.UTC)
+                uptime_secs = max(0, int((now - started).total_seconds()))
+                hours, rem = divmod(uptime_secs, 3600)
+                mins, secs = divmod(rem, 60)
+                uptime_str = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s"
+                typer.echo(f"Uptime: {uptime_str}")
+            except Exception:  # noqa: BLE001
+                pass
+        typer.echo(f"Pool size: {info.get('pool_size', 4)}")
         if info["autostart"] is not None:
             active_str = "enabled" if info["autostart_active"] else (
                 "disabled" if info["autostart_active"] is False else "unknown"

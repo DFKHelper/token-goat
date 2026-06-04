@@ -4,6 +4,78 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-03
+
+Bundles a 35-commit improvement campaign (2026-06-03): six new language indexers, ten-plus new CLI commands and flags, double-daemon prevention with JSON PID files, cross-AI harness improvements, and a broad reliability/quality pass with 200+ new tests.
+
+### New Language Indexers
+
+- **CSS/SCSS.** Extracts class, id, keyframe, mixin, function, and variable selectors; emits `@import`/`@use`/`@forward` as refs.
+- **SQL.** Extracts `CREATE TABLE/VIEW/INDEX/PROCEDURE/FUNCTION/TRIGGER` symbols; identifies DML refs.
+- **GraphQL.** Extracts type, interface, union, enum, input, fragment, and directive definitions; emits field and argument refs.
+- **Protobuf.** Extracts message, enum, service, rpc, and option definitions; emits field and import refs.
+- **`.env` files.** Extracts variable names as symbols for surgical reads.
+- **Makefile.** Extracts rule targets as symbols; emits prerequisite refs.
+- **`.mts`/`.cts` extensions.** Registered as TypeScript variants for tree-sitter dispatch.
+
+### New CLI Commands and Flags
+
+- **`token-goat refs --callers`** — resolves the enclosing function for each reference site via a SQL JOIN on the symbols table, so a single call gives you "called from `foo()` at line N" context.
+- **`token-goat changed --symbol`** — shows which symbols changed between HEAD and working tree.
+- **`token-goat config-get FILE KEY`** — dot-notation value extraction from TOML/YAML/JSON/INI (e.g. `config-get pyproject.toml project.version`).
+- **`token-goat version`** — shortcut showing installed version.
+- **`token-goat install --check`** — shows autostart registration status and whether the entry matches the current interpreter.
+- **`token-goat stats --by-command`** — per-command-type savings breakdown (`symbol`, `refs`, `changed`, etc.).
+- **`token-goat index --ext`** — selective re-indexing by file extension (repeatable: `--ext py --ext ts`).
+- **`token-goat bash-output/web-output --section HEADING`** — retrieve one section from a cached output by heading rather than reading the whole blob.
+- **`--quiet` flag on `symbol`, `refs`, `changed`, `outline`** — suppress prose preamble, emit JSON only.
+- **Unified `{"query":…,"results":[…],"total":N}` JSON envelope** across `symbol`, `refs`, `outline`, `changed`, `exports` — downstream tooling parses a consistent shape.
+
+### Double-Daemon Prevention
+
+- **JSON PID file format.** `_write_pid()` now writes `{"pid":N,"started_at":"…","interpreter":"…","version":"…"}` instead of a bare integer. `_read_pid_info()` parses both the new JSON format and the legacy plain-integer format for backward compatibility.
+- **Cross-interpreter startup guard.** When `_try_claim_worker_slot()` returns `None`, `run_daemon` reads the PID file to surface the competing worker's interpreter path in a `WARNING` log entry. Users can immediately identify a multi-interpreter collision via `token-goat doctor` or the log file.
+- **Post-write PID verification.** After `_write_pid()`, `run_daemon` re-reads the file and compares the PID to `os.getpid()`. If another process raced and overwrote it (theoretically impossible with the O_EXCL claim file but defensively guarded), the daemon exits before entering the main loop.
+- **`install --check` and autostart dedup.** Re-installs detect an existing autostart entry pointing to a different interpreter and replace it, preventing multi-interpreter accumulation in the registry/systemd/XDG layer.
+- **11 new regression tests** covering each prevention path: claim-slot held, WARNING log with interpreter, PID race window exit, normal startup when PID matches, and the full PID file format round-trip.
+
+### Cross-AI and Harness Improvements
+
+- **OpenCode bridge error guards.** `spawnSync` failures and non-zero exit codes are handled gracefully in both the opencode and openclaw bridges.
+- **Gemini WebFetch key-map fix.** Gemini harness passes `url` instead of `input`; remapped at the hook boundary.
+- **Codex unknown-tool WARNING.** Unrecognized Codex tool names now emit a single WARNING instead of silently dropping the hook event.
+- **`UnicodeDecodeError` in hook payloads.** Non-UTF-8 hook payloads previously propagated the exception; now treated as `{}` at the read boundary.
+- **Install docs updated.** `CLAUDE_MD_CONTENT`, `SKILL_MD_CONTENT`, and `CODEX_AGENTS_MD_CONTENT` document the new commands added this cycle.
+
+### Reliability
+
+- **Atomic sentinel writes.** All sentinel files in `hooks_cli.py` now use `paths.atomic_write_text()` (temp + `os.replace`) to eliminate partial-write corruption.
+- **Worker pool size cap.** `[worker] max_pool_workers` config key (default 4, ceiling 8, `TOKEN_GOAT_WORKER_MAX_POOL` env override) prevents runaway thread spawning on large repos.
+- **WAL checkpoint on DB close.** Non-fatal `PRAGMA wal_checkpoint(TRUNCATE)` added to write-session close; bounds WAL file growth between worker cycles.
+- **`with_timeout` row factory fix.** `sqlite3.Row` row_factory was missing from the `with_timeout` connection path; affected callers got plain tuples instead of named-column rows.
+- **Snapshot truncation at 50 KB.** Large-file snapshots are capped at `SNAPSHOT_TRUNCATE_BYTES` (50 KB) to bound disk use; SHA integrity check added to `symbol_changed_since_read()` so corrupt snapshots are treated as missing rather than emitting phantom diff hints.
+- **Multi-file `cat` detection.** `bash_parser.py` now returns all paths from a multi-file `cat a b c` command, not just the first one.
+- **Dirty-queue `UnicodeDecodeError` fix.** Binary or truncated `dirty.txt` entries no longer crash the worker; `errors="replace"` applied on read.
+- **macOS `LaunchAgent` `KeepAlive`.** Changed from `true` (always restart) to `{SuccessfulExit: false}` (restart only on crash).
+- **WSL detection helper.** `is_wsl()` extracted to `util.py`; crontab availability pre-checked on POSIX before attempting CronCreate hook.
+
+### Context Savings
+
+- **Session-aware `recent` tier.** `token-goat recent` now shows a "read this session" tier between edited and git-history tiers, with cross-tier deduplication.
+- **Branch name in compact manifest.** Manifest header includes `branch: <name>` via `git symbolic-ref`; detached HEAD handled gracefully.
+- **Surgical-read hints for new indexers.** `hints.py` emits per-type hints for CSS/SCSS, SQL, GraphQL, Proto, `.env`, and Makefile files with per-type size thresholds.
+- **Fuzzy file matching with did-you-mean.** `read_commands.py` falls back to fuzzy basename matching when a file is not found; suggests candidates in both text and JSON output.
+- **Manifest section ordering.** Fixed to `edited → recent_commits → symbols → key-files → skills`; cross-section symbol dedup regression guard added.
+
+### Quality and Tests
+
+- **200+ new tests** across all changed modules.
+- **Parametrized indexer dispatch tests.** 22 individual dispatch tests converted to `@pytest.mark.parametrize` in `test_parser_*.py`.
+- **Cross-platform compat tests extended.** `test_cross_platform_compat.py` now covers the `languages/` directory (26 files) with type-alias-statement, deprecated-stdlib, and `tomllib` fallback checks.
+- **Unified JSON schema consistency tests.** `test_json_schema_consistency.py` verifies the `{"query":…,"results":…,"total":…}` envelope across all affected commands.
+- **Per-language index breakdown.** `token-goat index` shows a per-language file count when multiple types are present.
+- **Config type validation.** Numeric config values are validated with actionable error messages; `doctor` shows the config file path.
+
 ## [1.0.1] - 2026-06-02
 
 Bundles two 50-commit improvement runs: a skill-cache / context-savings accuracy loop (source_sha stale-compact detection, separate compact/body eviction buckets, sidecar schema v2, lazy skill injection, gzip web-cache compression, serve-diff-on-reread, session-hint cooldown) and a general quality loop (type safety, error handling, performance, security, test coverage, code clarity, DRY, docs, observability, imports). Also fixes broken stats accounting for `bash_output_cached`, `skill_cached`, `web_output_cached`, `symbol`, `map`, and `semantic` lookup savings, and adds RuffFilter and MypyFilter bash-compress support.

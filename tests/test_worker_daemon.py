@@ -1051,3 +1051,186 @@ def test_run_daemon_proceeds_when_pid_matches(tmp_data_dir):
     ):
         daemon.run_daemon(stop_event=stop)
     # Test passes if run_daemon completes without error (the stop event exits it)
+
+
+# ---------------------------------------------------------------------------
+# kill_duplicate_daemon tests
+# ---------------------------------------------------------------------------
+
+
+def _write_json_pid(pid_path, pid: int, interpreter: str, started_at: str = "2026-06-03T00:00:00+00:00") -> None:
+    """Helper: write a JSON-format PID file."""
+    import json
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(
+        json.dumps({"pid": pid, "started_at": started_at, "interpreter": interpreter, "version": "1.0.0"}),
+        encoding="utf-8",
+    )
+
+
+def test_kill_duplicate_no_pid_file(tmp_data_dir):
+    """kill_duplicate_daemon returns 'No running worker found.' when no pid file exists."""
+    result = daemon.kill_duplicate_daemon()
+    assert result == "No running worker found."
+
+
+def test_kill_duplicate_pid_not_alive(tmp_data_dir):
+    """kill_duplicate_daemon returns 'No running worker found.' when pid file exists but process is dead."""
+    pid_path = worker.paths.worker_pid_path()
+    _write_json_pid(pid_path, pid=999997, interpreter="/other/python")
+
+    with patch.object(daemon, "_pid_is_alive", return_value=False):
+        result = daemon.kill_duplicate_daemon()
+
+    assert result == "No running worker found."
+
+
+def test_kill_duplicate_same_interpreter_no_kill(tmp_data_dir):
+    """kill_duplicate_daemon returns 'No duplicate daemon found.' when interpreter matches."""
+    pid_path = worker.paths.worker_pid_path()
+    _write_json_pid(pid_path, pid=os.getpid(), interpreter=sys.executable)
+
+    with patch.object(daemon, "_pid_is_alive", return_value=True):
+        result = daemon.kill_duplicate_daemon()
+
+    assert result == "No duplicate daemon found."
+
+
+def test_kill_duplicate_legacy_pid_format(tmp_data_dir):
+    """kill_duplicate_daemon handles a legacy plain-integer PID file gracefully."""
+    pid_path = worker.paths.worker_pid_path()
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text("12345", encoding="utf-8")
+
+    with patch.object(daemon, "_pid_is_alive", return_value=True):
+        result = daemon.kill_duplicate_daemon()
+
+    assert result == "Worker interpreter unknown (legacy pid file format)."
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-specific kill path")
+def test_kill_duplicate_different_interpreter_windows(tmp_data_dir):
+    """kill_duplicate_daemon calls TerminateProcess on Windows when interpreter differs."""
+    fake_pid = 54321
+    other_interp = r"C:\Python311\pythonw.exe"
+    pid_path = worker.paths.worker_pid_path()
+    _write_json_pid(pid_path, pid=fake_pid, interpreter=other_interp)
+
+    import ctypes as _ctypes
+    fake_handle = 9999
+    open_calls = []
+    terminate_calls = []
+    close_calls = []
+
+    with (
+        patch.object(daemon, "_pid_is_alive", return_value=True),
+        patch.object(_ctypes.windll.kernel32, "OpenProcess", side_effect=lambda *a, **k: (open_calls.append(a), fake_handle)[1]),
+        patch.object(_ctypes.windll.kernel32, "TerminateProcess", side_effect=lambda *a, **k: terminate_calls.append(a) or True),
+        patch.object(_ctypes.windll.kernel32, "CloseHandle", side_effect=lambda *a, **k: close_calls.append(a)),
+    ):
+        result = daemon.kill_duplicate_daemon()
+
+    assert "Killed duplicate daemon" in result
+    assert str(fake_pid) in result
+    assert other_interp in result
+    assert len(terminate_calls) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific kill path")
+def test_kill_duplicate_different_interpreter_posix(tmp_data_dir):
+    """kill_duplicate_daemon sends SIGTERM on POSIX when interpreter differs."""
+    fake_pid = 54321
+    other_interp = "/other/python3"
+    pid_path = worker.paths.worker_pid_path()
+    _write_json_pid(pid_path, pid=fake_pid, interpreter=other_interp)
+
+    kill_calls = []
+
+    with (
+        patch.object(daemon, "_pid_is_alive", return_value=True),
+        patch("os.kill", side_effect=lambda pid, sig: kill_calls.append((pid, sig))),
+    ):
+        result = daemon.kill_duplicate_daemon()
+
+    assert "Killed duplicate daemon" in result
+    assert str(fake_pid) in result
+    assert other_interp in result
+    import signal as _sig
+    assert kill_calls == [(fake_pid, _sig.SIGTERM)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific kill path")
+def test_kill_duplicate_os_error_returns_message(tmp_data_dir):
+    """kill_duplicate_daemon returns an error message (not raise) when os.kill fails."""
+    fake_pid = 54321
+    other_interp = "/other/python3"
+    pid_path = worker.paths.worker_pid_path()
+    _write_json_pid(pid_path, pid=fake_pid, interpreter=other_interp)
+
+    with (
+        patch.object(daemon, "_pid_is_alive", return_value=True),
+        patch("os.kill", side_effect=OSError("permission denied")),
+    ):
+        result = daemon.kill_duplicate_daemon()
+
+    assert "Failed to kill" in result
+    assert str(fake_pid) in result
+
+
+# ---------------------------------------------------------------------------
+# query_worker_status enhanced fields tests
+# ---------------------------------------------------------------------------
+
+
+def test_query_worker_status_includes_interpreter_and_started_at(tmp_data_dir):
+    """query_worker_status returns interpreter and started_at from the JSON pid file."""
+    import json
+    fake_pid = os.getpid()  # use our PID so psutil.pid_exists returns True
+    fake_interp = "/fake/pythonw.exe"
+    fake_ts = "2026-06-03T10:00:00+00:00"
+    pid_path = worker.paths.worker_pid_path()
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(
+        json.dumps({"pid": fake_pid, "started_at": fake_ts, "interpreter": fake_interp, "version": "1.0.0"}),
+        encoding="utf-8",
+    )
+
+    with patch.object(daemon, "_pid_is_alive", return_value=True):
+        info = daemon.query_worker_status()
+
+    assert info["pid"] == fake_pid
+    assert info["interpreter"] == fake_interp
+    assert info["started_at"] == fake_ts
+    assert info["running"] is True
+
+
+def test_query_worker_status_pool_size_from_config(tmp_data_dir):
+    """query_worker_status returns pool_size from config.worker.max_pool_workers."""
+    import token_goat.config as _cfg_mod
+    from token_goat.config import Config, WorkerConfig
+    fake_cfg = Config()
+    fake_cfg.worker = WorkerConfig(max_pool_workers=6)
+
+    with patch.object(_cfg_mod, "load", return_value=fake_cfg):
+        info = daemon.query_worker_status()
+
+    assert info["pool_size"] == 6
+
+
+def test_query_worker_status_pool_size_default_on_config_error(tmp_data_dir):
+    """query_worker_status returns pool_size=4 (default) when config load fails."""
+    with patch("token_goat.worker_daemon._pid_is_alive", return_value=False):
+        import token_goat.config as _cfg_mod
+        with patch.object(_cfg_mod, "load", side_effect=RuntimeError("config broken")):
+            info = daemon.query_worker_status()
+
+    assert info["pool_size"] == 4
+
+
+def test_query_worker_status_no_pid_file(tmp_data_dir):
+    """query_worker_status returns running=False, pid=None when no pid file exists."""
+    info = daemon.query_worker_status()
+    assert info["running"] is False
+    assert info["pid"] is None
+    assert info["interpreter"] is None
+    assert info["started_at"] is None

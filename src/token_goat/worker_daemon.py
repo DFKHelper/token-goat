@@ -611,6 +611,67 @@ def run_daemon(stop_event=None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Duplicate daemon kill (used by `token-goat worker --kill-duplicate`)
+# ---------------------------------------------------------------------------
+
+def kill_duplicate_daemon() -> str:
+    """Kill a running worker whose interpreter path differs from the current Python executable.
+
+    Returns a human-readable status line describing what was done:
+    - "Killed duplicate daemon (PID NNN, interpreter /path/to/python)"
+    - "No duplicate daemon found."
+    - "No running worker found." (PID file absent or process dead)
+    - "Worker interpreter unknown (legacy pid file format)."
+
+    The kill is platform-appropriate: ``SIGTERM`` on POSIX, ``TerminateProcess``
+    via ctypes on Windows.  The function never raises; all errors are returned
+    as descriptive strings so the CLI can print them without crashing.
+    """
+    from . import paths  # noqa: PLC0415
+    from . import worker as _w  # noqa: PLC0415
+
+    pid_path = paths.worker_pid_path()
+    if not pid_path.exists():
+        return "No running worker found."
+
+    try:
+        pid_text = pid_path.read_text(encoding="utf-8")
+        pid, worker_interp = _w._read_pid_info(pid_text)
+    except (OSError, ValueError) as exc:
+        return f"No running worker found (pid file unreadable: {exc})."
+
+    if not _pid_is_alive(pid):
+        return "No running worker found."
+
+    if worker_interp is None:
+        return "Worker interpreter unknown (legacy pid file format)."
+
+    def _norm(p: str) -> str:
+        return p.replace("\\", "/").casefold() if sys.platform == "win32" else p
+
+    if _norm(worker_interp) == _norm(sys.executable):
+        return "No duplicate daemon found."
+
+    # The running worker uses a different interpreter — kill it.
+    try:
+        if sys.platform == "win32":
+            PROCESS_TERMINATE = 0x0001
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+            if handle:
+                ctypes.windll.kernel32.TerminateProcess(handle, 1)
+                ctypes.windll.kernel32.CloseHandle(handle)
+            else:
+                return f"Could not open process PID {pid} for termination (OpenProcess returned NULL)."
+        else:
+            import signal as _signal  # noqa: PLC0415
+            os.kill(pid, _signal.SIGTERM)
+    except OSError as exc:
+        return f"Failed to kill PID {pid}: {exc}."
+
+    return f"Killed duplicate daemon (PID {pid}, interpreter {worker_interp})."
+
+
+# ---------------------------------------------------------------------------
 # Worker status query (used by `token-goat worker --status`)
 # ---------------------------------------------------------------------------
 
@@ -620,19 +681,55 @@ def query_worker_status() -> dict[str, object]:
     Keys:
         running (bool): True if the worker process appears to be alive.
         pid (int | None): PID from the pid file, or None.
+        interpreter (str | None): Python executable path from the pid file, or None.
+        started_at (str | None): ISO-format start timestamp from the pid file, or None.
         autostart (str | None): 'systemd', 'registry', 'xdg', or None.
         autostart_active (bool | None): True/False/None (None = unknown).
+        pool_size (int): Configured max_pool_workers from config (default 4).
         last_log_line (str | None): Last non-empty line from today's log file.
     """
     from . import paths  # noqa: PLC0415
 
     pid: int | None = None
+    interpreter: str | None = None
+    started_at: str | None = None
     running = False
 
-    raw_pid = _read_pid_from_file()
-    if raw_pid != _PID_UNKNOWN:
-        pid = raw_pid
-        running = _pid_is_alive(raw_pid)
+    pid_path = paths.worker_pid_path()
+    if pid_path.exists():
+        try:
+            import json as _json  # noqa: PLC0415
+
+            from . import worker as _w  # noqa: PLC0415
+            pid_text = pid_path.read_text(encoding="utf-8")
+            pid_raw, interp = _w._read_pid_info(pid_text)
+            if pid_raw != _PID_UNKNOWN:
+                pid = pid_raw
+                interpreter = interp
+                running = _pid_is_alive(pid_raw)
+                # Extract started_at from the JSON payload if present.
+                try:
+                    data = _json.loads(pid_text.strip())
+                    started_at = data.get("started_at") or None
+                except (ValueError, KeyError):
+                    pass
+        except (OSError, ValueError):
+            pass
+
+    # Fall back to the simple reader when the above block didn't populate pid.
+    if pid is None:
+        raw_pid = _read_pid_from_file()
+        if raw_pid != _PID_UNKNOWN:
+            pid = raw_pid
+            running = _pid_is_alive(raw_pid)
+
+    # Pool size from config (fail-soft: return the default if config unavailable).
+    pool_size: int = 4
+    try:
+        from . import config as _cfg  # noqa: PLC0415
+        pool_size = _cfg.load().worker.max_pool_workers
+    except Exception:  # noqa: BLE001
+        pass
 
     autostart: str | None = None
     autostart_active: bool | None = None
@@ -696,7 +793,10 @@ def query_worker_status() -> dict[str, object]:
     return {
         "running": running,
         "pid": pid,
+        "interpreter": interpreter,
+        "started_at": started_at,
         "autostart": autostart,
         "autostart_active": autostart_active,
+        "pool_size": pool_size,
         "last_log_line": last_log_line,
     }
