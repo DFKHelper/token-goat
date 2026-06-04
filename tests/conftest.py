@@ -181,9 +181,26 @@ JS_SAMPLE = FIXTURE_DIR / "js_sample"
 
 @pytest.fixture
 def tmp_data_dir(tmp_path):
-    """Monkeypatch token_goat.paths.data_dir to a temporary directory."""
+    """Monkeypatch token_goat.paths.data_dir to a temporary directory.
+
+    Also clears module-level caches that would otherwise carry stale data
+    across tests when the data_dir changes between test invocations:
+    - session._proc_load_cache: process-local session load cache (keyed by
+      session_id; stale entries from a prior tmp_path would be served to
+      the next test that reuses the same session_id string).
+    - compact._manifest_sha_written_this_process: set that gates sidecar
+      re-reads; if a test writes a manifest for "sid-1" the entry persists
+      into the next test's context, corrupting the sidecar cache-hit check.
+    """
+    from token_goat import compact as _compact_mod
+    from token_goat import session as _session_mod
+
+    _session_mod._proc_load_cache.clear()
+    _compact_mod._manifest_sha_written_this_process.clear()
     with patch.object(paths, 'data_dir', return_value=tmp_path):
         yield tmp_path
+    _session_mod._proc_load_cache.clear()
+    _compact_mod._manifest_sha_written_this_process.clear()
 
 
 @pytest.fixture(autouse=True)
