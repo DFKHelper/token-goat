@@ -3000,6 +3000,7 @@ def index(
     report_large: bool = typer.Option(False, "--report-large", help="After indexing, print a table of files that were skipped or received symbol-only treatment due to their size."),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Print each file as it's indexed with symbol count."),
     check: bool = typer.Option(False, "--check", help="Report pending dirty files without indexing. Exit 1 if dirty files exist, 0 if clean."),
+    ext: list[str] | None = typer.Option(None, "--ext", help="Only (re-)index files with this extension. May be repeated: --ext py --ext ts. Useful after adding a new indexer."),  # noqa: B008
 ) -> None:
     """Rebuild project/global indices."""
     from . import paths as _paths  # noqa: PLC0415
@@ -3073,9 +3074,17 @@ def index(
         else:
             typer.echo(f"  {done}/{total} files scanned...", err=True)
 
+    # Build frozenset of lowercased extensions with leading dot for the filter.
+    _ext_filter: frozenset[str] | None = None
+    if ext:
+        _ext_filter = frozenset(
+            (e if e.startswith(".") else f".{e}").lower()
+            for e in ext
+        )
+
     _LOG.info("index start: project=%s mode=%s", proj.root.name, "full" if full else "incremental")
     try:
-        summary = index_project(proj, full=full, progress=_progress, verbose=verbose)
+        summary = index_project(proj, full=full, progress=_progress, verbose=verbose, ext_filter=_ext_filter)
     except Exception as exc:  # noqa: BLE001
         _error(f"indexing failed: {exc}")
         raise typer.Exit(1) from None
@@ -3102,6 +3111,15 @@ def index(
         f"— {langs} "
         f"— in {summary['duration_sec']}s"
     )
+
+    # Per-extension breakdown (shown when there are multiple distinct extensions indexed).
+    ext_counts: dict[str, int] = summary.get("ext_counts", {})  # type: ignore[assignment]
+    if ext_counts and len(ext_counts) > 1:
+        breakdown = ", ".join(
+            f"{count} {extension}"
+            for extension, count in sorted(ext_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        typer.echo(f"  by type: {breakdown}")
 
     # --report-large: print a table of files that were skipped or symbol-only.
     large_files = summary.get("large_files", [])

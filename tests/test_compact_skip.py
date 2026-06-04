@@ -521,3 +521,106 @@ class TestSentinelCountsAfterSkip:
         data = json.loads(sentinel.read_text(encoding="utf-8"))
         assert data["edited_count"] == 2
         assert data["bash_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# 11. Sentinel write is atomic (uses paths.atomic_write_text)
+# ---------------------------------------------------------------------------
+
+
+class TestWriteCompactSkipSentinelAtomic:
+    def test_uses_atomic_write_text(self, tmp_data_dir):
+        """_write_compact_skip_sentinel delegates to paths.atomic_write_text, not write_text."""
+        with patch("token_goat.paths.atomic_write_text") as mock_atomic:
+            _write_compact_skip_sentinel("atomic-sentinel-abc", edited_count=2, bash_count=3)
+
+        mock_atomic.assert_called_once()
+        call_args = mock_atomic.call_args
+        # First arg: Path, second arg: JSON string
+        written_payload = call_args[0][1]
+        data = json.loads(written_payload)
+        assert data["edited_count"] == 2
+        assert data["bash_count"] == 3
+
+    def test_atomic_write_no_partial_content_on_error(self, tmp_data_dir):
+        """If atomic_write_text raises, the error is silently swallowed (fail-soft)."""
+        with patch("token_goat.paths.atomic_write_text", side_effect=OSError("disk full")):
+            # Must not raise; sentinel write failures are always suppressed
+            _write_compact_skip_sentinel("atomic-error-abc", edited_count=1, bash_count=0)
+        # No sentinel was written (error suppressed)
+        sentinel = paths.compact_skip_sentinel_path("atomic-error-abc")
+        assert not sentinel.exists()
+
+
+# ---------------------------------------------------------------------------
+# 12. pre_compact timing log
+# ---------------------------------------------------------------------------
+
+
+class TestPreCompactTimingLog:
+    def test_timing_log_emitted_at_debug(self, tmp_data_dir, caplog):
+        """pre_compact emits a DEBUG log with 'built manifest in' after build_manifest_with_count."""
+        import logging
+
+        from conftest import _make_session
+
+        from token_goat.hooks_cli import pre_compact
+
+        sid = "timing-log-test-abc"
+        _make_session(sid, edits=1, bash_runs={"echo hi": (50, 0)})
+
+        payload = {"session_id": sid, "trigger": "manual"}
+        with patch("token_goat.config.load") as mock_cfg:
+            cfg = MagicMock()
+            cfg.compact_assist.enabled = True
+            cfg.compact_assist.triggers = ["manual", "auto"]
+            cfg.compact_assist.min_events = 0
+            cfg.compact_assist.max_manifest_tokens = 400
+            cfg.compact_assist.auto_trigger_multiplier = 1.0
+            cfg.compact_assist.max_manifest_chars = 0
+            mock_cfg.return_value = cfg
+            with caplog.at_level(logging.DEBUG, logger="token_goat.hooks"):
+                pre_compact(payload)
+
+        timing_logs = [
+            r.message for r in caplog.records
+            if "built manifest in" in r.getMessage()
+        ]
+        assert timing_logs, "Expected a DEBUG log containing 'built manifest in'"
+        # The message should contain 'ms' (milliseconds) and 'tokens'
+        assert any("ms" in m and "tokens" in m for m in timing_logs)
+
+    def test_timing_log_contains_token_count(self, tmp_data_dir, caplog):
+        """Timing log token count is non-negative integer."""
+        import logging
+        import re
+
+        from conftest import _make_session
+
+        from token_goat.hooks_cli import pre_compact
+
+        sid = "timing-log-tokens-abc"
+        _make_session(sid, edits=1)
+
+        payload = {"session_id": sid, "trigger": "manual"}
+        with patch("token_goat.config.load") as mock_cfg:
+            cfg = MagicMock()
+            cfg.compact_assist.enabled = True
+            cfg.compact_assist.triggers = ["manual", "auto"]
+            cfg.compact_assist.min_events = 0
+            cfg.compact_assist.max_manifest_tokens = 400
+            cfg.compact_assist.auto_trigger_multiplier = 1.0
+            cfg.compact_assist.max_manifest_chars = 0
+            mock_cfg.return_value = cfg
+            with caplog.at_level(logging.DEBUG, logger="token_goat.hooks"):
+                pre_compact(payload)
+
+        for record in caplog.records:
+            msg = record.getMessage()
+            if "built manifest in" in msg:
+                # Extract token count — expect pattern like "built manifest in 42ms (7 tokens)"
+                m = re.search(r"\((\d+) tokens\)", msg)
+                assert m is not None, f"Token count not found in log message: {msg!r}"
+                assert int(m.group(1)) >= 0
+                return
+        raise AssertionError("No 'built manifest in' timing log found")

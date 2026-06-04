@@ -326,6 +326,7 @@ class IndexProjectResult(TypedDict):
     duration_sec: float
     total_symbols: int
     large_files: list[LargeFileInfo]
+    ext_counts: dict[str, int]  # extension -> count of files indexed (e.g. {".py": 45, ".ts": 12})
 
 
 def _language_importer(module_name: str, attr: str = "extract") -> Callable[[], Extractor]:
@@ -526,6 +527,7 @@ def iter_source_files(
     project: Project,
     *,
     skip_threshold: int = MAX_FILE_SIZE,
+    ext_filter: frozenset[str] | None = None,
 ) -> Iterable[Path]:
     """Yield absolute paths of indexable source files under the project root.
 
@@ -540,6 +542,9 @@ def iter_source_files(
         skip_threshold: Files larger than this many bytes are skipped entirely.
             Defaults to ``MAX_FILE_SIZE``.  Pass ``config.indexing.large_file_skip_kb * 1024``
             to use the user-configured threshold.
+        ext_filter: When not None, only yield files whose suffix (lowercased,
+            with leading dot) is in this set.  E.g. ``frozenset({".py", ".pyi"})``.
+            Has no effect on basename-matched files (e.g. ``.env``).
     """
     root = project.root
     resolved_root = root.resolve()
@@ -575,6 +580,9 @@ def iter_source_files(
             if name_lower not in _KNOWN_BASENAMES:
                 suffix = path.suffix
                 if suffix not in _KNOWN_EXTENSIONS and suffix.lower() not in _KNOWN_EXTENSIONS:
+                    continue
+                # Apply optional extension filter (e.g. --ext py).
+                if ext_filter is not None and suffix.lower() not in ext_filter:
                     continue
             # Reject symlinks whose resolved target escapes the project root.
             # os.walk does not follow symlink *directories* by default, but it
@@ -864,6 +872,7 @@ def index_project(
     full: bool = True,
     progress: Callable[[int, int], None] | None = None,
     verbose: bool = False,
+    ext_filter: frozenset[str] | None = None,
 ) -> IndexProjectResult:
     """Index all source files in a project: full or incremental scan and persist to DB.
 
@@ -873,9 +882,11 @@ def index_project(
     Acquires an exclusive writer lock to prevent concurrent indexing on the same project.
 
     Returns IndexProjectResult with total_files, indexed, skipped_unchanged, errors, languages, duration_sec,
-    and large_files (a list of LargeFileInfo for files that were skipped or got symbol-only treatment).
+    large_files (a list of LargeFileInfo for files that were skipped or got symbol-only treatment), and
+    ext_counts (a dict mapping file extension to count of files indexed, e.g. {".py": 45, ".ts": 12}).
     Calls progress(indexed_so_far, total) every 100 files if progress is supplied.
     When verbose is True, prints each file as it's indexed with its symbol count.
+    When ext_filter is provided, only files whose suffix (lowercased) is in the set are indexed.
     """
     _LOG.info("index_project started: mode=%s path=%s", "full" if full else "incremental", project.root)
 
@@ -937,7 +948,7 @@ def index_project(
         except Exception:  # noqa: BLE001
             pass  # fail-soft: large-file scanning must never abort indexing
 
-    files = list(iter_source_files(project, skip_threshold=_skip_threshold))
+    files = list(iter_source_files(project, skip_threshold=_skip_threshold, ext_filter=ext_filter))
     n_total = len(files)
     if n_total == 0:
         _LOG.debug(
@@ -950,6 +961,8 @@ def index_project(
     n_errors = 0
     n_symbols = 0
     languages: set[str] = set()
+    # Per-extension file counts for summary output (e.g. {".py": 45, ".ts": 12}).
+    ext_counts: dict[str, int] = {}
     # Collect rel_paths seen in this walk so the end-of-loop stale-file prune
     # can reuse them without a second O(n) relative_to() pass over all files.
     on_disk: set[str] = set()
@@ -1007,6 +1020,9 @@ def index_project(
                         n_indexed += 1
                         n_symbols += len(fi.symbols)
                         languages.add(fi.language)
+                        # Track per-extension counts for the summary breakdown.
+                        _ext = fp.suffix.lower() or fp.name.lower()
+                        ext_counts[_ext] = ext_counts.get(_ext, 0) + 1
                         if verbose:
                             import typer as _typer  # noqa: PLC0415
                             sym_word = "symbol" if len(fi.symbols) == 1 else "symbols"
@@ -1104,6 +1120,7 @@ def index_project(
         "duration_sec": round(elapsed, 2),
         "total_symbols": n_symbols,
         "large_files": all_large_files,
+        "ext_counts": ext_counts,
     }
 
     files_per_sec = n_total / elapsed if elapsed > 0 else 0.0

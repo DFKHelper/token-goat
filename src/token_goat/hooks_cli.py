@@ -952,7 +952,7 @@ def _write_compact_skip_sentinel(
             {"edited_count": edited_count, "bash_count": bash_count},
             separators=(",", ":"),
         )
-        sentinel.write_text(payload, encoding="utf-8")
+        paths.atomic_write_text(sentinel, payload)
     except Exception:  # noqa: BLE001
         pass
 
@@ -996,7 +996,7 @@ def _write_precompact_estimate(session_id: str, cache: object) -> None:
         )
         sentinel = paths.precompact_estimate_path(session_id)
         paths.ensure_dir(sentinel.parent)
-        sentinel.write_text(payload, encoding="utf-8")
+        paths.atomic_write_text(sentinel, payload)
         _LOG.debug(
             "pre-compact: wrote estimate sentinel session=%s bytes=%d bash=%d web=%d",
             session_id[:16], max(0, bytes_estimate), len(bash_hist), len(web_hist),
@@ -1140,8 +1140,15 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     hard_max = max(cfg.max_manifest_tokens, 1200)
     effective_tokens = min(pre_clamp_tokens, hard_max)
 
+    _manifest_t0 = time.perf_counter()
     manifest, n_events = compact_mod.build_manifest_with_count(
         session_id, max_tokens=effective_tokens
+    )
+    _manifest_ms = (time.perf_counter() - _manifest_t0) * 1000
+    _manifest_tokens = compact_mod.estimate_tokens(manifest) if manifest else 0
+    _LOG.debug(
+        "pre-compact: built manifest in %.0fms (%d tokens)",
+        _manifest_ms, _manifest_tokens,
     )
 
     # Compute counts once for sentinel writes below.
