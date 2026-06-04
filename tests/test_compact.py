@@ -5392,10 +5392,15 @@ class TestTop5GuaranteedMin:
             # 10 edited files → dynamic max_key_files = 4, but guarantee gives us 5
             for i in range(10):
                 cache = session.mark_file_edited(sid, f"/proj/src/edit_{i:02d}.py", cache=cache)
-            # 8 read files; first 5 should always appear
+            # 8 read files; first 5 should always appear.
+            # Read counts must be STRICTLY DECREASING for the first 5 so that
+            # tie-breaking (by recency) cannot push read_04 out of the top 5.
+            # read_05–07 share count=1 which is below read_04's count=2; the top
+            # 5 are therefore read_00(5), read_01(4), read_02(3), read_03(2),
+            # read_04(2) — unambiguously above the tied trio at count=1.
             for i in range(8):
-                read_count = 5 - i if i < 5 else 1
-                for _ in range(max(1, read_count)):
+                read_count = max(2, 6 - i) if i < 5 else 1
+                for _ in range(read_count):
                     cache = session.mark_file_read(
                         sid, f"/proj/src/read_{i:02d}.py", offset=0, limit=50, cache=cache
                     )
