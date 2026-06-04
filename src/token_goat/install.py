@@ -236,6 +236,157 @@ def task_exists(name: str) -> bool:
     return code == 0
 
 
+def _extract_interpreter_from_command(cmd: str) -> str | None:
+    """Extract the interpreter path from an autostart command string.
+
+    Handles the ``pythonw.exe -m token_goat.cli ...`` form written by
+    :func:`paths.python_runner_command`.  The interpreter is always the first
+    token (quoted or unquoted).  Returns ``None`` when extraction fails.
+    """
+    stripped = cmd.strip()
+    if not stripped:
+        return None
+    # Handle a leading quoted path: "C:/path/pythonw.exe" -m ...
+    if stripped.startswith('"'):
+        end = stripped.find('"', 1)
+        if end != -1:
+            return stripped[1:end]
+        return None
+    # Unquoted: take first whitespace-delimited token
+    return stripped.split()[0] if stripped.split() else None
+
+
+def _read_win_autostart_command() -> str | None:
+    """Return the current HKCU Run value for token-goat-worker, or None if absent.
+
+    Read-only.  Returns the raw command string exactly as stored in the registry.
+    Returns ``None`` when the key or value does not exist or on read error.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg  # type: ignore[import]
+        key_read = getattr(winreg, "KEY_READ", 0x20019)
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            _HKCU_RUN_PATH,
+            0,
+            key_read,
+        ) as key:
+            try:
+                value, _ = winreg.QueryValueEx(key, TASK_WORKER)
+                return str(value)
+            except FileNotFoundError:
+                return None
+    except (ImportError, OSError, AttributeError):
+        return None
+
+
+def _read_linux_autostart_command() -> str | None:
+    """Return the ExecStart (systemd) or Exec (XDG) line from the autostart file, or None.
+
+    Read-only.  Returns the raw exec string from whichever autostart mechanism
+    is present (systemd user service first, XDG autostart fallback).
+    """
+    if sys.platform == "win32":
+        return None
+    svc = _systemd_service_path()
+    if svc.exists():
+        try:
+            content = svc.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                stripped_line = line.strip()
+                if stripped_line.startswith("ExecStart="):
+                    return stripped_line[len("ExecStart="):].strip()
+        except OSError:
+            pass
+        return None
+    desktop = _xdg_autostart_path()
+    if desktop.exists():
+        try:
+            content = desktop.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                stripped_line = line.strip()
+                if stripped_line.startswith("Exec="):
+                    return stripped_line[len("Exec="):].strip()
+        except OSError:
+            pass
+    return None
+
+
+def _read_mac_autostart_command() -> str | None:
+    """Return the first ProgramArguments entry (the interpreter) from the LaunchAgent plist.
+
+    Read-only.  Returns the first ``<string>`` entry in ``ProgramArguments``,
+    which is the interpreter path, or None when the plist is absent or unreadable.
+    """
+    if sys.platform == "win32":
+        return None
+    plist = _launchd_plist_path()
+    if not plist.exists():
+        return None
+    try:
+        content = plist.read_text(encoding="utf-8")
+        # Extract all <string> entries following <key>ProgramArguments</key><array>
+        import re as _re  # noqa: PLC0415
+        m = _re.search(
+            r"<key>ProgramArguments</key>\s*<array>(.*?)</array>",
+            content,
+            _re.DOTALL,
+        )
+        if not m:
+            return None
+        strings = _re.findall(r"<string>(.*?)</string>", m.group(1), _re.DOTALL)
+        if strings:
+            # The first element is the interpreter executable
+            return " ".join(strings)  # reconstruct full command
+    except OSError:
+        pass
+    return None
+
+
+def check_autostart() -> dict[str, str | None]:
+    """Return a dict describing the current autostart registration (read-only).
+
+    Keys:
+        status:           ``"registered"`` | ``"not registered"`` | ``"n/a"``
+        command:          Full registered command string, or ``None``.
+        registered_interp: Interpreter path extracted from the registered command, or ``None``.
+        current_interp:   Current ``sys.executable`` (the interpreter running now).
+        match:            ``"YES"`` | ``"NO"`` | ``"UNKNOWN"`` (when interp cannot be compared).
+
+    No side effects — safe to call at any time.
+    """
+    current_interp = sys.executable
+
+    if sys.platform == "win32":
+        cmd = _read_win_autostart_command()
+    elif sys.platform == "darwin":
+        cmd = _read_mac_autostart_command()
+    else:
+        cmd = _read_linux_autostart_command()
+
+    status = "registered" if cmd is not None else "not registered"
+    registered_interp = _extract_interpreter_from_command(cmd) if cmd else None
+
+    if registered_interp is None:
+        match = "UNKNOWN"
+    else:
+        # Normalise path separators and case (Windows paths are case-insensitive)
+        def _norm(p: str) -> str:
+            return p.replace("\\", "/").casefold() if sys.platform == "win32" else p
+
+        match = "YES" if _norm(registered_interp) == _norm(current_interp) else "NO"
+
+    return {
+        "status": status,
+        "command": cmd,
+        "registered_interp": registered_interp,
+        "current_interp": current_interp,
+        "match": match,
+    }
+
+
 def install_worker_task() -> tuple[bool, str]:
     """Register the token-goat worker to run at user logon via the HKCU Run key.
 
@@ -247,11 +398,29 @@ def install_worker_task() -> tuple[bool, str]:
     products don't behavior-flag the at-logon spawn (a tiny launcher .exe in
     a user-writable directory is a textbook payload-drop signature; pythonw
     invoking a module is not).
+
+    If an existing entry points to a different interpreter, it is replaced and
+    a WARNING is logged so the caller can surface a "replacing old entry" notice.
     """
     cmd = paths.python_runner_command("worker", "--daemon")
 
     if sys.platform != "win32":
         return True, "non-Windows: skipped"
+
+    # Dedup check: warn when replacing an entry that pointed at a different interpreter.
+    existing_cmd = _read_win_autostart_command()
+    if existing_cmd is not None:
+        old_interp = _extract_interpreter_from_command(existing_cmd)
+        new_interp = _extract_interpreter_from_command(cmd)
+        if old_interp and new_interp:
+            def _norm(p: str) -> str:
+                return p.replace("\\", "/").casefold()
+            if _norm(old_interp) != _norm(new_interp):
+                _LOG.warning(
+                    "install_worker_task: replacing existing autostart entry "
+                    "(old interpreter: %s) with new one (new interpreter: %s)",
+                    old_interp, new_interp,
+                )
 
     try:
         import winreg  # type: ignore[import]  # winreg is Windows-only; not in typeshed for cross-platform targets
@@ -396,12 +565,30 @@ def install_linux_autostart() -> tuple[bool, str]:
     On WSL without systemd the XDG file is written but won't trigger at logon —
     the SessionStart watchdog in hooks_cli ensures the worker runs on every
     Claude Code session regardless.
+
+    If an existing entry points to a different interpreter, it is replaced and
+    a WARNING is logged.
     """
 
     if sys.platform == "win32":
         return True, "Windows: skipped"
 
     import shlex  # noqa: PLC0415
+
+    # Dedup check: warn when replacing an entry that pointed at a different interpreter.
+    existing_cmd = _read_linux_autostart_command()
+    if existing_cmd is not None:
+        old_interp = _extract_interpreter_from_command(existing_cmd)
+        new_interp = sys.executable
+        if old_interp and new_interp:
+            def _norm_linux(p: str) -> str:
+                return p  # Linux paths are case-sensitive
+            if _norm_linux(old_interp) != _norm_linux(new_interp):
+                _LOG.warning(
+                    "install_linux_autostart: replacing existing autostart entry "
+                    "(old interpreter: %s) with new one (new interpreter: %s)",
+                    old_interp, new_interp,
+                )
 
     cmd_args = paths.python_runner_argv("worker", "--daemon")
     # Shell-quote every argument so paths containing spaces (e.g. a home
@@ -643,10 +830,25 @@ def install_mac_autostart() -> tuple[bool, str]:
     calls `launchctl load` to activate it immediately.  No admin required —
     LaunchAgents run in user scope.  Idempotent: unloads before re-loading if
     the plist already exists.
+
+    If an existing plist points to a different interpreter, it is replaced and
+    a WARNING is logged.
     """
 
     if sys.platform == "win32":
         return True, "Windows: skipped"
+
+    # Dedup check: warn when replacing an entry that pointed at a different interpreter.
+    existing_cmd = _read_mac_autostart_command()
+    if existing_cmd is not None:
+        old_interp = _extract_interpreter_from_command(existing_cmd)
+        new_interp = sys.executable
+        if old_interp and new_interp and old_interp != new_interp:
+            _LOG.warning(
+                "install_mac_autostart: replacing existing autostart entry "
+                "(old interpreter: %s) with new one (new interpreter: %s)",
+                old_interp, new_interp,
+            )
 
     cmd_args = paths.python_runner_argv("worker", "--daemon")
     plist_path = _launchd_plist_path()

@@ -1023,3 +1023,90 @@ class TestConfigTypeValidationEndToEnd:
         )
         assert cfg.compact_assist.min_events == 7
         assert cfg.compact_assist.auto_trigger_multiplier == 3.5
+
+
+# ---------------------------------------------------------------------------
+# WorkerConfig.max_pool_workers — config load, env override, ceiling
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerMaxPoolWorkers:
+    """worker.max_pool_workers is loaded from TOML, respects env override, and
+    is hard-capped at WORKER_MAX_POOL_CEILING (8) regardless of the source."""
+
+    def _load_from_toml(self, toml_text: str, tmp_path, monkeypatch):
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        cfg_mod._config_mtime_cache = None
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(toml_text, encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        try:
+            return cfg_mod.load()
+        finally:
+            cfg_mod._config_mtime_cache = None
+
+    def test_default_is_four(self, tmp_path, monkeypatch):
+        """Default max_pool_workers is 4 when no TOML or env override is present."""
+        cfg = self._load_from_toml("", tmp_path, monkeypatch)
+        assert cfg.worker.max_pool_workers == 4
+
+    def test_toml_value_is_respected(self, tmp_path, monkeypatch):
+        """A valid TOML value in [worker] is applied."""
+        cfg = self._load_from_toml("[worker]\nmax_pool_workers = 2\n", tmp_path, monkeypatch)
+        assert cfg.worker.max_pool_workers == 2
+
+    def test_toml_value_above_ceiling_falls_back_to_default(self, tmp_path, monkeypatch):
+        """A TOML value above WORKER_MAX_POOL_CEILING falls back to the default (4),
+        not a silent clamp — _validated_int rejects out-of-range values."""
+        import token_goat.config as cfg_mod
+
+        ceiling = cfg_mod.WORKER_MAX_POOL_CEILING
+        cfg = self._load_from_toml(
+            f"[worker]\nmax_pool_workers = {ceiling + 10}\n", tmp_path, monkeypatch
+        )
+        # Out-of-range → _validated_int falls back to default=4
+        assert cfg.worker.max_pool_workers == 4
+
+    def test_env_override_applied(self, tmp_path, monkeypatch):
+        """TOKEN_GOAT_WORKER_MAX_POOL env var overrides the TOML value."""
+        monkeypatch.setenv("TOKEN_GOAT_WORKER_MAX_POOL", "3")
+        cfg = self._load_from_toml("", tmp_path, monkeypatch)
+        assert cfg.worker.max_pool_workers == 3
+
+    def test_env_override_out_of_range_uses_default(self, tmp_path, monkeypatch):
+        """An env-var value above the ceiling uses the TOML/default value instead."""
+        import token_goat.config as cfg_mod
+
+        ceiling = cfg_mod.WORKER_MAX_POOL_CEILING
+        monkeypatch.setenv("TOKEN_GOAT_WORKER_MAX_POOL", str(ceiling + 100))
+        # No TOML override — default (4) should survive because the env value is out-of-range.
+        cfg = self._load_from_toml("", tmp_path, monkeypatch)
+        assert cfg.worker.max_pool_workers <= ceiling
+
+    def test_ceiling_constant_is_eight(self):
+        """The hard ceiling must be exactly 8 — change this test if the ceiling is intentionally raised."""
+        import token_goat.config as cfg_mod
+
+        assert cfg_mod.WORKER_MAX_POOL_CEILING == 8
+
+    def test_save_roundtrip_preserves_max_pool_workers(self, tmp_path, monkeypatch):
+        """save() then load() preserves max_pool_workers."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        cfg_mod._config_mtime_cache = None
+
+        try:
+            base = cfg_mod.load()
+            base.worker.max_pool_workers = 2
+            cfg_mod.save(base)
+
+            cfg_mod._config_mtime_cache = None
+            reloaded = cfg_mod.load()
+            assert reloaded.worker.max_pool_workers == 2
+        finally:
+            cfg_mod._config_mtime_cache = None

@@ -847,6 +847,19 @@ def doctor(  # noqa: C901
         except (OSError, ValueError):
             ok("claim file", "held (owner mid-startup)")
 
+    # Worker pool size — show configured max_pool_workers and ceiling so the user
+    # can verify the thread-pool cap is active and tune it if desired.
+    try:
+        from . import config as _cfg_doc  # noqa: PLC0415
+        _wk_cfg = _cfg_doc.load().worker
+        _ceil = _cfg_doc.WORKER_MAX_POOL_CEILING
+        ok(
+            "pool workers",
+            f"max_pool_workers={_wk_cfg.max_pool_workers} (ceiling={_ceil})",
+        )
+    except Exception as _e_pool:  # noqa: BLE001
+        flag("pool workers", f"config unavailable — {_e_pool}", warn=True)
+
     # Index-spawn markers (locks/{hash}.indexing). A stale marker is harmless
     # — _index_spawn_active() ignores it — but a pile of them hints at indexers
     # that crashed or were killed. With --fix, reap them here (the same logic

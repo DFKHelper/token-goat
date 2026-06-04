@@ -18,6 +18,7 @@ __all__ = [
     "StatsConfig",
     "WebFetchConfig",
     "WorkerConfig",
+    "WORKER_MAX_POOL_CEILING",
     "CONFIG_SCHEMA_VERSION",
     "load",
     "save",
@@ -66,6 +67,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_BASH_CACHE_MAX_BYTES",
     "TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT",
     "TOKEN_GOAT_WORKER_WATCHDOG",
+    "TOKEN_GOAT_WORKER_MAX_POOL",
     "TOKEN_GOAT_HOOK_WATCHDOG_MS",
     "TOKEN_GOAT_COMPRESS_PROFILE",
     "TOKEN_GOAT_SKILL_COMPRESS",
@@ -114,6 +116,7 @@ _ENV_BASH_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_FILES"  # int
 _ENV_BASH_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES"  # integer override (total bytes)
 _ENV_BASH_CACHE_MAX_BYTES_PER_OUTPUT: Final[str] = "TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT"  # integer override (max per single output)
 _ENV_WORKER_WATCHDOG: Final[str] = "TOKEN_GOAT_WORKER_WATCHDOG"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_WORKER_MAX_POOL: Final[str] = "TOKEN_GOAT_WORKER_MAX_POOL"  # integer override for max indexing thread-pool workers (1–8)
 _ENV_COMPRESS_PROFILE: Final[str] = "TOKEN_GOAT_COMPRESS_PROFILE"  # "auto"|"aggressive"|"balanced"|"minimal"
 _ENV_SKILL_COMPRESS: Final[str] = "TOKEN_GOAT_SKILL_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable body gzip
 _ENV_LAZY_SKILL_INJECTION: Final[str] = "TOKEN_GOAT_LAZY_SKILL_INJECTION"  # set to "0"/"false"/"no"/"off" for eager injection
@@ -339,6 +342,7 @@ class _WorkerToml(TypedDict, total=False):
     """Expected shape of the [worker] TOML section."""
 
     watchdog_enabled: bool
+    max_pool_workers: int
 
 
 class _IndexingToml(TypedDict, total=False):
@@ -967,6 +971,11 @@ class WebFetchConfig:
     compress_min_bytes: int = 16 * 1024
 
 
+# Hard ceiling for worker.max_pool_workers — applied after config load and env override.
+# A single daemon must never spawn more than this many index threads regardless of config.
+WORKER_MAX_POOL_CEILING: Final[int] = 8
+
+
 @dataclass
 class WorkerConfig:
     """Configuration for the background worker daemon.
@@ -980,9 +989,15 @@ class WorkerConfig:
             (not via a graceful stop signal).  Set to False to disable auto-restart.
             Can also be disabled at runtime by setting ``TOKEN_GOAT_WORKER_WATCHDOG=0``
             (or ``false``/``no``/``off``).
+        max_pool_workers: Maximum number of threads in the per-index
+            ThreadPoolExecutor.  Hard-capped at ``WORKER_MAX_POOL_CEILING`` (8)
+            regardless of the configured value so a single daemon cannot spawn an
+            unbounded thread pool.  Defaults to 4.  Override at runtime with
+            ``TOKEN_GOAT_WORKER_MAX_POOL=<n>`` (1–8).
     """
 
     watchdog_enabled: bool = True
+    max_pool_workers: int = 4
 
 
 @dataclass
@@ -1645,8 +1660,24 @@ def load() -> Config:
         watchdog_enabled=_validated_bool(
             wk_raw.get("watchdog_enabled", True), True, "worker.watchdog_enabled"
         ),
+        max_pool_workers=_validated_int(
+            wk_raw.get("max_pool_workers", 4), 4, 1, WORKER_MAX_POOL_CEILING,
+            "worker.max_pool_workers",
+        ),
     )
     _apply_env_disable(wk, "watchdog_enabled", _ENV_WORKER_WATCHDOG, "worker.watchdog_enabled")
+    # Apply env override for pool size; clamp to [1, ceiling] after any override.
+    wk.max_pool_workers = _env_int(
+        _ENV_WORKER_MAX_POOL, wk.max_pool_workers, 1, WORKER_MAX_POOL_CEILING,
+        "worker.max_pool_workers",
+    )
+    # Enforce ceiling regardless of how the value was set.
+    if wk.max_pool_workers > WORKER_MAX_POOL_CEILING:
+        _LOG.warning(
+            "worker.max_pool_workers=%d exceeds hard ceiling %d; clamping",
+            wk.max_pool_workers, WORKER_MAX_POOL_CEILING,
+        )
+        wk.max_pool_workers = WORKER_MAX_POOL_CEILING
 
     hk_raw: _HooksToml = cast("_HooksToml", raw.get("hooks", {}))
     hk = HooksConfig(
@@ -1721,7 +1752,7 @@ def load() -> Config:
         "stats record_zero_savings=%s; "
         "hints suppress_after_ignored=%d quiet_hours=%r; "
         "webfetch allow=%s deny=%s max_files=%d max_bytes=%d; "
-        "worker watchdog_enabled=%s",
+        "worker watchdog_enabled=%s max_pool_workers=%d",
         ca.enabled,
         ca.triggers,
         ca.min_events,
@@ -1757,6 +1788,7 @@ def load() -> Config:
         wf_cfg.max_file_count,
         wf_cfg.max_bytes,
         wk.watchdog_enabled,
+        wk.max_pool_workers,
     )
     result = Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
@@ -1867,6 +1899,7 @@ def save(config: Config) -> None:
         },
         "worker": {
             "watchdog_enabled": config.worker.watchdog_enabled,
+            "max_pool_workers": config.worker.max_pool_workers,
         },
         "indexing": {
             "large_file_symbol_only_kb": config.indexing.large_file_symbol_only_kb,

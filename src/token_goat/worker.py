@@ -2360,10 +2360,26 @@ def _resolve_project_from_bucket(
     return None
 
 
+def _get_max_pool_workers() -> int:
+    """Return the configured (and ceiling-clamped) max_pool_workers value.
+
+    Reads from config at call time so tests can override it via monkeypatching
+    the config without restarting the worker.  Falls back to 1 on any config
+    error to preserve the pre-feature behaviour.
+    """
+    try:
+        from . import config as _cfg  # noqa: PLC0415
+        return _cfg.load().worker.max_pool_workers
+    except Exception:  # noqa: BLE001
+        return 1
+
+
 def _run_index_with_timeout(
     project: Project,
     full: bool,
     timeout: float,
+    *,
+    max_workers: int | None = None,
 ) -> dict[str, object] | None:
     """Run ``parser.index_project`` in a thread with a wall-clock timeout.
 
@@ -2375,8 +2391,15 @@ def _run_index_with_timeout(
 
     A ``None`` return means the caller should treat this project as a failure
     and record a backoff entry.
+
+    The *max_workers* parameter overrides the pool size for this call; when
+    ``None`` (the default) the configured ``worker.max_pool_workers`` value is
+    used.  The value is always clamped to [1, WORKER_MAX_POOL_CEILING].
     """
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    from . import config as _cfg_mod  # noqa: PLC0415
+    _pool_size = max_workers if max_workers is not None else _get_max_pool_workers()
+    _pool_size = max(1, min(_pool_size, _cfg_mod.WORKER_MAX_POOL_CEILING))
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=_pool_size)
     try:
         future = executor.submit(parser.index_project, project, full=full)
         try:

@@ -1591,3 +1591,302 @@ def test_install_mac_autostart_message_includes_confirm_hint(monkeypatch, tmp_pa
     assert ok is True
     assert "launchctl" in msg
     assert install.LAUNCHD_PLIST_NAME in msg
+
+
+# ---------------------------------------------------------------------------
+# _extract_interpreter_from_command: helper tests
+# ---------------------------------------------------------------------------
+
+
+def test_extract_interpreter_quoted():
+    """_extract_interpreter_from_command handles a quoted path at the start."""
+    cmd = '"C:/Users/zelys/.venv/Scripts/pythonw.exe" -m token_goat.cli worker --daemon'
+    result = install._extract_interpreter_from_command(cmd)
+    assert result == "C:/Users/zelys/.venv/Scripts/pythonw.exe"
+
+
+def test_extract_interpreter_unquoted():
+    """_extract_interpreter_from_command handles an unquoted path."""
+    cmd = "/usr/bin/python3 -m token_goat.cli worker --daemon"
+    result = install._extract_interpreter_from_command(cmd)
+    assert result == "/usr/bin/python3"
+
+
+def test_extract_interpreter_empty():
+    """_extract_interpreter_from_command returns None for an empty string."""
+    assert install._extract_interpreter_from_command("") is None
+    assert install._extract_interpreter_from_command("   ") is None
+
+
+# ---------------------------------------------------------------------------
+# _read_win_autostart_command: reads HKCU Run value
+# ---------------------------------------------------------------------------
+
+
+def test_read_win_autostart_command_present(monkeypatch):
+    """_read_win_autostart_command returns the registry value when set."""
+    import sys
+    import types
+
+    stored_cmd = '"C:/venv/pythonw.exe" -m token_goat.cli worker --daemon'
+
+    fake_reg = types.ModuleType("winreg")
+    fake_reg.HKEY_CURRENT_USER = "HKCU"
+    fake_reg.KEY_READ = 0x20019
+
+    class _Key:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    fake_reg.OpenKey = lambda hive, path, res, acc: _Key()
+    fake_reg.QueryValueEx = lambda key, name: (stored_cmd, 1)
+
+    monkeypatch.setitem(sys.modules, "winreg", fake_reg)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    result = install._read_win_autostart_command()
+    assert result == stored_cmd
+
+
+def test_read_win_autostart_command_absent(monkeypatch):
+    """_read_win_autostart_command returns None when the value does not exist."""
+    import sys
+    import types
+
+    fake_reg = types.ModuleType("winreg")
+    fake_reg.HKEY_CURRENT_USER = "HKCU"
+    fake_reg.KEY_READ = 0x20019
+
+    class _Key:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    fake_reg.OpenKey = lambda hive, path, res, acc: _Key()
+    def _raise(*a):
+        raise FileNotFoundError
+    fake_reg.QueryValueEx = _raise
+
+    monkeypatch.setitem(sys.modules, "winreg", fake_reg)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    result = install._read_win_autostart_command()
+    assert result is None
+
+
+def test_read_win_autostart_command_non_windows(monkeypatch):
+    """_read_win_autostart_command returns None on non-Windows."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+    result = install._read_win_autostart_command()
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _read_linux_autostart_command: reads from systemd service or XDG desktop
+# ---------------------------------------------------------------------------
+
+
+def test_read_linux_autostart_command_systemd(tmp_path, monkeypatch):
+    """_read_linux_autostart_command reads ExecStart from systemd service file."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    svc = tmp_path / "token-goat-worker.service"
+    svc.write_text(
+        "[Unit]\nDescription=test\n\n[Service]\n"
+        "ExecStart=/usr/bin/python3 -m token_goat.cli worker --daemon\n\n"
+        "[Install]\nWantedBy=default.target\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(install, "_systemd_service_path", lambda: svc)
+    monkeypatch.setattr(install, "_xdg_autostart_path", lambda: tmp_path / "no.desktop")
+
+    result = install._read_linux_autostart_command()
+    assert result == "/usr/bin/python3 -m token_goat.cli worker --daemon"
+
+
+def test_read_linux_autostart_command_xdg(tmp_path, monkeypatch):
+    """_read_linux_autostart_command falls back to XDG Exec= when no systemd file."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    desktop = tmp_path / "token-goat-worker.desktop"
+    desktop.write_text(
+        "[Desktop Entry]\nVersion=1.0\nType=Application\n"
+        "Exec=/home/user/venv/bin/python3 -m token_goat.cli worker --daemon\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(install, "_systemd_service_path", lambda: tmp_path / "no.service")
+    monkeypatch.setattr(install, "_xdg_autostart_path", lambda: desktop)
+
+    result = install._read_linux_autostart_command()
+    assert result == "/home/user/venv/bin/python3 -m token_goat.cli worker --daemon"
+
+
+def test_read_linux_autostart_command_none(tmp_path, monkeypatch):
+    """_read_linux_autostart_command returns None when neither file exists."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(install, "_systemd_service_path", lambda: tmp_path / "no.service")
+    monkeypatch.setattr(install, "_xdg_autostart_path", lambda: tmp_path / "no.desktop")
+
+    result = install._read_linux_autostart_command()
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# check_autostart: high-level status dict
+# ---------------------------------------------------------------------------
+
+
+def test_check_autostart_windows_match(monkeypatch):
+    """check_autostart returns YES when registered interpreter matches current."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    current = "C:/venv/Scripts/pythonw.exe"
+    monkeypatch.setattr(sys, "executable", current)
+
+    cmd = f'"{current}" -m token_goat.cli worker --daemon'
+    monkeypatch.setattr(install, "_read_win_autostart_command", lambda: cmd)
+
+    info = install.check_autostart()
+    assert info["status"] == "registered"
+    assert info["match"] == "YES"
+    assert info["registered_interp"] == current
+    assert info["current_interp"] == current
+
+
+def test_check_autostart_windows_mismatch(monkeypatch):
+    """check_autostart returns NO when registered interpreter differs from current."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    old_interp = "C:/Python312/pythonw.exe"
+    new_interp = "C:/venv/Scripts/pythonw.exe"
+    monkeypatch.setattr(sys, "executable", new_interp)
+
+    cmd = f'"{old_interp}" -m token_goat.cli worker --daemon'
+    monkeypatch.setattr(install, "_read_win_autostart_command", lambda: cmd)
+
+    info = install.check_autostart()
+    assert info["status"] == "registered"
+    assert info["match"] == "NO"
+    assert info["registered_interp"] == old_interp
+    assert info["current_interp"] == new_interp
+
+
+def test_check_autostart_not_registered(monkeypatch):
+    """check_autostart returns 'not registered' when no entry exists."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(install, "_read_win_autostart_command", lambda: None)
+
+    info = install.check_autostart()
+    assert info["status"] == "not registered"
+    assert info["match"] == "UNKNOWN"
+    assert info["registered_interp"] is None
+
+
+def test_check_autostart_linux_match(monkeypatch):
+    """check_autostart returns YES on Linux when interpreters match."""
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    current = "/home/user/.venv/bin/python3"
+    monkeypatch.setattr(sys, "executable", current)
+    cmd = f"{current} -m token_goat.cli worker --daemon"
+    monkeypatch.setattr(install, "_read_linux_autostart_command", lambda: cmd)
+
+    info = install.check_autostart()
+    assert info["status"] == "registered"
+    assert info["match"] == "YES"
+
+
+# ---------------------------------------------------------------------------
+# install_worker_task: logs WARNING when replacing a different interpreter
+# ---------------------------------------------------------------------------
+
+
+def test_install_worker_task_warns_on_interpreter_change(monkeypatch, caplog):
+    """install_worker_task logs a WARNING when an existing entry uses a different interpreter."""
+    import logging
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    old_cmd = '"C:/Python312/pythonw.exe" -m token_goat.cli worker --daemon'
+    monkeypatch.setattr(install, "_read_win_autostart_command", lambda: old_cmd)
+    monkeypatch.setattr(
+        install.paths, "python_runner_command",
+        lambda *a: '"C:/venv/Scripts/pythonw.exe" -m token_goat.cli worker --daemon',
+    )
+
+    with caplog.at_level(logging.WARNING, logger="token_goat.install"):
+        install.install_worker_task()
+
+    assert any(
+        "replacing existing autostart entry" in r.message
+        and "C:/Python312/pythonw.exe" in r.message
+        for r in caplog.records
+    )
+
+
+def test_install_worker_task_no_warn_same_interpreter(monkeypatch, caplog):
+    """install_worker_task does NOT warn when the same interpreter is already registered."""
+    import logging
+    import sys
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    same_interp = "C:/venv/Scripts/pythonw.exe"
+    same_cmd = f'"{same_interp}" -m token_goat.cli worker --daemon'
+    monkeypatch.setattr(install, "_read_win_autostart_command", lambda: same_cmd)
+    monkeypatch.setattr(
+        install.paths, "python_runner_command",
+        lambda *a: same_cmd,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="token_goat.install"):
+        install.install_worker_task()
+
+    assert not any("replacing existing autostart entry" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# install_linux_autostart: logs WARNING when replacing a different interpreter
+# ---------------------------------------------------------------------------
+
+
+def test_install_linux_autostart_warns_on_interpreter_change(tmp_path, monkeypatch, caplog):
+    """install_linux_autostart logs WARNING when replacing an entry with a different interpreter."""
+    import logging
+    import sys
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    old_interp = "/home/user/old-venv/bin/python3"
+    old_cmd = f"{old_interp} -m token_goat.cli worker --daemon"
+    monkeypatch.setattr(install, "_read_linux_autostart_command", lambda: old_cmd)
+    monkeypatch.setattr(sys, "executable", "/home/user/new-venv/bin/python3")
+
+    # Provide XDG path and stub out systemd as unavailable
+    desktop = tmp_path / "token-goat-worker.desktop"
+    monkeypatch.setattr(install, "_systemd_user_available", lambda: False)
+    monkeypatch.setattr(install, "_xdg_autostart_path", lambda: desktop)
+    monkeypatch.setattr(install.paths, "ensure_dir", lambda p: None)
+    monkeypatch.setattr(
+        install.paths, "python_runner_argv",
+        lambda *a: ["/home/user/new-venv/bin/python3", "-m", "token_goat.cli", *a],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="token_goat.install"):
+        ok, _ = install.install_linux_autostart()
+
+    assert ok is True
+    assert any(
+        "replacing existing autostart entry" in r.message
+        and old_interp in r.message
+        for r in caplog.records
+    )

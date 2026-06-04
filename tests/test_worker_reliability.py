@@ -422,3 +422,95 @@ class TestIndexTimeout:
 
         worker._index_failure_counts.clear()
         worker._index_backoff_until.clear()
+
+
+# ---------------------------------------------------------------------------
+# 6. Pool size cap — max_pool_workers config & ceiling
+# ---------------------------------------------------------------------------
+
+
+class TestPoolSizeCap:
+    """worker.max_pool_workers config is honoured and capped at WORKER_MAX_POOL_CEILING."""
+
+    def test_run_index_respects_explicit_max_workers(self, tmp_data_dir):
+        """Passing max_workers= to _run_index_with_timeout uses that pool size."""
+        import concurrent.futures as _cf
+
+        from token_goat import parser as _parser
+        from token_goat.project import Project
+
+        captured_max_workers: list[int] = []
+
+        _real_tpe = _cf.ThreadPoolExecutor
+
+        def _tracking_tpe(max_workers=None, **kw):
+            if max_workers is not None:
+                captured_max_workers.append(max_workers)
+            return _real_tpe(max_workers=max_workers, **kw)
+
+        expected = {"indexed": 1, "total_files": 1, "errors": 0, "skipped_unchanged": 0, "duration_sec": 0.01}
+        proj = Project(root=tmp_data_dir, hash="aabbccdd", marker="manual")
+
+        with (
+            patch.object(_parser, "index_project", return_value=expected),
+            patch.object(_cf, "ThreadPoolExecutor", side_effect=_tracking_tpe),
+        ):
+            worker._run_index_with_timeout(proj, False, timeout=5.0, max_workers=3)
+
+        assert 3 in captured_max_workers, (
+            f"Expected ThreadPoolExecutor to be called with max_workers=3, got {captured_max_workers}"
+        )
+
+    def test_run_index_ceiling_enforced(self, tmp_data_dir):
+        """max_workers above WORKER_MAX_POOL_CEILING is clamped before creating the executor."""
+        import concurrent.futures as _cf
+
+        from token_goat import config as cfg_mod
+        from token_goat import parser as _parser
+        from token_goat.project import Project
+
+        captured_max_workers: list[int] = []
+        _real_tpe = _cf.ThreadPoolExecutor
+
+        def _tracking_tpe(max_workers=None, **kw):
+            if max_workers is not None:
+                captured_max_workers.append(max_workers)
+            return _real_tpe(max_workers=max_workers, **kw)
+
+        ceiling = cfg_mod.WORKER_MAX_POOL_CEILING
+        expected = {"indexed": 1, "total_files": 1, "errors": 0, "skipped_unchanged": 0, "duration_sec": 0.01}
+        proj = Project(root=tmp_data_dir, hash="aabbccdd", marker="manual")
+
+        with (
+            patch.object(_parser, "index_project", return_value=expected),
+            patch.object(_cf, "ThreadPoolExecutor", side_effect=_tracking_tpe),
+        ):
+            # Pass a value above the ceiling; expect it to be clamped.
+            worker._run_index_with_timeout(proj, False, timeout=5.0, max_workers=ceiling + 100)
+
+        assert all(w <= ceiling for w in captured_max_workers), (
+            f"Expected all pool sizes <= {ceiling}; got {captured_max_workers}"
+        )
+
+    def test_get_max_pool_workers_returns_config_value(self, tmp_data_dir, monkeypatch, tmp_path):
+        """_get_max_pool_workers() returns the configured value."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        cfg_mod._config_mtime_cache = None
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[worker]\nmax_pool_workers = 2\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        try:
+            result = worker._get_max_pool_workers()
+            assert result == 2, f"Expected 2, got {result}"
+        finally:
+            cfg_mod._config_mtime_cache = None
+
+    def test_get_max_pool_workers_falls_back_on_error(self, tmp_data_dir, monkeypatch):
+        """_get_max_pool_workers() returns 1 when config.load() raises."""
+        import token_goat.config as cfg_mod
+
+        with patch.object(cfg_mod, "load", side_effect=RuntimeError("config unavailable")):
+            result = worker._get_max_pool_workers()
+        assert result == 1, "Expected fallback of 1 on config error"

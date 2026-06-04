@@ -5618,6 +5618,7 @@ def cmd_install(
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print what would change; make no changes"),  # noqa: B008
     verify: bool = typer.Option(False, "--verify", help="After install, run a structured self-check"),  # noqa: B008
+    check: bool = typer.Option(False, "--check", help="Print current autostart registration and interpreter match; no side effects"),  # noqa: B008
 ) -> None:
     """One-time setup: scheduled tasks, settings.json, CLAUDE.md, skill, watchdog.
 
@@ -5627,8 +5628,33 @@ def cmd_install(
         token-goat install --target codex
         token-goat install --target all
         token-goat install --target claude --target codex
+
+    Use --check to inspect the current autostart registration without making changes:
+
+        token-goat install --check
     """
     from . import install as inst  # noqa: PLC0415
+
+    if check:
+        info = inst.check_autostart()
+        typer.echo(f"Autostart: {info['status']}")
+        if info["command"]:
+            typer.echo(f"Command: {info['command']}")
+        if info["registered_interp"]:
+            typer.echo(f"Interpreter: {info['registered_interp']}")
+            match = info["match"]
+            if match == "YES":
+                typer.echo("Match: YES (current interpreter matches)")
+            elif match == "NO":
+                typer.echo(
+                    f"Match: NO (registered: {info['registered_interp']}, "
+                    f"current: {info['current_interp']})"
+                )
+            else:
+                typer.echo("Match: UNKNOWN (could not compare interpreters)")
+        else:
+            typer.echo(f"Current interpreter: {info['current_interp']}")
+        return
 
     targets: builtins.set[str] | None = None
     if target:
@@ -5757,6 +5783,7 @@ def cmd_image_shrink(
 def cmd_worker(
     daemon: bool = typer.Option(False, "--daemon", help="Run as background daemon (otherwise interactive)"),
     status: bool = typer.Option(False, "--status", help="Show worker status and exit"),
+    check: bool = typer.Option(False, "--check", help="Check for a running worker and report its interpreter; exit 1 if a duplicate (different interpreter) is detected"),  # noqa: B008
 ) -> None:
     """Internal: background worker daemon. Should be invoked by the SessionStart watchdog, not directly.
 
@@ -5769,6 +5796,47 @@ def cmd_worker(
     timeout fires.  Direct unit tests of ``worker_daemon.run_daemon``
     do not go through this entry point, so they remain unaffected.
     """
+    if check:
+        from . import paths as _paths  # noqa: PLC0415
+        from . import worker as _worker_mod  # noqa: PLC0415
+
+        pid_path = _paths.worker_pid_path()
+        if not pid_path.exists():
+            typer.echo("Worker: not running (no pid file)")
+            raise typer.Exit(0)
+        try:
+            pid_text = pid_path.read_text(encoding="utf-8")
+            pid, worker_interp = _worker_mod._read_pid_info(pid_text)
+        except (OSError, ValueError) as e:
+            typer.echo(f"Worker: pid file unreadable ({e})")
+            raise typer.Exit(0) from e
+
+        from . import worker_daemon as _wd  # noqa: PLC0415
+        running = _wd._pid_is_alive(pid)
+        if not running:
+            typer.echo(f"Worker: stale pid file (pid {pid} not alive)")
+            raise typer.Exit(0)
+
+        typer.echo(f"Worker: running (pid {pid})")
+        if worker_interp:
+            typer.echo(f"Interpreter: {worker_interp}")
+            current = sys.executable
+
+            def _norm_interp(p: str) -> str:
+                return p.replace("\\", "/").casefold() if sys.platform == "win32" else p
+
+            if _norm_interp(worker_interp) != _norm_interp(current):
+                typer.echo(
+                    f"DUPLICATE DETECTED: worker interpreter ({worker_interp}) "
+                    f"differs from current ({current})"
+                )
+                raise typer.Exit(1)
+            else:
+                typer.echo("Match: YES (worker interpreter matches current)")
+        else:
+            typer.echo("Interpreter: unknown (legacy pid file format)")
+        raise typer.Exit(0)
+
     if status:
         from . import worker_daemon  # noqa: PLC0415
 
