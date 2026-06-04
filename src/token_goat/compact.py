@@ -4009,17 +4009,16 @@ def _enforce_char_budget(manifest: str, max_chars: int) -> str:
     kept_indices: list[int] = []
 
     def _current_result_len() -> int:
-        """Compute exact length of the joined kept lines."""
+        """Compute exact length of the joined kept lines (N lines joined by N-1 newlines)."""
         if not kept_indices:
             return 0
-        # Each line contributes len(line) chars + 1 for the "\n" separator.
-        # Last line also gets one trailing newline from rstrip before suffix join,
-        # but we measure against `available` so use exact join length.
-        return sum(len(lines[i]) for i in kept_indices) + len(kept_indices)  # N lines → N-1 joining "\n" + 1 trailing
+        return sum(len(lines[i]) for i in kept_indices) + max(0, len(kept_indices) - 1)
 
     def _add_line_fits(line_idx: int) -> bool:
         """Return True and add line_idx to kept_indices if it fits in available budget."""
-        line_cost = len(lines[line_idx]) + 1  # +1 for "\n"
+        # First line: no preceding newline. Each subsequent line adds one "\n" separator.
+        separator_cost = 1 if kept_indices else 0
+        line_cost = len(lines[line_idx]) + separator_cost
         current_len = _current_result_len()
         if current_len + line_cost <= available:
             kept_indices.append(line_idx)

@@ -175,6 +175,34 @@ class TestEnforceCharBudget:
         assert result == manifest
         assert "manifest truncated" not in result
 
+    def test_line_join_budget_is_exact(self):
+        """Budget uses N-1 newlines for N kept lines — no off-by-one overcounting.
+
+        Regression for: _current_result_len adding N newlines instead of N-1,
+        which caused the budget to be overcounted by 1 char per kept line.
+        With the bug, a tight budget would reject a line that actually fits.
+        """
+        # _TRUNCATION_SUFFIX = "\n... (manifest truncated at budget limit)" = 41 chars
+        _SUFFIX_LEN = 41
+        header = "## Token-Goat Session Manifest"  # 30 chars
+        body = "b" * 10                           # 10 chars
+        # Joined: header + "\n" + body = 41 chars.  Add a long filler to force truncation.
+        filler = "x" * 60
+        manifest = f"{header}\n{body}\n{filler}"
+        assert len(manifest) == 102  # sanity check
+
+        # Budget = header(30) + newline(1) + body(10) + suffix(41) = 82.
+        # available = 82 - 41 = 41. Exact room for header + body.
+        # Fixed code: both lines fit (30 + 1 + 10 = 41 = available).
+        # Buggy code: second line rejected because overcount makes current=31 after header.
+        budget = 82
+        result = _enforce_char_budget(manifest, budget)
+        assert body in result, (
+            "body line must fit when budget is exactly (header + newline + body + suffix); "
+            "off-by-one newline overcounting would reject it"
+        )
+        assert "manifest truncated" in result  # filler was dropped
+
 
 # ---------------------------------------------------------------------------
 # Integration: build_manifest with max_manifest_chars config
