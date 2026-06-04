@@ -724,8 +724,9 @@ class TestWorkerSelfHeal:
 # 11. spawn_detached — mocked; does not actually fork in CI
 # ---------------------------------------------------------------------------
 
-def test_spawn_detached_mocked(tmp_data_dir):
+def test_spawn_detached_mocked(tmp_data_dir, monkeypatch):
     """spawn_detached should return the PID returned by Popen."""
+    monkeypatch.delenv("TOKEN_GOAT_NO_WORKER_SPAWN", raising=False)
     fake_proc = MagicMock()
     fake_proc.pid = 12345
 
@@ -741,13 +742,14 @@ def test_spawn_detached_mocked(tmp_data_dir):
     assert any("token_goat" in arg for arg in cmd_arg)
 
 
-def test_spawn_detached_captures_stderr_to_file(tmp_data_dir):
+def test_spawn_detached_captures_stderr_to_file(tmp_data_dir, monkeypatch):
     """spawn_detached must not send the worker's stderr to DEVNULL.
 
     A worker that crashes before its logging FileHandler is attached — an
     import error, a failure in _setup_logging — would otherwise die with no
     trace at all. Its stderr now goes to logs/worker-stderr.log instead.
     """
+    monkeypatch.delenv("TOKEN_GOAT_NO_WORKER_SPAWN", raising=False)
     fake_proc = MagicMock()
     fake_proc.pid = 999
 
@@ -761,7 +763,7 @@ def test_spawn_detached_captures_stderr_to_file(tmp_data_dir):
     assert (tmp_data_dir / "logs" / "worker-stderr.log").exists()
 
 
-def test_spawn_detached_rotates_oversized_stderr_log(tmp_data_dir):
+def test_spawn_detached_rotates_oversized_stderr_log(tmp_data_dir, monkeypatch):
     """An oversized worker-stderr.log rolls over before the next spawn.
 
     spawn_detached appends to logs/worker-stderr.log on every spawn; without a
@@ -769,6 +771,7 @@ def test_spawn_detached_rotates_oversized_stderr_log(tmp_data_dir):
     never catches it because each append refreshes the mtime. Once the file
     exceeds STDERR_LOG_MAX_BYTES it must roll over to worker-stderr.prev.log.
     """
+    monkeypatch.delenv("TOKEN_GOAT_NO_WORKER_SPAWN", raising=False)
     logs_dir = tmp_data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     stderr_log = logs_dir / "worker-stderr.log"
@@ -857,8 +860,9 @@ def test_setup_logging_rolls_oversized_daily_log(tmp_data_dir):
 # spawn_index_detached — idempotency guard against the 44-process pileup
 # ---------------------------------------------------------------------------
 
-def test_spawn_index_detached_writes_marker(tmp_data_dir):
+def test_spawn_index_detached_writes_marker(tmp_data_dir, monkeypatch):
     """First spawn for a project Popens an index and records a spawn marker."""
+    monkeypatch.delenv("TOKEN_GOAT_NO_WORKER_SPAWN", raising=False)
     fake_proc = MagicMock()
     fake_proc.pid = 55501
     h = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -892,8 +896,9 @@ def test_spawn_index_detached_skips_when_already_running(tmp_data_dir):
     mock_popen.assert_not_called()
 
 
-def test_spawn_index_detached_respawns_when_marker_stale(tmp_data_dir):
+def test_spawn_index_detached_respawns_when_marker_stale(tmp_data_dir, monkeypatch):
     """A stale marker (timestamp older than the TTL) must not block a new spawn."""
+    monkeypatch.delenv("TOKEN_GOAT_NO_WORKER_SPAWN", raising=False)
     h = "cccccccccccccccccccccccccccccccccccccccc"
     marker = paths.locks_dir() / f"{h}.indexing"
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -909,8 +914,9 @@ def test_spawn_index_detached_respawns_when_marker_stale(tmp_data_dir):
     mock_popen.assert_called_once()
 
 
-def test_spawn_index_detached_respawns_when_pid_dead(tmp_data_dir):
+def test_spawn_index_detached_respawns_when_pid_dead(tmp_data_dir, monkeypatch):
     """A marker whose PID is no longer alive must not block a new spawn."""
+    monkeypatch.delenv("TOKEN_GOAT_NO_WORKER_SPAWN", raising=False)
     h = "dddddddddddddddddddddddddddddddddddddddd"
     marker = paths.locks_dir() / f"{h}.indexing"
     marker.parent.mkdir(parents=True, exist_ok=True)

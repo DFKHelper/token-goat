@@ -222,10 +222,11 @@ def test_spawn_index_detached_rejects_non_directory(tmp_path):
     assert result is None
 
 
-def test_spawn_index_detached_accepts_valid_dir(tmp_path):
+def test_spawn_index_detached_accepts_valid_dir(tmp_path, monkeypatch):
     # With a valid directory, it should attempt to spawn (may return a PID or None
     # depending on environment, but must NOT return None for the cwd-validation reason).
     # We mock the actual Popen so no subprocess is created.
+    monkeypatch.delenv("TOKEN_GOAT_NO_WORKER_SPAWN", raising=False)
     valid_hash = "a" * 40
     with (
         patch("token_goat.worker._index_spawn_active", return_value=False),

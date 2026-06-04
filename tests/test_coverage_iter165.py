@@ -282,10 +282,11 @@ class TestSpawnIndexDetachedHashValidation:
         assert result is None
         mock_popen.assert_not_called()
 
-    def test_valid_lowercase_hex_hash_proceeds(self, tmp_data_dir):
+    def test_valid_lowercase_hex_hash_proceeds(self, tmp_data_dir, monkeypatch):
         """A valid lowercase hex hash must pass validation (Popen attempted)."""
         from token_goat import worker
 
+        monkeypatch.delenv("TOKEN_GOAT_NO_WORKER_SPAWN", raising=False)
         valid_hash = "a" * 40  # 40 lowercase hex chars = valid SHA-1
         fake_proc = MagicMock()
         fake_proc.pid = 12345

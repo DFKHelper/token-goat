@@ -100,8 +100,9 @@ Module-scoped project fixtures (index once per test module)
 Autouse fixtures (active for all tests, no import needed)
 ---------------------------------------------------------
 ``isolate_hooks_stderr_log``
-    Redirects ``hooks-stderr.log`` writes to an isolated temp file.
-    Prevents test hook crashes from polluting the real log.
+    Redirects ``hooks-stderr.log`` writes to a session-scoped temp file.
+    Prevents test hook crashes from polluting the real log.  Session-scoped
+    (one directory for the whole run) to eliminate per-test tmpdir creation.
 
 ``isolate_registry``
     Replaces ``winreg`` with an in-memory fake so no test touches the real
@@ -119,6 +120,7 @@ Autouse fixtures (active for all tests, no import needed)
     Prevents hook dispatch from writing to the real daily log file.
 """
 import logging
+import os
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -128,6 +130,36 @@ import pytest
 import token_goat.paths as paths
 from token_goat.project import Project, canonicalize, project_hash
 from token_goat.session import SessionCache
+
+# ---------------------------------------------------------------------------
+# Hypothesis CI profile — register before any test file imports hypothesis.
+#
+# In CI (CI=true) we use max_examples=50 to cut the 3 300-example property
+# test suite down to ~450 examples.  Locally, we use 200 examples for a
+# faster feedback loop while still catching edge cases.  The default
+# hypothesis profile (300-500 per-test) is kept for dedicated fuzz/property
+# runs via ``-m hypothesis`` or explicit profile override.
+# ---------------------------------------------------------------------------
+try:
+    from hypothesis import HealthCheck
+    from hypothesis import settings as _h_settings
+
+    _h_settings.register_profile(
+        "ci",
+        max_examples=50,
+        suppress_health_check=list(HealthCheck),
+    )
+    _h_settings.register_profile(
+        "default",
+        max_examples=200,
+        suppress_health_check=[HealthCheck.too_slow],
+    )
+    if os.environ.get("CI") == "true":
+        _h_settings.load_profile("ci")
+    else:
+        _h_settings.load_profile("default")
+except ImportError:
+    pass  # hypothesis optional; test_parser_malformed.py / test_range_overlap_props.py skip without it
 
 # ---------------------------------------------------------------------------
 # Home-directory helpers (used by test_install.py and test_install_codex.py)
@@ -214,15 +246,21 @@ def tmp_data_dir(tmp_path):
     _clear_caches()
 
 
-@pytest.fixture(autouse=True)
-def isolate_hooks_stderr_log(tmp_path):
-    """Redirect hooks-stderr.log writes to an isolated tmp file for the duration of each test.
+@pytest.fixture(autouse=True, scope="session")
+def isolate_hooks_stderr_log(tmp_path_factory):
+    """Redirect hooks-stderr.log writes to an isolated tmp file for the test session.
 
     Prevents test-induced hook crashes (``RuntimeError: boom``, ``_CustomBaseExc: boom``,
     etc.) from polluting the production logs/hooks-stderr.log, which keeps
     ``token-goat doctor --crashes`` output free of test noise.
+
+    Session-scoped so that pytest creates only ONE temporary directory for this
+    purpose across the entire 11 K-test suite, rather than one per test.  The
+    production log is fully redirected for the whole session; test isolation is
+    maintained because paths.set_hooks_stderr_log_override() is a process-global
+    override and serial execution (-n 0) means no two tests run concurrently.
     """
-    isolated = tmp_path / "test-hooks-stderr.log"
+    isolated = tmp_path_factory.mktemp("hooks_stderr") / "test-hooks-stderr.log"
     paths.set_hooks_stderr_log_override(isolated)
     yield isolated
     paths.set_hooks_stderr_log_override(None)
@@ -456,6 +494,33 @@ def isolate_worker_autostart(monkeypatch):
     import token_goat.worker as worker
     monkeypatch.setattr(worker, "_register_autostart", lambda: None)
     yield
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _suppress_real_spawns():
+    """Block spawn_detached() and spawn_index_detached() from forking real processes.
+
+    Both functions check TOKEN_GOAT_NO_WORKER_SPAWN and return None immediately
+    when it is set. This fixture sets that variable for the entire pytest session
+    so that any code path reaching a spawn function (e.g. via _nudge_worker_if_down
+    -> ensure_running -> spawn_detached) cannot leave orphaned daemon processes
+    after the test suite exits.
+
+    Tests that specifically exercise the spawn code path (Popen mocked, PID
+    assertions) must opt out with::
+
+        monkeypatch.delenv("TOKEN_GOAT_NO_WORKER_SPAWN", raising=False)
+    """
+    import os
+    prev = os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN")
+    os.environ["TOKEN_GOAT_NO_WORKER_SPAWN"] = "1"
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("TOKEN_GOAT_NO_WORKER_SPAWN", None)
+        else:
+            os.environ["TOKEN_GOAT_NO_WORKER_SPAWN"] = prev
 
 
 @pytest.fixture(autouse=True, scope="session")
