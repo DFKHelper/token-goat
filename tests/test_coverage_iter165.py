@@ -110,7 +110,7 @@ class TestCliDoctorExceptions:
         assert "unknown" in result.output
 
     def test_uv_not_found_shows_warn(self, tmp_data_dir, capsys):
-        """When the uv subprocess raises FileNotFoundError, doctor flags uv as 'not found'."""
+        """When the uv subprocess raises FileNotFoundError, doctor flags uv with [WARN]."""
 
         from typer.testing import CliRunner
 
@@ -125,7 +125,8 @@ class TestCliDoctorExceptions:
             result = runner.invoke(app, ["doctor"])
 
         assert result.exit_code == 0
-        assert "not found" in result.output
+        # Doctor emits "[WARN] uv: <error message>" when the uv subprocess is unavailable.
+        assert "[WARN] uv:" in result.output
 
 
 # ===========================================================================

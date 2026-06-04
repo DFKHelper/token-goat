@@ -5676,7 +5676,7 @@ def doctor(  # noqa: C901
     """
     from . import cli_doctor  # noqa: PLC0415
 
-    cli_doctor.doctor(fix=fix)
+    cli_doctor.doctor(fix=fix, crashes=False)
 
 
 _VALID_TARGETS = {"claude", "codex", "gemini", "opencode", "openclaw", "all"}
