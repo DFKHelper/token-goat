@@ -121,6 +121,7 @@ class TestDetectHarness:
         monkeypatch.delenv("CODEX_SESSION", raising=False)
         monkeypatch.delenv("OPENCODE_SESSION", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_HARNESS_OVERRIDE", raising=False)
         result = detect_harness("not-a-real-harness")
         assert result == "generic"
 
@@ -147,6 +148,7 @@ class TestDetectHarness:
         """auto detection: CODEX_SESSION env var present → codex."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_HARNESS_OVERRIDE", raising=False)
         monkeypatch.setenv("CODEX_SESSION", "some-session-id")
         monkeypatch.delenv("OPENCODE_SESSION", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -158,6 +160,7 @@ class TestDetectHarness:
         """auto detection: OPENAI_API_KEY without ANTHROPIC_API_KEY → codex."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_HARNESS_OVERRIDE", raising=False)
         monkeypatch.delenv("CODEX_SESSION", raising=False)
         monkeypatch.delenv("OPENCODE_SESSION", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
@@ -169,6 +172,7 @@ class TestDetectHarness:
         """auto detection: OPENCODE_SESSION env var present → opencode."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_HARNESS_OVERRIDE", raising=False)
         monkeypatch.delenv("CODEX_SESSION", raising=False)
         monkeypatch.setenv("OPENCODE_SESSION", "oc-session")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -180,9 +184,34 @@ class TestDetectHarness:
         """auto detection: no matching env vars → generic fallback."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_HARNESS_OVERRIDE", raising=False)
         monkeypatch.delenv("CODEX_SESSION", raising=False)
         monkeypatch.delenv("OPENCODE_SESSION", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert detect_harness("auto") == "generic"
+
+    def test_harness_override_env_var_takes_precedence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TOKEN_GOAT_HARNESS_OVERRIDE beats all other probes — used by CI."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("CODEX_SESSION", raising=False)
+        monkeypatch.delenv("OPENCODE_SESSION", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("TOKEN_GOAT_HARNESS_OVERRIDE", "claudecode")
+        assert detect_harness("auto") == "claudecode"
+
+    def test_harness_override_unknown_value_ignored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TOKEN_GOAT_HARNESS_OVERRIDE with an unknown value falls through to env detection."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("CODEX_SESSION", raising=False)
+        monkeypatch.delenv("OPENCODE_SESSION", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("TOKEN_GOAT_HARNESS_OVERRIDE", "not-a-real-harness")
         assert detect_harness("auto") == "generic"
 
     def test_anthropic_key_beats_openai_key(
@@ -479,6 +508,7 @@ class TestAutoFallbackToGeneric:
         # Clear all harness-detection env vars so auto → generic.
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_HARNESS_OVERRIDE", raising=False)
         monkeypatch.delenv("CODEX_SESSION", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENCODE_SESSION", raising=False)

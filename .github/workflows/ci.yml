@@ -39,6 +39,11 @@ jobs:
         # the actual ``subprocess.Popen`` is skipped.
         env:
           TOKEN_GOAT_NO_WORKER_SPAWN: "1"
+          # Ensure detect_harness() returns "claudecode" on the CI runner.
+          # Without this, no ANTHROPIC_API_KEY or CLAUDE_CODE_SESSION_ID is
+          # present and detect_harness() falls back to "generic", which strips
+          # most manifest sections in _render() — causing 100+ test failures.
+          TOKEN_GOAT_HARNESS_OVERRIDE: "claudecode"
         # ``-m "not slow"`` excludes the opt-in stress tier (git-integration
         # tests, multi-process concurrency tests). The slow tier is racy on
         # the Windows runner's tmpdir under heavy IO and CI's already-stressed
@@ -75,6 +80,7 @@ jobs:
         continue-on-error: true
         env:
           TOKEN_GOAT_NO_WORKER_SPAWN: "1"
+          TOKEN_GOAT_HARNESS_OVERRIDE: "claudecode"
         run: uv run pytest -m "slow" -rfE --tb=short
 
       - name: Kill leftover detached worker daemons

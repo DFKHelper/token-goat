@@ -2296,7 +2296,12 @@ class TestPreCompactPressureAwareSizing:
         return cache
 
     def test_auto_trigger_doubles_budget_by_default(self, tmp_data_dir):
-        """trigger='auto' with multiplier=2.0 → effective_tokens = 800."""
+        """trigger='auto' with an explicitly user-configured multiplier of 3.0 → 200 × 3 = 600.
+
+        Uses multiplier=3.0 (not the default 2.0) so get_auto_trigger_multiplier()
+        takes the user-configured path (is_config_default=False) rather than
+        the per-harness lookup path, making the test environment-independent.
+        """
         from unittest.mock import patch
 
         from token_goat import hooks_cli
@@ -2307,7 +2312,7 @@ class TestPreCompactPressureAwareSizing:
             captured["max_tokens"] = max_tokens
             return ("## manifest body", 10)
 
-        fake_cfg = self._make_fake_cfg(multiplier=2.0)
+        fake_cfg = self._make_fake_cfg(multiplier=3.0)
         fake_cache = self._make_fake_session_cache()
         with patch("token_goat.config.load", return_value=fake_cfg), \
              patch("token_goat.session.safe_load", return_value=fake_cache), \
@@ -2316,9 +2321,9 @@ class TestPreCompactPressureAwareSizing:
             result = hooks_cli.pre_compact(payload)
 
         assert result.get("continue") is True
-        # With adaptive budget: simple session gets 200, auto-trigger boosts it to 400
-        assert captured.get("max_tokens") == 400, (
-            f"Expected auto-trigger boost 200→400, got {captured.get('max_tokens')}"
+        # Adaptive base for an empty session = 200; user-configured ×3.0 = 600.
+        assert captured.get("max_tokens") == 600, (
+            f"Expected auto-trigger boost 200→600 (×3.0), got {captured.get('max_tokens')}"
         )
 
     def test_manual_trigger_keeps_base_budget(self, tmp_data_dir):

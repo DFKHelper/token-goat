@@ -126,6 +126,9 @@ def detect_harness(config_override: str = "auto") -> str:
     user to pin the harness via ``[compact_assist] harness = "codex"``).
 
     Detection order:
+    0. ``TOKEN_GOAT_HARNESS_OVERRIDE`` env var → use that value directly (CI /
+       test environments that need a deterministic harness without injecting
+       harness-specific secrets like ``ANTHROPIC_API_KEY``).
     1. ``CLAUDE_CODE_SESSION_ID`` or ``ANTHROPIC_API_KEY`` → ``"claudecode"``
     2. ``CODEX_SESSION`` env var present → ``"codex"``
     3. ``OPENAI_API_KEY`` present without ``ANTHROPIC_API_KEY`` → ``"codex"``
@@ -140,6 +143,17 @@ def detect_harness(config_override: str = "auto") -> str:
         _LOG.warning(
             "detect_harness: unknown override %r; falling back to env detection",
             config_override,
+        )
+
+    # Explicit override for CI / test environments — takes precedence over all
+    # other env-var probes so CI doesn't need to inject harness-specific secrets.
+    _harness_override = os.environ.get("TOKEN_GOAT_HARNESS_OVERRIDE", "").strip().lower()
+    if _harness_override in _KNOWN_HARNESSES:
+        return _harness_override
+    if _harness_override:
+        _LOG.warning(
+            "detect_harness: TOKEN_GOAT_HARNESS_OVERRIDE=%r not a known harness; ignoring",
+            _harness_override,
         )
 
     # Claude Code: specific session ID env var or Anthropic API key

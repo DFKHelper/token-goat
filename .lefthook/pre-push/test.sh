@@ -3,4 +3,7 @@
 # -n 0 overrides the -n auto in pyproject.toml addopts; avoids xdist
 # INTERNALERROR worker crashes from Windows C-extension corruption.
 export TOKEN_GOAT_NO_WORKER_SPAWN=1
+# Mirror CI: ensure detect_harness() returns "claudecode" even when running
+# outside a Claude Code session (e.g. plain terminal push).
+export TOKEN_GOAT_HARNESS_OVERRIDE=claudecode
 exec uv run pytest -n 0 -m "not slow" -q --tb=short
