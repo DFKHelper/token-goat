@@ -349,6 +349,11 @@ def module_tmp_data_dir(tmp_path_factory):
     a way that would corrupt later tests in the same module.  Tests that write
     embeddings, re-index, or mutate project files must keep function scope.
     """
+    from token_goat import compact as _compact_mod
+    from token_goat import session as _session_mod
+
+    _session_mod._proc_load_cache.clear()
+    _compact_mod._manifest_sha_written_this_process.clear()
     tmp_path = tmp_path_factory.mktemp("module_data")
     with patch.object(paths, "data_dir", return_value=tmp_path):
         yield tmp_path
