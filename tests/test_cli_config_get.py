@@ -118,7 +118,9 @@ class TestConfigGetToml:
 
     def test_project_version_from_real_pyproject(self):
         """Smoke test against the real pyproject.toml in this repo."""
-        result = runner.invoke(app, ["config-get", "pyproject.toml", "project.version"])
+        import pathlib
+        pyproject = pathlib.Path(__file__).parent.parent / "pyproject.toml"
+        result = runner.invoke(app, ["config-get", str(pyproject), "project.version"])
         assert result.exit_code == 0
         ver = result.output.strip()
         # Version must look like X.Y.Z or X.Y.Z.dev0 etc.
