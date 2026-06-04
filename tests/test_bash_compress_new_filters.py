@@ -1,4 +1,4 @@
-"""Tests for TurboFilter, OxlintFilter, and PylintFilter."""
+"""Tests for TurboFilter, OxlintFilter, PylintFilter, CargoFilter (bench), and MypyFilter."""
 from __future__ import annotations
 
 from token_goat import bash_compress as bc
@@ -331,4 +331,198 @@ class TestPylintFilter:
 
     def test_empty_input(self) -> None:
         out = _compress(self.F, "")
+        assert isinstance(out, str)
+
+
+# ---------------------------------------------------------------------------
+# CargoFilter — cargo bench subcommand
+# ---------------------------------------------------------------------------
+
+_CARGO_BENCH_SINGLE = """\
+running 3 tests
+test bench_hash ... bench:       1,234 ns/iter (+/- 56)
+test bench_parse ... bench:       5,678 ns/iter (+/- 89)
+test bench_sort ... bench:         123 ns/iter (+/-  4)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 3 measured; 0 filtered out
+"""
+
+_CARGO_BENCH_MULTI = """\
+running 2 tests
+test bench_a ... bench:         100 ns/iter (+/- 5)
+test bench_b ... bench:         200 ns/iter (+/- 8)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 2 measured; 0 filtered out
+
+running 3 tests
+test bench_x ... bench:       1,000 ns/iter (+/- 10)
+test bench_y ... bench:       2,000 ns/iter (+/- 20)
+test bench_z ... bench:       3,000 ns/iter (+/- 30)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 3 measured; 0 filtered out
+"""
+
+_CARGO_BENCH_STDERR_SMALL = """\
+   Compiling mylib v0.1.0
+   Compiling benchmark v0.1.0
+    Finished bench [optimized] target(s)
+"""
+
+# More than 4 Compiling lines — triggers collapse (first 2 + last 2 kept)
+_CARGO_BENCH_STDERR_LARGE = "\n".join(
+    [f"   Compiling crate{i} v0.1.{i}" for i in range(10)]
+    + ["    Finished bench [optimized] target(s)"]
+) + "\n"
+
+
+def _compress_cargo_bench(stdout: str, stderr: str = "", exit_code: int = 0) -> str:
+    f = bc.CargoFilter()
+    argv = ["cargo", "bench"]
+    result = f.apply(stdout, stderr, exit_code, argv)
+    return result.text
+
+
+class TestCargoFilterBench:
+    F = bc.CargoFilter()
+
+    def test_matches_cargo_bench(self) -> None:
+        assert self.F.matches(["cargo", "bench"])
+
+    def test_matches_cargo_bench_with_flags(self) -> None:
+        assert self.F.matches(["cargo", "bench", "--", "bench_hash"])
+
+    def test_select_filter(self) -> None:
+        assert isinstance(bc.select_filter(["cargo", "bench"]), bc.CargoFilter)
+
+    def test_bench_result_lines_kept(self) -> None:
+        out = _compress_cargo_bench(_CARGO_BENCH_SINGLE)
+        assert "bench_hash" in out
+        assert "bench_parse" in out
+        assert "bench_sort" in out
+        assert "ns/iter" in out
+
+    def test_summary_line_kept(self) -> None:
+        out = _compress_cargo_bench(_CARGO_BENCH_SINGLE)
+        assert "test result: ok" in out
+
+    def test_single_running_header_dropped(self) -> None:
+        """With one bench harness, 'running N tests' header is redundant."""
+        out = _compress_cargo_bench(_CARGO_BENCH_SINGLE)
+        assert "running 3 tests" not in out
+
+    def test_multiple_running_headers_kept(self) -> None:
+        """Multiple bench harnesses — 'running N tests' headers must be kept."""
+        out = _compress_cargo_bench(_CARGO_BENCH_MULTI)
+        assert "running 2 tests" in out
+        assert "running 3 tests" in out
+
+    def test_multiple_harness_results_all_kept(self) -> None:
+        out = _compress_cargo_bench(_CARGO_BENCH_MULTI)
+        assert "bench_a" in out
+        assert "bench_z" in out
+
+    def test_many_compiling_lines_collapsed(self) -> None:
+        """More than 4 Compiling lines → middle ones collapsed with a note."""
+        out = _compress_cargo_bench(_CARGO_BENCH_SINGLE, stderr=_CARGO_BENCH_STDERR_LARGE)
+        assert "collapsed" in out
+
+    def test_finished_line_kept_when_build_present(self) -> None:
+        out = _compress_cargo_bench(_CARGO_BENCH_SINGLE, stderr=_CARGO_BENCH_STDERR_SMALL)
+        assert "Finished bench" in out
+
+    def test_empty_input(self) -> None:
+        out = _compress_cargo_bench("")
+        assert isinstance(out, str)
+
+
+# ---------------------------------------------------------------------------
+# MypyFilter — error dedup and context-note suppression
+# ---------------------------------------------------------------------------
+
+_MYPY_MANY_ERRORS = "\n".join([
+    f"src/auth.py:{i}:0: error: Incompatible return value type (got \"str\", expected \"int\")"
+    for i in range(10, 20)
+] + [
+    "Found 10 errors in 1 file (checked 5 source files)",
+])
+
+_MYPY_MIXED = """\
+src/auth.py:1:0: error: Module not found
+src/auth.py:2:0: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
+src/auth.py:3:0: note: Did you forget to install a stub package?
+src/auth.py:4:0: note: Did you forget to install a stub package?
+src/auth.py:5:0: note: Did you forget to install a stub package?
+src/auth.py:6:0: note: Did you forget to install a stub package?
+src/auth.py:7:0: error: (errors prevented further checking)
+src/auth.py:8:0: error: Incompatible type [assignment]
+  [assignment]
+Found 3 errors in 1 file
+"""
+
+_MYPY_CLEAN = "Success: no issues found in 5 source files\n"
+
+
+def _compress_mypy(stdout: str, stderr: str = "", exit_code: int = 0) -> str:
+    f = bc.MypyFilter()
+    argv = ["mypy", "src/"]
+    result = f.apply(stdout, stderr, exit_code, argv)
+    return result.text
+
+
+class TestMypyFilter:
+    F = bc.MypyFilter()
+
+    def test_matches_mypy(self) -> None:
+        assert self.F.matches(["mypy", "src/"])
+
+    def test_matches_dmypy(self) -> None:
+        assert self.F.matches(["dmypy", "run", "--", "src/"])
+
+    def test_no_match_pytest(self) -> None:
+        assert not self.F.matches(["pytest"])
+
+    def test_select_filter(self) -> None:
+        assert isinstance(bc.select_filter(["mypy", "src/"]), bc.MypyFilter)
+
+    def test_first_three_identical_errors_kept(self) -> None:
+        out = _compress_mypy(_MYPY_MANY_ERRORS)
+        assert "src/auth.py:10:0: error:" in out
+        assert "src/auth.py:11:0: error:" in out
+        assert "src/auth.py:12:0: error:" in out
+
+    def test_fourth_identical_error_dropped(self) -> None:
+        out = _compress_mypy(_MYPY_MANY_ERRORS)
+        assert "src/auth.py:13:0: error:" not in out
+
+    def test_dedup_note_emitted(self) -> None:
+        out = _compress_mypy(_MYPY_MANY_ERRORS)
+        assert "suppressed" in out and "duplicate" in out
+
+    def test_summary_line_always_kept(self) -> None:
+        out = _compress_mypy(_MYPY_MANY_ERRORS)
+        assert "Found 10 errors" in out
+
+    def test_see_https_note_dropped(self) -> None:
+        out = _compress_mypy(_MYPY_MIXED)
+        assert "mypy.readthedocs.io" not in out
+
+    def test_repeated_note_deduped_after_three(self) -> None:
+        out = _compress_mypy(_MYPY_MIXED)
+        occurrences = out.count("Did you forget to install a stub package")
+        assert occurrences == 3
+
+    def test_errors_prevented_further_checking_dropped(self) -> None:
+        out = _compress_mypy(_MYPY_MIXED)
+        assert "(errors prevented further checking)" not in out
+
+    def test_standalone_error_code_line_dropped(self) -> None:
+        out = _compress_mypy(_MYPY_MIXED)
+        assert "  [assignment]" not in out
+
+    def test_clean_output_preserved(self) -> None:
+        out = _compress_mypy(_MYPY_CLEAN)
+        assert "no issues found" in out
+
+    def test_empty_input(self) -> None:
+        out = _compress_mypy("")
         assert isinstance(out, str)
