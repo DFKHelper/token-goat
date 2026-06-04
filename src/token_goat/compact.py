@@ -94,6 +94,8 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 3 + 1)
 
 
+_LOG = get_logger("compact")
+
 # ---------------------------------------------------------------------------
 # Harness detection
 # ---------------------------------------------------------------------------
@@ -363,8 +365,6 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
 
 if TYPE_CHECKING:
     from .session import FileEntry, SessionCache
-
-_LOG = get_logger("compact")
 
 
 def _run_git(args: list[str], cwd: str, timeout: float = 5) -> str | None:
