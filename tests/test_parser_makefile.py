@@ -97,6 +97,13 @@ all:
         assert imps == []
         assert sections == []
 
+    def test_utf8_bom_on_first_target(self):
+        """A UTF-8 BOM prefix must not hide the first target."""
+        src = "﻿all: build\n\tbuild\n".encode()
+        symbols, _, _, _ = makefile_idx.extract(src, "Makefile")
+        names = [s.name for s in symbols]
+        assert "all" in names
+
     def test_binary_garbage_does_not_raise(self):
         """Non-UTF-8 bytes must be handled gracefully (fail-soft)."""
         src = b"\xff\xfe target: all\n"

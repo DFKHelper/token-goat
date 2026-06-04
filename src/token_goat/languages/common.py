@@ -780,7 +780,8 @@ def decode_source_text(source: bytes, log: logging.Logger, label: str) -> str | 
         Short adapter label prepended to the log message (e.g. ``"toml_idx"``).
     """
     try:
-        return source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        text = source.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        return text.lstrip("﻿")  # strip UTF-8 BOM if present (Notepad on Windows)
     except (UnicodeDecodeError, AttributeError) as exc:
         log.debug("%s: decode failed: %s", label, exc)
         return None

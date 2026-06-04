@@ -202,6 +202,13 @@ class TestCssEdgeCases:
         result = css_idx.extract(src, "bad.css")
         assert len(result) == 4  # (symbols, refs, imps, sections)
 
+    def test_utf8_bom_on_first_symbol(self):
+        """A UTF-8 BOM prefix must not swallow the first symbol."""
+        src = "﻿.hero { color: blue; }\n".encode()
+        symbols, _, _, _ = css_idx.extract(src, "style.css")
+        names = [s.name for s in symbols]
+        assert ".hero" in names
+
     def test_scss_extension_uses_same_extractor(self):
         src = b"@mixin rounded($r: 4px) { border-radius: $r; }\n"
         symbols, _, _, _ = css_idx.extract(src, "theme.scss")
@@ -391,6 +398,13 @@ class TestSqlEdgeCases:
         src = b"CREATE TABLE bad\xff_name (id INT);\n"
         result = sql_idx.extract(src, "bad.sql")
         assert len(result) == 4
+
+    def test_utf8_bom_on_first_symbol(self):
+        """A UTF-8 BOM prefix must not swallow the first CREATE TABLE."""
+        src = "﻿CREATE TABLE accounts (id INT);\n".encode()
+        symbols, _, _, _ = sql_idx.extract(src, "schema.sql")
+        names = [s.name for s in symbols]
+        assert "accounts" in names
 
     def test_double_quoted_name(self):
         src = b'CREATE TABLE "MyTable" (id INT);\n'

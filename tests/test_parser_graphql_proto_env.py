@@ -276,6 +276,13 @@ class TestGraphqlEdgeCases:
         result = graphql_idx.extract(src, "bad.graphql")
         assert len(result) == 4
 
+    def test_utf8_bom_on_first_symbol(self):
+        """A UTF-8 BOM prefix must not swallow the first type definition."""
+        src = "﻿type User {\n  id: ID!\n}\n".encode()
+        symbols, _, _, _ = graphql_idx.extract(src, "schema.graphql")
+        names = [s.name for s in symbols]
+        assert "User" in names
+
     def test_gql_extension_same_extractor(self):
         """The .gql extension should use the same extractor (test it accepts that path)."""
         src = b"type Order { total: Float }\n"
@@ -526,6 +533,13 @@ class TestProtoEdgeCases:
         src = b"message Bad\xff { int32 id = 1; }\n"
         result = proto_idx.extract(src, "bad.proto")
         assert len(result) == 4
+
+    def test_utf8_bom_on_first_symbol(self):
+        """A UTF-8 BOM prefix must not swallow the first message definition."""
+        src = "﻿message User {\n  int32 id = 1;\n}\n".encode()
+        symbols, _, _, _ = proto_idx.extract(src, "user.proto")
+        names = [s.name for s in symbols]
+        assert "User" in names
 
     def test_complex_proto_file(self):
         src = (
