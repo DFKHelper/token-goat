@@ -3,6 +3,7 @@ from __future__ import annotations
 
 __all__ = [
     "LANG_BY_EXT",
+    "MAX_SYMBOLS_PER_FILE",
     "SKIP_DIRS",
     "Extractor",
     "FileIndex",
@@ -165,6 +166,15 @@ SKIP_FILE_SUFFIXES: Final[tuple[str, ...]] = (
 # This constant is the hard-coded fallback used when config is unavailable (e.g.
 # when iter_source_files is called from tests that patch the config module).
 MAX_FILE_SIZE: Final[int] = 2_000_000  # 2 MB (matches default large_file_skip_kb=2048)
+
+# Hard cap on the number of symbols stored per file.  Generated files (compiled
+# CSS bundles, minified JS, auto-generated protobuf stubs) can contain tens of
+# thousands of identifiers; storing them all would balloon the project DB, slow
+# every query, and produce noise in --type filters.  When a file exceeds this
+# limit the first MAX_SYMBOLS_PER_FILE symbols (in source order) are kept and
+# the rest are silently dropped.  1 000 is conservative enough to cover any
+# real hand-written source file while still capping pathological generated files.
+MAX_SYMBOLS_PER_FILE: Final[int] = 1_000
 
 
 def _is_generated_filename(name: str) -> bool:
@@ -799,17 +809,29 @@ def write_file_index(conn: sqlite3.Connection, fi: FileIndex) -> None:
                 now,
             ),
         )
-        # Batch insert symbols (filter malformed rows).
+        # Batch insert symbols (filter malformed rows, apply per-file cap).
         # Generator expressions avoid allocating an intermediate list — executemany
         # accepts any iterable.  The guard `if fi.symbols` short-circuits so no
         # generator object is created for the common empty case.
+        #
+        # The cap (MAX_SYMBOLS_PER_FILE) guards against pathological generated files
+        # (compiled CSS bundles, auto-generated stubs) that could produce tens of
+        # thousands of symbols, bloating the DB and degrading every query.
         if fi.symbols:
+            valid_syms = [sym for sym in fi.symbols if sym.name and sym.kind]
+            if len(valid_syms) > MAX_SYMBOLS_PER_FILE:
+                _LOG.warning(
+                    "write_file_index: %s produced %d symbols (cap=%d); "
+                    "truncating to first %d — file may be generated/minified",
+                    fi.rel_path, len(valid_syms), MAX_SYMBOLS_PER_FILE, MAX_SYMBOLS_PER_FILE,
+                )
+                valid_syms = valid_syms[:MAX_SYMBOLS_PER_FILE]
             conn.executemany(
                 "INSERT INTO symbols (name, kind, file_rel, line, col, end_line, signature, parent_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
                 (
                     (sym.name, sym.kind, fi.rel_path, sym.line, sym.col, sym.end_line, sym.signature)
-                    for sym in fi.symbols if sym.name and sym.kind
+                    for sym in valid_syms
                 ),
             )
 

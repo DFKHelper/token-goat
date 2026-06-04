@@ -1484,3 +1484,74 @@ def test_list_all_project_hashes_returns_registered_projects(tmp_data_dir):
             )
     result = db.list_all_project_hashes()
     assert set(result) == set(hashes), f"expected {hashes!r}, got {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# Index coverage: symbols(name, kind) composite index
+# ---------------------------------------------------------------------------
+
+def _index_names(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' ORDER BY name"
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
+def _explain_plan(conn: sqlite3.Connection, sql: str, params: tuple) -> str:
+    """Return the EXPLAIN QUERY PLAN detail string for *sql*."""
+    rows = conn.execute(f"EXPLAIN QUERY PLAN {sql}", params).fetchall()
+    return " | ".join(r[-1] for r in rows)
+
+
+def test_project_symbols_name_kind_index_exists(tmp_data_dir):
+    """Per-project symbols table must have (name, kind) composite index."""
+    h = "abcdef0123456789abcdef0123456789abcde010"
+    with db.open_project(h) as conn:
+        indexes = _index_names(conn)
+    assert "idx_symbols_name_kind" in indexes, (
+        f"idx_symbols_name_kind not found; indexes present: {sorted(indexes)}"
+    )
+
+
+def test_global_symbols_name_kind_index_exists(tmp_data_dir):
+    """Global symbols_global table must have (name, kind) composite index."""
+    with db.open_global() as conn:
+        indexes = _index_names(conn)
+    assert "idx_symbols_global_name_kind" in indexes, (
+        f"idx_symbols_global_name_kind not found; indexes present: {sorted(indexes)}"
+    )
+
+
+def test_project_symbol_kind_query_uses_composite_index(tmp_data_dir):
+    """EXPLAIN QUERY PLAN for 'name=? AND kind IN (?,?)' must use idx_symbols_name_kind.
+
+    Without the composite index, SQLite uses idx_symbols_name (name=?) and filters
+    kind in memory.  The composite index allows the planner to use both columns,
+    which is O(log N) instead of O(matches(name) × scan).
+    """
+    h = "abcdef0123456789abcdef0123456789abcde011"
+    with db.open_project(h) as conn:
+        plan = _explain_plan(
+            conn,
+            "SELECT name, kind, file_rel, line, end_line, signature FROM symbols "
+            "WHERE name = ? AND kind IN (?,?) LIMIT 50",
+            ("myFunc", "function", "method"),
+        )
+    assert "idx_symbols_name_kind" in plan, (
+        f"Expected composite index in plan, got: {plan!r}"
+    )
+
+
+def test_global_symbol_kind_query_uses_composite_index(tmp_data_dir):
+    """EXPLAIN QUERY PLAN for global symbols with kind filter must use composite index."""
+    with db.open_global() as conn:
+        plan = _explain_plan(
+            conn,
+            "SELECT sg.project_hash, sg.name, sg.kind, sg.file_rel, sg.line, sg.signature "
+            "FROM symbols_global sg "
+            "WHERE sg.name = ? AND sg.kind IN (?,?) LIMIT 50",
+            ("MyClass", "class", "interface"),
+        )
+    assert "idx_symbols_global_name_kind" in plan, (
+        f"Expected composite index in global plan, got: {plan!r}"
+    )

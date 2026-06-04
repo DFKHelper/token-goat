@@ -443,6 +443,10 @@ CREATE TABLE IF NOT EXISTS symbols_global (
 );
 CREATE INDEX IF NOT EXISTS idx_symbols_global_name    ON symbols_global(name);
 CREATE INDEX IF NOT EXISTS idx_symbols_global_project ON symbols_global(project_hash);
+-- Composite (name, kind) for 'token-goat symbol NAME --type TYPE --all-projects':
+--   SELECT … FROM symbols_global sg WHERE sg.name = ? AND sg.kind IN (…)
+-- Mirrors idx_symbols_name_kind on the per-project symbols table.
+CREATE INDEX IF NOT EXISTS idx_symbols_global_name_kind ON symbols_global(name, kind);
 
 -- Cumulative token/byte savings events, one row per hook intercept or CLI read.
 -- Queried by 'token-goat stats' to compute total savings across all sessions.
@@ -508,6 +512,15 @@ CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_rel);
 --   'SEARCH symbols USING INDEX idx_symbols_file (file_rel=?)'
 -- After: 'SEARCH symbols USING INDEX idx_symbols_file_name (file_rel=? AND name=?)'
 CREATE INDEX IF NOT EXISTS idx_symbols_file_name ON symbols(file_rel, name);
+-- Composite (name, kind) for 'token-goat symbol NAME --type TYPE' queries:
+--   SELECT … FROM symbols WHERE name = ? AND kind IN (…)
+-- Without this, the planner uses idx_symbols_name then filters kind in memory.
+-- EXPLAIN QUERY PLAN before: 'SEARCH symbols USING INDEX idx_symbols_name (name=?)'
+-- After: 'SEARCH symbols USING INDEX idx_symbols_name_kind (name=? AND kind=?)'
+-- New indexers (sql_table, graphql_type, css_class, proto_message, etc.) add many
+-- distinct kind values; this index ensures --type filters stay O(log N) regardless
+-- of how many new kinds are registered.
+CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind);
 
 -- Call-site references: every identifier followed by '(' that appears in the project.
 -- Used for "find usages" and to build the PageRank graph in repomap.py.

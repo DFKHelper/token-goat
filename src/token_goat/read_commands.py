@@ -1420,6 +1420,7 @@ def outline(
     json_output: bool = False,
     max_depth: int | None = None,
     quiet: bool = False,
+    min_lines: int = 0,
 ) -> None:
     """List symbols in <file> with line ranges, line counts, and docstring hints.
 
@@ -1429,6 +1430,9 @@ def outline(
 
     Use ``--max-depth N`` (N >= 1) to include nested symbols up to N levels deep
     (e.g. ``--max-depth 2`` also shows methods inside classes).
+
+    Use ``--min-lines N`` to show only symbols whose body spans at least N lines.
+    Useful for finding large functions worth reading.
 
     Use ``token-goat read <file>::<symbol>`` to retrieve any symbol body.
     """
@@ -1472,6 +1476,14 @@ def outline(
         for row in rows
         if row["kind"] in _OUTLINE_ALL_KINDS and _kind_depth(row["kind"]) <= effective_max_depth
     ]
+
+    # Apply --min-lines filter: only retain symbols whose body spans >= min_lines.
+    if min_lines > 0:
+        rows_with_depth = [
+            (row, depth)
+            for row, depth in rows_with_depth
+            if (int(row["end_line"]) - int(row["line"]) + 1) >= min_lines
+        ]
 
     if not rows_with_depth:
         if json_output:

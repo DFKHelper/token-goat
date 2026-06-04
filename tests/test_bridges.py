@@ -185,6 +185,64 @@ class TestPluginTsSources:
         assert error_pos != -1 and stdout_pos != -1
         assert error_pos < stdout_pos, "r.error check must precede r.stdout access"
 
+    # --- opencode PreCompact / experimental.session.compacting tests ---
+
+    def test_opencode_ts_precompact_calls_pre_compact_hook(self) -> None:
+        # The compacting handler must call callHook("pre-compact", ...).
+        assert 'callHook("pre-compact"' in bridges.OPENCODE_PLUGIN_TS
+
+    def test_opencode_ts_precompact_passes_session_id(self) -> None:
+        # The compacting handler must forward input.sessionID as session_id.
+        # Verify both the source field (input.sessionID) and the dest key (session_id).
+        oc = bridges.OPENCODE_PLUGIN_TS
+        assert "input.sessionID" in oc
+        # The pre-compact call must include session_id: input.sessionID
+        assert "session_id: input.sessionID" in oc
+
+    def test_opencode_ts_precompact_extracts_systemMessage(self) -> None:
+        # The compacting handler must extract resp["systemMessage"] from the hook response.
+        assert '"systemMessage"' in bridges.OPENCODE_PLUGIN_TS
+
+    def test_opencode_ts_precompact_uses_context_push(self) -> None:
+        # Injection must use output.context.push(), not output.context.set() or any other API.
+        oc = bridges.OPENCODE_PLUGIN_TS
+        assert "output.context.push(" in oc
+
+    def test_opencode_ts_precompact_guards_empty_manifest(self) -> None:
+        # The compacting handler must guard with `if (manifest)` before calling push.
+        # An empty string or undefined systemMessage must not inject an empty context entry.
+        oc = bridges.OPENCODE_PLUGIN_TS
+        # The guard must appear BEFORE the push call in the source.
+        guard_pos = oc.find("if (manifest)")
+        push_pos = oc.find("output.context.push(")
+        assert guard_pos != -1, "if (manifest) guard not found in OPENCODE_PLUGIN_TS"
+        assert push_pos != -1, "output.context.push not found in OPENCODE_PLUGIN_TS"
+        assert guard_pos < push_pos, "if (manifest) guard must precede output.context.push call"
+
+    def test_opencode_ts_precompact_push_inside_guard(self) -> None:
+        # Verify the structural invariant: push is inside the `if (manifest)` block.
+        # Extract the compacting handler body and confirm the guard wraps the push.
+        oc = bridges.OPENCODE_PLUGIN_TS
+        compact_start = oc.find('"experimental.session.compacting"')
+        assert compact_start != -1, "compacting handler not found"
+        handler_body = oc[compact_start:]
+        # Within the compacting handler, `if (manifest)` must appear before push.
+        guard_in_handler = handler_body.find("if (manifest)")
+        push_in_handler = handler_body.find("output.context.push(")
+        assert guard_in_handler != -1, "if (manifest) guard not in compacting handler scope"
+        assert push_in_handler != -1, "output.context.push not in compacting handler scope"
+        assert guard_in_handler < push_in_handler
+
+    def test_opencode_ts_precompact_no_unconditional_push(self) -> None:
+        # There must not be an unconditional output.context.push() call.
+        # The only push must be inside the `if (manifest)` guard.
+        oc = bridges.OPENCODE_PLUGIN_TS
+        # Count occurrences of `output.context.push(` — must be exactly one (the guarded one).
+        push_count = oc.count("output.context.push(")
+        assert push_count == 1, (
+            f"Expected exactly 1 output.context.push call (guarded), found {push_count}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Bridge TS event-table alignment with hook_registry

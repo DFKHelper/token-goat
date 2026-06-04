@@ -783,6 +783,16 @@ def symbol(
         "-q",
         help="Suppress non-essential output (count lines, hints). Results only.",
     ),
+    context_lines: int = typer.Option(  # noqa: B008
+        0,
+        "--context",
+        "-C",
+        help=(
+            "Show N lines before and after each symbol's definition. "
+            "Saves a follow-up Read call when you need a quick look at the surrounding code."
+        ),
+        min=0,
+    ),
 ) -> None:
     """Find a symbol definition by name (function, class, method, type, constant, etc.).
 
@@ -810,6 +820,53 @@ def symbol(
 
     use_tty_color = sys.stdout.isatty() and not as_json
 
+    def _context_block(row: dict, n: int) -> list[str] | None:
+        """Return up to *n* source lines before and after the symbol body.
+
+        Returns a list of ``"<lineno>: <text>"`` strings centred on the symbol,
+        or None if the source file cannot be read.  The symbol's own lines are
+        included; context lines outside the symbol are prefixed with ``>`` in TTY
+        mode to distinguish them visually from the symbol body.
+        """
+        import pathlib  # noqa: PLC0415
+
+        # Determine the project root for this result.
+        # Single-project branch: proj is available in the outer scope.
+        # All-projects branch: row["project"] is the root string.
+        if "project" in row:
+            proj_root = pathlib.Path(row["project"])
+        else:
+            try:
+                proj_root = proj.root  # type: ignore[name-defined]  # noqa: F821
+            except NameError:
+                return None
+
+        file_rel = row.get("file", "")
+        sym_start = row.get("line", 1)
+        sym_end = row.get("end_line") or sym_start
+
+        try:
+            src_lines = (proj_root / file_rel).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return None
+
+        total = len(src_lines)
+        # 1-indexed → 0-indexed
+        first_idx = max(0, sym_start - 1 - n)
+        last_idx = min(total, sym_end + n)  # exclusive
+
+        output: list[str] = []
+        for i in range(first_idx, last_idx):
+            lineno = i + 1  # back to 1-indexed
+            text = src_lines[i]
+            is_body = sym_start <= lineno <= sym_end
+            if use_tty_color:
+                marker = " " if is_body else ">"
+                output.append(f"{marker}{lineno:>6}: {text}")
+            else:
+                output.append(f"{lineno:>6}: {text}")
+        return output
+
     def _fmt_plain(rows: list[dict]) -> None:
         """Print symbol rows as plain text, optionally with ANSI colour when stdout is a TTY."""
         for row in rows:
@@ -827,6 +884,10 @@ def symbol(
                 if ref_suffix:
                     ref_suffix = f"\033[36m{ref_suffix}\033[0m"
             typer.echo(f"{project_prefix}{row['file']}:{row['line']}: {kind_name}{sig_part}{ref_suffix}{not_indexed_suffix}")
+            if context_lines > 0:
+                block = _context_block(row, context_lines)
+                if block:
+                    typer.echo("\n".join(block))
 
     def _emit_results(
         results: list[dict],
@@ -853,6 +914,12 @@ def symbol(
                              substitution is auditable.
         """
         if as_json:
+            # Enrich results with context lines when requested.
+            if context_lines > 0 and results:
+                for r in results:
+                    block = _context_block(r, context_lines)
+                    if block is not None:
+                        r["context"] = "\n".join(block)
             # Always emit the unified envelope: {"query":..., "results":[...], "total":N}
             # plus optional "redirected_from" when a close-match redirect was applied.
             envelope: dict[str, object] = {
@@ -2090,6 +2157,12 @@ def outline(
         min=0,
     ),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress the '# Outline:' header line. Results only."),  # noqa: B008
+    min_lines: int = typer.Option(  # noqa: B008
+        0,
+        "--min-lines",
+        help="Only show symbols whose body spans at least N lines. Useful for finding large functions. Default 0 (no filter).",
+        min=0,
+    ),
 ) -> None:
     """List symbols in <file> with line ranges, line counts, and docstring hints.
 
@@ -2098,11 +2171,12 @@ def outline(
     output is typically ~5% of the cost of reading the full file.
 
     Use --max-depth N to also show symbols nested N levels deep.
+    Use --min-lines N to show only symbols with at least N lines (find large functions).
     Use ``token-goat read <file>::<symbol>`` to retrieve any symbol body.
     """
     from . import read_commands  # noqa: PLC0415
 
-    read_commands.outline(file, json_output=json_output, max_depth=max_depth, quiet=quiet)
+    read_commands.outline(file, json_output=json_output, max_depth=max_depth, quiet=quiet, min_lines=min_lines)
 
 
 @app.command("exports", rich_help_panel="Core")
