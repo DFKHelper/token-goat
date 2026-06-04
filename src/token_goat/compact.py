@@ -3630,6 +3630,7 @@ def compute_adaptive_budget(
         + min(200, edited_files_count × 50)       [up to 4 files]
         + min(150, symbols_accessed_files × 30)   [up to 5 files with symbols]
         + 20 tokens if bash_history has entries
+        + 15 tokens if web_history has entries
         + 50 tokens if there are pending git changes (git diff --stat HEAD non-empty)
         + 10 tokens if there are uncommitted changes (git diff/status non-empty)
         × tier multiplier (young=0.6, active=1.0, mature=1.4)

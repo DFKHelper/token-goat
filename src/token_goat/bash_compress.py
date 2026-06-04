@@ -1517,8 +1517,8 @@ _TWO_TOKEN_PREFIXES: Final[dict[str, frozenset[str]]] = {
     "pdm": frozenset(["run"]),
     "pipenv": frozenset(["run"]),
     "npx": frozenset(),  # npx <tool>, second token IS the binary
-    "pnpm": frozenset(["exec", "dlx", "run"]),
-    "yarn": frozenset(["run", "exec", "dlx"]),
+    "pnpm": frozenset(["exec", "dlx"]),
+    "yarn": frozenset(["exec", "dlx"]),
     "bundle": frozenset(["exec"]),
     "tox": frozenset(["-e"]),
     "hatch": frozenset(["run"]),

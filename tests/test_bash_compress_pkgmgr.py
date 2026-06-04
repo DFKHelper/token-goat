@@ -565,8 +565,25 @@ class TestDispatch:
         assert f is not None
         assert f.name == "pnpm"
 
+    def test_pnpm_run_dispatches_to_pnpm_filter(self) -> None:
+        # "run" must NOT strip via _TWO_TOKEN_PREFIXES — PnpmFilter must handle it.
+        f = bc.select_filter(["pnpm", "run", "dev"])
+        assert f is not None
+        assert f.name == "pnpm"
+
+    def test_pnpm_exec_wrapped_tool_dispatches_to_tool_filter(self) -> None:
+        f = bc.select_filter(["pnpm", "exec", "eslint", "src/"])
+        assert f is not None
+        assert f.name == "eslint"
+
     def test_yarn_dispatches_to_yarn_filter(self) -> None:
         f = bc.select_filter(["yarn", "install"])
+        assert f is not None
+        assert f.name == "yarn"
+
+    def test_yarn_run_dispatches_to_yarn_filter(self) -> None:
+        # "run" must NOT strip via _TWO_TOKEN_PREFIXES — YarnFilter must handle it.
+        f = bc.select_filter(["yarn", "run", "build"])
         assert f is not None
         assert f.name == "yarn"
 
