@@ -28,6 +28,8 @@ Bundles a 35-commit improvement campaign (2026-06-03): six new language indexers
 - **`token-goat stats --by-command`** — per-command-type savings breakdown (`symbol`, `refs`, `changed`, etc.).
 - **`token-goat index --ext`** — selective re-indexing by file extension (repeatable: `--ext py --ext ts`).
 - **`token-goat bash-output/web-output --section HEADING`** — retrieve one section from a cached output by heading rather than reading the whole blob.
+- **`token-goat worker --kill-duplicate`** — kills a running worker whose interpreter path differs from the current Python executable (handles the cross-interpreter double-daemon case).
+- **`token-goat worker --status`** — shows running worker PID, interpreter path, uptime, and pool size.
 - **`--quiet` flag on `symbol`, `refs`, `changed`, `outline`** — suppress prose preamble, emit JSON only.
 - **Unified `{"query":…,"results":[…],"total":N}` JSON envelope** across `symbol`, `refs`, `outline`, `changed`, `exports` — downstream tooling parses a consistent shape.
 
