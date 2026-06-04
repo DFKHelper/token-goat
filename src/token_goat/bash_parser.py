@@ -843,11 +843,27 @@ def _parse_powershell_read(binary: str, args: list[str]) -> BashIntent:
             continue
         if a.startswith("-"):
             # Skip unknown PowerShell flags (e.g. ``-Raw``, ``-Encoding utf8``).
-            # Flag-with-arg shapes are heuristically detected: if the next
-            # token does not itself start with ``-`` and we haven't yet found
-            # any paths, treat the next token as the flag's value rather than
-            # as a positional path.  This avoids ``-Encoding utf8 file.txt``
-            # being parsed as ``target=utf8``.
+            #
+            # Two categories of flags-with-args:
+            #
+            # Category A — unconditional arg-consumers.  These flags always
+            # take one argument regardless of whether a file path has already
+            # been found.  ``-Include *.txt`` and ``-Exclude *.log`` can appear
+            # both before and after the path, so their argument must be skipped
+            # in both positions.  Without this guard the argument (a glob
+            # pattern) would be appended to ``target_paths``.
+            if (
+                i + 1 < len(args)
+                and not args[i + 1].startswith("-")
+                and lower in {"-include", "-exclude", "-filter"}
+            ):
+                i += 2
+                continue
+            # Category B — heuristic arg-consumers: only skip the next token
+            # as the flag's value when no paths have been found yet.  This
+            # avoids ``-Encoding utf8 file.txt`` being parsed as
+            # ``target=utf8``.  The heuristic is safe for these flags because
+            # they virtually never appear after the file path in practice.
             if (
                 i + 1 < len(args)
                 and not args[i + 1].startswith("-")

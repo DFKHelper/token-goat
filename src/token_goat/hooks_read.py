@@ -3308,11 +3308,17 @@ def post_bash(payload: HookPayload) -> HookResponse:
     1. Extract stdout/stderr/exit_code from ``tool_response``.
     2. Check whether this command matches a recently-emitted bash-dedup hint;
        if so, increment ``hints_ignored`` so the curator can adapt.
-    3. If the combined output is large enough to be worth caching
+    3. If the command is a grep-family invocation, record the pattern and path
+       in session.greps so that subsequent Grep dedup hints can fire.
+    4. If the command is a read-equivalent invocation (``cat``, ``Get-Content``,
+       ``bat``, ``head``, ``tail``, etc.) and the command succeeded, record the
+       file path in session.files via :func:`~session.mark_file_read` so that
+       the "already read" session hint fires identically to a native Read call.
+    5. If the combined output is large enough to be worth caching
        (``_BASH_CACHE_MIN_BYTES``), write it to the on-disk bash cache and
        record a :class:`BashEntry` in the session so a future ``pre_read`` can
        dedupe a repeat invocation.
-    4. Always return CONTINUE — this hook never blocks, never modifies output.
+    6. Always return CONTINUE — this hook never blocks, never modifies output.
 
     Failures at any step are logged at debug and the hook still returns
     CONTINUE so a transient I/O issue cannot interrupt the agent.
@@ -3382,6 +3388,49 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     )
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: grep session record failed", exc_info=True)
+
+    # Read-equivalent session tracking: when the Bash command is a read-like
+    # invocation (cat, Get-Content, bat, head, tail, …), record the file path
+    # in session.files via mark_file_read so that subsequent pre-Read and
+    # pre-Bash hint logic fires identically to a native Read tool call.
+    # This closes the gap where ``Get-Content foo.py`` was intercepted by
+    # pre_read for image-shrink/hint purposes but never persisted in the
+    # session read-history, preventing the "already read" dedup hint from
+    # firing on a repeat access.
+    #
+    # Skip when exit_code is non-zero: a failed Get-Content (file not found,
+    # permission denied) should not be recorded as a successful read.
+    if session_id and exit_code in (None, 0):
+        try:
+            from . import bash_parser as _bp  # noqa: PLC0415
+            _read_intent = _bp.parse(display_cmd)
+            if (
+                _read_intent.kind == "read"
+                and _read_intent.target_path
+                and not _read_intent.is_interactive_pager
+            ):
+                _sess = _get_session()
+                _rc = _sess.safe_load(session_id, caller="post_bash_read_equiv")
+                if _rc is not None:
+                    # bash_parser returns 1-indexed offset; mark_file_read expects
+                    # 0-indexed (same convention as the native Read tool payload).
+                    _raw_offset = _read_intent.offset
+                    _norm_offset = (_raw_offset - 1) if _raw_offset is not None else None
+                    _sess.mark_file_read(
+                        session_id,
+                        _read_intent.target_path,
+                        _norm_offset,
+                        _read_intent.limit,
+                        cache=_rc,
+                    )
+                    with contextlib.suppress(Exception):
+                        _sess.save(_rc)
+                    _LOG.debug(
+                        "post-bash: recorded read-equivalent path=%r offset=%s limit=%s",
+                        _read_intent.target_path, _norm_offset, _read_intent.limit,
+                    )
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: read-equivalent session record failed", exc_info=True)
 
     # Binary output detection: if the output contains a high proportion of null
     # bytes it is almost certainly binary data (compiled artifact, compressed
