@@ -117,6 +117,74 @@ class TestPluginTsSources:
         # Web-fetch caching requires post-fetch, not post-read.
         assert 'WebFetch: "post-fetch"' in bridges.OPENCLAW_PLUGIN_TS
 
+    # --- PRE_HOOK_TOOLS guard tests ---
+
+    def test_opencode_ts_has_pre_hook_tools_guard(self) -> None:
+        # The before handler must skip pre-hook dispatch for edit-type tools.
+        # Edit/Write/apply_patch have no pre-hook in token-goat.
+        assert "PRE_HOOK_TOOLS" in bridges.OPENCODE_PLUGIN_TS
+
+    def test_openclaw_ts_has_pre_hook_tools_guard(self) -> None:
+        # Same guard required in openclaw's before_tool_call handler.
+        assert "PRE_HOOK_TOOLS" in bridges.OPENCLAW_PLUGIN_TS
+
+    def test_opencode_ts_pre_hook_guard_skips_edit(self) -> None:
+        # The guard expression must check whether the resolved tgTool is in the
+        # PRE_HOOK_TOOLS set and return early when it is not.
+        assert "PRE_HOOK_TOOLS.has(tgTool)" in bridges.OPENCODE_PLUGIN_TS
+
+    def test_openclaw_ts_pre_hook_guard_skips_edit(self) -> None:
+        assert "PRE_HOOK_TOOLS.has(tgTool)" in bridges.OPENCLAW_PLUGIN_TS
+
+    def test_opencode_ts_pre_hook_tools_excludes_edit(self) -> None:
+        # PRE_HOOK_TOOLS must NOT include Edit or Write — only read/search/fetch tools.
+        # Verify by checking that Edit is absent from the PRE_HOOK_TOOLS initializer
+        # (the set literal lists only Read, Grep, Glob, Bash, WebFetch).
+        import re
+        match = re.search(r'const PRE_HOOK_TOOLS = new Set\(\[([^\]]+)\]\)', bridges.OPENCODE_PLUGIN_TS)
+        assert match, "PRE_HOOK_TOOLS Set literal not found in OPENCODE_PLUGIN_TS"
+        members = match.group(1)
+        assert '"Edit"' not in members
+        assert '"Write"' not in members
+        assert '"Read"' in members
+        assert '"Bash"' in members
+
+    def test_openclaw_ts_pre_hook_tools_excludes_edit(self) -> None:
+        import re
+        match = re.search(r'const PRE_HOOK_TOOLS = new Set\(\[([^\]]+)\]\)', bridges.OPENCLAW_PLUGIN_TS)
+        assert match, "PRE_HOOK_TOOLS Set literal not found in OPENCLAW_PLUGIN_TS"
+        members = match.group(1)
+        assert '"Edit"' not in members
+        assert '"Write"' not in members
+        assert '"Read"' in members
+        assert '"Bash"' in members
+
+    # --- callHook error handling tests ---
+
+    def test_opencode_ts_callhook_checks_r_error(self) -> None:
+        # callHook must return null immediately when spawnSync sets r.error
+        # (binary not found / ENOENT) rather than proceeding to stdout parsing.
+        assert "r.error" in bridges.OPENCODE_PLUGIN_TS
+
+    def test_openclaw_ts_callhook_checks_r_error(self) -> None:
+        assert "r.error" in bridges.OPENCLAW_PLUGIN_TS
+
+    def test_opencode_ts_callhook_error_before_stdout(self) -> None:
+        # The r.error guard must appear before the stdout check to avoid
+        # dereferencing stdout on a failed spawn.
+        oc = bridges.OPENCODE_PLUGIN_TS
+        error_pos = oc.find("r.error")
+        stdout_pos = oc.find("r.stdout")
+        assert error_pos != -1 and stdout_pos != -1
+        assert error_pos < stdout_pos, "r.error check must precede r.stdout access"
+
+    def test_openclaw_ts_callhook_error_before_stdout(self) -> None:
+        ocl = bridges.OPENCLAW_PLUGIN_TS
+        error_pos = ocl.find("r.error")
+        stdout_pos = ocl.find("r.stdout")
+        assert error_pos != -1 and stdout_pos != -1
+        assert error_pos < stdout_pos, "r.error check must precede r.stdout access"
+
 
 # ---------------------------------------------------------------------------
 # Bridge TS event-table alignment with hook_registry

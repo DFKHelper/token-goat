@@ -1228,6 +1228,36 @@ _ROUTING_ROWS: list[tuple[str, str, str, str]] = [
         "Re-running `pytest`/`cargo`/`git log`",
         "Re-running `pytest`/`cargo`/`git log`",
     ),
+    (
+        "Find all callers of a symbol",
+        "`token-goat refs src/auth.py::login --callers`",
+        '`Grep "login"` across many files',
+        '`rg "login"` across many files',
+    ),
+    (
+        "List symbols changed since a git ref",
+        "`token-goat changed --symbol`",
+        "Reading the full `git diff`",
+        "Reading the full `git diff`",
+    ),
+    (
+        "Read one value from a config file",
+        "`token-goat config-get pyproject.toml project.version`",
+        "`Read pyproject.toml`",
+        "`cat pyproject.toml`",
+    ),
+    (
+        "List all signatures in a file without bodies",
+        "`token-goat skeleton src/auth.py`",
+        "`Read src/auth.py` (70-90% more tokens)",
+        "`cat src/auth.py` (70-90% more tokens)",
+    ),
+    (
+        "List symbols with line ranges and docstrings",
+        "`token-goat outline src/auth.py`",
+        "`Read src/auth.py`",
+        "`cat src/auth.py`",
+    ),
 ]
 
 # Goal text for the WebFetch row differs by harness (Codex adds "/ web_search").
@@ -1269,12 +1299,12 @@ def _render_routing_table(rows: list[tuple[str, str, str, str]], *, codex: bool)
 
 
 def _claude_skill_routing_rows() -> list[tuple[str, str, str, str]]:
-    """Rows for CLAUDE_MD_CONTENT and SKILL_MD_CONTENT (11 common rows + WebFetch)."""
+    """Rows for CLAUDE_MD_CONTENT and SKILL_MD_CONTENT (common rows + WebFetch)."""
     return _ROUTING_ROWS + [_ROUTING_ROW_WEBFETCH_CLAUDE_SKILL]
 
 
 def _codex_routing_rows() -> list[tuple[str, str, str, str]]:
-    """Rows for CODEX_AGENTS_MD_CONTENT (11 common rows + Codex WebFetch)."""
+    """Rows for CODEX_AGENTS_MD_CONTENT (common rows + Codex WebFetch)."""
     return _ROUTING_ROWS + [_ROUTING_ROW_WEBFETCH_CODEX]
 
 
@@ -1301,9 +1331,12 @@ CLAUDE_MD_CONTENT = (
     "Modifiers: `symbol --all-projects` (cross-repo), `--strict` (disable close-match redirect),"
     " `map --compact` (300-token budget), `semantic --max-distance 1.0` / `--no-rerank`"
     " (widen/tighten), `bash-output --grep PATTERN` / `web-output --grep PATTERN` (filter cached"
-    " output). A miss prints \"Did you mean...?\" suggestions; a unique high-confidence match"
-    " redirects transparently with a `(redirected from: ...)` marker. Pre-Bash, pre-Grep, and"
-    " pre-WebFetch hooks hint when a tool call is about to repeat.\n"
+    " output), `bash-output --section HEADING` / `web-output --section HEADING` (extract a"
+    " markdown section from cached output), `changed --symbol` (tree-sitter symbol names instead"
+    " of git hunk context), `refs --callers` (resolve enclosing function name for each reference)."
+    " A miss prints \"Did you mean...?\" suggestions; a unique high-confidence match redirects"
+    " transparently with a `(redirected from: ...)` marker. Pre-Bash, pre-Grep, and pre-WebFetch"
+    " hooks hint when a tool call is about to repeat.\n"
     "\n"
     "Read is the right call when:\n"
     "- The file is under about 200 lines and you need the whole thing.\n"
@@ -1348,7 +1381,8 @@ CLAUDE_MD_CONTENT = (
     "`token-goat stats` groups event kinds into named categories (Read savings, Lookups,"
     " Images, Hints, Bash, Web, Compact / Skills, Other) so the table stays readable even"
     " after many event kinds accumulate. The `By command` breakdown shows which surgical-read"
-    " commands (symbol, read, section, semantic, map) are generating savings.\n"
+    " commands (symbol, read, section, semantic, map, skeleton, outline, refs, changed,"
+    " config-get) are generating savings.\n"
     "\n"
     "Verify the habit. Run `token-goat stats` and watch event counts climb. Flat counts"
     " during code work mean you are reaching for Read or Grep where token-goat would apply.\n"
@@ -1412,9 +1446,11 @@ SKILL_MD_CONTENT = (
     "Modifiers: `symbol --all-projects` (cross-repo), `--strict` (disable close-match redirect),"
     " `map --compact` (300-token budget), `semantic --max-distance 1.0` / `--no-rerank`"
     " (widen/tighten), `bash-output --grep PATTERN` / `web-output --grep PATTERN` (filter cached"
-    " output). A miss prints \"Did you mean...?\" suggestions; try one before falling back to"
-    " `Read`. A unique high-confidence match redirects transparently with a `(redirected from: ...)`"
-    " marker.\n"
+    " output), `bash-output --section HEADING` / `web-output --section HEADING` (extract a"
+    " markdown section from cached output), `changed --symbol` (tree-sitter symbol names instead"
+    " of git hunk context), `refs --callers` (resolve enclosing function name for each reference)."
+    " A miss prints \"Did you mean...?\" suggestions; try one before falling back to `Read`. A"
+    " unique high-confidence match redirects transparently with a `(redirected from: ...)` marker.\n"
     "\n"
     "## Skill commands\n"
     "\n"
@@ -1450,7 +1486,8 @@ SKILL_MD_CONTENT = (
     "\n"
     "Run `token-goat stats` and watch event counts climb. Flat counts during code work mean"
     " you are reaching for Read or Grep where a token-goat command would apply. Run"
-    " `token-goat doctor` if anything looks wrong.\n"
+    " `token-goat doctor` if anything looks wrong. Run `token-goat version` to confirm the"
+    " installed version (scriptable; `--json` for structured output).\n"
 )
 
 
@@ -1558,9 +1595,12 @@ CODEX_AGENTS_MD_CONTENT = (
     "Modifiers: `symbol --all-projects` (cross-repo), `--strict` (disable close-match redirect),"
     " `map --compact` (300-token budget), `semantic --max-distance 1.0` / `--no-rerank`"
     " (widen/tighten), `bash-output --grep PATTERN` / `web-output --grep PATTERN` (filter cached"
-    " output). A miss prints \"Did you mean...?\" suggestions; a unique high-confidence match"
-    " redirects transparently with a `(redirected from: ...)` marker. Pre-Bash, pre-Grep, and"
-    " pre-WebFetch hooks hint when a tool call is about to repeat.\n"
+    " output), `bash-output --section HEADING` / `web-output --section HEADING` (extract a"
+    " markdown section from cached output), `changed --symbol` (tree-sitter symbol names instead"
+    " of git hunk context), `refs --callers` (resolve enclosing function name for each reference)."
+    " A miss prints \"Did you mean...?\" suggestions; a unique high-confidence match redirects"
+    " transparently with a `(redirected from: ...)` marker. Pre-Bash, pre-Grep, and pre-WebFetch"
+    " hooks hint when a tool call is about to repeat.\n"
     "\n"
     "Plain Bash reads are the right call when:\n"
     "- The file is under about 200 lines and you need the whole thing.\n"

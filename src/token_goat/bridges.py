@@ -118,6 +118,10 @@ const POST_HOOK: Record<string, string> = {
   Write: "post-edit",
 };
 
+// Tools that have a pre-hook (read/search/fetch types only).
+// Edit/Write tools have no pre-hook in token-goat; skip before-dispatch for them.
+const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Glob", "Bash", "WebFetch"]);
+
 const _seenSessions = new Set<string>();
 
 function reverseArgMap(tool: string): Record<string, string> {
@@ -133,6 +137,7 @@ function callHook(event: string, payload: Record<string, unknown>): Record<strin
       timeout: 5000,
       windowsHide: true,
     });
+    if (r.error) return null;
     const out = r.stdout?.trim();
     if (!out) return null;
     return JSON.parse(out) as Record<string, unknown>;
@@ -156,6 +161,9 @@ export const server = async (pluginInput: { directory: string }) => {
         _seenSessions.add(input.sessionID);
         callHook("session-start", { session_id: input.sessionID, cwd });
       }
+
+      // Edit/Write/apply_patch only have post-hooks; skip pre-hook dispatch.
+      if (!PRE_HOOK_TOOLS.has(tgTool)) return;
 
       const argMap = ARGS_TO_TG[input.tool] ?? {};
       const toolInput: Record<string, unknown> = {};
@@ -246,6 +254,10 @@ const POST_HOOK: Record<string, string> = {
   Write: "post-edit",
 };
 
+// Tools that have a pre-hook (read/search/fetch types only).
+// Edit/Write tools have no pre-hook in token-goat; skip before-dispatch for them.
+const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Glob", "Bash", "WebFetch"]);
+
 // Stable pseudo-session for this process lifetime (openclaw has no session concept)
 const SESSION_ID = `openclaw-${process.pid}-${Date.now()}`;
 
@@ -257,6 +269,7 @@ function callHook(event: string, payload: Record<string, unknown>): Record<strin
       timeout: 5000,
       windowsHide: true,
     });
+    if (r.error) return null;
     const out = r.stdout?.trim();
     if (!out) return null;
     return JSON.parse(out) as Record<string, unknown>;
@@ -276,6 +289,9 @@ export default {
     api.on("before_tool_call", async (event: any) => {
       const tgTool = TOOL_TO_TG[event.toolName];
       if (!tgTool) return {};
+
+      // Edit/Write/apply_patch only have post-hooks; skip pre-hook dispatch.
+      if (!PRE_HOOK_TOOLS.has(tgTool)) return {};
 
       const hookEvent = tgTool === "WebFetch" ? "pre-fetch" : "pre-read";
       const resp = callHook(hookEvent, {
