@@ -1290,3 +1290,82 @@ class TestByCommandAggregation:
         # Render should succeed without error
         output = stats.render_text(summary)
         assert output  # Non-empty output
+
+
+class TestChangedLookupKind:
+    """Tests for the changed_lookup stats kind."""
+
+    def test_changed_lookup_maps_to_read_source(self):
+        """changed_lookup kind maps to SOURCE_READ bucket."""
+        assert stats.kind_to_source("changed_lookup") == stats.SOURCE_READ
+
+    def test_changed_lookup_in_command_kinds(self):
+        """changed command is wired to changed_lookup kind."""
+        from token_goat.stats import _COMMAND_KINDS
+        assert "changed" in _COMMAND_KINDS
+        assert "changed_lookup" in _COMMAND_KINDS["changed"]
+
+    def test_changed_lookup_aggregates_into_changed_command(self, tmp_data_dir):
+        """changed_lookup kind aggregates into the changed command breakdown."""
+        db.record_stat(None, "changed_lookup", bytes_saved=800, tokens_saved=200, detail="since=HEAD~5 mode=default hits=2")
+        summary = stats.summarize(window_days=30)
+        assert len(summary.by_command) >= 1
+        commands = {c["command"]: c for c in summary.by_command}
+        assert "changed" in commands
+        assert commands["changed"]["bytes_saved"] == 800
+        assert commands["changed"]["tokens_saved"] == 200
+        assert commands["changed"]["events"] == 1
+
+    def test_changed_lookup_aggregates_into_read_source(self, tmp_data_dir):
+        """changed_lookup kind counts toward the read source bucket."""
+        db.record_stat(None, "changed_lookup", bytes_saved=400, tokens_saved=100)
+        summary = stats.summarize(window_days=30)
+        assert "read" in summary.by_source
+        assert summary.by_source["read"]["bytes_saved"] >= 400
+
+
+class TestRenderByCommand:
+    """Tests for stats.render_by_command()."""
+
+    def test_render_by_command_empty(self, tmp_data_dir):
+        """render_by_command with no command data returns a non-empty string (no crash)."""
+        summary = stats.summarize(window_days=30)
+        assert summary.by_command == []
+        output = stats.render_by_command(summary)
+        assert isinstance(output, str)
+
+    def test_render_by_command_with_data(self, tmp_data_dir):
+        """render_by_command renders command rows when data is present."""
+        db.record_stat(None, "read_replacement", bytes_saved=1000, tokens_saved=250)
+        db.record_stat(None, "changed_lookup", bytes_saved=400, tokens_saved=100)
+        summary = stats.summarize(window_days=30)
+        assert len(summary.by_command) >= 2
+        output = stats.render_by_command(summary)
+        assert output  # Non-empty output
+
+    def test_render_by_command_in_all_exports(self):
+        """render_by_command is listed in stats.__all__."""
+        assert "render_by_command" in stats.__all__
+
+
+class TestRefsStatTracking:
+    """Tests confirming that refs command wires stats recording to symbol_read kind."""
+
+    def test_symbol_read_maps_to_read_source(self):
+        """symbol_read kind (used by refs) maps to SOURCE_READ."""
+        assert stats.kind_to_source("symbol_read") == stats.SOURCE_READ
+
+    def test_refs_command_in_command_kinds(self):
+        """refs command is wired to symbol_read kind in _COMMAND_KINDS."""
+        from token_goat.stats import _COMMAND_KINDS
+        assert "refs" in _COMMAND_KINDS
+        assert "symbol_read" in _COMMAND_KINDS["refs"]
+
+    def test_symbol_read_aggregates_into_refs_command(self, tmp_data_dir):
+        """symbol_read kind aggregates into the refs command breakdown."""
+        db.record_stat(None, "symbol_read", bytes_saved=240, tokens_saved=60, detail="src/auth.py::login")
+        summary = stats.summarize(window_days=30)
+        commands = {c["command"]: c for c in summary.by_command}
+        assert "refs" in commands
+        assert commands["refs"]["bytes_saved"] == 240
+        assert commands["refs"]["tokens_saved"] == 60

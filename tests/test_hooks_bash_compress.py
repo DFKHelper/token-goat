@@ -252,18 +252,43 @@ class TestNewFilterIntegration:
         new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
         assert "--filter" in new_cmd and "delta" in new_cmd
 
-    def test_jq_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
-        """jq . data.json dispatches to JqFilter and gets wrapped."""
+    def test_jq_trivial_filter_takes_read_branch(self, tmp_data_dir, monkeypatch):
+        """jq . data.json (trivial identity filter) is a read-equivalent.
+
+        bash_parser classifies ``jq '.' file`` as kind='read', so the pre-Bash
+        hook routes it through the read-equivalent branch — not the compress
+        pipeline.  The response should NOT contain a compress wrapper command.
+        """
         monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
         result = _dispatch(_payload("jq . data.json"))
+        hso = result.get("hookSpecificOutput", {})
+        new_cmd = hso.get("updatedInput", {}).get("command", "")
+        assert "compress" not in str(new_cmd)
+
+    def test_jq_nontrivial_filter_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """jq .foo data.json (non-trivial filter) dispatches to JqFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("jq .foo data.json"))
         assert "hookSpecificOutput" in result
         new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
         assert "--filter" in new_cmd and "jq" in new_cmd
 
-    def test_yq_command_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
-        """yq . config.yaml dispatches to YqFilter and gets wrapped."""
+    def test_yq_trivial_filter_takes_read_branch(self, tmp_data_dir, monkeypatch):
+        """yq . config.yaml (trivial identity filter) is a read-equivalent.
+
+        Same as the jq case: ``yq '.' file`` is routed through the read branch,
+        not the compress pipeline.
+        """
         monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
         result = _dispatch(_payload("yq . config.yaml"))
+        hso = result.get("hookSpecificOutput", {})
+        new_cmd = hso.get("updatedInput", {}).get("command", "")
+        assert "compress" not in str(new_cmd)
+
+    def test_yq_nontrivial_filter_wrapped_via_hook(self, tmp_data_dir, monkeypatch):
+        """yq .metadata.name pod.yaml (non-trivial filter) dispatches to YqFilter and gets wrapped."""
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("yq .metadata.name pod.yaml"))
         assert "hookSpecificOutput" in result
         new_cmd = result["hookSpecificOutput"]["updatedInput"]["command"]
         assert "--filter" in new_cmd and "yq" in new_cmd

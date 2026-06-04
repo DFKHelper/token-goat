@@ -873,3 +873,135 @@ def test_grep_empty_on_system_path_rejected():
     intent = parse('grep "" /etc/hostname')
     assert intent.kind == "unknown"
     assert "system path" in intent.reason
+
+
+# ---------------------------------------------------------------------------
+# 28. Multi-file cat — target_paths populated when more than one file given
+# ---------------------------------------------------------------------------
+
+
+def test_cat_two_files_target_paths():
+    # ``cat file1.py file2.py`` reads both files; target_path holds the first
+    # for backward compat, target_paths holds all.
+    intent = parse("cat file1.py file2.py")
+    assert intent.kind == "read"
+    assert intent.target_path == "file1.py"
+    assert intent.target_paths == ["file1.py", "file2.py"]
+
+
+def test_cat_three_files_target_paths():
+    intent = parse("cat a.py b.py c.py")
+    assert intent.kind == "read"
+    assert intent.target_path == "a.py"
+    assert intent.target_paths == ["a.py", "b.py", "c.py"]
+
+
+def test_cat_single_file_no_target_paths():
+    # Single-file reads must not populate target_paths (backward compat).
+    intent = parse("cat file.py")
+    assert intent.kind == "read"
+    assert intent.target_path == "file.py"
+    assert intent.target_paths is None
+
+
+def test_cat_multi_file_with_flags():
+    # Flags (-n) mixed with multiple file paths.
+    intent = parse("cat -n file1.py file2.py")
+    assert intent.kind == "read"
+    assert intent.target_path == "file1.py"
+    assert intent.target_paths == ["file1.py", "file2.py"]
+
+
+def test_cat_multi_file_system_path_excluded():
+    # A system path mixed into a multi-file cat must be silently dropped;
+    # the remaining project files form the valid target_paths list.
+    intent = parse("cat file.py /etc/hosts other.py")
+    assert intent.kind == "read"
+    assert intent.target_path == "file.py"
+    assert intent.target_paths == ["file.py", "other.py"]
+
+
+def test_cat_multi_file_quoted_spaces():
+    # Quoted paths with spaces must be handled correctly across multiple files.
+    intent = parse('cat "dir with spaces/a.py" "dir with spaces/b.py"')
+    assert intent.kind == "read"
+    assert intent.target_path == "dir with spaces/a.py"
+    assert intent.target_paths == ["dir with spaces/a.py", "dir with spaces/b.py"]
+
+
+# ---------------------------------------------------------------------------
+# 29. jq / yq read-equivalent detection (trivial identity filter '.')
+# ---------------------------------------------------------------------------
+
+
+def test_jq_dot_filter_is_read():
+    # ``jq '.' config.json`` — identity filter streams whole file → read.
+    intent = parse("jq '.' config.json")
+    assert intent.kind == "read"
+    assert intent.target_path == "config.json"
+    assert intent.target_paths is None
+
+
+def test_yq_dot_filter_is_read():
+    # ``yq '.' config.yaml`` — same semantics as jq.
+    intent = parse("yq '.' config.yaml")
+    assert intent.kind == "read"
+    assert intent.target_path == "config.yaml"
+
+
+def test_jq_with_raw_output_flag_is_read():
+    # ``jq -r '.' file.json`` — the -r flag changes output encoding, not the
+    # files consumed; still a full-file read.
+    intent = parse("jq -r '.' config.json")
+    assert intent.kind == "read"
+    assert intent.target_path == "config.json"
+
+
+def test_jq_with_compact_flag_is_read():
+    # ``jq -c '.' file.json`` — compact output, still reads entire file.
+    intent = parse("jq -c '.' config.json")
+    assert intent.kind == "read"
+    assert intent.target_path == "config.json"
+
+
+def test_jq_nontrivial_filter_is_unknown():
+    # ``.foo`` is not the identity filter — the agent only sees a projection.
+    intent = parse("jq '.foo' config.json")
+    assert intent.kind == "unknown"
+    assert "non-trivial filter" in intent.reason
+
+
+def test_jq_complex_filter_is_unknown():
+    intent = parse("jq '.[] | .name' items.json")
+    assert intent.kind == "unknown"
+
+
+def test_jq_no_file_is_unknown():
+    # ``jq '.'`` with no file reads stdin — not a file read for session tracking.
+    intent = parse("jq '.'")
+    assert intent.kind == "unknown"
+    assert "stdin" in intent.reason
+
+
+def test_jq_no_args_is_unknown():
+    intent = parse("jq")
+    assert intent.kind == "unknown"
+
+
+def test_jq_system_path_rejected():
+    # ``jq '.' /etc/hosts`` — system path must be rejected.
+    intent = parse("jq '.' /etc/hosts")
+    assert intent.kind == "unknown"
+
+
+def test_jq_multi_file_target_paths():
+    # ``jq '.' file1.json file2.json`` reads all listed files.
+    intent = parse("jq '.' a.json b.json")
+    assert intent.kind == "read"
+    assert intent.target_path == "a.json"
+    assert intent.target_paths == ["a.json", "b.json"]
+
+
+def test_yq_nontrivial_filter_is_unknown():
+    intent = parse("yq '.metadata.name' pod.yaml")
+    assert intent.kind == "unknown"

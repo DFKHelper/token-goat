@@ -185,6 +185,12 @@ _KIND_TO_SOURCE: dict[str, str] = {
     #   savings picture.
     "skill_compact_served": SOURCE_SKILL,
     "skill_cached": SOURCE_SKILL,
+    # changed_lookup: `token-goat changed` — lists symbols that changed since a
+    # git ref.  Replaces reading the full unified diff (which can be hundreds of
+    # KB for large PRs); bytes_saved is estimated as diff_size − output_size.
+    # Falls into SOURCE_READ because it steers the agent toward a narrow slice
+    # of the project history instead of a full diff read.
+    "changed_lookup": SOURCE_READ,
     # bash output cache family — preventing repeat command runs is structurally
     # distinct from preventing file re-reads (no source file is involved), so
     # it gets its own user-visible bucket rather than folding into HINT.
@@ -264,6 +270,7 @@ _COMMAND_KINDS: dict[str, set[str]] = {
     "skeleton": {"stub_view"},
     "refs": {"symbol_read"},  # refs uses symbol_read internally
     "map": {"map_lookup"},
+    "changed": {"changed_lookup"},  # changed -- list symbols changed since a git ref
 }
 
 
@@ -315,6 +322,7 @@ __all__ = [
     "SOURCE_WEB",
     "StatsSummary",
     "kind_to_source",
+    "render_by_command",
     "render_by_project",
     "render_text",
     "summarize",
@@ -1294,4 +1302,79 @@ def render_by_project(summary: StatsSummary, top: int = 10) -> str:
             + RichText(f"{p['project_hash'][:8]}  ", style="dim cyan")
             + RichText(safe_root, style="dim")
         )
+    return buf.getvalue()
+
+
+def render_by_command(summary: StatsSummary) -> str:
+    """Render a focused per-command breakdown table, ordered by tokens saved.
+
+    Shows all CLI commands with recorded stats, with bytes saved, tokens saved,
+    event count, and share of the total for each command.
+
+    Falls back gracefully to a plain-text table when rich is unavailable.
+    """
+    try:
+        from .render.stats_renderer import (  # noqa: PLC0415
+            _render_by_command_section,
+            _render_header,
+            _render_kpi_section,
+        )
+        data = _to_stats_data(summary)
+        sections = [
+            _render_header(data),
+            _render_kpi_section(data),
+            _render_by_command_section(data),
+            [""],
+        ]
+        return "\n".join(line for section in sections for line in section)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("new renderer failed for by-command (%s: %s), falling back", type(exc).__name__, exc)
+
+    try:
+        import io  # noqa: PLC0415
+
+        from rich.console import Console  # noqa: PLC0415
+        from rich.text import Text as RichText  # noqa: PLC0415
+    except ImportError:
+        lines = ["By command:"]
+        if not summary.by_command:
+            lines.append("  (no command data recorded yet)")
+            return "\n".join(lines)
+        lines.append(f"  {'command':<16}  {'tokens':>10}  {'bytes':>10}  {'events':>7}")
+        for c in summary.by_command:
+            lines.append(
+                f"  {c['command']:<16}  {_fmt_tokens(c['tokens_saved']):>10}  "
+                f"{_fmt_bytes(c['bytes_saved']):>10}  {c['events']:>7}"
+            )
+        return "\n".join(lines)
+
+    buf = io.StringIO()
+    console = Console(
+        file=buf,
+        force_terminal=True,
+        color_system="truecolor",
+        width=80,
+        legacy_windows=False,
+    )
+
+    cmds = summary.by_command
+    if not cmds:
+        console.print(RichText("(no command data recorded yet)", style="dim italic"))
+        return buf.getvalue()
+
+    window_desc = "all time" if summary.window_days == 0 else f"last {summary.window_days} days"
+    console.print(RichText(f"By command  —  {window_desc}", style="bold"))
+
+    max_bytes = max((c["bytes_saved"] for c in cmds), default=0)
+    tbl = _make_stats_table("command")
+    for c in cmds:
+        bar, bar_style = _bar_text(c["bytes_saved"], max_bytes)
+        tbl.add_row(
+            c["command"],
+            RichText(bar, style=bar_style),
+            _fmt_bytes(c["bytes_saved"]),
+            _fmt_tokens(c["tokens_saved"]),
+            f"{c['events']} ev",
+        )
+    console.print(tbl)
     return buf.getvalue()

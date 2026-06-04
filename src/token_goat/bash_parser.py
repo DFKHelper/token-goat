@@ -14,8 +14,15 @@ Supported patterns
   (``sed``, ``awk``, ``perl``) are also recognized but treated as unknown when
   invoked with in-place edit flags.  Stdin redirection (``cmd < FILE``) is
   recognised as a read of ``FILE`` regardless of the leading command.
+  Multi-file reads (``cat f1.py f2.py``) are detected: ``target_path`` holds
+  the first file for backward compatibility and ``target_paths`` holds all
+  files when more than one is present.
 * **Grep** — ``rg``, ``grep``, ``ag``, ``ack``, ``ripgrep``.
 * **Glob/find** — ``find``, ``fd``, ``fdfind``, ``ls``, ``eza``.
+* **jq/yq read-equivalent** — ``jq '.' file.json`` and ``yq '.' file.yaml``
+  (trivial identity filter ``.`` only) are classified as ``kind='read'``
+  because they stream the full file to stdout unchanged.  Non-trivial filter
+  expressions fall through to ``unknown``.
 
 PowerShell pipelines
 --------------------
@@ -104,8 +111,16 @@ class BashIntent:
         kind: One of ``'read'`` (file read), ``'grep'`` (pattern search),
             ``'glob'`` (directory listing / find), or ``'unknown'`` (unrecognised
             or ambiguous command that should be passed through unchanged).
-        target_path: Resolved file path for ``kind='read'`` commands.  ``None``
-            for grep/glob/unknown.
+        target_path: Resolved file path for ``kind='read'`` commands.  When
+            multiple files are read (e.g. ``cat f1.py f2.py``), this is the
+            *first* path for backward compatibility.  ``None`` for
+            grep/glob/unknown.
+        target_paths: All file paths for multi-file ``kind='read'`` commands
+            (e.g. ``cat f1.py f2.py``).  ``None`` when only one path is
+            present or the kind is not ``'read'``.  Callers that only need a
+            single path should continue using ``target_path``; callers that
+            want to process every file in the command should iterate
+            ``target_paths`` when it is non-``None``.
         pattern: Search pattern for ``kind='grep'`` or root/name pattern for
             ``kind='glob'``.  ``None`` for read/unknown.
         offset: Line offset for ``kind='read'`` — 1-indexed start line.  Set by
@@ -133,6 +148,7 @@ class BashIntent:
 
     kind: BashIntentKind
     target_path: str | None = None
+    target_paths: list[str] | None = None
     pattern: str | None = None
     offset: int | None = None
     limit: int | None = None
@@ -255,6 +271,19 @@ GREP_BINS = frozenset(["rg", "grep", "ag", "ack", "ripgrep"])
 # Directory enumeration and file-discovery tools.  Treated as ``glob`` because
 # their output is a list of paths, analogous to the Glob tool.
 GLOB_BINS = frozenset(["find", "fd", "fdfind", "ls", "eza"])
+
+# JSON/YAML query tools.  When invoked with a trivial identity filter (``jq '.'``
+# or ``yq '.'``) the tool streams the entire file content to stdout, which is
+# semantically equivalent to a full file read.  Non-trivial filter expressions
+# are NOT treated as reads — the agent only sees a filtered projection.
+JQ_BINS = frozenset(["jq", "yq"])
+
+# Trivial jq/yq filter expressions that are equivalent to reading the whole
+# file.  ``'.'`` is the identity filter; ``'.'`` (single quotes stripped by
+# shlex) becomes ``'.'``.  An empty string also passes everything through.
+# More complex expressions like ``.foo``, ``.[] | .name`` etc. are NOT
+# trivial and fall through to ``unknown``.
+_JQ_TRIVIAL_FILTERS = frozenset([".", ""])
 
 
 def _try_parse_int(value: str) -> int | None:
@@ -516,6 +545,8 @@ def parse(command: str) -> BashIntent:
         return _parse_grep(binary, args)
     if binary in GLOB_BINS:
         return _parse_glob(binary, args)
+    if binary in JQ_BINS:
+        return _parse_jq_read(binary, args)
     # Unknown binary but stdin redirected from a file — still a read.
     if redirect_file:
         return _build_read_intent(redirect_file)
@@ -640,6 +671,7 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
             offset, limit = _parse_sed_script(positional_args[-2])
         elif binary == "awk":
             offset, limit = _parse_awk_script(positional_args[-2])
+        all_file_paths: list[str] = [target_path]
     else:
         target_path = positional_args[0]
         # ``head -n N FILE`` reads lines 1..N.  Record the offset so session
@@ -653,6 +685,12 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
             # ``tail -n +0`` is semantically ``+1`` on GNU tail (floor at 1 so
             # the hooks_read normalisation never produces a negative offset).
             offset = max(1, tail_skip_start)  # 1-indexed; hooks_read normalises to 0-indexed
+        # Collect all positional arguments as file paths.  Commands like
+        # ``cat f1.py f2.py`` read every named file.  Each path undergoes the
+        # same system-path filter; any system path silently drops out of the
+        # multi-file list (a single system path in an otherwise valid list does
+        # not poison the whole read).
+        all_file_paths = [p for p in positional_args if not _is_system_path(p)]
 
     # ``type`` ambiguity guard: in bash / POSIX shells ``type`` is a
     # command-lookup builtin (``type ls`` reports where ``ls`` lives), not a
@@ -668,7 +706,9 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
 
     # System path guard: reject reads of /etc, /sys, /proc, C:\Windows, etc.
     # These are not project files and should not trigger session tracking or
-    # image-shrink logic.
+    # image-shrink logic.  For a single-file read the first (and only) path
+    # must pass; for multi-file reads the first path must pass (it becomes
+    # ``target_path``).
     if _is_system_path(target_path):
         return BashIntent(
             kind="unknown",
@@ -684,6 +724,11 @@ def _parse_read(binary: str, args: list[str]) -> BashIntent:
         intent.limit = limit
         if binary in INTERACTIVE_PAGER_BINS:
             intent.is_interactive_pager = True
+        # Populate target_paths for multi-file reads (e.g. ``cat f1.py f2.py``).
+        # target_path holds the first path for backward compatibility; callers
+        # that want all files iterate target_paths when it is non-None.
+        if len(all_file_paths) > 1:
+            intent.target_paths = all_file_paths
     return intent
 
 
@@ -963,3 +1008,67 @@ def _parse_glob(binary: str, args: list[str]) -> BashIntent:
         if not a.startswith("-"):
             return BashIntent(kind="glob", pattern=a)
     return BashIntent(kind="glob")
+
+
+def _parse_jq_read(binary: str, args: list[str]) -> BashIntent:
+    """Detect ``jq '.' file.json`` / ``yq '.' file.yaml`` as read-equivalents.
+
+    When the filter expression is a trivial identity (``.`` or empty string),
+    ``jq``/``yq`` streams the entire file to stdout without modification — this
+    is semantically equivalent to a full file read.  Any non-trivial filter
+    (e.g. ``.foo``, ``.[] | .name``) produces only a projection of the file
+    and is *not* treated as a read.
+
+    Argument grammar (simplified):
+    * Positional form: ``jq FILTER [FILE...]``
+    * Flags are single-dash tokens (``-r``, ``-c``, ``--raw-output``, etc.)
+      and are skipped during positional extraction.
+    * ``--arg``, ``--argjson``, ``--slurpfile``, ``--rawfile``, and
+      ``--jsonargs``/``--args`` each consume following tokens as values; these
+      are skipped conservatively to avoid mistaking a jq variable name or JSON
+      literal for the filter or file path.
+    """
+    # jq flags that consume a following token as a value (name + value pairs).
+    _jq_value_flags = frozenset(
+        ["--arg", "--argjson", "--slurpfile", "--rawfile", "--jsonargs", "--args",
+         "--indent", "--tab"]
+    )
+    positional_args: list[str] = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in _jq_value_flags:
+            i += 2  # skip the flag and its value
+            continue
+        if a.startswith("-"):
+            i += 1
+            continue
+        positional_args.append(a)
+        i += 1
+
+    if not positional_args:
+        return BashIntent(kind="unknown", reason=f"{binary}: no filter or file argument")
+
+    filter_expr = positional_args[0]
+    if filter_expr not in _JQ_TRIVIAL_FILTERS:
+        # Non-trivial filter — the agent only sees a projection, not the full file.
+        return BashIntent(kind="unknown", reason=f"{binary}: non-trivial filter '{filter_expr}' is not a read-equivalent")
+
+    # Trivial filter — the file(s) are read in full.
+    file_paths = positional_args[1:]
+    if not file_paths:
+        # ``jq '.'`` with no file reads stdin — not a file read.
+        return BashIntent(kind="unknown", reason=f"{binary}: trivial filter but no file argument (reads stdin)")
+
+    # Filter out system paths and apply path-length guard.
+    valid_paths = [p for p in file_paths if not _is_system_path(p)]
+    if not valid_paths:
+        return BashIntent(
+            kind="unknown",
+            reason=f"{binary}: all file paths are system paths",
+        )
+
+    intent = _build_read_intent(valid_paths[0])
+    if intent.kind == "read" and len(valid_paths) > 1:
+        intent.target_paths = valid_paths
+    return intent

@@ -2038,6 +2038,20 @@ def refs(
         typer.echo(f"No references found for {file_rel}::{symbol_name}")
         return
 
+    # Record adoption stat: refs replaces a multi-file rg grep over the project.
+    # Estimate bytes_saved as refs_count * ~80 bytes (file+line+context per hit);
+    # this represents the grep output the agent would have had to process inline.
+    # Best-effort: never block rendering on a DB write failure.
+    with contextlib.suppress(Exception):
+        _bytes_saved = count * 80
+        db.record_stat(
+            proj.hash,
+            "symbol_read",
+            bytes_saved=_bytes_saved,
+            tokens_saved=max(1, _bytes_saved // 3 + 1),
+            detail=f"{file_rel}::{symbol_name}",
+        )
+
     typer.echo(f"{count} reference{'s' if count != 1 else ''} to {file_rel}::{symbol_name}")
 
     if callers:
@@ -2151,6 +2165,19 @@ def changed(
 
         file_entries = get_changed_symbols_db(cwd, since_ref=since_ref, limit=limit)
 
+        # Record adoption stat regardless of output mode (JSON or text).
+        # bytes_saved ≈ result_count * 400 — the raw diff context this replaces.
+        with contextlib.suppress(Exception):
+            _n = len(file_entries)
+            _bs = _n * 400
+            db.record_stat(
+                None,
+                "changed_lookup",
+                bytes_saved=_bs,
+                tokens_saved=max(1, _bs // 3 + 1) if _bs > 0 else 0,
+                detail=f"since={since_ref} mode=symbol hits={_n}",
+            )
+
         if json_output:
             # Unified envelope + backward-compat aliases (files/count).
             typer.echo(json.dumps(
@@ -2181,13 +2208,26 @@ def changed(
             sym_list = entry["symbols"]
             sym_count = entry["symbol_count"]
             sym_noun = "symbol changed" if sym_count == 1 else "symbols changed"
-            sym_display = ", ".join(f"{s}()" for s in sym_list)  # type: ignore[union-attr]
+            sym_display = ", ".join(f"{s}()" for s in sym_list)  # type: ignore[union-attr,attr-defined]
             typer.echo(f"  {entry['file']}: {sym_display} — {sym_count} {sym_noun}")
         return
 
     from .git_history import get_changed_symbols  # noqa: PLC0415
 
     entries = get_changed_symbols(cwd, since_ref=since_ref, limit=limit)
+
+    # Record adoption stat regardless of output mode (JSON or text).
+    # bytes_saved ≈ result_count * 400 — the raw diff context this replaces.
+    with contextlib.suppress(Exception):
+        _n = len(entries)
+        _bs = _n * 400
+        db.record_stat(
+            None,
+            "changed_lookup",
+            bytes_saved=_bs,
+            tokens_saved=max(1, _bs // 3 + 1) if _bs > 0 else 0,
+            detail=f"since={since_ref} mode=default hits={_n}",
+        )
 
     if json_output:
         # Unified envelope + backward-compat aliases (symbols/count).

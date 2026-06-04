@@ -3146,6 +3146,7 @@ def stats(
     window: int = typer.Option(30, "--window", "-w", help="Days to include (0 = all time)"),
     json_output: bool = _OPT_JSON,
     by_project: bool = typer.Option(False, "--by-project", help="Show per-project breakdown table"),
+    by_command: bool = typer.Option(False, "--by-command", help="Show per-CLI-command breakdown table"),
     top: int = typer.Option(10, "--top", help="Number of projects to show with --by-project"),
     since: int | None = typer.Option(  # noqa: B008
         None,
@@ -3161,7 +3162,7 @@ def stats(
 
     # --since is a friendlier alias for --window; it takes precedence when both are specified.
     effective_window = since if since is not None else window
-    cli_stats.stats(window=effective_window, json_output=json_output, by_project=by_project, top=top)
+    cli_stats.stats(window=effective_window, json_output=json_output, by_project=by_project, by_command=by_command, top=top)
 
 
 @app.command(rich_help_panel="Core")
