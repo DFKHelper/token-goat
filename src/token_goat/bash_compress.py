@@ -2256,6 +2256,8 @@ class CargoFilter(Filter):
         return self._compress_build(stdout, stderr)
 
     def _compress_build(self, stdout: str, stderr: str) -> str:
+        # Note: reversed order — cargo's useful diagnostics come on stderr; stdout
+        # typically contains only build script output that is secondary context.
         merged = self._combine_output(stderr, stdout)
         lines = merged.split("\n")
         compiled: list[str] = []
@@ -2314,6 +2316,7 @@ class CargoFilter(Filter):
         return build_part if build_part.strip() else test_out
 
     def _compress_clippy(self, stdout: str, stderr: str) -> str:
+        # Note: reversed order — same rationale as _compress_build above.
         merged = self._combine_output(stderr, stdout)
         lines = merged.split("\n")
         compiled: list[str] = []
