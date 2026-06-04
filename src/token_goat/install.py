@@ -1460,6 +1460,12 @@ _ROUTING_ROWS: list[tuple[str, str, str, str]] = [
         "`Read src/auth.py`",
         "`cat src/auth.py`",
     ),
+    (
+        "Read a file on Windows via PowerShell",
+        '`token-goat read "src/auth.py::login"` or `token-goat section "README.md::Install"`',
+        "`Get-Content src/auth.py`",
+        "`Get-Content src/auth.py`",
+    ),
 ]
 
 # Goal text for the WebFetch row differs by harness (Codex adds "/ web_search").

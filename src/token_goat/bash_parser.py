@@ -844,31 +844,25 @@ def _parse_powershell_read(binary: str, args: list[str]) -> BashIntent:
         if a.startswith("-"):
             # Skip unknown PowerShell flags (e.g. ``-Raw``, ``-Encoding utf8``).
             #
-            # Two categories of flags-with-args:
+            # Unconditional arg-consumers: these flags ALWAYS take one argument
+            # regardless of whether a file path has already been found.  Without
+            # this guard the argument token would be appended to ``target_paths``.
             #
-            # Category A — unconditional arg-consumers.  These flags always
-            # take one argument regardless of whether a file path has already
-            # been found.  ``-Include *.txt`` and ``-Exclude *.log`` can appear
-            # both before and after the path, so their argument must be skipped
-            # in both positions.  Without this guard the argument (a glob
-            # pattern) would be appended to ``target_paths``.
+            # Flags that can appear either before or after the path:
+            #   ``-Include *.txt``, ``-Exclude *.log``, ``-Filter *.py`` — glob filters
+            #   ``-Encoding utf8``, ``-Delimiter ,`` — format options
+            #   ``-Stream Zone.Identifier`` — NTFS alternate data stream name; the
+            #       stream identifier is never a file path, so it must always be
+            #       consumed.  Without this guard ``gc file.txt -Stream Zone.Identifier``
+            #       would incorrectly add ``Zone.Identifier`` to ``target_paths``.
+            #   ``-ReadCount N`` — pipeline batch size (all lines still consumed);
+            #       without unconditional handling ``gc file.txt -ReadCount 10``
+            #       would append ``10`` to ``target_paths``.
             if (
                 i + 1 < len(args)
                 and not args[i + 1].startswith("-")
-                and lower in {"-include", "-exclude", "-filter"}
-            ):
-                i += 2
-                continue
-            # Category B — heuristic arg-consumers: only skip the next token
-            # as the flag's value when no paths have been found yet.  This
-            # avoids ``-Encoding utf8 file.txt`` being parsed as
-            # ``target=utf8``.  The heuristic is safe for these flags because
-            # they virtually never appear after the file path in practice.
-            if (
-                i + 1 < len(args)
-                and not args[i + 1].startswith("-")
-                and not target_paths
-                and lower in {"-encoding", "-delimiter", "-stream", "-readcount"}
+                and lower in {"-include", "-exclude", "-filter", "-encoding", "-delimiter",
+                               "-stream", "-readcount"}
             ):
                 i += 2
                 continue

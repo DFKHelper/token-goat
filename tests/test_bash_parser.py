@@ -1201,3 +1201,93 @@ class TestGetContentNewCapabilities:
         assert intent.kind == "read"
         assert intent.filtered is True
         assert intent.filter_pattern == "warning"
+
+    # Flag arg-consumer edge cases (Category A unconditional) ----------------
+
+    def test_stream_after_path_does_not_add_stream_name_as_target(self):
+        """-Stream after the path must not add the stream name to target_paths.
+
+        ``gc file.txt -Stream Zone.Identifier`` reads an NTFS alternate data
+        stream.  ``Zone.Identifier`` is the *stream name*, never a file path.
+        It must be consumed as the flag's argument and not appended to
+        ``target_paths``.
+        """
+        intent = parse("gc file.txt -Stream Zone.Identifier")
+        assert intent.kind == "read"
+        assert intent.target_path == "file.txt"
+        assert intent.target_paths is None
+
+    def test_stream_before_path_is_consumed(self):
+        """``gc -Stream Zone.Identifier file.txt`` — stream name before path is consumed."""
+        intent = parse("gc -Stream Zone.Identifier file.txt")
+        assert intent.kind == "read"
+        assert intent.target_path == "file.txt"
+        assert intent.target_paths is None
+
+    def test_readcount_after_path_does_not_add_count_as_target(self):
+        """-ReadCount N after the path must not append N to target_paths.
+
+        ``gc file.txt -ReadCount 10`` reads all lines, processing them in
+        batches of 10.  The count ``10`` is the flag's argument and must not
+        be treated as a second file path.
+        """
+        intent = parse("gc file.txt -ReadCount 10")
+        assert intent.kind == "read"
+        assert intent.target_path == "file.txt"
+        assert intent.target_paths is None
+        assert intent.limit is None  # -ReadCount is not a total-count limit
+
+    def test_readcount_before_path_is_consumed(self):
+        """``gc -ReadCount 5 file.txt`` — count before path is consumed."""
+        intent = parse("gc -ReadCount 5 file.txt")
+        assert intent.kind == "read"
+        assert intent.target_path == "file.txt"
+        assert intent.target_paths is None
+
+    def test_encoding_after_path_does_not_add_encoding_as_target(self):
+        """-Encoding value after the path must not append to target_paths."""
+        intent = parse("gc file.txt -Encoding UTF8")
+        assert intent.kind == "read"
+        assert intent.target_path == "file.txt"
+        assert intent.target_paths is None
+
+    def test_delimiter_after_path_does_not_add_delimiter_as_target(self):
+        """-Delimiter value after the path must not append to target_paths."""
+        intent = parse("gc file.txt -Delimiter ,")
+        assert intent.kind == "read"
+        assert intent.target_path == "file.txt"
+        assert intent.target_paths is None
+
+    def test_asbyte_stream_is_full_read(self):
+        """-AsByteStream reads the whole file in binary mode — kind='read'.
+
+        token-goat treats -AsByteStream as a full file read for session-tracking
+        and image-shrink purposes: the entire file is loaded into the agent's
+        context regardless of whether it is text or binary.
+        """
+        intent = parse("Get-Content file.bin -AsByteStream")
+        assert intent.kind == "read"
+        assert intent.target_path == "file.bin"
+        assert intent.limit is None
+        assert intent.offset is None
+        assert intent.is_interactive_pager is False
+
+    def test_asbyte_stream_on_image_is_read(self):
+        """-AsByteStream on an image still yields kind='read' (image-shrink applies)."""
+        intent = parse("Get-Content image.png -AsByteStream")
+        assert intent.kind == "read"
+        assert intent.target_path == "image.png"
+
+    def test_full_cmdlet_stream_after_path(self):
+        """Full cmdlet name Get-Content with -Stream after path."""
+        intent = parse("Get-Content notes.txt -Stream Zone.Identifier")
+        assert intent.kind == "read"
+        assert intent.target_path == "notes.txt"
+        assert intent.target_paths is None
+
+    def test_multi_file_unaffected_by_stream_fix(self):
+        """Multi-file reads still populate target_paths after -Stream fix."""
+        intent = parse("gc file1.txt file2.txt")
+        assert intent.kind == "read"
+        assert intent.target_path == "file1.txt"
+        assert intent.target_paths == ["file1.txt", "file2.txt"]
