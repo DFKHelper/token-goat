@@ -8526,8 +8526,6 @@ class PnpmFilter(Filter):
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
-        if stem.endswith(".exe"):
-            stem = stem[:-4]
         return stem == "pnpm"
 
     def compress(
@@ -8540,6 +8538,10 @@ class PnpmFilter(Filter):
 
         if subcmd == "run" and len(positionals) >= 2:
             return self._compress_run(merged, positionals[1])
+
+        if subcmd in ("exec", "dlx"):
+            # exec/dlx run an arbitrary binary; pass output through unchanged.
+            return merged
 
         # install / add / remove / update / import
         return self._compress_install(merged)
@@ -8641,8 +8643,6 @@ class YarnFilter(Filter):
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
-        if stem.endswith(".exe"):
-            stem = stem[:-4]
         return stem == "yarn"
 
     def compress(
@@ -8762,9 +8762,6 @@ class EzaFilter(Filter):
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
-        # Strip .exe on Windows
-        if stem.endswith(".exe"):
-            stem = stem[:-4]
         return stem in self.binaries
 
     def compress(
@@ -8857,9 +8854,6 @@ class FdFilter(Filter):
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
-        # Strip .exe on Windows
-        if stem.endswith(".exe"):
-            stem = stem[:-4]
         return stem in self.binaries
 
     def compress(
@@ -8934,9 +8928,6 @@ class BatFilter(Filter):
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
-        # Strip .exe on Windows
-        if stem.endswith(".exe"):
-            stem = stem[:-4]
         return stem in self.binaries
 
     def compress(
@@ -8998,9 +8989,6 @@ class DeltaFilter(Filter):
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
-        # Strip .exe on Windows
-        if stem.endswith(".exe"):
-            stem = stem[:-4]
         return stem in self.binaries
 
     def compress(
@@ -9134,9 +9122,6 @@ class JqFilter(Filter):
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
-        # Strip .exe on Windows
-        if stem.endswith(".exe"):
-            stem = stem[:-4]
         return stem in self.binaries
 
     def compress(
@@ -9177,9 +9162,6 @@ class YqFilter(Filter):
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
-        # Strip .exe on Windows
-        if stem.endswith(".exe"):
-            stem = stem[:-4]
         return stem in self.binaries
 
     def compress(

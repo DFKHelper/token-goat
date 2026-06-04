@@ -2724,6 +2724,48 @@ def test_cleanup_old_sessions_no_dir_returns_zero(tmp_data_dir):
     assert removed == 0
 
 
+def test_cleanup_old_sessions_removes_companion_sidecars(tmp_data_dir):
+    """When a stale JSON is removed, its .json.lock and .json.flock sidecars go too."""
+    from token_goat import paths as _paths
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    old_age = (worker._SESSION_RETENTION_DAYS + 1) * 86400
+    stale_json = _make_session_file(sessions_dir, "sid-old.json", old_age)
+    # Sidecars share the stem of the JSON file.
+    lock_sidecar = sessions_dir / "sid-old.json.lock"
+    flock_sidecar = sessions_dir / "sid-old.json.flock"
+    lock_sidecar.write_text("", encoding="utf-8")
+    flock_sidecar.write_text("", encoding="utf-8")
+
+    removed = worker._cleanup_old_sessions()
+
+    assert removed == 1
+    assert not stale_json.exists()
+    assert not lock_sidecar.exists(), ".json.lock sidecar should be removed with its JSON"
+    assert not flock_sidecar.exists(), ".json.flock sidecar should be removed with its JSON"
+
+
+def test_cleanup_old_sessions_sweeps_orphaned_sidecars(tmp_data_dir):
+    """Orphaned lock/flock sidecars (no corresponding .json) are removed."""
+    from token_goat import paths as _paths
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sidecars with no corresponding .json — left by a prior cleanup or crash.
+    orphan_lock = sessions_dir / "sid-gone.json.lock"
+    orphan_flock = sessions_dir / "sid-gone.json.flock"
+    orphan_lock.write_text("", encoding="utf-8")
+    orphan_flock.write_text("", encoding="utf-8")
+
+    worker._cleanup_old_sessions()
+
+    assert not orphan_lock.exists(), "orphaned .json.lock should be swept"
+    assert not orphan_flock.exists(), "orphaned .json.flock should be swept"
+
+
 def test_cleanup_old_sessions_wired_into_cleanup_on_startup(tmp_data_dir, monkeypatch):
     """cleanup_on_startup must call _cleanup_old_sessions and record its result."""
     calls: list[int] = []

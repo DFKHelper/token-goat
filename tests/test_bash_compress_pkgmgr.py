@@ -392,6 +392,36 @@ class TestPnpmFilterRun:
         assert "third line" in result
 
 
+class TestPnpmFilterExec:
+    """PnpmFilter passes exec/dlx output through unchanged."""
+
+    PNPM = bc.PnpmFilter()
+
+    def test_exec_output_passed_through(self) -> None:
+        out = "src/index.ts:10:1 error  Parsing error: Unexpected token\n"
+        result = _apply(self.PNPM, stdout=out, argv=["pnpm", "exec", "eslint", "src/"])
+        assert "Parsing error" in result
+
+    def test_dlx_output_passed_through(self) -> None:
+        out = "create-react-app my-app\nSuccess! Created my-app\n"
+        result = _apply(self.PNPM, stdout=out, argv=["pnpm", "dlx", "create-react-app", "my-app"])
+        assert "Success! Created my-app" in result
+
+    def test_exec_no_pnpm_install_note(self) -> None:
+        out = "lint passed\n"
+        result = _apply(self.PNPM, stdout=out, argv=["pnpm", "exec", "biome", "check"])
+        assert "collapsed" not in result.lower()
+
+
+class TestPnpmFilterMatchesExe:
+    """PnpmFilter.matches() handles .exe suffixes via Path.stem."""
+
+    PNPM = bc.PnpmFilter()
+
+    def test_matches_pnpm_exe(self) -> None:
+        assert self.PNPM.matches(["pnpm.exe", "install"])
+
+
 # ---------------------------------------------------------------------------
 # YarnFilter
 # ---------------------------------------------------------------------------

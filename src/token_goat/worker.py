@@ -1403,11 +1403,24 @@ def _cleanup_old_sessions() -> int:
                     fp.unlink()
                     removed += 1
                     _LOG.debug("_cleanup_old_sessions: removed %s", fp.name)
+                    # Remove companion lock/flock sidecars for this session so they
+                    # do not accumulate after the session JSON is gone.
+                    for sidecar_suffix in (".json.lock", ".json.flock"):
+                        sidecar = fp.with_suffix(sidecar_suffix)
+                        with contextlib.suppress(OSError):
+                            sidecar.unlink(missing_ok=True)
             except OSError:
                 continue
     except OSError as exc:
         _LOG.debug("_cleanup_old_sessions: directory scan failed: %s", exc)
         return removed
+    # Sweep orphaned lock/flock sidecars whose .json was removed in a prior run.
+    for sidecar_glob in ("*.json.lock", "*.json.flock"):
+        for sidecar in sessions_dir.glob(sidecar_glob):
+            stem = sidecar.name.split(".json.")[0]
+            if not (sessions_dir / f"{stem}.json").exists():
+                with contextlib.suppress(OSError):
+                    sidecar.unlink(missing_ok=True)
     if removed > 0:
         _LOG.info("_cleanup_old_sessions: removed %d stale session JSON(s)", removed)
     return removed
