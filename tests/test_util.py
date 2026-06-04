@@ -14,6 +14,7 @@ from token_goat.util import (
     sanitize_control_chars,
     strip_ansi,
     strip_bom,
+    utf8_bytes,
 )
 
 
@@ -375,3 +376,54 @@ class TestConfigureStdoutEncoding:
             # Both should have been called even though stdout failed
             fake_stdout.reconfigure.assert_called_once()
             fake_stderr.reconfigure.assert_called_once()
+
+
+class TestUtf8Bytes:
+    """utf8_bytes(s) encodes a str to UTF-8 bytes with surrogate replacement."""
+
+    def test_ascii_string(self) -> None:
+        """ASCII strings encode to identical bytes."""
+        assert utf8_bytes("hello") == b"hello"
+
+    def test_empty_string(self) -> None:
+        """Empty string encodes to empty bytes."""
+        assert utf8_bytes("") == b""
+
+    def test_multibyte_unicode(self) -> None:
+        """Multi-byte characters are encoded correctly."""
+        # 'é' is 2 bytes in UTF-8; 'café' is 5 bytes
+        assert utf8_bytes("café") == "café".encode()
+        assert len(utf8_bytes("café")) == 5
+
+    def test_emoji(self) -> None:
+        """4-byte emoji characters are encoded correctly."""
+        result = utf8_bytes("hi 🎉")
+        assert result == "hi 🎉".encode()
+        assert len(result) == 7  # 2 + 1 (space) + 4 (emoji)
+
+    def test_return_type_is_bytes(self) -> None:
+        """Return type is always bytes."""
+        assert isinstance(utf8_bytes("test"), bytes)
+
+    def test_surrogate_replaced_not_raised(self) -> None:
+        """Lone surrogates (from subprocess surrogate-escape) are replaced, not raised."""
+        # Python's surrogate-escape mechanism produces \\udcXX chars which are
+        # not valid Unicode code points.  utf8_bytes must not raise UnicodeEncodeError.
+        surrogate_str = "\udcff\udcfe"
+        # Must not raise — the key invariant is no UnicodeEncodeError.
+        result = utf8_bytes(surrogate_str)
+        assert isinstance(result, bytes)
+        # Each surrogate is replaced (exact replacement byte depends on platform
+        # and Python version; we only assert no exception and valid bytes output).
+        assert len(result) >= 2  # at least one byte per surrogate
+
+    def test_byte_length_matches_encode(self) -> None:
+        """len(utf8_bytes(s)) always equals len(s.encode('utf-8', errors='replace'))."""
+        samples = ["", "hello", "café", "日本語", "hi 🎉", "line1\nline2"]
+        for s in samples:
+            assert len(utf8_bytes(s)) == len(s.encode("utf-8", errors="replace"))
+
+    def test_in_all(self) -> None:
+        """utf8_bytes is exported via __all__ in util."""
+        from token_goat import util
+        assert "utf8_bytes" in util.__all__

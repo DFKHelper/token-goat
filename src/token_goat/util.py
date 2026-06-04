@@ -25,6 +25,7 @@ __all__ = [
     "sanitize_surrogates",
     "sanitize_control_chars",
     "ellipsize",
+    "utf8_bytes",
     "env_float",
     "env_int",
     "configure_stdout_encoding",
@@ -186,6 +187,26 @@ def sanitize_control_chars(text: str) -> str:
     # Remove C0 chars (0x00-0x1F) except 0x09 (tab), 0x0A (LF), 0x0D (CR)
     # Remove C1 chars (0x80-0x9F)
     return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x80-\x9f]", "", text)
+
+
+def utf8_bytes(s: str) -> bytes:
+    """Encode *s* to UTF-8 bytes, replacing lone surrogates with U+FFFD.
+
+    This is the canonical byte-length helper for all token-saving and cache
+    byte-count calculations across the codebase.  It is equivalent to
+    ``s.encode("utf-8", errors="replace")`` but centralises the encoding
+    contract so callers don't need to repeat the ``errors="replace"`` guard.
+
+    Use this wherever you need ``len(s.encode("utf-8"))`` (byte-length check)
+    or need the raw bytes for storage — it is safe on all strings, including
+    those with surrogate-escape sequences from subprocess output.
+
+    >>> utf8_bytes("hello")
+    b'hello'
+    >>> len(utf8_bytes("café"))
+    5
+    """
+    return s.encode("utf-8", errors="replace")
 
 
 def ellipsize(s: str, max_chars: int) -> str:

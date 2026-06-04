@@ -3686,6 +3686,271 @@ class TestSurgicalIntentGuardOffsetZero:
 
 
 # ---------------------------------------------------------------------------
+# Structured-file hints — new file types (CSS, SQL, GraphQL, Proto, env, Makefile)
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredFileHintsNewTypes:
+    """Hint emission for CSS, SQL, GraphQL, Proto, .env, and Makefile file types."""
+
+    def _make_file(self, tmp_path: Path, name: str, size: int) -> str:
+        p = tmp_path / name
+        p.write_bytes(b"x" * size)
+        return str(p)
+
+    # ── CSS / SCSS / Sass ──────────────────────────────────────────────────
+
+    def test_css_hint_fires_for_large_css_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "styles.css", 15_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for large .css file"
+        text = str(result)
+        assert "css" in text.lower(), f"hint should mention css: {text}"
+        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+
+    def test_scss_hint_fires_for_large_scss_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "app.scss", 12_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for large .scss file"
+        text = str(result)
+        assert "scss" in text.lower(), f"hint should mention scss: {text}"
+
+    def test_sass_hint_fires_for_large_sass_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "theme.sass", 11_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for large .sass file"
+        text = str(result)
+        assert "sass" in text.lower(), f"hint should mention sass: {text}"
+
+    def test_css_hint_suppressed_for_small_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "tiny.css", 500)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is None, "hint should not fire for tiny .css file"
+
+    def test_css_hint_suppressed_when_surgical(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "styles.css", 20_000)
+        result = build_structured_file_hint(file_path=f, offset=0, limit=100)
+        assert result is None, "offset+limit should suppress css hint"
+
+    def test_css_hint_mentions_section(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "main.css", 15_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None
+        assert "section" in str(result).lower(), "hint should mention token-goat section"
+
+    # ── SQL ────────────────────────────────────────────────────────────────
+
+    def test_sql_hint_fires_for_large_sql_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "schema.sql", 8_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for large .sql file"
+        text = str(result)
+        assert "sql" in text.lower(), f"hint should mention sql: {text}"
+        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+
+    def test_sql_hint_suppressed_for_small_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "tiny.sql", 200)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is None, "hint should not fire for tiny .sql file"
+
+    def test_sql_hint_suppressed_when_surgical(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "migrations.sql", 10_000)
+        result = build_structured_file_hint(file_path=f, offset=0, limit=50)
+        assert result is None, "offset+limit should suppress sql hint"
+
+    # ── GraphQL ────────────────────────────────────────────────────────────
+
+    def test_graphql_hint_fires_for_large_graphql_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "schema.graphql", 3_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for large .graphql file"
+        text = str(result)
+        assert "graphql" in text.lower(), f"hint should mention graphql: {text}"
+        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+
+    def test_gql_hint_fires_for_large_gql_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "queries.gql", 2_500)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for large .gql file"
+        text = str(result)
+        assert "graphql" in text.lower(), f"hint should mention graphql: {text}"
+
+    def test_graphql_hint_suppressed_for_small_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "tiny.graphql", 100)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is None, "hint should not fire for tiny .graphql file"
+
+    def test_graphql_hint_suppressed_when_surgical(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "schema.graphql", 5_000)
+        result = build_structured_file_hint(file_path=f, offset=10, limit=30)
+        assert result is None, "offset+limit should suppress graphql hint"
+
+    # ── Protocol Buffers ───────────────────────────────────────────────────
+
+    def test_proto_hint_fires_for_large_proto_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "service.proto", 3_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for large .proto file"
+        text = str(result)
+        assert "proto" in text.lower(), f"hint should mention proto: {text}"
+        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+
+    def test_proto_hint_suppressed_for_small_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "tiny.proto", 100)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is None, "hint should not fire for tiny .proto file"
+
+    def test_proto_hint_suppressed_when_surgical(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "api.proto", 4_000)
+        result = build_structured_file_hint(file_path=f, offset=0, limit=25)
+        assert result is None, "offset+limit should suppress proto hint"
+
+    # ── .env files ─────────────────────────────────────────────────────────
+
+    def test_env_hint_fires_for_env_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, ".env", 1_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for .env file above threshold"
+        text = str(result)
+        assert "env" in text.lower(), f"hint should mention env: {text}"
+        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+
+    def test_env_example_hint_fires(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, ".env.example", 800)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for .env.example file"
+
+    def test_env_local_hint_fires(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, ".env.local", 600)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for .env.local file"
+
+    def test_env_hint_suppressed_for_tiny_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, ".env", 100)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is None, "hint should not fire for tiny .env file"
+
+    def test_env_hint_suppressed_when_surgical(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, ".env", 2_000)
+        result = build_structured_file_hint(file_path=f, offset=0, limit=20)
+        assert result is None, "offset+limit should suppress env hint"
+
+    def test_env_hint_mentions_var_name(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, ".env.example", 1_500)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None
+        text = str(result)
+        assert "VAR_NAME" in text or "symbol" in text.lower(), (
+            f"env hint should mention variable lookup: {text}"
+        )
+
+    # ── Makefile ───────────────────────────────────────────────────────────
+
+    def test_makefile_hint_fires(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "Makefile", 2_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for Makefile above threshold"
+        text = str(result)
+        assert "makefile" in text.lower() or "target" in text.lower(), (
+            f"hint should mention makefile or target: {text}"
+        )
+        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+
+    def test_gnumakefile_hint_fires(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "GNUmakefile", 1_500)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "hint should fire for GNUmakefile"
+
+    def test_makefile_hint_suppressed_for_tiny_file(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "Makefile", 200)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is None, "hint should not fire for tiny Makefile"
+
+    def test_makefile_hint_suppressed_when_surgical(self, tmp_path: Path) -> None:
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "Makefile", 3_000)
+        result = build_structured_file_hint(file_path=f, offset=5, limit=30)
+        assert result is None, "offset+limit should suppress Makefile hint"
+
+    # ── Regression: legacy types still work correctly ──────────────────────
+
+    def test_legacy_csv_still_fires(self, tmp_path: Path) -> None:
+        """Adding new types must not break existing CSV hints."""
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "data.csv", 100_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "legacy CSV hint must still fire"
+
+    def test_legacy_yaml_still_fires(self, tmp_path: Path) -> None:
+        """Adding new types must not break existing YAML hints."""
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "config.yaml", 60_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is not None, "legacy YAML hint must still fire"
+
+    def test_unknown_extension_still_silent(self, tmp_path: Path) -> None:
+        """Files with unrecognised extensions produce no hint."""
+        from token_goat.hints import build_structured_file_hint
+
+        f = self._make_file(tmp_path, "data.xyz", 500_000)
+        result = build_structured_file_hint(file_path=f, offset=None, limit=None)
+        assert result is None, "unknown extension must not emit a hint"
+
+
+# ---------------------------------------------------------------------------
 # Co-read suggestion hints
 # ---------------------------------------------------------------------------
 

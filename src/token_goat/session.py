@@ -125,7 +125,7 @@ from typing import Any, Final, TypedDict, TypeVar, cast
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
-from .util import env_int, get_logger, strip_bom
+from .util import env_int, get_logger, strip_bom, utf8_bytes
 
 _LOG = get_logger("session")
 
@@ -2974,7 +2974,7 @@ def _trim_session_for_size(cache: SessionCache, max_bytes: int) -> bool:
     was already within the limit.
     """
     cache._invalidate_json_cache()
-    current_size = len(cache.to_json().encode("utf-8"))
+    current_size = len(utf8_bytes(cache.to_json()))
     if current_size <= max_bytes:
         return False
 
@@ -2986,7 +2986,7 @@ def _trim_session_for_size(cache: SessionCache, max_bytes: int) -> bool:
 
     for _pass in range(5):
         cache._invalidate_json_cache()
-        current_size = len(cache.to_json().encode("utf-8"))
+        current_size = len(utf8_bytes(cache.to_json()))
         if current_size <= max_bytes:
             break
 
@@ -3045,7 +3045,7 @@ def _trim_session_for_size(cache: SessionCache, max_bytes: int) -> bool:
         trimmed = True
 
     cache._invalidate_json_cache()
-    final_size = len(cache.to_json().encode("utf-8"))
+    final_size = len(utf8_bytes(cache.to_json()))
     if final_size > max_bytes:
         _LOG.warning(
             "session size cap: could not reduce %s below cap after 5 passes "

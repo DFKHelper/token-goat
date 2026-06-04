@@ -3712,9 +3712,48 @@ _STRUCTURED_EXT_YAML: frozenset[str] = frozenset({".yaml", ".yml"})
 _STRUCTURED_EXT_TOML: frozenset[str] = frozenset({".toml"})
 _STRUCTURED_EXT_LOCK: frozenset[str] = frozenset({".lock", ".lockb"})
 
+# New file types with surgical-read hints.
+# CSS / SCSS / Sass — suggest token-goat symbol / section for rule lookup.
+_STRUCTURED_EXT_CSS: frozenset[str] = frozenset({".css", ".scss", ".sass"})
+# SQL — suggest token-goat symbol for table / procedure names.
+_STRUCTURED_EXT_SQL: frozenset[str] = frozenset({".sql"})
+# GraphQL — suggest token-goat symbol for type / query names.
+_STRUCTURED_EXT_GRAPHQL: frozenset[str] = frozenset({".graphql", ".gql"})
+# Protocol Buffers — suggest token-goat symbol for message / service names.
+_STRUCTURED_EXT_PROTO: frozenset[str] = frozenset({".proto"})
+
+# Basenames (lowercased) that are env-variable files — matched by name, not extension.
+_STRUCTURED_BASENAME_ENV: frozenset[str] = frozenset({
+    ".env",
+    ".env.example",
+    ".env.local",
+    ".env.test",
+    ".env.production",
+    ".env.staging",
+    ".env.development",
+    ".env.defaults",
+})
+# Basenames (lowercased) that are Makefiles — matched by name, not extension.
+_STRUCTURED_BASENAME_MAKEFILE: frozenset[str] = frozenset({
+    "makefile",
+    "gnumakefile",
+    "bsdmakefile",
+})
+
 # Minimum size in bytes before the structured-file hint fires.  Below this the
 # file is cheap to read whole and the hint would approach the saving it advertises.
 _STRUCTURED_FILE_MIN_BYTES: int = 50_000
+
+# Per-category minimum sizes for new file types that are valuable to hint even
+# when the file is smaller than the global _STRUCTURED_FILE_MIN_BYTES threshold.
+# These are set lower because even medium-sized files of these types benefit from
+# surgical reads (e.g. a 3 KB GraphQL schema with 20 types).
+_STRUCTURED_CSS_MIN_BYTES: int = 10_000   # 10 KB — CSS can be large even when "small"
+_STRUCTURED_SQL_MIN_BYTES: int = 5_000    # 5 KB — any multi-table schema benefits
+_STRUCTURED_GRAPHQL_MIN_BYTES: int = 2_000  # 2 KB — schemas with a few types
+_STRUCTURED_PROTO_MIN_BYTES: int = 2_000    # 2 KB — proto with a few messages
+_STRUCTURED_ENV_MIN_BYTES: int = 500        # 500 B — any non-trivial .env benefits
+_STRUCTURED_MAKEFILE_MIN_BYTES: int = 1_000  # 1 KB — any Makefile with targets
 
 # Maximum bytes to read when counting newlines for the row estimate.
 # 32 KB is enough for a tight estimate at a cheap I/O cost.
@@ -3936,6 +3975,7 @@ def _build_structured_file_hint_inner(
 
     path = Path(file_path)
     ext = path.suffix.lower()
+    basename_lower = path.name.lower()
 
     is_tabular = ext in _STRUCTURED_EXT_TABULAR
     is_json = ext in _STRUCTURED_EXT_JSON
@@ -3944,8 +3984,18 @@ def _build_structured_file_hint_inner(
     is_yaml = ext in _STRUCTURED_EXT_YAML
     is_toml = ext in _STRUCTURED_EXT_TOML
     is_lock = ext in _STRUCTURED_EXT_LOCK
+    # New file types matched by extension or basename.
+    is_css = ext in _STRUCTURED_EXT_CSS
+    is_sql = ext in _STRUCTURED_EXT_SQL
+    is_graphql = ext in _STRUCTURED_EXT_GRAPHQL
+    is_proto = ext in _STRUCTURED_EXT_PROTO
+    is_env = basename_lower in _STRUCTURED_BASENAME_ENV
+    is_makefile = basename_lower in _STRUCTURED_BASENAME_MAKEFILE
 
-    if not (is_tabular or is_json or is_log or is_xml or is_yaml or is_toml or is_lock):
+    if not (
+        is_tabular or is_json or is_log or is_xml or is_yaml or is_toml or is_lock
+        or is_css or is_sql or is_graphql or is_proto or is_env or is_makefile
+    ):
         return None
 
     # Cheap size check first — skip the row-count probe for small files.
@@ -3954,7 +4004,25 @@ def _build_structured_file_hint_inner(
     except OSError:
         return None
 
-    if file_size < _STRUCTURED_FILE_MIN_BYTES:
+    # New file types use per-category thresholds that are lower than the global
+    # minimum, since even small files of these types benefit from surgical reads.
+    if is_css and file_size < _STRUCTURED_CSS_MIN_BYTES:
+        return None
+    if is_sql and file_size < _STRUCTURED_SQL_MIN_BYTES:
+        return None
+    if is_graphql and file_size < _STRUCTURED_GRAPHQL_MIN_BYTES:
+        return None
+    if is_proto and file_size < _STRUCTURED_PROTO_MIN_BYTES:
+        return None
+    if is_env and file_size < _STRUCTURED_ENV_MIN_BYTES:
+        return None
+    if is_makefile and file_size < _STRUCTURED_MAKEFILE_MIN_BYTES:
+        return None
+
+    # For the legacy types, apply the original global threshold.
+    if (
+        is_tabular or is_json or is_log or is_xml or is_yaml or is_toml or is_lock
+    ) and file_size < _STRUCTURED_FILE_MIN_BYTES:
         return None
 
     size_kb = file_size // 1024
@@ -4027,6 +4095,69 @@ def _build_structured_file_hint_inner(
             _apply_terse(
                 f"📋 large toml ({size_kb}KB) — "
                 f"use `token-goat section \"{safe_path}::section\"` to read one block"
+            ),
+            0,
+        )
+
+    if is_css:
+        css_kind = ext.lstrip(".")  # "css", "scss", or "sass"
+        return ReadHint(
+            _apply_terse(
+                f"🎨 large {css_kind} ({size_kb}KB) — "
+                f"use `token-goat symbol .class-name \"{safe_path}\"` for a rule "
+                f"or `token-goat section \"{safe_path}::media-queries\"` for a section"
+            ),
+            0,
+        )
+
+    if is_sql:
+        return ReadHint(
+            _apply_terse(
+                f"🗄️ large sql ({size_kb}KB) — "
+                f"use `token-goat symbol table_name \"{safe_path}\"` to read one table/procedure "
+                f"or `token-goat section \"{safe_path}::CreateTable\"` for a block"
+            ),
+            0,
+        )
+
+    if is_graphql:
+        return ReadHint(
+            _apply_terse(
+                f"📐 large graphql ({size_kb}KB) — "
+                f"use `token-goat symbol TypeName \"{safe_path}\"` to read one type "
+                f"or `token-goat section \"{safe_path}::TypeName\"` for a block"
+            ),
+            0,
+        )
+
+    if is_proto:
+        return ReadHint(
+            _apply_terse(
+                f"📦 large proto ({size_kb}KB) — "
+                f"use `token-goat symbol MessageName \"{safe_path}\"` to read one message/service "
+                f"or `token-goat section \"{safe_path}::MessageName\"` for a block"
+            ),
+            0,
+        )
+
+    if is_env:
+        return ReadHint(
+            _apply_terse(
+                f"🔑 env file ({size_kb if size_kb > 0 else '<1'}KB) — "
+                f"use `token-goat symbol VAR_NAME \"{safe_path}\"` to find a specific variable "
+                f"or grep/rg for the key you need"
+            ),
+            0,
+        )
+
+    if is_makefile:
+        row_count = _estimate_row_count(path, file_size)
+        row_str = f"~{row_count:,}lines" if row_count > 0 else "many lines"
+        return ReadHint(
+            _apply_terse(
+                f"⚙️ Makefile ({size_kb if size_kb > 0 else '<1'}KB, {row_str}) — "
+                f"use `token-goat symbol target-name \"{safe_path}\"` to read one target "
+                f"or `token-goat section \"{safe_path}::target-name\"` for a block"
             ),
             0,
         )

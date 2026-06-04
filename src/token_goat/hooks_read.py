@@ -71,6 +71,7 @@ from .hooks_common import (
 )
 from .util import env_int as _env_int
 from .util import sanitize_surrogates as _sanitize_surrogates
+from .util import utf8_bytes as _utf8_bytes
 
 # Environment variable that disables Bash output compression at the hook layer.
 # Recognised values: "0", "false", "no", "off" (case-insensitive).  Any other
@@ -1428,7 +1429,7 @@ def _try_diff_serve(
         return None
 
     diff_text = "\n".join(diff_lines)
-    diff_bytes = len(diff_text.encode("utf-8"))
+    diff_bytes = len(_utf8_bytes(diff_text))
     file_size = len(current_bytes)
 
     # Only intercept when the diff is meaningfully smaller than the full file.
@@ -2120,7 +2121,7 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
             cache.recovery_injected = True  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this attribute at runtime
         except Exception:  # noqa: BLE001
             pass
-        hint_bytes = len(hint.encode("utf-8"))
+        hint_bytes = len(_utf8_bytes(hint))
         _LOG.info(
             "pre-read: deferred recovery hint injected for session=%s (%d chars, stored_estimate=%d)",
             session_id[:16], hint_bytes, stored_bytes_estimate,
@@ -3308,7 +3309,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Tail-bias truncation keeps error summaries which appear at the end.
     stdout, stderr, _was_truncated = _apply_output_size_cap(stdout, stderr)
 
-    total_bytes = len(stdout.encode("utf-8")) + len(stderr.encode("utf-8"))
+    total_bytes = len(_utf8_bytes(stdout)) + len(_utf8_bytes(stderr))
     if total_bytes < _BASH_CACHE_MIN_BYTES:
         _LOG.debug(
             "post-bash: output too small to cache (%d bytes < %d threshold)",
@@ -3335,8 +3336,8 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     cmd_sha=_cmd_sha,
                     cmd_preview=display_cmd,
                     output_id=_output_id,
-                    stdout_bytes=len(stdout.encode("utf-8")),
-                    stderr_bytes=len(stderr.encode("utf-8")),
+                    stdout_bytes=len(_utf8_bytes(stdout)),
+                    stderr_bytes=len(_utf8_bytes(stderr)),
                     exit_code=exit_code,
                     truncated=False,
                     output_sha=_output_sha,

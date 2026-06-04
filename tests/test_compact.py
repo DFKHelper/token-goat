@@ -6474,13 +6474,22 @@ class TestSkillsSectionCollapse:
 
         # Must NOT emit per-skill bullet lines with "🧠" prefix — those are the
         # full listing format, which should be suppressed when collapsed.
+        # We check only bullet lines (starting with "- ") because the legend line
+        # ("skill=🧠") may appear after the skills section and is unrelated.
         skills_part = result.split("**Skills:**", 1)[1]
         next_section_start = skills_part.find("**")
         if next_section_start >= 0:
             skills_content = skills_part[:next_section_start]
         else:
             skills_content = skills_part
-        assert "🧠" not in skills_content
+        bullet_lines_with_brain = [
+            ln for ln in skills_content.splitlines()
+            if ln.strip().startswith("- ") and "🧠" in ln
+        ]
+        assert not bullet_lines_with_brain, (
+            f"Per-skill bullet lines with 🧠 prefix should not appear in collapsed format: "
+            f"{bullet_lines_with_brain}"
+        )
 
     def test_summary_format_always_used(self, tmp_data_dir):
         """Skills are always emitted as a single summary line regardless of activity level.
@@ -8495,3 +8504,321 @@ class TestOrchestratorConfig:
         """load() returns default orchestrator_commit_threshold=5."""
         cfg = config.load()
         assert cfg.compact_assist.orchestrator_commit_threshold == 5
+
+
+# ---------------------------------------------------------------------------
+# Section ordering: edited → recent_commits → symbols → key_files → skills
+# ---------------------------------------------------------------------------
+
+
+class TestManifestSectionOrder:
+    """Manifest sections appear in the documented priority order.
+
+    The inverted-pyramid order is:
+      edited files → recent_commits → symbols accessed → key files read → skills.
+    This ensures that if the manifest is truncated, the highest-value content
+    (edited files) survives, and skills (load-bearing but recoverable) come last.
+    """
+
+    def test_section_group_order_in_source(self):
+        """_section_groups assembles sections in the documented priority order.
+
+        This is a structural test: it inspects the source of _render to verify
+        the relative order of the five key sections without depending on a live
+        session producing all five.  The order we enforce is:
+            edited → recent_commits → syms → files → skills
+        """
+        import inspect
+        src = inspect.getsource(compact._render)
+
+        # Find the _section_groups list literal in the source.
+        assert "_section_groups" in src
+
+        # Extract the section names from the _section_groups assignment in order.
+        # We look for the pattern ("name", ...) inside the list.
+        import re
+        # Match all ("name", ...) tuple opens in the _section_groups list.
+        names_in_order = re.findall(r'\("(\w+)",[^)]*,\s*(?:True|False)\)', src)
+        assert names_in_order, "Could not parse _section_groups from _render source"
+
+        def _pos(name: str) -> int:
+            try:
+                return names_in_order.index(name)
+            except ValueError:
+                return -1
+
+        edited_pos = _pos("edited")
+        recent_commits_pos = _pos("recent_commits")
+        syms_pos = _pos("syms")
+        files_pos = _pos("files")
+        skills_pos = _pos("skills")
+
+        assert edited_pos != -1, "Section 'edited' not found in _section_groups"
+        assert recent_commits_pos != -1, "Section 'recent_commits' not found in _section_groups"
+        assert syms_pos != -1, "Section 'syms' not found in _section_groups"
+        assert files_pos != -1, "Section 'files' not found in _section_groups"
+        assert skills_pos != -1, "Section 'skills' not found in _section_groups"
+
+        assert edited_pos < recent_commits_pos, (
+            f"'edited' (pos {edited_pos}) must come before 'recent_commits' "
+            f"(pos {recent_commits_pos}) in _section_groups"
+        )
+        assert recent_commits_pos < syms_pos, (
+            f"'recent_commits' (pos {recent_commits_pos}) must come before 'syms' "
+            f"(pos {syms_pos}) in _section_groups"
+        )
+        assert syms_pos < files_pos, (
+            f"'syms' (pos {syms_pos}) must come before 'files' "
+            f"(pos {files_pos}) in _section_groups"
+        )
+        assert files_pos < skills_pos, (
+            f"'files' (pos {files_pos}) must come before 'skills' "
+            f"(pos {skills_pos}) in _section_groups.  Skills should appear last "
+            f"(after edited files and key files) so the most critical content "
+            f"comes first in the manifest."
+        )
+
+    def test_edited_before_symbols_before_files(self, tmp_data_dir):
+        """Edited files appear before symbols accessed which appears before key files
+        in the rendered manifest (live integration test).
+
+        Uses a wide session (> wide_session_threshold=15 files) WITH symbol
+        accesses so the Symbols Accessed section fires as a summary pointer.
+        The wide-session path emits a single "N files accessed" line regardless
+        of item #8 suppression, making this test robust.
+        """
+        import token_goat.session as session_mod
+        from token_goat import compact as compact_mod
+
+        sid = "section-order-wide-syms-abc"
+        cache = session_mod.load(sid)
+        # Edited file (NOT a symbol file so edited and symbols are separate).
+        cache = session_mod.mark_file_edited(sid, "/proj/src/auth.py", cache=cache)
+        # 16 files each with one symbol access — total > wide_session_threshold=15
+        # so the wide-session path fires and emits "**Symbols Accessed:** N files".
+        for i in range(16):
+            cache = session_mod.mark_file_read(
+                sid, f"/proj/src/mod_{i}.py", symbol=f"fn_{i}", cache=cache
+            )
+        session_mod.save(cache)
+
+        result = compact_mod.build_manifest(sid, max_tokens=1600)
+
+        has_edited = "**Staged/Uncommitted:**" in result or "**Edited:**" in result
+        has_syms = "**Symbols Accessed:**" in result
+        has_files = "**Files:**" in result
+
+        if not (has_edited and has_syms and has_files):
+            pytest.skip(
+                f"Not all sections fired (edited={has_edited}, syms={has_syms}, "
+                f"files={has_files}); skipping live ordering check."
+            )
+
+        lines = result.splitlines()
+        edited_idx = next(
+            (i for i, ln in enumerate(lines) if "**Staged/Uncommitted:**" in ln or "**Edited:**" in ln),
+            -1,
+        )
+        syms_idx = next(
+            (i for i, ln in enumerate(lines) if "**Symbols Accessed:**" in ln),
+            -1,
+        )
+        files_idx = next(
+            (i for i, ln in enumerate(lines) if "**Files:**" in ln),
+            -1,
+        )
+
+        assert edited_idx < syms_idx, (
+            f"Edited files section (line {edited_idx}) must appear before "
+            f"Symbols Accessed (line {syms_idx}). Full manifest:\n{result}"
+        )
+        assert syms_idx < files_idx, (
+            f"Symbols Accessed section (line {syms_idx}) must appear before "
+            f"Key Files Read (line {files_idx}). Full manifest:\n{result}"
+        )
+
+    def test_skills_after_edited_files(self, tmp_data_dir):
+        """Skills section appears after the edited files section.
+
+        Skills are protected (never dropped) but should appear after edited files
+        so that edited files — the highest-priority work-in-progress — come first
+        in the manifest.
+        """
+        from token_goat import skill_cache
+
+        sid = "section-order-skills-abc"
+        session.mark_file_edited(sid, "/proj/src/edited.py")
+
+        body = "ralph skill body content " * 20
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+
+        result = compact.build_manifest(sid, max_tokens=800)
+
+        if "**Skills:**" not in result:
+            pytest.skip("Skills section not present; skipping ordering check.")
+
+        has_edited = (
+            "**Staged/Uncommitted:**" in result or "**Edited:**" in result
+        )
+        if not has_edited:
+            pytest.skip("Edited section not present; skipping ordering check.")
+
+        lines = result.splitlines()
+        edited_idx = next(
+            (i for i, ln in enumerate(lines) if "**Staged/Uncommitted:**" in ln or "**Edited:**" in ln),
+            -1,
+        )
+        skills_idx = next(
+            (i for i, ln in enumerate(lines) if "**Skills:**" in ln),
+            -1,
+        )
+
+        assert edited_idx < skills_idx, (
+            f"Edited files section (line {edited_idx}) must appear before "
+            f"Skills section (line {skills_idx}). Full manifest:\n{result}"
+        )
+
+    def test_skills_after_files(self, tmp_data_dir):
+        """Skills section appears after key files read section.
+
+        The order edited → symbols → key_files → skills must hold so that skills
+        (protected, recoverable via recall command) appear last.
+        """
+        from token_goat import skill_cache
+
+        sid = "section-order-skills-after-files-abc"
+        session.mark_file_edited(sid, "/proj/src/main.py")
+        # Key file read 3 times so it fires under Key Files Read.
+        for _ in range(3):
+            session.mark_file_read(sid, "/proj/src/db.py", offset=0, limit=50)
+
+        body = "improve skill body content " * 20
+        meta = skill_cache.store_output(sid, "improve", body)
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+
+        result = compact.build_manifest(sid, max_tokens=800)
+
+        if "**Skills:**" not in result or "**Files:**" not in result:
+            pytest.skip("Skills or Files section not present; skipping ordering check.")
+
+        lines = result.splitlines()
+        files_idx = next(
+            (i for i, ln in enumerate(lines) if "**Files:**" in ln),
+            -1,
+        )
+        skills_idx = next(
+            (i for i, ln in enumerate(lines) if "**Skills:**" in ln),
+            -1,
+        )
+
+        assert files_idx < skills_idx, (
+            f"Key Files section (line {files_idx}) must appear before "
+            f"Skills section (line {skills_idx}). Full manifest:\n{result}"
+        )
+
+    def test_edited_before_skills_even_when_symbols_absent(self, tmp_data_dir):
+        """Edited files come before skills even when no symbols are accessed.
+
+        Regression guard: when the symbols section is empty (no token-goat read
+        commands ran), edited files must still precede skills.
+        """
+        from token_goat import skill_cache
+
+        sid = "section-order-no-syms-abc"
+        session.mark_file_edited(sid, "/proj/src/worker.py")
+        session.mark_file_edited(sid, "/proj/src/hooks.py")
+
+        body = "ralph skill content " * 20
+        meta = skill_cache.store_output(sid, "ralph", body)
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        session.mark_skill_loaded(
+            sid, meta.skill_name, meta.output_id, meta.content_sha,
+            meta.body_bytes, meta.truncated,
+        )
+
+        result = compact.build_manifest(sid, max_tokens=600)
+
+        if "**Skills:**" not in result:
+            pytest.skip("Skills section not present; skipping ordering check.")
+
+        lines = result.splitlines()
+        edited_idx = next(
+            (i for i, ln in enumerate(lines) if "**Staged/Uncommitted:**" in ln or "**Edited:**" in ln),
+            -1,
+        )
+        skills_idx = next(
+            (i for i, ln in enumerate(lines) if "**Skills:**" in ln),
+            -1,
+        )
+
+        if edited_idx == -1:
+            pytest.skip("Edited section header not found; skipping ordering check.")
+
+        assert edited_idx < skills_idx, (
+            f"Edited files (line {edited_idx}) must appear before Skills (line {skills_idx}) "
+            f"even when no symbols section is present.\nFull manifest:\n{result}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cross-section symbol deduplication (Item #36) — regression guard
+# ---------------------------------------------------------------------------
+
+
+class TestCrossSectionSymbolDedupRegression:
+    """Regression tests ensuring edited-file symbols stay out of Symbols Accessed.
+
+    Item #36: when a file appears in the Edited Files section, its symbols must
+    not also appear in the Symbols Accessed section (they are already covered by
+    the edited-file listing and duplicating them wastes manifest tokens).
+    """
+
+    def test_edited_file_symbols_omitted_from_symbols_section(self, tmp_data_dir):
+        """Symbols from an edited file are not listed under Symbols Accessed."""
+        sid = "item36-regression-edited-syms"
+        session.mark_file_edited(sid, "/proj/src/core.py")
+        session.mark_file_read(sid, "/proj/src/core.py", symbol="CoreClass")
+
+        result = compact.build_manifest(sid, max_tokens=600)
+
+        assert "core.py" in result
+        if "**Symbols Accessed:**" in result:
+            syms_part = result.split("**Symbols Accessed:**", 1)[1]
+            end = syms_part.find("\n**")
+            if end >= 0:
+                syms_part = syms_part[:end]
+            assert "CoreClass" not in syms_part, (
+                "CoreClass (from edited file core.py) should NOT appear in "
+                f"**Symbols Accessed:**.  Manifest:\n{result}"
+            )
+
+    def test_readonly_symbols_preserved_alongside_edited(self, tmp_data_dir):
+        """Symbols from read-only files are kept in Symbols Accessed even when
+        other files are edited."""
+        sid = "item36-regression-readonly-syms"
+        session.mark_file_edited(sid, "/proj/src/edited.py")
+        session.mark_file_read(sid, "/proj/src/readonly.py", symbol="ReadOnlyFunc")
+
+        result = compact.build_manifest(sid, max_tokens=600)
+
+        if "**Symbols Accessed:**" in result:
+            syms_part = result.split("**Symbols Accessed:**", 1)[1]
+            end = syms_part.find("\n**")
+            if end >= 0:
+                syms_part = syms_part[:end]
+            assert "ReadOnlyFunc" in syms_part, (
+                "ReadOnlyFunc (from read-only file) should appear in "
+                f"**Symbols Accessed:**.  Manifest:\n{result}"
+            )

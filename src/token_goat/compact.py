@@ -6246,6 +6246,7 @@ def _render(
     #   [sealed] Above-the-fold MUST_PRESERVE block — edited files, blocker, skills
     #   0. Current Blockers  — active failures the agent must know about
     #   1. Files Edited       — ongoing work (must survive compaction)
+    #   1a.Recent Commits     — session commit history
     #   2. Bash history       — current work context (what was just run)
     #   2a.What Worked        — last 2 green test runs (curated "good state" pointer)
     #   3. Symbols accessed   — precise code read
@@ -6254,6 +6255,7 @@ def _render(
     #   5. Grep patterns      — investigation history (least critical)
     #   6. Key files read     — broader context
     #   6b. TODOs             — pending/in-progress TaskList entries
+    #   6c. Active Skills     — skill recall hints (protected, after edited files)
     # ── Section assembly with truncation priority ───────────────────────────
     # Each tuple is (name, lines, protected).  ``protected`` sections are NEVER
     # dropped wholesale during the safety-trim pass — they carry the highest
@@ -6279,13 +6281,26 @@ def _render(
     #  12. test_failures — Recent test failures (high value for active fix cycles)
     # Protected (never wholesale-dropped):
     #   sealed, header, blockers, decisions, skills, uncommitted, edited, legend.
+    # Section order (inverted pyramid — most critical first):
+    #   sealed/header/pinned/blockers/decisions — framing and active failures
+    #   test_failures/uncommitted/edited        — must-preserve work-in-progress
+    #   recent_commits                          — session commit history
+    #   stale/most_accessed/session_goal        — context signals
+    #   bash/what_worked                        — command history
+    #   syms                                    — symbol details per file
+    #   web/glob/dep_changes/grep               — reference / search history
+    #   files                                   — key files read (broader context)
+    #   todos/open_questions/active_errors      — pending issues
+    #   skills                                  — active skill recall hints (last,
+    #                                             but protected so never dropped;
+    #                                             positioned after edited so edited
+    #                                             files appear first in the manifest)
     _section_groups: list[tuple[str, list[str], bool]] = [
         ("sealed",        sealed_block,          True),
         ("header",        header_lines,          True),
         ("pinned",        pinned_lines,          True),
         ("blockers",      blocker_lines,         True),
         ("decisions",     decision_lines,        True),
-        ("skills",        skill_lines,           True),
         ("test_failures", test_failure_lines,    True),
         ("uncommitted",   uncommitted_lines,     True),
         ("edited",        edited_lines,          True),
@@ -6304,6 +6319,7 @@ def _render(
         ("todos",         todo_lines,            False),
         ("open_questions", open_questions_lines, False),
         ("active_errors", active_errors_lines,  False),
+        ("skills",        skill_lines,           True),
     ]
 
     # ── Harness-specific section filtering ───────────────────────────────────
