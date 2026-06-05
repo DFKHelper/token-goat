@@ -542,7 +542,10 @@ def test_install_signal_handlers_wires_sigterm_on_posix() -> None:
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only")
 def test_graceful_shutdown_clears_pid_before_exit() -> None:
     """_graceful_shutdown calls _worker._clear_pid() then sys.exit(0)."""
+    # Explicitly reset _daemon_stop_event to None so we exercise the else-branch
+    # regardless of xdist worker state (a prior test may have set the event).
     with (
+        patch.object(daemon, "_daemon_stop_event", None),
         patch.object(worker, "_clear_pid") as mock_clear,
         patch("sys.exit") as mock_exit,
     ):

@@ -1,6 +1,7 @@
 """Tests for paths.safe_join — the canonical user-controlled path-join helper."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,7 @@ def test_safe_join_rejects_dotdot_nested(base: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="backslash is not a path separator on Linux/macOS")
 def test_safe_join_rejects_dotdot_windows(base: Path) -> None:
     """Windows-style traversal using backslash must be rejected."""
     with pytest.raises(ValueError):

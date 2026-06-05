@@ -191,10 +191,8 @@ def _normalize_skill_name(raw: str) -> str:
     lowercase the result.  Returns ``""`` when the result is empty after all
     steps so callers can bail early on an unusable name.
     """
-    import os as _os  # noqa: PLC0415
-
     stripped = raw.strip()
-    if "/" in stripped or _os.sep in stripped:
+    if "/" in stripped or "\\" in stripped:
         stripped = stripped.replace("\\", "/").split("/")[-1]
     if stripped.lower().endswith(".md"):
         stripped = stripped[:-3]
