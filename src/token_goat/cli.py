@@ -6163,6 +6163,15 @@ def subagent_stop(
     hooks_cli.safe_run("subagent-stop", input_file, _parse_harness(harness))
 
 
+@hook_app.command("pre-skill", context_settings=_HOOK_CTX)
+def pre_skill(
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
+) -> None:
+    """Hook: pre-skill event (blocks repeat skill loads; serves compact on first load when curated)."""
+    hooks_cli.safe_run("pre-skill", input_file, _parse_harness(harness))
+
+
 @hook_app.command("post-skill", context_settings=_HOOK_CTX)
 def post_skill(
     input_file: Path | None = _INPUT_OPT,

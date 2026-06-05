@@ -24,7 +24,7 @@ never interrupt the agent's work.
 """
 from __future__ import annotations
 
-__all__ = ["post_skill"]
+__all__ = ["pre_skill", "post_skill"]
 
 from pathlib import Path
 
@@ -32,6 +32,7 @@ from .hooks_common import (
     CONTINUE,
     HookPayload,
     HookResponse,
+    deny_redirect,
     get_hook_context,
     get_tool_input,
     record_cached_stat,
@@ -180,6 +181,213 @@ def _record_skill_compact_stat(skill_name: str, bytes_saved: int, tokens_saved: 
         )
     except Exception:  # noqa: BLE001
         _LOG.debug("post-skill: skill_compact_served stat record failed", exc_info=True)
+
+
+def _normalize_skill_name(raw: str) -> str:
+    """Normalize a raw skill name from tool_input to a consistent cache key.
+
+    Mirrors the normalization in ``post_skill``: strip whitespace, take the last
+    path component when slashes are present, strip a trailing ``.md`` suffix, and
+    lowercase the result.  Returns ``""`` when the result is empty after all
+    steps so callers can bail early on an unusable name.
+    """
+    import os as _os  # noqa: PLC0415
+
+    stripped = raw.strip()
+    if "/" in stripped or _os.sep in stripped:
+        stripped = stripped.replace("\\", "/").split("/")[-1]
+    if stripped.lower().endswith(".md"):
+        stripped = stripped[:-3]
+    return stripped.lower() if stripped else ""
+
+
+def _compaction_occurred_after(session_id: str, skill_ts: float) -> bool:
+    """Return ``True`` when a compaction event fired more recently than *skill_ts*.
+
+    Uses the mtime of the manifest-SHA sidecar as a proxy for the most recent
+    compaction.  When the sidecar does not exist (no compaction yet this
+    session) returns ``False``.  Failures are caught and return ``False`` so
+    a broken path lookup never accidentally blocks a reload.
+    """
+    try:
+        from . import paths  # noqa: PLC0415
+
+        sidecar = paths.manifest_sha_sidecar_path(session_id)
+        if not sidecar.exists():
+            return False
+        return sidecar.stat().st_mtime > skill_ts
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _read_first_load_compact(skill_name: str) -> str | None:
+    """Try to extract a compact form from the skill file on disk for first-load serving.
+
+    Resolves the skill body path, reads the file, and applies
+    :func:`skill_cache.extract_compact_from_marker`.  Returns ``None`` when the
+    file cannot be found, the file cannot be read, or it has no
+    ``<!-- COMPACT_END -->`` marker.  Failures are caught and return ``None``
+    so the caller falls through to a normal full-body load.
+
+    The compact is NOT stored here — that is still done by ``post_skill`` after
+    the PostToolUse event fires.  We read it inline so the pre-skill hook can
+    serve it without waiting for the post-hook round-trip.
+    """
+    path = _resolve_skill_body_path(skill_name)
+    if not path:
+        return None
+    try:
+        body = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    from . import skill_cache  # noqa: PLC0415
+
+    return skill_cache.extract_compact_from_marker(body)
+
+
+def pre_skill(payload: HookPayload) -> HookResponse:
+    """PreToolUse(Skill) hook: block repeat loads; serve compact on first load when curated.
+
+    Two interception modes:
+
+    **Repeat-load dedup (always on, gated by pre_skill_enabled):**
+    When the same skill has already been loaded in this session and no
+    compaction has fired since (which would evict it from context), the
+    full re-load is blocked.  The cached compact is injected via
+    ``additionalContext`` so the model has the operative rules without the
+    full body cost.  Falls back to a recall-pointer-only message when no
+    compact is available.
+
+    **First-load compact (opt-in, gated by first_load_compact):**
+    When the skill has never been loaded this session AND the skill file on
+    disk contains a ``<!-- COMPACT_END -->`` marker AND ``first_load_compact``
+    is ``True`` in config, the first load is also blocked and the curated
+    compact section is served instead.  The full body remains accessible via
+    ``token-goat skill-body <name> --section <heading>``.
+
+    Always returns CONTINUE on any exception — a broken pre_skill must never
+    interrupt the agent's work.
+    """
+    if not isinstance(payload, dict):
+        return CONTINUE()
+
+    tool_name = payload.get("tool_name", "")
+    if tool_name != "Skill":
+        return CONTINUE()
+
+    from . import config as config_mod  # noqa: PLC0415
+
+    cfg = config_mod.load().skill_preservation
+    if not cfg.enabled or not cfg.pre_skill_enabled:
+        return CONTINUE()
+
+    session_id, _cwd = get_hook_context(payload)
+    if session_id is None:
+        return CONTINUE()
+
+    tool_input = get_tool_input(payload)
+    skill_name_raw = (
+        tool_input.get("skill")
+        or tool_input.get("skillName")
+        or tool_input.get("name")
+    )
+    if not isinstance(skill_name_raw, str) or not skill_name_raw:
+        return CONTINUE()
+
+    skill_name = _normalize_skill_name(skill_name_raw)
+    if not skill_name:
+        return CONTINUE()
+
+    from . import session, skill_cache  # noqa: PLC0415
+
+    prior_entry = session.lookup_skill_entry(session_id, skill_name)
+
+    # -----------------------------------------------------------------------
+    # Repeat-load branch: skill was loaded before in this session.
+    # Block re-injection unless a compaction may have evicted it from context.
+    # -----------------------------------------------------------------------
+    if prior_entry is not None:
+        skill_ts = prior_entry.ts
+        if _compaction_occurred_after(session_id, skill_ts):
+            # Compaction may have evicted the body; allow the reload.
+            _LOG.debug(
+                "pre-skill: compaction detected after skill load (skill=%s ts=%.0f); allowing reload",
+                sanitize_log_str(skill_name, max_len=80),
+                skill_ts,
+            )
+            return CONTINUE()
+
+        run_count = prior_entry.run_count
+        body_tokens = prior_entry.body_bytes // 4  # rough: 4 bytes/token
+        compact_text = skill_cache.get_compact(session_id, skill_name)
+
+        if compact_text:
+            compact_tokens = len(compact_text.encode("utf-8", errors="replace")) // 4
+            context = (
+                f"Skill **{skill_name}** is already in context from this session "
+                f"({run_count}× loaded, ~{body_tokens} tokens). "
+                f"Re-loading blocked to save {body_tokens - compact_tokens} tokens.\n\n"
+                f"**Compact operative summary** (~{compact_tokens} tokens):\n\n"
+                f"{compact_text}\n\n"
+                f"Full sections: `token-goat skill-body {skill_name} --section <heading>`"
+            )
+            _LOG.info(
+                "pre-skill: blocked repeat load of %s (run_count=%d); served compact (%d tokens)",
+                sanitize_log_str(skill_name, max_len=80),
+                run_count,
+                compact_tokens,
+            )
+        else:
+            context = (
+                f"Skill **{skill_name}** is already in context from this session "
+                f"({run_count}× loaded, ~{body_tokens} tokens). "
+                f"Re-loading blocked — its instructions are still active.\n\n"
+                f"Recall the cached body: `token-goat skill-body {skill_name}`\n"
+                f"Recall a specific section: `token-goat skill-body {skill_name} --section <heading>`"
+            )
+            _LOG.info(
+                "pre-skill: blocked repeat load of %s (run_count=%d); no compact cached",
+                sanitize_log_str(skill_name, max_len=80),
+                run_count,
+            )
+
+        return deny_redirect(
+            reason=f"Skill '{skill_name}' already loaded in this session (run {run_count}×); re-injection skipped",
+            context=context,
+        )
+
+    # -----------------------------------------------------------------------
+    # First-load compact branch: opt-in; requires COMPACT_END marker in file.
+    # -----------------------------------------------------------------------
+    if cfg.first_load_compact:
+        compact_text = _read_first_load_compact(skill_name)
+        if compact_text:
+            compact_tokens = len(compact_text.encode("utf-8", errors="replace")) // 4
+            context = (
+                f"Skill **{skill_name}** has a curated compact section "
+                f"(~{compact_tokens} tokens). "
+                f"Serving compact on first load (`first_load_compact` is enabled).\n\n"
+                f"**Compact operative summary**:\n\n"
+                f"{compact_text}\n\n"
+                f"Full skill body: `token-goat skill-body {skill_name}`\n"
+                f"Specific section: `token-goat skill-body {skill_name} --section <heading>`"
+            )
+            _LOG.info(
+                "pre-skill: first-load compact served for %s (~%d tokens)",
+                sanitize_log_str(skill_name, max_len=80),
+                compact_tokens,
+            )
+            return deny_redirect(
+                reason=f"Skill '{skill_name}' first load: compact section served (full body available via skill-body)",
+                context=context,
+            )
+        _LOG.debug(
+            "pre-skill: first_load_compact enabled but no COMPACT_END marker found for %s; allowing full load",
+            sanitize_log_str(skill_name, max_len=80),
+        )
+
+    return CONTINUE()
 
 
 def post_skill(payload: HookPayload) -> HookResponse:

@@ -209,6 +209,19 @@ HOOK_EVENTS: tuple[HookEvent, ...] = (
         docstring="post-fetch event (caches WebFetch text body for dedup + retrieval).",
     ),
     HookEvent(
+        name="pre-skill",
+        typer_func="pre_skill",
+        module="hooks_skill",
+        attr="pre_skill",
+        claude_event="PreToolUse",
+        claude_matcher="Skill",
+        claude_timeout_ms=3000,
+        codex_event=None,  # Codex has no Skill tool.
+        codex_matcher="",
+        codex_timeout_ms=0,
+        docstring="pre-skill event (blocks repeat skill loads; serves compact on first load when curated).",
+    ),
+    HookEvent(
         name="post-skill",
         typer_func="post_skill",
         module="hooks_skill",

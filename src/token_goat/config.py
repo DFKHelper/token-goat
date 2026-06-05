@@ -261,6 +261,8 @@ class _SkillPreservationToml(TypedDict, total=False):
     compress_bodies: bool
     compress_min_bytes: int
     inline_snippets: bool
+    pre_skill_enabled: bool
+    first_load_compact: bool
 
 
 class _ImageShrinkToml(TypedDict, total=False):
@@ -631,6 +633,21 @@ class SkillPreservationConfig:
             Set to ``False`` to revert to recall-command-only behaviour (saves
             ~150–200 tokens per skill at manifest-build time but requires the
             agent to fetch the snippet manually after compaction).
+        pre_skill_enabled: When ``True`` (default), a PreToolUse hook fires
+            before every Skill invocation.  Repeat loads of the same skill
+            in the same session are blocked and the cached compact is injected
+            as ``additionalContext`` instead (or a recall pointer when no
+            compact is available), saving the full body size on every reload.
+            First-load blocking is separately gated by ``first_load_compact``.
+            Disable with ``TOKEN_GOAT_PRE_SKILL=0``.
+        first_load_compact: When ``True`` *and* the skill has an explicit
+            ``<!-- COMPACT_END -->`` marker, the pre-skill hook also blocks the
+            *first* load of the skill and serves only the compact section.  The
+            full body is accessible on demand via
+            ``token-goat skill-body <name> --section <heading>``.  Defaults to
+            ``False`` (safe default: full body on first load, compact on
+            subsequent loads only).  Enable only after verifying that your
+            skill compacts are functional standalones.
     """
 
     enabled: bool = True
@@ -641,6 +658,8 @@ class SkillPreservationConfig:
     compress_bodies: bool = True
     compress_min_bytes: int = 16 * 1024
     inline_snippets: bool = True
+    pre_skill_enabled: bool = True
+    first_load_compact: bool = False
 
 
 @dataclass
@@ -1496,10 +1515,17 @@ def load() -> Config:
         inline_snippets=_validated_bool(
             sp_raw.get("inline_snippets", True), True, "skill_preservation.inline_snippets",
         ),
+        pre_skill_enabled=_validated_bool(
+            sp_raw.get("pre_skill_enabled", True), True, "skill_preservation.pre_skill_enabled",
+        ),
+        first_load_compact=_validated_bool(
+            sp_raw.get("first_load_compact", False), False, "skill_preservation.first_load_compact",
+        ),
     )
     _apply_env_disable(sp, "enabled", _ENV_SKILL_PRESERVATION, "skill_preservation")
     _apply_env_disable(sp, "orphan_sweep_enabled", _ENV_ORPHAN_SWEEP, "skill_preservation.orphan_sweep_enabled")
     _apply_env_disable(sp, "compress_bodies", _ENV_SKILL_COMPRESS, "skill_preservation.compress_bodies")
+    _apply_env_disable(sp, "pre_skill_enabled", "TOKEN_GOAT_PRE_SKILL", "skill_preservation.pre_skill_enabled")
 
     is_raw: _ImageShrinkToml = cast("_ImageShrinkToml", raw.get("image_shrink", {}))
     is_cfg = ImageShrinkConfig(
