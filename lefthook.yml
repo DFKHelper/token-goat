@@ -10,8 +10,10 @@ pre-commit:
 pre-push:
   commands:
     typecheck:
+      glob: "**/*.py"
       run: uv run mypy src
     test:
+      glob: "**/*.py"
       env:
         PYTHONIOENCODING: "utf-8:replace"
       # Script file avoids Windows quote-mangling of "not slow" that breaks
