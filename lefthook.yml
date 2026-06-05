@@ -20,3 +20,10 @@ pre-push:
       # both cmd.exe and shell: bash inline forms. The script sets -n 0 to
       # override the -n auto addopts and avoids xdist INTERNALERROR crashes.
       run: bash .lefthook/pre-push/test.sh
+    wsl-test:
+      glob: "**/*.py"
+      # Mirrors CI ubuntu-latest gate (-n auto, not slow). Runs in parallel
+      # with the Windows test step — hook wall time stays at ~7 min.
+      # Catches Linux-specific failures (platform gating, os.sep, etc.)
+      # before they reach CI. Skips gracefully when WSL is unavailable.
+      run: bash .lefthook/pre-push/wsl-test.sh
