@@ -46,6 +46,7 @@ __all__ = [
     "generate_compact_summary",
     "get_all_cached_skills",
     "get_compact",
+    "get_compact_any_session",
     "get_skill_file_path",
     "list_by_session",
     "list_outputs",
@@ -1548,6 +1549,36 @@ def get_compact(session_id: str, skill_name: str) -> str | None:
         return out_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         _LOG.debug("skill_cache.get_compact: I/O error for %s: %s", skill_name, exc)
+        return None
+
+
+def get_compact_any_session(skill_name: str) -> str | None:
+    """Return a compact summary for *skill_name* from any session, or ``None``.
+
+    Unlike :func:`get_compact`, this performs a cross-session glob search for
+    ``*-{safe_name}-compact`` files in the skills cache directory, picking the
+    newest match by file mtime.  Used by :mod:`hooks_skill` post_skill advisory
+    and by :mod:`install` to verify that a pre-generated compact is visible
+    regardless of which session created it.  Fail-soft on I/O errors.
+    """
+    name = _safe_skill_name(skill_name)
+    if name is None:
+        return None
+
+    safe_name = name.replace(":", "_")
+    if ":" in name:
+        safe_name += "n"
+    pattern = f"*-{safe_name}-compact"
+
+    try:
+        out_dir = _skill_outputs_dir()
+        matches = list(out_dir.glob(pattern))
+        if not matches:
+            return None
+        newest = max(matches, key=lambda p: p.stat().st_mtime)
+        return newest.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _LOG.debug("skill_cache.get_compact_any_session: I/O error for %s: %s", skill_name, exc)
         return None
 
 

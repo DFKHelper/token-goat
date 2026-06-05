@@ -4682,6 +4682,18 @@ def cmd_skill_compact(
             _error("Cannot combine a skill NAME argument with --all.")
             raise typer.Exit(1)
 
+        # First pass: pre-generate compacts for all skill files on disk.
+        # This covers skills that have never been loaded in any session.
+        from . import install as _install_mod  # noqa: PLC0415
+        try:
+            pregen_summary = _install_mod.pregen_skill_compacts()
+            if not json_output:
+                typer.echo(f"  [pre-gen: {pregen_summary}]")
+        except Exception as _pregen_exc:  # noqa: BLE001
+            _LOG.warning("skill-compact --all: pregen pass failed: %s", _pregen_exc)
+            if not json_output:
+                typer.echo(f"  [pre-gen: FAILED — {_pregen_exc}]")
+
         # Enumerate unique skill names visible in the current session (or, when
         # no session is set, all entries in the cache directory).
         if _compact_session_id:

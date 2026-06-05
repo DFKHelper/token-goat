@@ -1197,6 +1197,15 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     except Exception:  # noqa: BLE001
         _LOG.debug("pre-compact: telemetry record failed", exc_info=True)
 
+    # Reset context-growth tracking so threshold advisories restart cleanly in
+    # the post-compact session (the cache is preserved across compaction).
+    try:
+        session_cache.turns_since_last_compact = 0
+        session_cache.last_context_advisory_threshold = None
+        session_mod.save(session_cache)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-compact: context tracking reset failed", exc_info=True)
+
     return {"continue": True, "systemMessage": manifest}
 
 

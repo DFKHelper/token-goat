@@ -1,0 +1,1034 @@
+"""Tests for context growth mitigation changes (design doc 2026-06-05).
+
+Covers:
+- Change 4: pregen_skill_compacts() at install time + get_compact_any_session()
+- Change 2: pre_skill and post_skill compact advisories
+- Change 3: threshold-crossing ETA in user_prompt_submit
+"""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from token_goat import install, paths, skill_cache
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_SIMPLE_SKILL_BODY = """\
+---
+description: A simple test skill for unit tests.
+---
+
+# Test Skill
+
+## Overview
+
+This is a test skill body for pre-generation testing.
+
+## Usage
+
+Call it when you need to test compact pre-generation.
+
+CRITICAL: This line must appear in the compact.
+"""
+
+_LARGE_SKILL_BODY = "# Large Skill\n\n" + ("x " * 5000) + "\nCRITICAL: Large skill marker.\n"
+
+
+def _make_skill_dir(parent: Path, name: str, body: str = _SIMPLE_SKILL_BODY) -> Path:
+    """Create a minimal ~/.claude/skills/<name>/SKILL.md under *parent*."""
+    skill_dir = parent / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
+    return skill_dir
+
+
+# ---------------------------------------------------------------------------
+# Change 4: get_compact_any_session
+# ---------------------------------------------------------------------------
+
+
+class TestGetCompactAnySession:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir):
+        self.data_dir = tmp_data_dir
+
+    def test_returns_none_when_no_compact_exists(self):
+        result = skill_cache.get_compact_any_session("nonexistent-skill")
+        assert result is None
+
+    def test_finds_compact_from_install_session(self):
+        body = _SIMPLE_SKILL_BODY
+        sha = skill_cache.content_hash(body)
+        compact_text = skill_cache.generate_compact_summary(body)
+        skill_cache.store_compact("_install", "test-skill", compact_text, source_sha=sha)
+
+        result = skill_cache.get_compact_any_session("test-skill")
+        assert result is not None
+        assert "compact form" in result
+
+    def test_finds_newest_when_multiple_sessions(self):
+        body = _SIMPLE_SKILL_BODY
+        sha = skill_cache.content_hash(body)
+        compact = skill_cache.generate_compact_summary(body)
+        skill_cache.store_compact("session-aaa", "multi-skill", compact, source_sha=sha)
+        time.sleep(0.01)
+        compact2 = compact + "\n# Extra section"
+        skill_cache.store_compact("session-bbb", "multi-skill", compact2, source_sha=sha)
+
+        result = skill_cache.get_compact_any_session("multi-skill")
+        assert result is not None
+
+    def test_plugin_namespaced_skill(self):
+        body = _SIMPLE_SKILL_BODY
+        sha = skill_cache.content_hash(body)
+        compact = skill_cache.generate_compact_summary(body)
+        skill_cache.store_compact("_install", "myplugin:myscill", compact, source_sha=sha)
+
+        result = skill_cache.get_compact_any_session("myplugin:myscill")
+        assert result is not None
+
+    def test_returns_none_for_invalid_name(self):
+        result = skill_cache.get_compact_any_session("")
+        assert result is None
+
+        result = skill_cache.get_compact_any_session("../etc/passwd")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Change 4: pregen_skill_compacts
+# ---------------------------------------------------------------------------
+
+
+class TestPregenSkillCompacts:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir, monkeypatch):
+        self.data_dir = tmp_data_dir
+        # Point paths.claude_skills_dir() and claude_plugins_dir() to our tmp home.
+        self.fake_skills_root = tmp_data_dir / "fake_skills"
+        self.fake_plugins_root = tmp_data_dir / "fake_plugins"
+        self.fake_skills_root.mkdir()
+        self.fake_plugins_root.mkdir()
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: self.fake_skills_root)
+        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: self.fake_plugins_root)
+
+    def test_generates_compacts_for_user_skills(self):
+        _make_skill_dir(self.fake_skills_root, "skill-alpha")
+        _make_skill_dir(self.fake_skills_root, "skill-beta")
+
+        summary = install.pregen_skill_compacts()
+
+        assert "2 skills found" in summary
+        assert "2 generated" in summary
+
+        # Compacts should be retrievable cross-session.
+        assert skill_cache.get_compact_any_session("skill-alpha") is not None
+        assert skill_cache.get_compact_any_session("skill-beta") is not None
+
+    def test_skips_up_to_date_compact(self):
+        _make_skill_dir(self.fake_skills_root, "fresh-skill")
+        # Pre-generate once.
+        install.pregen_skill_compacts()
+        # Second run should skip.
+        summary = install.pregen_skill_compacts()
+        assert "1 up-to-date" in summary
+        assert "generated" not in summary or "0 generated" in summary or "1 skills found" in summary
+
+    def test_writes_sentinel_file(self):
+        _make_skill_dir(self.fake_skills_root, "sentinel-skill")
+        install.pregen_skill_compacts()
+
+        sentinel = paths.skill_pregen_sentinel_path()
+        assert sentinel.exists()
+        data = json.loads(sentinel.read_text())
+        assert "ts" in data
+        assert data["skill_count"] == 1
+        assert data["compact_count"] >= 1
+
+    def test_handles_empty_skills_dir(self):
+        summary = install.pregen_skill_compacts()
+        assert "0 skills found" in summary
+
+    def test_handles_skills_dir_not_existing(self, monkeypatch):
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: self.fake_skills_root / "does_not_exist")
+        summary = install.pregen_skill_compacts()
+        assert "0 skills found" in summary
+
+    def test_discovers_plugin_skills(self):
+        # Create marketplace-layout plugin skill:
+        # plugins/cache/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md
+        plugin_skill_dir = (
+            self.fake_plugins_root
+            / "cache"
+            / "hub"
+            / "my-plugin"
+            / "v1.0.0"
+            / "skills"
+            / "my-plugin-skill"
+        )
+        plugin_skill_dir.mkdir(parents=True)
+        (plugin_skill_dir / "SKILL.md").write_text(_SIMPLE_SKILL_BODY, encoding="utf-8")
+
+        summary = install.pregen_skill_compacts()
+
+        assert "1 skills found" in summary
+        assert skill_cache.get_compact_any_session("my-plugin:my-plugin-skill") is not None
+
+    def test_subsequent_post_skill_finds_cache_hit(self):
+        _make_skill_dir(self.fake_skills_root, "cached-skill", body=_SIMPLE_SKILL_BODY)
+        install.pregen_skill_compacts()
+
+        # After pre-gen, get_compact_any_session should return a compact.
+        result = skill_cache.get_compact_any_session("cached-skill")
+        assert result is not None
+        assert "compact form" in result
+
+
+# ---------------------------------------------------------------------------
+# Change 4: install_all includes skill compact pre-gen step
+# ---------------------------------------------------------------------------
+
+
+def test_install_all_includes_pregen_step(tmp_data_dir, monkeypatch, patched_home):
+    """install_all() should include a 'skill compact pre-gen' result key."""
+    fake_skills = patched_home / ".claude" / "skills"
+    fake_skills.mkdir(parents=True, exist_ok=True)
+    _make_skill_dir(fake_skills, "install-test-skill")
+
+    monkeypatch.setattr(paths, "claude_skills_dir", lambda: fake_skills)
+    monkeypatch.setattr(paths, "claude_plugins_dir", lambda: patched_home / ".claude" / "plugins")
+
+    with (
+        patch("token_goat.install.patch_settings_json", return_value=(True, "ok")),
+        patch("token_goat.install.patch_claude_md", return_value="ok"),
+        patch("token_goat.install._install_platform_autostart"),
+        patch("token_goat.install.probe_image_codecs", return_value={"ok": True, "summary": "ok"}),
+        patch("token_goat.install._remove_legacy_launchers", return_value=[]),
+    ):
+        result = install.install_all()
+
+    assert "skill compact pre-gen" in result
+    assert "FAIL" not in result["skill compact pre-gen"]
+
+
+# ---------------------------------------------------------------------------
+# Change 4: sentinel-based new-plugin gap detection
+# ---------------------------------------------------------------------------
+
+
+class TestPluginGapDetection:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir, monkeypatch):
+        self.data_dir = tmp_data_dir
+        self.fake_skills_root = tmp_data_dir / "fake_skills"
+        self.fake_plugins_root = tmp_data_dir / "fake_plugins"
+        self.fake_skills_root.mkdir()
+        self.fake_plugins_root.mkdir()
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: self.fake_skills_root)
+        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: self.fake_plugins_root)
+
+    def test_sentinel_ts_is_after_pregen(self):
+        _make_skill_dir(self.fake_skills_root, "gap-skill")
+        t_before = time.time()
+        install.pregen_skill_compacts()
+        sentinel = paths.skill_pregen_sentinel_path()
+        data = json.loads(sentinel.read_text())
+        assert data["ts"] >= t_before
+
+    def test_no_sentinel_before_pregen(self):
+        sentinel = paths.skill_pregen_sentinel_path()
+        assert not sentinel.exists()
+
+    def test_sentinel_updated_on_second_run(self):
+        _make_skill_dir(self.fake_skills_root, "gap-skill2")
+        install.pregen_skill_compacts()
+        sentinel = paths.skill_pregen_sentinel_path()
+        ts1 = json.loads(sentinel.read_text())["ts"]
+
+        time.sleep(0.05)
+        install.pregen_skill_compacts()
+        ts2 = json.loads(sentinel.read_text())["ts"]
+        assert ts2 >= ts1
+
+
+# ---------------------------------------------------------------------------
+# Change 2: pre_skill context advisory (2a)
+# ---------------------------------------------------------------------------
+
+# Minimal skill body that fits within the "small" advisory threshold so it
+# doesn't trigger the post_skill advisory unless we force the size.
+_SMALL_SKILL_BODY = "# Tiny Skill\n\nOne liner.\n"
+
+# 9 KB body — above _ADVISORY_BODY_THRESHOLD_BYTES (8 KB) but below
+# _LARGE_BODY_THRESHOLD_BYTES (40 KB), so post_skill goes Path 2 (sync).
+_MEDIUM_SKILL_BODY = "# Medium Skill\n\n" + ("w " * 4_500) + "\nCRITICAL: medium marker.\n"
+
+# 42 KB body — above _LARGE_BODY_THRESHOLD_BYTES, so post_skill goes Path 3/4 (async/info).
+_XLARGE_SKILL_BODY = "# XLarge Skill\n\n" + ("z " * 21_000) + "\nCRITICAL: xlarge marker.\n"
+
+
+def _make_pre_skill_payload(session_id: str, skill_name: str) -> dict:
+    """Build a minimal pre_skill (PreToolUse) payload."""
+    return {
+        "session_id": session_id,
+        "tool_name": "Skill",
+        "tool_input": {"skill": skill_name},
+    }
+
+
+def _make_post_skill_payload(session_id: str, skill_name: str, body: str) -> dict:
+    """Build a minimal post_skill (PostToolUse) payload."""
+    return {
+        "session_id": session_id,
+        "tool_name": "Skill",
+        "tool_input": {"skill": skill_name},
+        "tool_response": body,
+    }
+
+
+class TestChange2PreSkillAdvisory:
+    """Tests for the 2a non-blocking context advisory in pre_skill."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir):
+        self.data_dir = tmp_data_dir
+
+    def _run_pre_skill(self, session_id: str, skill_name: str) -> dict:
+        from token_goat import hooks_skill
+
+        payload = _make_pre_skill_payload(session_id, skill_name)
+        return hooks_skill.pre_skill(payload)
+
+    def test_emits_advisory_when_context_high_and_skill_large(self):
+        """Context > 60 % and incoming skill > 4 K tokens → non-blocking advisory."""
+        with (
+            patch("token_goat.hooks_skill._estimate_context_fill", return_value=0.75),
+            patch("token_goat.hooks_skill._estimate_incoming_skill_tokens", return_value=6_000),
+        ):
+            resp = self._run_pre_skill("sess-advisory", "big-skill")
+
+        # Must be a non-blocking CONTINUE (not a deny/redirect).
+        assert resp.get("continue") is True
+        # The advisory lands in hookSpecificOutput → additionalContext.
+        hook_out = resp.get("hookSpecificOutput", {})
+        additional = hook_out.get("additionalContext", "")
+        assert "token-goat" in additional
+        assert "context at" in additional
+        assert "big-skill" in additional
+        assert "compact" in additional.lower()
+
+    def test_no_advisory_when_context_below_threshold(self):
+        """Context ≤ 60 % → no advisory, plain CONTINUE with no additionalContext."""
+        with (
+            patch("token_goat.hooks_skill._estimate_context_fill", return_value=0.45),
+            patch("token_goat.hooks_skill._estimate_incoming_skill_tokens", return_value=8_000),
+        ):
+            resp = self._run_pre_skill("sess-low-ctx", "any-skill")
+
+        assert resp.get("continue") is True
+        hook_out = resp.get("hookSpecificOutput", {})
+        assert "additionalContext" not in hook_out or hook_out.get("additionalContext") == ""
+
+    def test_no_advisory_when_skill_tokens_below_threshold(self):
+        """Context > 60 % but skill ≤ 4 K tokens → no advisory."""
+        with (
+            patch("token_goat.hooks_skill._estimate_context_fill", return_value=0.80),
+            patch("token_goat.hooks_skill._estimate_incoming_skill_tokens", return_value=2_000),
+        ):
+            resp = self._run_pre_skill("sess-small-skill", "tiny-skill")
+
+        assert resp.get("continue") is True
+        hook_out = resp.get("hookSpecificOutput", {})
+        assert "additionalContext" not in hook_out or hook_out.get("additionalContext") == ""
+
+    def test_advisory_disabled_via_config(self):
+        """pre_skill_advisory=False → advisory suppressed even at 90 % context."""
+        from token_goat.config import Config, HintsConfig
+
+        fake_cfg = Config()
+        fake_cfg.hints = HintsConfig(pre_skill_advisory=False)
+
+        with (
+            patch("token_goat.hooks_skill._estimate_context_fill", return_value=0.90),
+            patch("token_goat.hooks_skill._estimate_incoming_skill_tokens", return_value=10_000),
+            patch("token_goat.config.load", return_value=fake_cfg),
+        ):
+            resp = self._run_pre_skill("sess-disabled", "big-skill")
+
+        assert resp.get("continue") is True
+        hook_out = resp.get("hookSpecificOutput", {})
+        assert "additionalContext" not in hook_out or hook_out.get("additionalContext") == ""
+
+    def test_estimate_failure_does_not_block_skill(self):
+        """If estimation raises, pre_skill still returns CONTINUE (fail-soft)."""
+        with patch(
+            "token_goat.hooks_skill._estimate_context_fill",
+            side_effect=RuntimeError("simulated failure"),
+        ):
+            resp = self._run_pre_skill("sess-err", "any-skill")
+
+        assert resp.get("continue") is True
+
+
+# ---------------------------------------------------------------------------
+# Change 2: post_skill 4-path compact advisory (2b)
+# ---------------------------------------------------------------------------
+
+
+class TestChange2PostSkillCompactPaths:
+    """Tests for the 4-path compact advisory logic in post_skill."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir):
+        self.data_dir = tmp_data_dir
+
+    def _run_post_skill(self, session_id: str, skill_name: str, body: str) -> dict:
+        from token_goat import hooks_skill
+
+        payload = _make_post_skill_payload(session_id, skill_name, body)
+        return hooks_skill.post_skill(payload)
+
+    # -- Path 1: pre-generated compact with matching SHA --------------------
+
+    def test_path1_uses_pregen_compact_on_sha_match(self):
+        """Pre-gen compact with SHA matching current body → system_message with 'Pre-generated'."""
+        body = _MEDIUM_SKILL_BODY
+        body_sha = skill_cache.content_hash(body)
+        compact = skill_cache.generate_compact_summary(body)
+        # Store a pregen compact under the install session.
+        skill_cache.store_compact("_install", "pregen-skill", compact, source_sha=body_sha)
+
+        resp = self._run_post_skill("sess-path1", "pregen-skill", body)
+
+        assert resp.get("continue") is True
+        system_msg = resp.get("systemMessage", "")
+        # Advisory must mention the skill name and 'Pre-generated'.
+        assert "pregen-skill" in system_msg
+        assert "Pre-generated" in system_msg
+
+    def test_path1_skips_generation_when_pregen_hit(self):
+        """Path 1: _generate_and_store_compact must NOT be called on a SHA hit."""
+        body = _MEDIUM_SKILL_BODY
+        body_sha = skill_cache.content_hash(body)
+        compact = skill_cache.generate_compact_summary(body)
+        skill_cache.store_compact("_install", "pregen-no-gen", compact, source_sha=body_sha)
+
+        with patch("token_goat.hooks_skill._generate_and_store_compact") as mock_gen:
+            self._run_post_skill("sess-path1-skip", "pregen-no-gen", body)
+
+        mock_gen.assert_not_called()
+
+    # -- Path 2: sync generation for small-to-medium bodies ----------------
+
+    def test_path2_sync_generates_compact_for_medium_body(self):
+        """No pre-gen, body < 40 KB → compact generated synchronously."""
+        body = _MEDIUM_SKILL_BODY  # ~9 KB, above advisory threshold
+        assert len(body.encode()) < 40_000
+
+        resp = self._run_post_skill("sess-path2", "medium-skill", body)
+
+        assert resp.get("continue") is True
+        # After sync generation, a compact should be stored for this session.
+        stored = skill_cache.get_compact("sess-path2", "medium-skill")
+        assert stored is not None
+        # system_message should mention the skill and compact token count.
+        system_msg = resp.get("systemMessage", "")
+        assert "medium-skill" in system_msg
+        assert "tokens" in system_msg
+
+    def test_path2_no_system_message_for_tiny_body(self):
+        """Small body < _ADVISORY_BODY_THRESHOLD_BYTES (8 KB) → no system_message."""
+        body = _SMALL_SKILL_BODY
+        assert len(body.encode()) < 8_000
+
+        resp = self._run_post_skill("sess-path2-tiny", "tiny-skill", body)
+
+        assert resp.get("continue") is True
+        # No advisory for tiny skills below the advisory threshold.
+        assert not resp.get("systemMessage")
+
+    # -- Path 3: async generation for large body when worker alive ----------
+
+    def test_path3_dispatches_thread_when_worker_alive(self):
+        """body >= 40 KB, worker alive → daemon thread spawned, no blocking generation."""
+        body = _XLARGE_SKILL_BODY
+        assert len(body.encode()) >= 40_000
+
+        with (
+            patch("token_goat.worker.is_worker_alive", return_value=True),
+            patch("token_goat.hooks_skill._generate_and_store_compact") as mock_gen,
+            patch("threading.Thread") as mock_thread_cls,
+        ):
+            mock_thread = mock_thread_cls.return_value
+            resp = self._run_post_skill("sess-path3", "xlarge-skill", body)
+
+        assert resp.get("continue") is True
+        # Thread must be constructed and started.
+        mock_thread_cls.assert_called_once()
+        mock_thread.start.assert_called_once()
+        # Sync generation must NOT run in the hook body.
+        mock_gen.assert_not_called()
+        # system_message should mention background generation.
+        system_msg = resp.get("systemMessage", "")
+        assert "background" in system_msg.lower()
+        assert "xlarge-skill" in system_msg
+
+    # -- Path 4: info-only when worker is down and no pre-gen --------------
+
+    def test_path4_info_only_when_worker_down(self):
+        """body >= 40 KB, worker down → info-only system_message, no generation."""
+        body = _XLARGE_SKILL_BODY
+        assert len(body.encode()) >= 40_000
+
+        with (
+            patch("token_goat.worker.is_worker_alive", return_value=False),
+            patch("token_goat.hooks_skill._generate_and_store_compact") as mock_gen,
+        ):
+            resp = self._run_post_skill("sess-path4", "xlarge-offline", body)
+
+        assert resp.get("continue") is True
+        mock_gen.assert_not_called()
+        system_msg = resp.get("systemMessage", "")
+        # Must tell the user how to resolve (install or skill-compact --all).
+        assert "xlarge-offline" in system_msg
+        assert "install" in system_msg or "skill-compact" in system_msg
+
+    # -- Stale pre-gen (SHA mismatch) falls through to path 2/3/4 ----------
+
+    def test_stale_pregen_compact_falls_through_to_sync(self):
+        """Pre-gen compact with wrong SHA → treated as absent; sync generation runs."""
+        body = _MEDIUM_SKILL_BODY
+        # Store a compact that has a *different* SHA than the current body.
+        skill_cache.store_compact("_install", "stale-skill", "old compact text", source_sha="deadbeef")
+
+        with patch("token_goat.hooks_skill._generate_and_store_compact") as mock_gen:
+            mock_gen.return_value = (100, 2250)
+            resp = self._run_post_skill("sess-stale", "stale-skill", body)
+
+        assert resp.get("continue") is True
+        # Sync generation must have been called since the pre-gen SHA doesn't match.
+        mock_gen.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Change 3: threshold-crossing ETA in user_prompt_submit
+# ---------------------------------------------------------------------------
+
+def _run_user_prompt_submit(session_id: str, prompt: str = "what changed?") -> dict:
+    """Call user_prompt_submit and return the hook response."""
+    from token_goat import hooks_session
+
+    payload = {
+        "session_id": session_id,
+        "prompt": prompt,
+    }
+    return hooks_session.user_prompt_submit(payload)
+
+
+def _set_loaded_skill_tokens(session_id: str, tokens: int) -> None:
+    """Directly set loaded_skill_total_tokens on the session cache for testing."""
+    from token_goat import session as ses
+
+    cache = ses.safe_load(session_id, caller="test")
+    if cache is None:
+        cache = ses._fresh_cache(session_id)
+    cache.loaded_skill_total_tokens = tokens
+    ses.save(cache)
+
+
+class TestChange3ThresholdAdvisory:
+    """Tests for the threshold-crossing context advisory in user_prompt_submit."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir):
+        self.data_dir = tmp_data_dir
+
+    def test_no_advisory_below_50_percent(self):
+        """Below 50% context fill → existing status line, no ctx part."""
+        sid = "sess-c3-low"
+        # 0 loaded skill tokens → pct = 10,800 / 660,000 ≈ 1.6%, well below 50%
+        _set_loaded_skill_tokens(sid, 0)
+
+        resp = _run_user_prompt_submit(sid)
+        ctx = resp.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "ctx" not in ctx
+        assert "CONTEXT" not in ctx
+
+    def test_first_crossing_50_percent_appends_ctx_part(self):
+        """First turn above 50% → ctx appended to status line."""
+        sid = "sess-c3-50"
+        # 10,800 tokens catalog; need ~50% of 660,000 = 330,000 total
+        # loaded_skill_total_tokens ≈ 330,000 - 10,800 = 319,200
+        _set_loaded_skill_tokens(sid, 320_000)
+
+        resp = _run_user_prompt_submit(sid)
+        ctx = resp.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "ctx:" in ctx
+        assert "context approaching midpoint" in ctx
+        # Must be the bracket-joined format, not urgency prefix.
+        assert ctx.startswith("[")
+        assert "CONTEXT" not in ctx
+
+    def test_50_percent_crossing_fires_only_once(self):
+        """Second turn still above 50% → no ctx part (one-time crossing)."""
+        sid = "sess-c3-50-once"
+        _set_loaded_skill_tokens(sid, 320_000)
+
+        _run_user_prompt_submit(sid)   # first turn — fires
+        resp2 = _run_user_prompt_submit(sid)  # second turn — should not fire again
+
+        ctx = resp2.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "ctx:" not in ctx
+        assert "context approaching midpoint" not in ctx
+
+    def test_first_crossing_70_percent_replaces_summary(self):
+        """First turn above 70% → CONTEXT urgency prefix replaces normal format."""
+        sid = "sess-c3-70"
+        # loaded_skill_total_tokens ≈ 70% of 660,000 - 10,800 ≈ 451,200
+        _set_loaded_skill_tokens(sid, 452_000)
+
+        resp = _run_user_prompt_submit(sid)
+        ctx = resp.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert ctx.startswith("[CONTEXT ~7")
+        assert "Consider /compact soon." in ctx
+
+    def test_70_percent_crossing_fires_only_once(self):
+        """Second turn still above 70% → no repeat of 70% advisory."""
+        sid = "sess-c3-70-once"
+        _set_loaded_skill_tokens(sid, 452_000)
+
+        _run_user_prompt_submit(sid)   # first turn — fires
+        resp2 = _run_user_prompt_submit(sid)  # second turn — should not fire again
+
+        ctx = resp2.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "Consider /compact soon." not in ctx
+
+    def test_85_percent_fires_every_turn(self):
+        """Above 85% → urgency advisory fires on every turn (no one-time gate)."""
+        sid = "sess-c3-85"
+        # loaded_skill_total_tokens ≈ 85% of 660,000 - 10,800 ≈ 550,200
+        _set_loaded_skill_tokens(sid, 551_000)
+
+        resp1 = _run_user_prompt_submit(sid)
+        resp2 = _run_user_prompt_submit(sid)
+
+        for resp in (resp1, resp2):
+            ctx = resp.get("hookSpecificOutput", {}).get("additionalContext", "")
+            assert ctx.startswith("[CONTEXT ~8")
+            assert "/compact now." in ctx
+
+    def test_turns_since_last_compact_increments(self):
+        """turns_since_last_compact increments on each user_prompt_submit call."""
+        from token_goat import session as ses
+
+        sid = "sess-c3-turns"
+        _set_loaded_skill_tokens(sid, 0)
+
+        _run_user_prompt_submit(sid)
+        _run_user_prompt_submit(sid)
+        _run_user_prompt_submit(sid)
+
+        cache = ses.safe_load(sid, caller="test")
+        assert cache is not None
+        assert cache.turns_since_last_compact == 3
+
+    def test_advisory_disabled_via_config(self):
+        """context_threshold_advisory=False → no CONTEXT prefix even at 90%."""
+        from token_goat.config import Config, HintsConfig
+
+        sid = "sess-c3-disabled"
+        _set_loaded_skill_tokens(sid, 600_000)  # ~90%
+
+        fake_cfg = Config(hints=HintsConfig(context_threshold_advisory=False))
+        with (
+            patch("token_goat.hooks_session._cfg_mod", None, create=True),
+            patch("token_goat.config.load", return_value=fake_cfg),
+        ):
+            resp = _run_user_prompt_submit(sid)
+
+        ctx = resp.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "CONTEXT" not in ctx
+        assert "ctx:" not in ctx
+
+
+# ---------------------------------------------------------------------------
+# Change 1: doctor --context footprint section
+# ---------------------------------------------------------------------------
+
+
+def _make_session_with_skills(
+    tmp_data_dir: Path,
+    session_id: str,
+    skills: list[tuple[str, int]],  # (name, body_bytes)
+    turns: int = 5,
+) -> None:
+    """Create a session cache with the given loaded skills and turn count."""
+    from token_goat import session as ses
+    from token_goat.session import SkillEntry
+
+    cache = ses._fresh_cache(session_id)
+    cache.turns_since_last_compact = turns
+    for skill_name, body_bytes in skills:
+        cache.skill_history[skill_name] = SkillEntry(
+            skill_name=skill_name,
+            output_id=f"fake-{skill_name}-id",
+            content_sha="deadbeef",
+            ts=1000.0,
+            body_bytes=body_bytes,
+        )
+    ses.save(cache)
+
+
+class TestChange1ContextFootprint:
+    """Tests for _build_context_section() and the doctor --context flag."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir, monkeypatch):
+        self.data_dir = tmp_data_dir
+        self.fake_skills_root = tmp_data_dir / "fake_skills"
+        self.fake_plugins_root = tmp_data_dir / "fake_plugins"
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: self.fake_skills_root)
+        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: self.fake_plugins_root)
+
+    def _call(self) -> tuple[list[str], bool]:
+        from token_goat.cli_doctor import _build_context_section
+
+        return _build_context_section()
+
+    # -----------------------------------------------------------------------
+    # Basic structure
+    # -----------------------------------------------------------------------
+
+    def test_returns_lines_and_flag(self, tmp_data_dir):
+        """_build_context_section() returns (list[str], bool) without raising."""
+        lines, auto = self._call()
+        assert isinstance(lines, list)
+        assert isinstance(auto, bool)
+        assert any("Context footprint" in ln for ln in lines)
+
+    def test_section_absent_when_low_fill_no_uncompacted(self, tmp_data_dir):
+        """No loaded skills, low fill → should_auto_show is False."""
+        # Empty skills dir, no session → fill_pct near zero.
+        lines, auto = self._call()
+        assert auto is False
+
+    # -----------------------------------------------------------------------
+    # should_auto_show triggers
+    # -----------------------------------------------------------------------
+
+    def test_auto_show_when_fill_exceeds_40_percent(self, tmp_data_dir, monkeypatch):
+        """fill_pct > 0.40 → should_auto_show=True."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-ctx1-high"
+        # 300,000 body_bytes → ~75,000 tokens from loaded skills alone
+        # catalog ≈ 0 tokens, conversation ≈ 10,000 → total ~85,000
+        # Need ~264,000 tokens for 40% of 660,000.  Use 1,100,000 bytes.
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 5
+        cache.skill_history["big-skill"] = SkillEntry(
+            skill_name="big-skill",
+            output_id="fake-big-id",
+            content_sha="aabbccdd",
+            ts=1000.0,
+            body_bytes=1_100_000,
+        )
+        ses.save(cache)
+
+        lines, auto = self._call()
+        assert auto is True
+
+    def test_auto_show_when_loaded_skill_over_2k_lacks_compact(self, tmp_data_dir, monkeypatch):
+        """Loaded skill > 2K tokens with no compact → should_auto_show=True."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-ctx1-no-compact"
+        # 10,000 bytes → 2,500 tokens > 2,000 threshold
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 2
+        cache.skill_history["medium-skill"] = SkillEntry(
+            skill_name="medium-skill",
+            output_id="fake-med-id",
+            content_sha="11223344",
+            ts=1000.0,
+            body_bytes=10_000,
+        )
+        ses.save(cache)
+
+        lines, auto = self._call()
+        assert auto is True
+
+    def test_no_auto_show_when_small_skill_has_no_compact(self, tmp_data_dir, monkeypatch):
+        """Loaded skill ≤ 2K tokens (tiny) without compact → should_auto_show stays False if fill < 40%."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-ctx1-tiny"
+        # 4,000 bytes → 1,000 tokens ≤ 2,000 — does not trigger auto-show
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 2
+        cache.skill_history["tiny-skill"] = SkillEntry(
+            skill_name="tiny-skill",
+            output_id="fake-tiny-id",
+            content_sha="aabbccdd",
+            ts=1000.0,
+            body_bytes=4_000,
+        )
+        ses.save(cache)
+
+        lines, auto = self._call()
+        assert auto is False
+
+    # -----------------------------------------------------------------------
+    # Compact coverage reporting
+    # -----------------------------------------------------------------------
+
+    def test_loaded_skill_with_compact_shows_savings(self, tmp_data_dir, monkeypatch):
+        """Skill with a compact shows 'compact: N tok  saves ~M tok' in output."""
+        from token_goat import session as ses
+        from token_goat import skill_cache
+        from token_goat.session import SkillEntry
+
+        sid = "sess-ctx1-with-compact"
+        body = "# Large Skill\n\n" + ("word " * 2000)  # ~10 KB
+        compact_text = "# Compact\n\nSummary only.\n"
+
+        skill_cache.store_compact(sid, "rich-skill", compact_text)
+
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 3
+        cache.skill_history["rich-skill"] = SkillEntry(
+            skill_name="rich-skill",
+            output_id="fake-rich-id",
+            content_sha="ccddccdd",
+            ts=1000.0,
+            body_bytes=len(body.encode()),
+        )
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "rich-skill" in combined
+        # The compact line should mention "compact:" with token counts
+        assert "compact:" in combined
+        assert "saves" in combined
+
+    def test_loaded_skill_without_compact_shows_action(self, tmp_data_dir, monkeypatch):
+        """Skill without compact shows 'no compact' and 'token-goat skill-compact NAME'."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-ctx1-no-cpt"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 3
+        cache.skill_history["bare-skill"] = SkillEntry(
+            skill_name="bare-skill",
+            output_id="fake-bare-id",
+            content_sha="00112233",
+            ts=1000.0,
+            body_bytes=30_000,  # 7,500 tokens
+        )
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "bare-skill" in combined
+        assert "no compact" in combined
+        assert "token-goat skill-compact bare-skill" in combined
+
+    # -----------------------------------------------------------------------
+    # Skills catalog
+    # -----------------------------------------------------------------------
+
+    def test_catalog_count_includes_installed_skills(self, tmp_data_dir, monkeypatch):
+        """Skills on disk are counted in the catalog."""
+        _make_skill_dir(self.fake_skills_root, "alpha")
+        _make_skill_dir(self.fake_skills_root, "beta")
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Should show catalog_count = 2
+        assert "2 skills" in combined
+
+    # -----------------------------------------------------------------------
+    # New-since-pregen detection
+    # -----------------------------------------------------------------------
+
+    def test_never_run_pregen_shows_warning(self, tmp_data_dir, monkeypatch):
+        """No sentinel file → 'never run' message is emitted."""
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "never run" in combined
+
+    def test_new_skills_since_pregen_reported(self, tmp_data_dir, monkeypatch):
+        """skill_count in sentinel < current count → 'installed since last pre-gen' message."""
+        # Create 2 skill dirs
+        _make_skill_dir(self.fake_skills_root, "skill-one")
+        _make_skill_dir(self.fake_skills_root, "skill-two")
+
+        # Write a sentinel that claims only 1 skill was present
+        sentinel = paths.skill_pregen_sentinel_path()
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text(
+            json.dumps({"ts": time.time(), "skill_count": 1, "compact_count": 0}),
+            encoding="utf-8",
+        )
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "installed since last pre-gen" in combined
+
+    def test_up_to_date_pregen_shows_no_new_skills(self, tmp_data_dir, monkeypatch):
+        """sentinel skill_count matches disk → 'installed since last pre-gen' NOT shown."""
+        _make_skill_dir(self.fake_skills_root, "skill-x")
+
+        sentinel = paths.skill_pregen_sentinel_path()
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text(
+            json.dumps({"ts": time.time(), "skill_count": 1, "compact_count": 1}),
+            encoding="utf-8",
+        )
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "installed since last pre-gen" not in combined
+
+    # -----------------------------------------------------------------------
+    # CLAUDE.md + MEMORY.md size
+    # -----------------------------------------------------------------------
+
+    def test_claude_md_and_memory_md_contribute_meta_tokens(self, tmp_data_dir, monkeypatch):
+        """CLAUDE.md and MEMORY.md on disk are reflected in the meta-tokens line."""
+        fake_home = tmp_data_dir / "fakehome"
+        fake_home.mkdir()
+        claude_dir = fake_home / ".claude"
+        claude_dir.mkdir()
+        # Write a non-trivial CLAUDE.md (~4 KB)
+        (claude_dir / "CLAUDE.md").write_text("x" * 4000, encoding="utf-8")
+
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # meta_tokens = 4000 // 4 = 1,000 → should show non-zero value
+        # The line format is "CLAUDE.md + MEMORY.md: ~NNN tokens/turn"
+        import re
+
+        m = re.search(r"CLAUDE\.md \+ MEMORY\.md: ~(\d[\d,]*) tokens/turn", combined)
+        assert m is not None, f"meta-tokens line not found in:\n{combined}"
+        tok = int(m.group(1).replace(",", ""))
+        assert tok >= 1_000
+
+    # -----------------------------------------------------------------------
+    # Conversation estimate
+    # -----------------------------------------------------------------------
+
+    def test_conversation_tokens_based_on_turns(self, tmp_data_dir, monkeypatch):
+        """Conversation estimate = turns_since_last_compact * 2000."""
+        from token_goat import session as ses
+
+        sid = "sess-ctx1-conv"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 7
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # 7 * 2000 = 14,000 tokens
+        assert "14,000" in combined
+        assert "7 turns" in combined
+
+    # -----------------------------------------------------------------------
+    # ETA calculation
+    # -----------------------------------------------------------------------
+
+    def test_eta_unknown_with_no_active_session(self, tmp_data_dir, monkeypatch):
+        """No session file → ETA line says 'unknown'."""
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "ETA" in combined
+        assert "unknown" in combined
+
+    def test_eta_range_shown_for_fewer_than_3_turns(self, tmp_data_dir, monkeypatch):
+        """< 3 turns → ETA shows a range (e.g. '~N–M turns')."""
+        from token_goat import session as ses
+
+        sid = "sess-ctx1-eta-2"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 2
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "ETA" in combined
+        assert "–" in combined  # dash range
+
+    # -----------------------------------------------------------------------
+    # Actions block
+    # -----------------------------------------------------------------------
+
+    def test_actions_block_appears_for_uncompacted_large_skill(self, tmp_data_dir, monkeypatch):
+        """Uncompacted loaded skill > 2K tokens → Actions block with skill-compact command."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-ctx1-actions"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 3
+        cache.skill_history["action-skill"] = SkillEntry(
+            skill_name="action-skill",
+            output_id="fake-act-id",
+            content_sha="ffffffff",
+            ts=1000.0,
+            body_bytes=25_000,  # ~6,250 tokens > 2,000
+        )
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "Actions:" in combined
+        assert "token-goat skill-compact action-skill" in combined
+
+    def test_actions_block_absent_when_all_compacted(self, tmp_data_dir, monkeypatch):
+        """All loaded skills have compacts and catalog is up-to-date → no Actions block."""
+        from token_goat import session as ses
+        from token_goat import skill_cache
+        from token_goat.session import SkillEntry
+
+        sid = "sess-ctx1-no-actions"
+        compact_text = "# Summary\n\nCompact.\n"
+        skill_cache.store_compact(sid, "covered-skill", compact_text)
+
+        # One skill on disk, sentinel matches
+        _make_skill_dir(self.fake_skills_root, "covered-skill")
+        sentinel = paths.skill_pregen_sentinel_path()
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.write_text(
+            json.dumps({"ts": time.time(), "skill_count": 1, "compact_count": 1}),
+            encoding="utf-8",
+        )
+
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 3
+        # Small skill (< 2K tokens): 7,000 bytes = 1,750 tokens → won't trigger action
+        cache.skill_history["covered-skill"] = SkillEntry(
+            skill_name="covered-skill",
+            output_id="fake-cov-id",
+            content_sha="aabbccdd",
+            ts=1000.0,
+            body_bytes=7_000,
+        )
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "Actions:" not in combined

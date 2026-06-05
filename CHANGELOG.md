@@ -4,6 +4,28 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-05
+
+Context growth audit — four changes that cut session context size and make overhead visible.
+
+### Context footprint in `doctor`
+
+`token-goat doctor --context` now prints a **Context footprint** section measuring every token source that pads the context window each turn: the skills catalog (~10,800 tokens/turn for a typical install), loaded skill bodies accumulated in `system-reminder` injections, `CLAUDE.md` + `MEMORY.md` meta-files, and the rolling conversation estimate. The section shows fill % against the 660,000-token autocompact threshold, an ETA in turns at the current growth rate, and an **Actions** block naming the exact commands to run when any loaded skill above 2,000 tokens is missing a compact.
+
+Auto-shown when estimated fill exceeds 40 % or any loaded skill > 2 K tokens lacks a compact; always shown with `--context`.
+
+### Compact pre-generation at install time
+
+`token-goat install` now runs `skill-compact --all` as a final step, so compacts are ready before the first session — no post-install warm-up turn required. A sentinel file (`skill_pregen_sentinel.json`) records the catalog count; the doctor section uses it to detect skills added after the last pre-gen pass.
+
+### Per-skill compact advisory in `post_skill`
+
+When a skill body lands in context, the `post_skill` hook now reports the compact's token savings inline (pre-generated compacts, sync-generated compacts for bodies < 40 KB, background-generated for larger bodies, info-only when no worker is running). Advisory fires only for bodies above 8 KB to stay silent for tiny skills.
+
+### Threshold-crossing context advisory in `user_prompt_submit`
+
+A lightweight ETA advisory fires the first time estimated context fill crosses 50 % and again at 70 %. The message is appended to the existing status line (bracket-joined, not a separate injection) and references `/compact now` at 70 %. Resets after each compact. Configurable via `hints.context_threshold_advisory = false`.
+
 ## [1.2.0] - 2026-06-05
 
 14 commits since v1.1.0. Output overflow guard, cross-platform path normalization fixes, and a reliability pass.

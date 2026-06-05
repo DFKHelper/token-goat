@@ -37,6 +37,7 @@ __all__ = [
     "manifest_text_sidecar_path",
     "precompact_estimate_path",
     "recovery_pending_path",
+    "skill_pregen_sentinel_path",
     "sentinels_dir",
     "safe_join",
     "session_cache_path",
@@ -697,6 +698,22 @@ def precompact_estimate_path(session_id: str) -> Path:
     """
     safe_id = _sanitize_session_id_for_filename(session_id)
     return _safe_child_path(sentinels_dir(), f"precompact_estimate_{safe_id}", ".json", "session_id")
+
+
+def skill_pregen_sentinel_path() -> Path:
+    """Path to ``sentinels/skill_pregen_sentinel.json``.
+
+    Written by ``pregen_skill_compacts()`` in ``install.py`` (and by
+    ``token-goat skill-compact --all``) after a successful pre-generation run.
+    The file stores a JSON payload::
+
+        {"ts": float, "skill_count": int, "compact_count": int}
+
+    ``token-goat doctor`` reads this file to detect skills installed after the
+    last pre-generation run by comparing the sentinel mtime against plugin dir
+    mtimes.  A missing sentinel means pre-generation has never run.
+    """
+    return sentinels_dir() / "skill_pregen_sentinel.json"
 
 
 def manifest_sha_sidecar_path(session_id: str) -> Path:

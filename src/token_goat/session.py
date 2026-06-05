@@ -1279,6 +1279,15 @@ class SessionCache:
     # manifest.  Capped at PINNED_SYMBOLS_MAX (20).  Stored as an ordered list
     # so insertion order is preserved for display.  Missing in older sessions → [].
     pinned_symbols: list[str] = field(default_factory=list)
+    # Context growth tracking for threshold-crossing advisory in user_prompt_submit.
+    # turns_since_last_compact: incremented each turn, reset on PreCompact.
+    # loaded_skill_total_tokens: aggregate of body_bytes//4 across all skill_history entries;
+    #   recomputed on each mark_skill_loaded to avoid double-counting repeat loads.
+    # last_context_advisory_threshold: the highest threshold (50 or 70) that has already
+    #   fired; None means no crossing advisory has been emitted yet this session.
+    turns_since_last_compact: int = 0
+    loaded_skill_total_tokens: int = 0
+    last_context_advisory_threshold: int | None = None
     # Monotonically-incrementing version counter for optimistic CAS in save().
     # Starts at 0 for a new session; each successful save() increments by 1.
     # When two concurrent processes both load version N, the second to save
@@ -1374,6 +1383,9 @@ class SessionCache:
             symbol_access_counts=self.symbol_access_counts,
             pinned_symbols=list(self.pinned_symbols),
             cwd=self.cwd,
+            turns_since_last_compact=self.turns_since_last_compact,
+            loaded_skill_total_tokens=self.loaded_skill_total_tokens,
+            last_context_advisory_threshold=self.last_context_advisory_threshold,
         )
 
     def to_json(self) -> str:
@@ -1910,6 +1922,14 @@ class SessionCache:
             # Defensive trim — manually-edited caches could exceed the cap.
             pinned_symbols = pinned_symbols[:PINNED_SYMBOLS_MAX]
 
+        # Context growth tracking fields — missing in older sessions → defaults.
+        _raw_tslc = d.get("turns_since_last_compact", 0)
+        turns_since_last_compact: int = max(0, int(_raw_tslc)) if isinstance(_raw_tslc, (int, float)) else 0
+        _raw_lstt = d.get("loaded_skill_total_tokens", 0)
+        loaded_skill_total_tokens: int = max(0, int(_raw_lstt)) if isinstance(_raw_lstt, (int, float)) else 0
+        _raw_lcat = d.get("last_context_advisory_threshold")
+        last_context_advisory_threshold: int | None = _raw_lcat if _raw_lcat in (50, 70) else None
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -1945,6 +1965,9 @@ class SessionCache:
             symbol_access_counts=symbol_access_counts,
             pinned_symbols=pinned_symbols,
             cwd=str(d["cwd"]) if isinstance(d.get("cwd"), str) else None,
+            turns_since_last_compact=turns_since_last_compact,
+            loaded_skill_total_tokens=loaded_skill_total_tokens,
+            last_context_advisory_threshold=last_context_advisory_threshold,
         )
 
 
@@ -2490,6 +2513,9 @@ class _SessionDict(TypedDict, total=False):
     symbol_access_counts: dict[str, int]
     pinned_symbols: list[str]
     cwd: str | None
+    turns_since_last_compact: int
+    loaded_skill_total_tokens: int
+    last_context_advisory_threshold: int | None
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
@@ -4079,6 +4105,12 @@ def mark_skill_loaded(
         "skill_history",
         session_id,
     )
+    # Recompute aggregate token count so user_prompt_submit can estimate context
+    # fill without iterating skill_history on every turn.  Keyed by skill_name, so
+    # repeat loads of the same skill update the entry rather than double-counting.
+    cache.loaded_skill_total_tokens = sum(
+        getattr(e, "body_bytes", 0) for e in cache.skill_history.values()
+    ) // 4
     return _commit_mutation(cache, now)
 
 

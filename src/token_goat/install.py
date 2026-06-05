@@ -1715,6 +1715,130 @@ def write_skill() -> str:
     return str(skill_path)
 
 
+def pregen_skill_compacts() -> str:
+    """Pre-generate compact summaries for every skill file on disk.
+
+    Discovers all skill SKILL.md files under ``claude_skills_dir()`` and
+    ``claude_plugins_dir()`` (marketplace layout).  For each skill without an
+    up-to-date compact in any session, generates one synchronously and stores it
+    under the ``_install`` pseudo-session ID so subsequent ``post_skill``
+    invocations find a cache hit via :func:`skill_cache.get_compact_any_session`.
+
+    After the run, writes a sentinel file via :func:`paths.skill_pregen_sentinel_path`
+    so ``token-goat doctor`` can surface skills installed after the last pre-gen run.
+
+    Returns a human-readable summary string for the install result dict.
+    """
+    from . import skill_cache  # noqa: PLC0415
+
+    skills_root = paths.claude_skills_dir()
+    plugins_root = paths.claude_plugins_dir()
+
+    # Collect (skill_name, skill_path) pairs.
+    skill_files: list[tuple[str, Path]] = []
+
+    # User-installed skills: ~/.claude/skills/<name>/SKILL.md
+    if skills_root.is_dir():
+        for skill_dir_entry in skills_root.iterdir():
+            if not skill_dir_entry.is_dir():
+                continue
+            skill_name = skill_dir_entry.name
+            for candidate in (
+                skill_dir_entry / "SKILL.md",
+                skill_dir_entry / f"{skill_name}.md",
+                skill_dir_entry / skill_name / "SKILL.md",
+            ):
+                if candidate.is_file():
+                    skill_files.append((skill_name, candidate))
+                    break
+
+    # Plugin-installed skills: marketplace layout
+    # ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md
+    plugins_cache = plugins_root / "cache"
+    if plugins_cache.is_dir():
+        try:
+            for mkt in plugins_cache.iterdir():
+                if not mkt.is_dir():
+                    continue
+                for plugin_dir_entry in mkt.iterdir():
+                    if not plugin_dir_entry.is_dir():
+                        continue
+                    plugin_name = plugin_dir_entry.name
+                    try:
+                        versions = sorted(
+                            (v for v in plugin_dir_entry.iterdir() if v.is_dir()),
+                            reverse=True,
+                        )
+                    except OSError:
+                        continue
+                    for ver in versions:
+                        ver_skills = ver / "skills"
+                        if not ver_skills.is_dir():
+                            continue
+                        for skill_entry in ver_skills.iterdir():
+                            if not skill_entry.is_dir():
+                                continue
+                            sname = skill_entry.name
+                            namespaced = f"{plugin_name}:{sname}"
+                            for candidate in (
+                                skill_entry / "SKILL.md",
+                                skill_entry / f"{sname}.md",
+                            ):
+                                if candidate.is_file():
+                                    skill_files.append((namespaced, candidate))
+                                    break
+                        break  # use newest version only
+        except OSError:
+            pass
+
+    generated = 0
+    skipped = 0
+    failed = 0
+    session_id = "_install"
+
+    for skill_name, skill_path in skill_files:
+        try:
+            body = skill_path.read_text(encoding="utf-8", errors="replace")
+            body_sha = skill_cache.content_hash(body)
+
+            # Check if a fresh compact already exists (any session).
+            existing = skill_cache.get_compact_any_session(skill_name)
+            if existing:
+                compact_sha = skill_cache.extract_compact_source_sha(existing)
+                if compact_sha is not None and body_sha.startswith(compact_sha):
+                    skipped += 1
+                    continue
+
+            # Generate and store the compact.
+            compact = skill_cache.generate_compact_summary(body)
+            skill_cache.store_compact(session_id, skill_name, compact, source_sha=body_sha)
+            generated += 1
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning("pregen_skill_compacts: failed for %s: %s", skill_name, exc)
+            failed += 1
+
+    # Write sentinel so doctor can detect newly installed skills.
+    try:
+        sentinel_path = paths.skill_pregen_sentinel_path()
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        sentinel_data = json.dumps({
+            "ts": time.time(),
+            "skill_count": len(skill_files),
+            "compact_count": generated + skipped,
+        })
+        paths.atomic_write_text(sentinel_path, sentinel_data)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("pregen_skill_compacts: sentinel write failed: %s", exc)
+
+    parts = [f"{generated} generated"]
+    if skipped:
+        parts.append(f"{skipped} up-to-date")
+    if failed:
+        parts.append(f"{failed} failed")
+    total = len(skill_files)
+    return f"{total} skills found — " + ", ".join(parts)
+
+
 def remove_skill() -> str:
     """Remove the token-goat skill from the Claude Code skills directory."""
     sd = skill_dir()
@@ -2842,6 +2966,14 @@ def install_all(
     skill_path = write_skill()
     result["skill"] = _ok_fail(True, skill_path)
     _LOG.info("install step: skill — %s", _ok_fail(True, skill_path))
+
+    try:
+        pregen_result = pregen_skill_compacts()
+        result["skill compact pre-gen"] = _ok_fail(True, pregen_result)
+        _LOG.info("install step: skill compact pre-gen — %s", pregen_result)
+    except Exception as e:  # noqa: BLE001
+        result["skill compact pre-gen"] = f"FAIL — {e}"
+        _LOG.warning("install step: skill compact pre-gen — FAIL: %s", e)
 
     _install_platform_autostart(result)
 

@@ -58,6 +58,12 @@ _SKILL_CACHE_MIN_BYTES: int = 256
 # tool response.
 _SKILL_CACHE_MAX_CHARS: int = 2 * 1024 * 1024  # 2 MB character cap
 
+# Compact advisory thresholds for post_skill.
+# Advisory fires when the cached body exceeds ~2 K tokens; the async / info-only
+# path kicks in when the body exceeds ~10 K tokens.
+_ADVISORY_BODY_THRESHOLD_BYTES: int = 8_000   # ~2 K tokens
+_LARGE_BODY_THRESHOLD_BYTES: int = 40_000     # ~10 K tokens
+
 
 def _extract_skill_body(payload: HookPayload) -> str:
     """Pull the skill body text from a PostToolUse(Skill) payload.
@@ -197,6 +203,93 @@ def _normalize_skill_name(raw: str) -> str:
     if stripped.lower().endswith(".md"):
         stripped = stripped[:-3]
     return stripped.lower() if stripped else ""
+
+
+def _estimate_context_fill(session_id: str) -> float:
+    """Rough fill fraction [0..1] of the autocompact trigger point.
+
+    Adds up loaded-skill body bytes from the session cache, adds a constant
+    catalog estimate (~10,800 tokens × 4 bytes), and divides by the autocompact
+    trigger budget (~660,000 tokens × 4 bytes).  Returns 0.0 on any error.
+    """
+    try:
+        from . import session as _ses  # noqa: PLC0415
+
+        cache = _ses.safe_load(session_id, caller="pre-skill-ctx-est")
+        loaded_bytes = 0
+        if cache is not None:
+            for entry in cache.skill_history.values():
+                loaded_bytes += getattr(entry, "body_bytes", 0)
+        catalog_bytes = 43_200          # ~10,800 tokens × 4 bytes/token
+        context_limit = 660_000 * 4    # autocompact fires at ~660 K tokens
+        return (loaded_bytes + catalog_bytes) / context_limit
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _estimate_incoming_skill_tokens(skill_name: str) -> int:
+    """Estimate the on-disk skill body size in tokens without reading the file.
+
+    Uses :func:`_resolve_skill_body_path` plus ``stat().st_size`` for an O(1)
+    size estimate.  Returns 0 when the path cannot be found or the stat fails.
+    """
+    try:
+        source = _resolve_skill_body_path(skill_name)
+        if source:
+            return Path(source).stat().st_size // 4
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
+
+
+def _generate_and_store_compact(
+    session_id: str,
+    skill_name: str,
+    body: str,
+    body_size: int,
+    content_sha: str,
+) -> tuple[int, int] | None:
+    """Generate a compact summary, apply the budget cap, store it, and record stats.
+
+    Returns ``(compact_tokens, full_tokens)`` on success or ``None`` when
+    generation produces no output.  Failures inside budget / store steps are
+    logged and propagated; callers should wrap in try/except.
+    """
+    from . import skill_cache  # noqa: PLC0415
+
+    compact_text = skill_cache.generate_compact_summary(body)
+    if not compact_text:
+        return None
+    try:
+        from .config import load as _load_cfg  # noqa: PLC0415
+
+        _cfg_budget = _load_cfg().skill_preservation.truncation_budget_tokens
+    except Exception:  # noqa: BLE001
+        _cfg_budget = 800
+    if _cfg_budget > 0:
+        _budget_chars = _cfg_budget * 4
+        if len(compact_text) > _budget_chars:
+            from .cache_common import find_markdown_boundary as _fmb  # noqa: PLC0415
+
+            _cut = _fmb(compact_text, _budget_chars)
+            if _cut <= 0:
+                _cut = _budget_chars
+            compact_text = compact_text[:_cut].rstrip() + "…"
+            _LOG.debug(
+                "post-skill: compact for %s truncated to budget (%d tokens) at markdown boundary",
+                sanitize_log_str(skill_name, max_len=80),
+                _cfg_budget,
+            )
+    skill_cache.store_compact(session_id, skill_name, compact_text, source_sha=content_sha)
+    _compact_bytes = len(compact_text.encode("utf-8", errors="replace"))
+    _compact_tokens = _compact_bytes // 4
+    _full_tokens = body_size // 4
+    _record_skill_compact_stat(
+        skill_name,
+        max(0, body_size - _compact_bytes),
+        max(0, _full_tokens - _compact_tokens),
+    )
+    return _compact_tokens, _full_tokens
 
 
 def _compaction_occurred_after(session_id: str, skill_ts: float) -> bool:
@@ -385,6 +478,31 @@ def pre_skill(payload: HookPayload) -> HookResponse:
             sanitize_log_str(skill_name, max_len=80),
         )
 
+    # 2a: Non-blocking context advisory — warn when context fill is high and the
+    # incoming skill body is large.  Uses pre_tool_use_with_context so the Skill
+    # tool is NOT blocked; the warning appears only in additionalContext.
+    try:
+        from . import config as _cfg_mod  # noqa: PLC0415
+
+        _hints_cfg = _cfg_mod.load().hints
+        if _hints_cfg.pre_skill_advisory:
+            _ctx_pct = _estimate_context_fill(session_id)
+            if _ctx_pct > 0.60:
+                _skill_tokens = _estimate_incoming_skill_tokens(skill_name)
+                if _skill_tokens > 4_000:
+                    from .hooks_common import pre_tool_use_with_context  # noqa: PLC0415
+
+                    _new_pct = min(1.0, _ctx_pct + (_skill_tokens * 4) / (660_000 * 4))
+                    _advisory = (
+                        f"[token-goat: context at ~{_ctx_pct:.0%}. "
+                        f"Loading {skill_name} (~{_skill_tokens:,} tokens) "
+                        f"will push to ~{_new_pct:.0%}. "
+                        f"Consider /compact first to preserve headroom.]"
+                    )
+                    return pre_tool_use_with_context(_advisory)
+    except Exception:  # noqa: BLE001
+        pass
+
     return CONTINUE()
 
 
@@ -551,69 +669,109 @@ def post_skill(payload: HookPayload) -> HookResponse:
                     f" Detail at: token-goat skill-section {skill_name} <heading>."
                 )
             else:
-                # Warn when a large body has no COMPACT_END marker.  Large skills
-                # without an explicit marker force the auto-extractor to guess the
-                # compact section, which is less accurate and may miss load-bearing
-                # content.  The threshold of 32 KB (32_768 bytes) is chosen to
-                # flag skills comparable to ralph (~30 KB) while leaving small
-                # helper skills quiet.
-                _LARGE_BODY_WARN_BYTES: int = 32_768
-                if body_size >= _LARGE_BODY_WARN_BYTES:
-                    import sys as _sys  # noqa: PLC0415
-                    _sys.stderr.write(
-                        f"token-goat warning: skill '{sanitize_log_str(skill_name, max_len=80)}'"
-                        f" body is {body_size // 1024} KB but has no <!-- COMPACT_END --> marker."
-                        f" Add the marker after the section the agent needs most to improve"
-                        f" context savings accuracy.\n"
+                # Priority 2: pre-generated compact from any prior session — avoids
+                # regeneration when install-time pre-gen already ran.
+                _pregen = skill_cache.get_compact_any_session(skill_name)
+                _pregen_sha = (
+                    skill_cache.extract_compact_source_sha(_pregen) if _pregen else None
+                )
+                if _pregen is not None and _pregen_sha is not None and meta.content_sha.startswith(_pregen_sha):
+                    # Path 1: fresh pre-gen compact hit — copy to session; skip generation.
+                    skill_cache.store_compact(
+                        session_id, skill_name, _pregen, source_sha=meta.content_sha
                     )
-                    _LOG.warning(
-                        "post-skill: large skill body (%d bytes) without COMPACT_END marker: %s",
-                        body_size,
-                        sanitize_log_str(skill_name, max_len=80),
-                    )
-                compact_text = skill_cache.generate_compact_summary(body)
-                if compact_text:
-                    # Apply the configurable truncation_budget_tokens cap so that
-                    # skills without an explicit COMPACT_END marker don't inject
-                    # oversized compacts into the manifest.  4 chars ≈ 1 token.
-                    # Cut at a markdown heading or paragraph boundary so the stored
-                    # compact ends at a coherent structural point rather than
-                    # mid-sentence (uses find_markdown_boundary from cache_common).
-                    try:
-                        from .config import load as _load_cfg  # noqa: PLC0415
-                        _cfg_budget = _load_cfg().skill_preservation.truncation_budget_tokens
-                    except Exception:  # noqa: BLE001
-                        _cfg_budget = 800
-                    if _cfg_budget > 0:
-                        _budget_chars = _cfg_budget * 4
-                        if len(compact_text) > _budget_chars:
-                            from .cache_common import (
-                                find_markdown_boundary as _fmb,  # noqa: PLC0415
-                            )
-                            _cut = _fmb(compact_text, _budget_chars)
-                            if _cut <= 0:
-                                _cut = _budget_chars
-                            compact_text = compact_text[:_cut].rstrip() + "…"
-                            _LOG.debug(
-                                "post-skill: compact for %s truncated to budget (%d tokens)"
-                                " at markdown boundary",
-                                sanitize_log_str(skill_name, max_len=80),
-                                _cfg_budget,
-                            )
-                    skill_cache.store_compact(session_id, skill_name, compact_text, source_sha=meta.content_sha)
-                    _compact_bytes = len(compact_text.encode("utf-8", errors="replace"))
-                    _compact_tokens = _compact_bytes // 4
+                    _cp_bytes = len(_pregen.encode("utf-8", errors="replace"))
+                    _cp_tokens = _cp_bytes // 4
                     _full_tokens = body_size // 4
                     _record_skill_compact_stat(
                         skill_name,
-                        max(0, body_size - _compact_bytes),
-                        max(0, _full_tokens - _compact_tokens),
+                        max(0, body_size - _cp_bytes),
+                        max(0, _full_tokens - _cp_tokens),
                     )
                     _LOG.debug(
-                        "post-skill: compact stored for %s via auto-extraction (%d chars)",
+                        "post-skill: pre-gen compact hit for %s (~%d tokens saved)",
                         sanitize_log_str(skill_name, max_len=80),
-                        len(compact_text),
+                        max(0, _full_tokens - _cp_tokens),
                     )
+                    if body_size > _ADVISORY_BODY_THRESHOLD_BYTES:
+                        system_message = (
+                            f"[token-goat: {skill_name} loaded (~{_full_tokens:,} tokens). "
+                            f"Compact available: ~{_cp_tokens:,} tokens "
+                            f"(saves ~{max(0, _full_tokens - _cp_tokens):,} tokens/compact). "
+                            f"Pre-generated — no extra computation needed.]"
+                        )
+                else:
+                    # No valid pre-gen compact; warn on large bodies missing a marker.
+                    _LARGE_BODY_WARN_BYTES: int = 32_768
+                    if body_size >= _LARGE_BODY_WARN_BYTES:
+                        import sys as _sys  # noqa: PLC0415
+
+                        _sys.stderr.write(
+                            f"token-goat warning: skill '{sanitize_log_str(skill_name, max_len=80)}'"
+                            f" body is {body_size // 1024} KB but has no <!-- COMPACT_END --> marker."
+                            f" Add the marker after the section the agent needs most to improve"
+                            f" context savings accuracy.\n"
+                        )
+                        _LOG.warning(
+                            "post-skill: large skill body (%d bytes) without COMPACT_END marker: %s",
+                            body_size,
+                            sanitize_log_str(skill_name, max_len=80),
+                        )
+                    if body_size < _LARGE_BODY_THRESHOLD_BYTES:
+                        # Path 2: sync auto-extraction for small-to-medium bodies.
+                        result = _generate_and_store_compact(
+                            session_id, skill_name, body, body_size, meta.content_sha
+                        )
+                        if result is not None:
+                            _compact_tokens, _full_tokens = result
+                            _LOG.debug(
+                                "post-skill: compact stored for %s via auto-extraction (%d tokens)",
+                                sanitize_log_str(skill_name, max_len=80),
+                                _compact_tokens,
+                            )
+                            if body_size > _ADVISORY_BODY_THRESHOLD_BYTES:
+                                system_message = (
+                                    f"[token-goat: {skill_name} loaded (~{body_size // 4:,} tokens). "
+                                    f"Compact generated: ~{_compact_tokens:,} tokens "
+                                    f"(saves ~{max(0, body_size // 4 - _compact_tokens):,} tokens/compact).]"
+                                )
+                    else:
+                        # Paths 3 + 4: large body (≥ 10 K tokens) — async or info-only.
+                        from . import worker as _worker_mod  # noqa: PLC0415
+
+                        if _worker_mod.is_worker_alive():
+                            # Path 3: dispatch compact generation to a daemon thread.
+                            import contextlib as _contextlib  # noqa: PLC0415
+                            import threading as _threading  # noqa: PLC0415
+
+                            def _gen_compact_bg(
+                                _b: str = body,
+                                _s: str = session_id,
+                                _n: str = skill_name,
+                                _z: int = body_size,
+                                _h: str = meta.content_sha,
+                            ) -> None:
+                                with _contextlib.suppress(Exception):
+                                    _generate_and_store_compact(_s, _n, _b, _z, _h)
+
+                            _threading.Thread(target=_gen_compact_bg, daemon=True).start()
+                            if body_size > _ADVISORY_BODY_THRESHOLD_BYTES:
+                                system_message = (
+                                    f"[token-goat: {skill_name} loaded "
+                                    f"(~{body_size // 4:,} tokens — large skill). "
+                                    f"Generating compact in background. "
+                                    f"Run `token-goat skill-compact {skill_name}` "
+                                    f"if needed immediately.]"
+                                )
+                        else:
+                            # Path 4: worker down — no generation, info-only advisory.
+                            if body_size > _ADVISORY_BODY_THRESHOLD_BYTES:
+                                system_message = (
+                                    f"[token-goat: {skill_name} loaded "
+                                    f"(~{body_size // 4:,} tokens — large skill). "
+                                    f"No compact cached. Run `token-goat install` or "
+                                    f"`token-goat skill-compact --all` to pre-generate compacts.]"
+                                )
         except Exception as exc:  # noqa: BLE001
             _LOG.debug("post-skill: compact failed: %s", exc)
 

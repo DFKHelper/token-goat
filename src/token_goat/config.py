@@ -946,6 +946,15 @@ class HintsConfig:
     # ``[hints] min_session_hint_savings_bytes = N`` in config.toml.
     # Clamped to [0, 1_000_000].
     min_session_hint_savings_bytes: int = 512
+    # When True, emit a non-blocking advisory in pre_skill when estimated context
+    # fill exceeds 60 % AND the incoming skill body exceeds 4,000 tokens.  Uses
+    # additionalContext so the load is NOT blocked.  Opt-out via
+    # ``[hints] pre_skill_advisory = false`` in config.toml.
+    pre_skill_advisory: bool = True
+    # When True, emit threshold-crossing context advisories in user_prompt_submit
+    # at 50 %, 70 %, and every turn above 85 % estimated context fill.  Opt-out
+    # via ``[hints] context_threshold_advisory = false`` in config.toml.
+    context_threshold_advisory: bool = True
 
 
 @dataclass

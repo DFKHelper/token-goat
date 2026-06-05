@@ -1739,10 +1739,42 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
     except Exception:  # noqa: BLE001
         pass
 
-    if not parts:
+    # Context threshold advisory — fires on first crossing of 50% / 70%, or every
+    # turn above 85% (urgency zone).  Gates on config [hints] context_threshold_advisory.
+    _ctx_advisory_prefix: str | None = None
+    try:
+        from . import config as _cfg_mod  # noqa: PLC0415
+
+        _hints_cfg = _cfg_mod.load().hints
+        if _hints_cfg.context_threshold_advisory and cache is not None:
+            cache.turns_since_last_compact = getattr(cache, "turns_since_last_compact", 0) + 1
+
+            _loaded_tokens = getattr(cache, "loaded_skill_total_tokens", 0)
+            _ctx_pct = (_loaded_tokens + 10_800) / 660_000  # catalog ~10,800 tokens
+            _pct_int = int(_ctx_pct * 100)
+            _last_thr = getattr(cache, "last_context_advisory_threshold", None)
+
+            if _ctx_pct >= 0.85:
+                _ctx_advisory_prefix = f"CONTEXT ~{_pct_int}% full. /compact now. "
+            elif _ctx_pct >= 0.70 and _last_thr != 70:
+                cache.last_context_advisory_threshold = 70
+                _ctx_advisory_prefix = f"CONTEXT ~{_pct_int}% full. Consider /compact soon. "
+            elif _ctx_pct >= 0.50 and _last_thr is None:
+                cache.last_context_advisory_threshold = 50
+                parts.append(f"ctx: ~{_pct_int}% — context approaching midpoint")
+
+            from . import session as _ses_save  # noqa: PLC0415
+            _ses_save.save(cache)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not parts and _ctx_advisory_prefix is None:
         return CONTINUE()
 
-    summary = "[" + " | ".join(parts) + "]"
+    if _ctx_advisory_prefix is not None:
+        summary = "[" + _ctx_advisory_prefix + " | ".join(parts) + "]"
+    else:
+        summary = "[" + " | ".join(parts) + "]"
     _LOG.debug("user-prompt-submit: injecting context summary: %s", summary)
     return {
         "continue": True,

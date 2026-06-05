@@ -349,7 +349,7 @@ Manual paths:
 | `token-goat session-summary` | Compact one-liner about current session state — designed for orchestrators and multi-agent loops. |
 | `token-goat cache-audit` | Audit your Claude Code config for patterns that bust the prompt cache. |
 | `token-goat install` | Wire up hooks and autostart. `--dry-run` previews the changes, `--verify` audits an existing install. |
-| `token-goat doctor` | Confirm everything is wired correctly. Surfaces install state, cold-import timing, cache hit rates, compaction-budget telemetry, opt-in flag status, and canonical-root sanity. |
+| `token-goat doctor` | Confirm everything is wired correctly. Surfaces install state, cold-import timing, cache hit rates, compaction-budget telemetry, opt-in flag status, and canonical-root sanity. Pass `--context` to show the **Context footprint** section: catalog token cost per turn, loaded skill overhead, estimated context fill %, ETA in turns until autocompact, and exact commands to fix any uncompacted large skills. Auto-shown when fill > 40 % or any loaded skill > 2 K tokens lacks a compact. |
 
 First `token-goat semantic` call downloads a small embedding model, about 130 MB, into the token-goat data directory. One-time. Offline after that.
 
@@ -367,6 +367,8 @@ To add the marker to a skill, open the file and insert `<!-- COMPACT_END -->` on
 - If the same skill is invoked a second time in the session (e.g. `/improve` called again after a `/compact`), re-load detection fires: instead of re-caching the full body, token-goat emits the cached token count and `skill-body`/`skill-section` recall hints. The model can retrieve any section it actually needs rather than absorbing the whole skill again.
 
 To check overhead for your current skills: `token-goat skill-size`. To inspect compact freshness, run `token-goat skill-list` — the `compact_stale` column shows `[stale]` when a skill's compact was generated from an older version of the file. Run `token-goat skill-compact --all` to refresh every stale compact in the current session in one pass.
+
+`token-goat install` now pre-generates compacts for all installed skills as its final step, so compacts are ready from the first session. If you install new skills after the initial install, run `token-goat skill-compact --all` manually — or check `token-goat doctor --context` which reports how many skills were added since the last pre-gen pass and shows the exact command to run.
 
 ## What gets installed?
 

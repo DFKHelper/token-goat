@@ -110,12 +110,379 @@ def _render_cache_section(
         ok(label, f"{file_count} files, {size_str}{age_str}")
 
 
+def _build_context_section() -> tuple[list[str], bool]:
+    """Build lines for the Context footprint doctor section.
+
+    Returns ``(lines, should_auto_show)`` where *should_auto_show* is True when
+    estimated context fill > 40 % or any loaded skill > 2 K tokens lacks a compact.
+    The caller emits the lines when ``--context`` is passed or should_auto_show is True.
+    """
+    import json  # noqa: PLC0415
+
+    lines: list[str] = []
+    should_auto_show = False
+
+    # ------------------------------------------------------------------ #
+    # 1. Skills catalog — scan actual file sizes (same logic as pregen)   #
+    # ------------------------------------------------------------------ #
+    skills_root = paths.claude_skills_dir()
+    plugins_root = paths.claude_plugins_dir()
+    plugins_cache = plugins_root / "cache"
+
+    catalog_count = 0
+    catalog_bytes = 0
+
+    def _scan_skills_dir(root: Path, prefix: str = "") -> None:
+        nonlocal catalog_count, catalog_bytes
+        if not root.is_dir():
+            return
+        try:
+            for entry in root.iterdir():
+                if not entry.is_dir():
+                    continue
+                for candidate in (
+                    entry / "SKILL.md",
+                    entry / f"{entry.name}.md",
+                    entry / entry.name / "SKILL.md",
+                ):
+                    if candidate.is_file():
+                        with contextlib.suppress(OSError):
+                            catalog_bytes += candidate.stat().st_size
+                        catalog_count += 1
+                        break
+        except OSError:
+            pass
+
+    _scan_skills_dir(skills_root)
+
+    if plugins_cache.is_dir():
+        try:
+            for mkt in plugins_cache.iterdir():
+                if not mkt.is_dir():
+                    continue
+                for plugin_dir in mkt.iterdir():
+                    if not plugin_dir.is_dir():
+                        continue
+                    try:
+                        versions = sorted(
+                            (v for v in plugin_dir.iterdir() if v.is_dir()),
+                            reverse=True,
+                        )
+                    except OSError:
+                        continue
+                    for ver in versions:
+                        _scan_skills_dir(ver / "skills", prefix=plugin_dir.name)
+                        break
+        except OSError:
+            pass
+
+    catalog_tokens = max(catalog_bytes // 4, catalog_count * 130)
+
+    # ------------------------------------------------------------------ #
+    # 2. Compact coverage — one glob pass over the cache dir              #
+    # ------------------------------------------------------------------ #
+    # Build a set of safe names that have at least one compact file, then
+    # check each discovered skill name against it (O(n) vs. O(n * glob)).
+    compact_names: set[str] = set()
+    try:
+        from . import skill_cache as _sc  # noqa: PLC0415
+
+        out_dir = _sc._skill_outputs_dir()  # type: ignore[attr-defined]
+        if out_dir.is_dir():
+            for p in out_dir.iterdir():
+                if p.name.endswith("-compact"):
+                    # Pattern: {session_fragment}-{safe_name}-compact
+                    # session_fragment is up to 16 chars and may itself contain dashes,
+                    # so we cannot split on the first dash.  Store the full stem and
+                    # check with endswith() in _has_compact() instead.
+                    compact_names.add(p.name[:-8])  # strip "-compact", keep full stem
+    except Exception:  # noqa: BLE001
+        pass
+
+    def _has_compact(skill_name: str) -> bool:
+        try:
+            from . import skill_cache as _sc2  # noqa: PLC0415
+
+            safe = _sc2._safe_skill_name(skill_name)  # type: ignore[attr-defined]
+            if safe is None:
+                return False
+            safe_n = safe.replace(":", "_")
+            if ":" in safe:
+                safe_n += "n"
+            # Each stem is "{session_fragment}-{safe_name}"; match by suffix.
+            suffix = f"-{safe_n}"
+            return any(s.endswith(suffix) for s in compact_names)
+        except Exception:  # noqa: BLE001
+            return False
+
+    # ------------------------------------------------------------------ #
+    # 3. New skills since last pre-generation                             #
+    # ------------------------------------------------------------------ #
+    new_since_pregen: int | None = None  # None = never run
+    try:
+        pregen_sentinel = paths.skill_pregen_sentinel_path()
+        if pregen_sentinel.is_file():
+            pregen_data = json.loads(pregen_sentinel.read_text(encoding="utf-8"))
+            pregen_count = int(pregen_data.get("skill_count", 0))
+            new_since_pregen = max(0, catalog_count - pregen_count)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ------------------------------------------------------------------ #
+    # 4. Loaded skills — most-recently-modified session file              #
+    # ------------------------------------------------------------------ #
+    loaded_skill_entries: list[tuple[str, int, bool]] = []  # (name, body_tokens, has_compact)
+    session_turns = 0
+
+    sessions_dir_path = paths.sessions_dir()
+    if sessions_dir_path.is_dir():
+        try:
+            best_mtime = 0.0
+            best_file: Path | None = None
+            for f in sessions_dir_path.glob("*.json"):
+                try:
+                    mtime = f.stat().st_mtime
+                    if mtime > best_mtime:
+                        best_mtime = mtime
+                        best_file = f
+                except OSError:
+                    continue
+            if best_file is not None:
+                from . import session as _ses  # noqa: PLC0415
+
+                cache = _ses.load(best_file.stem)
+                session_turns = getattr(cache, "turns_since_last_compact", 0)
+                for skill_name, entry in getattr(cache, "skill_history", {}).items():
+                    body_bytes = getattr(entry, "body_bytes", 0)
+                    body_tokens = body_bytes // 4
+                    hc = _has_compact(skill_name)
+                    loaded_skill_entries.append((skill_name, body_tokens, hc))
+                    if body_tokens > 2000 and not hc:
+                        should_auto_show = True
+        except Exception:  # noqa: BLE001
+            pass
+
+    loaded_skill_tokens = sum(bt for _, bt, _ in loaded_skill_entries)
+
+    # ------------------------------------------------------------------ #
+    # 5. CLAUDE.md + MEMORY.md sizes                                      #
+    # ------------------------------------------------------------------ #
+    claude_dir = Path.home() / ".claude"
+    meta_bytes = 0
+    try:
+        claude_md = claude_dir / "CLAUDE.md"
+        if claude_md.is_file():
+            meta_bytes += claude_md.stat().st_size
+    except OSError:
+        pass
+    try:
+        projects_root = claude_dir / "projects"
+        if projects_root.is_dir():
+            for proj_dir in projects_root.iterdir():
+                if not proj_dir.is_dir():
+                    continue
+                memory_md = proj_dir / "memory" / "MEMORY.md"
+                if memory_md.is_file():
+                    with contextlib.suppress(OSError):
+                        meta_bytes += memory_md.stat().st_size
+    except OSError:
+        pass
+    meta_tokens = meta_bytes // 4
+
+    # ------------------------------------------------------------------ #
+    # 6. Conversation estimate                                             #
+    # ------------------------------------------------------------------ #
+    conversation_tokens = session_turns * 2000
+
+    # ------------------------------------------------------------------ #
+    # 7. Precompact baseline — read without consuming the sentinel         #
+    # ------------------------------------------------------------------ #
+    precompact_tokens = 0
+    has_precompact = False
+    try:
+        sentinels_dir_path = paths.sentinels_dir()
+        if sentinels_dir_path.is_dir():
+            cutoff = time.time() - 300.0
+            candidates: list[tuple[float, Path]] = []
+            for p in sentinels_dir_path.glob("precompact_estimate_*.json"):
+                try:
+                    mtime = p.stat().st_mtime
+                    if mtime >= cutoff:
+                        candidates.append((mtime, p))
+                except OSError:
+                    continue
+            if candidates:
+                candidates.sort(reverse=True)
+                _, best_sentinel = candidates[0]
+                sentinel_data = json.loads(best_sentinel.read_text(encoding="utf-8"))
+                precompact_tokens = max(0, int(sentinel_data.get("bytes_estimate", 0))) // 4
+                has_precompact = True
+    except Exception:  # noqa: BLE001
+        pass
+
+    # ------------------------------------------------------------------ #
+    # 8. Totals, fill %, ETA                                               #
+    # ------------------------------------------------------------------ #
+    CONTEXT_CAP = 660_000
+    additional_tokens = catalog_tokens + loaded_skill_tokens + meta_tokens + conversation_tokens
+    current_estimate = (precompact_tokens + additional_tokens) if has_precompact else additional_tokens
+    fill_pct = current_estimate / CONTEXT_CAP
+
+    if fill_pct > 0.40:
+        should_auto_show = True
+
+    tokens_per_turn = max(1, conversation_tokens // session_turns) if session_turns >= 3 else 2000
+    remaining = max(0, CONTEXT_CAP - current_estimate)
+    eta_turns = remaining / tokens_per_turn
+
+    # ------------------------------------------------------------------ #
+    # 9. Assemble output lines                                             #
+    # ------------------------------------------------------------------ #
+    lines.append("\nContext footprint")
+    lines.append(f"  Skills catalog: {catalog_count} skills ≈ {catalog_tokens:,} tokens/turn  [actual file sizes]")
+
+    compact_count = sum(1 for sname in _iter_skill_names(skills_root, plugins_cache) if _has_compact(sname))
+    if catalog_count > 0:
+        lines.append(f"  Skill compacts: {compact_count} of {catalog_count} skills have fresh compacts")
+
+    if new_since_pregen is None:
+        lines.append("  Skills pre-gen: never run — run: token-goat skill-compact --all")
+    elif new_since_pregen > 0:
+        lines.append(f"  Skills installed since last pre-gen: {new_since_pregen}")
+
+    if loaded_skill_entries:
+        lines.append(
+            f"  Loaded skills this session: {len(loaded_skill_entries)}"
+            f" (~{loaded_skill_tokens:,} tokens in system-reminder)"
+        )
+        for skill_name, body_tokens, hc in loaded_skill_entries:
+            if hc:
+                try:
+                    from . import skill_cache as _sc3  # noqa: PLC0415
+                    compact_text = _sc3.get_compact_any_session(skill_name) or ""
+                except Exception:  # noqa: BLE001
+                    compact_text = ""
+                compact_tok = len(compact_text) // 4
+                saves = max(0, body_tokens - compact_tok)
+                lines.append(
+                    f"    {skill_name:<24}~{body_tokens:,} tok"
+                    f"   compact: {compact_tok:,} tok"
+                    f"   saves ~{saves:,} tok at next /compact"
+                )
+            else:
+                lines.append(
+                    f"    {skill_name:<24}~{body_tokens:,} tok"
+                    f"   no compact"
+                    f"          run: token-goat skill-compact {skill_name}"
+                )
+    else:
+        lines.append("  Loaded skills this session: none")
+
+    lines.append(f"  CLAUDE.md + MEMORY.md: ~{meta_tokens:,} tokens/turn")
+
+    if session_turns > 0:
+        per_turn_est = conversation_tokens // session_turns
+        lines.append(
+            f"  Conversation (~{session_turns} turns): ~{conversation_tokens:,} tokens"
+            f"  (~{per_turn_est:,}/turn)"
+        )
+    else:
+        lines.append("  Conversation: no active session found")
+
+    lines.append("  " + "─" * 54)
+    lines.append(f"  Estimated additional: ~{additional_tokens:,} tokens")
+
+    if has_precompact:
+        lines.append(f"  Context at last compact: ~{precompact_tokens:,}  (from precompact estimate)")
+        lines.append(
+            f"  Current estimate: ~{current_estimate:,} / {CONTEXT_CAP:,}"
+            f"  ({int(fill_pct * 100)}%)"
+        )
+    else:
+        lines.append("  Context at last compact: < no compact baseline yet >")
+        lines.append(
+            f"  Current estimate: ~{current_estimate:,} / {CONTEXT_CAP:,}"
+            f"  ({int(fill_pct * 100)}%)"
+        )
+
+    if session_turns >= 3:
+        if eta_turns > 20:
+            lines.append("  ETA: > 20 turns at current rate")
+        else:
+            lines.append(f"  ETA: ~{max(1, int(eta_turns))} turns at current rate")
+    elif session_turns > 0:
+        lo = max(1, int(eta_turns) - 3)
+        hi = int(eta_turns) + 3
+        lines.append(f"  ETA: ~{lo}–{hi} turns  (estimated, < 3 turns of history)")
+    else:
+        lines.append("  ETA: unknown  (no active session found)")
+
+    # Actions
+    actions: list[str] = []
+    for skill_name, body_tokens, hc in loaded_skill_entries:
+        if not hc and body_tokens > 2000:
+            actions.append(f"    token-goat skill-compact {skill_name}")
+    if compact_count < catalog_count or new_since_pregen is None or (new_since_pregen or 0) > 0:
+        actions.append("    token-goat skill-compact --all")
+
+    if actions:
+        lines.append("")
+        lines.append("  Actions:")
+        lines.extend(actions)
+
+    return lines, should_auto_show
+
+
+def _iter_skill_names(skills_root: Path, plugins_cache: Path) -> list[str]:
+    """Return all skill names discovered on disk (same traversal as pregen)."""
+    names: list[str] = []
+    if skills_root.is_dir():
+        try:
+            for entry in skills_root.iterdir():
+                if entry.is_dir():
+                    names.append(entry.name)
+        except OSError:
+            pass
+    if plugins_cache.is_dir():
+        try:
+            for mkt in plugins_cache.iterdir():
+                if not mkt.is_dir():
+                    continue
+                for plugin_dir in mkt.iterdir():
+                    if not plugin_dir.is_dir():
+                        continue
+                    try:
+                        versions = sorted(
+                            (v for v in plugin_dir.iterdir() if v.is_dir()),
+                            reverse=True,
+                        )
+                    except OSError:
+                        continue
+                    for ver in versions:
+                        ver_skills = ver / "skills"
+                        if not ver_skills.is_dir():
+                            continue
+                        try:
+                            for skill_entry in ver_skills.iterdir():
+                                if skill_entry.is_dir():
+                                    names.append(f"{plugin_dir.name}:{skill_entry.name}")
+                        except OSError:
+                            pass
+                        break
+        except OSError:
+            pass
+    return names
+
+
 def doctor(  # noqa: C901
     fix: bool = typer.Option(  # noqa: B008
         False, "--fix", help="Clear stale index-spawn markers that doctor flags."
     ),
     crashes: bool = typer.Option(  # noqa: B008
         False, "--crashes", help="Show the last 5 hook crash entries from hooks-stderr.log."
+    ),
+    context: bool = typer.Option(  # noqa: B008
+        False, "--context", help="Always show the Context footprint section (shown automatically when context > 40% or an uncompacted loaded skill exists)."
     ),
 ) -> None:
     """Diagnose indexing health.
@@ -1856,5 +2223,17 @@ def doctor(  # noqa: C901
                         typer.echo("  ---")
         except Exception as e:  # noqa: BLE001
             flag("crashes", str(e), warn=True)
+
+    # ------------------------------------------------------------------
+    # Context footprint
+    # ------------------------------------------------------------------
+    try:
+        ctx_lines, ctx_auto_show = _build_context_section()
+        if context or ctx_auto_show:
+            for line in ctx_lines:
+                typer.echo(line)
+    except Exception as e:  # noqa: BLE001
+        if context:
+            flag("context footprint", str(e), warn=True)
 
     typer.echo("")
