@@ -1,5 +1,4 @@
 """Test paths module."""
-import sys
 from pathlib import Path
 
 import pytest
@@ -600,9 +599,10 @@ class TestNormalizeKey:
 
     Contract (must match session._normalize_path exactly):
     - Backslashes → forward slashes
-    - On Windows ONLY: uppercase drive letter (``C:`` style) → lowercase (``c:``)
-    - On non-Windows platforms: drive case is preserved (treated as literal chars)
-    - Idempotent: normalize(normalize(p)) == normalize(p) on the same platform
+    - Uppercase drive letter (``C:`` style) → lowercase (``c:``) on ALL platforms
+    - WSL processes emit Windows-format paths on Linux; unconditional lowercasing
+      ensures both forms produce the same cache key
+    - Idempotent: normalize(normalize(p)) == normalize(p)
     - Empty/short strings pass through without crashing
     """
 
@@ -614,21 +614,17 @@ class TestNormalizeKey:
         # Mixed separators collapse to all forward slashes.
         assert paths.normalize_key("src\\foo/bar\\baz.py") == "src/foo/bar/baz.py"
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
     def test_windows_drive_lowercased(self) -> None:
         assert paths.normalize_key("C:\\Projects\\foo.py") == "c:/Projects/foo.py"
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
     def test_windows_drive_already_lowercase(self) -> None:
         # No change to already-lowercased drive letters.
         assert paths.normalize_key("c:\\Projects\\foo.py") == "c:/Projects/foo.py"
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics")
-    def test_posix_drive_letter_preserved(self) -> None:
-        # On non-Windows, paths like ``C:\\foo`` are not Windows drives; the
-        # backslash is still converted but the leading char is not touched.
-        # (This matches session._normalize_path behavior.)
-        assert paths.normalize_key("C:\\foo") == "C:/foo"
+    def test_windows_drive_lowercased_on_all_platforms(self) -> None:
+        # Drive-letter lowercasing is unconditional — WSL processes emit
+        # C:/... on Linux and must produce the same cache key as /mnt/c/...
+        assert paths.normalize_key("C:\\foo") == "c:/foo"
 
     def test_already_normalized_idempotent(self) -> None:
         # Forward-slash absolute POSIX path — no change expected.
@@ -729,17 +725,14 @@ class TestNormalizeKeyCrossPlatformAudit:
 
     # ---- (e) Drive-letter case on the fast path --------------------------
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
     def test_fast_path_forward_slash_drive_lowercased(self) -> None:
         # Fast path (no backslashes) must still lowercase an uppercase drive.
         assert paths.normalize_key("C:/Projects/foo.py") == "c:/Projects/foo.py"
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
     def test_fast_path_drive_only(self) -> None:
         # Drive-only string ``C:`` -> ``c:``.
         assert paths.normalize_key("C:") == "c:"
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter casing is Windows-only")
     def test_drive_root_backslash(self) -> None:
         # ``C:\`` -> ``c:/`` (drive + root separator).
         assert paths.normalize_key("C:\\") == "c:/"
@@ -777,7 +770,7 @@ class TestNormalizeKeyCrossPlatformAudit:
         s = "C:\\foo\\\ud800.py"
         result = paths.normalize_key(s)
         assert "\ud800" in result
-        assert result.startswith("c:/") if sys.platform == "win32" else result.startswith("C:/")
+        assert result.startswith("c:/")
 
 
 class TestEnsureDirRaceTolerance:

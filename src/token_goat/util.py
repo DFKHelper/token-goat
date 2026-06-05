@@ -99,9 +99,10 @@ def normalize_path(path: str | Path) -> str:
         # Step 3: replace backslashes with forward slashes
         if "\\" in s:
             s = s.replace("\\", "/")
-        # Step 4: lowercase the drive letter prefix (C: → c:) — Windows only.
-        # On Linux/macOS, C: is not a drive prefix and case must be preserved.
-        if sys.platform == "win32" and len(s) >= 2 and s[1] == ":" and s[0].isalpha() and s[0].isupper():
+        # Step 4: lowercase the drive letter prefix (C: → c:) on all platforms.
+        # WSL processes emit Windows-format paths on Linux; both must produce the
+        # same cache key, so lowercasing must be unconditional.
+        if len(s) >= 2 and s[1] == ":" and s[0].isalpha() and s[0].isupper():
             s = s[0].lower() + s[1:]
 
     return s

@@ -13,7 +13,6 @@ Covers:
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -242,7 +241,6 @@ class TestNormalizePathFastPath:
         p = "c:/projects/token-goat/src/main.py"
         assert _normalize_path(p) == p
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Drive-letter logic is Windows-only")
     def test_uppercase_drive_letter_lowercased_fast_path(self):
         """Uppercase drive letter is lowercased even in the fast path (no backslashes)."""
         from token_goat.session import _normalize_path

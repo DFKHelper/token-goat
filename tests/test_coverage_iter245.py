@@ -170,19 +170,16 @@ def test_fail_soft_error_contains_exception_type():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows drive-letter logic")
 def test_normalize_path_lowercases_windows_drive_letter():
     result = _normalize_path("C:\\Users\\zelys\\project\\file.py")
     assert result.startswith("c:/")
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows drive-letter logic")
 def test_normalize_path_already_lowercase_drive_unchanged():
     result = _normalize_path("c:\\Users\\zelys\\file.py")
     assert result == "c:/Users/zelys/file.py"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows drive-letter logic")
 def test_normalize_path_backslashes_converted():
     result = _normalize_path("D:\\foo\\bar\\baz.txt")
     assert "\\" not in result

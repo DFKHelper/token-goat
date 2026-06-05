@@ -301,14 +301,12 @@ class TestPathNormalization:
         """Backslashes converted to forward slashes."""
         session.mark_file_read("s9", "C:\\foo\\bar.py")
         cache2 = session.mark_file_read("s9", "C:/foo/bar.py")
-        # Both should reference the same entry; drive letter is lowercased on Windows only.
+        # Both should reference the same entry; drive letter is lowercased unconditionally.
         assert len(cache2.files) == 1
-        expected_key = "c:/foo/bar.py" if sys.platform == "win32" else "C:/foo/bar.py"
-        assert cache2.files[expected_key].read_count == 2
+        assert cache2.files["c:/foo/bar.py"].read_count == 2
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="drive-letter lowercasing is Windows-only")
     def test_drive_letter_lowercase(self, tmp_data_dir):
-        """Drive letters normalized to lowercase (Windows only)."""
+        """Drive letters normalized to lowercase on all platforms (WSL compatibility)."""
         session.mark_file_read("s10", "C:/foo.py")
         cache2 = session.mark_file_read("s10", "c:/foo.py")
         assert len(cache2.files) == 1
@@ -590,9 +588,8 @@ class TestGetFileEntry:
         entry = session.get_file_entry("s_missing", "f.py")
         assert entry is None
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="cross-case Windows path lookup is Windows-only")
     def test_get_file_entry_path_normalization(self, tmp_data_dir):
-        """get_file_entry normalizes path like mark_file_read (Windows drive-letter case)."""
+        """get_file_entry normalizes path like mark_file_read (drive-letter case, all platforms)."""
         s_id = "s18"
         session.mark_file_read(s_id, "C:/foo.py")
         entry = session.get_file_entry(s_id, "c:\\foo.py")
