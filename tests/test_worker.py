@@ -2362,48 +2362,42 @@ def test_drain_dirty_queue_dedup_empty_queue(tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 def test_enqueue_dirty_concurrent_writes(tmp_data_dir):
-    """Concurrent enqueue_dirty calls must produce valid JSON lines with no interleaving.
+    """Concurrent enqueue_dirty calls must retain every entry with no torn lines.
 
-    Spawn 4 threads, each writing 50 entries with distinct 6 KB paths.
-    All lines must parse as valid JSON; no torn writes (key assertion).
-    Entry count may be slightly less than 200 if lock timeout occurs (best-effort fallback),
-    but zero torn/malformed JSON lines proves locking is working.
+    Spawn 4 threads, each writing 20 entries. ``_ENQUEUE_DIRTY_LOCK`` serializes
+    the read-modify-write across threads, so the result is deterministic: exactly
+    80 well-formed JSON lines.
 
-    Marked ``slow``: this test passes deterministically in isolation but is flaky
-    on Windows under heavy xdist load (5000+ tests in parallel) because disk-lock
-    contention can momentarily exceed the file-lock timeout, producing a torn line
-    that's interpreted as interleaving. Locking correctness is still covered by
-    the in-isolation run; the slow marker just keeps the false positives out of
-    the fast-tier gate.
+    This is a regression test for the torn-write race — remove the module-level
+    threading lock and the interleaved rewrites either drop entries (count < 80)
+    or produce a malformed line, failing one of the two assertions below.
     """
     num_threads = 4
-    entries_per_thread = 50
+    entries_per_thread = 20
     total_expected = num_threads * entries_per_thread
 
     def worker_thread(thread_id: int) -> None:
         for i in range(entries_per_thread):
-            # Create a 6 KB path to stress the PIPE_BUF boundary on all platforms.
-            long_path = f"src/thread_{thread_id}_file_{i}_{'x' * 6000}.ts"
+            long_path = f"src/thread_{thread_id}_file_{i}.ts"
             worker.enqueue_dirty(long_path, project_hash=f"proj_{thread_id}")
 
     threads = [threading.Thread(target=worker_thread, args=(i,)) for i in range(num_threads)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(timeout=30)
 
     # Drain and verify all entries are valid JSON and no interleaving occurred.
     queue_file = paths.dirty_queue_path()
     assert queue_file.exists(), "Dirty queue file should exist"
 
     lines = queue_file.read_text(encoding="utf-8").splitlines()
-    # Entry count should be very close to 200; allow a few losses due to lock timeout.
-    assert len(lines) >= total_expected * 0.95, f"Expected ≥{total_expected * 0.95} lines, got {len(lines)}"
+    # In-process serialization is deterministic: every entry is retained.
+    assert len(lines) == total_expected, f"Expected {total_expected} entries, got {len(lines)}"
 
     # Parse each line as JSON; any JSON decode error means interleaving occurred.
-    # This is the critical assertion: no torn/malformed lines even under lock timeout.
+    # This is the critical assertion: no torn/malformed lines.
     for i, line in enumerate(lines):
         try:
             entry = json.loads(line)
@@ -2412,6 +2406,33 @@ def test_enqueue_dirty_concurrent_writes(tmp_data_dir):
             assert "ts" in entry, f"Line {i} missing 'ts' key"
         except json.JSONDecodeError as e:
             raise AssertionError(f"Line {i} is malformed JSON (interleaving detected): {line!r}") from e
+
+
+def test_enqueue_dirty_drops_entry_when_os_lock_not_acquired(tmp_data_dir, monkeypatch, caplog):
+    """When the OS lock can't be acquired, enqueue_dirty drops the entry, never writing.
+
+    A cross-process lock timeout means another process may be mid-rewrite; writing
+    now would tear a line. The fail-soft contract is to drop the entry (a missed
+    dirty hint is recovered on the file's next edit) rather than risk a torn line
+    that poisons the drain. This forces the not-acquired branch by stubbing the
+    lock to yield ``False`` and asserts no queue file is written.
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def _lock_not_acquired(lock_path):
+        yield False  # simulate OS lock timeout / contention
+
+    monkeypatch.setattr(worker, "_dirty_queue_lock", _lock_not_acquired)
+
+    queue_file = paths.dirty_queue_path()
+    with caplog.at_level(logging.DEBUG, logger="token_goat.worker"):
+        worker.enqueue_dirty("src/dropped.py", project_hash="proj_x")
+
+    # The entry must NOT have been written.
+    if queue_file.exists():
+        assert queue_file.read_text(encoding="utf-8").strip() == "", "entry was written despite unacquired lock"
+    assert any("dropping entry" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

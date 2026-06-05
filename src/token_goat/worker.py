@@ -175,6 +175,13 @@ _MAX_QUEUE_MARKER_LEN = 64
 # heavily loaded machine — ample capacity while still being a safety cap.
 DIRTY_QUEUE_MAX_ENTRIES = 10_000
 
+# In-process serialization for the dirty-queue read-modify-write. The OS file lock
+# (_dirty_queue_lock) protects against cross-process interleaving, but multiple
+# threads in one process (the test harness, in-process plugin bridges) share file
+# descriptions and can still interleave the truncate+rewrite; this lock makes that
+# path deterministic. Cross-process callers fall back to the OS lock alone.
+_ENQUEUE_DIRTY_LOCK = threading.Lock()
+
 # Size cap for the worker-stderr.log crash sink. spawn_detached appends to this
 # file on every worker spawn (one per SessionStart hook); the daily-log
 # retention sweep never catches it because each append refreshes the mtime. Once
@@ -721,11 +728,14 @@ def _try_claim_worker_slot() -> int | None:
 
 
 @contextlib.contextmanager
-def _dirty_queue_lock(lock_path: Path) -> Iterator[None]:
+def _dirty_queue_lock(lock_path: Path) -> Iterator[bool]:
     """Context manager for acquiring an exclusive lock on the dirty queue.
 
     Uses OS-level locking (fcntl.flock on POSIX, msvcrt.locking on Windows).
-    On timeout, logs a warning but yields anyway (best-effort fallback).
+    Yields ``True`` when the lock was acquired and ``False`` on timeout/failure
+    (still yields, so the caller decides whether to proceed unlocked or drop the
+    write). The previous unconditional yield let a Windows lock-timeout writer
+    interleave its truncate+rewrite with another writer, producing torn lines.
     """
     fd = None
     lock_acquired = False
@@ -770,7 +780,7 @@ def _dirty_queue_lock(lock_path: Path) -> Iterator[None]:
             except OSError as e:
                 _LOG.debug("fcntl.flock on dirty queue failed: %s; writing unlocked (best-effort)", e)
 
-        yield  # Perform the write under lock (or best-effort)
+        yield lock_acquired  # caller decides whether to write when not acquired
 
     finally:
         if lock_acquired and fd is not None:
@@ -819,7 +829,17 @@ def enqueue_dirty(
 
     queue_path = paths.dirty_queue_path()
     lock_path = queue_path.parent / ".dirty_queue.lock"
-    with _dirty_queue_lock(lock_path):
+    # _ENQUEUE_DIRTY_LOCK serializes the read-modify-write across threads in this
+    # process; _dirty_queue_lock serializes it across processes.
+    with _ENQUEUE_DIRTY_LOCK, _dirty_queue_lock(lock_path) as lock_acquired:
+        if not lock_acquired:
+            # The OS lock timed out: another process holds it and may be mid-rewrite.
+            # Writing now would interleave a truncate+write and tear a line that
+            # poisons the drain. Drop this entry — a missed dirty hint is recoverable
+            # (the file is reindexed on its next edit), a torn line is not.
+            _LOG.debug("dirty queue OS lock not acquired; dropping entry (fail-soft): %s", rel_path)
+            return
+
         # Read current entries to check if we need to prune.
         entries_to_keep: list[str] = []
         if queue_path.exists():
