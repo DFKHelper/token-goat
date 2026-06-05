@@ -211,10 +211,14 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
         else:
             _LOG.debug("journal_mode for %s: WAL confirmed", db_path.name)
         _apply_connection_pragmas(conn)
-        # Explicit checkpoint to flush any pending WAL data from prior readers,
-        # especially in high-contention scenarios where autocheckpoint may be blocked.
+        # Best-effort checkpoint: move WAL frames to the DB without waiting for readers.
+        # PASSIVE never blocks — it checkpoints whatever frames are available immediately.
+        # RESTART/TRUNCATE would block for busy_timeout (5 s) when any reader holds a snapshot,
+        # making every open_global() call expensive under concurrent read load.
+        # The worker's periodic TRUNCATE and the per-connection journal_size_limit handle
+        # WAL size bounds; we do not need a blocking checkpoint on every connection open.
         try:
-            conn.execute("PRAGMA wal_checkpoint(RESTART)").fetchone()
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
         except sqlite3.OperationalError as e:
             _LOG.debug("WAL checkpoint failed (non-fatal): %s", e)
     except sqlite3.OperationalError as e:
@@ -804,14 +808,17 @@ def _log_session_close(
     took 1 s or more is logged at WARNING so slow DB operations are visible in
     production logs without manual filtering.
 
-    When *checkpoint* is True, a best-effort ``PRAGMA wal_checkpoint(TRUNCATE)``
-    is executed before closing the connection.  This truncates the WAL file back
-    to zero pages after write sessions, supplementing the worker's periodic
-    checkpoint and the ``journal_size_limit`` PRAGMA.  Errors from the checkpoint
-    PRAGMA are suppressed — a failed checkpoint is not fatal; the WAL will be
-    cleaned up by the next successful checkpoint or by the worker's maintenance
-    cycle.  Not set for read-only connections (checkpoint on a read-only
-    connection is a no-op and can raise ``OperationalError`` on some platforms).
+    When *checkpoint* is True, a best-effort ``PRAGMA wal_checkpoint(PASSIVE)``
+    is executed before closing the connection.  PASSIVE moves as many WAL frames
+    as possible to the database without waiting for any active readers — it never
+    blocks and returns immediately even if some frames cannot be moved.  WAL size
+    bounds come from ``journal_size_limit`` on every connection and the worker's
+    periodic TRUNCATE checkpoint; the on-close PASSIVE is supplementary cleanup
+    that avoids blocking the caller when concurrent readers are present.  Errors
+    are suppressed — a failed checkpoint is not fatal; the WAL will be cleaned up
+    by the next successful checkpoint or by the worker's maintenance cycle.  Not
+    set for read-only connections (checkpoint on a read-only connection is a no-op
+    and can raise ``OperationalError`` on some platforms).
     """
     session_ms = (time.monotonic() - t0) * 1000
     if session_ms >= 1000:
@@ -820,7 +827,7 @@ def _log_session_close(
         _LOG.debug("closing %s (session %.1fms)", label, session_ms)
     if checkpoint and conn is not None:
         with contextlib.suppress(sqlite3.OperationalError):
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
     _close_conn(conn)
 
 

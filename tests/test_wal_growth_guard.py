@@ -67,7 +67,9 @@ def test_checkpoint_global_wal_drains_a_bloated_wal(tmp_data_dir):
         with db.open_global() as writer:
             writer.executemany(
                 "INSERT INTO wal_bloat (blob) VALUES (?)",
-                [(payload,)] * 1200,
+                # 150 rows × 4 KB = ~630 KB in the WAL, enough to exceed 500 KB.
+                # Original 1200 rows (4.9 MB) proved the same assertion at 8× the I/O cost.
+                [(payload,)] * 150,
             )
 
         bloated = wal.stat().st_size
