@@ -4,6 +4,31 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-05
+
+14 commits since v1.1.0. Output overflow guard, cross-platform path normalization fixes, and a reliability pass.
+
+### Output Overflow Guard
+
+Surgical-read commands (`symbol`, `read`, `section`, `bash-output`, `web-output`, and the rest) now cap oversized output before it reaches the model. When estimated tokens exceed the cap, the output is head-truncated on a line boundary. A marker line is appended naming the cap, the truncation ratio, and the narrowing action — `symbol` users get directed toward `file::Class.method` lookups, `section` users toward sub-headings, cached-output users toward `--grep`/`--tail`.
+
+Default cap: 25,000 tokens. Configure via `[overflow_guard] max_tokens` in `config.toml`, override with `TOKEN_GOAT_OVERFLOW_MAX_TOKENS=<n>`, or disable with `TOKEN_GOAT_OVERFLOW_GUARD=0` / `[overflow_guard] enabled = false`.
+
+The estimator is deliberately conservative — 3 chars/token, same rate as the compaction manifest — so the cap is never under-applied. ANSI escapes are stripped before estimation since color codes inflate length without adding model-visible tokens. A single-line blob (no internal newlines) is sliced at the char budget so it cannot pass through whole.
+
+### Cross-Platform Path Normalization
+
+Two fixes that make path-keyed caches work correctly across Windows, WSL, and Linux:
+
+**`normalize_path` / `paths.normalize_key`** — Drive-letter lowercasing (`C:` → `c:`) is now unconditional. The previous guard `sys.platform == "win32"` meant a WSL process that emits a Windows-format path (`C:/Users/…`) produced a different cache key than a native Windows process reading the same file. Both now produce `c:/users/…`.
+
+**`hooks_skill.post_skill`** — Windows-style backslash paths like `C:\Users\user\.claude\skills\ralph` were not stripped on Linux because the inline guard used `_os.sep` (`/` on Linux) instead of the string literal `"\\"`. The inline block is now a call to `_normalize_skill_name`, which hardcodes `"\\"` and handles both separator styles on every platform.
+
+### Reliability
+
+- **Worker dirty-queue torn writes.** Concurrent `_append_dirty` calls could produce truncated or concatenated JSON lines under write contention. An OS-level file lock (`fcntl` on POSIX, `msvcrt` on Windows) now serializes appends, same as the session cache.
+- **SQLite WAL checkpoint mode.** Changed from `RESTART` to `PASSIVE` on connection open. `RESTART` waited for all readers to drain, blocking hook subprocesses for hundreds of milliseconds during active indexing. `PASSIVE` checkpoints cooperatively and does not wait.
+
 ## [1.1.0] - 2026-06-04
 
 57 commits since v1.0.1. Six new language indexers, twenty-plus new CLI commands and flags, a pre-skill hook that cuts repeat skill loads from 40–65k tokens to ~400, pnpm/yarn/bun compress filters, rg/grep dedup hints, double-daemon prevention, and a reliability pass with 400+ new tests.
