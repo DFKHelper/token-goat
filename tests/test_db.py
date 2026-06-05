@@ -278,7 +278,7 @@ def test_writer_lock_is_mutually_exclusive_under_concurrency(tmp_data_dir):
 
     def worker() -> None:
         nonlocal successes
-        barrier.wait()  # release all threads at the same instant to force the race
+        barrier.wait(timeout=5)  # release all threads at the same instant to force the race
         try:
             with db.project_writer_lock(h, timeout_sec=5.0):
                 with guard:
@@ -297,7 +297,7 @@ def test_writer_lock_is_mutually_exclusive_under_concurrency(tmp_data_dir):
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(timeout=30)
 
     assert not violations, f"writer lock was held concurrently: peak holders={violations}"
     assert state["max"] == 1, f"expected exclusive access, peak holders={state['max']}"

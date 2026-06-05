@@ -328,7 +328,7 @@ class TestConcurrentSessionUpdate:
 
         def mark_fp(fp: str) -> None:
             try:
-                barrier.wait()
+                barrier.wait(timeout=5)
 
                 def mutate(cache: session.SessionCache) -> None:
                     cache.mark_hint_seen(fp)

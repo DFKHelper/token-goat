@@ -418,7 +418,7 @@ class TestAtomicWriteText:
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=30)
 
         # At least one write must have succeeded
         assert target.exists(), "no successful write completed"

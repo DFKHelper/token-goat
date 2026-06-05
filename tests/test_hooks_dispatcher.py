@@ -657,6 +657,7 @@ def test_hook_submodules_not_imported_at_dispatcher_import():
         check=True,
         capture_output=True,
         text=True,
+        timeout=30,
     )
     loaded = set(result.stdout.split())
     forbidden = {

@@ -724,7 +724,7 @@ class TestStoreCompactAtomicWrite:
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=30)
 
         assert not errors, f"threads raised exceptions: {errors}"
 

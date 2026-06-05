@@ -269,7 +269,7 @@ class TestSessionCasOrdering:
 
         def record_file(path: str) -> None:
             try:
-                barrier.wait()
+                barrier.wait(timeout=5)
 
                 def mutate(cache: session.SessionCache) -> None:
                     cache.edited_files[path] = cache.edited_files.get(path, 0) + 1

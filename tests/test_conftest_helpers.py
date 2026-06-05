@@ -25,7 +25,7 @@ class TestMakeGitRepo:
         # repo exists and git can run inside it.
         result = subprocess.run(
             ["git", "status"],
-            cwd=repo, capture_output=True, text=True, check=True,
+            cwd=repo, capture_output=True, text=True, check=True, timeout=30,
         )
         assert "No commits yet" in result.stdout or "branch" in result.stdout.lower()
 
@@ -41,7 +41,7 @@ class TestMakeGitRepo:
         # Exactly one commit, with the provided message.
         log = subprocess.run(
             ["git", "log", "--oneline"],
-            cwd=repo, capture_output=True, text=True, check=True,
+            cwd=repo, capture_output=True, text=True, check=True, timeout=30,
         ).stdout.strip().splitlines()
         assert len(log) == 1
         assert "init two files" in log[0]
@@ -57,7 +57,7 @@ class TestMakeGitRepo:
         )
         log = subprocess.run(
             ["git", "log", "--oneline"],
-            cwd=repo, capture_output=True, text=True, check=True,
+            cwd=repo, capture_output=True, text=True, check=True, timeout=30,
         ).stdout.strip().splitlines()
         assert len(log) == 3, f"expected 3 commits, got: {log}"
         # Newest commit is at the top.
@@ -76,7 +76,7 @@ class TestMakeGitRepo:
         )
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=repo, capture_output=True, text=True, check=True,
+            cwd=repo, capture_output=True, text=True, check=True, timeout=30,
         ).stdout.strip()
         assert branch == "main"
 

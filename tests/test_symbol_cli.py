@@ -25,6 +25,7 @@ def _run(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.Comp
         capture_output=True,
         text=True,
         env=merged_env,
+        timeout=30,
     )
 
 
@@ -39,6 +40,7 @@ def _run_uv(args: list[str], cwd: Path, env: dict | None = None) -> subprocess.C
         capture_output=True,
         text=True,
         env=merged_env,
+        timeout=30,
     )
 
 

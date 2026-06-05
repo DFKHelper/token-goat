@@ -337,18 +337,20 @@ def make_git_repo(
     init_cmd = ["git", "init"]
     if init_branch:
         init_cmd += ["-b", init_branch]
-    subprocess.run(init_cmd, cwd=repo, capture_output=True, check=True)
+    subprocess.run(init_cmd, cwd=repo, capture_output=True, check=True, timeout=30)
     subprocess.run(
         ["git", "config", "user.email", email],
         cwd=repo,
         capture_output=True,
         check=True,
+        timeout=30,
     )
     subprocess.run(
         ["git", "config", "user.name", user],
         cwd=repo,
         capture_output=True,
         check=True,
+        timeout=30,
     )
 
     def _stage_and_commit(payload: dict[str, str], msg: str) -> None:
@@ -357,10 +359,10 @@ def make_git_repo(
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
         subprocess.run(
-            ["git", "add", "."], cwd=repo, capture_output=True, check=True,
+            ["git", "add", "."], cwd=repo, capture_output=True, check=True, timeout=30,
         )
         subprocess.run(
-            ["git", "commit", "-m", msg], cwd=repo, capture_output=True, check=True,
+            ["git", "commit", "-m", msg], cwd=repo, capture_output=True, check=True, timeout=30,
         )
 
     if commits is not None:

@@ -264,6 +264,7 @@ class TestPreReadCli:
             input="not-json-at-all",
             capture_output=True,
             text=True,
+            timeout=30,
         )
         # The CLI may return a non-zero exit code for invalid JSON, but should still
         # produce continue:true or at least not produce garbage output.
