@@ -356,13 +356,15 @@ class TestEmbeddingsUnavailable:
         assert isinstance(exc, Exception)
 
     def test_import_error_raises_embeddings_unavailable(self):
-        # Clear model cache to force a fresh load attempt.
+        import builtins as _b
+
         emb_mod._MODEL_CACHE.clear()
+        _real_import = _b.__import__
 
         def fake_import(name, *args, **kwargs):
             if name == "fastembed":
                 raise ImportError("no fastembed")
-            return __import__(name, *args, **kwargs)
+            return _real_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", side_effect=fake_import), pytest.raises(
             EmbeddingsUnavailable, match="fastembed not installed"
@@ -387,12 +389,15 @@ class TestEmbeddingsUnavailable:
         assert result is False
 
     def test_debug_log_fires_before_raise_on_import_error(self):
+        import builtins as _b
+
         emb_mod._MODEL_CACHE.clear()
+        _real_import = _b.__import__
 
         def fake_import(name, *args, **kwargs):
             if name == "fastembed":
                 raise ImportError("no fastembed")
-            return __import__(name, *args, **kwargs)
+            return _real_import(name, *args, **kwargs)
 
         # Confirm the exception is EmbeddingsUnavailable — the debug log
         # may or may not fire depending on cache state, but the raise must happen.
