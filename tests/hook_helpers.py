@@ -61,25 +61,30 @@ def make_image(path: Path, width: int, height: int, mode: str = "RGB") -> Path:
 def make_large_jpeg(tmp_path: Path, *, name: str = "large.jpg") -> Path:
     """Return a path to a synthetic >100 KB JPEG in *tmp_path*.
 
-    Creates a 1600×1200 image filled with random pixel data.  If JPEG
-    compression somehow produces a file under the threshold (unlikely but
-    possible on some environments), falls back to BMP so the size guarantee
-    always holds.
+    Creates a 1100×825 image filled with random pixel data.  The long edge
+    (1100 px) exceeds token-goat's MAX_LONG_EDGE (1024 px) so shrink() will
+    actually resize it, and the file size at quality=95 is reliably above
+    SIZE_THRESHOLD_BYTES (100 KB).  Using 1100×825 instead of the original
+    1600×1200 cuts pixel generation and JPEG encoding time by ~60% while still
+    satisfying all image-shrink test requirements.
+
+    If JPEG compression somehow produces a file under the threshold (unlikely
+    with random noise at quality=95), falls back to BMP which is guaranteed.
 
     Shared by ``test_image_shrink.py`` and ``test_hooks_image.py``.
     """
     from token_goat import image_shrink
 
     p = tmp_path / name
-    make_image(p, 1600, 1200, mode="RGB")
+    make_image(p, 1100, 825, mode="RGB")
     if p.stat().st_size <= image_shrink.SIZE_THRESHOLD_BYTES:
         # BMP is uncompressed — guaranteed to be large enough.
         bmp = p.with_suffix(".bmp")
         from PIL import Image
-        img = Image.new("RGB", (1600, 1200))
+        img = Image.new("RGB", (1100, 825))
         img.putdata([
             (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-            for _ in range(1600 * 1200)
+            for _ in range(1100 * 825)
         ])
         img.save(bmp, "BMP")
         bmp.rename(p)

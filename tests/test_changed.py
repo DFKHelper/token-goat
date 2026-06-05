@@ -229,6 +229,14 @@ class TestGetChangedSymbolsIntegration:
 
 
 class TestReadCommandsChanged:
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_data_dir):
+        """Redirect DB writes to a temp dir so tests don't touch the production database.
+
+        changed() calls db.record_stat() → open_global() on every invocation.
+        Without isolation the wal_checkpoint(TRUNCATE) on close takes 5-9 s on Windows.
+        """
+
     def _make_entries(self) -> list[dict]:
         return [
             {"file": "src/foo.py", "symbol": "my_func", "lines_added": 5, "lines_removed": 2},
@@ -521,6 +529,14 @@ class TestGetChangedSymbolsDb:
 
 class TestReadCommandsChangedSymbolMode:
     """Unit tests for the --symbol output path in read_commands.changed()."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_data_dir):
+        """Redirect DB writes to a temp dir so tests don't touch the production database.
+
+        changed() calls db.record_stat() → open_global() on every invocation.
+        Without isolation the wal_checkpoint(TRUNCATE) on close takes 5-9 s on Windows.
+        """
 
     def _make_file_entries(self) -> list[dict]:
         return [

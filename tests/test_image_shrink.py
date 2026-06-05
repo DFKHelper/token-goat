@@ -377,11 +377,14 @@ class TestPngToJpeg:
 
         from PIL import Image
 
+        # 1100×825: long edge (1100) > MAX_LONG_EDGE (1024) so shrink() will resize;
+        # file size at PNG with random pixels is well above SIZE_THRESHOLD_BYTES.
+        # Smaller than 1600×1200 (was) — cuts pixel generation time by ~60%.
         p = tmp_path / "photo.png"
-        img = Image.new("RGB", (1600, 1200))
+        img = Image.new("RGB", (1100, 825))
         pixels = [
             (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-            for _ in range(1600 * 1200)
+            for _ in range(1100 * 825)
         ]
         img.putdata(pixels)
         img.save(p, "PNG")
@@ -402,11 +405,14 @@ class TestPngToJpeg:
 
         monkeypatch.setenv("TOKEN_GOAT_IMAGE_FORMAT", "jpeg")
 
+        # 1100×825: long edge (1100) > MAX_LONG_EDGE (1024) so shrink() will resize;
+        # file size at PNG with random pixels is well above SIZE_THRESHOLD_BYTES.
+        # Smaller than 1600×1200 (was) — cuts pixel generation time by ~60%.
         p = tmp_path / "photo.png"
-        img = Image.new("RGB", (1600, 1200))
+        img = Image.new("RGB", (1100, 825))
         pixels = [
             (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-            for _ in range(1600 * 1200)
+            for _ in range(1100 * 825)
         ]
         img.putdata(pixels)
         img.save(p, "PNG")

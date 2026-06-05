@@ -378,6 +378,15 @@ class TestSessionStartGitHistory:
 
 
 class TestPreReadGitHint:
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_data_dir):
+        """Redirect DB writes to a temp dir so tests don't touch the production database.
+
+        Both tests call hooks_read.pre_read() which calls db.record_stat() →
+        open_global().  Without isolation this opens the real global.db and the
+        wal_checkpoint(TRUNCATE) on close takes 5-9 s on Windows.
+        """
+
     def test_git_hint_appended_to_session_hint(self) -> None:
         from token_goat import hooks_read
 

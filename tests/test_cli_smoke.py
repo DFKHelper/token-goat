@@ -1,4 +1,5 @@
 """Smoke test for CLI."""
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -19,8 +20,20 @@ def test_cli_help_runs():
     assert "map" in result.stdout
 
 
-def test_doctor_command_runs():
-    """Test that token-goat doctor runs successfully."""
+def test_doctor_command_runs(tmp_data_dir, monkeypatch):
+    """Test that token-goat doctor runs successfully.
+
+    Mocks 'uv --version' subprocess call (takes 6s on Windows per invocation)
+    and uses tmp_data_dir to avoid opening the production global.db.
+    """
+    _real_run = subprocess.run
+
+    def _mock_run(args, **kwargs):
+        if args and args[0] == "uv" and args[1:] == ["--version"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="uv 0.x.y\n", stderr="")
+        return _real_run(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _mock_run)
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0
     assert "token-goat doctor" in result.stdout

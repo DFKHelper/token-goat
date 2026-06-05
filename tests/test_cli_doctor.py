@@ -5,6 +5,7 @@ import subprocess
 import time
 from unittest.mock import patch
 
+import pytest
 from typer.testing import CliRunner
 
 import token_goat.paths as paths
@@ -20,6 +21,26 @@ runner = CliRunner()
 
 class TestDoctorHookWrapper:
     """doctor output covers the 'Hook wrapper' section correctly."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_uv_check(self, monkeypatch, tmp_data_dir):
+        """Prevent the real 'uv --version' subprocess call in doctor's _check_uv().
+
+        Every ``runner.invoke(cli.app, ["doctor"])`` call runs _check_uv() which
+        calls ``subprocess.run(["uv", "--version"], ...)`` — a 6 s overhead on
+        Windows per test.  Replace it with a lightweight stub that returns
+        immediately.  Tests that specifically test the wrapper invocation still
+        control their own ``subprocess.run`` mock via patch() in the test body;
+        this fixture wraps only the uv check.
+        """
+        _real_run = subprocess.run
+
+        def _patched_run(args, **kwargs):
+            if args and args[0] == "uv" and args[1:] == ["--version"]:
+                return subprocess.CompletedProcess(args=args, returncode=0, stdout="uv 0.x.y\n", stderr="")
+            return _real_run(args, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", _patched_run)
 
     def test_hook_wrapper_missing_shows_fail(self, tmp_path, monkeypatch):
         """When hook_wrapper_path() points at a non-existent file, doctor shows [FAIL]."""

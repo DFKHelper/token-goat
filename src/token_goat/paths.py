@@ -269,6 +269,15 @@ def _safe_child_path(base: Path, child_name: str, extension: str, label: str) ->
             f"{label} contains colon (would create NTFS Alternate Data Stream on Windows): "
             f"{child_name!r}"
         )
+    # Reject UNC-style paths before calling .resolve().  On Windows,
+    # Path("//server/share/...").resolve() triggers a network lookup and can
+    # stall for several seconds when the host is unreachable.  Check the raw
+    # string first so we raise immediately without touching the network.
+    _norm = child_name.replace("\\", "/")
+    if _norm.startswith("//"):
+        raise ValueError(
+            f"{label} produces a path outside {base.name}/: {child_name!r}"
+        )
     candidate = (base / f"{child_name}{extension}").resolve()
     try:
         candidate.relative_to(base.resolve())

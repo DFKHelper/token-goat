@@ -55,6 +55,15 @@ def _make_file_entry(
 
 
 class TestPerFileHintCooldown:
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_data_dir):
+        """Redirect DB writes to a temp dir so tests don't touch the production database.
+
+        Tests in this class call hooks_read.pre_read() which eventually calls
+        db.record_stat() → open_global().  Without isolation this opens the real
+        global.db, and the wal_checkpoint(TRUNCATE) on close takes 5-8 s on Windows.
+        """
+
     def test_cooldown_suppresses_repeat_hint(self) -> None:
         """After a tokens_saved>0 hint fires, mark_session_hint_emitted should gate repeat."""
         cache = _make_session_cache()
@@ -315,6 +324,16 @@ class TestSessionHintSuppressedStat:
 
 class TestSessionHintBackoff:
     """Tests for [hints] backoff_thresholds: hint fires only at {1, 3, 10, 30}."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_db(self, tmp_data_dir):
+        """Redirect DB writes to a temp dir so tests don't touch the production database.
+
+        _pre_read_with_read_count() calls hooks_read.pre_read() which calls
+        db.record_stat() → open_global().  Without isolation this opens the real
+        global.db, and the wal_checkpoint(TRUNCATE) on close takes 5-8 s per call
+        on Windows — test_non_threshold_read_counts_suppress_hint calls it 10 times.
+        """
 
     def _pre_read_with_read_count(
         self,

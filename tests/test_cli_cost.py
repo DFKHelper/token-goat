@@ -76,7 +76,7 @@ def test_cost_session_flag_not_found(tmp_data_dir):
     assert result.exit_code == 1
 
 
-def test_cost_contains_tokens_keyword():
+def test_cost_contains_tokens_keyword(tmp_data_dir):
     """Test that cost output always contains 'tokens' keyword."""
     result = runner.invoke(cli.app, ["cost"])
     assert result.exit_code == 0
