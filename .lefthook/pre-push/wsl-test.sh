@@ -11,10 +11,17 @@ if ! command -v wsl.exe &>/dev/null && ! wsl.exe --status &>/dev/null 2>&1; then
     exit 0
 fi
 
-# git rev-parse gives a Git-bash Unix path (/c/Projects/...) on Windows.
-# Convert to WSL mount form (/mnt/c/Projects/...).
+# git rev-parse output varies by shell:
+#   Git Bash (MSYS): /c/Projects/token-goat
+#   Windows native / lefthook: C:/Projects/token-goat
+# Normalize both to the WSL mount form (/mnt/c/...).
 GIT_ROOT="$(git rev-parse --show-toplevel)"
-WSL_ROOT="$(echo "$GIT_ROOT" | sed 's|^/\([a-z]\)/|/mnt/\1/|')"
+if [[ "$GIT_ROOT" =~ ^[A-Za-z]:/ ]]; then
+    drive="${GIT_ROOT:0:1}"
+    rest="${GIT_ROOT:3}"
+    GIT_ROOT="/${drive,,}/$rest"
+fi
+WSL_ROOT="$(echo "$GIT_ROOT" | sed 's|^/\([a-zA-Z]\)/|/mnt/\1/|')"
 
 wsl.exe -d Ubuntu -- bash -l -c "
   set -euo pipefail
