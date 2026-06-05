@@ -361,6 +361,34 @@ class TestFindProjectOsError:
         result = find_project(bare)
         assert result is None
 
+    def test_find_project_stops_at_system_temp(self, tmp_path):
+        """Stray project-marker files in %TEMP% / /tmp must not be treated as a project root.
+
+        find_project stops the upward walk when it reaches tempfile.gettempdir(),
+        so a package.json (or similar) dropped there by an unrelated tool does not
+        absorb every pytest tmp_path subdirectory into a phantom project.
+        """
+        import tempfile
+
+        from token_goat.project import find_project
+
+        sys_temp = Path(tempfile.gettempdir())
+        stray = sys_temp / "package.json"
+        pre_existing = stray.exists()
+        if not pre_existing:
+            stray.write_text('{"name": "stray-test-marker"}', encoding="utf-8")
+        try:
+            bare = tmp_path / "bare"
+            bare.mkdir()
+            result = find_project(bare)
+            assert result is None, (
+                f"find_project should stop at system temp; got {result!r} "
+                f"(tmp_path is under sys_temp={sys_temp})"
+            )
+        finally:
+            if not pre_existing:
+                stray.unlink(missing_ok=True)
+
 
 # ---------------------------------------------------------------------------
 # 5. Type-narrowed hooks — hooks_common TypedDicts

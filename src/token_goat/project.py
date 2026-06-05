@@ -13,6 +13,7 @@ __all__ = [
 import hashlib
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -233,6 +234,11 @@ def find_project(cwd: Path | str) -> Project | None:
     many checkouts cannot swallow them all into one project.
 
     Returns None if none found (e.g., user is in C:\Projects\ with 100 sibling dirs).
+
+    The walk stops at the system temp directory (``tempfile.gettempdir()``).  A
+    stray project-marker file landing in ``%TEMP%`` or ``/tmp`` — e.g. from a
+    package manager that runs an install step there — must not be treated as a
+    real project root.
     """
     t0 = time.monotonic()
     try:
@@ -240,8 +246,15 @@ def find_project(cwd: Path | str) -> Project | None:
     except (OSError, ValueError) as exc:
         _LOG.debug("find_project: could not canonicalize cwd %r: %s", cwd, exc)
         return None
+    try:
+        _sys_temp: Path | None = canonicalize(Path(tempfile.gettempdir()))
+    except (OSError, ValueError):
+        _sys_temp = None
     levels_walked = 0
     for current in (p, *p.parents):
+        if _sys_temp is not None and current == _sys_temp:
+            _LOG.debug("find_project: stopping walk at system temp dir %s", current)
+            break
         for marker in PROJECT_MARKERS:
             if _marker_exists(current, marker):
                 if _is_repo_container(current):
