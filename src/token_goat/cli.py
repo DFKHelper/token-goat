@@ -3765,7 +3765,11 @@ def _run_output_recall_command(
     if _header_parts:
         typer.echo("# " + "  ".join(_header_parts))
 
-    typer.echo(sliced)
+    # Safety net: even with smart-default slicing, `--full` recall can dump an unbounded cached body. Cap it so one recall can't overflow context.
+    from . import overflow_guard  # noqa: PLC0415
+
+    _cmd_label = stat_kind.replace("_output_recall", "-output")
+    typer.echo(overflow_guard.guard(sliced, command=_cmd_label))
 
 
 @app.command("bash-output", rich_help_panel="Core")

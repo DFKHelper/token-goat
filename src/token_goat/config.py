@@ -12,6 +12,7 @@ __all__ = [
     "HooksConfig",
     "ImageShrinkConfig",
     "IndexingConfig",
+    "OverflowGuardConfig",
     "RepomapConfig",
     "SessionBriefConfig",
     "SkillPreservationConfig",
@@ -74,6 +75,8 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_LAZY_SKILL_INJECTION",
     "TOKEN_GOAT_SERVE_DIFF_ON_REREAD",
     "TOKEN_GOAT_SESSION_HINT_MIN_BYTES",
+    "TOKEN_GOAT_OVERFLOW_GUARD",
+    "TOKEN_GOAT_OVERFLOW_MAX_TOKENS",
 )
 
 
@@ -121,6 +124,8 @@ _ENV_COMPRESS_PROFILE: Final[str] = "TOKEN_GOAT_COMPRESS_PROFILE"  # "auto"|"agg
 _ENV_SKILL_COMPRESS: Final[str] = "TOKEN_GOAT_SKILL_COMPRESS"  # set to "0"/"false"/"no"/"off" to disable body gzip
 _ENV_LAZY_SKILL_INJECTION: Final[str] = "TOKEN_GOAT_LAZY_SKILL_INJECTION"  # set to "0"/"false"/"no"/"off" for eager injection
 _ENV_SERVE_DIFF_ON_REREAD: Final[str] = "TOKEN_GOAT_SERVE_DIFF_ON_REREAD"  # set to "1"/"true"/"yes"/"on" to enable diff-as-tool-result
+_ENV_OVERFLOW_GUARD: Final[str] = "TOKEN_GOAT_OVERFLOW_GUARD"  # set to "0"/"false"/"no"/"off" to disable
+_ENV_OVERFLOW_MAX_TOKENS: Final[str] = "TOKEN_GOAT_OVERFLOW_MAX_TOKENS"  # integer override (max tokens)
 
 CONFIG_SCHEMA_VERSION: Final[int] = 1
 
@@ -158,6 +163,7 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
     "curator",
     "hint_budget",
     "repomap",
+    "overflow_guard",
     "stats",
     "hints",
     "hooks",
@@ -360,6 +366,13 @@ class _CompressionToml(TypedDict, total=False):
     profile: str
 
 
+class _OverflowGuardToml(TypedDict, total=False):
+    """Expected shape of the [overflow_guard] TOML section."""
+
+    enabled: bool
+    max_tokens: int
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -379,6 +392,7 @@ class _ConfigToml(TypedDict, total=False):
     worker: _WorkerToml
     indexing: _IndexingToml
     compression: _CompressionToml
+    overflow_guard: _OverflowGuardToml
 
 
 @dataclass
@@ -799,6 +813,14 @@ class RepomapConfig:
 
 
 @dataclass
+class OverflowGuardConfig:
+    """Caps oversized command output so a single dump can't overflow context."""
+
+    enabled: bool = True
+    max_tokens: int = 25000
+
+
+@dataclass
 class StatsConfig:
     """Configuration for stats recording.
 
@@ -1118,6 +1140,7 @@ class Config:
     curator: CuratorConfig = field(default_factory=CuratorConfig)
     hint_budget: HintBudgetConfig = field(default_factory=HintBudgetConfig)
     repomap: RepomapConfig = field(default_factory=RepomapConfig)
+    overflow_guard: OverflowGuardConfig = field(default_factory=OverflowGuardConfig)
     stats: StatsConfig = field(default_factory=StatsConfig)
     hints: HintsConfig = field(default_factory=HintsConfig)
     hooks: HooksConfig = field(default_factory=HooksConfig)
@@ -1586,6 +1609,18 @@ def load() -> Config:
         _ENV_REPOMAP_COMPACT_THRESHOLD, rm.compact_file_threshold, 0, 100_000, "repomap.compact_file_threshold"
     )
 
+    og_raw: _OverflowGuardToml = cast("_OverflowGuardToml", raw.get("overflow_guard", {}))
+    og = OverflowGuardConfig(
+        enabled=_validated_bool(og_raw.get("enabled", True), True, "overflow_guard.enabled"),
+        max_tokens=_validated_int(
+            og_raw.get("max_tokens", 25000), 25000, 0, 10_000_000, "overflow_guard.max_tokens"
+        ),
+    )
+    _apply_env_disable(og, "enabled", _ENV_OVERFLOW_GUARD, "overflow_guard.enabled")
+    og.max_tokens = _env_int(
+        _ENV_OVERFLOW_MAX_TOKENS, og.max_tokens, 0, 10_000_000, "overflow_guard.max_tokens"
+    )
+
     stats_raw: _StatsToml = cast("_StatsToml", raw.get("stats", {}))
     stats = StatsConfig(
         record_zero_savings=_validated_bool(
@@ -1818,7 +1853,8 @@ def load() -> Config:
     )
     result = Config(
         compact_assist=ca, bash_compress=bc, session_brief=sb, skill_preservation=sp,
-        image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, stats=stats,
+        image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, overflow_guard=og,
+        stats=stats,
         hints=hints_cfg, hooks=hk, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
         compression=cmp_cfg,
     )
@@ -1901,6 +1937,10 @@ def save(config: Config) -> None:
         "repomap": {
             "compact_file_threshold": config.repomap.compact_file_threshold,
             "exclude_tests": config.repomap.exclude_tests,
+        },
+        "overflow_guard": {
+            "enabled": config.overflow_guard.enabled,
+            "max_tokens": config.overflow_guard.max_tokens,
         },
         "stats": {
             "record_zero_savings": stats.record_zero_savings,

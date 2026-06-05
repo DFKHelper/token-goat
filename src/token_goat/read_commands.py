@@ -16,7 +16,7 @@ from typing import NamedTuple, TypedDict, cast
 
 import typer
 
-from . import db, hints, read_replacement, session
+from . import db, hints, overflow_guard, read_replacement, session
 from .project import Project, find_project
 from .util import get_logger
 
@@ -601,6 +601,8 @@ def _emit_text_result(
     is_tty = sys.stdout.isatty()
     apply_color = is_tty and not no_color
     display_text = _apply_context_gutter(text, context_before, context_after, no_color=not apply_color)
+    # Final safety net: cap pathologically large output so one surgical read can't overflow the model's context. ``separator_label`` ("symbol"/"section"/"lines") doubles as the command hint for the truncation marker. No-op under budget.
+    display_text = overflow_guard.guard(display_text, command=separator_label)
     typer.echo(display_text)
 
 

@@ -359,6 +359,7 @@ class TestConfigValidate:
             "worker": config_mod.WorkerConfig,
             "indexing": config_mod.IndexingConfig,
             "compression": config_mod.CompressionConfig,
+            "overflow_guard": config_mod.OverflowGuardConfig,
         }
         # Verify that section_to_cls covers exactly _KNOWN_SECTIONS minus schema_version.
         expected = config_mod._KNOWN_SECTIONS - {"schema_version"}

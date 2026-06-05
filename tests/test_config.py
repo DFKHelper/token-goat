@@ -1110,3 +1110,94 @@ class TestWorkerMaxPoolWorkers:
             assert reloaded.worker.max_pool_workers == 2
         finally:
             cfg_mod._config_mtime_cache = None
+
+
+class TestOverflowGuardConfig:
+    """OverflowGuardConfig.enabled / max_tokens must load, save, and honour
+    env-var overrides; the section must be recognised by the loader."""
+
+    def _reset_cache(self) -> None:
+        import token_goat.config as cfg_mod
+        cfg_mod._config_mtime_cache = None
+
+    def test_defaults(self):
+        from token_goat.config import OverflowGuardConfig
+        og = OverflowGuardConfig()
+        assert og.enabled is True
+        assert og.max_tokens == 25000
+
+    def test_section_is_known(self):
+        """The loader recognises [overflow_guard] (not flagged as unknown)."""
+        import token_goat.config as cfg_mod
+        assert "overflow_guard" in cfg_mod._KNOWN_SECTIONS
+
+    def test_enabled_from_toml(self, tmp_path, monkeypatch):
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[overflow_guard]\nenabled = false\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.overflow_guard.enabled is False
+
+    def test_max_tokens_from_toml(self, tmp_path, monkeypatch):
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[overflow_guard]\nmax_tokens = 12000\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.overflow_guard.max_tokens == 12000
+
+    def test_env_disable(self, tmp_path, monkeypatch):
+        """TOKEN_GOAT_OVERFLOW_GUARD=0 disables the guard regardless of TOML."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[overflow_guard]\nenabled = true\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        monkeypatch.setenv("TOKEN_GOAT_OVERFLOW_GUARD", "0")
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.overflow_guard.enabled is False
+
+    def test_env_max_tokens_override(self, tmp_path, monkeypatch):
+        """TOKEN_GOAT_OVERFLOW_MAX_TOKENS overrides the TOML value."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[overflow_guard]\nmax_tokens = 25000\n", encoding="utf-8")
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        monkeypatch.setenv("TOKEN_GOAT_OVERFLOW_MAX_TOKENS", "500")
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        assert cfg.overflow_guard.max_tokens == 500
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        """enabled and max_tokens survive a save → load cycle."""
+        import token_goat.config as cfg_mod
+        import token_goat.paths as paths_mod
+
+        config_file = tmp_path / "config.toml"
+        monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
+        self._reset_cache()
+
+        cfg = cfg_mod.load()
+        cfg.overflow_guard.enabled = False
+        cfg.overflow_guard.max_tokens = 1234
+        cfg_mod.save(cfg)
+        self._reset_cache()
+
+        reloaded = cfg_mod.load()
+        assert reloaded.overflow_guard.enabled is False
+        assert reloaded.overflow_guard.max_tokens == 1234
