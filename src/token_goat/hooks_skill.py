@@ -429,22 +429,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
             type(skill_name_raw).__name__,
         )
         return CONTINUE()
-    # Normalize: strip whitespace, strip any leading path components (e.g.
-    # "~/.claude/skills/ralph" → "ralph"), and lowercase so cache lookups are
-    # consistent across invocations regardless of how the skill was referenced.
-    skill_name_stripped = skill_name_raw.strip()
-    # Strip path separators: if the name contains slashes or backslashes, take
-    # only the last component (and strip a trailing .md suffix if present).
-    import os as _os  # noqa: PLC0415
-    if "/" in skill_name_stripped or _os.sep in skill_name_stripped:
-        skill_name_stripped = skill_name_stripped.replace("\\", "/").split("/")[-1]
-    if skill_name_stripped.lower().endswith(".md"):
-        skill_name_stripped = skill_name_stripped[:-3]
-    skill_name = skill_name_stripped.lower() if skill_name_stripped else skill_name_raw.strip()
-    # Guard: if the name is empty after all normalization (e.g. input was "/" or
-    # "/.md"), there is nothing safe to cache.  Log and bail rather than letting
-    # the downstream name-validation in skill_cache.store_output reject it
-    # silently after we have already extracted the body.
+    skill_name = _normalize_skill_name(skill_name_raw)
     if not skill_name:
         _LOG.debug("post-skill: skill name empty after normalization (raw=%r); skipping",
                    sanitize_log_str(skill_name_raw, max_len=120))
