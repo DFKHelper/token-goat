@@ -22,14 +22,18 @@ jobs:
 
   test:
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv python install 3.13
-      - run: uv sync --all-extras
+      - run: uv python install ${{ matrix.python-version }}
+      - run: uv sync --all-extras --python ${{ matrix.python-version }}
       - name: Test
         # ``-rfE`` prints short tracebacks for failures and errors at the
         # end of the run so a CI failure surfaces the actual assertion or
