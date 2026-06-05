@@ -120,21 +120,17 @@ class TestTimeout:
 
 
 class TestOverflow:
-    def test_giant_output_does_not_oom(self):
-        # Produce ~10 MB of output and verify the wrapper completes without
-        # error.  The wrapper caps capture at 32 MiB.
+    def test_chained_command_with_explicit_filter(self):
+        # "&&" chains are rejected by detect_from_command but pass when filter_name
+        # is given explicitly.  Use cheap shell built-ins to avoid Python startup cost.
         out_buf, err_buf = _captured_writers()
         rc = bash_runner.run(
-            "python -c \"print('x' * 80, flush=True)\" "  # tiny output
-            "&& python -c \"print('y' * 80, flush=True)\"",
+            "echo x && echo y",
             filter_name="pytest",
-            timeout=30,
+            timeout=10,
             write_stdout=out_buf.write,
             write_stderr=err_buf.write,
         )
-        # The chained command contains "&&", which detect_from_command would
-        # reject, but here we pass filter_name explicitly so the wrapper just
-        # runs it.  Verify successful completion.
         assert rc == 0
 
 

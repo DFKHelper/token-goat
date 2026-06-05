@@ -28,6 +28,12 @@ def _make_project(root: Path) -> Project:
     return Project(root=canon, hash=project_hash(canon), marker=".git")
 
 
+# tlp.process() is O(n²) in file size — keep fixtures just above their threshold.
+# 3× threshold → 9× parse time (measured: 648 KB = 26.4 s, 207 KB ≈ 1.5 s).
+_FIXTURE_ABOVE_200KB = 207_000   # just above 200 KB (204_800 bytes)
+_FIXTURE_ABOVE_100KB = 104_000   # just above 100 KB (102_400 bytes)
+
+
 def _write_py(path: Path, size_bytes: int) -> None:
     """Write a valid-looking Python file of approximately *size_bytes* bytes."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +147,7 @@ def test_index_project_large_files_in_result(tmp_path, tmp_data_dir):
     (root / ".git").mkdir(exist_ok=True)
 
     big = root / "huge.py"
-    _write_py(big, 600_000)  # 600 KB — above 500 KB default symbol_only threshold
+    _write_py(big, _FIXTURE_ABOVE_200KB)  # above the 200 KB threshold used by mock_cfg
 
     proj = _make_project(root)
 
@@ -201,7 +207,7 @@ def test_index_project_skip_tier_recorded(tmp_path, tmp_data_dir):
     small.write_text("def foo(): pass\n", encoding="utf-8")
 
     big = root / "giant.py"
-    _write_py(big, 400_000)  # 400 KB
+    _write_py(big, _FIXTURE_ABOVE_200KB)  # above the 200 KB skip threshold in mock_cfg
 
     proj = _make_project(root)
 
@@ -362,7 +368,7 @@ def test_report_large_flag_with_large_file(tmp_path, tmp_data_dir):
     (root / ".git").mkdir()
     (root / "small.py").write_text("def foo(): pass\n", encoding="utf-8")
     big = root / "huge.py"
-    _write_py(big, 300_000)  # 300 KB
+    _write_py(big, _FIXTURE_ABOVE_100KB)  # above the 100 KB threshold used by mock_cfg
 
     import token_goat.config as _config_mod
     from token_goat.config import Config, IndexingConfig
@@ -385,3 +391,26 @@ def test_report_large_flag_with_large_file(tmp_path, tmp_data_dir):
     assert result.exit_code == 0
     assert "symbol_only" in result.output
     assert "huge.py" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Regression guard: fixture sizes must stay within 1.2× of their threshold
+# ---------------------------------------------------------------------------
+
+def test_large_file_fixture_sizes_within_bound():
+    """Guard against O(n²) fixture bloat: fixture writes must not exceed 1.2× their threshold.
+
+    tlp.process() is O(n²) in file size. At 648 KB parse time is ~26 s; at 207 KB it is ~1.5 s.
+    If _FIXTURE_ABOVE_200KB or _FIXTURE_ABOVE_100KB are inflated, this test will fail before
+    the slow tests become painful again.
+    """
+    _200KB_THRESHOLD = 200 * 1024  # 204_800 bytes
+    _100KB_THRESHOLD = 100 * 1024  # 102_400 bytes
+    assert _FIXTURE_ABOVE_200KB < _200KB_THRESHOLD * 1.2, (
+        f"_FIXTURE_ABOVE_200KB={_FIXTURE_ABOVE_200KB} is more than 1.2× the 200 KB threshold "
+        "(tlp.process() is O(n²) — fixture bloat → test bloat)"
+    )
+    assert _FIXTURE_ABOVE_100KB < _100KB_THRESHOLD * 1.2, (
+        f"_FIXTURE_ABOVE_100KB={_FIXTURE_ABOVE_100KB} is more than 1.2× the 100 KB threshold "
+        "(tlp.process() is O(n²) — fixture bloat → test bloat)"
+    )
