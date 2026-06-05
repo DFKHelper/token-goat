@@ -99,6 +99,7 @@ markers = [
 
 [tool.mypy]
 python_version = "3.11"
+platform = "win32"
 warn_unused_ignores = false
 
 # Tree-sitter language pack returns are typed as `object` and we unpack
