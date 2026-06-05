@@ -4,9 +4,66 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-06-03
+## [1.1.0] - 2026-06-04
 
-Bundles a 35-commit improvement campaign (2026-06-03): six new language indexers, ten-plus new CLI commands and flags, double-daemon prevention with JSON PID files, cross-AI harness improvements, and a broad reliability/quality pass with 200+ new tests.
+57 commits since v1.0.1. Six new language indexers, twenty-plus new CLI commands and flags, a pre-skill hook that cuts repeat skill loads from 40–65k tokens to ~400, pnpm/yarn/bun compress filters, rg/grep dedup hints, double-daemon prevention, and a reliability pass with 400+ new tests.
+
+### Skill Re-load Prevention
+
+The most wasteful thing a long session does is load the same large skill twice. `/ralph`, `/superman`, `/improve` — each injects 40–65k tokens every time. By the third invocation you've paid for three full copies of the same rules.
+
+A new `PreToolUse(Skill)` hook now fires before every Skill invocation. When a skill was already loaded in the current session and no compaction has fired since, the reload is blocked. The cached compact form (~400 tokens) is served via `additionalContext` instead. Falls back to a recall-pointer message when no compact is available.
+
+Compaction awareness: the manifest-SHA sidecar's mtime is compared against the skill's session load timestamp. If compaction fired more recently, the hook allows the reload rather than blocking it — the skill may have been evicted from context.
+
+An opt-in `first_load_compact` flag (default: off) extends this to first loads for skills with a `<!-- COMPACT_END -->` marker. Only the curated compact section is served; the full body stays accessible via `token-goat skill-body <name>`. Enable only after verifying your skill compacts are functional standalones.
+
+Config: `[skill_preservation] pre_skill_enabled = true` (default on), `first_load_compact = false`. Disable via `TOKEN_GOAT_PRE_SKILL=0`.
+
+### New CLI Flags
+
+- **`symbol --context N`** — emit N lines of surrounding source around each match in both text and JSON output.
+- **`symbol --json`** — structured `{file, line, kind, snippet}` output for downstream tooling.
+- **`outline --min-lines N`** — filter sections by minimum body size; skip stub headings.
+- **`outline --max-depth N`** — cap tree depth.
+- **Outline line counts** — each section header now shows its line span.
+- **`web-output --list`** — show all cached web responses with size, age, and URL.
+- **`map --filter GLOB` / `--since-minutes N`** — focus map output to recently-changed or name-matched files.
+- **`stats --since DAYS`** — alias for `--window`.
+- **`token-goat recent`** — session-aware file recency: edited → read this session → git history, with cross-tier deduplication.
+- **Bash history exit codes** — non-zero exits now show `[exit:N]` in the history entry; commands truncated to 100 chars.
+
+### Package Manager Filters
+
+pnpm, yarn, and bun bash compress filters added. `pnpm run`/`yarn run` now route through their own filters instead of falling through to the generic handler. `pnpm exec`/`dlx` pass through unchanged (were incorrectly matching the install filter).
+
+### Context Savings
+
+- **`rg`/`grep`/`ag` dedup.** Bash `rg` and `grep` invocations now fire dedup hints and record to `session.greps` the same way the native Grep tool does. Repeat searches return a cached match-count hint instead of re-running.
+- **Top-5 file guarantee.** The five most-accessed files always appear in the compaction manifest, in a protected section that survives the safety trim.
+- **Scope for new file types.** CSS, SQL, GraphQL, and Makefile symbols now participate in scope resolution via `token-goat scope`.
+- **Web content-type stored.** The sidecar now carries content type so `web-output --section` can route heading-based lookups correctly.
+- **Session hint min-savings threshold** configurable — suppress hints that would save fewer than N tokens.
+- **Glob tracking.** File paths from Glob calls are tracked in session history for dedup hints.
+- **Pre-read skips binary/large files** to avoid wasted processing on non-text content.
+- **HTML stripping** for web output before section extraction.
+
+### Reliability
+
+- **Stale .flock sidecar eviction.** `.flock` and `.tmp` files left by crashed hook processes are now swept during session cleanup.
+- **WSL path guards in bash_parser.** Backslash normalization and Windows system path detection work correctly on WSL-mounted paths (`/mnt/c/windows/`, `/mnt/c/program files/`).
+- **BOM stripping.** `decode_source_text` strips UTF-8 BOM for all new indexers.
+- **Worker stale PID cleanup.** `kill_duplicate_daemon` now removes the stale PID file rather than leaving it for the next startup to trip over.
+- **CI harness detection.** `TOKEN_GOAT_HARNESS_OVERRIDE` env var lets CI runners force `detect_harness()` to return a specific value, fixing 113 test failures that appeared when running without a Claude Code session.
+- **sqlite3.Row end_line fix.** `symbol --json` was using `.get()` on `sqlite3.Row` objects, which don't support attribute-style access; fixed with a proper column-name key lookup.
+
+### Quality and Tests
+
+- **400+ new tests** across all changed modules.
+- Session fixture isolation: `tmp_data_dir` prevents the 5-9s WAL checkpoint overhead per test that appeared when tests touched the production global.db.
+- `uv --version` subprocess mocked in doctor tests: eliminates the 6s overhead per invocation.
+- Synthetic image dimensions reduced from 1600×1200 to 1100×825 in image tests: long edge still exceeds `MAX_LONG_EDGE` so all shrink behavior is exercised, but pixel generation drops ~60%.
+- `uv` dependency caching added to CI: `enable-cache: true` + `cache-dependency-glob: uv.lock` eliminates 2–5 min of package install per run.
 
 ### New Language Indexers
 
