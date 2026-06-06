@@ -20,6 +20,33 @@ from token_goat import install, paths, skill_cache
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+def _call_context_section():
+    """Invoke _build_context_section() — shared by all test classes in this file."""
+    from token_goat.cli_doctor import _build_context_section
+
+    return _build_context_section()
+
+
+def _write_precompact_sentinel(
+    bytes_estimate: int | None = None,
+    *,
+    age_seconds: float | None = None,
+    content: str | None = None,
+) -> None:
+    """Write precompact_estimate_test.json sentinel, optionally backdated."""
+    import json
+    import os
+
+    sentinels_dir = paths.sentinels_dir()
+    sentinels_dir.mkdir(parents=True, exist_ok=True)
+    p = sentinels_dir / "precompact_estimate_test.json"
+    text = content if content is not None else json.dumps({"bytes_estimate": bytes_estimate})
+    p.write_text(text, encoding="utf-8")
+    if age_seconds is not None:
+        t = time.time() - age_seconds
+        os.utime(p, (t, t))
+
 _SIMPLE_SKILL_BODY = """\
 ---
 description: A simple test skill for unit tests.
@@ -697,10 +724,8 @@ class TestChange1ContextFootprint:
         monkeypatch.setattr(paths, "claude_skills_dir", lambda: self.fake_skills_root)
         monkeypatch.setattr(paths, "claude_plugins_dir", lambda: self.fake_plugins_root)
 
-    def _call(self) -> tuple[list[str], bool]:
-        from token_goat.cli_doctor import _build_context_section
-
-        return _build_context_section()
+    def _call(self):
+        return _call_context_section()
 
     # -----------------------------------------------------------------------
     # Basic structure
@@ -1055,21 +1080,10 @@ class TestPrecompactSentinelAge:
         monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
-        from token_goat.cli_doctor import _build_context_section
-        return _build_context_section()
+        return _call_context_section()
 
     def _write_sentinel(self, age_seconds: float, bytes_estimate: int = 500_000) -> None:
-        """Write a precompact_estimate_*.json sentinel with the given age."""
-        sentinels_dir = paths.sentinels_dir()
-        sentinels_dir.mkdir(parents=True, exist_ok=True)
-        sentinel_path = sentinels_dir / "precompact_estimate_test.json"
-        sentinel_path.write_text(
-            json.dumps({"bytes_estimate": bytes_estimate}), encoding="utf-8"
-        )
-        # Backdate mtime to simulate age
-        old_mtime = time.time() - age_seconds
-        import os
-        os.utime(sentinel_path, (old_mtime, old_mtime))
+        _write_precompact_sentinel(bytes_estimate, age_seconds=age_seconds)
 
     def test_accepts_sentinel_older_than_300_seconds(self):
         """Sentinels older than 5 minutes are now used (not silently dropped)."""
@@ -1125,15 +1139,10 @@ class TestContextFillBar:
         monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
-        from token_goat.cli_doctor import _build_context_section
-        return _build_context_section()
+        return _call_context_section()
 
     def _write_sentinel(self, bytes_estimate: int) -> None:
-        sentinels_dir = paths.sentinels_dir()
-        sentinels_dir.mkdir(parents=True, exist_ok=True)
-        (sentinels_dir / "precompact_estimate_test.json").write_text(
-            json.dumps({"bytes_estimate": bytes_estimate}), encoding="utf-8"
-        )
+        _write_precompact_sentinel(bytes_estimate)
 
     def test_fill_bar_present_in_output(self):
         """A fill bar line starting with '[' is always emitted."""
@@ -1346,15 +1355,10 @@ class TestCompactionRecommendations:
         monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
-        from token_goat.cli_doctor import _build_context_section
-        return _build_context_section()
+        return _call_context_section()
 
     def _write_sentinel(self, bytes_estimate: int) -> None:
-        sentinels_dir = paths.sentinels_dir()
-        sentinels_dir.mkdir(parents=True, exist_ok=True)
-        (sentinels_dir / "precompact_estimate_test.json").write_text(
-            json.dumps({"bytes_estimate": bytes_estimate}), encoding="utf-8"
-        )
+        _write_precompact_sentinel(bytes_estimate)
 
     def test_urgent_recommendation_at_85_percent(self):
         """>=85% fill → urgent /compact recommendation."""
@@ -1558,15 +1562,10 @@ class TestContextEdgeCases:
         monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
-        from token_goat.cli_doctor import _build_context_section
-        return _build_context_section()
+        return _call_context_section()
 
     def _write_sentinel(self, bytes_estimate: int) -> None:
-        sentinels_dir = paths.sentinels_dir()
-        sentinels_dir.mkdir(parents=True, exist_ok=True)
-        (sentinels_dir / "precompact_estimate_test.json").write_text(
-            json.dumps({"bytes_estimate": bytes_estimate}), encoding="utf-8"
-        )
+        _write_precompact_sentinel(bytes_estimate)
 
     # ------------------------------------------------------------------
     # Zero-byte sentinel tests
@@ -1687,15 +1686,10 @@ class TestSentinelErrorHandling:
         monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
-        from token_goat.cli_doctor import _build_context_section
-        return _build_context_section()
+        return _call_context_section()
 
     def _write_sentinel(self, content: str) -> None:
-        sentinels_dir = paths.sentinels_dir()
-        sentinels_dir.mkdir(parents=True, exist_ok=True)
-        (sentinels_dir / "precompact_estimate_test.json").write_text(
-            content, encoding="utf-8"
-        )
+        _write_precompact_sentinel(content=content)
 
     def test_malformed_json_sentinel_shows_error_note(self):
         """A sentinel with malformed JSON emits a '(sentinel error: ...)' note and
@@ -1767,17 +1761,10 @@ class TestContextMetricAccuracy:
         monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
-        from token_goat.cli_doctor import _build_context_section
-        return _build_context_section()
+        return _call_context_section()
 
     def _write_sentinel(self, bytes_estimate: int, age_seconds: float = 10.0) -> None:
-        import os
-        sentinels_dir = paths.sentinels_dir()
-        sentinels_dir.mkdir(parents=True, exist_ok=True)
-        p = sentinels_dir / "precompact_estimate_test.json"
-        p.write_text(json.dumps({"bytes_estimate": bytes_estimate}), encoding="utf-8")
-        t = time.time() - age_seconds
-        os.utime(p, (t, t))
+        _write_precompact_sentinel(bytes_estimate, age_seconds=age_seconds)
 
     # ------------------------------------------------------------------
     # Fill severity thresholds
