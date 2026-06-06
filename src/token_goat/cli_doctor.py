@@ -362,9 +362,34 @@ def _build_context_section() -> tuple[list[str], bool]:
     meta_tokens = meta_bytes // 4
 
     # ------------------------------------------------------------------ #
-    # 6. Conversation estimate                                             #
+    # 6. Conversation estimate (iter 8: tool-output-aware)                #
+    # The old formula (turns * 2000) underestimates sessions with heavy   #
+    # bash or web tool use.  We now use actual output bytes from the      #
+    # session cache — bash stdout/stderr and web fetch bodies — capped    #
+    # per-entry to avoid double-counting truncated outputs.               #
+    # Per-turn dialogue is estimated at 800 tokens (model text only);     #
+    # tool outputs add on top of that.                                    #
     # ------------------------------------------------------------------ #
-    conversation_tokens = session_turns * 2000
+    _TOOL_OUTPUT_CAP = 32_768  # bytes per entry — prevents one giant bash output
+    #                           from dominating; token-goat already truncates
+    tool_output_bytes = 0
+    try:
+        if "cache" in locals():  # session was loaded earlier (section 4 above)
+            bash_hist = getattr(cache, "bash_history", {})
+            for be in bash_hist.values():
+                tool_output_bytes += min(
+                    getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0),
+                    _TOOL_OUTPUT_CAP,
+                )
+            web_hist = getattr(cache, "web_history", {})
+            for we in web_hist.values():
+                tool_output_bytes += min(getattr(we, "body_bytes", 0), _TOOL_OUTPUT_CAP)
+    except Exception:  # noqa: BLE001
+        tool_output_bytes = 0
+
+    tool_output_tokens = tool_output_bytes // 4
+    dialogue_tokens = session_turns * 800  # model text per turn
+    conversation_tokens = dialogue_tokens + tool_output_tokens
 
     # ------------------------------------------------------------------ #
     # 7. Precompact baseline — read without consuming the sentinel         #
@@ -478,10 +503,17 @@ def _build_context_section() -> tuple[list[str], bool]:
 
     if session_turns > 0:
         per_turn_est = conversation_tokens // session_turns
-        lines.append(
-            f"  Conversation (~{session_turns} turns): ~{conversation_tokens:,} tokens"
-            f"  (~{per_turn_est:,}/turn)"
-        )
+        if tool_output_tokens > 0:
+            lines.append(
+                f"  Conversation (~{session_turns} turns): ~{conversation_tokens:,} tokens"
+                f"  (~{per_turn_est:,}/turn)"
+                f"  [dialogue ~{dialogue_tokens:,} + tool outputs ~{tool_output_tokens:,}]"
+            )
+        else:
+            lines.append(
+                f"  Conversation (~{session_turns} turns): ~{conversation_tokens:,} tokens"
+                f"  (~{per_turn_est:,}/turn)"
+            )
     else:
         lines.append("  Conversation: no active session found")
 

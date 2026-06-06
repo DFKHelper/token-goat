@@ -933,7 +933,8 @@ class TestChange1ContextFootprint:
     # -----------------------------------------------------------------------
 
     def test_conversation_tokens_based_on_turns(self, tmp_data_dir, monkeypatch):
-        """Conversation estimate = turns_since_last_compact * 2000."""
+        """Conversation estimate uses turns_since_last_compact * 800 (dialogue) +
+        tool output bytes from bash/web history (iter 8 improvement)."""
         from token_goat import session as ses
 
         sid = "sess-ctx1-conv"
@@ -943,8 +944,8 @@ class TestChange1ContextFootprint:
 
         lines, _ = self._call()
         combined = "\n".join(lines)
-        # 7 * 2000 = 14,000 tokens
-        assert "14,000" in combined
+        # With no tool output in history: 7 * 800 = 5,600 tokens
+        assert "5,600" in combined
         assert "7 turns" in combined
 
     # -----------------------------------------------------------------------
@@ -1751,4 +1752,86 @@ class TestContextMetricAccuracy:
         eta_line = next((ln for ln in lines if "ETA:" in ln), "")
         assert "at current rate" in eta_line or "ETA: unknown" in eta_line, (
             f"Expected 'at current rate' ETA with 5 turns but got: {eta_line!r}"
+        )
+
+    # ------------------------------------------------------------------
+    # Tool-output-aware conversation estimate (iter 8)
+    # ------------------------------------------------------------------
+
+    def test_tool_output_tokens_increase_estimate(self):
+        """When bash_history has entries, tool output bytes add to conversation estimate."""
+        from token_goat import session as ses
+        from token_goat.session import BashEntry
+
+        sid = "sess-toolout-iter8"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 3
+        # Add a bash entry with 80,000 bytes of stdout (= 20,000 tokens at /4)
+        be = BashEntry(
+            cmd_sha="abc12345",
+            cmd_preview="pytest",
+            output_id="out123",
+            ts=1000.0,
+            stdout_bytes=80_000,
+            stderr_bytes=0,
+        )
+        cache.bash_history["abc12345"] = be
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Conversation line should show "tool outputs" breakdown
+        assert "tool outputs" in combined, (
+            f"Expected 'tool outputs' annotation in conversation line:\n{combined}"
+        )
+        # dialogue_tokens = 3 * 800 = 2,400
+        # tool_output_tokens = min(80_000, 32_768) // 4 = 8,192
+        # total = 10,592
+        conv_line = next((ln for ln in lines if "Conversation" in ln and "turns" in ln), "")
+        assert "dialogue" in conv_line, f"Expected 'dialogue' in conv line: {conv_line!r}"
+
+    def test_no_tool_output_shows_simple_conversation_line(self):
+        """When no bash/web history, conversation line does not show breakdown."""
+        from token_goat import session as ses
+
+        sid = "sess-notools-iter8"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 4
+        ses.save(cache)
+
+        lines, _ = self._call()
+        conv_line = next((ln for ln in lines if "Conversation" in ln and "turns" in ln), "")
+        assert "dialogue" not in conv_line, (
+            f"Expected no breakdown when no tools used: {conv_line!r}"
+        )
+        assert "tool outputs" not in conv_line
+
+    def test_tool_output_capped_per_entry(self):
+        """Each bash entry is capped at 32,768 bytes to prevent one large output dominating."""
+        from token_goat import session as ses
+        from token_goat.session import BashEntry
+
+        sid = "sess-cap-iter8"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 2
+        # Add a bash entry with 1MB stdout — should be capped at 32,768 bytes
+        be = BashEntry(
+            cmd_sha="bigcmd1",
+            cmd_preview="cat bigfile",
+            output_id="outbig",
+            ts=1000.0,
+            stdout_bytes=1_000_000,
+            stderr_bytes=0,
+        )
+        cache.bash_history["bigcmd1"] = be
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # tool_output_tokens = min(1_000_000, 32_768) // 4 = 8,192
+        # dialogue_tokens = 2 * 800 = 1,600
+        # total = 9,792 — should NOT show 250,000 tokens from uncapped 1MB
+        # Verify capping occurred: "250,000" should not appear
+        assert "250,000" not in combined, (
+            f"Tool output was not capped — uncapped 1MB shown:\n{combined}"
         )
