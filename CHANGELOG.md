@@ -4,6 +4,18 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-06-06
+
+Three bug fixes surfaced by the pre-push WSL test suite.
+
+### Bug fixes
+
+**Compact file ID case normalization on Linux.** `_compact_file_id` and `get_compact_any_session` now both lowercase the skill name before constructing the compact file path suffix (`-freshskill-compact` rather than `-freshSkill-compact`). On case-sensitive Linux/WSL filesystems the mismatch caused `compact_coverage_score` to return 0 for mixed-case skill names (store wrote the file; lookup missed it) and the stale-fraction calculation in `_compute_stale_compact_fraction` to return 1.0 (cross-session glob matched nothing). Both code paths are now consistent with `store_compact`'s write path.
+
+**`type: ignore` error code correction in `cli.py`.** Two `# type: ignore[arg-type]` comments on `int(compact_quality["score"])` and `list(compact_quality.get("issues", []))` suppressed the wrong error code. mypy reports `[call-overload]` for `int(object)`, not `[arg-type]`, so the annotations were no-ops and the errors surfaced when `warn_unused_ignores` is active. Changed to `# type: ignore[call-overload]`. Two parallel defaults in `hooks_skill._gen_compact_bg` were also corrected from `str | None` to `str` to clear `[assignment]` and `[union-attr]` errors.
+
+**psutil `[import-untyped]` suppression.** `psutil` is now listed in the `[[tool.mypy.overrides]]` `ignore_missing_imports = true` group in `pyproject.toml`, clearing `[import-untyped]` errors in the five source files that import it.
+
 ## [1.4.0] - 2026-06-06
 
 Forty-iteration self-improvement pass across four focus areas: context tracking depth, compact quality, output efficiency, and DRY/test hygiene.
