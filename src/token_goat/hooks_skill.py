@@ -417,9 +417,9 @@ def pre_skill(payload: HookPayload) -> HookResponse:
             compact_tokens = len(compact_text.encode("utf-8", errors="replace")) // 4
             context = (
                 f"Skill **{skill_name}** is already in context from this session "
-                f"({run_count}× loaded, ~{body_tokens} tokens). "
-                f"Re-loading blocked to save {body_tokens - compact_tokens} tokens.\n\n"
-                f"**Compact operative summary** (~{compact_tokens} tokens):\n\n"
+                f"({run_count}× loaded, ~{body_tokens} tok). "
+                f"Re-loading blocked to save {body_tokens - compact_tokens} tok.\n\n"
+                f"**Compact operative summary** (~{compact_tokens} tok):\n\n"
                 f"{compact_text}\n\n"
                 f"Full sections: `token-goat skill-body {skill_name} --section <heading>`"
             )
@@ -432,7 +432,7 @@ def pre_skill(payload: HookPayload) -> HookResponse:
         else:
             context = (
                 f"Skill **{skill_name}** is already in context from this session "
-                f"({run_count}× loaded, ~{body_tokens} tokens). "
+                f"({run_count}× loaded, ~{body_tokens} tok). "
                 f"Re-loading blocked — its instructions are still active.\n\n"
                 f"Recall the cached body: `token-goat skill-body {skill_name}`\n"
                 f"Recall a specific section: `token-goat skill-body {skill_name} --section <heading>`"
@@ -457,7 +457,7 @@ def pre_skill(payload: HookPayload) -> HookResponse:
             compact_tokens = len(compact_text.encode("utf-8", errors="replace")) // 4
             context = (
                 f"Skill **{skill_name}** has a curated compact section "
-                f"(~{compact_tokens} tokens). "
+                f"(~{compact_tokens} tok). "
                 f"Serving compact on first load (`first_load_compact` is enabled).\n\n"
                 f"**Compact operative summary**:\n\n"
                 f"{compact_text}\n\n"

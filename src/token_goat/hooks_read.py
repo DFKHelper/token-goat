@@ -1742,7 +1742,7 @@ def _try_grep_symbol_hint(pattern: str, cwd: str | None) -> str | None:
         return (
             f"Symbol `{pattern}` is indexed — use `token-goat symbol {pattern}` "
             f"to jump directly to its definition(s) ({loc_str}) "
-            f"instead of scanning files with grep (~95% fewer tokens)."
+            f"instead of scanning files with grep (~95% fewer tok)."
         )
     except Exception:  # noqa: BLE001
         return None
@@ -1814,7 +1814,7 @@ def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
         return (
             f"For `{pattern}`, `{method}` is indexed — use "
             f"`token-goat symbol {method}` to jump to its definition(s) "
-            f"({loc_str}) instead of scanning files with grep (~95% fewer tokens)."
+            f"({loc_str}) instead of scanning files with grep (~95% fewer tok)."
         )
     except Exception:  # noqa: BLE001
         return None

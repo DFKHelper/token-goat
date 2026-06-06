@@ -227,6 +227,9 @@ _TERSE: dict[str, str] = {
     "exit=": "x=",
     "ran ": "×",
     "use `offset=": "→offset=",
+    # Keep "tok" consistent with the token_estimate_header format (~N tok).
+    " tokens).": " tok).",
+    "to read selectively.": "selectively.",
 }
 
 
