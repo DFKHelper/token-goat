@@ -3628,12 +3628,57 @@ def _session_age_tier(age_seconds: float) -> str:
     return "mature"
 
 
+def _compute_stale_compact_fraction(session_id: str, skill_history: dict) -> float:  # type: ignore[type-arg]
+    """Return the fraction of loaded skills whose compact is missing or stale.
+
+    A compact is considered **stale** when:
+    - No compact file exists for the skill, OR
+    - The compact file's embedded SHA (12-char prefix from the header) does not
+      match the first 12 characters of the session's recorded ``content_sha`` for
+      that skill entry.
+
+    A compact is considered **fresh** when a compact file exists whose embedded
+    SHA is a prefix of the session's ``content_sha`` (or the compact has no SHA
+    header at all — treated as unknown/fresh to be conservative).
+
+    Returns ``0.0`` when no skills are loaded.  Returns a value in ``[0.0, 1.0]``.
+
+    This fraction drives :func:`compute_adaptive_budget`: sessions where many
+    skills cannot contribute compacts to the manifest need more token budget to
+    compensate with other context sections.
+    """
+    if not skill_history:
+        return 0.0
+
+    from . import skill_cache as _sc  # noqa: PLC0415
+
+    total = 0
+    stale_count = 0
+    for name, entry in skill_history.items():
+        total += 1
+        entry_sha: str = getattr(entry, "content_sha", "") or ""
+        compact_text = _sc.get_compact_any_session(name)
+        if compact_text is None:
+            # No compact at all → stale
+            stale_count += 1
+            continue
+        embedded_sha = _sc.extract_compact_source_sha(compact_text)  # type: ignore[attr-defined]
+        if embedded_sha is None:
+            # No SHA in header (old-format compact) → treat as fresh (unknown ≠ stale)
+            continue
+        if entry_sha and not entry_sha.startswith(embedded_sha):
+            stale_count += 1
+
+    return stale_count / total if total > 0 else 0.0
+
+
 def compute_adaptive_budget(
     cache: SessionCache,
     age_seconds: float = 0.0,
     *,
     has_pending_diff: bool = False,
     has_uncommitted_changes: bool = False,
+    stale_compact_fraction: float = 0.0,
 ) -> int:
     """Compute an adaptive token budget for the manifest based on session complexity.
 
@@ -3647,6 +3692,7 @@ def compute_adaptive_budget(
         + 15 tokens if web_history has entries
         + 50 tokens if there are pending git changes (git diff --stat HEAD non-empty)
         + 10 tokens if there are uncommitted changes (git diff/status non-empty)
+        + min(60, round(stale_compact_fraction × 60)) if skills have stale/missing compacts
         × tier multiplier (young=0.6, active=1.0, mature=1.4)
         Capped to [200, 800]
 
@@ -3661,6 +3707,13 @@ def compute_adaptive_budget(
     *has_uncommitted_changes* should be ``True`` when ``_get_uncommitted_changes()``
     returned a non-empty string.  Adds 10 tokens to account for the
     "Uncommitted Changes" section in the manifest.
+
+    *stale_compact_fraction* is the fraction of loaded skills whose compact is
+    missing or has a SHA mismatch (0.0 = all fresh, 1.0 = all stale/missing).
+    When skills cannot contribute their compacts to the manifest, the manifest
+    needs more room to compensate with other context.  Up to 60 bonus tokens are
+    added, scaling linearly with the fraction.  Use
+    :func:`_compute_stale_compact_fraction` to compute this from the session cache.
 
     Returns a value guaranteed to be in the range [200, 800].
     """
@@ -3688,7 +3741,22 @@ def compute_adaptive_budget(
     # Uncommitted changes bonus: 10 tokens for the "Uncommitted Changes" section
     uncommitted_bonus = 10 if has_uncommitted_changes else 0
 
-    raw_total = base + edited_bonus + symbols_bonus + bash_bonus + web_bonus + diff_bonus + uncommitted_bonus
+    # Stale compact bonus: sessions where skills lack fresh compacts need more
+    # manifest room to preserve skill context via other means (e.g. last-seen
+    # sections, bash history, edited files).  Scale 0→60 tokens linearly.
+    _safe_frac = max(0.0, min(1.0, stale_compact_fraction))
+    stale_bonus = min(60, round(_safe_frac * 60))
+
+    raw_total = (
+        base
+        + edited_bonus
+        + symbols_bonus
+        + bash_bonus
+        + web_bonus
+        + diff_bonus
+        + uncommitted_bonus
+        + stale_bonus
+    )
 
     # Apply session-age tier multiplier: young sessions need less manifest space
     # (little context has accumulated); mature sessions need more.
@@ -3758,11 +3826,17 @@ def build_manifest_adaptive(session_id: str) -> str:
     cwd = getattr(cache, "cwd", None)
     pending_diff = _get_git_diff_stat_summary(cwd)
     uncommitted = _get_uncommitted_changes(cwd)
+    # Compute the stale compact fraction for skills loaded in this session.
+    # When many skills lack fresh compacts, the manifest needs more room to
+    # preserve skill context via other sections (bash history, edited files, etc).
+    skill_history = getattr(cache, "skill_history", None) or {}
+    stale_frac = _compute_stale_compact_fraction(session_id, skill_history)
     budget = compute_adaptive_budget(
         cache,
         age_seconds=age_seconds,
         has_pending_diff=bool(pending_diff),
         has_uncommitted_changes=bool(uncommitted),
+        stale_compact_fraction=stale_frac,
     )
     # Activity-floor suppression: if the session has too little activity, skip
     # the full manifest.  A score below _ACTIVITY_FLOOR means essentially
@@ -3779,7 +3853,7 @@ def build_manifest_adaptive(session_id: str) -> str:
         return ""
 
     _LOG.debug(
-        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s web=%s diff=%s uncommitted=%s activity=%d)",
+        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s web=%s diff=%s uncommitted=%s stale_frac=%.2f activity=%d)",
         session_id[:8],
         budget,
         _session_age_tier(age_seconds),
@@ -3789,6 +3863,7 @@ def build_manifest_adaptive(session_id: str) -> str:
         bool(getattr(cache, "web_history", None) and cache.web_history),
         bool(pending_diff),
         bool(uncommitted),
+        stale_frac,
         activity_score,
     )
     cfg = _load_config()
