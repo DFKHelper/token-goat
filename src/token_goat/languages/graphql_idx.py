@@ -192,17 +192,7 @@ def extract(
         sections: list[Section] = []
         seen: set[tuple[str, int]] = set()
 
-        def _emit(name: str, kind: str, line: int) -> None:
-            if len(name) > _MAX_HEADING_LEN:
-                return
-            if len(symbols) >= _MAX_SYMBOLS:
-                return
-            key = (name, line)
-            if key in seen:
-                return
-            seen.add(key)
-            symbols.append(Symbol(name=name, kind=kind, line=line))
-            sections.append(Section(heading=name, level=1, line=line))
+        _emit = common.make_symbol_emitter(symbols, sections, seen)
 
         # type / interface / input / enum / union / scalar (+ extend variants)
         for m in _TYPE_RE.finditer(stripped):

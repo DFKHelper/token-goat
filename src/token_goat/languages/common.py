@@ -22,6 +22,7 @@ __all__ = [
     "kind_str",
     "make_add_fn",
     "make_add_symbol",
+    "make_symbol_emitter",
     "make_process_config",
     "merge_extra_symbols",
     "offset_to_line",
@@ -83,6 +84,47 @@ def strip_cstyle_comments(
     text = block_re.sub(_blank_block, text)
     text = line_re.sub("", text)
     return text
+
+
+def make_symbol_emitter(
+    symbols: list,
+    sections: list,
+    seen: set,
+    *,
+    max_heading_len: int = 120,
+    max_symbols: int = 500,
+) -> Callable[[str, str, int], None]:
+    """Return a closure that appends a (Symbol, Section) pair when constraints allow.
+
+    The returned ``emit(name, kind, line)`` closure is the de-duplicated emit
+    helper used by CSS, GraphQL, Proto, and other flat-grammar adapters.
+
+    Args:
+        symbols:        The list to append :class:`Symbol` objects to.
+        sections:       The list to append :class:`Section` objects to.
+        seen:           A ``{(name, line)}`` set used for exact-duplicate suppression.
+        max_heading_len: Maximum allowed character length for *name* (default 120).
+        max_symbols:     Maximum number of symbols to emit (default 500).
+
+    Returns:
+        A ``(name: str, kind: str, line: int) -> None`` callable.
+    """
+    from ..parser import Section, Symbol  # local import avoids circular dep at module level
+
+    def emit(name: str, kind: str, line: int) -> None:
+        if len(name) > max_heading_len:
+            return
+        if len(symbols) >= max_symbols:
+            return
+        key = (name, line)
+        if key in seen:
+            return
+        seen.add(key)
+        symbols.append(Symbol(name=name, kind=kind, line=line))
+        sections.append(Section(heading=name, level=1, line=line))
+
+    return emit
+
 
 class AddSymbolFn(Protocol):
     """Protocol for the recursive ``_add_symbol`` closure returned by :func:`make_add_symbol`.

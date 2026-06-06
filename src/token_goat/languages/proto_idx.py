@@ -146,17 +146,7 @@ def extract(
         sections: list[Section] = []
         seen: set[tuple[str, int]] = set()
 
-        def _emit(name: str, kind: str, line: int) -> None:
-            if len(name) > _MAX_HEADING_LEN:
-                return
-            if len(symbols) >= _MAX_SYMBOLS:
-                return
-            key = (name, line)
-            if key in seen:
-                return
-            seen.add(key)
-            symbols.append(Symbol(name=name, kind=kind, line=line))
-            sections.append(Section(heading=name, level=1, line=line))
+        _emit = common.make_symbol_emitter(symbols, sections, seen)
 
         # import "path/to/file.proto" — extract before stripping comments
         # (imports appear at top of file, rarely inside comments)

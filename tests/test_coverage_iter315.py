@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Systemd service file content assertions
 # ---------------------------------------------------------------------------
@@ -12,81 +14,42 @@ from unittest.mock import MagicMock, patch
 class TestSystemdServiceFileContent:
     """The generated .service file must include restart / rate-limit directives."""
 
-    def test_service_file_contains_restart_on_failure(self, tmp_path, monkeypatch):
+    @pytest.fixture(autouse=True)
+    def _linux_install_env(self, tmp_path, monkeypatch):
+        """Simulate a Linux environment with a no-op subprocess.run."""
+        from token_goat import install
+
+        self._install = install
+
+        def _fake_run(cmd, **kwargs):
+            r = MagicMock()
+            r.returncode = 0
+            return r
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
+        monkeypatch.setattr(install.subprocess, "run", _fake_run)
+        install.install_linux_autostart()
+
+    def _service_content(self) -> str:
+        return self._install._systemd_service_path().read_text()
+
+    def test_service_file_contains_restart_on_failure(self):
         """Generated service file has Restart=on-failure."""
-        from token_goat import install
+        assert "Restart=on-failure" in self._service_content()
 
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
-
-        def fake_run(cmd, **kwargs):
-            r = MagicMock()
-            r.returncode = 0
-            return r
-
-        monkeypatch.setattr(install.subprocess, "run", fake_run)
-        install.install_linux_autostart()
-
-        content = install._systemd_service_path().read_text()
-        assert "Restart=on-failure" in content
-
-    def test_service_file_contains_restart_sec_5(self, tmp_path, monkeypatch):
+    def test_service_file_contains_restart_sec_5(self):
         """Generated service file has RestartSec=5."""
-        from token_goat import install
+        assert "RestartSec=5" in self._service_content()
 
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
-
-        def fake_run(cmd, **kwargs):
-            r = MagicMock()
-            r.returncode = 0
-            return r
-
-        monkeypatch.setattr(install.subprocess, "run", fake_run)
-        install.install_linux_autostart()
-
-        content = install._systemd_service_path().read_text()
-        assert "RestartSec=5" in content
-
-    def test_service_file_contains_start_limit_interval(self, tmp_path, monkeypatch):
+    def test_service_file_contains_start_limit_interval(self):
         """Generated service file has StartLimitIntervalSec=60."""
-        from token_goat import install
+        assert "StartLimitIntervalSec=60" in self._service_content()
 
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
-
-        def fake_run(cmd, **kwargs):
-            r = MagicMock()
-            r.returncode = 0
-            return r
-
-        monkeypatch.setattr(install.subprocess, "run", fake_run)
-        install.install_linux_autostart()
-
-        content = install._systemd_service_path().read_text()
-        assert "StartLimitIntervalSec=60" in content
-
-    def test_service_file_contains_start_limit_burst(self, tmp_path, monkeypatch):
+    def test_service_file_contains_start_limit_burst(self):
         """Generated service file has StartLimitBurst=3."""
-        from token_goat import install
-
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-        monkeypatch.setattr(install, "_systemd_user_available", lambda: True)
-
-        def fake_run(cmd, **kwargs):
-            r = MagicMock()
-            r.returncode = 0
-            return r
-
-        monkeypatch.setattr(install.subprocess, "run", fake_run)
-        install.install_linux_autostart()
-
-        content = install._systemd_service_path().read_text()
-        assert "StartLimitBurst=3" in content
+        assert "StartLimitBurst=3" in self._service_content()
 
 
 # ---------------------------------------------------------------------------
