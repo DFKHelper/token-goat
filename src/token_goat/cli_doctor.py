@@ -636,9 +636,30 @@ def _build_context_section() -> tuple[list[str], bool]:
     # ------------------------------------------------------------------ #
     recommendations: list[str] = []
 
+    # Count uncompacted large loaded skills (used in compound warnings below)
+    uncompacted_large_skills = [
+        name for name, btok, hc in loaded_skill_entries if not hc and btok > 2000
+    ]
+
+    # Tier 0: over-capacity — estimate exceeds CONTEXT_CAP (100%)
+    if fill_pct >= 1.0:
+        recommendations.append(
+            "    [OVER CAPACITY] Estimated context exceeds 100% — responses may degrade."
+            " Run /compact immediately."
+        )
+
     # Tier 1: immediate compaction recommended
-    if fill_pct >= 0.85:
-        recommendations.append("    [URGENT] Run /compact now — context is >= 85% full.")
+    elif fill_pct >= 0.85:
+        if uncompacted_large_skills:
+            # Compound: high fill + uncompacted skills — mention skill-compact first
+            skill_list = ", ".join(uncompacted_large_skills[:3])
+            more = f" (+{len(uncompacted_large_skills) - 3} more)" if len(uncompacted_large_skills) > 3 else ""
+            recommendations.append(
+                f"    [URGENT] Run skill-compact first ({skill_list}{more}),"
+                f" then /compact — uncompacted skills re-inflate context every turn."
+            )
+        else:
+            recommendations.append("    [URGENT] Run /compact now — context is >= 85% full.")
     elif fill_pct >= 0.70:
         recommendations.append("    Run /compact soon — context is >= 70% full.")
     elif fill_pct >= 0.40 and session_turns >= 10:
@@ -650,18 +671,33 @@ def _build_context_section() -> tuple[list[str], bool]:
     # Tier 2: skill compact opportunities (uncompacted loaded skills)
     for skill_name, body_tokens, hc in loaded_skill_entries:
         if not hc and body_tokens > 2000:
-            recommendations.append(f"    token-goat skill-compact {skill_name}")
+            savings_note = f"  # ~{(body_tokens - body_tokens // 5):,} tok saved"
+            recommendations.append(f"    token-goat skill-compact {skill_name}{savings_note}")
 
     # Tier 3: catalog-wide pregen gap
     if compact_count < catalog_count or new_since_pregen is None or (new_since_pregen or 0) > 0:
         recommendations.append("    token-goat skill-compact --all  # update compact catalog")
 
-    # Tier 4: rising trend warning
+    # Tier 4: early session with heavy context
     if session_turns < 5 and fill_pct >= 0.30:
-        # Only <5 turns yet context is already at 30%+ — likely heavy skill load
-        recommendations.append(
-            "    Context is growing fast for early session — skill compacts will help most."
-        )
+        # Determine dominant early-session cost component
+        component_costs: list[tuple[str, int]] = [
+            ("loaded skills", loaded_skill_tokens),
+            ("meta (CLAUDE.md)", meta_tokens),
+            ("catalog", catalog_tokens),
+        ]
+        dominant = max(component_costs, key=lambda x: x[1])
+        if dominant[1] > 0:
+            recommendations.append(
+                f"    Context is {int(fill_pct * 100)}% after only {session_turns} turn(s)"
+                f" — dominant cost: {dominant[0]} ({dominant[1]:,} tok)."
+                f" Skill compacts will help most."
+            )
+        else:
+            recommendations.append(
+                f"    Context at {int(fill_pct * 100)}% with only {session_turns} turn(s)"
+                f" — run: token-goat skill-compact --all"
+            )
 
     if recommendations:
         lines.append("")

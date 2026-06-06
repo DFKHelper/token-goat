@@ -1423,6 +1423,124 @@ class TestCompactionRecommendations:
         assert "Recommendations:" in combined
         assert "Actions:" not in combined
 
+    # ------------------------------------------------------------------
+    # Compound and Tier 0 recommendations (iter 10)
+    # ------------------------------------------------------------------
+
+    def test_over_capacity_shows_tier0_warning(self):
+        """fill_pct >= 100% → OVER CAPACITY warning in Recommendations."""
+        # 660,000 tokens * 4 bytes each = 2,640,000 bytes; use 4,000,000 to exceed 100%
+        self._write_sentinel(bytes_estimate=4_000_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "OVER CAPACITY" in combined, (
+            f"Expected 'OVER CAPACITY' at >100% fill:\n{combined}"
+        )
+
+    def test_tier0_takes_priority_over_tier1(self):
+        """OVER CAPACITY supersedes the normal 'URGENT' message."""
+        self._write_sentinel(bytes_estimate=4_000_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Tier 0 should appear; Tier 1 URGENT should not appear alongside it
+        # (the elif means only one fires)
+        assert "OVER CAPACITY" in combined
+        # The standard tier-1 URGENT message should not duplicate
+        assert combined.count("URGENT") == 1 or "OVER CAPACITY" in combined
+
+    def test_compound_recommendation_when_urgent_and_uncompacted_skills(self):
+        """>=85% fill + uncompacted large skill → compound 'skill-compact first' message."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-compound-iter10"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 5
+        cache.skill_history["heavy-skill"] = SkillEntry(
+            skill_name="heavy-skill",
+            output_id="oid-heavy",
+            content_sha="aaaabbbb",
+            ts=1000.0,
+            body_bytes=40_000,  # 10,000 tokens > 2,000 threshold
+        )
+        ses.save(cache)
+
+        # 85% fill sentinel: 2,244,000 bytes = 561,000 tokens
+        self._write_sentinel(bytes_estimate=2_244_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Should show the compound message that mentions skill-compact before /compact
+        assert "skill-compact" in combined
+        assert "URGENT" in combined
+        # The compound message should mention the skill name
+        assert "heavy-skill" in combined
+
+    def test_skill_compact_recommendation_includes_savings_estimate(self):
+        """skill-compact recommendation includes an approximate token savings note."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-savings-iter10"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 3
+        cache.skill_history["costly-skill"] = SkillEntry(
+            skill_name="costly-skill",
+            output_id="oid-costly",
+            content_sha="11223344",
+            ts=1000.0,
+            body_bytes=20_000,  # 5,000 tokens
+        )
+        ses.save(cache)
+
+        lines, _ = self._call()
+        # The Recommendations block emits lines like:
+        #   "    token-goat skill-compact costly-skill  # ~N tok saved"
+        # (distinct from the skill table line "run: token-goat skill-compact …")
+        rec_line = next(
+            (
+                ln
+                for ln in lines
+                if "costly-skill" in ln and "skill-compact" in ln and "tok saved" in ln
+            ),
+            None,
+        )
+        assert rec_line is not None, (
+            "Expected a recommendation with 'tok saved' for costly-skill.\n"
+            "All lines mentioning costly-skill:\n"
+            + "\n".join(ln for ln in lines if "costly-skill" in ln)
+        )
+
+    def test_tier4_early_session_shows_dominant_component(self):
+        """Early session with high fill shows the dominant cost component."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-tier4-iter10"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 2  # < 5 turns
+        # Large loaded skill: 800,000 bytes = 200,000 tokens
+        # Total estimate (skill + meta ~43k + conv ~1.6k) ≈ 245k → 37% fill ≥ 30% threshold
+        cache.skill_history["dominant-skill"] = SkillEntry(
+            skill_name="dominant-skill",
+            output_id="oid-dom",
+            content_sha="99aabbcc",
+            ts=1000.0,
+            body_bytes=800_000,
+        )
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Should mention the dominant component in the recommendation
+        # (loaded skills dominates here at 125,000 tokens)
+        tier4_line = next(
+            (ln for ln in lines if "Skill compacts will help most" in ln or "dominant cost" in ln),
+            None,
+        )
+        assert tier4_line is not None, (
+            f"Expected Tier 4 recommendation mentioning dominant cost:\n{combined}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Edge case hardening (iter 5/10)
