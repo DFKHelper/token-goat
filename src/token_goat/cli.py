@@ -5683,6 +5683,11 @@ def doctor(  # noqa: C901
     fix: bool = typer.Option(  # noqa: B008
         False, "--fix", help="Clear stale index-spawn markers that doctor flags."
     ),
+    context: bool = typer.Option(  # noqa: B008
+        False,
+        "--context",
+        help="Always show the Context footprint section (auto-shown when context > 40% or an uncompacted loaded skill exists).",
+    ),
 ) -> None:
     """Diagnose the health of the token-goat installation and indices.
 
@@ -5692,7 +5697,7 @@ def doctor(  # noqa: C901
     """
     from . import cli_doctor  # noqa: PLC0415
 
-    cli_doctor.doctor(fix=fix, crashes=False)
+    cli_doctor.doctor(fix=fix, crashes=False, context=context)
 
 
 _VALID_TARGETS = {"claude", "codex", "gemini", "opencode", "openclaw", "all"}
