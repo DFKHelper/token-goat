@@ -2245,11 +2245,11 @@ class TestTokenEstimateHeader:
     """Tests for read_replacement.token_estimate_header."""
 
     def test_format(self):
-        """Header format is '# N lines (M tokens est.)'."""
+        """Header format is '# N lines (~M tok)'."""
         import re
         text = "line1\nline2\nline3"
         header = read_replacement.token_estimate_header(text)
-        assert re.match(r"^# \d+ lines \(\d+ tokens est\.\)$", header), (
+        assert re.match(r"^# \d+ lines \(~\d+ tok\)$", header), (
             f"Unexpected header format: {header!r}"
         )
 
@@ -2263,12 +2263,12 @@ class TestTokenEstimateHeader:
         """Token estimate is len(text) // 4."""
         text = "x" * 400
         header = read_replacement.token_estimate_header(text)
-        assert "(100 tokens est.)" in header
+        assert "(~100 tok)" in header
 
     def test_empty_string(self):
         """Empty string produces a header with 0 tokens."""
         header = read_replacement.token_estimate_header("")
-        assert "0 tokens" in header
+        assert "(~0 tok)" in header
 
     def test_single_line(self):
         """Single-line text counts as 1 line."""
@@ -2307,7 +2307,7 @@ class TestReadCommandFullFlag:
         runner = CliRunner()
         result = runner.invoke(app, ["read", "bigfile.py::big_function"])
         assert result.exit_code == 0, result.output
-        assert "tokens est." in result.output
+        assert "~" in result.output and "tok" in result.output
 
     def test_read_truncates_long_body_by_default(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
         """Without --full, long symbol bodies are truncated."""

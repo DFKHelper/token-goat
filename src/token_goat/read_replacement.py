@@ -907,16 +907,18 @@ def truncate_symbol_body(text: str, *, full: bool = False) -> str:
 def token_estimate_header(text: str) -> str:
     """Return a one-line header estimating the token count of *text*.
 
-    Format: ``# {N} lines ({approx_tokens} tokens est.)``
+    Format: ``# {N} lines (~{approx_tokens} tok)``
 
     ``approx_tokens`` is computed as ``len(text) // 4``, which is the standard
     rough approximation for GPT-family and Claude tokenizers (4 chars ≈ 1 token).
     The estimate is intentionally rough — it gives the reader a useful order-of-
     magnitude budget signal without the overhead of running a real tokenizer.
+    The compact format saves ~6 chars per read compared to the previous
+    "({approx_tokens} tokens est.)" form, which adds up across many reads.
     """
     n_lines = text.count("\n") + (1 if text else 0)
     approx_tokens = len(text) // 4
-    return f"# {n_lines} lines ({approx_tokens} tokens est.)"
+    return f"# {n_lines} lines (~{approx_tokens} tok)"
 
 
 def _read_file_lines(abs_path: Path) -> tuple[list[str], int] | None:
