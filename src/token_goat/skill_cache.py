@@ -1775,7 +1775,7 @@ def get_compact_any_session(skill_name: str) -> str | None:
     if name is None:
         return None
 
-    safe_name = name.replace(":", "_")
+    safe_name = name.lower().replace(":", "_")
     if ":" in name:
         safe_name += "n"
     suffix = f"-{safe_name}-compact"
