@@ -5342,8 +5342,18 @@ def _render(
                     # before estimating tokens so the count reflects usable content only.
                     _bare_compact = skill_cache._strip_compact_header(_compact_text)  # type: ignore[attr-defined]
                     _tok_est = max(1, len(_bare_compact) // 4)
+                    # Detect SHA staleness: the compact header embeds the first 12 hex chars
+                    # of the body SHA at compact-generation time.  If the session's recorded
+                    # content_sha has a different prefix, the skill was updated after the
+                    # compact was written — annotate so the post-compact model knows to
+                    # re-run `skill-compact` before relying on the recalled compact.
+                    _entry_sha = getattr(_se, "content_sha", "") or ""
+                    _compact_sha = skill_cache.extract_compact_source_sha(_compact_text)  # type: ignore[attr-defined]
+                    _stale_ann = ""
+                    if _compact_sha and _entry_sha and not _entry_sha.startswith(_compact_sha):
+                        _stale_ann = " [stale]"
                     skill_lines.append(
-                        f"- {_skill_name} ({_tok_est} tokens)"
+                        f"- {_skill_name} ({_tok_est} tokens{_stale_ann})"
                         f" → `token-goat skill-body {_skill_name} --compact`"
                     )
                 else:
