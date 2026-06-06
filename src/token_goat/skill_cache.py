@@ -1300,6 +1300,137 @@ def extract_compact_source_sha(stored_text: str) -> str | None:
     return None
 
 
+def score_compact(compact_body: str, full_body: str) -> dict[str, object]:
+    """Score the quality of a compact relative to its source body.
+
+    Returns a dict with these fields:
+
+    - ``score`` (int 0-100): overall quality score (higher is better).
+    - ``coverage_ratio`` (float 0.0-1.0): compact tokens / body tokens, capped at 1.0.
+      A well-formed compact should be 0.10–0.50 (10-50% of the body).
+    - ``non_empty_sections`` (int): number of headings in the compact followed by
+      at least one non-blank content line.
+    - ``has_goal_marker`` (bool): whether the compact contains a COMPACT_END marker
+      or a frontmatter ``description:`` field — both indicate the compact was
+      intentionally curated vs. heuristically generated.
+    - ``headings_count`` (int): total H1-H4 heading count in the compact body
+      (outside fenced code blocks).
+    - ``has_rule_lines`` (bool): whether any CRITICAL/MUST/NEVER/RULE lines were
+      preserved (a signal that the compact captured load-bearing directives).
+    - ``issues`` (list[str]): human-readable warnings about quality problems.
+
+    Callers must pass the *bare* compact body (without the ``--- compact form … ---``
+    header line — pass the output of :func:`_strip_compact_header`).  The *full_body*
+    should be the original skill body text used to estimate the coverage ratio.
+    """
+    issues: list[str] = []
+
+    # ── token estimates ────────────────────────────────────────────────────────
+    # Use the same 3-chars/token heuristic as compact.estimate_tokens so the
+    # coverage ratio is internally consistent.
+    compact_tokens = max(1, len(compact_body) // 3)
+    body_tokens = max(1, len(full_body) // 3)
+    raw_ratio = compact_tokens / body_tokens
+    coverage_ratio = min(1.0, raw_ratio)
+
+    # ── heading analysis (code-block-aware) ───────────────────────────────────
+    in_fence = False
+    headings: list[str] = []
+    lines = compact_body.splitlines()
+    i = 0
+    heading_has_content: list[bool] = []
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            i += 1
+            continue
+        if not in_fence and stripped.startswith("#"):
+            headings.append(stripped)
+            # Look ahead for at least one non-blank content line
+            j = i + 1
+            has_content = False
+            while j < len(lines):
+                next_stripped = lines[j].strip()
+                if next_stripped.startswith("#"):
+                    break
+                if next_stripped and not next_stripped.startswith("```"):
+                    has_content = True
+                    break
+                j += 1
+            heading_has_content.append(has_content)
+        i += 1
+
+    headings_count = len(headings)
+    non_empty_sections = sum(1 for hc in heading_has_content if hc)
+
+    # ── goal / curation markers ───────────────────────────────────────────────
+    has_goal_marker = (
+        "<!-- COMPACT_END -->" in full_body
+        or bool(_COMPACT_HEADER_RE.match(compact_body + "\n"))  # unlikely but safe
+        # frontmatter description in the body is a strong curation signal
+        or (full_body.startswith("---") and "description:" in full_body[:400])
+    )
+
+    # ── rule-line presence ────────────────────────────────────────────────────
+    has_rule_lines = bool(_RULE_KEYWORDS_RE.search(compact_body))
+
+    # ── quality scoring ───────────────────────────────────────────────────────
+    # Base score starts at 50; penalties and bonuses applied below.
+    score = 50
+
+    # Coverage ratio: ideal range 0.10–0.50.  Too small → may be empty/stub.
+    # Too large → compact is not meaningfully smaller than the body.
+    if raw_ratio < 0.05:
+        score -= 20
+        issues.append(f"compact is very small ({coverage_ratio:.0%} of body) — may be stub or empty")
+    elif raw_ratio < 0.10:
+        score -= 8
+        issues.append(f"compact coverage is low ({coverage_ratio:.0%} of body)")
+    elif raw_ratio <= 0.50:
+        score += 15  # ideal range
+    elif raw_ratio <= 0.80:
+        score += 5   # acceptable but verbose
+    else:
+        score -= 10
+        issues.append(f"compact is {coverage_ratio:.0%} of body — barely smaller than the original")
+
+    # Headings: structured compacts are easier to navigate.
+    if headings_count == 0:
+        score -= 10
+        issues.append("compact has no headings — may be unstructured prose")
+    elif headings_count >= 3:
+        score += 10
+
+    # Non-empty sections: sections with content are better than placeholder headers.
+    empty_sections = headings_count - non_empty_sections
+    if headings_count > 0 and empty_sections > 0:
+        score -= 5 * min(empty_sections, 3)
+        issues.append(f"{empty_sections} section(s) with no content lines")
+
+    # Goal/curation marker: intentionally curated compacts score higher.
+    if has_goal_marker:
+        score += 10
+
+    # Rule lines: load-bearing directives were preserved.
+    if has_rule_lines:
+        score += 5
+
+    # Clamp to 0-100.
+    score = max(0, min(100, score))
+
+    return {
+        "score": score,
+        "coverage_ratio": round(coverage_ratio, 4),
+        "non_empty_sections": non_empty_sections,
+        "has_goal_marker": has_goal_marker,
+        "headings_count": headings_count,
+        "has_rule_lines": has_rule_lines,
+        "issues": issues,
+    }
+
+
 def generate_compact_summary(full_body: str) -> str:
     """Extract a compact summary from *full_body* capped at ~400 tokens (1600 chars).
 

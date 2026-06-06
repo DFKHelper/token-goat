@@ -4838,6 +4838,9 @@ def cmd_skill_compact(
     )
 
     if json_output:
+        # Strip header from compact_display to get the bare body for quality scoring.
+        compact_bare = skill_cache._strip_compact_header(compact_display)
+        quality = skill_cache.score_compact(compact_bare, body)
         payload: dict[str, object] = {
             "skill_name": name,
             "compact": True,
@@ -4848,6 +4851,7 @@ def cmd_skill_compact(
             "returned_bytes": returned_bytes,
             "saved_bytes": saved_bytes,
             "saved_tokens": _tokens_saved,
+            "compact_quality": quality,
         }
         if meta is not None:
             payload["output_id"] = meta.output_id
@@ -5202,6 +5206,11 @@ def cmd_skill_list(
                 frag_len = len(compact_src_sha)
                 compact_stale = body_sha[:frag_len] != compact_src_sha
 
+        # Score the compact quality when a compact exists.
+        compact_quality: dict[str, object] | None = None
+        if has_compact and compact_body and body_text:
+            compact_quality = skill_cache.score_compact(compact_body, body_text)
+
         rows.append({
             "name": meta.skill_name,
             "body_tokens": body_tokens,
@@ -5210,6 +5219,7 @@ def cmd_skill_list(
             "compact_stale": compact_stale,
             "age_secs": round(age_secs),
             "compact_served_count": compact_served_count,
+            "compact_quality": compact_quality,
         })
 
     if json_output:
