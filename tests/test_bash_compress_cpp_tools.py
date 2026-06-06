@@ -1,6 +1,8 @@
 """Tests for C/C++ tool filters: ConanFilter, VcpkgFilter, CppcheckFilter, ClangTidyFilter."""
 from __future__ import annotations
 
+from filter_test_helpers import FilterTestMixin
+
 from token_goat import bash_compress as bc
 
 
@@ -39,7 +41,7 @@ _CONAN_OUTPUT = "\n".join([
 ])
 
 
-class TestConanFilter:
+class TestConanFilter(FilterTestMixin):
     F = bc.ConanFilter()
 
     def test_matches_conan(self) -> None:
@@ -83,9 +85,6 @@ class TestConanFilter:
         result = self.F.apply(output, "", 1, ["conan", "install", "."])
         assert "ERROR: Package binary not found" in result.text
 
-    def test_empty_output(self) -> None:
-        result = _apply(self.F, stdout="")
-        assert isinstance(result, str)
 
     def test_compression_ratio(self) -> None:
         result = self.F.apply(_CONAN_OUTPUT, "", 0, ["conan", "install", "."])
@@ -136,7 +135,7 @@ _VCPKG_OUTPUT = "\n".join([
 ])
 
 
-class TestVcpkgFilter:
+class TestVcpkgFilter(FilterTestMixin):
     F = bc.VcpkgFilter()
 
     def test_matches_vcpkg(self) -> None:
@@ -186,9 +185,6 @@ class TestVcpkgFilter:
         result = self.F.apply(output, "", 1, ["vcpkg", "install", "zlib"])
         assert "BUILD_FAILED" in result.text
 
-    def test_empty_output(self) -> None:
-        result = _apply(self.F, stdout="")
-        assert isinstance(result, str)
 
     def test_compression_ratio(self) -> None:
         result = self.F.apply(_VCPKG_OUTPUT, "", 0, ["vcpkg", "install", "zlib"])
@@ -233,7 +229,7 @@ _CPPCHECK_STDERR = "\n".join([
 ])
 
 
-class TestCppcheckFilter:
+class TestCppcheckFilter(FilterTestMixin):
     F = bc.CppcheckFilter()
 
     def test_matches_cppcheck(self) -> None:
@@ -274,9 +270,6 @@ class TestCppcheckFilter:
         result = _apply(self.F, stderr=_CPPCHECK_STDERR)
         assert "[src/main.cpp:10]: (error) Memory leak: buf" in result
 
-    def test_empty_output(self) -> None:
-        result = _apply(self.F, stdout="")
-        assert isinstance(result, str)
 
     def test_compression_ratio(self) -> None:
         result = self.F.apply(_CPPCHECK_OUTPUT, "", 0, ["cppcheck", "src/"])
@@ -330,7 +323,7 @@ _CLANG_TIDY_STDERR_PROGRESS = "\n".join([
 ])
 
 
-class TestClangTidyFilter:
+class TestClangTidyFilter(FilterTestMixin):
     F = bc.ClangTidyFilter()
 
     def test_matches_clang_tidy(self) -> None:
@@ -388,9 +381,6 @@ class TestClangTidyFilter:
         result = _apply(self.F, stderr=_CLANG_TIDY_STDERR_PROGRESS)
         assert "clang-tidy: Processing 5 files..." not in result
 
-    def test_empty_output(self) -> None:
-        result = _apply(self.F, stdout="")
-        assert isinstance(result, str)
 
     def test_compression_ratio_on_verbose_output(self) -> None:
         # Build a realistic-sized output with many progress/include/context lines

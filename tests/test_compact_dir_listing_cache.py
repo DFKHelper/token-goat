@@ -50,11 +50,20 @@ def _reset_dir_cache() -> None:
 # ---------------------------------------------------------------------------
 
 
-class TestDirListingBasic:
+
+
+
+
+class DirListingMixin:
+    """Mixin providing data-dir isolation + dir-listing cache reset for test classes."""
+
     @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
+    def _isolate(self, tmp_data_dir):  # noqa: PT004
         self.tmp_data_dir = tmp_data_dir
         _reset_dir_cache()
+
+
+class TestDirListingBasic(DirListingMixin):
 
     def test_returns_existing_compact_file(self):
         """_get_skills_dir_listing includes a compact file that was just written."""
@@ -78,11 +87,7 @@ class TestDirListingBasic:
 # ---------------------------------------------------------------------------
 
 
-class TestDirListingCacheHit:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
-        _reset_dir_cache()
+class TestDirListingCacheHit(DirListingMixin):
 
     def test_second_call_returns_same_list_object(self):
         """Two rapid calls to _get_skills_dir_listing return the same list instance."""
@@ -123,11 +128,7 @@ class TestDirListingCacheHit:
 # ---------------------------------------------------------------------------
 
 
-class TestDirListingCacheExpiry:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
-        _reset_dir_cache()
+class TestDirListingCacheExpiry(DirListingMixin):
 
     def test_cache_refreshes_after_ttl(self):
         """After simulating TTL expiry, the next call to _get_skills_dir_listing re-scans."""
@@ -173,11 +174,7 @@ class TestDirListingCacheExpiry:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCompactAnySessionWithCache:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
-        _reset_dir_cache()
+class TestGetCompactAnySessionWithCache(DirListingMixin):
 
     def test_returns_compact_for_any_session(self):
         """get_compact_any_session finds a compact regardless of session mismatch."""
@@ -218,11 +215,7 @@ class TestGetCompactAnySessionWithCache:
 # ---------------------------------------------------------------------------
 
 
-class TestDirListingFailSoft:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
-        _reset_dir_cache()
+class TestDirListingFailSoft(DirListingMixin):
 
     def test_returns_empty_list_on_oserror(self):
         """_get_skills_dir_listing returns [] when iterdir raises OSError."""

@@ -69,3 +69,8 @@ class FilterTestMixin:
         """Filter must return a str (not raise) on empty input."""
         out = apply_filter(self.F, "")
         assert isinstance(out, str)
+
+    def test_empty_output(self) -> None:
+        """Filter must return a str (not raise) when stdout is empty string."""
+        result = apply_filter(self.F, stdout="")
+        assert isinstance(result, str)
