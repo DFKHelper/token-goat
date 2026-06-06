@@ -266,7 +266,7 @@ class TestFormatSessionStats:
         cache = self._make_cache(suppressed=7)
         result = _format_session_stats(cache)
         assert result is not None
-        assert "7 hints suppressed" in result
+        assert "7 suppressed" in result
 
     def test_all_fields_present(self):
         cache = self._make_cache(edited=2, bash=10, suppressed=4)
@@ -274,7 +274,7 @@ class TestFormatSessionStats:
         assert result is not None
         assert "2 edited" in result
         assert "10 bash" in result
-        assert "4 hints suppressed" in result
+        assert "4 suppressed" in result
         assert result.startswith("Stats:")
 
     def test_zero_fields_omitted(self):

@@ -2821,7 +2821,7 @@ def _extract_dep_changes(bash_history: object) -> list[str]:
 def _format_session_stats(cache: object) -> str | None:
     """Return a compact 1-line session stats summary for the manifest header.
 
-    Format: ``Stats: 3 edited  12 bash  7 hints suppressed``
+    Format: ``Stats: 3 edited  12 bash  7 suppressed``
 
     Shows: edited file count, bash command count, total hints suppressed.
     Returns None when all three values are zero (nothing worth showing).
@@ -2840,7 +2840,7 @@ def _format_session_stats(cache: object) -> str | None:
     if bash_count:
         parts.append(f"{bash_count} bash")
     if suppressed:
-        parts.append(f"{suppressed} hints suppressed")
+        parts.append(f"{suppressed} suppressed")
 
     return "Stats: " + "  ".join(parts) if parts else None
 
@@ -3249,7 +3249,7 @@ def _format_hint_telemetry(cache: object) -> str | None:
     Both zeroes means no hints fired at all (e.g. first tool call, cold session)
     and the line adds no signal.
 
-    Format: ``(12 hints emitted, 4 suppressed)``
+    Format: ``(12 hints, 4 suppressed)``
     """
     emitted = int(getattr(cache, "hints_emitted", 0) or 0)
     _sup_raw = getattr(cache, "hints_suppressed_by_type", None) or {}
@@ -3257,8 +3257,8 @@ def _format_hint_telemetry(cache: object) -> str | None:
     if emitted == 0 and suppressed == 0:
         return None
     if suppressed == 0:
-        return f"({emitted} hints emitted)"
-    return f"({emitted} hints emitted, {suppressed} suppressed)"
+        return f"({emitted} hints)"
+    return f"({emitted} hints, {suppressed} suppressed)"
 
 
 def _select_top_glob_entries(glob_history: object) -> list[object]:
