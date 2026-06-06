@@ -5226,6 +5226,20 @@ def cmd_skill_list(
             compact_quality_score = int(compact_quality["score"])  # type: ignore[arg-type]
             compact_quality_issues = list(compact_quality.get("issues", []))  # type: ignore[arg-type]
 
+        # Compute a per-skill compact coverage score (0-100) that combines
+        # availability (has_compact), freshness (not stale), and quality.
+        # Components:
+        #   +50 if has_compact
+        #   +30 if compact is fresh or freshness is unknown (not explicitly stale)
+        #   +20 scaled from compact_quality_score (0-100 → 0-20)
+        # A skill with a fresh, high-quality compact scores near 100.
+        # A skill with no compact at all scores 0.
+        _coverage_base = 50 if has_compact else 0
+        # Freshness: stale=True subtracts the freshness bonus; stale=None (unknown) keeps it.
+        _coverage_fresh = 30 if (has_compact and compact_stale is not True) else 0
+        _coverage_quality = ((compact_quality_score or 0) * 20 // 100) if has_compact else 0
+        compact_coverage_score: int = _coverage_base + _coverage_fresh + _coverage_quality
+
         rows.append({
             "name": meta.skill_name,
             "body_tokens": body_tokens,
@@ -5238,6 +5252,7 @@ def cmd_skill_list(
             "compact_quality": compact_quality,
             "compact_quality_score": compact_quality_score,
             "compact_quality_issues": compact_quality_issues,
+            "compact_coverage_score": compact_coverage_score,
         })
 
     if json_output:
@@ -5247,8 +5262,16 @@ def cmd_skill_list(
         #     body's content_sha (null when no compact or SHA unavailable)
         #   compact_quality_score — int 0-100 quality score (null when no compact)
         #   compact_quality_issues — list of human-readable quality problem strings
+        #   compact_coverage_score — composite 0-100: availability (50) + freshness (30) + quality (20)
+        # Session-level fields:
+        #   compact_coverage_pct — average compact_coverage_score across all skills (0-100)
+        #     Provides a single number for "how well are this session's skills covered
+        #     by fresh, high-quality compacts?" — useful for CI checks and dashboards.
+        _total_cov = sum(int(r.get("compact_coverage_score", 0)) for r in rows)  # type: ignore[call-overload]
+        compact_coverage_pct: int = round(_total_cov / len(rows)) if rows else 0
         _emit_json({
             "session_id": resolved_session,
+            "compact_coverage_pct": compact_coverage_pct,
             "skills": rows,
         })
         return
