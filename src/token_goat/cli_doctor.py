@@ -1826,6 +1826,74 @@ def doctor(  # noqa: C901
                     )
                 else:
                     ok("compact coverage", "ok (all compacts ≥ 20% of body, or no compacts yet)")
+
+                # ----------------------------------------------------------
+                # Compact SHA-staleness check: the compact header embeds a
+                # 12-char prefix of the body SHA used to generate it.  When
+                # that prefix no longer matches the sidecar's content_sha,
+                # the compact was built from a different version of the body
+                # and the cached summary may be misleading.  This is distinct
+                # from the mtime-based stale check above, which only catches
+                # on-disk source-file changes; here we catch cases where the
+                # body was replaced via cross-session dedup without touching
+                # the source file on disk.
+                # ----------------------------------------------------------
+                sha_stale_skills: list[str] = []
+                try:
+
+                    cache_dir_p = _skill_cache._skill_outputs_dir()  # type: ignore[attr-defined]
+                    for ce2 in compact_entries:
+                        coid2 = str(ce2.get("output_id", ""))
+                        if not coid2:
+                            continue
+                        compact_path = cache_dir_p / coid2
+                        if not compact_path.is_file():
+                            continue
+                        try:
+                            compact_text = compact_path.read_text(encoding="utf-8", errors="replace")
+                        except OSError:
+                            continue
+                        embedded_sha = _skill_cache.extract_compact_source_sha(compact_text)
+                        if not embedded_sha:
+                            # Compact was written by an older build without SHA — skip.
+                            continue
+
+                        # Derive skill_label from compact ID.
+                        name_c = coid2
+                        if name_c.endswith("-compact"):
+                            name_c = name_c[:-len("-compact")]
+                        parts_c = name_c.split("-")
+                        label_c = "-".join(parts_c[1:]) if len(parts_c) >= 2 else name_c
+
+                        # Find the body sidecar that matches this skill label.
+                        body_sha: str | None = None
+                        for be2 in body_entries:
+                            boid2 = be2.get("output_id", "")
+                            bm2 = _skill_cache.read_sidecar(boid2)
+                            if bm2 is not None and bm2.skill_name and bm2.skill_name.lower() == label_c.lower():
+                                body_sha = bm2.content_sha
+                                break
+
+                        if body_sha is None:
+                            continue
+                        # Compare the embedded 12-char prefix against the body SHA.
+                        if not body_sha.startswith(embedded_sha):
+                            sha_stale_skills.append(
+                                f"{label_c} (compact sha={embedded_sha[:8]} ≠ body sha={body_sha[:8]};"
+                                f" run `token-goat skill-compact {label_c}` to refresh)"
+                            )
+                except Exception:  # noqa: BLE001
+                    pass
+
+                if sha_stale_skills:
+                    flag(
+                        "sha-stale compacts",
+                        f"{len(sha_stale_skills)} compact(s) built from a superseded body version: "
+                        + ", ".join(sha_stale_skills),
+                        warn=True,
+                    )
+                else:
+                    ok("sha-stale compacts", "0 (all compacts match their body SHA, or no SHA recorded)")
             except Exception:  # noqa: BLE001 — compact ratio check is best-effort
                 pass
 
