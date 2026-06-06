@@ -1204,9 +1204,13 @@ class TestContextGrowthTrend:
             import os
             os.utime(p, (base_mtime + i * 60, base_mtime + i * 60))
 
-    def _trend(self):
+    def _trend(self, current_tokens: int = 0, context_cap: int = 660_000):
         from token_goat.cli_doctor import _compute_context_growth_trend
-        return _compute_context_growth_trend(paths.sentinels_dir())
+        return _compute_context_growth_trend(
+            paths.sentinels_dir(),
+            current_tokens=current_tokens,
+            context_cap=context_cap,
+        )
 
     def test_returns_none_with_single_sentinel(self):
         """One sentinel → no trend (not enough data points)."""
@@ -1267,6 +1271,64 @@ class TestContextGrowthTrend:
         combined = "\n".join(lines)
         # Any of the three arrows should appear
         assert any(arrow in combined for arrow in ("↗", "↘", "→"))
+
+    # ------------------------------------------------------------------
+    # Sessions-to-URGENT projection (iter 9)
+    # ------------------------------------------------------------------
+
+    def test_growing_trend_with_high_fill_shows_sessions_to_urgent(self):
+        """When growing AND close to URGENT, shows '[~N sessions to URGENT]'."""
+        # sentinels growing +50,000 tok/step (+200,000 bytes each)
+        self._write_sentinels([400_000, 600_000, 800_000])
+        # current = 450,000 tokens; urgent = 660,000 * 0.85 = 561,000
+        # headroom = 561,000 - 450,000 = 111,000
+        # avg_delta = (50,000 + 50,000) / 2 = 50,000 tok/session
+        # sessions_to_urgent = 111,000 / 50,000 ≈ 2.2 → shown as ~2 sessions
+        result = self._trend(current_tokens=450_000)
+        assert result is not None
+        assert "sessions to URGENT" in result or "session to URGENT" in result, (
+            f"Expected 'sessions to URGENT' in trend line but got: {result!r}"
+        )
+
+    def test_growing_trend_far_from_urgent_no_projection(self):
+        """When growing but still > 10 sessions from URGENT, no projection shown."""
+        # sentinels growing very slowly: +2,000 tok/step (+8,000 bytes)
+        self._write_sentinels([400_000, 408_000, 416_000])
+        # current = 50,000 tokens; urgent = 561,000
+        # avg_delta = 2,000 tok/session
+        # sessions_to_urgent = (561,000 - 50,000) / 2,000 = 255.5 → omitted (> 10)
+        result = self._trend(current_tokens=50_000)
+        assert result is not None
+        # Either growing or within stable threshold (2000 < 5000 stable)
+        # but projection should NOT appear since it's far away
+        assert "sessions to URGENT" not in (result or "")
+
+    def test_shrinking_trend_never_shows_projection(self):
+        """Shrinking trend never shows 'sessions to URGENT'."""
+        self._write_sentinels([800_000, 600_000, 400_000])
+        result = self._trend(current_tokens=500_000)
+        assert result is not None
+        assert "sessions to URGENT" not in result
+        assert "session to URGENT" not in result
+
+    def test_growing_trend_no_current_tokens_no_projection(self):
+        """When current_tokens=0, no projection is appended even if growing."""
+        self._write_sentinels([400_000, 600_000, 800_000])
+        result = self._trend(current_tokens=0)
+        assert result is not None
+        assert "sessions to URGENT" not in result
+        assert "session to URGENT" not in result
+
+    def test_already_urgent_shows_1_session(self):
+        """When already past URGENT threshold and still growing, shows ~1 session."""
+        # sentinels growing by 200,000 bytes = 50,000 tok per step
+        self._write_sentinels([400_000, 600_000, 800_000])
+        # current = 580,000 tokens (above urgent=561,000)
+        # headroom = max(0, 561,000 - 580,000) = 0 → shows "~1 session"
+        result = self._trend(current_tokens=580_000)
+        assert result is not None
+        # Should show the projection (headroom = 0 → sessions = 0 → max(1,0) = 1)
+        assert "session to URGENT" in result or "sessions to URGENT" in result
 
 
 # ---------------------------------------------------------------------------

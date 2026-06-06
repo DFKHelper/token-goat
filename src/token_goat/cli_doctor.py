@@ -110,16 +110,24 @@ def _render_cache_section(
         ok(label, f"{file_count} files, {size_str}{age_str}")
 
 
-def _compute_context_growth_trend(sentinels_dir: Path) -> str | None:
+def _compute_context_growth_trend(
+    sentinels_dir: Path,
+    current_tokens: int = 0,
+    context_cap: int = 660_000,
+) -> str | None:
     """Return a human-readable context growth trend line from precompact sentinels.
 
     Reads up to 5 most-recent ``precompact_estimate_*.json`` sentinels and
     computes the average growth per sentinel (a rough proxy for session-level
     growth).  Returns None when fewer than 2 sentinels exist (no trend data).
 
+    When the trend is growing and ``current_tokens`` is provided, appends a
+    projection for how many sessions remain before the URGENT (85%) threshold
+    is reached at the current growth rate.
+
     The returned string is suitable for direct inclusion in doctor output, e.g.::
 
-        "↗ growing +12,400 tok/session avg (last 3 sessions)"
+        "↗ growing +12,400 tok/session avg (last 3 sessions)  [~4 sessions to URGENT]"
         "↘ shrinking −8,200 tok/session avg (last 3 sessions)"
         "→ stable ±3,000 tok/session avg (last 3 sessions)"
     """
@@ -158,18 +166,31 @@ def _compute_context_growth_trend(sentinels_dir: Path) -> str | None:
         arrow = "↗"  # ↗
         direction = "growing"
         sign = "+"
+        # Project sessions until URGENT threshold (85%) at current growth rate
+        urgent_threshold = int(context_cap * 0.85)
+        sessions_eta_suffix = ""
+        if current_tokens > 0 and avg_delta > 0:
+            headroom = max(0, urgent_threshold - current_tokens)
+            sessions_to_urgent = headroom / avg_delta
+            if sessions_to_urgent <= 10:
+                sessions_int = max(1, int(sessions_to_urgent))
+                sessions_eta_suffix = f"  [~{sessions_int} session{'s' if sessions_int != 1 else ''} to URGENT]"
+        trend_suffix = sessions_eta_suffix
     elif avg_delta < -stable_threshold:
         arrow = "↘"  # ↘
         direction = "shrinking"
         sign = "−"  # −
+        trend_suffix = ""
     else:
         arrow = "→"  # →
         direction = "stable"
         sign = "±"  # ±
+        trend_suffix = ""
 
     return (
         f"  {arrow} {direction} {sign}{abs_avg:,} tok/session avg"
         f"  (last {n_sessions} session{'s' if n_sessions != 1 else ''})"
+        f"{trend_suffix}"
     )
 
 
@@ -598,7 +619,11 @@ def _build_context_section() -> tuple[list[str], bool]:
     # ------------------------------------------------------------------ #
     try:
         sentinels_dir_for_trend = paths.sentinels_dir()
-        trend_line = _compute_context_growth_trend(sentinels_dir_for_trend)
+        trend_line = _compute_context_growth_trend(
+            sentinels_dir_for_trend,
+            current_tokens=current_estimate,
+            context_cap=CONTEXT_CAP,
+        )
         if trend_line is not None:
             lines.append(trend_line)
     except Exception:  # noqa: BLE001
