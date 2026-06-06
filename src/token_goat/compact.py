@@ -5331,9 +5331,17 @@ def _render(
                 if not _skill_name:
                     continue
                 # Estimate compact token count from cached text size (4 chars/token).
+                # Fall back to cross-session lookup so a skill that was compacted in
+                # a previous session still shows its token estimate rather than a bare
+                # recall pointer with no size hint.
                 _compact_text = skill_cache.get_compact(session_id, _skill_name)
+                if not _compact_text:
+                    _compact_text = skill_cache.get_compact_any_session(_skill_name)
                 if _compact_text:
-                    _tok_est = max(1, len(_compact_text) // 4)
+                    # Strip the compact header (e.g. "--- compact form (N tokens, sha=...) ---\n")
+                    # before estimating tokens so the count reflects usable content only.
+                    _bare_compact = skill_cache._strip_compact_header(_compact_text)  # type: ignore[attr-defined]
+                    _tok_est = max(1, len(_bare_compact) // 4)
                     skill_lines.append(
                         f"- {_skill_name} ({_tok_est} tokens)"
                         f" → `token-goat skill-body {_skill_name} --compact`"
