@@ -60,6 +60,8 @@ from ..parser import ImpExp, Ref, Section, Symbol
 from ..util import get_logger
 from . import common
 
+_strip_comments = common.strip_cstyle_comments
+
 _LOG = get_logger("languages.css_idx")
 
 # ---------------------------------------------------------------------------
@@ -71,24 +73,9 @@ _LOG = get_logger("languages.css_idx")
 # line M makes every line in [N, M] unreliable for column-0 regex matching.
 # Replacing with the same number of newlines preserves line numbers so that
 # every extracted symbol's ``line`` is accurate in the *original* source.
-_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 
 # Line comments ``// ...`` (SCSS / Less only; not valid CSS3, but common in
 # the wild and harmless to strip unconditionally).
-_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
-
-
-def _strip_comments(text: str) -> str:
-    """Replace comment regions with whitespace, preserving line numbers."""
-    # Replace block comments: keep all the newlines they contain so that
-    # subsequent matches land on the correct 1-indexed line.
-    def _blank_block(m: re.Match[str]) -> str:
-        return "\n" * m.group(0).count("\n")
-
-    text = _BLOCK_COMMENT_RE.sub(_blank_block, text)
-    text = _LINE_COMMENT_RE.sub("", text)
-    return text
-
 
 # ---------------------------------------------------------------------------
 # Extraction regexes
@@ -169,7 +156,6 @@ _CSS_IMPORT_RE = re.compile(
 
 _MAX_SYMBOLS: int = 1000
 _MAX_HEADING_LEN: int = 120
-
 
 def extract(
     source: bytes, rel_path: str

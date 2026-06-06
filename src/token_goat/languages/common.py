@@ -29,6 +29,7 @@ __all__ = [
     "propagate_section_end_lines_to_symbols",
     "safe_regex_parse",
     "scan_flat_headers",
+    "strip_cstyle_comments",
     "sym_kind_str",
 ]
 
@@ -51,6 +52,37 @@ _LOG = get_logger("languages.common")
 # avoids a redundant re.compile() call at import time.
 CALL_RE = re.compile(r"(?<![.\w])([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
+
+# Pre-compiled patterns used by strip_cstyle_comments for the common C-style
+# block-comment syntax (/* ... */).  Individual adapters may pass a custom
+# line_comment_re when their single-line delimiter differs (e.g. "--" for SQL).
+_CSTYLE_BLOCK_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_CSTYLE_LINE_RE = re.compile(r"//[^\n]*")
+
+
+def strip_cstyle_comments(
+    text: str,
+    *,
+    block_re: re.Pattern[str] = _CSTYLE_BLOCK_RE,
+    line_re: re.Pattern[str] = _CSTYLE_LINE_RE,
+) -> str:
+    """Replace comment regions with whitespace, preserving line numbers.
+
+    Replaces block comments (*block_re*) with the same number of newlines they
+    contained so that subsequent matches land on the correct 1-indexed line,
+    and strips line comments (*line_re*) entirely.
+
+    The defaults handle ``/* ... */`` block comments and ``//`` line comments,
+    shared by CSS, Proto, and many other C-family formats.  Pass *line_re* to
+    override the line-comment delimiter (e.g. SQL uses ``--``).
+    """
+
+    def _blank_block(m: re.Match[str]) -> str:
+        return "\n" * m.group(0).count("\n")
+
+    text = block_re.sub(_blank_block, text)
+    text = line_re.sub("", text)
+    return text
 
 class AddSymbolFn(Protocol):
     """Protocol for the recursive ``_add_symbol`` closure returned by :func:`make_add_symbol`.

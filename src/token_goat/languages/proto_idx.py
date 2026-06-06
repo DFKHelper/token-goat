@@ -56,6 +56,8 @@ from ..parser import ImpExp, Ref, Section, Symbol
 from ..util import get_logger
 from . import common
 
+_strip_comments = common.strip_cstyle_comments
+
 _LOG = get_logger("languages.proto_idx")
 
 # ---------------------------------------------------------------------------
@@ -63,21 +65,8 @@ _LOG = get_logger("languages.proto_idx")
 # ---------------------------------------------------------------------------
 
 # Block comments ``/* ... */`` (DOTALL so content can span lines).
-_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 
 # Line comments ``// ...``
-_LINE_COMMENT_RE = re.compile(r"//[^\n]*")
-
-
-def _strip_comments(text: str) -> str:
-    """Replace comment regions with whitespace, preserving line numbers."""
-    def _blank_block(m: re.Match[str]) -> str:
-        return "\n" * m.group(0).count("\n")
-
-    text = _BLOCK_COMMENT_RE.sub(_blank_block, text)
-    text = _LINE_COMMENT_RE.sub("", text)
-    return text
-
 
 # ---------------------------------------------------------------------------
 # Extraction regexes
@@ -134,7 +123,6 @@ _KIND_MAP: dict[str, str] = {
     "enum":    "proto_enum",
     "service": "proto_service",
 }
-
 
 def extract(
     source: bytes, rel_path: str

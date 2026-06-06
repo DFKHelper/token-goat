@@ -51,25 +51,18 @@ from ..parser import ImpExp, Ref, Section, Symbol
 from ..util import get_logger
 from . import common
 
+_SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+
+
+def _strip_comments(text: str) -> str:
+    """Replace SQL comment regions with whitespace, preserving line numbers."""
+    return common.strip_cstyle_comments(text, line_re=_SQL_LINE_COMMENT_RE)
+
 _LOG = get_logger("languages.sql_idx")
 
 # ---------------------------------------------------------------------------
 # Comment stripping
 # ---------------------------------------------------------------------------
-
-_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
-_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
-
-
-def _strip_comments(text: str) -> str:
-    """Replace comment regions with whitespace, preserving line numbers."""
-    def _blank_block(m: re.Match[str]) -> str:
-        return "\n" * m.group(0).count("\n")
-
-    text = _BLOCK_COMMENT_RE.sub(_blank_block, text)
-    text = _LINE_COMMENT_RE.sub("", text)
-    return text
-
 
 # ---------------------------------------------------------------------------
 # Name pattern
@@ -83,7 +76,6 @@ def _strip_comments(text: str) -> str:
 _BARE = r"[A-Za-z_][A-Za-z0-9_$]*"
 _QUOTED = r'"[^"]{1,128}"|`[^`]{1,128}`|\[[^\]]{1,128}\]'
 _NAME = rf"(?:{_QUOTED}|{_BARE})(?:\.(?:{_QUOTED}|{_BARE}))?"
-
 
 def _make_create_re(object_kw: str, opt_prefix: str = "") -> re.Pattern[str]:
     """Build a ``CREATE [opt_prefix] <object_kw> [IF NOT EXISTS] <name>`` regex.
@@ -104,7 +96,6 @@ def _make_create_re(object_kw: str, opt_prefix: str = "") -> re.Pattern[str]:
         rf"(?<!\w)CREATE\s+{opt_prefix}{object_kw}\s+(?:IF\s+NOT\s+EXISTS\s+)?({_NAME})",
         re.IGNORECASE,
     )
-
 
 # TABLE (with optional TEMP[ORARY])
 _TABLE_RE = _make_create_re(
@@ -151,7 +142,6 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
 _MAX_SYMBOLS: int = 500
 _MAX_HEADING_LEN: int = 128
 
-
 def _unquote(name: str) -> str:
     """Strip outer quoting from an SQL identifier."""
     if len(name) >= 2 and (
@@ -161,7 +151,6 @@ def _unquote(name: str) -> str:
     ):
         return name[1:-1]
     return name
-
 
 def extract(
     source: bytes, rel_path: str
