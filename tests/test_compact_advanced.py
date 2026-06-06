@@ -8,96 +8,18 @@ Covers:
 """
 from __future__ import annotations
 
-import time
 from unittest.mock import MagicMock, patch
+
+from compact_test_helpers import make_bash_entry as _make_bash_entry
+from compact_test_helpers import make_bash_history as _make_bash_history
+from compact_test_helpers import make_cache as _make_cache
+from compact_test_helpers import make_file_entry as _make_file_entry
 
 from token_goat import compact
 from token_goat.compact import (
     _compute_budget_multiplier,
     _compute_manifest_fingerprint,
 )
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
-def _make_bash_entry(
-    cmd_preview: str,
-    output_id: str = "out-0",
-    *,
-    exit_code: int = 0,
-    ts: float | None = None,
-    stdout_bytes: int = 5000,
-    stderr_bytes: int = 0,
-    run_count: int = 1,
-) -> object:
-    entry = MagicMock()
-    entry.cmd_preview = cmd_preview
-    entry.output_id = output_id
-    entry.exit_code = exit_code
-    entry.ts = ts if ts is not None else time.time()
-    entry.stdout_bytes = stdout_bytes
-    entry.stderr_bytes = stderr_bytes
-    entry.run_count = run_count
-    entry.truncated = False
-    entry.elapsed_ms = 0
-    return entry
-
-
-def _make_bash_history(*entries: object) -> dict:
-    return {str(i): e for i, e in enumerate(entries)}
-
-
-def _make_file_entry(
-    rel_or_abs: str,
-    *,
-    symbols: list[str] | None = None,
-    read_count: int = 1,
-    ts: float | None = None,
-) -> object:
-    entry = MagicMock()
-    entry.rel_or_abs = rel_or_abs
-    entry.symbols_read = list(symbols or [])
-    entry.symbols_ts = {s: (ts or time.time()) for s in (symbols or [])}
-    entry.read_count = read_count
-    entry.last_read_ts = ts if ts is not None else time.time()
-    entry.last_edit_ts = 0.0
-    entry.line_ranges = []
-    return entry
-
-
-def _make_cache(
-    *,
-    edited_files: dict | None = None,
-    bash_history: dict | None = None,
-    files: dict | None = None,
-    web_history: dict | None = None,
-    greps: list | None = None,
-    glob_history: list | None = None,
-    skill_history: dict | None = None,
-    decisions: list | None = None,
-    cwd: str | None = None,
-    created_ts: float | None = None,
-    hints_emitted: int = 0,
-    hints_suppressed_by_type: dict | None = None,
-    bash_dedup_emitted_ids: set | None = None,
-) -> MagicMock:
-    cache = MagicMock()
-    cache.edited_files = edited_files if edited_files is not None else {}
-    cache.bash_history = bash_history if bash_history is not None else {}
-    cache.files = files if files is not None else {}
-    cache.web_history = web_history if web_history is not None else {}
-    cache.greps = greps if greps is not None else []
-    cache.glob_history = glob_history if glob_history is not None else []
-    cache.skill_history = skill_history if skill_history is not None else {}
-    cache.decisions = decisions if decisions is not None else []
-    cache.cwd = cwd
-    cache.created_ts = created_ts if created_ts is not None else time.time()
-    cache.hints_emitted = hints_emitted
-    cache.hints_suppressed_by_type = hints_suppressed_by_type or {}
-    cache.bash_dedup_emitted_ids = bash_dedup_emitted_ids or set()
-    return cache
-
 
 # ---------------------------------------------------------------------------
 # 1. Progressive section dropping

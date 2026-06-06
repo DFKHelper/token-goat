@@ -7,6 +7,9 @@ import subprocess
 import time
 from unittest.mock import MagicMock, patch
 
+from compact_test_helpers import make_bash_entry as _make_bash_entry
+from compact_test_helpers import make_bash_history as _make_bash_history
+
 from token_goat import compact
 from token_goat.compact import (
     _build_sealed_block,
@@ -14,36 +17,6 @@ from token_goat.compact import (
     _extract_test_failures,
     _format_session_stats,
 )
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _make_bash_entry(
-    cmd_preview: str,
-    output_id: str,
-    *,
-    exit_code: int = 0,
-    ts: float | None = None,
-    stdout_bytes: int = 5000,
-) -> object:
-    """Build a minimal BashEntry-like object for testing."""
-    entry = MagicMock()
-    entry.cmd_preview = cmd_preview
-    entry.output_id = output_id
-    entry.exit_code = exit_code
-    entry.ts = ts if ts is not None else time.time()
-    entry.stdout_bytes = stdout_bytes
-    entry.stderr_bytes = 0
-    entry.run_count = 1
-    entry.truncated = False
-    return entry
-
-
-def _make_bash_history(*entries: object) -> dict:
-    """Wrap entries into a cmd_sha → BashEntry dict."""
-    return {str(i): e for i, e in enumerate(entries)}
-
 
 # ---------------------------------------------------------------------------
 # _extract_test_failures

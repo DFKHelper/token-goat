@@ -8,32 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-
-def _make_file_entry(path: str, *, read_count: int = 1, edited: bool = False) -> MagicMock:
-    """Create a minimal FileEntry mock for testing."""
-    fe = MagicMock()
-    fe.rel_or_abs = path
-    fe.last_read_ts = 1000.0
-    fe.last_edit_ts = 1100.0 if edited else 0.0
-    fe.read_count = read_count
-    fe.symbols_read = []
-    fe.symbols_ts = {}
-    return fe
-
-
-def _make_bash_entry(cmd: str, stdout_bytes: int = 2000) -> MagicMock:
-    be = MagicMock()
-    be.cmd_preview = cmd
-    be.cmd_sha = "abc123"
-    be.output_id = "out-abc123"
-    be.ts = 1200.0
-    be.stdout_bytes = stdout_bytes
-    be.stderr_bytes = 0
-    be.exit_code = 0
-    be.truncated = False
-    be.output_sha = ""
-    be.run_count = 1
-    return be
+from compact_test_helpers import make_file_entry as _make_file_entry
 
 
 def _make_skill_entry(name: str) -> MagicMock:
