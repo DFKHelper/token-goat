@@ -1216,10 +1216,14 @@ def build_map(
                 out.append(f"+{omitted} more\n")
 
     # Language breakdown footer (one line, e.g. "Python: 60%  TypeScript: 40%").
-    # Suppressed when use_summary_line is active: the header already lists the
-    # language set and the summary line shows ext counts, so the footer would
-    # duplicate information already present in a shorter form.
-    if not use_summary_line:
+    # Suppressed in two cases:
+    #   1. use_summary_line is active: the header already lists the language set
+    #      and the summary line shows ext counts.
+    #   2. Single-language projects: the header already contains the only language
+    #      (e.g. "(12,python)"), so "Python: 100%" adds zero information.
+    # The footer is useful only when multiple languages are present and percentages
+    # actually convey the mix — that is when len(lang_set) > 1.
+    if not use_summary_line and len(lang_set) > 1:
         breakdown = lang_breakdown(data.files)
         if breakdown:
             out.append(f"{breakdown}\n")

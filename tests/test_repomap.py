@@ -1164,8 +1164,13 @@ def test_lang_breakdown_four_languages_no_other():
 
 def test_lang_breakdown_in_build_map_footer(ts_project):
     text = repomap.build_map(ts_project, budget_tokens=4000)
-    # The ts_sample has typescript files; the breakdown should mention it.
+    # The ts_sample is a single-language TypeScript project.  The language must
+    # appear in the header ("# ts_sample (N,typescript)") even though the
+    # footer is suppressed for single-language projects (no information gain).
     assert "typescript" in text.lower() or "Typescript" in text
+    # Footer suppressed for single-language projects: "TypeScript: 100%" would
+    # be redundant given the header already encodes the language.
+    assert "100%" not in text
 
 
 # ---------------------------------------------------------------------------
