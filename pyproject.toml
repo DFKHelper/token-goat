@@ -133,6 +133,7 @@ module = [
     "google_auth_oauthlib.*",
     "networkx",
     "networkx.*",
+    "psutil",
 ]
 ignore_missing_imports = true
 
