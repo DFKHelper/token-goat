@@ -359,9 +359,9 @@ class TestManifestCompactIntegration:
 
         with unittest.mock.patch("token_goat.compact._load_config", return_value=_lazy_config()):
             m = compact.build_manifest(sid, max_tokens=800)
-        # The line should look like: "- ralph (NNN tokens) → `token-goat skill-body ralph --compact`"
+        # The line should look like: "- ralph (NNN tok) → `token-goat skill-body ralph --compact`"
         assert "ralph" in m
-        assert "tokens)" in m  # "(NNN tokens)" must appear
+        assert "tok)" in m  # "(NNN tok)" must appear
         assert "token-goat skill-body ralph --compact" in m
 
     def test_lazy_injection_no_compact_cached_still_shows_recall(self, tmp_data_dir):

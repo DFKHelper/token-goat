@@ -66,7 +66,7 @@ class TestCurrentSessionCompact:
             m = compact.build_manifest(sid, max_tokens=50_000)
 
         assert "testskill" in m
-        assert re.search(r"testskill \(\d+ tokens\)", m), (
+        assert re.search(r"testskill \(\d+ tok\)", m), (
             "lazy pointer should show token count when compact is stored; "
             f"manifest snippet: {m[:600]!r}"
         )
@@ -113,7 +113,7 @@ class TestBarePointerNoCompact:
 
         assert "myskill" in m
         # No parenthesised token count on the myskill line.
-        assert not re.search(r"myskill \(\d+ tokens\)", m), (
+        assert not re.search(r"myskill \(\d+ tok\)", m), (
             "bare pointer should not show token count when no compact exists; "
             f"manifest snippet: {m[:600]!r}"
         )
@@ -161,7 +161,7 @@ class TestCrossSessionFallback:
             m = compact.build_manifest(sid_b, max_tokens=50_000)
 
         assert "crossskill" in m
-        assert re.search(r"crossskill \(\d+ tokens\)", m), (
+        assert re.search(r"crossskill \(\d+ tok\)", m), (
             "cross-session fallback should provide token count even when session-B compact deleted; "
             f"manifest snippet: {m[:600]!r}"
         )
@@ -193,7 +193,7 @@ class TestTokenEstimateStripsHeader:
         with unittest.mock.patch("token_goat.compact._load_config", return_value=_lazy_config()):
             m = compact.build_manifest(sid, max_tokens=50_000)
 
-        assert f"stripskill ({expected_tokens} tokens)" in m, (
+        assert f"stripskill ({expected_tokens} tok)" in m, (
             f"token count should be {expected_tokens} based on stripped body len {len(stripped)}; "
             f"manifest snippet: {m[:600]!r}"
         )

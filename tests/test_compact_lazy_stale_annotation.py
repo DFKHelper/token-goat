@@ -126,8 +126,8 @@ class TestStaleCompactAnnotation:
         with unittest.mock.patch("token_goat.compact._load_config", return_value=_lazy_config()):
             m = compact.build_manifest(sid, max_tokens=50_000)
 
-        # Should match: "parencheck (N tokens [stale])"
-        assert re.search(r"parencheck \(\d+ tokens \[stale\]\)", m), (
+        # Should match: "parencheck (N tok [stale])"
+        assert re.search(r"parencheck \(\d+ tok \[stale\]\)", m), (
             f"[stale] should be inside the parenthesised token count; manifest:\n{m[:800]!r}"
         )
 

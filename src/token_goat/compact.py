@@ -5428,7 +5428,7 @@ def _render(
                     if _compact_sha and _entry_sha and not _entry_sha.startswith(_compact_sha):
                         _stale_ann = " [stale]"
                     skill_lines.append(
-                        f"- {_skill_name} ({_tok_est} tokens{_stale_ann})"
+                        f"- {_skill_name} ({_tok_est} tok{_stale_ann})"
                         f" → `token-goat skill-body {_skill_name} --compact`"
                     )
                 else:

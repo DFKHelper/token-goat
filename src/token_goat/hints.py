@@ -230,6 +230,9 @@ _TERSE: dict[str, str] = {
     # Keep "tok" consistent with the token_estimate_header format (~N tok).
     " tokens).": " tok).",
     "to read selectively.": "selectively.",
+    # Cache-hit verbs: ~18 chars saved per bash/web cache hint fire.
+    "to read without re-running.": "(no re-run).",
+    "to read without re-fetching.": "(no re-fetch).",
 }
 
 
@@ -2831,7 +2834,7 @@ def build_bash_cache_hit_hint(
             first_line = _get_first_line_preview(body)
             if first_line:
                 # Escape single quotes for display
-                preview_text = f" Preview: '{first_line}'"
+                preview_text = f" ↪'{first_line}'"
     except Exception:  # noqa: BLE001 — fail-soft: preview must never break the hint
         pass
 
