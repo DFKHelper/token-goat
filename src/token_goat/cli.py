@@ -5219,8 +5219,12 @@ def cmd_skill_list(
 
         # Score the compact quality when a compact exists.
         compact_quality: dict[str, object] | None = None
+        compact_quality_score: int | None = None
+        compact_quality_issues: list[str] | None = None
         if has_compact and compact_body and body_text:
             compact_quality = skill_cache.score_compact(compact_body, body_text)
+            compact_quality_score = int(compact_quality["score"])  # type: ignore[arg-type]
+            compact_quality_issues = list(compact_quality.get("issues", []))  # type: ignore[arg-type]
 
         rows.append({
             "name": meta.skill_name,
@@ -5232,6 +5236,8 @@ def cmd_skill_list(
             "age_secs": round(age_secs),
             "compact_served_count": compact_served_count,
             "compact_quality": compact_quality,
+            "compact_quality_score": compact_quality_score,
+            "compact_quality_issues": compact_quality_issues,
         })
 
     if json_output:
@@ -5239,6 +5245,8 @@ def cmd_skill_list(
         #   compact_served_count — hits in PreCompact manifests this session
         #   compact_stale — True when the compact's source_sha differs from the
         #     body's content_sha (null when no compact or SHA unavailable)
+        #   compact_quality_score — int 0-100 quality score (null when no compact)
+        #   compact_quality_issues — list of human-readable quality problem strings
         _emit_json({
             "session_id": resolved_session,
             "skills": rows,
@@ -5264,11 +5272,24 @@ def cmd_skill_list(
         compact_stale = cast("bool | None", row.get("compact_stale"))
         _raw_compact_age = row.get("compact_age_secs")
         compact_age_secs = int(_raw_compact_age) if _raw_compact_age is not None else None  # type: ignore[call-overload]
+        _raw_quality_score = row.get("compact_quality_score")
+        compact_quality_score = int(_raw_quality_score) if _raw_quality_score is not None else None  # type: ignore[call-overload]
+
+        # Quality score thresholds for human-readable display:
+        #   < 40  → "poor"  — likely missing rules or severely under-covered
+        #   40-59 → "fair"  — below ideal but not critically bad
+        #   >= 60 → no quality flag (acceptable or good)
+        _QUALITY_POOR_THRESHOLD = 40
+        _QUALITY_FAIR_THRESHOLD = 60
 
         if not has_compact:
             compact_col = "no"
         elif compact_stale is True:
             compact_col = f"~{compact_tokens} tok [stale]"
+        elif compact_quality_score is not None and compact_quality_score < _QUALITY_POOR_THRESHOLD:
+            compact_col = f"~{compact_tokens} tok [poor]"
+        elif compact_quality_score is not None and compact_quality_score < _QUALITY_FAIR_THRESHOLD:
+            compact_col = f"~{compact_tokens} tok [fair]"
         elif compact_age_secs is not None and compact_age_secs > 86400:
             # Compact is older than 1 day — flag it so users know it may be outdated.
             compact_age_days = compact_age_secs // 86400
