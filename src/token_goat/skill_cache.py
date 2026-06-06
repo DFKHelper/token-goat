@@ -48,6 +48,8 @@ __all__ = [
     "get_compact",
     "get_compact_any_session",
     "get_compact_mtime",
+    "_is_valid_compact",
+    "_MIN_COMPACT_CONTENT_CHARS",
     "get_skill_file_path",
     "list_by_session",
     "list_outputs",
@@ -1662,6 +1664,34 @@ def store_compact(
         _LOG.debug("skill_cache.store_compact: stored id=%s (%d tokens)", file_id, compact_tokens)
 
 
+# Minimum number of non-whitespace characters required for a compact to be
+# considered valid.  Files shorter than this threshold are treated as empty or
+# corrupted (e.g. a zero-byte file, a file containing only a stale header, or
+# a file produced by a partial write) and callers receive ``None`` instead of
+# the garbage content.  10 chars is low enough to pass any real compact (even a
+# trivial one-line "## Rules\nX." snippet is 14 chars) while reliably catching
+# empty, header-only, and whitespace-only files.
+_MIN_COMPACT_CONTENT_CHARS: int = 10
+
+
+def _is_valid_compact(text: str) -> bool:
+    """Return True when *text* looks like a real compact (non-empty, non-stub).
+
+    Rejects:
+    * Empty strings and whitespace-only strings.
+    * Files whose non-whitespace content is below ``_MIN_COMPACT_CONTENT_CHARS``
+      — these are header-only stubs or zero-byte corruption artifacts.
+
+    Does NOT validate format/structure; callers that need quality scoring should
+    call :func:`score_compact` separately.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return False
+    non_ws = sum(1 for c in stripped if not c.isspace())
+    return non_ws >= _MIN_COMPACT_CONTENT_CHARS
+
+
 def get_compact(session_id: str, skill_name: str) -> str | None:
     """Return a previously stored compact summary for *skill_name*, or ``None``.
 
@@ -1678,7 +1708,14 @@ def get_compact(session_id: str, skill_name: str) -> str | None:
         out_path = _skill_outputs_dir() / file_id
         if not out_path.exists():
             return None
-        return out_path.read_text(encoding="utf-8", errors="replace")
+        text = out_path.read_text(encoding="utf-8", errors="replace")
+        if not _is_valid_compact(text):
+            _LOG.debug(
+                "skill_cache.get_compact: compact file %s is empty or corrupted — returning None",
+                file_id,
+            )
+            return None
+        return text
     except OSError as exc:
         _LOG.debug("skill_cache.get_compact: I/O error for %s: %s", skill_name, exc)
         return None
@@ -1707,8 +1744,21 @@ def get_compact_any_session(skill_name: str) -> str | None:
         matches = list(out_dir.glob(pattern))
         if not matches:
             return None
-        newest = max(matches, key=lambda p: p.stat().st_mtime)
-        return newest.read_text(encoding="utf-8", errors="replace")
+        # Sort by mtime descending so we try the newest file first.  If it is
+        # corrupted/empty, fall through to the next-newest one.
+        sorted_matches = sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)
+        for candidate in sorted_matches:
+            try:
+                text = candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if _is_valid_compact(text):
+                return text
+            _LOG.debug(
+                "skill_cache.get_compact_any_session: skipping corrupted/empty compact %s",
+                candidate.name,
+            )
+        return None
     except OSError as exc:
         _LOG.debug("skill_cache.get_compact_any_session: I/O error for %s: %s", skill_name, exc)
         return None
