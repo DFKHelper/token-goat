@@ -194,7 +194,7 @@ class TestSkillFileReadHint:
         hook_out = resp.get("hookSpecificOutput", {})
         ctx = hook_out.get("additionalContext", "") if isinstance(hook_out, dict) else ""
         assert "token-goat skill-body ralph" in ctx
-        assert "already loaded" in ctx
+        assert "in context" in ctx
 
     def test_skill_file_read_no_hint_when_not_loaded(self, tmp_data_dir):
         """Reading a skill file for a NOT-yet-loaded skill passes through without hint."""

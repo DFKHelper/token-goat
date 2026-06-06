@@ -588,7 +588,7 @@ def _try_surgical_read_hint(
         range_str = f"Lines {req_start}–EOF" if limit_is_sentinel else f"Lines {req_start}–{req_end}"
         return (
             f"{range_str} of `{fname}` span {sym_list}. "
-            f"Use `{cmd}` for a surgical read (~90% fewer tokens on repeat access)."
+            f"Use `{cmd}` for a surgical read (~90% fewer tok on repeat access)."
         )
     except (OSError, ValueError, AttributeError):
         # OSError: DB/file access errors (transient locks, permission)
@@ -875,10 +875,9 @@ def _handle_skill_file_read(
     from .hints import _hint_fingerprint  # noqa: PLC0415
 
     hint_text = (
-        f"Note: skill '{skill_name}' was already loaded this session via the Skill tool — "
-        f"its body is in context. Use `token-goat skill-body {skill_name}` to recall the "
-        f"cached body (~95% fewer tokens than reading the file). "
-        f"For a specific section: `token-goat skill-section {skill_name} <heading>`."
+        f"Skill '{skill_name}' in context (loaded via Skill tool). "
+        f"Recall: `token-goat skill-body {skill_name}` (~95% fewer tok). "
+        f"Section: `token-goat skill-section {skill_name} <heading>`."
     )
     fingerprint = _hint_fingerprint(hint_text, path=file_path)
     mark_seen = getattr(cache, "mark_hint_seen", None)
@@ -1730,7 +1729,7 @@ def _try_grep_symbol_hint(pattern: str, cwd: str | None) -> str | None:
             return (
                 f"Symbol `{pattern}` is indexed at {loc} — use `{read_cmd}` "
                 f"to read its body directly, or `token-goat symbol {pattern}` "
-                f"for all references (~95% fewer tokens than grep)."
+                f"for all references (~95% fewer tok than grep)."
             )
 
         locations = []
@@ -1802,7 +1801,7 @@ def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
             read_cmd = f'token-goat read "{row["file_rel"]}::{method}"'
             return (
                 f"For `{pattern}`, `{method}` is indexed at {loc} — use "
-                f"`{read_cmd}` to read its body directly (~95% fewer tokens than grep)."
+                f"`{read_cmd}` to read its body directly (~95% fewer tok than grep)."
             )
 
         locations = []
