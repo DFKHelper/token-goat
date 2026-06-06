@@ -110,6 +110,69 @@ def _render_cache_section(
         ok(label, f"{file_count} files, {size_str}{age_str}")
 
 
+def _compute_context_growth_trend(sentinels_dir: Path) -> str | None:
+    """Return a human-readable context growth trend line from precompact sentinels.
+
+    Reads up to 5 most-recent ``precompact_estimate_*.json`` sentinels and
+    computes the average growth per sentinel (a rough proxy for session-level
+    growth).  Returns None when fewer than 2 sentinels exist (no trend data).
+
+    The returned string is suitable for direct inclusion in doctor output, e.g.::
+
+        "↗ growing +12,400 tok/session avg (last 3 sessions)"
+        "↘ shrinking −8,200 tok/session avg (last 3 sessions)"
+        "→ stable ±3,000 tok/session avg (last 3 sessions)"
+    """
+    import json as _json  # noqa: PLC0415
+
+    if not sentinels_dir.is_dir():
+        return None
+
+    samples: list[tuple[float, int]] = []
+    try:
+        for p in sentinels_dir.glob("precompact_estimate_*.json"):
+            try:
+                mtime = p.stat().st_mtime
+                data = _json.loads(p.read_text(encoding="utf-8"))
+                tok = max(0, int(data.get("bytes_estimate", 0))) // 4
+                samples.append((mtime, tok))
+            except (OSError, ValueError, KeyError):
+                continue
+    except OSError:
+        return None
+
+    if len(samples) < 2:
+        return None
+
+    samples.sort()  # oldest first
+    samples = samples[-5:]  # keep at most 5 most-recent
+
+    deltas = [samples[i + 1][1] - samples[i][1] for i in range(len(samples) - 1)]
+    avg_delta = sum(deltas) / len(deltas)
+    n_sessions = len(deltas)
+
+    abs_avg = abs(int(avg_delta))
+    stable_threshold = 5_000  # tokens
+
+    if avg_delta > stable_threshold:
+        arrow = "↗"  # ↗
+        direction = "growing"
+        sign = "+"
+    elif avg_delta < -stable_threshold:
+        arrow = "↘"  # ↘
+        direction = "shrinking"
+        sign = "−"  # −
+    else:
+        arrow = "→"  # →
+        direction = "stable"
+        sign = "±"  # ±
+
+    return (
+        f"  {arrow} {direction} {sign}{abs_avg:,} tok/session avg"
+        f"  (last {n_sessions} session{'s' if n_sessions != 1 else ''})"
+    )
+
+
 def _build_context_section() -> tuple[list[str], bool]:
     """Build lines for the Context footprint doctor section.
 
@@ -465,6 +528,19 @@ def _build_context_section() -> tuple[list[str], bool]:
         lines.append(f"  ETA: ~{lo}–{hi} turns  (estimated, < 3 turns of history)")
     else:
         lines.append("  ETA: unknown  (no active session found)")
+
+    # ------------------------------------------------------------------ #
+    # 10. Session-to-session growth trend (iter 3)                         #
+    # Reads multiple precompact sentinels to show whether context usage     #
+    # is growing, shrinking, or stable across sessions.                    #
+    # ------------------------------------------------------------------ #
+    try:
+        sentinels_dir_for_trend = paths.sentinels_dir()
+        trend_line = _compute_context_growth_trend(sentinels_dir_for_trend)
+        if trend_line is not None:
+            lines.append(trend_line)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Actions
     actions: list[str] = []

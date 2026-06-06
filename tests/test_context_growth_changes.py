@@ -1176,3 +1176,93 @@ class TestContextFillBar:
         lines, _ = self._call()
         # May or may not have breakdown (depends on CLAUDE.md size); just check no crash
         assert isinstance(lines, list)
+
+
+# ---------------------------------------------------------------------------
+# Session-to-session context growth trend (iter 3/10)
+# ---------------------------------------------------------------------------
+
+
+class TestContextGrowthTrend:
+    """_compute_context_growth_trend() and its integration in _build_context_section."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir, monkeypatch):
+        self.data_dir = tmp_data_dir
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
+        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
+
+    def _write_sentinels(self, byte_estimates: list[int]) -> None:
+        """Write multiple precompact sentinels with incrementing mtimes."""
+        sentinels_dir = paths.sentinels_dir()
+        sentinels_dir.mkdir(parents=True, exist_ok=True)
+        base_mtime = time.time() - 3600.0
+        for i, est in enumerate(byte_estimates):
+            p = sentinels_dir / f"precompact_estimate_sess{i:03d}.json"
+            p.write_text(json.dumps({"bytes_estimate": est}), encoding="utf-8")
+            import os
+            os.utime(p, (base_mtime + i * 60, base_mtime + i * 60))
+
+    def _trend(self):
+        from token_goat.cli_doctor import _compute_context_growth_trend
+        return _compute_context_growth_trend(paths.sentinels_dir())
+
+    def test_returns_none_with_single_sentinel(self):
+        """One sentinel → no trend (not enough data points)."""
+        self._write_sentinels([400_000])
+        result = self._trend()
+        assert result is None
+
+    def test_returns_none_with_no_sentinels(self):
+        """No sentinels → no trend."""
+        paths.sentinels_dir().mkdir(parents=True, exist_ok=True)
+        result = self._trend()
+        assert result is None
+
+    def test_returns_none_when_dir_missing(self):
+        """Missing sentinels dir → no trend, no exception."""
+        from token_goat.cli_doctor import _compute_context_growth_trend
+        result = _compute_context_growth_trend(paths.sentinels_dir().parent / "nonexistent_dir")
+        assert result is None
+
+    def test_growing_trend_detected(self):
+        """Consistently growing sentinels → '↗ growing' trend."""
+        # Each step: +100,000 bytes = +25,000 tokens → clearly growing
+        self._write_sentinels([100_000, 200_000, 300_000])
+        result = self._trend()
+        assert result is not None
+        assert "growing" in result
+        assert "↗" in result
+
+    def test_shrinking_trend_detected(self):
+        """Consistently shrinking sentinels → '↘ shrinking' trend."""
+        self._write_sentinels([400_000, 300_000, 200_000])
+        result = self._trend()
+        assert result is not None
+        assert "shrinking" in result
+        assert "↘" in result
+
+    def test_stable_trend_detected(self):
+        """Nearly-flat sentinels → '→ stable' trend."""
+        # Small oscillation well within ±5,000 token threshold
+        self._write_sentinels([400_000, 401_000, 399_000])
+        result = self._trend()
+        assert result is not None
+        assert "stable" in result
+        assert "→" in result
+
+    def test_trend_shows_session_count(self):
+        """Trend line includes the number of sessions used for the average."""
+        self._write_sentinels([100_000, 200_000, 300_000, 400_000])
+        result = self._trend()
+        assert result is not None
+        assert "3 sessions" in result  # 4 sentinels = 3 deltas
+
+    def test_integration_trend_in_context_section(self):
+        """When multiple sentinels exist, the trend line appears in doctor output."""
+        self._write_sentinels([100_000, 200_000, 300_000])
+        from token_goat.cli_doctor import _build_context_section
+        lines, _ = _build_context_section()
+        combined = "\n".join(lines)
+        # Any of the three arrows should appear
+        assert any(arrow in combined for arrow in ("↗", "↘", "→"))
