@@ -2,6 +2,13 @@
 from __future__ import annotations
 
 
+def _reset_cfg_cache() -> None:
+    """Clear the module-level config mtime cache between test cases."""
+    import token_goat.config as cfg_mod
+
+    cfg_mod._config_mtime_cache = None
+
+
 class TestConfigMtimeCache:
     """Item 1: config.load() uses a process-level mtime cache.
 
@@ -9,14 +16,9 @@ class TestConfigMtimeCache:
     stat + read_text + tomllib.loads on every invocation.
     """
 
-    def _reset_cache(self) -> None:
-        """Clear the module-level cache between test cases."""
-        import token_goat.config as cfg_mod
-        cfg_mod._config_mtime_cache = None
-
     def test_repeated_calls_return_same_object(self, tmp_path, monkeypatch):
         """Second call returns the cached Config object (identity check)."""
-        self._reset_cache()
+        _reset_cfg_cache()
         import token_goat.config as cfg_mod
         import token_goat.paths as paths_mod
 
@@ -32,7 +34,7 @@ class TestConfigMtimeCache:
 
         config_file = tmp_path / "config.toml"
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         c1 = cfg_mod.load()
 
@@ -55,7 +57,7 @@ class TestConfigMtimeCache:
         import token_goat.paths as paths_mod
 
         monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "no_config.toml")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         c1 = cfg_mod.load()
         c2 = cfg_mod.load()
@@ -67,7 +69,7 @@ class TestConfigMtimeCache:
         import token_goat.paths as paths_mod
 
         monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "config.toml")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         results = [cfg_mod.load() for _ in range(5)]
         assert all(r is results[0] for r in results[1:])
@@ -79,7 +81,7 @@ class TestConfigMtimeCache:
 
         config_file = tmp_path / "config.toml"
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         c1 = cfg_mod.load()
         cfg_mod.save(c1)
@@ -91,7 +93,7 @@ class TestConfigMtimeCache:
         import token_goat.paths as paths_mod
 
         monkeypatch.setattr(paths_mod, "config_path", lambda: tmp_path / "config.toml")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg_mod.load()
         assert cfg_mod._config_mtime_cache is not None
@@ -106,10 +108,6 @@ class TestConfigMtimeCache:
 class TestConfigUnknownSectionWarning:
     """Unknown top-level TOML sections produce a warning (typo detection)."""
 
-    def _reset_cache(self) -> None:
-        import token_goat.config as cfg_mod
-        cfg_mod._config_mtime_cache = None
-
     def test_typo_section_emits_warning(self, tmp_path, monkeypatch, caplog):
         """A misspelt section name triggers a WARNING log entry."""
         import logging
@@ -121,7 +119,7 @@ class TestConfigUnknownSectionWarning:
         # Intentional typo: 'compact_assit' instead of 'compact_assist'
         config_file.write_text("[compact_assit]\nmin_events = 5\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         with caplog.at_level(logging.WARNING, logger="token_goat.config"):
             cfg_mod.load()
@@ -144,7 +142,7 @@ class TestConfigUnknownSectionWarning:
             encoding="utf-8",
         )
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         with caplog.at_level(logging.WARNING, logger="token_goat.config"):
             cfg_mod.load()
@@ -168,7 +166,7 @@ class TestConfigUnknownSectionWarning:
             encoding="utf-8",
         )
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         with caplog.at_level(logging.WARNING, logger="token_goat.config"):
             cfg = cfg_mod.load()
@@ -181,11 +179,6 @@ class TestConfigUnknownSectionWarning:
 
 class TestWebFetchConfig:
     """Tests for WebFetch cache configuration (file-count and byte-cap eviction)."""
-
-    def _reset_cache(self):
-        """Reset the process-level config cache (used between tests)."""
-        import token_goat.config as cfg_mod
-        cfg_mod._config_mtime_cache = None
 
     def test_webfetch_defaults(self):
         """WebFetchConfig has sensible defaults matching bash_cache."""
@@ -207,7 +200,7 @@ class TestWebFetchConfig:
             encoding="utf-8",
         )
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_file_count == 2048
@@ -222,7 +215,7 @@ class TestWebFetchConfig:
         config_file.write_text("[webfetch]\nmax_file_count = 2048\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_WEB_CACHE_MAX_FILES", "512")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_file_count == 512
@@ -236,7 +229,7 @@ class TestWebFetchConfig:
         config_file.write_text("[webfetch]\nmax_bytes = 16777216\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_WEB_CACHE_MAX_BYTES", "8388608")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_bytes == 8388608
@@ -250,10 +243,6 @@ class TestHintsConfigRoundTrip:
     any user-configured values.
     """
 
-    def _reset_cache(self) -> None:
-        import token_goat.config as cfg_mod
-        cfg_mod._config_mtime_cache = None
-
     def test_verbose_until_seen_count_loads_from_toml(self, tmp_path, monkeypatch):
         """verbose_until_seen_count is read from [hints] in config.toml."""
         import token_goat.config as cfg_mod
@@ -262,7 +251,7 @@ class TestHintsConfigRoundTrip:
         config_file = tmp_path / "config.toml"
         config_file.write_text("[hints]\nverbose_until_seen_count = 7\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.hints.verbose_until_seen_count == 7
@@ -275,7 +264,7 @@ class TestHintsConfigRoundTrip:
         config_file = tmp_path / "config.toml"
         config_file.write_text("[hints]\nmin_file_lines_for_hint = 50\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.hints.min_file_lines_for_hint == 50
@@ -287,7 +276,7 @@ class TestHintsConfigRoundTrip:
 
         config_file = tmp_path / "config.toml"
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         # Build a config with non-default values for all hints fields.
         cfg = cfg_mod.load()
@@ -301,7 +290,7 @@ class TestHintsConfigRoundTrip:
         cfg.hints.grep_dedup_min_matches = 10
 
         cfg_mod.save(cfg)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         reloaded = cfg_mod.load()
         assert reloaded.hints.suppress_after_ignored == 3
@@ -317,22 +306,18 @@ class TestHintsConfigRoundTrip:
 class TestSkillPreservationRoundTrip:
     """orphan_sweep_enabled and orphan_age_secs must survive a save/load cycle."""
 
-    def _reset_cache(self) -> None:
-        import token_goat.config as cfg_mod
-        cfg_mod._config_mtime_cache = None
-
     def test_orphan_sweep_enabled_round_trips(self, tmp_path, monkeypatch):
         import token_goat.config as cfg_mod
         import token_goat.paths as paths_mod
 
         config_file = tmp_path / "config.toml"
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         cfg.skill_preservation.orphan_sweep_enabled = False
         cfg_mod.save(cfg)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         assert cfg_mod.load().skill_preservation.orphan_sweep_enabled is False
 
@@ -342,12 +327,12 @@ class TestSkillPreservationRoundTrip:
 
         config_file = tmp_path / "config.toml"
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         cfg.skill_preservation.orphan_age_secs = 86400
         cfg_mod.save(cfg)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         assert cfg_mod.load().skill_preservation.orphan_age_secs == 86400
 
@@ -355,10 +340,6 @@ class TestSkillPreservationRoundTrip:
 class TestBashCacheConfig:
     """BashCompressConfig.cache_max_file_count and cache_max_bytes must load,
     save, and honour env-var overrides."""
-
-    def _reset_cache(self) -> None:
-        import token_goat.config as cfg_mod
-        cfg_mod._config_mtime_cache = None
 
     def test_defaults(self):
         from token_goat.config import BashCompressConfig
@@ -373,7 +354,7 @@ class TestBashCacheConfig:
         config_file = tmp_path / "config.toml"
         config_file.write_text("[bash_compress]\ncache_max_file_count = 512\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.bash_compress.cache_max_file_count == 512
@@ -385,7 +366,7 @@ class TestBashCacheConfig:
         config_file = tmp_path / "config.toml"
         config_file.write_text("[bash_compress]\ncache_max_bytes = 8388608\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.bash_compress.cache_max_bytes == 8388608
@@ -399,7 +380,7 @@ class TestBashCacheConfig:
         config_file.write_text("[bash_compress]\ncache_max_file_count = 2048\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_BASH_CACHE_MAX_FILES", "256")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.bash_compress.cache_max_file_count == 256
@@ -413,7 +394,7 @@ class TestBashCacheConfig:
         config_file.write_text("[bash_compress]\ncache_max_bytes = 8388608\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_BASH_CACHE_MAX_BYTES", "4194304")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.bash_compress.cache_max_bytes == 4194304
@@ -425,13 +406,13 @@ class TestBashCacheConfig:
 
         config_file = tmp_path / "config.toml"
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         cfg.bash_compress.cache_max_file_count = 1024
         cfg.bash_compress.cache_max_bytes = 4 * 1024 * 1024
         cfg_mod.save(cfg)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         reloaded = cfg_mod.load()
         assert reloaded.bash_compress.cache_max_file_count == 1024
@@ -446,7 +427,7 @@ class TestBashCacheConfig:
         config_file.write_text("", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_BASH_CACHE_MAX_FILES", "0")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.bash_compress.cache_max_file_count == 4096  # default preserved
@@ -460,7 +441,7 @@ class TestBashCacheConfig:
         config_file.write_text("", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_BASH_CACHE_MAX_BYTES", "0")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.bash_compress.cache_max_bytes == 16 * 1024 * 1024  # default preserved
@@ -469,10 +450,6 @@ class TestBashCacheConfig:
 class TestWebFetchCacheConfig:
     """WebFetchConfig max_file_count and max_bytes: TOML validation and env-var range guards."""
 
-    def _reset_cache(self) -> None:
-        import token_goat.config as cfg_mod
-        cfg_mod._config_mtime_cache = None
-
     def test_webfetch_max_file_count_from_toml(self, tmp_path, monkeypatch):
         import token_goat.config as cfg_mod
         import token_goat.paths as paths_mod
@@ -480,7 +457,7 @@ class TestWebFetchCacheConfig:
         config_file = tmp_path / "config.toml"
         config_file.write_text("[webfetch]\nmax_file_count = 128\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_file_count == 128
@@ -492,7 +469,7 @@ class TestWebFetchCacheConfig:
         config_file = tmp_path / "config.toml"
         config_file.write_text("[webfetch]\nmax_bytes = 1048576\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_bytes == 1048576
@@ -505,7 +482,7 @@ class TestWebFetchCacheConfig:
         config_file = tmp_path / "config.toml"
         config_file.write_text('[webfetch]\nmax_file_count = "lots"\n', encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_file_count == 4096  # default
@@ -519,7 +496,7 @@ class TestWebFetchCacheConfig:
         config_file.write_text("", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_WEB_CACHE_MAX_FILES", "0")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_file_count == 4096  # default preserved
@@ -533,7 +510,7 @@ class TestWebFetchCacheConfig:
         config_file.write_text("", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_WEB_CACHE_MAX_BYTES", "0")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.webfetch.max_bytes == 32 * 1024 * 1024  # default preserved
@@ -660,10 +637,6 @@ class TestSkillPreservationForwardCompat:
     been updated to understand the new keys.
     """
 
-    def _reset_cache(self) -> None:
-        import token_goat.config as cfg_mod
-        cfg_mod._config_mtime_cache = None
-
     def test_unknown_key_does_not_crash(self, tmp_path, monkeypatch):
         """A config file with an unknown key inside [skill_preservation] must load without error."""
         import token_goat.config as cfg_mod
@@ -678,7 +651,7 @@ class TestSkillPreservationForwardCompat:
             encoding="utf-8",
         )
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         # Must not raise.
         cfg = cfg_mod.load()
@@ -701,7 +674,7 @@ class TestSkillPreservationForwardCompat:
             encoding="utf-8",
         )
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.skill_preservation.truncation_budget_tokens == 1200
@@ -715,7 +688,7 @@ class TestSkillPreservationForwardCompat:
 
         config_file = tmp_path / "config.toml"
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         cfg.skill_preservation.enabled = True
@@ -725,7 +698,7 @@ class TestSkillPreservationForwardCompat:
         cfg.skill_preservation.compress_bodies = False
         cfg.skill_preservation.compress_min_bytes = 4096
         cfg_mod.save(cfg)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg2 = cfg_mod.load()
         assert cfg2.skill_preservation.enabled is True
@@ -1116,10 +1089,6 @@ class TestOverflowGuardConfig:
     """OverflowGuardConfig.enabled / max_tokens must load, save, and honour
     env-var overrides; the section must be recognised by the loader."""
 
-    def _reset_cache(self) -> None:
-        import token_goat.config as cfg_mod
-        cfg_mod._config_mtime_cache = None
-
     def test_defaults(self):
         from token_goat.config import OverflowGuardConfig
         og = OverflowGuardConfig()
@@ -1138,7 +1107,7 @@ class TestOverflowGuardConfig:
         config_file = tmp_path / "config.toml"
         config_file.write_text("[overflow_guard]\nenabled = false\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.overflow_guard.enabled is False
@@ -1150,7 +1119,7 @@ class TestOverflowGuardConfig:
         config_file = tmp_path / "config.toml"
         config_file.write_text("[overflow_guard]\nmax_tokens = 12000\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.overflow_guard.max_tokens == 12000
@@ -1164,7 +1133,7 @@ class TestOverflowGuardConfig:
         config_file.write_text("[overflow_guard]\nenabled = true\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_OVERFLOW_GUARD", "0")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.overflow_guard.enabled is False
@@ -1178,7 +1147,7 @@ class TestOverflowGuardConfig:
         config_file.write_text("[overflow_guard]\nmax_tokens = 25000\n", encoding="utf-8")
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
         monkeypatch.setenv("TOKEN_GOAT_OVERFLOW_MAX_TOKENS", "500")
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         assert cfg.overflow_guard.max_tokens == 500
@@ -1190,13 +1159,13 @@ class TestOverflowGuardConfig:
 
         config_file = tmp_path / "config.toml"
         monkeypatch.setattr(paths_mod, "config_path", lambda: config_file)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         cfg = cfg_mod.load()
         cfg.overflow_guard.enabled = False
         cfg.overflow_guard.max_tokens = 1234
         cfg_mod.save(cfg)
-        self._reset_cache()
+        _reset_cfg_cache()
 
         reloaded = cfg_mod.load()
         assert reloaded.overflow_guard.enabled is False

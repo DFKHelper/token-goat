@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import pathlib
 
+from compact_test_helpers import make_fake_session_cache as _shared_fake_session_cache
 from hook_helpers import assert_continue as _assert_continue
 
 from token_goat import hooks_cli, session
@@ -557,24 +558,7 @@ class TestCompactSkipSentinelWrite:
     """Verify that pre_compact writes the sentinel when the manifest is skipped."""
 
     def _make_fake_session_cache(self):
-        """Create a mock SessionCache with minimal required attributes.
-
-        The adaptive budget computation needs created_ts and various history
-        attributes. This helper ensures the mock has all required fields set
-        to non-MagicMock values so comparisons work correctly.
-        """
-        import time
-        from unittest.mock import MagicMock
-
-        cache = MagicMock()
-        # Use current time, so age_seconds will be near 0 (young session)
-        cache.created_ts = time.time()
-        # Stub attributes that compute_adaptive_budget checks with isinstance/getattr
-        cache.edited_files = {}  # Not a dict → 0 bonus
-        cache.files = {}  # Empty → 0 symbols accessed
-        cache.bash_history = None  # No bash history
-        cache.web_history = None  # No web history
-        return cache
+        return _shared_fake_session_cache()
 
     def test_sentinel_written_when_no_session(self, tmp_data_dir, monkeypatch):
         """pre_compact writes sentinel when session_id is present but session is empty."""

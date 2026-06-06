@@ -1,14 +1,16 @@
 """Shared test helpers for compact-related test modules.
 
-Consolidates ``_make_bash_entry``, ``_make_bash_history``, ``_make_file_entry``
-and ``_make_cache`` that were previously copy-pasted across
-``test_compact_manifest.py``, ``test_compact_advanced.py``,
-``test_recovery_hint.py``, and ``test_recovery_hint_headings.py``.
+Consolidates ``_make_bash_entry``, ``_make_bash_history``, ``_make_file_entry``,
+``_make_cache``, and ``make_fake_session_cache`` that were previously copy-pasted
+across ``test_compact_manifest.py``, ``test_compact_advanced.py``,
+``test_recovery_hint.py``, ``test_recovery_hint_headings.py``,
+``test_compact.py``, and ``test_hooks_session.py``.
 
 Import them as::
 
     from compact_test_helpers import make_bash_entry, make_bash_history
     from compact_test_helpers import make_file_entry, make_cache
+    from compact_test_helpers import make_fake_session_cache
 
 The underscored aliases exist for callers that kept the old names::
 
@@ -130,6 +132,29 @@ def make_cache(
     cache.hints_emitted = hints_emitted
     cache.hints_suppressed_by_type = hints_suppressed_by_type or {}
     cache.bash_dedup_emitted_ids = bash_dedup_emitted_ids or set()
+    return cache
+
+
+# ---------------------------------------------------------------------------
+# Fake SessionCache for adaptive-budget / sentinel tests
+# ---------------------------------------------------------------------------
+
+
+def make_fake_session_cache() -> MagicMock:
+    """Create a mock SessionCache with minimal required attributes.
+
+    The adaptive budget computation needs created_ts and various history
+    attributes. This helper ensures the mock has all required fields set
+    to non-MagicMock values so comparisons work correctly.
+    """
+    cache = MagicMock()
+    # Use current time, so age_seconds will be near 0 (young session)
+    cache.created_ts = time.time()
+    # Stub attributes that compute_adaptive_budget checks with isinstance/getattr
+    cache.edited_files = {}  # Not a dict → 0 bonus
+    cache.files = {}  # Empty → 0 symbols accessed
+    cache.bash_history = None  # No bash history
+    cache.web_history = None  # No web history
     return cache
 
 

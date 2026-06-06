@@ -5,6 +5,7 @@ import time
 import unittest.mock
 
 import pytest
+from compact_test_helpers import make_fake_session_cache as _shared_fake_session_cache
 from conftest import make_git_repo
 
 from token_goat import compact, config, session
@@ -2276,24 +2277,7 @@ class TestPreCompactPressureAwareSizing:
         return fake_cfg
 
     def _make_fake_session_cache(self):
-        """Create a mock SessionCache with minimal required attributes.
-
-        The adaptive budget computation needs created_ts and various history
-        attributes. This helper ensures the mock has all required fields set
-        to non-MagicMock values so comparisons work correctly.
-        """
-        import time
-        from unittest.mock import MagicMock
-
-        cache = MagicMock()
-        # Use current time, so age_seconds will be near 0 (young session)
-        cache.created_ts = time.time()
-        # Stub attributes that compute_adaptive_budget checks with isinstance/getattr
-        cache.edited_files = {}  # Not a dict → 0 bonus
-        cache.files = {}  # Empty → 0 symbols accessed
-        cache.bash_history = None  # No bash history
-        cache.web_history = None  # No web history
-        return cache
+        return _shared_fake_session_cache()
 
     def test_auto_trigger_doubles_budget_by_default(self, tmp_data_dir):
         """trigger='auto' with an explicitly user-configured multiplier of 3.0 → 200 × 3 = 600.
