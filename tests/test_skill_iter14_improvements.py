@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from unittest.mock import patch
 
-import pytest
+from compact_test_helpers import DataDirMixin
 from conftest import fire_skill_hook
 
 from token_goat import skill_cache
@@ -19,12 +19,9 @@ from token_goat import skill_cache
 # ---------------------------------------------------------------------------
 
 
-class TestCrossSessionDedup:
+class TestCrossSessionDedup(DataDirMixin):
     """store_output reuses an existing body file when (name, sha) already cached."""
 
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
 
     # ------------------------------------------------------------------
     # find_cross_session_entry
@@ -263,12 +260,9 @@ class TestCrossSessionDedup:
 # ---------------------------------------------------------------------------
 
 
-class TestPostSkillMinimalBodyGuard:
+class TestPostSkillMinimalBodyGuard(DataDirMixin):
     """post_skill skips caching when the body is too small (stub/confirmation response)."""
 
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
 
     def _fire(self, session_id: str, skill_name: str, body: str) -> dict:
         return fire_skill_hook(session_id, skill_name, body)

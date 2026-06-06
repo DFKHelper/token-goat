@@ -13,6 +13,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from compact_test_helpers import DataDirMixin
 from conftest import fire_skill_hook
 
 from token_goat import config
@@ -45,10 +46,7 @@ def _lazy_cfg() -> config.Config:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCompactMtimeAbsent:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestGetCompactMtimeAbsent(DataDirMixin):
 
     def test_returns_none_when_compact_absent(self):
         """get_compact_mtime returns None for a (session, skill) with no compact."""
@@ -66,10 +64,7 @@ class TestGetCompactMtimeAbsent:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCompactMtimePresent:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestGetCompactMtimePresent(DataDirMixin):
 
     def test_returns_float_after_store(self):
         """After store_compact, get_compact_mtime returns a positive float."""
@@ -106,10 +101,7 @@ class TestGetCompactMtimePresent:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCompactMtimeInvalidName:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestGetCompactMtimeInvalidName(DataDirMixin):
 
     def test_whitespace_only_name_returns_none(self):
         """A whitespace-only skill name is invalid."""
@@ -130,10 +122,7 @@ class TestGetCompactMtimeInvalidName:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCompactMtimeMonotonic:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestGetCompactMtimeMonotonic(DataDirMixin):
 
     def test_mtime_advances_on_re_store(self):
         """Re-storing a compact updates its mtime to a later value."""
@@ -159,10 +148,7 @@ class TestGetCompactMtimeMonotonic:
 # ---------------------------------------------------------------------------
 
 
-class TestCompactPresenceAgreement:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestCompactPresenceAgreement(DataDirMixin):
 
     def test_absent_compact_both_none(self):
         """Both get_compact and get_compact_mtime return None for missing compact."""
@@ -206,10 +192,7 @@ class TestCompactPresenceAgreement:
 # ---------------------------------------------------------------------------
 
 
-class TestSkillListJsonCompactAge:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestSkillListJsonCompactAge(DataDirMixin):
 
     def test_compact_age_secs_present_in_json_row(self):
         """skill-list --json row includes compact_age_secs when compact exists."""

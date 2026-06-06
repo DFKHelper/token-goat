@@ -15,6 +15,7 @@ import unittest.mock
 from io import StringIO
 
 import pytest
+from compact_test_helpers import DataDirMixin
 from conftest import fire_skill_hook
 
 from token_goat import cli
@@ -76,10 +77,7 @@ def _run_skill_list_text(sid: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class TestQualityFieldsInJson:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestQualityFieldsInJson(DataDirMixin):
 
     def test_compact_quality_score_present_when_compact_exists(self):
         """compact_quality_score is an int in JSON when has_compact=True."""
@@ -136,10 +134,7 @@ class TestQualityFieldsInJson:
 # ---------------------------------------------------------------------------
 
 
-class TestPoorQualityFlag:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestPoorQualityFlag(DataDirMixin):
 
     def test_poor_compact_shows_poor_flag(self):
         """When compact score < 40, human-readable output shows [poor] in compact column."""
@@ -169,10 +164,7 @@ class TestPoorQualityFlag:
 # ---------------------------------------------------------------------------
 
 
-class TestFairQualityFlag:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestFairQualityFlag(DataDirMixin):
 
     def test_fair_compact_shows_fair_flag(self):
         """When compact score is 40-59, human-readable output shows [fair] in compact column."""
@@ -207,10 +199,7 @@ class TestFairQualityFlag:
 # ---------------------------------------------------------------------------
 
 
-class TestGoodQualityNoFlag:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestGoodQualityNoFlag(DataDirMixin):
 
     def test_good_compact_shows_no_quality_flag(self):
         """When compact score >= 60, no quality flag appears in human-readable output."""
@@ -237,10 +226,7 @@ class TestGoodQualityNoFlag:
 # ---------------------------------------------------------------------------
 
 
-class TestStalePriorityOverQuality:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestStalePriorityOverQuality(DataDirMixin):
 
     def test_stale_trumps_poor_quality(self):
         """When compact is both stale AND poor quality, [stale] appears, not [poor]."""

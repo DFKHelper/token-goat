@@ -9,6 +9,7 @@ D. get_compact_mtime() is unaffected by corruption (file exists → mtime report
 from __future__ import annotations
 
 import pytest
+from compact_test_helpers import DataDirMixin
 
 from token_goat.skill_cache import (
     _MIN_COMPACT_CONTENT_CHARS,
@@ -99,10 +100,7 @@ class TestIsValidCompact:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCompactRejectsCorruption:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestGetCompactRejectsCorruption(DataDirMixin):
 
     def test_returns_none_for_empty_file(self):
         """get_compact returns None when the compact file is zero bytes."""
@@ -134,10 +132,7 @@ class TestGetCompactRejectsCorruption:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCompactAnySessionFallback:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestGetCompactAnySessionFallback(DataDirMixin):
 
     def test_returns_none_when_all_corrupted(self):
         """When every compact file is corrupt, returns None."""
@@ -180,10 +175,7 @@ class TestGetCompactAnySessionFallback:
 # ---------------------------------------------------------------------------
 
 
-class TestGetCompactMtimeWithCorruption:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestGetCompactMtimeWithCorruption(DataDirMixin):
 
     def test_mtime_returns_value_for_corrupt_file(self):
         """get_compact_mtime reports mtime even for corrupt/empty compact files.

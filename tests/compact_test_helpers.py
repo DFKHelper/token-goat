@@ -1,16 +1,18 @@
 """Shared test helpers for compact-related test modules.
 
 Consolidates ``_make_bash_entry``, ``_make_bash_history``, ``_make_file_entry``,
-``_make_cache``, and ``make_fake_session_cache`` that were previously copy-pasted
-across ``test_compact_manifest.py``, ``test_compact_advanced.py``,
-``test_recovery_hint.py``, ``test_recovery_hint_headings.py``,
-``test_compact.py``, and ``test_hooks_session.py``.
+``_make_cache``, ``make_fake_session_cache``, and ``DataDirMixin`` that were
+previously copy-pasted across ``test_compact_manifest.py``,
+``test_compact_advanced.py``, ``test_recovery_hint.py``,
+``test_recovery_hint_headings.py``, ``test_compact.py``,
+``test_hooks_session.py``, and a further 8 compact/skill test modules.
 
 Import them as::
 
     from compact_test_helpers import make_bash_entry, make_bash_history
     from compact_test_helpers import make_file_entry, make_cache
     from compact_test_helpers import make_fake_session_cache
+    from compact_test_helpers import DataDirMixin
 
 The underscored aliases exist for callers that kept the old names::
 
@@ -21,6 +23,8 @@ from __future__ import annotations
 
 import time
 from unittest.mock import MagicMock
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # BashEntry-like mock
@@ -176,3 +180,31 @@ _make_bash_entry = make_bash_entry
 _make_bash_history = make_bash_history
 _make_file_entry = make_file_entry
 _make_cache = make_cache
+
+
+# ---------------------------------------------------------------------------
+# DataDirMixin — single autouse _isolate fixture for classes that only need
+# tmp_data_dir bound to self.tmp_data_dir.  Replaces 35 identical per-class
+# copies across the compact / skill test modules.
+#
+# Usage::
+#
+#     from compact_test_helpers import DataDirMixin
+#
+#     class TestFoo(DataDirMixin):
+#         def test_it(self):
+#             path = self.tmp_data_dir / "something"
+# ---------------------------------------------------------------------------
+
+
+class DataDirMixin:
+    """Mixin that binds the ``tmp_data_dir`` fixture to ``self.tmp_data_dir``.
+
+    Every test class that only needs data-dir isolation (no monkeypatching of
+    skills or plugins paths) should inherit from this instead of repeating the
+    two-line ``_isolate`` fixture.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir):  # noqa: PT004
+        self.tmp_data_dir = tmp_data_dir

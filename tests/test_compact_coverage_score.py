@@ -25,6 +25,7 @@ import json
 import unittest.mock
 
 import pytest
+from compact_test_helpers import DataDirMixin
 from conftest import fire_skill_hook
 
 from token_goat.skill_cache import store_compact
@@ -70,10 +71,7 @@ def _run_skill_list_json(session_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-class TestCoverageScoreNoCompact:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestCoverageScoreNoCompact(DataDirMixin):
 
     def test_no_compact_coverage_score_zero(self):
         """A skill with no compact should have compact_coverage_score == 0."""
@@ -102,10 +100,7 @@ class TestCoverageScoreNoCompact:
 # ---------------------------------------------------------------------------
 
 
-class TestCoverageScoreHighQuality:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestCoverageScoreHighQuality(DataDirMixin):
 
     def test_fresh_high_quality_score_near_100(self):
         """A fresh, high-quality compact should score at least 80 (50+30+quality bonus)."""
@@ -139,10 +134,7 @@ class TestCoverageScoreHighQuality:
 # ---------------------------------------------------------------------------
 
 
-class TestCoverageScoreStaleCompact:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestCoverageScoreStaleCompact(DataDirMixin):
 
     def test_stale_compact_loses_freshness_bonus(self):
         """A stale compact (SHA mismatch) should not receive the +30 freshness bonus."""
@@ -171,10 +163,7 @@ class TestCoverageScoreStaleCompact:
 # ---------------------------------------------------------------------------
 
 
-class TestCoverageScoreFreshZeroQuality:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestCoverageScoreFreshZeroQuality(DataDirMixin):
 
     def test_fresh_zero_quality_scores_80(self):
         """A fresh compact with quality=0 should score exactly 50+30+0 = 80."""
@@ -215,10 +204,7 @@ class TestCoverageScoreFreshZeroQuality:
 # ---------------------------------------------------------------------------
 
 
-class TestCompactCoveragePctAverage:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestCompactCoveragePctAverage(DataDirMixin):
 
     def test_coverage_pct_is_average(self):
         """compact_coverage_pct should be the rounded average of all per-skill scores."""
@@ -255,10 +241,7 @@ class TestCompactCoveragePctAverage:
 # ---------------------------------------------------------------------------
 
 
-class TestCoverageScoreFieldPresent:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestCoverageScoreFieldPresent(DataDirMixin):
 
     def test_compact_coverage_score_field_in_row(self):
         """Each row in skill-list --json output must contain compact_coverage_score."""
@@ -284,10 +267,7 @@ class TestCoverageScoreFieldPresent:
 # ---------------------------------------------------------------------------
 
 
-class TestCompactCoveragePctFieldPresent:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestCompactCoveragePctFieldPresent(DataDirMixin):
 
     def test_compact_coverage_pct_top_level_field(self):
         """skill-list --json must emit compact_coverage_pct as a top-level field."""

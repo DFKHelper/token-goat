@@ -19,6 +19,7 @@ import re
 import unittest.mock
 
 import pytest
+from compact_test_helpers import DataDirMixin
 from conftest import fire_skill_hook
 
 from token_goat import compact, config
@@ -55,10 +56,7 @@ def _lazy_config() -> config.Config:
 # ---------------------------------------------------------------------------
 
 
-class TestFreshCompactNoStaleAnnotation:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestFreshCompactNoStaleAnnotation(DataDirMixin):
 
     def test_fresh_compact_no_stale_flag(self):
         """When the compact's embedded SHA matches the session content_sha, no [stale] appears."""
@@ -94,10 +92,7 @@ class TestFreshCompactNoStaleAnnotation:
 # ---------------------------------------------------------------------------
 
 
-class TestStaleCompactAnnotation:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestStaleCompactAnnotation(DataDirMixin):
 
     def test_stale_compact_shows_stale_annotation(self):
         """When the compact's embedded SHA differs from the session content_sha, [stale] appears."""
@@ -137,10 +132,7 @@ class TestStaleCompactAnnotation:
 # ---------------------------------------------------------------------------
 
 
-class TestCompactWithoutShaHeader:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestCompactWithoutShaHeader(DataDirMixin):
 
     def test_no_stale_when_no_sha_header(self):
         """Compacts written without a SHA header (old format) are not flagged as stale."""
@@ -166,10 +158,7 @@ class TestCompactWithoutShaHeader:
 # ---------------------------------------------------------------------------
 
 
-class TestNoCompactNoBareStale:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestNoCompactNoBareStale(DataDirMixin):
 
     def test_bare_pointer_has_no_stale_flag(self):
         """When no compact exists at all, the bare pointer line has no [stale] annotation."""

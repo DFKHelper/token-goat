@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import unittest.mock
 
-import pytest
+from compact_test_helpers import DataDirMixin
 
 from token_goat.compact import (
     _compute_stale_compact_fraction,  # type: ignore[attr-defined]
@@ -162,10 +162,7 @@ class TestComputeStaleCompactFractionEmpty:
 # ---------------------------------------------------------------------------
 
 
-class TestComputeStaleCompactFractionAllMissing:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestComputeStaleCompactFractionAllMissing(DataDirMixin):
 
     def test_all_missing_returns_one(self):
         """When no compact exists for any loaded skill, fraction should be 1.0."""
@@ -192,10 +189,7 @@ class TestComputeStaleCompactFractionAllMissing:
 # ---------------------------------------------------------------------------
 
 
-class TestComputeStaleCompactFractionPartial:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestComputeStaleCompactFractionPartial(DataDirMixin):
 
     def test_half_stale_returns_half(self):
         """When 1 of 2 skills has a stale compact, fraction should be 0.5."""
@@ -229,10 +223,7 @@ class TestComputeStaleCompactFractionPartial:
 # ---------------------------------------------------------------------------
 
 
-class TestComputeStaleCompactFractionOldFormat:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestComputeStaleCompactFractionOldFormat(DataDirMixin):
 
     def test_no_sha_header_treated_as_fresh(self):
         """A compact stored without source_sha=None should be treated as fresh (unknown ≠ stale)."""
@@ -260,10 +251,7 @@ class TestComputeStaleCompactFractionOldFormat:
 # ---------------------------------------------------------------------------
 
 
-class TestBuildManifestAdaptiveStaleWiring:
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
+class TestBuildManifestAdaptiveStaleWiring(DataDirMixin):
 
     def test_stale_fraction_passed_to_compute_budget(self):
         """build_manifest_adaptive passes the computed stale fraction to compute_adaptive_budget."""

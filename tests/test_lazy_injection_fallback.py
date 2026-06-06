@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import unittest.mock
 
-import pytest
+from compact_test_helpers import DataDirMixin
 from conftest import fire_skill_hook
 
 from token_goat import compact, config, skill_cache
@@ -50,12 +50,9 @@ def _lazy_config() -> config.Config:
 # ---------------------------------------------------------------------------
 
 
-class TestCurrentSessionCompact:
+class TestCurrentSessionCompact(DataDirMixin):
     """When a compact exists for the current session, lazy pointer shows its size."""
 
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
 
     def test_token_estimate_shown_when_compact_stored(self):
         """After skill loads in session, manifest shows token count on the lazy pointer."""
@@ -87,12 +84,9 @@ class TestCurrentSessionCompact:
 # ---------------------------------------------------------------------------
 
 
-class TestBarePointerNoCompact:
+class TestBarePointerNoCompact(DataDirMixin):
     """When no compact exists anywhere, lazy pointer has no token count."""
 
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
 
     def test_bare_pointer_when_no_compact(self):
         """If get_compact returns None and no cross-session compact exists either,
@@ -125,12 +119,9 @@ class TestBarePointerNoCompact:
 # ---------------------------------------------------------------------------
 
 
-class TestCrossSessionFallback:
+class TestCrossSessionFallback(DataDirMixin):
     """A compact stored in session A is found by session B's lazy injection."""
 
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
 
     def test_cross_session_compact_provides_token_estimate(self):
         """Compact generated in session A should show a token count in session B manifest."""
@@ -172,12 +163,9 @@ class TestCrossSessionFallback:
 # ---------------------------------------------------------------------------
 
 
-class TestTokenEstimateStripsHeader:
+class TestTokenEstimateStripsHeader(DataDirMixin):
     """Token count in the manifest reflects the stripped compact, not header+content."""
 
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir):
-        self.tmp_data_dir = tmp_data_dir
 
     def test_token_count_matches_stripped_body_length(self):
         """The token count shown in the lazy pointer == len(stripped_compact) // 4."""
