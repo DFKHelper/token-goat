@@ -48,6 +48,8 @@ __all__ = [
     "get_compact",
     "get_compact_any_session",
     "get_compact_mtime",
+    "_get_skills_dir_listing",
+    "_DIR_LISTING_CACHE_TTL_SECS",
     "_is_valid_compact",
     "_MIN_COMPACT_CONTENT_CHARS",
     "get_skill_file_path",
@@ -98,6 +100,40 @@ _LOG = get_logger("skill_cache")
 
 # One-shot orphan sweep flag: set to True after the sweep runs in this process.
 _sweep_done = False
+
+# Process-local directory listing cache for the skills output directory.
+# A single manifest build may call get_compact_any_session() once per loaded
+# skill; each call previously ran out_dir.glob(pattern), which is an OS-level
+# directory scan.  With 3 skills that is 3 scans of the same directory in
+# rapid succession.  The cache below stores the full directory listing for a
+# short TTL (5 s) so that all skill lookups within one render share a single
+# iterdir() call.  TTL is deliberately short so new compact files written
+# between manifest renders are visible without delay.
+_DIR_LISTING_CACHE_TTL_SECS: float = 5.0
+_dir_listing_cache: tuple[float, list[Path]] | None = None
+
+
+def _get_skills_dir_listing(out_dir: Path) -> list[Path]:
+    """Return a cached listing of *out_dir*, refreshed at most every 5 seconds.
+
+    Caches the result of ``list(out_dir.iterdir())`` so that multiple
+    :func:`get_compact_any_session` calls within a single manifest render
+    reuse the same directory scan rather than each running a separate
+    ``Path.glob()`` syscall.  Fail-soft: returns an empty list on I/O error.
+    """
+    global _dir_listing_cache  # noqa: PLW0603
+    now = time.time()
+    if _dir_listing_cache is not None:
+        cached_ts, cached_list = _dir_listing_cache
+        if now - cached_ts < _DIR_LISTING_CACHE_TTL_SECS:
+            return cached_list
+    try:
+        listing = list(out_dir.iterdir())
+    except OSError:
+        listing = []
+    _dir_listing_cache = (now, listing)
+    return listing
+
 
 # Schema version embedded in every newly written SkillMeta sidecar JSON.
 # Increment this when a new required field is added so that read_sidecar can
@@ -1661,6 +1697,11 @@ def store_compact(
         # same compact cannot produce a torn file.  Matches the pattern used by
         # store_blob / session.py for all other cache writes.
         _paths.atomic_write_text(out_path, stored_text)
+        # Invalidate the directory listing cache so subsequent calls to
+        # get_compact_any_session within the same process pick up the newly
+        # written compact without waiting for the TTL to expire.
+        global _dir_listing_cache  # noqa: PLW0603
+        _dir_listing_cache = None
         _LOG.debug("skill_cache.store_compact: stored id=%s (%d tokens)", file_id, compact_tokens)
 
 
@@ -1737,11 +1778,16 @@ def get_compact_any_session(skill_name: str) -> str | None:
     safe_name = name.replace(":", "_")
     if ":" in name:
         safe_name += "n"
-    pattern = f"*-{safe_name}-compact"
+    suffix = f"-{safe_name}-compact"
 
     try:
         out_dir = _skill_outputs_dir()
-        matches = list(out_dir.glob(pattern))
+        # Use the process-local directory listing cache to avoid a separate
+        # glob() syscall for each skill when multiple skills are looked up
+        # during a single manifest render.  The cache is refreshed every 5 s
+        # so newly written compact files are visible promptly.
+        all_entries = _get_skills_dir_listing(out_dir)
+        matches = [p for p in all_entries if p.name.endswith(suffix)]
         if not matches:
             return None
         # Sort by mtime descending so we try the newest file first.  If it is
