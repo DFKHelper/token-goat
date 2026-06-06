@@ -376,6 +376,7 @@ def _build_context_section() -> tuple[list[str], bool]:
     precompact_tokens = 0
     has_precompact = False
     precompact_age_seconds: int | None = None
+    sentinel_error: str | None = None  # set when the best sentinel is unreadable
     try:
         sentinels_dir_path = paths.sentinels_dir()
         if sentinels_dir_path.is_dir():
@@ -390,17 +391,27 @@ def _build_context_section() -> tuple[list[str], bool]:
             if candidates:
                 candidates.sort(reverse=True)
                 best_mtime, best_sentinel = candidates[0]
-                sentinel_data = json.loads(best_sentinel.read_text(encoding="utf-8"))
-                raw_bytes = int(sentinel_data.get("bytes_estimate", 0))
-                if raw_bytes > 0:
-                    # Only treat as a valid baseline when bytes_estimate is positive.
-                    # A zero-byte estimate means the sentinel was written before any
-                    # content was captured — treat it the same as no baseline.
-                    precompact_tokens = raw_bytes // 4
-                    has_precompact = True
-                    precompact_age_seconds = int(now - best_mtime)
+                try:
+                    raw_text = best_sentinel.read_text(encoding="utf-8")
+                except OSError as exc:
+                    sentinel_error = f"unreadable ({exc.__class__.__name__})"
+                    raw_text = None
+                if raw_text is not None:
+                    try:
+                        sentinel_data = json.loads(raw_text)
+                        raw_bytes = int(sentinel_data.get("bytes_estimate", 0))
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        sentinel_error = "malformed JSON in sentinel"
+                        raw_bytes = 0
+                    if raw_bytes > 0:
+                        # Only treat as a valid baseline when bytes_estimate is positive.
+                        # A zero-byte estimate means the sentinel was written before any
+                        # content was captured — treat it the same as no baseline.
+                        precompact_tokens = raw_bytes // 4
+                        has_precompact = True
+                        precompact_age_seconds = int(now - best_mtime)
     except Exception:  # noqa: BLE001
-        pass
+        sentinel_error = "unexpected error reading sentinels"
 
     # ------------------------------------------------------------------ #
     # 8. Totals, fill %, ETA                                               #
@@ -493,6 +504,8 @@ def _build_context_section() -> tuple[list[str], bool]:
         )
     else:
         lines.append("  Context at last compact: < no compact baseline yet >")
+        if sentinel_error:
+            lines.append(f"    (sentinel error: {sentinel_error})")
         lines.append(
             f"  Current estimate: ~{current_estimate:,} / {CONTEXT_CAP:,}"
             f"  ({int(fill_pct * 100)}%)"

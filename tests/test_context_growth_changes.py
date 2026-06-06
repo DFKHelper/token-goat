@@ -1489,3 +1489,82 @@ class TestContextEdgeCases:
         assert "turns at current rate" not in eta_line, (
             f"Expected unknown ETA but got a numeric ETA: {eta_line!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Sentinel error robustness (iter 6/10)
+# ---------------------------------------------------------------------------
+
+
+class TestSentinelErrorHandling:
+    """_build_context_section() handles corrupt/unreadable sentinels gracefully."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir, monkeypatch):
+        self.data_dir = tmp_data_dir
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
+        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
+
+    def _call(self):
+        from token_goat.cli_doctor import _build_context_section
+        return _build_context_section()
+
+    def _write_sentinel(self, content: str) -> None:
+        sentinels_dir = paths.sentinels_dir()
+        sentinels_dir.mkdir(parents=True, exist_ok=True)
+        (sentinels_dir / "precompact_estimate_test.json").write_text(
+            content, encoding="utf-8"
+        )
+
+    def test_malformed_json_sentinel_shows_error_note(self):
+        """A sentinel with malformed JSON emits a '(sentinel error: ...)' note and
+        does not raise an exception."""
+        self._write_sentinel("{not valid json}")
+        # Must not raise
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Graceful degradation: shows baseline message and error note
+        assert "no compact baseline yet" in combined
+        assert "sentinel error" in combined
+
+    def test_malformed_json_sentinel_does_not_show_baseline(self):
+        """A corrupt sentinel must not show 'Context at last compact' with a stale value."""
+        self._write_sentinel("null")
+        lines, _ = self._call()
+        for line in lines:
+            # Should not claim to have a baseline from a null sentinel
+            assert "Context at last compact: ~" not in line, (
+                f"Unexpected baseline line from null sentinel: {line!r}"
+            )
+
+    def test_non_numeric_bytes_estimate_sentinel_shows_error_note(self):
+        """A sentinel with a non-numeric bytes_estimate emits the error note."""
+        self._write_sentinel('{"bytes_estimate": "not-a-number"}')
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "no compact baseline yet" in combined
+        assert "sentinel error" in combined
+
+    def test_valid_sentinel_does_not_show_sentinel_error(self):
+        """A valid sentinel with positive bytes_estimate must not show any error note."""
+        self._write_sentinel('{"bytes_estimate": 400000}')
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "sentinel error" not in combined
+        assert "Context at last compact" in combined
+
+    def test_function_never_raises_on_empty_sentinel_dir(self):
+        """_build_context_section() must not raise even if sentinels_dir is empty."""
+        # Don't write any sentinels
+        result = self._call()
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+
+    def test_function_never_raises_on_missing_sentinel_dir(self, monkeypatch):
+        """_build_context_section() must not raise even if sentinels_dir doesn't exist."""
+        # Point sentinels_dir to a path that definitely does not exist
+        nonexistent = self.data_dir / "does_not_exist" / "sentinels"
+        monkeypatch.setattr(paths, "sentinels_dir", lambda: nonexistent)
+        result = self._call()
+        assert isinstance(result, tuple)
+        assert len(result) == 2
