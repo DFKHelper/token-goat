@@ -1215,10 +1215,14 @@ def build_map(
                 # not what the budget was.
                 out.append(f"+{omitted} more\n")
 
-    # Language breakdown footer (one line, e.g. "Python: 60%  TypeScript: 40%")
-    breakdown = lang_breakdown(data.files)
-    if breakdown:
-        out.append(f"{breakdown}\n")
+    # Language breakdown footer (one line, e.g. "Python: 60%  TypeScript: 40%").
+    # Suppressed when use_summary_line is active: the header already lists the
+    # language set and the summary line shows ext counts, so the footer would
+    # duplicate information already present in a shorter form.
+    if not use_summary_line:
+        breakdown = lang_breakdown(data.files)
+        if breakdown:
+            out.append(f"{breakdown}\n")
 
     # Persist new cache entries (best-effort; failure must not affect output)
     if cache_writes:
