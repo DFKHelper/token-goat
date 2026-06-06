@@ -47,6 +47,7 @@ __all__ = [
     "get_all_cached_skills",
     "get_compact",
     "get_compact_any_session",
+    "get_compact_mtime",
     "get_skill_file_path",
     "list_by_session",
     "list_outputs",
@@ -1710,6 +1711,33 @@ def get_compact_any_session(skill_name: str) -> str | None:
         return newest.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         _LOG.debug("skill_cache.get_compact_any_session: I/O error for %s: %s", skill_name, exc)
+        return None
+
+
+def get_compact_mtime(session_id: str, skill_name: str) -> float | None:
+    """Return the mtime (POSIX seconds) of the stored compact file, or ``None``.
+
+    Used by ``token-goat skill-list`` to display how old a compact is (separate
+    from body age).  Returns ``None`` when no compact exists for this
+    (session, skill) pair, or on any I/O error (fail-soft).
+
+    The returned value is the raw :meth:`pathlib.Path.stat().st_mtime` float,
+    so callers compute age as ``time.time() - get_compact_mtime(...)`` when
+    the return value is not ``None``.
+    """
+    if not session_id:
+        return None
+    name = _safe_skill_name(skill_name)
+    if name is None:
+        return None
+    try:
+        file_id = _compact_file_id(session_id, name)
+        out_path = _skill_outputs_dir() / file_id
+        if not out_path.exists():
+            return None
+        return out_path.stat().st_mtime
+    except (OSError, TypeError) as exc:
+        _LOG.debug("skill_cache.get_compact_mtime: I/O error for %s: %s", skill_name, exc)
         return None
 
 

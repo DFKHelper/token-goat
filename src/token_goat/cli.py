@@ -5188,6 +5188,17 @@ def cmd_skill_list(
         compact_body = skill_cache._strip_compact_header(compact_text) if compact_text else ""
         compact_tokens = _compact.estimate_tokens(compact_body) if compact_body else 0
 
+        # Compute compact age (seconds since compact file was last written) so
+        # users can distinguish a freshly-generated compact from one that is days
+        # old.  This is independent of body age (age_secs) — a body can be loaded
+        # once and then have its compact regenerated many times.
+        compact_mtime = skill_cache.get_compact_mtime(resolved_session, meta.skill_name)
+        if compact_mtime is None and has_compact:
+            # Also try the alt_name form for plugin-namespaced skills.
+            alt_name_compact = meta.skill_name.replace("_", ":")
+            compact_mtime = skill_cache.get_compact_mtime(resolved_session, alt_name_compact)
+        compact_age_secs: int | None = round(now - compact_mtime) if compact_mtime is not None else None
+
         compact_served_count = _compact_hit_by_name.get(meta.skill_name, 0)
 
         # Determine whether the cached compact is stale relative to the body.
@@ -5217,6 +5228,7 @@ def cmd_skill_list(
             "has_compact": has_compact,
             "compact_tokens": compact_tokens,
             "compact_stale": compact_stale,
+            "compact_age_secs": compact_age_secs,
             "age_secs": round(age_secs),
             "compact_served_count": compact_served_count,
             "compact_quality": compact_quality,
@@ -5250,11 +5262,17 @@ def cmd_skill_list(
         age_secs = int(row["age_secs"])  # type: ignore[call-overload]
         compact_served = int(row.get("compact_served_count", 0))  # type: ignore[call-overload]
         compact_stale = cast("bool | None", row.get("compact_stale"))
+        _raw_compact_age = row.get("compact_age_secs")
+        compact_age_secs = int(_raw_compact_age) if _raw_compact_age is not None else None  # type: ignore[call-overload]
 
         if not has_compact:
             compact_col = "no"
         elif compact_stale is True:
             compact_col = f"~{compact_tokens} tok [stale]"
+        elif compact_age_secs is not None and compact_age_secs > 86400:
+            # Compact is older than 1 day — flag it so users know it may be outdated.
+            compact_age_days = compact_age_secs // 86400
+            compact_col = f"~{compact_tokens} tok [{compact_age_days}d old]"
         else:
             compact_col = f"~{compact_tokens} tok"
 
