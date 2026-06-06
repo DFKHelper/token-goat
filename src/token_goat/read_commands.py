@@ -1539,27 +1539,27 @@ def outline(
         ))
         return
 
-    if not quiet:
-        typer.echo(f"# Outline: {file_rel}  ({len(filtered)} symbols)")
+    # Render lines once — reuse for display and savings accounting.
+    rendered_outline: list[str] = []
     for row, depth in filtered:
         doc = _extract_docstring_first_line(
             source_lines, int(row["line"]), int(row["end_line"]),
         ) if source_lines else None
-        typer.echo(_format_outline_line(
+        rendered_outline.append(_format_outline_line(
             row["name"], row["kind"],
             int(row["line"]), int(row["end_line"]),
             doc, depth=depth,
         ))
 
+    if not quiet:
+        typer.echo(f"# Outline: {file_rel}  ({len(filtered)} symbols)")
+    for line in rendered_outline:
+        typer.echo(line)
+
     # Record token savings: outline costs ~5% of a full file read.
     try:
         src_bytes = abs_path.stat().st_size
-        outline_bytes = sum(
-            len(_format_outline_line(
-                r["name"], r["kind"], int(r["line"]), int(r["end_line"]), None,
-            ).encode())
-            for r, _d in filtered
-        )
+        outline_bytes = sum(len(line.encode()) for line in rendered_outline)
         saved = max(0, src_bytes - outline_bytes)
         db.record_stat(None, "outline", bytes_saved=saved, tokens_saved=max(1, saved // 3 + 1) if saved > 0 else 0, detail=file_rel)
     except Exception:  # noqa: BLE001
@@ -1819,18 +1819,20 @@ def stub_view(
         typer.echo(json.dumps(out, separators=(",", ":")))
         return
 
+    # Render lines once — reuse for display and savings accounting.
+    rendered_lines = [
+        _format_stub_line(row["name"], row["kind"], row["line"], row["signature"])
+        for row in filtered
+    ]
     typer.echo(f"# Skeleton: {file_rel}  ({len(filtered)} symbols)")
-    for row in filtered:
-        typer.echo(_format_stub_line(row["name"], row["kind"], row["line"], row["signature"]))
+    for line in rendered_lines:
+        typer.echo(line)
 
     # Record savings: stub views cost ~5-15% of a full file read.
     try:
         abs_path = proj.root / file_rel
         src_bytes = abs_path.stat().st_size
-        stub_bytes = sum(
-            len(_format_stub_line(r["name"], r["kind"], r["line"], r["signature"]).encode())
-            for r in filtered
-        )
+        stub_bytes = sum(len(line.encode()) for line in rendered_lines)
         saved = max(0, src_bytes - stub_bytes)
         db.record_stat(None, "stub_view", bytes_saved=saved, tokens_saved=max(1, saved // 3 + 1) if saved > 0 else 0, detail=file_rel)
     except Exception:  # noqa: BLE001
