@@ -1393,7 +1393,7 @@ def _hint_from_index(
         return ReadHint(
             _apply_terse(
                 f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
-                f"No symbols indexed. Use `offset`/`limit` to read chunks."
+                f"No symbols indexed. Use offset/limit to chunk."
             ),
             0,
         )
@@ -3502,9 +3502,7 @@ def _build_unchanged_file_hint_inner(
     prose = ReadHint(
         _apply_terse(
             f"`{fname}` unchanged since your edit ({age_s}s ago, sha:{sha_prefix}, ~{full_tokens}t). "
-            f"Content already in context from Edit result. "
-            f"Re-read only if you need line numbers. "
-            f"For a symbol use `token-goat read \"{safe_path}::Symbol\"`."
+            f"Edit result still in context — for symbols: `token-goat read \"{safe_path}::Symbol\"`."
         ),
         full_tokens,
     )
