@@ -418,6 +418,42 @@ def _build_context_section() -> tuple[list[str], bool]:
             f"  ({int(fill_pct * 100)}%)"
         )
 
+    # ------------------------------------------------------------------ #
+    # Fill bar + per-component breakdown (iter 2)                          #
+    # Shows which budget components dominate at a glance.                  #
+    # ------------------------------------------------------------------ #
+    BAR_WIDTH = 40
+    filled = min(BAR_WIDTH, int(fill_pct * BAR_WIDTH))
+    bar = "█" * filled + "░" * (BAR_WIDTH - filled)
+    fill_label = f"{int(fill_pct * 100)}%"
+    # Threshold markers in the bar string
+    if fill_pct >= 0.85:
+        severity = "CRIT"
+    elif fill_pct >= 0.70:
+        severity = "HIGH"
+    elif fill_pct >= 0.40:
+        severity = "WARN"
+    else:
+        severity = "ok"
+    lines.append(f"  [{bar}] {fill_label} ({severity})")
+
+    # Per-component percentages — only show components that are >2% of total
+    components: list[tuple[str, int]] = [
+        ("precompact", precompact_tokens if has_precompact else 0),
+        ("catalog", catalog_tokens),
+        ("loaded skills", loaded_skill_tokens),
+        ("meta (CLAUDE.md)", meta_tokens),
+        ("conversation", conversation_tokens),
+    ]
+    if current_estimate > 0:
+        breakdown_parts = []
+        for cname, ctok in components:
+            pct = ctok / current_estimate * 100
+            if pct >= 2.0:
+                breakdown_parts.append(f"{cname} {pct:.0f}%")
+        if breakdown_parts:
+            lines.append(f"  Breakdown: {', '.join(breakdown_parts)}")
+
     if session_turns >= 3:
         if eta_turns > 20:
             lines.append("  ETA: > 20 turns at current rate")

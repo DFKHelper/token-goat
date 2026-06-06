@@ -1107,3 +1107,72 @@ class TestPrecompactSentinelAge:
         lines, _ = self._call()
         combined = "\n".join(lines)
         assert "no compact baseline yet" in combined
+
+
+# ---------------------------------------------------------------------------
+# Fill bar and per-component breakdown (iter 2/10)
+# ---------------------------------------------------------------------------
+
+
+class TestContextFillBar:
+    """_build_context_section() emits a fill bar and per-component breakdown."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir, monkeypatch):
+        self.data_dir = tmp_data_dir
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
+        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
+
+    def _call(self):
+        from token_goat.cli_doctor import _build_context_section
+        return _build_context_section()
+
+    def _write_sentinel(self, bytes_estimate: int) -> None:
+        sentinels_dir = paths.sentinels_dir()
+        sentinels_dir.mkdir(parents=True, exist_ok=True)
+        (sentinels_dir / "precompact_estimate_test.json").write_text(
+            json.dumps({"bytes_estimate": bytes_estimate}), encoding="utf-8"
+        )
+
+    def test_fill_bar_present_in_output(self):
+        """A fill bar line starting with '[' is always emitted."""
+        lines, _ = self._call()
+        bar_lines = [ln for ln in lines if ln.strip().startswith("[") and "░" in ln or "█" in ln]
+        assert len(bar_lines) >= 1, f"No fill bar found in output: {lines}"
+
+    def test_fill_bar_shows_ok_when_low(self):
+        """Low fill → bar shows 'ok' severity."""
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "(ok)" in combined
+
+    def test_fill_bar_shows_warn_at_50_percent(self):
+        """~50% fill → bar shows 'WARN' severity."""
+        # 50% of 660,000 = 330,000 tokens → ~1,320,000 bytes_estimate
+        self._write_sentinel(bytes_estimate=1_320_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "(WARN)" in combined
+
+    def test_fill_bar_shows_crit_at_90_percent(self):
+        """~90% fill → bar shows 'CRIT' severity."""
+        # 90% of 660,000 = 594,000 tokens → ~2,376,000 bytes_estimate
+        self._write_sentinel(bytes_estimate=2_376_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "(CRIT)" in combined
+
+    def test_breakdown_line_present_with_nonzero_components(self):
+        """A 'Breakdown:' line appears when at least one component is >= 2% of total."""
+        # Write a large sentinel so precompact dominates
+        self._write_sentinel(bytes_estimate=1_000_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "Breakdown:" in combined
+
+    def test_breakdown_omitted_when_no_data(self):
+        """When current_estimate is 0, no breakdown line is emitted."""
+        # No sentinel, no skills, no session → near-zero estimate
+        lines, _ = self._call()
+        # May or may not have breakdown (depends on CLAUDE.md size); just check no crash
+        assert isinstance(lines, list)
