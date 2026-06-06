@@ -239,7 +239,16 @@ def _build_context_section() -> tuple[list[str], bool]:
         except OSError:
             pass
 
-    catalog_tokens = max(catalog_bytes // 4, catalog_count * 130)
+    # catalog_bytes == 0 with catalog_count > 0 means every stat() failed
+    # (e.g. permission error) or every skill file is genuinely empty.
+    # In either case the 130-token floor is a conservative fallback.
+    # Track which formula was used so the output can be annotated.
+    if catalog_count > 0 and catalog_bytes == 0:
+        catalog_tokens = catalog_count * 130
+        catalog_size_note = "  [no byte sizes — using 130 tok/skill fallback]"
+    else:
+        catalog_tokens = max(catalog_bytes // 4, catalog_count * 130)
+        catalog_size_note = ""
 
     # ------------------------------------------------------------------ #
     # 2. Compact coverage — one glob pass over the cache dir              #
@@ -382,9 +391,14 @@ def _build_context_section() -> tuple[list[str], bool]:
                 candidates.sort(reverse=True)
                 best_mtime, best_sentinel = candidates[0]
                 sentinel_data = json.loads(best_sentinel.read_text(encoding="utf-8"))
-                precompact_tokens = max(0, int(sentinel_data.get("bytes_estimate", 0))) // 4
-                has_precompact = True
-                precompact_age_seconds = int(now - best_mtime)
+                raw_bytes = int(sentinel_data.get("bytes_estimate", 0))
+                if raw_bytes > 0:
+                    # Only treat as a valid baseline when bytes_estimate is positive.
+                    # A zero-byte estimate means the sentinel was written before any
+                    # content was captured — treat it the same as no baseline.
+                    precompact_tokens = raw_bytes // 4
+                    has_precompact = True
+                    precompact_age_seconds = int(now - best_mtime)
     except Exception:  # noqa: BLE001
         pass
 
@@ -407,7 +421,10 @@ def _build_context_section() -> tuple[list[str], bool]:
     # 9. Assemble output lines                                             #
     # ------------------------------------------------------------------ #
     lines.append("\nContext footprint")
-    lines.append(f"  Skills catalog: {catalog_count} skills ≈ {catalog_tokens:,} tokens/turn  [actual file sizes]")
+    catalog_size_label = "[actual file sizes]" if not catalog_size_note else "[fallback estimate]"
+    lines.append(f"  Skills catalog: {catalog_count} skills ≈ {catalog_tokens:,} tokens/turn  {catalog_size_label}")
+    if catalog_size_note:
+        lines.append(catalog_size_note)
 
     compact_count = sum(1 for sname in _iter_skill_names(skills_root, plugins_cache) if _has_compact(sname))
     if catalog_count > 0:

@@ -1359,3 +1359,133 @@ class TestCompactionRecommendations:
         combined = "\n".join(lines)
         assert "Recommendations:" in combined
         assert "Actions:" not in combined
+
+
+# ---------------------------------------------------------------------------
+# Edge case hardening (iter 5/10)
+# ---------------------------------------------------------------------------
+
+
+class TestContextEdgeCases:
+    """Edge cases in _build_context_section(): zero-byte sentinels, empty catalogs,
+    and empty sessions."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir, monkeypatch):
+        self.data_dir = tmp_data_dir
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
+        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
+
+    def _call(self):
+        from token_goat.cli_doctor import _build_context_section
+        return _build_context_section()
+
+    def _write_sentinel(self, bytes_estimate: int) -> None:
+        sentinels_dir = paths.sentinels_dir()
+        sentinels_dir.mkdir(parents=True, exist_ok=True)
+        (sentinels_dir / "precompact_estimate_test.json").write_text(
+            json.dumps({"bytes_estimate": bytes_estimate}), encoding="utf-8"
+        )
+
+    # ------------------------------------------------------------------
+    # Zero-byte sentinel tests
+    # ------------------------------------------------------------------
+
+    def test_zero_byte_sentinel_treated_as_no_baseline(self):
+        """A sentinel with bytes_estimate=0 must not show a '~0 tokens' baseline."""
+        self._write_sentinel(bytes_estimate=0)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Should fall back to 'no compact baseline yet', not '~0 tokens'
+        assert "no compact baseline yet" in combined, (
+            f"Expected 'no compact baseline yet' but got:\n{combined}"
+        )
+
+    def test_zero_byte_sentinel_does_not_show_context_at_last_compact(self):
+        """A sentinel with bytes_estimate=0 must not produce a 'Context at last compact' line."""
+        self._write_sentinel(bytes_estimate=0)
+        lines, _ = self._call()
+        for line in lines:
+            assert "Context at last compact: ~0" not in line, (
+                f"Misleading zero-byte baseline shown: {line!r}"
+            )
+
+    def test_positive_byte_sentinel_still_shows_baseline(self):
+        """Positive bytes_estimate still produces the baseline line (regression guard)."""
+        self._write_sentinel(bytes_estimate=400_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "Context at last compact" in combined
+        assert "no compact baseline yet" not in combined
+
+    # ------------------------------------------------------------------
+    # Empty catalog (all skill files are zero bytes or stat failed)
+    # ------------------------------------------------------------------
+
+    def test_empty_skill_files_show_fallback_label(self):
+        """When catalog_bytes=0 but catalog_count>0, output shows '[fallback estimate]'."""
+        # Create skill dirs with zero-byte SKILL.md files
+        skills_root = self.data_dir / "fake_skills"
+        for name in ("skill-a", "skill-b"):
+            skill_dir = skills_root / name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            (skill_dir / "SKILL.md").write_text("", encoding="utf-8")
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "[fallback estimate]" in combined, (
+            f"Expected '[fallback estimate]' label for empty skills but got:\n{combined}"
+        )
+        assert "no byte sizes" in combined.lower(), (
+            f"Expected fallback note in output but got:\n{combined}"
+        )
+
+    def test_populated_skill_files_show_actual_file_sizes_label(self):
+        """When skills have real content, output shows '[actual file sizes]'."""
+        skills_root = self.data_dir / "fake_skills"
+        skill_dir = skills_root / "real-skill"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text("# Real Skill\n\n" + "x " * 500, encoding="utf-8")
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "[actual file sizes]" in combined, (
+            f"Expected '[actual file sizes]' label but got:\n{combined}"
+        )
+        assert "[fallback estimate]" not in combined
+
+    def test_no_skills_shows_actual_file_sizes_label(self):
+        """When catalog_count=0 (no skills at all), output shows '[actual file sizes]'
+        because the catalog_bytes == 0 AND catalog_count == 0 branch is distinct from
+        the fallback branch (no skills to warn about)."""
+        # skills dir does not exist → catalog_count=0, catalog_bytes=0
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # With zero skills, no misleading fallback note should appear
+        assert "no byte sizes" not in combined.lower(), (
+            f"Unexpected fallback note for zero-skill catalog:\n{combined}"
+        )
+
+    # ------------------------------------------------------------------
+    # Empty session (turns=0)
+    # ------------------------------------------------------------------
+
+    def test_empty_session_shows_no_active_session(self):
+        """When no session exists (turns=0), output shows 'no active session found'."""
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "no active session found" in combined
+
+    def test_empty_session_shows_eta_unknown(self):
+        """When session_turns=0, ETA is shown as 'unknown' rather than omitted."""
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # An ETA line is still emitted but with "unknown" instead of a number
+        assert "ETA: unknown" in combined, (
+            f"Expected 'ETA: unknown' for empty session but got:\n{combined}"
+        )
+        # No numeric turn count should appear in the ETA line
+        eta_line = next((ln for ln in lines if "ETA:" in ln), "")
+        assert "turns at current rate" not in eta_line, (
+            f"Expected unknown ETA but got a numeric ETA: {eta_line!r}"
+        )
