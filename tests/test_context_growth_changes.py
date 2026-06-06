@@ -20,13 +20,11 @@ from token_goat import install, paths, skill_cache
 # Helpers
 # ---------------------------------------------------------------------------
 
-
 def _call_context_section():
     """Invoke _build_context_section() — shared by all test classes in this file."""
     from token_goat.cli_doctor import _build_context_section
 
     return _build_context_section()
-
 
 def _write_precompact_sentinel(
     bytes_estimate: int | None = None,
@@ -67,7 +65,6 @@ CRITICAL: This line must appear in the compact.
 
 _LARGE_SKILL_BODY = "# Large Skill\n\n" + ("x " * 5000) + "\nCRITICAL: Large skill marker.\n"
 
-
 def _make_skill_dir(parent: Path, name: str, body: str = _SIMPLE_SKILL_BODY) -> Path:
     """Create a minimal ~/.claude/skills/<name>/SKILL.md under *parent*."""
     skill_dir = parent / name
@@ -75,11 +72,9 @@ def _make_skill_dir(parent: Path, name: str, body: str = _SIMPLE_SKILL_BODY) -> 
     (skill_dir / "SKILL.md").write_text(body, encoding="utf-8")
     return skill_dir
 
-
 # ---------------------------------------------------------------------------
 # Change 4: get_compact_any_session
 # ---------------------------------------------------------------------------
-
 
 class TestGetCompactAnySession:
     @pytest.fixture(autouse=True)
@@ -128,11 +123,9 @@ class TestGetCompactAnySession:
         result = skill_cache.get_compact_any_session("../etc/passwd")
         assert result is None
 
-
 # ---------------------------------------------------------------------------
 # Change 4: pregen_skill_compacts
 # ---------------------------------------------------------------------------
-
 
 class TestPregenSkillCompacts:
     @pytest.fixture(autouse=True)
@@ -217,11 +210,9 @@ class TestPregenSkillCompacts:
         assert result is not None
         assert "compact form" in result
 
-
 # ---------------------------------------------------------------------------
 # Change 4: install_all includes skill compact pre-gen step
 # ---------------------------------------------------------------------------
-
 
 def test_install_all_includes_pregen_step(tmp_data_dir, monkeypatch, patched_home):
     """install_all() should include a 'skill compact pre-gen' result key."""
@@ -244,11 +235,9 @@ def test_install_all_includes_pregen_step(tmp_data_dir, monkeypatch, patched_hom
     assert "skill compact pre-gen" in result
     assert "FAIL" not in result["skill compact pre-gen"]
 
-
 # ---------------------------------------------------------------------------
 # Change 4: sentinel-based new-plugin gap detection
 # ---------------------------------------------------------------------------
-
 
 class TestPluginGapDetection:
     @pytest.fixture(autouse=True)
@@ -284,7 +273,6 @@ class TestPluginGapDetection:
         ts2 = json.loads(sentinel.read_text())["ts"]
         assert ts2 >= ts1
 
-
 # ---------------------------------------------------------------------------
 # Change 2: pre_skill context advisory (2a)
 # ---------------------------------------------------------------------------
@@ -300,7 +288,6 @@ _MEDIUM_SKILL_BODY = "# Medium Skill\n\n" + ("w " * 4_500) + "\nCRITICAL: medium
 # 42 KB body — above _LARGE_BODY_THRESHOLD_BYTES, so post_skill goes Path 3/4 (async/info).
 _XLARGE_SKILL_BODY = "# XLarge Skill\n\n" + ("z " * 21_000) + "\nCRITICAL: xlarge marker.\n"
 
-
 def _make_pre_skill_payload(session_id: str, skill_name: str) -> dict:
     """Build a minimal pre_skill (PreToolUse) payload."""
     return {
@@ -308,7 +295,6 @@ def _make_pre_skill_payload(session_id: str, skill_name: str) -> dict:
         "tool_name": "Skill",
         "tool_input": {"skill": skill_name},
     }
-
 
 def _make_post_skill_payload(session_id: str, skill_name: str, body: str) -> dict:
     """Build a minimal post_skill (PostToolUse) payload."""
@@ -318,7 +304,6 @@ def _make_post_skill_payload(session_id: str, skill_name: str, body: str) -> dic
         "tool_input": {"skill": skill_name},
         "tool_response": body,
     }
-
 
 class TestChange2PreSkillAdvisory:
     """Tests for the 2a non-blocking context advisory in pre_skill."""
@@ -403,11 +388,9 @@ class TestChange2PreSkillAdvisory:
 
         assert resp.get("continue") is True
 
-
 # ---------------------------------------------------------------------------
 # Change 2: post_skill 4-path compact advisory (2b)
 # ---------------------------------------------------------------------------
-
 
 class TestChange2PostSkillCompactPaths:
     """Tests for the 4-path compact advisory logic in post_skill."""
@@ -543,7 +526,6 @@ class TestChange2PostSkillCompactPaths:
         # Sync generation must have been called since the pre-gen SHA doesn't match.
         mock_gen.assert_called_once()
 
-
 # ---------------------------------------------------------------------------
 # Change 3: threshold-crossing ETA in user_prompt_submit
 # ---------------------------------------------------------------------------
@@ -558,7 +540,6 @@ def _run_user_prompt_submit(session_id: str, prompt: str = "what changed?") -> d
     }
     return hooks_session.user_prompt_submit(payload)
 
-
 def _set_loaded_skill_tokens(session_id: str, tokens: int) -> None:
     """Directly set loaded_skill_total_tokens on the session cache for testing."""
     from token_goat import session as ses
@@ -568,7 +549,6 @@ def _set_loaded_skill_tokens(session_id: str, tokens: int) -> None:
         cache = ses._fresh_cache(session_id)
     cache.loaded_skill_total_tokens = tokens
     ses.save(cache)
-
 
 class TestChange3ThresholdAdvisory:
     """Tests for the threshold-crossing context advisory in user_prompt_submit."""
@@ -684,11 +664,9 @@ class TestChange3ThresholdAdvisory:
         assert "CONTEXT" not in ctx
         assert "ctx:" not in ctx
 
-
 # ---------------------------------------------------------------------------
 # Change 1: doctor --context footprint section
 # ---------------------------------------------------------------------------
-
 
 def _make_session_with_skills(
     tmp_data_dir: Path,
@@ -711,7 +689,6 @@ def _make_session_with_skills(
             body_bytes=body_bytes,
         )
     ses.save(cache)
-
 
 class TestChange1ContextFootprint:
     """Tests for _build_context_section() and the doctor --context flag."""
@@ -1059,25 +1036,37 @@ class TestChange1ContextFootprint:
         combined = "\n".join(lines)
         assert "Recommendations:" not in combined
 
-
 # ---------------------------------------------------------------------------
-# Precompact sentinel age handling (iter 1/10)
+# Shared isolation mixin
 # ---------------------------------------------------------------------------
 
+class SkillPathsMixin:
+    """Mixin providing the ``_isolate`` fixture for classes that need fake skill/plugin dirs.
 
-class TestPrecompactSentinelAge:
-    """_build_context_section() correctly handles old precompact sentinels.
-
-    Previously, a 300-second cutoff meant sentinels older than 5 minutes were
-    silently ignored, producing 'no compact baseline yet' even when valid
-    baseline data existed on disk.
+    Monkeypatches ``paths.claude_skills_dir`` and ``paths.claude_plugins_dir``
+    to temp subdirectories so tests never touch the real user skill cache.
+    The ``data_dir`` attribute is available after fixture setup via ``self.data_dir``.
     """
+
+    data_dir: object  # set by _isolate fixture
 
     @pytest.fixture(autouse=True)
     def _isolate(self, tmp_data_dir, monkeypatch):
         self.data_dir = tmp_data_dir
         monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
         monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
+
+# ---------------------------------------------------------------------------
+# Precompact sentinel age handling (iter 1/10)
+# ---------------------------------------------------------------------------
+
+class TestPrecompactSentinelAge(SkillPathsMixin):
+    """_build_context_section() correctly handles old precompact sentinels.
+
+    Previously, a 300-second cutoff meant sentinels older than 5 minutes were
+    silently ignored, producing 'no compact baseline yet' even when valid
+    baseline data existed on disk.
+    """
 
     def _call(self):
         return _call_context_section()
@@ -1123,20 +1112,12 @@ class TestPrecompactSentinelAge:
         combined = "\n".join(lines)
         assert "no compact baseline yet" in combined
 
-
 # ---------------------------------------------------------------------------
 # Fill bar and per-component breakdown (iter 2/10)
 # ---------------------------------------------------------------------------
 
-
-class TestContextFillBar:
+class TestContextFillBar(SkillPathsMixin):
     """_build_context_section() emits a fill bar and per-component breakdown."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir, monkeypatch):
-        self.data_dir = tmp_data_dir
-        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
-        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
         return _call_context_section()
@@ -1187,20 +1168,12 @@ class TestContextFillBar:
         # May or may not have breakdown (depends on CLAUDE.md size); just check no crash
         assert isinstance(lines, list)
 
-
 # ---------------------------------------------------------------------------
 # Session-to-session context growth trend (iter 3/10)
 # ---------------------------------------------------------------------------
 
-
-class TestContextGrowthTrend:
+class TestContextGrowthTrend(SkillPathsMixin):
     """_compute_context_growth_trend() and its integration in _build_context_section."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir, monkeypatch):
-        self.data_dir = tmp_data_dir
-        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
-        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _write_sentinels(self, byte_estimates: list[int]) -> None:
         """Write multiple precompact sentinels with incrementing mtimes."""
@@ -1339,20 +1312,12 @@ class TestContextGrowthTrend:
         # Should show the projection (headroom = 0 → sessions = 0 → max(1,0) = 1)
         assert "session to URGENT" in result or "sessions to URGENT" in result
 
-
 # ---------------------------------------------------------------------------
 # Tiered compaction recommendations (iter 4/10)
 # ---------------------------------------------------------------------------
 
-
-class TestCompactionRecommendations:
+class TestCompactionRecommendations(SkillPathsMixin):
     """Tiered recommendation block in _build_context_section()."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir, monkeypatch):
-        self.data_dir = tmp_data_dir
-        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
-        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
         return _call_context_section()
@@ -1545,21 +1510,13 @@ class TestCompactionRecommendations:
             f"Expected Tier 4 recommendation mentioning dominant cost:\n{combined}"
         )
 
-
 # ---------------------------------------------------------------------------
 # Edge case hardening (iter 5/10)
 # ---------------------------------------------------------------------------
 
-
-class TestContextEdgeCases:
+class TestContextEdgeCases(SkillPathsMixin):
     """Edge cases in _build_context_section(): zero-byte sentinels, empty catalogs,
     and empty sessions."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir, monkeypatch):
-        self.data_dir = tmp_data_dir
-        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
-        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
         return _call_context_section()
@@ -1670,20 +1627,12 @@ class TestContextEdgeCases:
             f"Expected unknown ETA but got a numeric ETA: {eta_line!r}"
         )
 
-
 # ---------------------------------------------------------------------------
 # Sentinel error robustness (iter 6/10)
 # ---------------------------------------------------------------------------
 
-
-class TestSentinelErrorHandling:
+class TestSentinelErrorHandling(SkillPathsMixin):
     """_build_context_section() handles corrupt/unreadable sentinels gracefully."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir, monkeypatch):
-        self.data_dir = tmp_data_dir
-        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
-        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
         return _call_context_section()
@@ -1744,21 +1693,13 @@ class TestSentinelErrorHandling:
         assert isinstance(result, tuple)
         assert len(result) == 2
 
-
 # ---------------------------------------------------------------------------
 # Context metric accuracy tests (iter 7/10)
 # ---------------------------------------------------------------------------
 
-
-class TestContextMetricAccuracy:
+class TestContextMetricAccuracy(SkillPathsMixin):
     """Unit tests for fill percentage, severity thresholds, breakdown visibility,
     tokens-per-turn fallback, and growth trend inclusion."""
-
-    @pytest.fixture(autouse=True)
-    def _isolate(self, tmp_data_dir, monkeypatch):
-        self.data_dir = tmp_data_dir
-        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
-        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
 
     def _call(self):
         return _call_context_section()

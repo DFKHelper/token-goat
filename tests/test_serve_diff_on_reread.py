@@ -10,36 +10,17 @@ Covers:
 """
 from __future__ import annotations
 
-import threading
 from unittest.mock import patch
 
 from hook_helpers import assert_continue, assert_deny
+from hook_helpers import post_edit_sync as _post_edit_sync
 
 from token_goat import config as cfg_mod
-from token_goat import hooks_edit, hooks_read, session
+from token_goat import hooks_read, session
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _post_edit_sync(payload: dict) -> dict:
-    """Call post_edit and join the predictive-snapshot background thread."""
-    threads: list[threading.Thread] = []
-    original = hooks_edit._pre_snapshot_imports
-
-    def _capturing(*args, **kwargs):
-        t = original(*args, **kwargs)
-        threads.append(t)
-        return t
-
-    hooks_edit._pre_snapshot_imports = _capturing  # type: ignore[assignment]
-    try:
-        result = hooks_edit.post_edit(payload)
-    finally:
-        hooks_edit._pre_snapshot_imports = original  # type: ignore[assignment]
-    for t in threads:
-        t.join(timeout=5)
-    return result
 
 
 def _make_config_with_serve_diff(enabled: bool) -> cfg_mod.Config:

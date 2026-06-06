@@ -133,6 +133,40 @@ def run_hook_subprocess(event: str, payload: dict, *, timeout: int = 30) -> dict
     return json.loads(proc.stdout)
 
 
+def post_edit_sync(payload: dict) -> dict:
+    """Call ``hooks_edit.post_edit`` and join the predictive-snapshot thread.
+
+    Captures the daemon thread spawned by ``_pre_snapshot_imports`` via a
+    monkeypatch and joins it before returning, eliminating ``time.sleep()``
+    in tests that need the snapshot to be present immediately.
+
+    Usage::
+
+        from hook_helpers import post_edit_sync
+        result = post_edit_sync({"session_id": sid, "path": str(p)})
+    """
+    import threading
+
+    from token_goat import hooks_edit
+
+    threads: list[threading.Thread] = []
+    original = hooks_edit._pre_snapshot_imports
+
+    def _capturing(*args: object, **kwargs: object) -> object:
+        t = original(*args, **kwargs)
+        threads.append(t)
+        return t
+
+    hooks_edit._pre_snapshot_imports = _capturing  # type: ignore[assignment]
+    try:
+        result = hooks_edit.post_edit(payload)
+    finally:
+        hooks_edit._pre_snapshot_imports = original  # type: ignore[assignment]
+    for t in threads:
+        t.join(timeout=5)
+    return result
+
+
 def assert_continue(result: dict) -> None:
     """Assert ``continue: True``, tolerating extra diagnostic fields from dispatch.
 

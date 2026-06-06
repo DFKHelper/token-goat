@@ -1,35 +1,10 @@
 """End-to-end: post_read snapshots, post_edit invalidates, pre_read emits diff."""
 from __future__ import annotations
 
-import threading
-
 from hook_helpers import assert_continue as _assert_continue
+from hook_helpers import post_edit_sync as _post_edit_sync
 
 from token_goat import hooks_edit, hooks_read, session
-
-
-def _post_edit_sync(payload: dict) -> dict:
-    """Call post_edit and join the predictive-snapshot background thread.
-
-    Captures the daemon thread spawned by ``_pre_snapshot_imports`` and joins
-    it before returning, eliminating the need for ``time.sleep()`` in tests.
-    """
-    threads: list[threading.Thread] = []
-    original = hooks_edit._pre_snapshot_imports
-
-    def _capturing(*args, **kwargs):
-        t = original(*args, **kwargs)
-        threads.append(t)
-        return t
-
-    hooks_edit._pre_snapshot_imports = _capturing  # type: ignore[assignment]
-    try:
-        result = hooks_edit.post_edit(payload)
-    finally:
-        hooks_edit._pre_snapshot_imports = original  # type: ignore[assignment]
-    for t in threads:
-        t.join(timeout=5)
-    return result
 
 
 class TestDiffHintEndToEnd:

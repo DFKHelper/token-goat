@@ -5,6 +5,7 @@ import hashlib
 from pathlib import Path
 
 from hook_helpers import assert_continue as _assert_continue
+from hook_helpers import post_edit_sync as _post_edit_sync
 
 from token_goat import hints, hooks_read, session, snapshots
 
@@ -279,34 +280,6 @@ class TestPostReadSnapshots:
         assert snapshots.load("post-read-snap-2", str(src)) is None
 
 
-def _post_edit_sync(payload: dict) -> dict:
-    """Call post_edit and join the predictive-snapshot background thread before returning.
-
-    Avoids time.sleep() in tests by capturing the daemon thread from
-    ``_pre_snapshot_imports`` via a monkeypatch and joining it.  Tests that
-    need the snapshot to be present immediately should call this instead of
-    ``hooks_edit.post_edit`` directly.
-    """
-    import threading
-
-    from token_goat import hooks_edit
-
-    threads: list[threading.Thread] = []
-    original = hooks_edit._pre_snapshot_imports
-
-    def _capturing(*args, **kwargs):
-        t = original(*args, **kwargs)
-        threads.append(t)
-        return t
-
-    hooks_edit._pre_snapshot_imports = _capturing  # type: ignore[assignment]
-    try:
-        result = hooks_edit.post_edit(payload)
-    finally:
-        hooks_edit._pre_snapshot_imports = original  # type: ignore[assignment]
-    for t in threads:
-        t.join(timeout=5)
-    return result
 
 
 class TestPredictiveSnapshot:
