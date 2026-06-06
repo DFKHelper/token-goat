@@ -542,18 +542,44 @@ def _build_context_section() -> tuple[list[str], bool]:
     except Exception:  # noqa: BLE001
         pass
 
-    # Actions
-    actions: list[str] = []
+    # ------------------------------------------------------------------ #
+    # 11. Recommendations (iter 4)                                         #
+    # Tiered actionable advice based on fill %, ETA, and growth trend.     #
+    # Priority ordering: compact-now > skill-compact > pregen.             #
+    # ------------------------------------------------------------------ #
+    recommendations: list[str] = []
+
+    # Tier 1: immediate compaction recommended
+    if fill_pct >= 0.85:
+        recommendations.append("    [URGENT] Run /compact now — context is >= 85% full.")
+    elif fill_pct >= 0.70:
+        recommendations.append("    Run /compact soon — context is >= 70% full.")
+    elif fill_pct >= 0.40 and session_turns >= 10:
+        recommendations.append(
+            f"    Consider /compact — context at {int(fill_pct * 100)}% with"
+            f" {session_turns} turns; compact to reset baseline."
+        )
+
+    # Tier 2: skill compact opportunities (uncompacted loaded skills)
     for skill_name, body_tokens, hc in loaded_skill_entries:
         if not hc and body_tokens > 2000:
-            actions.append(f"    token-goat skill-compact {skill_name}")
-    if compact_count < catalog_count or new_since_pregen is None or (new_since_pregen or 0) > 0:
-        actions.append("    token-goat skill-compact --all")
+            recommendations.append(f"    token-goat skill-compact {skill_name}")
 
-    if actions:
+    # Tier 3: catalog-wide pregen gap
+    if compact_count < catalog_count or new_since_pregen is None or (new_since_pregen or 0) > 0:
+        recommendations.append("    token-goat skill-compact --all  # update compact catalog")
+
+    # Tier 4: rising trend warning
+    if session_turns < 5 and fill_pct >= 0.30:
+        # Only <5 turns yet context is already at 30%+ — likely heavy skill load
+        recommendations.append(
+            "    Context is growing fast for early session — skill compacts will help most."
+        )
+
+    if recommendations:
         lines.append("")
-        lines.append("  Actions:")
-        lines.extend(actions)
+        lines.append("  Recommendations:")
+        lines.extend(recommendations)
 
     return lines, should_auto_show
 

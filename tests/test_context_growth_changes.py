@@ -995,11 +995,11 @@ class TestChange1ContextFootprint:
 
         lines, _ = self._call()
         combined = "\n".join(lines)
-        assert "Actions:" in combined
+        assert "Recommendations:" in combined
         assert "token-goat skill-compact action-skill" in combined
 
     def test_actions_block_absent_when_all_compacted(self, tmp_data_dir, monkeypatch):
-        """All loaded skills have compacts and catalog is up-to-date → no Actions block."""
+        """All loaded skills have compacts and catalog is up-to-date → no Recommendations block."""
         from token_goat import session as ses
         from token_goat import skill_cache
         from token_goat.session import SkillEntry
@@ -1031,7 +1031,7 @@ class TestChange1ContextFootprint:
 
         lines, _ = self._call()
         combined = "\n".join(lines)
-        assert "Actions:" not in combined
+        assert "Recommendations:" not in combined
 
 
 # ---------------------------------------------------------------------------
@@ -1266,3 +1266,96 @@ class TestContextGrowthTrend:
         combined = "\n".join(lines)
         # Any of the three arrows should appear
         assert any(arrow in combined for arrow in ("↗", "↘", "→"))
+
+
+# ---------------------------------------------------------------------------
+# Tiered compaction recommendations (iter 4/10)
+# ---------------------------------------------------------------------------
+
+
+class TestCompactionRecommendations:
+    """Tiered recommendation block in _build_context_section()."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir, monkeypatch):
+        self.data_dir = tmp_data_dir
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
+        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
+
+    def _call(self):
+        from token_goat.cli_doctor import _build_context_section
+        return _build_context_section()
+
+    def _write_sentinel(self, bytes_estimate: int) -> None:
+        sentinels_dir = paths.sentinels_dir()
+        sentinels_dir.mkdir(parents=True, exist_ok=True)
+        (sentinels_dir / "precompact_estimate_test.json").write_text(
+            json.dumps({"bytes_estimate": bytes_estimate}), encoding="utf-8"
+        )
+
+    def test_urgent_recommendation_at_85_percent(self):
+        """>=85% fill → urgent /compact recommendation."""
+        # 85% of 660,000 tokens = 561,000 tokens → 2,244,000 bytes_estimate
+        self._write_sentinel(bytes_estimate=2_244_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "URGENT" in combined
+        assert "/compact" in combined
+
+    def test_recommendation_at_70_percent(self):
+        """>=70% fill → /compact soon recommendation."""
+        # 70% of 660,000 = 462,000 tokens → 1,848,000 bytes_estimate
+        self._write_sentinel(bytes_estimate=1_848_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "compact" in combined.lower()
+
+    def test_no_compact_recommendation_at_low_fill(self):
+        """Low fill with few turns → no /compact recommendation."""
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Should NOT urgently recommend compact when context is nearly empty
+        assert "URGENT" not in combined
+
+    def test_skill_compact_in_recommendations_for_uncompacted_large_skill(self):
+        """Uncompacted large skill → skill-compact command in Recommendations."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-rec-large"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 3
+        cache.skill_history["big-skill"] = SkillEntry(
+            skill_name="big-skill",
+            output_id="fake-id",
+            content_sha="deadbeef",
+            ts=1000.0,
+            body_bytes=30_000,
+        )
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "token-goat skill-compact big-skill" in combined
+
+    def test_recommendations_label_used_not_actions(self):
+        """The block is labelled 'Recommendations:' not 'Actions:' (iter 4 rename)."""
+        from token_goat import session as ses
+        from token_goat.session import SkillEntry
+
+        sid = "sess-rec-label"
+        cache = ses._fresh_cache(sid)
+        cache.turns_since_last_compact = 3
+        cache.skill_history["unlabeled-skill"] = SkillEntry(
+            skill_name="unlabeled-skill",
+            output_id="fake-id2",
+            content_sha="cafebabe",
+            ts=1000.0,
+            body_bytes=20_000,
+        )
+        ses.save(cache)
+
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "Recommendations:" in combined
+        assert "Actions:" not in combined
