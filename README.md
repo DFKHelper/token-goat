@@ -349,7 +349,7 @@ Manual paths:
 | `token-goat session-summary` | Compact one-liner about current session state — designed for orchestrators and multi-agent loops. |
 | `token-goat cache-audit` | Audit your Claude Code config for patterns that bust the prompt cache. |
 | `token-goat install` | Wire up hooks and autostart. `--dry-run` previews the changes, `--verify` audits an existing install. |
-| `token-goat doctor` | Confirm everything is wired correctly. Surfaces install state, cold-import timing, cache hit rates, compaction-budget telemetry, opt-in flag status, and canonical-root sanity. Pass `--context` to show the **Context footprint** section: catalog token cost per turn, loaded skill overhead, estimated context fill %, ETA in turns until autocompact, and exact commands to fix any uncompacted large skills. Auto-shown when fill > 40 % or any loaded skill > 2 K tokens lacks a compact. |
+| `token-goat doctor` | Confirm everything is wired correctly. Surfaces install state, cold-import timing, cache hit rates, compaction-budget telemetry, opt-in flag status, and canonical-root sanity. Pass `--context` to show the **Context footprint** section: a fill bar with severity (ok / warn / high / URGENT), per-component breakdown (skills catalog, loaded skill bodies, CLAUDE.md+MEMORY.md, conversation estimate), session-to-session growth trend with sessions-to-URGENT projection, and tiered compaction recommendations (Tier 0–4) naming the exact commands to run. Auto-shown when fill > 40 % or any loaded skill > 2 K tokens lacks a compact. |
 
 First `token-goat semantic` call downloads a small embedding model, about 130 MB, into the token-goat data directory. One-time. Offline after that.
 

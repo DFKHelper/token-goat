@@ -4,6 +4,26 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-06
+
+Forty-iteration self-improvement pass across four focus areas: context tracking depth, compact quality, output efficiency, and DRY/test hygiene.
+
+### Context tracking depth (10 iterations)
+
+`doctor --context` gains a richer, more actionable context footprint report. Fill is now shown as a visual bar with severity color (ok / warn / high / URGENT). The per-component breakdown lists every token source (skills catalog, loaded skill bodies, CLAUDE.md+MEMORY.md, conversation estimate) so the dominant cost is immediately visible. Session-to-session growth trends are derived from precompact sentinels: the report projects how many sessions remain until URGENT fill and shows the growth rate per session. Tiered compaction recommendations (Tier 0–4) surface the exact commands to run, ordered by impact. A Tier 0 over-capacity warning fires immediately when fill exceeds 100%. Conversation estimate is now tool-output-aware, incorporating bash and web history bytes for a more realistic fill figure. Edge cases (zero-byte sentinels, empty skill catalogs, missing sentinel files) are handled with graceful degradation and per-field error annotations.
+
+### Compact quality and trigger improvements (10 iterations)
+
+`score_compact()` — a new quality scorer — evaluates each compact on coverage density, heading structure, goal-marker presence, and rule-line signals. Scores are exposed in `skill-list --json` (`compact_quality_score`, `compact_coverage_score`, `compact_coverage_pct`) and in `skill-list` output via `[poor]`/`[fair]` flag annotations. SHA-staleness detection warns when the cached compact was built from a superseded body version; `skill-list --json` now includes a `compact_stale` boolean. Lazy injection falls back to cross-session compacts when the current-session compact is absent. `compact_age_secs` is added to skill-list output via a new `get_compact_mtime()` helper. Corrupted and empty compact files are guarded with explicit fallbacks in `get_compact` and `get_compact_any_session`. The skills directory listing inside `get_compact_any_session` is cached to eliminate redundant `glob()` calls per render. The stale compact fraction feeds an adaptive budget calculation for skill-degraded sessions.
+
+### Output efficiency (10 iterations)
+
+High-frequency output strings are compressed throughout the codebase. `tokens est.` → `~N tok` (saves ~6 chars per read header); `Referenced by:` → `Refs:` (saves 10 chars per symbol footer); `tokens` → `tok` normalized across all hint strings and the `_TERSE` substitution table. The `lang_breakdown` footer is suppressed for single-language projects and when the summary line already encodes language info, eliminating a redundant line in the vast majority of `map` outputs. Skeleton/outline savings accounting eliminates a double-format pass. Bash/web cache hint text is compressed. Manifest hint-telemetry shortened (`(N hints emitted)` → `(N hints)`). Unchanged-file and no-symbols-indexed hint text trimmed.
+
+### DRY and test hygiene (10 iterations)
+
+Repeated helper patterns extracted to shared modules: `make_bash_entry`, `make_bash_history`, `make_file_entry`, `make_cache` in compact test helpers; `apply_filter` from `filter_test_helpers` replaces 8 local `_compress` definitions; `_reset_cfg_cache` (9×) and `make_fake_session_cache` (2×) consolidated in test_config; `_call` (7×) and `_write_sentinel` (6×) hoisted to module-level in `test_context_growth_changes`; `FilterTestMixin` (9× `test_empty_input`, 4× `test_empty_output`) and `clear_process_guard` (4×) added to test infrastructure; `_strip_comments` (3×) extracted to `common.strip_cstyle_comments` in language adapters; `post_edit_sync` extracted to `hook_helpers`, `SkillPathsMixin` for 7 isolate copies; `make_symbol_emitter` factory eliminates 3× `_emit` closures in language adapters; `DataDirMixin` eliminates 35× `_isolate` fixture across 8 compact test files; `DirListingMixin` eliminates 5× `_isolate` in dir-listing tests.
+
 ## [1.3.0] - 2026-06-05
 
 Context growth audit — four changes that cut session context size and make overhead visible.
