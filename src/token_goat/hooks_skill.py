@@ -746,10 +746,10 @@ def post_skill(payload: HookPayload) -> HookResponse:
 
                             def _gen_compact_bg(
                                 _b: str = body,
-                                _s: str = session_id,
+                                _s: str = session_id or "",
                                 _n: str = skill_name,
                                 _z: int = body_size,
-                                _h: str = meta.content_sha,
+                                _h: str = meta.content_sha if meta is not None else "",
                             ) -> None:
                                 with _contextlib.suppress(Exception):
                                     _generate_and_store_compact(_s, _n, _b, _z, _h)

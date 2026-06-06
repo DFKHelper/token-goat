@@ -5223,8 +5223,8 @@ def cmd_skill_list(
         compact_quality_issues: list[str] | None = None
         if has_compact and compact_body and body_text:
             compact_quality = skill_cache.score_compact(compact_body, body_text)
-            compact_quality_score = int(compact_quality["score"])  # type: ignore[arg-type]
-            compact_quality_issues = list(compact_quality.get("issues", []))  # type: ignore[arg-type]
+            compact_quality_score = int(compact_quality["score"])  # type: ignore[call-overload]
+            compact_quality_issues = list(compact_quality.get("issues", []))  # type: ignore[call-overload]
 
         # Compute a per-skill compact coverage score (0-100) that combines
         # availability (has_compact), freshness (not stale), and quality.

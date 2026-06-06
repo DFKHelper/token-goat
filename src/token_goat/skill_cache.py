@@ -1635,7 +1635,7 @@ def _compact_file_id(session_id: str, skill_name: str) -> str:
     produce distinct compact file IDs.
     """
     safe_session = safe_session_fragment(session_id)
-    safe_name = skill_name.replace(":", "_")
+    safe_name = skill_name.lower().replace(":", "_")
     if ":" in skill_name:
         safe_name += "n"  # namespace-collision guard (matches output_id_for)
     return f"{safe_session}-{safe_name}-compact"
