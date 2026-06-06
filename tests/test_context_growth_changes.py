@@ -1032,3 +1032,78 @@ class TestChange1ContextFootprint:
         lines, _ = self._call()
         combined = "\n".join(lines)
         assert "Actions:" not in combined
+
+
+# ---------------------------------------------------------------------------
+# Precompact sentinel age handling (iter 1/10)
+# ---------------------------------------------------------------------------
+
+
+class TestPrecompactSentinelAge:
+    """_build_context_section() correctly handles old precompact sentinels.
+
+    Previously, a 300-second cutoff meant sentinels older than 5 minutes were
+    silently ignored, producing 'no compact baseline yet' even when valid
+    baseline data existed on disk.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_data_dir, monkeypatch):
+        self.data_dir = tmp_data_dir
+        monkeypatch.setattr(paths, "claude_skills_dir", lambda: tmp_data_dir / "fake_skills")
+        monkeypatch.setattr(paths, "claude_plugins_dir", lambda: tmp_data_dir / "fake_plugins")
+
+    def _call(self):
+        from token_goat.cli_doctor import _build_context_section
+        return _build_context_section()
+
+    def _write_sentinel(self, age_seconds: float, bytes_estimate: int = 500_000) -> None:
+        """Write a precompact_estimate_*.json sentinel with the given age."""
+        sentinels_dir = paths.sentinels_dir()
+        sentinels_dir.mkdir(parents=True, exist_ok=True)
+        sentinel_path = sentinels_dir / "precompact_estimate_test.json"
+        sentinel_path.write_text(
+            json.dumps({"bytes_estimate": bytes_estimate}), encoding="utf-8"
+        )
+        # Backdate mtime to simulate age
+        old_mtime = time.time() - age_seconds
+        import os
+        os.utime(sentinel_path, (old_mtime, old_mtime))
+
+    def test_accepts_sentinel_older_than_300_seconds(self):
+        """Sentinels older than 5 minutes are now used (not silently dropped)."""
+        self._write_sentinel(age_seconds=600, bytes_estimate=800_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Should show the compact baseline, not 'no compact baseline yet'
+        assert "no compact baseline yet" not in combined
+        assert "Context at last compact" in combined
+
+    def test_old_sentinel_shows_age_annotation(self):
+        """Sentinels older than 5 minutes display an age annotation."""
+        self._write_sentinel(age_seconds=400, bytes_estimate=800_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        # Should contain the age annotation (e.g. "6m old" or similar)
+        assert "m old" in combined or "h old" in combined
+
+    def test_very_old_sentinel_shows_hours(self):
+        """Sentinels older than 1 hour show hours in the age annotation."""
+        self._write_sentinel(age_seconds=7200, bytes_estimate=800_000)
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "h old" in combined
+
+    def test_fresh_sentinel_shows_no_age_annotation(self):
+        """Sentinels under 5 minutes old do not display an age annotation."""
+        self._write_sentinel(age_seconds=60, bytes_estimate=800_000)
+        lines, _ = self._call()
+        # Fresh sentinel should not say "old"
+        line = next((ln for ln in lines if "Context at last compact" in ln), "")
+        assert "old" not in line
+
+    def test_no_sentinel_still_shows_no_baseline_message(self):
+        """When no sentinel exists, 'no compact baseline yet' is still shown."""
+        lines, _ = self._call()
+        combined = "\n".join(lines)
+        assert "no compact baseline yet" in combined

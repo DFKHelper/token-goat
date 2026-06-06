@@ -296,27 +296,32 @@ def _build_context_section() -> tuple[list[str], bool]:
 
     # ------------------------------------------------------------------ #
     # 7. Precompact baseline — read without consuming the sentinel         #
+    # The 300-second age cap previously meant any session older than 5     #
+    # minutes produced "no compact baseline yet" even when a valid         #
+    # sentinel existed on disk.  We now accept any sentinel, but report    #
+    # its age so the user knows whether it reflects the current session.   #
     # ------------------------------------------------------------------ #
     precompact_tokens = 0
     has_precompact = False
+    precompact_age_seconds: int | None = None
     try:
         sentinels_dir_path = paths.sentinels_dir()
         if sentinels_dir_path.is_dir():
-            cutoff = time.time() - 300.0
+            now = time.time()
             candidates: list[tuple[float, Path]] = []
             for p in sentinels_dir_path.glob("precompact_estimate_*.json"):
                 try:
                     mtime = p.stat().st_mtime
-                    if mtime >= cutoff:
-                        candidates.append((mtime, p))
+                    candidates.append((mtime, p))
                 except OSError:
                     continue
             if candidates:
                 candidates.sort(reverse=True)
-                _, best_sentinel = candidates[0]
+                best_mtime, best_sentinel = candidates[0]
                 sentinel_data = json.loads(best_sentinel.read_text(encoding="utf-8"))
                 precompact_tokens = max(0, int(sentinel_data.get("bytes_estimate", 0))) // 4
                 has_precompact = True
+                precompact_age_seconds = int(now - best_mtime)
     except Exception:  # noqa: BLE001
         pass
 
@@ -393,7 +398,15 @@ def _build_context_section() -> tuple[list[str], bool]:
     lines.append(f"  Estimated additional: ~{additional_tokens:,} tokens")
 
     if has_precompact:
-        lines.append(f"  Context at last compact: ~{precompact_tokens:,}  (from precompact estimate)")
+        if precompact_age_seconds is not None and precompact_age_seconds > 3600:
+            age_hrs = precompact_age_seconds // 3600
+            age_note = f"  [{age_hrs}h old — may not reflect current session]"
+        elif precompact_age_seconds is not None and precompact_age_seconds > 300:
+            age_min = precompact_age_seconds // 60
+            age_note = f"  [{age_min}m old]"
+        else:
+            age_note = ""
+        lines.append(f"  Context at last compact: ~{precompact_tokens:,}{age_note}")
         lines.append(
             f"  Current estimate: ~{current_estimate:,} / {CONTEXT_CAP:,}"
             f"  ({int(fill_pct * 100)}%)"
