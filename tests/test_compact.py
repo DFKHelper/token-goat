@@ -5,6 +5,7 @@ import time
 import unittest.mock
 
 import pytest
+from compact_test_helpers import clear_process_guard as _clear_process_guard
 from compact_test_helpers import make_fake_session_cache as _shared_fake_session_cache
 from conftest import make_git_repo
 
@@ -373,8 +374,7 @@ class TestManifestDeltaCache:
     """
 
     def _clear_process_guard(self, sid: str) -> None:
-        """Simulate a new process starting by removing sid from the guard set."""
-        compact._manifest_sha_written_this_process.discard(sid)
+        _clear_process_guard(sid)
 
     def test_first_call_returns_full_manifest(self, tmp_data_dir):
         sid = "delta-first-call"
@@ -6884,8 +6884,7 @@ class TestManifestCacheStub:
     """
 
     def _clear_process_guard(self, sid: str) -> None:
-        """Simulate a new hook process by removing sid from the process-local guard."""
-        compact._manifest_sha_written_this_process.discard(sid)
+        _clear_process_guard(sid)
 
     # ------------------------------------------------------------------
     # Test 1: first compact builds full manifest AND sidecar is created
@@ -7279,7 +7278,7 @@ class TestManifestDelta:
     """
 
     def _clear_process_guard(self, sid: str) -> None:
-        compact._manifest_sha_written_this_process.discard(sid)
+        _clear_process_guard(sid)
 
     def test_first_compact_emits_no_delta_line(self, tmp_data_dir):
         """First-ever compact has no prior sidecar — Δ line must be absent."""

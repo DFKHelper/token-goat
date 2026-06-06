@@ -1,6 +1,7 @@
 """Tests for TurboFilter, OxlintFilter, PylintFilter, CargoFilter (bench), and MypyFilter."""
 from __future__ import annotations
 
+from filter_test_helpers import FilterTestMixin
 from filter_test_helpers import apply_filter as _compress
 
 from token_goat import bash_compress as bc
@@ -42,7 +43,7 @@ _TURBO_FAIL = """\
 """
 
 
-class TestTurboFilter:
+class TestTurboFilter(FilterTestMixin):
     F = bc.TurboFilter()
 
     # --- matches -----------------------------------------------------------
@@ -118,9 +119,6 @@ class TestTurboFilter:
 
     # --- compress: empty input -------------------------------------------
 
-    def test_empty_input(self) -> None:
-        out = _compress(self.F, "")
-        assert isinstance(out, str)
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +159,7 @@ Finished in 50ms on 2 files with 7 rules used.
 """
 
 
-class TestOxlintFilter:
+class TestOxlintFilter(FilterTestMixin):
     F = bc.OxlintFilter()
 
     # --- matches -----------------------------------------------------------
@@ -214,9 +212,6 @@ class TestOxlintFilter:
 
     # --- compress: empty input -------------------------------------------
 
-    def test_empty_input(self) -> None:
-        out = _compress(self.F, "")
-        assert isinstance(out, str)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +243,7 @@ Your code has been rated at 10.00/10 (previous run: 10.00/10, +0.00)
 """
 
 
-class TestPylintFilter:
+class TestPylintFilter(FilterTestMixin):
     F = bc.PylintFilter()
 
     # --- matches -----------------------------------------------------------
@@ -324,9 +319,6 @@ class TestPylintFilter:
 
     # --- compress: empty input -------------------------------------------
 
-    def test_empty_input(self) -> None:
-        out = _compress(self.F, "")
-        assert isinstance(out, str)
 
 
 # ---------------------------------------------------------------------------

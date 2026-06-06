@@ -47,3 +47,25 @@ def savings_ratio(
     if argv is None:
         argv = [filter_.name]
     return filter_.apply(stdout, stderr, 0, argv).percent_saved / 100.0
+
+
+class FilterTestMixin:
+    """Mixin providing shared test methods for bash-compress filter test classes.
+
+    Inherit alongside a class that defines a class-level ``F`` attribute
+    (a ``bc.Filter`` instance).  The mixin's tests run as part of the
+    inheriting class's pytest collection automatically.
+
+    Usage::
+
+        class TestMyFilter(FilterTestMixin):
+            F = bc.MyFilter()
+            ...
+    """
+
+    F: bc.Filter  # subclass must define this
+
+    def test_empty_input(self) -> None:
+        """Filter must return a str (not raise) on empty input."""
+        out = apply_filter(self.F, "")
+        assert isinstance(out, str)

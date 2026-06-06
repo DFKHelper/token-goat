@@ -1,6 +1,7 @@
 """Tests for ErlangFilter, FlyFilter, and ForgeFilter."""
 from __future__ import annotations
 
+from filter_test_helpers import FilterTestMixin
 from filter_test_helpers import apply_filter as _compress
 
 from token_goat import bash_compress as bc
@@ -50,7 +51,7 @@ All dependencies already locked
 """
 
 
-class TestErlangFilter:
+class TestErlangFilter(FilterTestMixin):
     F = bc.ErlangFilter()
 
     # --- matches -----------------------------------------------------------
@@ -140,9 +141,6 @@ class TestErlangFilter:
 
     # --- compress: empty input -------------------------------------------
 
-    def test_empty_input(self) -> None:
-        out = _compress(self.F, "")
-        assert isinstance(out, str)
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +186,7 @@ The above IP address may need 1-2 minutes to propagate
 """
 
 
-class TestFlyFilter:
+class TestFlyFilter(FilterTestMixin):
     F = bc.FlyFilter()
 
     # --- matches -----------------------------------------------------------
@@ -280,9 +278,6 @@ class TestFlyFilter:
 
     # --- compress: empty input -------------------------------------------
 
-    def test_empty_input(self) -> None:
-        out = _compress(self.F, "")
-        assert isinstance(out, str)
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +342,7 @@ Test result: ok. 2 passed; 0 failed; 0 skipped
 """
 
 
-class TestForgeFilter:
+class TestForgeFilter(FilterTestMixin):
     F = bc.ForgeFilter()
 
     # --- matches -----------------------------------------------------------
@@ -454,6 +449,3 @@ class TestForgeFilter:
 
     # --- compress: empty input -------------------------------------------
 
-    def test_empty_input(self) -> None:
-        out = _compress(self.F, "")
-        assert isinstance(out, str)

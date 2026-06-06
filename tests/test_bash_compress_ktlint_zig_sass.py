@@ -1,6 +1,7 @@
 """Tests for KtlintFilter, ZigFilter, and SassFilter."""
 from __future__ import annotations
 
+from filter_test_helpers import FilterTestMixin
 from filter_test_helpers import apply_filter as _compress
 
 from token_goat import bash_compress as bc
@@ -38,7 +39,7 @@ _KTLINT_CHECKSTYLE = """\
 """
 
 
-class TestKtlintFilter:
+class TestKtlintFilter(FilterTestMixin):
     F = bc.KtlintFilter()
 
     # --- matches -----------------------------------------------------------
@@ -123,9 +124,6 @@ class TestKtlintFilter:
 
     # --- compress: empty input -------------------------------------------
 
-    def test_empty_input(self) -> None:
-        out = _compress(self.F, "")
-        assert isinstance(out, str)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +172,7 @@ Build Summary: 2/2 steps succeeded
 """
 
 
-class TestZigFilter:
+class TestZigFilter(FilterTestMixin):
     F = bc.ZigFilter()
 
     # --- matches -----------------------------------------------------------
@@ -274,9 +272,6 @@ class TestZigFilter:
 
     # --- compress: empty input -------------------------------------------
 
-    def test_empty_input(self) -> None:
-        out = _compress(self.F, "")
-        assert isinstance(out, str)
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +341,7 @@ Done compiling sass.
 """
 
 
-class TestSassFilter:
+class TestSassFilter(FilterTestMixin):
     F = bc.SassFilter()
 
     # --- matches -----------------------------------------------------------
@@ -455,6 +450,3 @@ class TestSassFilter:
 
     # --- compress: empty input -------------------------------------------
 
-    def test_empty_input(self) -> None:
-        out = _compress(self.F, "")
-        assert isinstance(out, str)

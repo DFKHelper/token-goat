@@ -158,6 +158,19 @@ def make_fake_session_cache() -> MagicMock:
     return cache
 
 
+def clear_process_guard(sid: str) -> None:
+    """Remove *sid* from the process-local manifest-SHA guard set.
+
+    Used by test classes to simulate a new hook process starting (the guard
+    set is module-level in ``token_goat.compact``, so each test class that
+    tests deduplication across "processes" needs to evict the session ID
+    before each sub-scenario).
+    """
+    from token_goat import compact
+
+    compact._manifest_sha_written_this_process.discard(sid)
+
+
 # Underscored aliases for callers that kept the old private-style names.
 _make_bash_entry = make_bash_entry
 _make_bash_history = make_bash_history

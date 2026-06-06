@@ -17,6 +17,8 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
+from compact_test_helpers import clear_process_guard as _clear_process_guard
+
 from token_goat import compact, paths, session
 from token_goat.hooks_cli import (
     _check_compact_skip_sentinel_detail,
@@ -31,7 +33,7 @@ class TestManifestDeltaQuality:
     """Delta line accurately reflects growth in edited files, bash cmds, and symbols."""
 
     def _clear_process_guard(self, sid: str) -> None:
-        compact._manifest_sha_written_this_process.discard(sid)
+        _clear_process_guard(sid)
 
     def test_delta_shows_new_edited_files(self, tmp_data_dir):
         """Delta line carries +N edited when new files are edited between compacts."""
