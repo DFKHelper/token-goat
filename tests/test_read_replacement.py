@@ -510,7 +510,7 @@ def test_format_callers_footer_with_callers(ts_project):
     _, proj = ts_project
     footer = read_replacement.format_callers_footer(proj, "greet")
     # greet is called inside UserService.hello — should appear in the footer
-    assert footer.startswith("Referenced by:"), repr(footer)
+    assert footer.startswith("Refs:"), repr(footer)
     assert "index.ts" in footer
     assert ":11" in footer  # line 11: return greet(this.name);
 
@@ -569,7 +569,7 @@ def test_format_callers_footer_exactly_at_limit(ts_project, monkeypatch):
     )
     footer = read_replacement.format_callers_footer(proj, "something", limit=3)
     assert "and more" not in footer
-    assert footer.startswith("Referenced by:")
+    assert footer.startswith("Refs:")
 
 
 def test_cli_section_json_output(indexed_md_cli):

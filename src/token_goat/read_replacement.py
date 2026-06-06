@@ -1313,8 +1313,8 @@ def format_callers_footer(
 
     Format examples::
 
-        Referenced by: bar.py:42, baz.py:17
-        Referenced by: bar.py:42, baz.py:17, qux.py:99 (and more)
+        Refs: bar.py:42, baz.py:17
+        Refs: bar.py:42, baz.py:17, qux.py:99 (and more)
     """
     try:
         callers = db.get_symbol_callers(project.hash, symbol_name, limit=limit)
@@ -1331,4 +1331,4 @@ def format_callers_footer(
     refs_str = ", ".join(parts)
     if has_more:
         refs_str += " (and more)"
-    return f"Referenced by: {refs_str}"
+    return f"Refs: {refs_str}"

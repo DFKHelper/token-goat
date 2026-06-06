@@ -404,7 +404,7 @@ def test_callers_footer_appended_in_text_mode(capsys: pytest.CaptureFixture[str]
         patch("token_goat.read_commands.session.mark_file_read"),
         patch(
             "token_goat.read_replacement.format_callers_footer",
-            return_value="Referenced by: bar.py:42",
+            return_value="Refs: bar.py:42",
         ),
         patch.object(sys.stdout, "isatty", return_value=False),
     ):
@@ -421,7 +421,7 @@ def test_callers_footer_appended_in_text_mode(capsys: pytest.CaptureFixture[str]
         )
 
     out = capsys.readouterr().out
-    assert "Referenced by: bar.py:42" in out
+    assert "Refs: bar.py:42" in out
     assert "my_func" in out  # body still present
 
 
@@ -439,7 +439,7 @@ def test_callers_footer_absent_in_json_mode(capsys: pytest.CaptureFixture[str]) 
         patch("token_goat.read_commands.session.mark_file_read"),
         patch(
             "token_goat.read_replacement.format_callers_footer",
-            return_value="Referenced by: bar.py:42",
+            return_value="Refs: bar.py:42",
         ),
         patch.object(sys.stdout, "isatty", return_value=False),
     ):
@@ -457,8 +457,8 @@ def test_callers_footer_absent_in_json_mode(capsys: pytest.CaptureFixture[str]) 
 
     out = capsys.readouterr().out
     data = json.loads(out.strip())
-    assert "Referenced by" not in data.get("text", "")
-    assert "Referenced by" not in out  # nowhere in raw JSON output
+    assert "Refs:" not in data.get("text", "")
+    assert "Refs:" not in out  # nowhere in raw JSON output
 
 
 def test_callers_footer_absent_when_no_callers(capsys: pytest.CaptureFixture[str]) -> None:
@@ -492,7 +492,7 @@ def test_callers_footer_absent_when_no_callers(capsys: pytest.CaptureFixture[str
         )
 
     out = capsys.readouterr().out
-    assert "Referenced by" not in out
+    assert "Refs:" not in out
     assert "my_func" in out  # body present
 
 
@@ -503,7 +503,7 @@ def test_callers_footer_not_called_for_section(capsys: pytest.CaptureFixture[str
     mock_result = _make_mock_result_with_symbol(text="section body")
     mock_reader = MagicMock(return_value=mock_result)
     file_target = _make_file_target()
-    mock_footer = MagicMock(return_value="Referenced by: bar.py:1")
+    mock_footer = MagicMock(return_value="Refs: bar.py:1")
 
     with (
         patch("token_goat.read_commands._resolve_file_target", return_value=file_target),
@@ -526,4 +526,4 @@ def test_callers_footer_not_called_for_section(capsys: pytest.CaptureFixture[str
 
     mock_footer.assert_not_called()
     out = capsys.readouterr().out
-    assert "Referenced by" not in out
+    assert "Refs:" not in out
