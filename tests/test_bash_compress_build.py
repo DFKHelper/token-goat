@@ -1,19 +1,9 @@
 """Tests for GradleFilter (extended), AntFilter, and BazelFilter."""
 from __future__ import annotations
 
+from filter_test_helpers import apply_filter as _compress
+
 from token_goat import bash_compress as bc
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _compress(filter_: bc.Filter, stdout: str = "", stderr: str = "", exit_code: int = 0) -> str:
-    """Run filter_.apply() and return the compressed text."""
-    argv = [filter_.name]
-    result = filter_.apply(stdout, stderr, exit_code, argv)
-    return result.text
-
 
 # ---------------------------------------------------------------------------
 # GradleFilter — extended: download progress + daemon messages

@@ -1,18 +1,9 @@
 """Tests for JestFilter, VitestFilter, and ESLintFilter."""
 from __future__ import annotations
 
+from filter_test_helpers import apply_filter as _compress
+
 from token_goat import bash_compress as bc
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _compress(filter_: bc.Filter, stdout: str = "", stderr: str = "", exit_code: int = 0) -> str:
-    """Run filter_.apply() with a synthetic argv derived from filter_.name."""
-    result = filter_.apply(stdout, stderr, exit_code, [filter_.name])
-    return result.text
-
 
 # ---------------------------------------------------------------------------
 # JestFilter
