@@ -4,6 +4,24 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+Context-pressure awareness: one source of truth for how full the window is, and hints that get terser as it fills.
+
+### Centralized context-pressure model
+
+`get_context_pressure(session_id)` in `compact.py` is now the single place that answers how close a session is to autocompaction. It returns a frozen `ContextPressure` — a `fill_fraction` paired with a `tier` of `cool`, `warm`, `hot`, or `critical`. The estimate sums the known context contributors (loaded skill bodies, the ~10,800-token skills catalog, and per-event costs for bash history, web history, and read files) and divides by the fixed 660,000-token autocompact budget rather than the model's raw window, so the fraction carries the same meaning no matter which model is driving the session. The old `_estimate_context_fill` helper and the inline calculation in the session hook both defer to it, retiring the copies of the 660 K constant that had spread across half a dozen call sites in favor of one shared `CONTEXT_AUTOCOMPACT_TOKENS`.
+
+### Named tier boundaries
+
+The fraction-to-tier mapping lives in `tier_for_fraction()`, backed by three named constants: `CONTEXT_TIER_WARM` (0.50), `CONTEXT_TIER_HOT` (0.70), and `CONTEXT_TIER_CRITICAL` (0.85). The bands are cool below 0.50, warm up to 0.70, hot up to 0.85, and critical at or above it. With the magic numbers pulled out of the band checks, the boundaries are defined once and the tests pin them directly.
+
+### Pressure-aware surgical-read hints
+
+The pre-read hook tightens its large-file threshold as the window fills. A file earns a surgical-read suggestion past 500 lines while the session is cool, 350 when warm, 200 when hot, and 50 when critical. It also folds a single per-tier note into the read's additional context: "Context warming" at warm, "Context pressure" at hot, "CONTEXT CRITICAL" at critical. The note is fingerprinted by tier, so it fires once per band rather than on every read. Cool sessions get no note.
+
+### Smaller manifests under pressure
+
+`compute_adaptive_budget` now weighs context pressure when it sizes the compaction manifest. Once the window runs hot the budget is capped at 500 tokens, and at critical it drops to 300, so the manifest stops adding to the very problem it exists to summarize.
+
 ## [1.4.1] - 2026-06-06
 
 Three bug fixes surfaced by the pre-push WSL test suite.

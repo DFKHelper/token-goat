@@ -1143,12 +1143,16 @@ class CompressionConfig:
 
 @dataclass
 class ContextConfig:
-    """Context-window sizing for fill-fraction estimates.
+    """Records the model's context-window size.
 
-    token-goat estimates context fill by dividing the sum of known context
-    contributors (loaded skill tokens, bash history, web history, read files)
-    by ``model_window_tokens``.  The default matches Claude Haiku and Sonnet
-    (200 K tokens).  Set this to 1_000_000 when using Opus exclusively.
+    Note: the live context-pressure estimate in ``compact.get_context_pressure``
+    divides the sum of known context contributors (loaded skill tokens, bash
+    history, web history, read files) by the fixed autocompact budget
+    (``compact.CONTEXT_AUTOCOMPACT_TOKENS``, 660 K), not by this field.  That
+    budget is the point at which Claude Code triggers auto-compaction, so it is
+    a model-independent basis for the fill fraction.  This field is retained for
+    callers that need the raw window size and is not currently consumed by the
+    fill calculation.
 
     Attributes:
         model_window_tokens: The model's context window size in tokens.

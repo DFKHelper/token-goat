@@ -24,6 +24,10 @@ Before Claude Code summarizes a long session, the `PreCompact` hook injects a st
 
 Every `Bash`, `WebFetch`, and `Skill` invocation is cached. On a repeat, the `Pre-*` hook emits a dedup hint pointing at `token-goat bash-output <id>`, `token-goat web-output <id>`, or `token-goat skill-body <name>` instead of re-executing. The cache is byte-capped with LRU eviction and oldest-first expiry.
 
+### 5. Context pressure
+
+`get_context_pressure(session_id)` in `compact.py` is the single answer to "how full is the window": it returns a frozen `ContextPressure` dataclass with `fill_fraction: float` and `tier: Literal["cool","warm","hot","critical"]`, and fails soft to `ContextPressure(fill_fraction=0.0, tier="cool")` on any error, None session_id, or missing session. The fill estimate sums loaded skill body tokens plus a ~10,800-token skills-catalog constant, with per-event costs of 500 for bash history entries, 1,000 for web history entries, and 200 for read paths, then divides by `CONTEXT_AUTOCOMPACT_TOKENS = 660_000` (the autocompact trigger budget, not the model's raw window), so the fraction carries the same meaning across models. Named constants `CONTEXT_TIER_WARM = 0.50`, `CONTEXT_TIER_HOT = 0.70`, and `CONTEXT_TIER_CRITICAL = 0.85` feed `tier_for_fraction()` as the single source of truth: cool below 0.50, warm in [0.50, 0.70), hot in [0.70, 0.85), critical at or above 0.85. The pre-read hook ramps the large-file surgical-read threshold monotonically with pressure (500 lines at cool → 350 → 200 → 50 at critical) and injects one per-tier note into the read's additional context, fingerprinted by tier so it fires once per band rather than on every read; cool injects nothing. `compute_adaptive_budget` applies the same pressure signal to manifest sizing, capping the PreCompact manifest at 500 tokens once hot and 300 once critical so the manifest does not add to the problem it summarizes.
+
 ## Recent improvements (22 iterations, May 2026)
 
 The latest iteration (v0.9.0-unreleased) added 20 context-savings refinements:
