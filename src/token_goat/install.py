@@ -1000,7 +1000,8 @@ def _write_hook_wrapper() -> Path:
     wrapper_path = paths.hook_wrapper_path()
     paths.ensure_dir(wrapper_path.parent)
     content = paths.hook_wrapper_content()
-    paths.atomic_write_text(wrapper_path, content)
+    # Write as bytes, not text: content bakes in platform-correct line endings (CRLF on Windows, LF on POSIX); a Windows text-mode write would translate \n -> \r\n on top of the existing \r\n, producing \r\r\n — cmd.exe tolerates the stray CR so forwarding still works, but doctor's byte-exact compare against hook_wrapper_content() then warns "differs from expected" forever, nagging a reinstall that never fixes it.
+    paths.atomic_write_bytes(wrapper_path, content.encode("utf-8"))
     if sys.platform != "win32":
         wrapper_path.chmod(0o755)
     _LOG.info("install step: hook wrapper — %s", wrapper_path)

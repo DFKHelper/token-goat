@@ -1367,6 +1367,27 @@ def test_patch_codex_config_strips_legacy_tokenwise_hooks(patched_home, monkeypa
     assert any("token-goat" in c for c in commands_flat)
 
 
+def test_write_hook_wrapper_byte_faithful_no_crlf_doubling(tmp_data_dir):
+    """On-disk wrapper must equal ``hook_wrapper_content()`` byte-for-byte.
+
+    Regression: the wrapper bakes platform-correct line endings (CRLF on
+    Windows) into its content string, then was written through a text-mode
+    handle that *also* translated ``\\n`` -> ``\\r\\n`` on Windows, doubling
+    every CR to ``\\r\\r\\n``. cmd.exe tolerated the stray CR so forwarding still
+    worked, but ``token-goat doctor`` compared on-disk vs regenerated content and
+    warned "differs from expected" forever, telling the user to reinstall (which
+    never fixed it). Writing as bytes preserves the hand-authored endings.
+    """
+    from token_goat import paths  # noqa: PLC0415
+
+    wrapper_path = install._write_hook_wrapper()
+    on_disk = wrapper_path.read_bytes().decode("utf-8")
+    # Same process, same find_spec -> the two must be byte-identical.
+    assert on_disk == paths.hook_wrapper_content()
+    # No doubled carriage returns leaked through, on any platform.
+    assert "\r\r\n" not in on_disk
+
+
 def test_hook_runner_command_prefers_wrapper_when_present(tmp_path, monkeypatch):
     """``_hook_runner_command`` returns the wrapper path when the file exists."""
     from token_goat import paths as paths_mod  # noqa: PLC0415
