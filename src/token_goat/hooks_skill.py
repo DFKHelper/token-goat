@@ -64,6 +64,16 @@ _SKILL_CACHE_MAX_CHARS: int = 2 * 1024 * 1024  # 2 MB character cap
 _ADVISORY_BODY_THRESHOLD_BYTES: int = 8_000   # ~2 K tokens
 _LARGE_BODY_THRESHOLD_BYTES: int = 40_000     # ~10 K tokens
 
+# pre_skill context advisory thresholds.
+# The advisory fires only once context is solidly into the warm band — above
+# this floor (deliberately set between CONTEXT_TIER_WARM 0.50 and
+# CONTEXT_TIER_HOT 0.70 so it nudges before the hot-tier hint cascade) AND the
+# incoming skill body is large enough that loading it meaningfully erodes
+# headroom.  Kept as a distinct named floor rather than a tier boundary because
+# the trigger point is intentionally offset from the tier edges.
+_PRE_SKILL_ADVISORY_FILL_FLOOR: float = 0.60
+_PRE_SKILL_ADVISORY_MIN_SKILL_TOKENS: int = 4_000
+
 
 def _extract_skill_body(payload: HookPayload) -> str:
     """Pull the skill body text from a PostToolUse(Skill) payload.
@@ -480,9 +490,9 @@ def pre_skill(payload: HookPayload) -> HookResponse:
         _hints_cfg = _cfg_mod.load().hints
         if _hints_cfg.pre_skill_advisory:
             _ctx_pct = _estimate_context_fill(session_id)
-            if _ctx_pct > 0.60:
+            if _ctx_pct > _PRE_SKILL_ADVISORY_FILL_FLOOR:
                 _skill_tokens = _estimate_incoming_skill_tokens(skill_name)
-                if _skill_tokens > 4_000:
+                if _skill_tokens > _PRE_SKILL_ADVISORY_MIN_SKILL_TOKENS:
                     from .compact import CONTEXT_AUTOCOMPACT_TOKENS  # noqa: PLC0415
                     from .hooks_common import pre_tool_use_with_context  # noqa: PLC0415
 

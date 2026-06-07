@@ -16,6 +16,10 @@ __all__ = [
     "_dedup_grep_entries",
     "CONTEXT_AUTOCOMPACT_TOKENS",
     "CATALOG_TOKENS",
+    "CONTEXT_TIER_WARM",
+    "CONTEXT_TIER_HOT",
+    "CONTEXT_TIER_CRITICAL",
+    "tier_for_fraction",
     "ContextPressure",
     "get_context_pressure",
     "_build_sealed_block",
@@ -112,6 +116,43 @@ CONTEXT_AUTOCOMPACT_TOKENS: Final[int] = 660_000
 #: (one entry per available skill × ~6 tokens, ~1,800 skills).
 CATALOG_TOKENS: Final[int] = 10_800
 
+#: Context-fill fraction boundaries separating the four pressure tiers.  These
+#: are the single source of truth for tier semantics: ``get_context_pressure``,
+#: the pre-read hint thresholds, and the pre-skill advisory all key off them
+#: (directly or via :func:`tier_for_fraction`).  A fill at or above each bound
+#: promotes to the next tier:
+#:   fill <  CONTEXT_TIER_WARM      → "cool"
+#:   CONTEXT_TIER_WARM     ≤ fill   → "warm"
+#:   CONTEXT_TIER_HOT      ≤ fill   → "hot"
+#:   CONTEXT_TIER_CRITICAL ≤ fill   → "critical"
+CONTEXT_TIER_WARM: Final[float] = 0.50
+CONTEXT_TIER_HOT: Final[float] = 0.70
+CONTEXT_TIER_CRITICAL: Final[float] = 0.85
+
+
+def tier_for_fraction(fill: float) -> Literal["cool", "warm", "hot", "critical"]:
+    """Map a context-fill *fraction* to its qualitative pressure tier.
+
+    The boundaries are the module-level ``CONTEXT_TIER_*`` constants.  This is
+    the single canonical fraction→tier mapping; ``get_context_pressure`` and any
+    other caller that needs a tier from a raw fraction must route through here so
+    tier semantics never drift between call sites.
+
+    Args:
+        fill: Context-fill fraction in [0.0, ∞).  Values above 1.0 simply map to
+            ``"critical"`` (no clamping is needed — the comparisons are monotone).
+
+    Returns:
+        One of ``"cool"``, ``"warm"``, ``"hot"``, ``"critical"``.
+    """
+    if fill >= CONTEXT_TIER_CRITICAL:
+        return "critical"
+    if fill >= CONTEXT_TIER_HOT:
+        return "hot"
+    if fill >= CONTEXT_TIER_WARM:
+        return "warm"
+    return "cool"
+
 
 @dataclass(frozen=True)
 class ContextPressure:
@@ -145,7 +186,8 @@ def get_context_pressure(session_id: str | None = None) -> ContextPressure:
 
     Divides by ``CONTEXT_AUTOCOMPACT_TOKENS`` (660,000) — the budget at which
     Claude Code triggers auto-compaction, *not* the full model window — to get
-    a fill fraction, then maps to a tier:
+    a fill fraction, then maps to a tier via :func:`tier_for_fraction` using the
+    ``CONTEXT_TIER_*`` boundary constants:
 
         cool     < 0.50
         warm     0.50 – 0.70
@@ -181,16 +223,7 @@ def get_context_pressure(session_id: str | None = None) -> ContextPressure:
         window = CONTEXT_AUTOCOMPACT_TOKENS
         fill = total / window
 
-        if fill >= 0.85:
-            tier: Literal["cool", "warm", "hot", "critical"] = "critical"
-        elif fill >= 0.70:
-            tier = "hot"
-        elif fill >= 0.50:
-            tier = "warm"
-        else:
-            tier = "cool"
-
-        return ContextPressure(fill_fraction=fill, tier=tier)
+        return ContextPressure(fill_fraction=fill, tier=tier_for_fraction(fill))
     except Exception:  # noqa: BLE001
         return ContextPressure(fill_fraction=0.0, tier="cool")
 

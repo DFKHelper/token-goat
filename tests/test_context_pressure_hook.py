@@ -186,3 +186,59 @@ class TestContextPressureThreshold:
         ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
         assert "CONTEXT CRITICAL" not in ctx
         assert "Context pressure" not in ctx
+
+
+class TestTierForFractionBoundaries:
+    """The extracted tier_for_fraction helper is the single source of truth for
+    the fraction->tier mapping. Boundaries are inclusive at the lower edge of
+    each band: cool <0.50, warm [0.50,0.70), hot [0.70,0.85), critical >=0.85.
+    """
+
+    def test_boundary_mapping(self):
+        from token_goat.compact import (
+            CONTEXT_TIER_CRITICAL,
+            CONTEXT_TIER_HOT,
+            CONTEXT_TIER_WARM,
+            tier_for_fraction,
+        )
+
+        # Constants pin the band edges.
+        assert (CONTEXT_TIER_WARM, CONTEXT_TIER_HOT, CONTEXT_TIER_CRITICAL) == (
+            0.50,
+            0.70,
+            0.85,
+        )
+
+        cases = [
+            (0.0, "cool"),
+            (0.49, "cool"),
+            (0.50, "warm"),
+            (0.69, "warm"),
+            (0.70, "hot"),
+            (0.84, "hot"),
+            (0.85, "critical"),
+            (1.0, "critical"),
+            (1.5, "critical"),
+        ]
+        for fill, expected in cases:
+            assert tier_for_fraction(fill) == expected, (
+                f"tier_for_fraction({fill}) should be {expected!r}"
+            )
+
+    def test_constants_drive_the_boundaries(self):
+        """The mapping is defined in terms of the named constants, not bare
+        literals: a value just below each constant lands in the lower band, and
+        the constant value itself lands in the upper band."""
+        from token_goat.compact import (
+            CONTEXT_TIER_CRITICAL,
+            CONTEXT_TIER_HOT,
+            CONTEXT_TIER_WARM,
+            tier_for_fraction,
+        )
+
+        assert tier_for_fraction(CONTEXT_TIER_WARM - 0.001) == "cool"
+        assert tier_for_fraction(CONTEXT_TIER_WARM) == "warm"
+        assert tier_for_fraction(CONTEXT_TIER_HOT - 0.001) == "warm"
+        assert tier_for_fraction(CONTEXT_TIER_HOT) == "hot"
+        assert tier_for_fraction(CONTEXT_TIER_CRITICAL - 0.001) == "hot"
+        assert tier_for_fraction(CONTEXT_TIER_CRITICAL) == "critical"
