@@ -2374,6 +2374,8 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 _eff_threshold = 50
             elif _ctx_tier == "hot":
                 _eff_threshold = 200
+            elif _ctx_tier == "warm":
+                _eff_threshold = 350
         except Exception:  # noqa: BLE001 — fail-soft; never block a Read
             pass
 
@@ -2806,10 +2808,12 @@ def pre_read(payload: HookPayload) -> HookResponse:
             _LOG.debug("test-file-hint: unexpected exception", exc_info=True)
 
         # Context-pressure urgency note: emit once per session per tier transition
-        # at hot (≥70%) or critical (≥85%) fill to remind the agent to read
-        # surgically.  Uses a tier-keyed fingerprint so it fires exactly once per
-        # tier level regardless of how many files are subsequently read.
-        if _ctx_tier in ("hot", "critical") and cache is not None:
+        # at warm (≥50%), hot (≥70%), or critical (≥85%) fill to remind the agent
+        # to read surgically.  The message escalates with the tier so the agent
+        # gets a gentle nudge early and a hard warning late.  Uses a tier-keyed
+        # fingerprint so it fires exactly once per tier level regardless of how
+        # many files are subsequently read.
+        if _ctx_tier in ("warm", "hot", "critical") and cache is not None:
             try:
                 from .hints import _hint_fingerprint as _cpfp  # noqa: PLC0415
                 _pct = int(_ctx_fill * 100)
@@ -2820,10 +2824,16 @@ def pre_read(payload: HookPayload) -> HookResponse:
                         f"files ≥{_eff_threshold} lines now trigger surgical hints. "
                         f"Avoid full-file reads; compact or wrap up soon."
                     )
-                else:
+                elif _ctx_tier == "hot":
                     _cp_text = (
                         f"Context pressure ({_pct}% full): prefer surgical reads. "
                         f"Files ≥{_eff_threshold} lines now trigger surgical-read suggestions."
+                    )
+                else:  # warm
+                    _cp_text = (
+                        f"Context warming ({_pct}% full): consider surgical reads for large "
+                        f"files. Files ≥{_eff_threshold} lines now trigger surgical-read "
+                        f"suggestions."
                     )
                 _cp_fp = _cpfp(_cp_text, path=f"__ctx_pressure_{_ctx_tier}__")
                 if not cache.has_hint_fingerprint(_cp_fp):

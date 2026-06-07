@@ -2,8 +2,11 @@
 
 Verifies that:
 - cool tier passes threshold=500 to build_read_hint
+- warm tier passes threshold=350
 - hot tier passes threshold=200
 - critical tier passes threshold=50
+- warm tier injects a gentle context-warming note
+- hot tier injects a context-pressure note
 - critical tier injects a context-pressure urgency note
 """
 from __future__ import annotations
@@ -114,6 +117,33 @@ class TestContextPressureThreshold:
 
         assert any(t == 50 for t in calls), f"Expected threshold=50 in calls {calls}"
 
+    def test_warm_tier_uses_350_threshold(self, tmp_data_dir, monkeypatch):
+        """At warm context pressure, build_read_hint receives threshold=350."""
+        import token_goat.hints as _hints_mod
+        from token_goat.compact import ContextPressure
+
+        monkeypatch.setattr(
+            "token_goat.compact.get_context_pressure",
+            lambda _sid: ContextPressure(fill_fraction=0.60, tier="warm"),
+        )
+        monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
+
+        calls: list[int] = []
+
+        def capture_brh(**kwargs):
+            calls.append(kwargs.get("large_file_line_threshold", -1))
+            return None
+
+        monkeypatch.setattr(_hints_mod, "build_read_hint", capture_brh)
+
+        path = self._make_tmp_py()
+        try:
+            self._run_pre_read("ctx-warm-threshold", path)
+        finally:
+            os.unlink(path)
+
+        assert any(t == 350 for t in calls), f"Expected threshold=350 in calls {calls}"
+
     def test_critical_tier_injects_urgency_note(self, tmp_data_dir, monkeypatch):
         """At critical pressure, a CONTEXT CRITICAL urgency note appears in the output."""
         import token_goat.hints as _hints_mod
@@ -163,6 +193,30 @@ class TestContextPressureThreshold:
             f"Expected 'Context pressure' in additionalContext. Got: {ctx!r}"
         )
 
+    def test_warm_tier_injects_context_warming_note(self, tmp_data_dir, monkeypatch):
+        """At warm pressure, a gentle context-warming note appears in the output."""
+        import token_goat.hints as _hints_mod
+        from token_goat.compact import ContextPressure
+
+        monkeypatch.setattr(
+            "token_goat.compact.get_context_pressure",
+            lambda _sid: ContextPressure(fill_fraction=0.60, tier="warm"),
+        )
+        monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
+        monkeypatch.setattr(_hints_mod, "build_read_hint", lambda **_kw: None)
+
+        path = self._make_tmp_py()
+        try:
+            result = self._run_pre_read("ctx-warm-warming", path)
+        finally:
+            os.unlink(path)
+
+        hso = result.get("hookSpecificOutput") or {}
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert "Context warming" in ctx, (
+            f"Expected 'Context warming' in additionalContext. Got: {ctx!r}"
+        )
+
     def test_cool_tier_does_not_inject_urgency_note(self, tmp_data_dir, monkeypatch):
         """At cool pressure, no context-pressure urgency note is injected."""
         import token_goat.hints as _hints_mod
@@ -186,6 +240,7 @@ class TestContextPressureThreshold:
         ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
         assert "CONTEXT CRITICAL" not in ctx
         assert "Context pressure" not in ctx
+        assert "Context warming" not in ctx
 
 
 class TestTierForFractionBoundaries:
