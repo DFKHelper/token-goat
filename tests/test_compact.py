@@ -9046,11 +9046,11 @@ class TestContextPressure:
 
     def test_unknown_session_returns_cool(self, tmp_data_dir):
         """Session that has never been written -> cool tier (only catalog overhead)."""
-        from token_goat.compact import CATALOG_TOKENS
-        _DEFAULT_WINDOW = 200_000
+        from token_goat.compact import CATALOG_TOKENS, CONTEXT_AUTOCOMPACT_TOKENS
         cp = compact.get_context_pressure("nonexistent-session-id-xyz")
-        # Fresh session: total = CATALOG_TOKENS (no bash/web/read events yet)
-        expected_fill = CATALOG_TOKENS / _DEFAULT_WINDOW
+        # Fresh session: total = CATALOG_TOKENS (no bash/web/read events yet).
+        # Fill is measured against the auto-compact budget, not the model window.
+        expected_fill = CATALOG_TOKENS / CONTEXT_AUTOCOMPACT_TOKENS
         assert abs(cp.fill_fraction - expected_fill) < 1e-6
         assert cp.tier == "cool"
 
@@ -9065,8 +9065,7 @@ class TestContextPressure:
 
     def test_get_context_pressure_accounts_for_bash(self, tmp_data_dir):
         """Bash events (x500 tokens each) increase fill_fraction."""
-        from token_goat.compact import get_context_pressure
-        _DEFAULT_WINDOW = 200_000
+        from token_goat.compact import CONTEXT_AUTOCOMPACT_TOKENS, get_context_pressure
         sid = "ctx-pressure-bash"
         session.mark_file_read(sid, "/proj/x.py", offset=0, limit=10)
         cp_before = get_context_pressure(sid)
@@ -9076,14 +9075,13 @@ class TestContextPressure:
         session.mark_bash_run(sid, "sha3", "git status", "id3", 300, 0, 0, False)
         cp_after = get_context_pressure(sid)
         # 3 bash entries x 500 tokens = 1500 additional tokens
-        expected_increase = (3 * 500) / _DEFAULT_WINDOW
+        expected_increase = (3 * 500) / CONTEXT_AUTOCOMPACT_TOKENS
         assert cp_after.fill_fraction > fill_before
         assert abs(cp_after.fill_fraction - fill_before - expected_increase) < 1e-6
 
     def test_get_context_pressure_accounts_for_web(self, tmp_data_dir):
         """Web events (x1000 tokens each) increase fill_fraction."""
-        from token_goat.compact import get_context_pressure
-        _DEFAULT_WINDOW = 200_000
+        from token_goat.compact import CONTEXT_AUTOCOMPACT_TOKENS, get_context_pressure
         sid = "ctx-pressure-web"
         session.mark_file_read(sid, "/proj/x.py", offset=0, limit=10)
         cp_before = get_context_pressure(sid)
@@ -9091,7 +9089,7 @@ class TestContextPressure:
         session.mark_web_fetch(sid, "urlsha1", "https://example.com/docs", "wid1", 1000, 200, False)
         session.mark_web_fetch(sid, "urlsha2", "https://other.com/api", "wid2", 2000, 200, False)
         cp_after = get_context_pressure(sid)
-        expected_increase = (2 * 1_000) / _DEFAULT_WINDOW
+        expected_increase = (2 * 1_000) / CONTEXT_AUTOCOMPACT_TOKENS
         assert cp_after.fill_fraction > fill_before
         assert abs(cp_after.fill_fraction - fill_before - expected_increase) < 1e-6
 

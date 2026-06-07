@@ -143,9 +143,9 @@ def get_context_pressure(session_id: str | None = None) -> ContextPressure:
     * ``web_history`` entries × 1,000 tokens each
     * ``read_paths`` (``files`` dict) entries × 200 tokens each
 
-    Divides by ``config.context.model_window_tokens`` (default 200,000 for
-    Haiku/Sonnet; set to 1,000,000 for Opus) to get a fill fraction, then
-    maps to a tier:
+    Divides by ``CONTEXT_AUTOCOMPACT_TOKENS`` (660,000) — the budget at which
+    Claude Code triggers auto-compaction, *not* the full model window — to get
+    a fill fraction, then maps to a tier:
 
         cool     < 0.50
         warm     0.50 – 0.70
@@ -178,7 +178,7 @@ def get_context_pressure(session_id: str | None = None) -> ContextPressure:
             + web_count * 1_000
             + read_count * 200
         )
-        window = _load_config().context.model_window_tokens
+        window = CONTEXT_AUTOCOMPACT_TOKENS
         fill = total / window
 
         if fill >= 0.85:
