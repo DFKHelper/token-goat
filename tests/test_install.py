@@ -1364,7 +1364,8 @@ def test_patch_codex_config_strips_legacy_tokenwise_hooks(patched_home, monkeypa
     ]
     assert commands_flat, "expected token-goat hook entries after patch"
     assert not any("tokenwise" in c for c in commands_flat)
-    assert any("token-goat" in c for c in commands_flat)
+    # Assert on the stable hook markers, not the literal "token-goat" binary/path string: the Codex command is "<interpreter> -m token_goat.cli hook <name> --harness codex", whose only reliable token-goat substring is the module name "token_goat". A bare "token-goat" check passes on Windows only by accident (the uv-tool interpreter path contains the hyphenated project name) and fails on the WSL runner whose venv lives at /tmp/tg-linux-venv. Mirrors the settings.json strip test above.
+    assert any(("token_goat" in c) or ("tg-hook" in c) for c in commands_flat)
 
 
 def test_write_hook_wrapper_byte_faithful_no_crlf_doubling(tmp_data_dir):
