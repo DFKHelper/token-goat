@@ -1090,11 +1090,40 @@ def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]
 # - "tg-hook" matches the persistent wrapper at ``data_dir/bin/tg-hook.cmd``
 #   (or ``tg-hook.sh`` on POSIX).
 _TOKEN_GOAT_HOOK_MARKERS = ("token_goat", "tg-hook")
+# Legacy command markers from before the tokenwise -> token-goat rename
+# (2026-05-13). Configs patched by old tokenwise builds still carry these; they
+# point at a uv-tool path that no longer exists, so they must be stripped on
+# re-install/uninstall instead of accumulating as dead duplicate hooks.
+_LEGACY_HOOK_MARKERS = ("tokenwise",)
 
 
 def _is_token_goat_hook(command: str) -> bool:
-    """Return True when *command* is one of our hook commands."""
+    """Return True when *command* is one of our *current* hook commands.
+
+    Current-only by design: this drives the "installed?" status checks, so a
+    config carrying only stale legacy (pre-rename) entries correctly reports as
+    *not* installed and prompts a re-install. Use :func:`_is_managed_hook` for
+    the strip path, which must also recognise legacy entries.
+    """
     return any(marker in command for marker in _TOKEN_GOAT_HOOK_MARKERS)
+
+
+def _is_managed_hook(command: str) -> bool:
+    """Return True when *command* is a hook token-goat owns and should replace.
+
+    Covers current *and* legacy (pre-rename ``tokenwise``) command markers, so
+    the idempotent strip path removes orphaned legacy entries rather than
+    leaving them as dead duplicates beside the fresh ones.
+    """
+    return _is_token_goat_hook(command) or any(
+        marker in command for marker in _LEGACY_HOOK_MARKERS
+    )
+
+
+# Claude settings.json permission allowlist entry, plus legacy (pre-rename)
+# variants that must be dropped on patch/unpatch so they don't linger as cruft.
+_TOKEN_GOAT_PERMISSION = "Bash(token-goat:*)"
+_LEGACY_PERMISSIONS = ("Bash(tokenwise:*)",)
 
 
 def _strip_token_goat_entries(entries: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -1105,7 +1134,7 @@ def _strip_token_goat_entries(entries: list[dict[str, object]]) -> list[dict[str
         hook_list: list[dict[str, object]] = raw_hooks if isinstance(raw_hooks, list) else []
         surviving_hooks = [
             h for h in hook_list
-            if isinstance(h, dict) and not _is_token_goat_hook(str(h.get("command", "")))
+            if isinstance(h, dict) and not _is_managed_hook(str(h.get("command", "")))
         ]
         if surviving_hooks:
             kept.append({"matcher": entry.get("matcher", "*"), "hooks": surviving_hooks})
@@ -1221,17 +1250,21 @@ def patch_settings_json() -> tuple[bool, str]:
     if hooks_added:
         _LOG.info("patch_settings_json: added new hook entries for: %s", ", ".join(hooks_added))
 
-    # Permission allowlist
+    # Permission allowlist — add the current entry, drop any legacy (pre-rename)
+    # entries so they don't linger beside it.
     raw_perms = current.get("permissions", {})
     perms: dict[str, object] = raw_perms if isinstance(raw_perms, dict) else {}
     raw_allowed = perms.get("allow", [])
-    allowed: list[str] = list(raw_allowed) if isinstance(raw_allowed, list) else []
-    perm_added = "Bash(token-goat:*)" not in allowed
+    allowed: list[str] = [
+        a for a in (raw_allowed if isinstance(raw_allowed, list) else [])
+        if a not in _LEGACY_PERMISSIONS
+    ]
+    perm_added = _TOKEN_GOAT_PERMISSION not in allowed
     if perm_added:
-        allowed.append("Bash(token-goat:*)")
-        _LOG.info("patch_settings_json: added permission Bash(token-goat:*)")
+        allowed.append(_TOKEN_GOAT_PERMISSION)
+        _LOG.info("patch_settings_json: added permission %s", _TOKEN_GOAT_PERMISSION)
     else:
-        _LOG.debug("patch_settings_json: permission Bash(token-goat:*) already present")
+        _LOG.debug("patch_settings_json: permission %s already present", _TOKEN_GOAT_PERMISSION)
     perms["allow"] = allowed
     current["permissions"] = perms
 
@@ -1258,7 +1291,8 @@ def unpatch_settings_json() -> str:
     raw_perms = current.get("permissions", {})
     perms: dict[str, object] = raw_perms if isinstance(raw_perms, dict) else {}
     raw_allowed = perms.get("allow", [])
-    allowed = [a for a in (raw_allowed if isinstance(raw_allowed, list) else []) if a != "Bash(token-goat:*)"]
+    _drop_perms = {_TOKEN_GOAT_PERMISSION, *_LEGACY_PERMISSIONS}
+    allowed = [a for a in (raw_allowed if isinstance(raw_allowed, list) else []) if a not in _drop_perms]
     perms["allow"] = allowed
     # Drop permissions key entirely if it has no meaningful content left
     if not perms.get("allow") and not perms.get("deny") and not perms.get("ask"):
@@ -2500,7 +2534,7 @@ def _count_token_goat_hooks(hooks: dict[str, object]) -> int:
             if not isinstance(entry, dict):
                 continue
             for h in (entry.get("hooks", []) or []):
-                if isinstance(h, dict) and _is_token_goat_hook(str(h.get("command", ""))):
+                if isinstance(h, dict) and _is_managed_hook(str(h.get("command", ""))):
                     count += 1
     return count
 
@@ -2715,7 +2749,7 @@ def plan_install(
                     if isinstance(entries, list)
                     for e in entries
                     for h in (e.get("hooks", []) if isinstance(e, dict) else [])
-                    if isinstance(h, dict) and _is_token_goat_hook(str(h.get("command", "")))
+                    if isinstance(h, dict) and _is_managed_hook(str(h.get("command", "")))
                 )
                 action = "update" if existing_count else "create"
                 detail = (

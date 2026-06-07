@@ -1254,6 +1254,119 @@ def test_is_token_goat_hook_recognises_both_markers():
     assert not install._is_token_goat_hook("")
 
 
+def test_is_token_goat_hook_excludes_legacy_tokenwise():
+    """Current-only predicate must NOT match the pre-rename ``tokenwise`` name.
+
+    This is what makes a config carrying only stale legacy entries report as
+    *not installed* (and prompt a re-install) rather than masquerading as
+    healthy.  Regression guard: a refactor that folds legacy markers back into
+    ``_is_token_goat_hook`` would silently break that status signal.
+    """
+    assert not install._is_token_goat_hook(
+        'C:/path/pythonw.exe -m tokenwise.cli hook pre-read'
+    )
+    assert not install._is_token_goat_hook("Bash(tokenwise:*)")
+
+
+def test_is_managed_hook_covers_current_and_legacy():
+    """The strip predicate owns current *and* legacy (``tokenwise``) commands.
+
+    Drives the idempotent re-install path: legacy entries must be recognised so
+    they are removed rather than left as dead duplicates beside the fresh ones.
+    """
+    # Current forms — same as _is_token_goat_hook.
+    assert install._is_managed_hook('pythonw.exe -m token_goat.cli hook pre-read')
+    assert install._is_managed_hook('"...\\bin\\tg-hook.cmd" hook pre-read')
+    # Legacy pre-rename form — managed-only.
+    assert install._is_managed_hook('pythonw.exe -m tokenwise.cli hook pre-read')
+    # Unrelated / empty — neither.
+    assert not install._is_managed_hook("other-tool hook bash")
+    assert not install._is_managed_hook("")
+
+
+def test_patch_settings_json_strips_legacy_tokenwise_hooks(patched_home, monkeypatch):
+    """Re-install must purge orphaned ``tokenwise`` hook + permission cruft.
+
+    Regression for the rename leftover bug: install merged fresh token-goat
+    entries but never removed the pre-rename ``tokenwise`` ones, leaving dead
+    duplicates in settings.json.
+    """
+    home = patched_home
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
+
+    claude_dir = home / ".claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    existing = {
+        "hooks": {
+            "PostToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "pythonw.exe -m tokenwise.cli hook post-edit",
+                            "timeout": 1000,
+                        }
+                    ],
+                }
+            ]
+        },
+        "permissions": {"allow": ["Bash(tokenwise:*)", "Bash(git:*)"]},
+    }
+    (claude_dir / "settings.json").write_text(json.dumps(existing), encoding="utf-8")
+
+    ok, _ = install.patch_settings_json()
+    assert ok is True
+
+    data = json.loads((claude_dir / "settings.json").read_text())
+    commands_flat = [
+        h["command"]
+        for entry in data["hooks"].get("PostToolUse", [])
+        for h in entry.get("hooks", [])
+    ]
+    # Stale legacy hook command is gone.
+    assert not any("tokenwise" in c for c in commands_flat)
+    # Fresh token-goat hooks are present.
+    assert any(("token_goat" in c) or ("tg-hook" in c) for c in commands_flat)
+
+    allowed = data["permissions"]["allow"]
+    # Legacy permission dropped, current present exactly once, unrelated kept.
+    assert "Bash(tokenwise:*)" not in allowed
+    assert allowed.count("Bash(token-goat:*)") == 1
+    assert "Bash(git:*)" in allowed
+
+
+def test_patch_codex_config_strips_legacy_tokenwise_hooks(patched_home, monkeypatch):
+    """Codex re-install must purge orphaned ``tokenwise`` hook entries too."""
+    import tomllib  # noqa: PLC0415
+
+    home = patched_home
+    monkeypatch.setattr(install, "token_goat_binary", lambda: "token-goat")
+
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    existing = (
+        "[[hooks.PostToolUse]]\n"
+        'matcher = "Bash"\n'
+        "[[hooks.PostToolUse.hooks]]\n"
+        'type = "command"\n'
+        'command = "tokenwise hook post-edit"\n'
+    )
+    (codex_dir / "config.toml").write_text(existing, encoding="utf-8")
+
+    install.patch_codex_config("token-goat")
+
+    data = tomllib.loads((codex_dir / "config.toml").read_text(encoding="utf-8"))
+    commands_flat = [
+        h.get("command", "")
+        for entry in data.get("hooks", {}).get("PostToolUse", [])
+        for h in entry.get("hooks", [])
+    ]
+    assert commands_flat, "expected token-goat hook entries after patch"
+    assert not any("tokenwise" in c for c in commands_flat)
+    assert any("token-goat" in c for c in commands_flat)
+
+
 def test_hook_runner_command_prefers_wrapper_when_present(tmp_path, monkeypatch):
     """``_hook_runner_command`` returns the wrapper path when the file exists."""
     from token_goat import paths as paths_mod  # noqa: PLC0415
