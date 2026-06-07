@@ -269,7 +269,7 @@ def _os_advisory_lock(fd: int) -> bool:
         _LOG.warning("fcntl unavailable; session lock degraded to in-process only")
         return True  # fail open: in-process _FILE_LOCK still serialises threads
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
     except OSError:
         return False
     return True
@@ -288,7 +288,7 @@ def _os_advisory_unlock(fd: int) -> None:
     except ImportError:
         return
     with contextlib.suppress(OSError):
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        fcntl.flock(fd, fcntl.LOCK_UN)  # type: ignore[attr-defined]
 
 
 def _acquire_session_lock(session_id: str) -> int | None:
