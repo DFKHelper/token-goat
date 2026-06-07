@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from hook_helpers import assert_continue as _assert_continue
+from hook_helpers import (
+    assert_well_formed_unified_diff,
+    extract_diff_block,
+)
 from hook_helpers import post_edit_sync as _post_edit_sync
 
 from token_goat import hooks_edit, hooks_read, session
@@ -50,6 +54,56 @@ class TestDiffHintEndToEnd:
         # Either format is acceptable — verify the hint fires and mentions the file.
         assert "module.py" in ctx or "```diff" in ctx, (
             f"Expected diff hint referencing module.py, got: {ctx!r}"
+        )
+
+    def test_full_diff_block_is_well_formed(self, tmp_data_dir, tmp_path):
+        """Regression: a multi-hunk diff hint must render a valid unified diff.
+
+        ``build_diff_hint`` builds its lines with ``splitlines(keepends=True)``
+        and joins with ``"".join`` — so the ``unified_diff`` call must use the
+        default ``lineterm="\\n"``. Forcing ``lineterm=""`` glues the
+        ``---``/``+++``/``@@`` headers onto one line. The fixture changes three
+        well-separated lines (multi-hunk, >2 changed lines so the micro-diff
+        summary collapse does not apply) and contains no blank content lines, so
+        any glued header or empty interior line is the malformation.
+        """
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "settings_full.py"
+        lines = [f"OPTION_{i} = {i}\n" for i in range(200)]
+        src.write_text("".join(lines), encoding="utf-8")
+
+        sid = "diff-e2e-full-block"
+
+        _assert_continue(hooks_read.post_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+        }))
+
+        # Three widely separated edits → three hunks → full unified diff block
+        # (not the micro-diff one-liner summary).
+        lines[0] = "OPTION_0 = 999\n"
+        lines[100] = "OPTION_100 = 999\n"
+        lines[199] = "OPTION_199 = 999\n"
+        src.write_text("".join(lines), encoding="utf-8")
+        _assert_continue(_post_edit_sync({
+            "session_id": sid,
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        }))
+
+        result = hooks_read.pre_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        })
+        _assert_continue(result)
+        ctx = (result.get("hookSpecificOutput") or {}).get("additionalContext", "")
+        diff_block = extract_diff_block(ctx)
+        assert_well_formed_unified_diff(diff_block)
+        assert diff_block.count("@@ ") >= 3, (
+            f"expected >=3 hunk headers, got: {diff_block!r}"
         )
 
     def test_no_snapshot_falls_back_to_session_hint(self, tmp_data_dir, tmp_path):

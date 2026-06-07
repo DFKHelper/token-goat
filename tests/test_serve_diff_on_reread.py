@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hook_helpers import assert_continue, assert_deny
+from hook_helpers import (
+    assert_continue,
+    assert_deny,
+    assert_well_formed_unified_diff,
+    extract_diff_block,
+)
 from hook_helpers import post_edit_sync as _post_edit_sync
 
 from token_goat import config as cfg_mod
@@ -281,3 +286,56 @@ class TestServeDiffOnReread:
         # Changed lines.
         assert "-DEBUG = False" in ctx or "DEBUG = False" in ctx
         assert "+DEBUG = True" in ctx or "DEBUG = True" in ctx
+
+    def test_served_diff_is_well_formed(self, tmp_data_dir, tmp_path):
+        """Regression: the served diff must be a structurally valid unified diff.
+
+        Guards against mixing ``splitlines(keepends=True)`` with ``lineterm=""``
+        and ``"\\n".join`` — that combination double-counts newlines and renders
+        a doubled blank line after every content row. The fixture changes three
+        well-separated lines (multi-hunk) and contains no blank content lines, so
+        any empty interior line in the rendered diff is the doubled-newline bug.
+        """
+        (tmp_path / ".git").mkdir()
+        src = tmp_path / "settings.py"
+        # 200 distinct, non-blank lines so a multi-hunk diff stays well under the
+        # 50%-of-file large-change guard.
+        lines = [f"OPTION_{i} = {i}\n" for i in range(200)]
+        src.write_text("".join(lines), encoding="utf-8")
+
+        sid = "serve-diff-well-formed"
+
+        assert_continue(hooks_read.post_read({
+            "session_id": sid,
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(src)},
+        }))
+
+        # Change three widely separated lines → three distinct hunks.
+        lines[0] = "OPTION_0 = 999\n"
+        lines[100] = "OPTION_100 = 999\n"
+        lines[199] = "OPTION_199 = 999\n"
+        src.write_text("".join(lines), encoding="utf-8")
+        assert_continue(_post_edit_sync({
+            "session_id": sid,
+            "tool_input": {"file_path": str(src)},
+            "cwd": str(tmp_path),
+        }))
+
+        fake_cfg = _make_config_with_serve_diff(True)
+        with patch.object(cfg_mod, "load", return_value=fake_cfg):
+            result = hooks_read.pre_read({
+                "session_id": sid,
+                "tool_name": "Read",
+                "tool_input": {"file_path": str(src)},
+                "cwd": str(tmp_path),
+            })
+
+        assert_deny(result)
+        ctx = (result.get("hookSpecificOutput") or {}).get("additionalContext", "")
+        diff_block = extract_diff_block(ctx)
+        assert_well_formed_unified_diff(diff_block)
+        # Three separate hunks → three "@@" header lines, each on its own line.
+        assert diff_block.count("@@ ") >= 3, (
+            f"expected >=3 hunk headers, got: {diff_block!r}"
+        )

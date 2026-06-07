@@ -1415,9 +1415,13 @@ def _try_diff_serve(
     import os.path as _osp  # noqa: PLC0415
 
     fname = _osp.basename(file_path)
+    # NOTE: splitlines() WITHOUT keepends pairs with lineterm="" and "\n".join
+    # below. Mixing keepends=True with lineterm="" double-counts newlines —
+    # content rows keep their own "\n" and the join adds another, producing
+    # doubled blank lines in the rendered diff.
     diff_lines = list(difflib.unified_diff(
-        snapshot_text.splitlines(keepends=True),
-        current_text.splitlines(keepends=True),
+        snapshot_text.splitlines(),
+        current_text.splitlines(),
         fromfile=f"a/{fname}",
         tofile=f"b/{fname}",
         lineterm="",

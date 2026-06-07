@@ -1929,13 +1929,16 @@ def _build_diff_hint_inner(
         else _DIFF_CONTEXT_LINES
     )
 
+    # NOTE: snapshot_lines/current_lines carry their own trailing "\n"
+    # (splitlines(keepends=True) above), so the control rows must use the
+    # default lineterm="\n" to pair with the "".join below. Forcing
+    # lineterm="" here glues the ---/+++/@@ headers onto one line.
     diff_iter = difflib.unified_diff(
         snapshot_lines,
         current_lines,
         fromfile=f"{fname} (previously read)",
         tofile=f"{fname} (current)",
         n=n_context,
-        lineterm="",
     )
     diff_text = "".join(diff_iter)
     if not diff_text:

@@ -186,3 +186,47 @@ def assert_deny(result: dict) -> None:
     assert result.get("continue") is True
     hso = result.get("hookSpecificOutput", {})
     assert hso.get("permissionDecision") == "deny"
+
+
+def extract_diff_block(text: str) -> str:
+    """Return the body of the first ```diff fenced block in *text*.
+
+    Raises AssertionError if no fenced diff block is present. The returned
+    string has the surrounding fences and their adjacent newlines stripped.
+    """
+    marker = "```diff"
+    start = text.find(marker)
+    assert start != -1, f"no ```diff block found in: {text[:200]!r}"
+    rest = text[start + len(marker):]
+    end = rest.find("```")
+    assert end != -1, f"unterminated ```diff block in: {text[:200]!r}"
+    return rest[:end].strip("\n")
+
+
+def assert_well_formed_unified_diff(diff_text: str) -> None:
+    """Assert *diff_text* is a structurally valid unified diff.
+
+    Catches the two malformations produced by mixing
+    ``splitlines(keepends=True)`` with ``lineterm=""``:
+
+    * doubled blank lines on content rows (``"\\n".join`` + kept newlines), and
+    * ``---``/``+++``/``@@`` headers glued onto a single line (``"".join`` +
+      empty line terminator).
+
+    The diff fixtures used with this helper must contain **no genuinely blank
+    content lines**, so any empty interior line is necessarily a malformation.
+    """
+    lines = diff_text.split("\n")
+    assert any(ln.startswith("--- ") for ln in lines), f"missing '---' header: {diff_text!r}"
+    assert any(ln.startswith("+++ ") for ln in lines), f"missing '+++' header: {diff_text!r}"
+    assert any(ln.startswith("@@") for ln in lines), f"missing '@@' hunk header: {diff_text!r}"
+
+    for ln in lines:
+        # Headers must each occupy their own line — never glued together.
+        assert not (ln.startswith("--- ") and "+++" in ln), f"glued ---/+++ header: {ln!r}"
+        if "@@" in ln:
+            assert ln.startswith("@@"), f"'@@' hunk header not at line start (glued): {ln!r}"
+        # Every body line carries a unified-diff prefix; an empty interior line
+        # is the doubled-newline artifact (fixtures contain no blank content).
+        assert ln != "", f"empty/doubled line in diff body: {diff_text!r}"
+        assert ln[:1] in (" ", "+", "-", "@"), f"line lacks unified-diff prefix: {ln!r}"
