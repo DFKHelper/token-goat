@@ -1749,8 +1749,10 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
         if _hints_cfg.context_threshold_advisory and cache is not None:
             cache.turns_since_last_compact = getattr(cache, "turns_since_last_compact", 0) + 1
 
-            _loaded_tokens = getattr(cache, "loaded_skill_total_tokens", 0)
-            _ctx_pct = (_loaded_tokens + 10_800) / 660_000  # catalog ~10,800 tokens
+            from .compact import get_context_pressure  # noqa: PLC0415
+
+            _pressure = get_context_pressure(getattr(cache, "session_id", None))
+            _ctx_pct = _pressure.fill_fraction
             _pct_int = int(_ctx_pct * 100)
             _last_thr = getattr(cache, "last_context_advisory_threshold", None)
 

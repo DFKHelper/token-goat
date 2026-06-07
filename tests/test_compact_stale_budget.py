@@ -262,7 +262,8 @@ class TestBuildManifestAdaptiveStaleWiring(DataDirMixin):
         orig_compute = c.compute_adaptive_budget
 
         def capturing_compute(cache, age_seconds=0.0, *, has_pending_diff=False,
-                              has_uncommitted_changes=False, stale_compact_fraction=0.0):
+                              has_uncommitted_changes=False, stale_compact_fraction=0.0,
+                              context_pressure=None):
             captured_fraction.append(stale_compact_fraction)
             return orig_compute(
                 cache,
@@ -270,6 +271,7 @@ class TestBuildManifestAdaptiveStaleWiring(DataDirMixin):
                 has_pending_diff=has_pending_diff,
                 has_uncommitted_changes=has_uncommitted_changes,
                 stale_compact_fraction=stale_compact_fraction,
+                context_pressure=context_pressure,
             )
 
         fake_cache = _minimal_cache()

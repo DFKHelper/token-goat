@@ -6,6 +6,7 @@ __all__ = [
     "CompactAssistConfig",
     "CompressionConfig",
     "Config",
+    "ContextConfig",
     "CuratorConfig",
     "HintBudgetConfig",
     "HintsConfig",
@@ -171,6 +172,7 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
     "worker",
     "indexing",
     "compression",
+    "context",
 ])
 
 
@@ -360,6 +362,12 @@ class _IndexingToml(TypedDict, total=False):
     large_file_skip_kb: int
 
 
+class _ContextToml(TypedDict, total=False):
+    """Expected shape of the [context] TOML section."""
+
+    model_window_tokens: int
+
+
 class _CompressionToml(TypedDict, total=False):
     """Expected shape of the [compression] TOML section."""
 
@@ -393,6 +401,7 @@ class _ConfigToml(TypedDict, total=False):
     indexing: _IndexingToml
     compression: _CompressionToml
     overflow_guard: _OverflowGuardToml
+    context: _ContextToml
 
 
 @dataclass
@@ -1133,6 +1142,24 @@ class CompressionConfig:
 
 
 @dataclass
+class ContextConfig:
+    """Context-window sizing for fill-fraction estimates.
+
+    token-goat estimates context fill by dividing the sum of known context
+    contributors (loaded skill tokens, bash history, web history, read files)
+    by ``model_window_tokens``.  The default matches Claude Haiku and Sonnet
+    (200 K tokens).  Set this to 1_000_000 when using Opus exclusively.
+
+    Attributes:
+        model_window_tokens: The model's context window size in tokens.
+            Default 200_000.  Valid range: [10_000, 10_000_000].
+            Override with the ``TOKEN_GOAT_MODEL_WINDOW_TOKENS`` env var.
+    """
+
+    model_window_tokens: int = 200_000
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -1157,6 +1184,7 @@ class Config:
     worker: WorkerConfig = field(default_factory=WorkerConfig)
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
     compression: CompressionConfig = field(default_factory=CompressionConfig)
+    context: ContextConfig = field(default_factory=ContextConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -1810,6 +1838,14 @@ def load() -> Config:
             )
     cmp_cfg = CompressionConfig(profile=_cmp_profile_raw)
 
+    ctx_raw: _ContextToml = cast("_ContextToml", raw.get("context", {}))
+    _ctx_window = _validated_int(
+        ctx_raw.get("model_window_tokens", 200_000),
+        200_000, 10_000, 10_000_000, "context.model_window_tokens",
+    )
+    _ctx_window = _env_int("TOKEN_GOAT_MODEL_WINDOW_TOKENS", _ctx_window, 10_000, 10_000_000, "context.model_window_tokens")
+    ctx_cfg = ContextConfig(model_window_tokens=_ctx_window)
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d cache_files=%d cache_bytes=%d; "
@@ -1865,7 +1901,7 @@ def load() -> Config:
         image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, overflow_guard=og,
         stats=stats,
         hints=hints_cfg, hooks=hk, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
-        compression=cmp_cfg,
+        compression=cmp_cfg, context=ctx_cfg,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
     return result

@@ -2355,6 +2355,24 @@ def pre_read(payload: HookPayload) -> HookResponse:
 
     cache = load_session_safe(session_id)
     try:
+        # Context-pressure tier: used both to lower the surgical-read suggestion
+        # threshold (fewer lines needed to trigger a hint under pressure) and to
+        # inject a session-wide urgency note when approaching the context limit.
+        _ctx_tier = "cool"
+        _ctx_fill = 0.0
+        _eff_threshold = 500  # lines — default LARGE_FILE_LINE_THRESHOLD
+        try:
+            from .compact import get_context_pressure as _gcp  # noqa: PLC0415
+            _cp = _gcp(session_id)
+            _ctx_tier = _cp.tier
+            _ctx_fill = _cp.fill_fraction
+            if _ctx_tier == "critical":
+                _eff_threshold = 50
+            elif _ctx_tier == "hot":
+                _eff_threshold = 200
+        except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+            pass
+
         # Deferred recovery hint: inject on the first Read after compaction.
         # This fires before all other hints so the recovery context is the first
         # additionalContext the agent receives in its new post-compact window.
@@ -2586,6 +2604,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
                         limit=tool_input.get("limit"),
                         cwd=cwd,
                         cache=cache,
+                        large_file_line_threshold=_eff_threshold,
                     )
             if hint:
                 from .hints import _hint_fingerprint  # noqa: PLC0415
@@ -2781,6 +2800,39 @@ def pre_read(payload: HookPayload) -> HookResponse:
             pass
         except Exception:  # noqa: BLE001 — fail-soft
             _LOG.debug("test-file-hint: unexpected exception", exc_info=True)
+
+        # Context-pressure urgency note: emit once per session per tier transition
+        # at hot (≥70%) or critical (≥85%) fill to remind the agent to read
+        # surgically.  Uses a tier-keyed fingerprint so it fires exactly once per
+        # tier level regardless of how many files are subsequently read.
+        if _ctx_tier in ("hot", "critical") and cache is not None:
+            try:
+                from .hints import _hint_fingerprint as _cpfp  # noqa: PLC0415
+                _pct = int(_ctx_fill * 100)
+                if _ctx_tier == "critical":
+                    _cp_text = (
+                        f"CONTEXT CRITICAL ({_pct}% full): context window is almost full. "
+                        f"Read ONLY with surgical token-goat commands — "
+                        f"files ≥{_eff_threshold} lines now trigger surgical hints. "
+                        f"Avoid full-file reads; compact or wrap up soon."
+                    )
+                else:
+                    _cp_text = (
+                        f"Context pressure ({_pct}% full): prefer surgical reads. "
+                        f"Files ≥{_eff_threshold} lines now trigger surgical-read suggestions."
+                    )
+                _cp_fp = _cpfp(_cp_text, path=f"__ctx_pressure_{_ctx_tier}__")
+                if not cache.has_hint_fingerprint(_cp_fp):
+                    cache.mark_hint_seen(_cp_fp)
+                    cache.record_hint_emitted("context_pressure_warning")
+                    # Context-pressure warnings are MEDIUM priority.
+                    hint_items.append(HintItem(_cp_text, HINT_PRIORITY_MEDIUM))
+                    _LOG.debug(
+                        "pre-read: context-pressure urgency note (tier=%s, fill=%.2f)",
+                        _ctx_tier, _ctx_fill,
+                    )
+            except Exception:  # noqa: BLE001 — fail-soft
+                pass
 
         if not hint_items:
             _LOG.debug("pre-read: no hint for %s", sanitize_log_str(file_path))

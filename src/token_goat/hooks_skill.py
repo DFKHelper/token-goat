@@ -208,21 +208,14 @@ def _normalize_skill_name(raw: str) -> str:
 def _estimate_context_fill(session_id: str) -> float:
     """Rough fill fraction [0..1] of the autocompact trigger point.
 
-    Adds up loaded-skill body bytes from the session cache, adds a constant
-    catalog estimate (~10,800 tokens × 4 bytes), and divides by the autocompact
-    trigger budget (~660,000 tokens × 4 bytes).  Returns 0.0 on any error.
+    Delegates to :func:`compact.get_context_pressure` which provides a richer,
+    multi-source estimate (skills + catalog + bash/web/read history).
+    Returns 0.0 on any error.
     """
     try:
-        from . import session as _ses  # noqa: PLC0415
+        from .compact import get_context_pressure  # noqa: PLC0415
 
-        cache = _ses.safe_load(session_id, caller="pre-skill-ctx-est")
-        loaded_bytes = 0
-        if cache is not None:
-            for entry in cache.skill_history.values():
-                loaded_bytes += getattr(entry, "body_bytes", 0)
-        catalog_bytes = 43_200          # ~10,800 tokens × 4 bytes/token
-        context_limit = 660_000 * 4    # autocompact fires at ~660 K tokens
-        return (loaded_bytes + catalog_bytes) / context_limit
+        return get_context_pressure(session_id).fill_fraction
     except Exception:  # noqa: BLE001
         return 0.0
 
@@ -490,9 +483,10 @@ def pre_skill(payload: HookPayload) -> HookResponse:
             if _ctx_pct > 0.60:
                 _skill_tokens = _estimate_incoming_skill_tokens(skill_name)
                 if _skill_tokens > 4_000:
+                    from .compact import CONTEXT_AUTOCOMPACT_TOKENS  # noqa: PLC0415
                     from .hooks_common import pre_tool_use_with_context  # noqa: PLC0415
 
-                    _new_pct = min(1.0, _ctx_pct + (_skill_tokens * 4) / (660_000 * 4))
+                    _new_pct = min(1.0, _ctx_pct + _skill_tokens / CONTEXT_AUTOCOMPACT_TOKENS)
                     _advisory = (
                         f"[token-goat: context at ~{_ctx_pct:.0%}. "
                         f"Loading {skill_name} (~{_skill_tokens:,} tokens) "

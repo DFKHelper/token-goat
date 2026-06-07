@@ -14,6 +14,10 @@ __all__ = [
     "event_count",
     "is_noise_path",
     "_dedup_grep_entries",
+    "CONTEXT_AUTOCOMPACT_TOKENS",
+    "CATALOG_TOKENS",
+    "ContextPressure",
+    "get_context_pressure",
     "_build_sealed_block",
     "_format_hint_telemetry",
     "_get_inline_diff_for_file",
@@ -42,11 +46,11 @@ import os
 import re
 import time
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, TypeVar
+from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar
 from urllib.parse import urlparse
 
 from . import paths
@@ -95,6 +99,101 @@ def estimate_tokens(text: str) -> int:
 
 
 _LOG = get_logger("compact")
+
+# ---------------------------------------------------------------------------
+# Context pressure constants
+# ---------------------------------------------------------------------------
+
+#: The token count at which Claude Code auto-compacts the conversation.
+#: All context-fill fraction computations divide by this value.
+CONTEXT_AUTOCOMPACT_TOKENS: Final[int] = 660_000
+
+#: Estimated tokens consumed by the skill catalog listing injected by token-goat
+#: (one entry per available skill × ~6 tokens, ~1,800 skills).
+CATALOG_TOKENS: Final[int] = 10_800
+
+
+@dataclass(frozen=True)
+class ContextPressure:
+    """Snapshot of estimated context fill at a point in time.
+
+    Attributes:
+        fill_fraction: Fraction of the autocompact budget consumed [0.0, ∞).
+            Values > 1.0 are clamped when computing the tier but the raw value
+            is preserved for diagnostics.
+        tier: Qualitative tier derived from *fill_fraction*.
+            ``cool``  < 50 %  — context is comfortable.
+            ``warm``  50–70 % — approaching midpoint; monitor.
+            ``hot``   70–85 % — elevated pressure; prefer surgical reads.
+            ``critical`` ≥ 85 % — compact soon; lower every hint threshold.
+    """
+
+    fill_fraction: float
+    tier: Literal["cool", "warm", "hot", "critical"]
+
+
+def get_context_pressure(session_id: str | None = None) -> ContextPressure:
+    """Return the estimated context fill fraction and pressure tier.
+
+    Sums all known context contributors from the session cache:
+
+    * ``loaded_skill_total_tokens`` — skill bodies loaded via PostToolUse(Skill)
+    * ``CATALOG_TOKENS`` (10,800) — constant overhead for the skill catalog
+    * ``bash_history`` entries × 500 tokens each
+    * ``web_history`` entries × 1,000 tokens each
+    * ``read_paths`` (``files`` dict) entries × 200 tokens each
+
+    Divides by ``config.context.model_window_tokens`` (default 200,000 for
+    Haiku/Sonnet; set to 1,000,000 for Opus) to get a fill fraction, then
+    maps to a tier:
+
+        cool     < 0.50
+        warm     0.50 – 0.70
+        hot      0.70 – 0.85
+        critical ≥ 0.85
+
+    Returns a ``ContextPressure`` with ``fill_fraction=0.0`` and ``tier="cool"``
+    when the session cache is unavailable or the session_id is None.
+
+    This function is the single canonical implementation.  All other context-fill
+    estimates in the codebase (``_estimate_context_fill`` in ``hooks_skill``, the
+    inline calculation in ``hooks_session``) delegate here.
+    """
+    try:
+        from . import session as _ses  # noqa: PLC0415
+
+        cache = _ses.safe_load(session_id, caller="get-context-pressure") if session_id else None
+        if cache is None:
+            return ContextPressure(fill_fraction=0.0, tier="cool")
+
+        skill_tokens: int = getattr(cache, "loaded_skill_total_tokens", 0)
+        bash_count: int = len(cache.bash_history) if getattr(cache, "bash_history", None) else 0
+        web_count: int = len(cache.web_history) if getattr(cache, "web_history", None) else 0
+        read_count: int = len(cache.files) if getattr(cache, "files", None) else 0
+
+        total = (
+            skill_tokens
+            + CATALOG_TOKENS
+            + bash_count * 500
+            + web_count * 1_000
+            + read_count * 200
+        )
+        window = _load_config().context.model_window_tokens
+        fill = total / window
+
+        if fill >= 0.85:
+            tier: Literal["cool", "warm", "hot", "critical"] = "critical"
+        elif fill >= 0.70:
+            tier = "hot"
+        elif fill >= 0.50:
+            tier = "warm"
+        else:
+            tier = "cool"
+
+        return ContextPressure(fill_fraction=fill, tier=tier)
+    except Exception:  # noqa: BLE001
+        return ContextPressure(fill_fraction=0.0, tier="cool")
+
 
 # ---------------------------------------------------------------------------
 # Harness detection
@@ -3679,6 +3778,7 @@ def compute_adaptive_budget(
     has_pending_diff: bool = False,
     has_uncommitted_changes: bool = False,
     stale_compact_fraction: float = 0.0,
+    context_pressure: ContextPressure | None = None,
 ) -> int:
     """Compute an adaptive token budget for the manifest based on session complexity.
 
@@ -3694,7 +3794,9 @@ def compute_adaptive_budget(
         + 10 tokens if there are uncommitted changes (git diff/status non-empty)
         + min(60, round(stale_compact_fraction × 60)) if skills have stale/missing compacts
         × tier multiplier (young=0.6, active=1.0, mature=1.4)
-        Capped to [200, 800]
+        Capped to [200, 800], then further capped by context pressure:
+            critical → max 300 (force aggressive compaction)
+            hot      → max 500
 
     *age_seconds* is the session age in seconds.  When omitted (or 0) the session
     is treated as young.  Pass ``time.time() - cache.created_ts`` at call sites
@@ -3714,6 +3816,11 @@ def compute_adaptive_budget(
     needs more room to compensate with other context.  Up to 60 bonus tokens are
     added, scaling linearly with the fraction.  Use
     :func:`_compute_stale_compact_fraction` to compute this from the session cache.
+
+    *context_pressure* when provided, caps the budget at lower values when the
+    context window is heavily loaded.  A detailed 800-token manifest at critical
+    fill tells the compaction LLM to preserve more, worsening the stuck-compact
+    loop.  A minimal manifest at critical fill forces aggressive compaction.
 
     Returns a value guaranteed to be in the range [200, 800].
     """
@@ -3764,6 +3871,13 @@ def compute_adaptive_budget(
     tier_factors = {"young": 0.6, "active": 1.0, "mature": 1.4}
     factor = tier_factors[tier]
     total = int(round(raw_total * factor))
+
+    # Context-pressure cap: shrink the manifest at high fill so the compaction LLM compresses aggressively rather than preserving everything (large manifest at high fill worsens the stuck-compact loop where repeated compactions never reduce context below ~80%).
+    if context_pressure is not None:
+        if context_pressure.tier == "critical":
+            max_total = min(max_total, 300)
+        elif context_pressure.tier == "hot":
+            max_total = min(max_total, 500)
 
     return max(min_total, min(max_total, total))
 
@@ -3831,12 +3945,14 @@ def build_manifest_adaptive(session_id: str) -> str:
     # preserve skill context via other sections (bash history, edited files, etc).
     skill_history = getattr(cache, "skill_history", None) or {}
     stale_frac = _compute_stale_compact_fraction(session_id, skill_history)
+    pressure = get_context_pressure(session_id)
     budget = compute_adaptive_budget(
         cache,
         age_seconds=age_seconds,
         has_pending_diff=bool(pending_diff),
         has_uncommitted_changes=bool(uncommitted),
         stale_compact_fraction=stale_frac,
+        context_pressure=pressure,
     )
     # Activity-floor suppression: if the session has too little activity, skip
     # the full manifest.  A score below _ACTIVITY_FLOOR means essentially
@@ -3853,10 +3969,11 @@ def build_manifest_adaptive(session_id: str) -> str:
         return ""
 
     _LOG.debug(
-        "build_manifest_adaptive: session=%s budget=%d tier=%s (edited=%d symbols=%d bash=%s web=%s diff=%s uncommitted=%s stale_frac=%.2f activity=%d)",
+        "build_manifest_adaptive: session=%s budget=%d tier=%s pressure=%s (edited=%d symbols=%d bash=%s web=%s diff=%s uncommitted=%s stale_frac=%.2f activity=%d)",
         session_id[:8],
         budget,
         _session_age_tier(age_seconds),
+        pressure.tier,
         len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0,
         sum(1 for e in cache.files.values() if e.symbols_read),
         bool(getattr(cache, "bash_history", None) and cache.bash_history),

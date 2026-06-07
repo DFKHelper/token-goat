@@ -740,6 +740,7 @@ def build_read_hint(
     limit: int | None,
     cwd: str | None,
     cache: session.SessionCache | None = None,
+    large_file_line_threshold: int = LARGE_FILE_LINE_THRESHOLD,
 ) -> ReadHint | None:
     """Return a ReadHint, or None when no hint is warranted.
 
@@ -754,6 +755,7 @@ def build_read_hint(
             limit=limit,
             cwd=cwd,
             cache=cache,
+            threshold=large_file_line_threshold,
         )
         # JSON sidecar: opt-in machine-readable line prepended after dedup so
         # fingerprint dedup above keeps deduping correctly. No-op when the
@@ -788,6 +790,7 @@ def _build_read_hint_inner(
     limit: int | None,
     cwd: str | None,
     cache: session.SessionCache | None = None,
+    threshold: int = LARGE_FILE_LINE_THRESHOLD,
 ) -> ReadHint | None:
     """Inner implementation of build_read_hint; may raise."""
     if not session_id or not file_path:
@@ -884,10 +887,10 @@ def _build_read_hint_inner(
     _stat_size: int | None = None
     try:
         _stat_size = Path(file_path).stat().st_size
-        if _stat_size < LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE:
+        if _stat_size < threshold * _BYTES_PER_LINE_ESTIMATE:
             _LOG.debug(
                 "build_read_hint: stat-skip index for %s (%dB < %dB threshold)",
-                fname, _stat_size, LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE,
+                fname, _stat_size, threshold * _BYTES_PER_LINE_ESTIMATE,
             )
             # Before returning None, check for co-read suggestions on supported
             # source files on first read (when cache entry is None).
@@ -914,7 +917,7 @@ def _build_read_hint_inner(
     except OSError:
         pass
 
-    hint = _hint_from_index(file_path, cwd, req_start, req_end, fname=fname)
+    hint = _hint_from_index(file_path, cwd, req_start, req_end, fname=fname, threshold=threshold)
     if hint is not None:
         _LOG.debug("build_read_hint: index hint for %s (large file suggestion)", fname)
     else:
@@ -1304,6 +1307,7 @@ def _confirmed_line_count(
     estimated_lines: int,
     line_count_is_exact: bool,
     abs_path: Path,
+    threshold: int = LARGE_FILE_LINE_THRESHOLD,
 ) -> int | None:
     """Return a confirmed line count at or above the large-file threshold, or None.
 
@@ -1313,11 +1317,11 @@ def _confirmed_line_count(
     when the file is clearly below the threshold and no hint is warranted.
     """
     if line_count_is_exact:
-        return estimated_lines if estimated_lines >= LARGE_FILE_LINE_THRESHOLD else None
+        return estimated_lines if estimated_lines >= threshold else None
     # Estimate is below threshold — check the real file before suppressing the hint.
-    if estimated_lines < LARGE_FILE_LINE_THRESHOLD:
+    if estimated_lines < threshold:
         actual = _line_count(abs_path)
-        if actual is None or actual < LARGE_FILE_LINE_THRESHOLD:
+        if actual is None or actual < threshold:
             return None
         return actual
     # Estimate is at or above threshold — trust it without a disk read.
@@ -1331,6 +1335,7 @@ def _hint_from_index(
     req_end: int,
     *,
     fname: str | None = None,
+    threshold: int = LARGE_FILE_LINE_THRESHOLD,
 ) -> ReadHint | None:
     """Build hint when file is large and has indexed symbols but not yet cached."""
     # Accept a pre-computed fname to avoid a redundant Path allocation on the
@@ -1366,7 +1371,7 @@ def _hint_from_index(
         _LOG.debug("_hint_from_index: %s not in project index (no file row)", fname)
         return None
 
-    n_lines = _confirmed_line_count(estimated_lines, line_count_is_exact, abs_path)
+    n_lines = _confirmed_line_count(estimated_lines, line_count_is_exact, abs_path, threshold=threshold)
     if n_lines is None:
         _LOG.debug("_hint_from_index: %s below large-file threshold (estimated=%s)", fname, estimated_lines)
         return None

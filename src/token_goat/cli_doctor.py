@@ -113,7 +113,7 @@ def _render_cache_section(
 def _compute_context_growth_trend(
     sentinels_dir: Path,
     current_tokens: int = 0,
-    context_cap: int = 660_000,
+    context_cap: int | None = None,
 ) -> str | None:
     """Return a human-readable context growth trend line from precompact sentinels.
 
@@ -167,7 +167,10 @@ def _compute_context_growth_trend(
         direction = "growing"
         sign = "+"
         # Project sessions until URGENT threshold (85%) at current growth rate
-        urgent_threshold = int(context_cap * 0.85)
+        from .compact import CONTEXT_AUTOCOMPACT_TOKENS  # noqa: PLC0415
+
+        _effective_cap = context_cap if context_cap is not None else CONTEXT_AUTOCOMPACT_TOKENS
+        urgent_threshold = int(_effective_cap * 0.85)
         sessions_eta_suffix = ""
         if current_tokens > 0 and avg_delta > 0:
             headroom = max(0, urgent_threshold - current_tokens)
@@ -462,7 +465,8 @@ def _build_context_section() -> tuple[list[str], bool]:
     # ------------------------------------------------------------------ #
     # 8. Totals, fill %, ETA                                               #
     # ------------------------------------------------------------------ #
-    CONTEXT_CAP = 660_000
+    from .compact import CONTEXT_AUTOCOMPACT_TOKENS as CONTEXT_CAP  # noqa: PLC0415
+
     additional_tokens = catalog_tokens + loaded_skill_tokens + meta_tokens + conversation_tokens
     current_estimate = (precompact_tokens + additional_tokens) if has_precompact else additional_tokens
     fill_pct = current_estimate / CONTEXT_CAP
