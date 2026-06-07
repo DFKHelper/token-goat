@@ -238,13 +238,7 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # web_dedup_stale: fired by build_web_dedup_hint when a prior fetch
     # entry exists but is age-stale.  Parallel to bash_dedup_stale.
     "web_dedup_stale": SOURCE_WEB,
-    # session_cache_lock_timeout: operational telemetry fired by the session
-    # cache writer (session.py) when it cannot acquire the per-session write
-    # lock within the timeout window (consecutive_lock_timeouts counter).
-    # bytes_saved / tokens_saved are always 0; the row exists so operators can
-    # detect contention on the session cache file (e.g., two concurrent hook
-    # processes racing on the same session).  Falls into SOURCE_OTHER because
-    # it is not a token-saving event but a reliability health signal.
+    # session_cache_lock_timeout: operational telemetry fired by the session cache writer (session.py) when it cannot acquire the per-session write lock within the timeout window. bytes_saved / tokens_saved are always 0; the row exists so operators can detect contention on the session cache file (e.g., two concurrent hook processes racing on the same session). Falls into SOURCE_OTHER because it is not a token-saving event but a reliability health signal.
     "session_cache_lock_timeout": SOURCE_OTHER,
 }
 

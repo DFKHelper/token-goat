@@ -235,23 +235,11 @@ _CONTENTION_MARK_TTL_SECS: Final[float] = 3600.0
 # ---------------------------------------------------------------------------
 # Cross-process session lockfile helpers
 # ---------------------------------------------------------------------------
-# Each session JSON gets a sidecar ``<session_id>.json.lock`` file used as a
-# mutual-exclusion token between hook processes.  We use O_CREAT|O_EXCL for
-# atomic creation — the process that wins the create owns the lock.  Stale
-# lockfiles (empty/malformed content or PID gone) older than _LOCK_STALE_SECS
-# are reclaimed automatically.
-_LOCK_STALE_SECS: Final[float] = 30.0
-# Maximum time (seconds) to spend waiting for a lock before giving up.
-# Originally 2.0; raised to 5.0 because Windows pytest tmp-dir IO under concurrent
-# load can push individual save() calls past 2 s, causing legitimate work to be
-# dropped by the consecutive-timeout safety net. The hot path is unaffected
-# (rare-event budget only kicks in when the lock is genuinely contended).
+# Each session JSON gets a sidecar ``<session_id>.json.lock`` file. The lock is an OS advisory byte-range lock (msvcrt on Windows, fcntl.flock on POSIX) held on a persistent, never-deleted lockfile; the OS drops it automatically when the owning process closes the fd or dies, so there is no PID bookkeeping, no staleness probe, and no unlink race. _LOCK_TIMEOUT_SECS is the maximum time (seconds) to spend waiting for a lock before giving up, raised from 2.0 to 5.0 because Windows pytest tmp-dir IO under concurrent load can push individual save() calls past 2 s; the hot path is unaffected (this budget only applies when the lock is genuinely contended).
 _LOCK_TIMEOUT_SECS: Final[float] = 5.0
-# Poll interval when spinning for the lock. Jittered slightly inside the loop
-# to prevent two starving processes from synchronising their polls.
-_LOCK_POLL_SECS: Final[float] = 0.02
-# Dedicated Random instance keeps the jitter deterministic per-process and
-# independent of any seeded RNG state callers may have set globally.
+# Poll interval (seconds) when spinning for the lock, jittered inside the loop to prevent two starving processes from synchronising their polls.
+_LOCK_POLL_SECS: Final[float] = 0.002
+# Dedicated Random instance keeps the jitter deterministic per-process and independent of any seeded RNG state callers may have set globally.
 _LOCK_JITTER: Final[random.Random] = random.Random()
 
 
@@ -260,115 +248,96 @@ def _session_lock_path(session_id: str) -> Path:
     return paths.session_cache_path(session_id).with_suffix(".json.lock")
 
 
-def _lock_is_stale(lock_path: Path) -> bool:
-    """Return True if *lock_path* is stale and safe to reclaim.
+def _os_advisory_lock(fd: int) -> bool:
+    """Try to take an exclusive OS advisory lock on *fd* without blocking.
 
-    A lock is stale when:
-    - It is older than _LOCK_STALE_SECS (process that created it is gone or
-      frozen), OR
-    - Its content is empty/malformed AND it is older than 5 seconds (empty
-      file written then abandoned before the PID was recorded).
+    Returns True if the lock was acquired, False if another process holds it.
+    The OS releases the lock automatically when *fd* is closed (including on
+    process death), so there is no PID file to orphan and no staleness window.
     """
+    if _IS_WINDOWS:
+        import msvcrt  # noqa: PLC0415
+
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
     try:
-        st = lock_path.stat()
+        import fcntl  # noqa: PLC0415
+    except ImportError:
+        _LOG.warning("fcntl unavailable; session lock degraded to in-process only")
+        return True  # fail open: in-process _FILE_LOCK still serialises threads
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        return True  # already gone
-    age = time.time() - st.st_mtime
-    if age > _LOCK_STALE_SECS:
-        return True
-    # Empty/malformed content after 5 s → stale
+        return False
+    return True
+
+
+def _os_advisory_unlock(fd: int) -> None:
+    """Release the advisory lock taken by :func:`_os_advisory_lock` on *fd*."""
+    if _IS_WINDOWS:
+        import msvcrt  # noqa: PLC0415
+
+        with contextlib.suppress(OSError):
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
     try:
-        content = lock_path.read_text(encoding="utf-8").strip()
-        if not content:
-            return age > 5.0
-        pid = int(content)
-    except (OSError, ValueError):
-        return age > 5.0
-    # Reject obviously invalid PIDs before probing — os.kill(0, 0) raises
-    # OSError on Windows and signals every process in the group on POSIX,
-    # and Windows refuses PIDs outside the 32-bit unsigned range with
-    # WinError 87. Either path can also surface as SystemError when the
-    # interpreter is mid-exception. Treat any of those as "stale".
-    if pid <= 0 or pid > 0xFFFFFFFF:
-        return True
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return True
-    except BaseException:  # noqa: BLE001
-        # SystemError or any other unexpected wrapper from the C call —
-        # be conservative and reclaim the lock rather than crash.
-        return True
-    return False
+        import fcntl  # noqa: PLC0415
+    except ImportError:
+        return
+    with contextlib.suppress(OSError):
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def _acquire_session_lock(session_id: str) -> int | None:
     """Acquire the cross-process lock for *session_id*.
 
-    Returns the open file descriptor for the lockfile on success, or None if
-    the lock could not be acquired within _LOCK_TIMEOUT_SECS.  The caller is
-    responsible for calling :func:`_release_session_lock` with the returned fd.
+    Returns the open file descriptor for the lockfile on success, or None if the
+    lock could not be acquired within _LOCK_TIMEOUT_SECS. The caller must pass the
+    returned fd to :func:`_release_session_lock`. The lockfile is persistent and
+    never deleted; mutual exclusion comes from an OS advisory lock on the fd, not
+    from the file's existence. Invariant: never write to or seek the lock fd — the
+    Windows byte-range lock covers offset [0, 1) regardless of file contents.
     """
     lock_path = _session_lock_path(session_id)
     paths.ensure_dir(lock_path.parent)
+    try:
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        _LOG.error("session lock open failed: %s", session_id[:16])
+        return None
     deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
-    while True:
-        try:
-            fd = os.open(
-                str(lock_path),
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o600,
-            )
-            # Write our PID so stale-check can verify liveness.
-            # Retry once after a small delay if the first write fails.
-            pid_bytes = str(os.getpid()).encode()
-            try:
-                os.write(fd, pid_bytes)
-                # Flush to disk so a racing reader sees the full PID, not a
-                # half-written prefix that would int-parse to a different PID
-                # and confuse the stale-check.
+    try:
+        while True:
+            if _os_advisory_lock(fd):
+                return fd
+            if time.monotonic() >= deadline:
+                _LOG.debug("session lock timeout: %s", session_id[:16])
                 with contextlib.suppress(OSError):
-                    os.fsync(fd)
-            except OSError:
-                time.sleep(0.01)
-                try:
-                    os.write(fd, pid_bytes)
-                    with contextlib.suppress(OSError):
-                        os.fsync(fd)
-                except OSError:
-                    # Both writes failed; lock file has no PID, making stale-check unreliable.
-                    # Close fd and refuse the lock to avoid silent races.
-                    with contextlib.suppress(OSError):
-                        os.close(fd)
-                    with contextlib.suppress(OSError):
-                        lock_path.unlink(missing_ok=True)
-                    _LOG.error("session lock PID write failed (retry); refusing lock: %s", session_id[:16])
-                    return None
-            return fd
-        except (FileExistsError, OSError):
-            pass
-        # Lock exists — check if it is stale.
-        if _lock_is_stale(lock_path):
-            with contextlib.suppress(OSError):
-                lock_path.unlink(missing_ok=True)
-            continue  # retry create immediately
-        if time.monotonic() >= deadline:
-            _LOG.debug("session lock timeout: %s", session_id[:16])
-            return None
-        # Small jitter (±25%) on the poll interval — without it, two starving
-        # processes settle into lockstep where they always check the lockfile
-        # at the same moment, and the loser always loses.
-        time.sleep(_LOCK_POLL_SECS * (0.75 + 0.5 * _LOCK_JITTER.random()))
+                    os.close(fd)
+                return None
+            # Jitter (±25%) on the poll interval so two starving processes do not settle into lockstep where the loser always loses.
+            time.sleep(_LOCK_POLL_SECS * (0.75 + 0.5 * _LOCK_JITTER.random()))
+    except BaseException:
+        # _os_advisory_lock swallows OSError, but a non-OSError (bad fd, interpreter shutdown) would otherwise leak the open descriptor.
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        raise
 
 
 def _release_session_lock(session_id: str, fd: int | None) -> None:
-    """Release the cross-process lock acquired by :func:`_acquire_session_lock`."""
-    lock_path = _session_lock_path(session_id)
-    if fd is not None:
-        with contextlib.suppress(OSError):
-            os.close(fd)
+    """Release the cross-process lock acquired by :func:`_acquire_session_lock`.
+
+    The lockfile is intentionally left on disk; closing the fd drops the OS
+    advisory lock. *session_id* is retained for signature stability with callers.
+    """
+    if fd is None:
+        return
+    _os_advisory_unlock(fd)
     with contextlib.suppress(OSError):
-        lock_path.unlink(missing_ok=True)
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -3112,32 +3081,29 @@ def save(cache: SessionCache) -> None:
     classic load-modify-save lost-update race.
 
     Retry budget: up to 3 attempts for the underlying ``atomic_write_text``;
-    the lock itself has a 2-second timeout (see ``_LOCK_TIMEOUT_SECS``).  On
-    total failure the cache is marked ``unavailable`` so future saves no-op.
+    the lock itself has a 5-second timeout (see ``_LOCK_TIMEOUT_SECS``).  On
+    total write failure the cache is marked ``unavailable`` so future saves
+    no-op until a fresh ``load`` rebuilds the cache.
 
     Lock-timeout handling: if ``_acquire_session_lock`` returns None (timeout)
-    the save is aborted for that attempt.  After 3 consecutive lock timeouts the
-    cache is marked unavailable to stop future save attempts.
+    only *this* save attempt is aborted.  A lock timeout never marks the cache
+    unavailable — a transiently busy lock must not silently drop future edits.
     """
     if cache.unavailable:
         _LOG.debug("session save skipped (cache unavailable): %s", cache.session_id[:16])
         return
     t0 = time.monotonic()
     last_exc: OSError | None = None
-    consecutive_lock_timeouts = 0
 
     for attempt in range(3):
         if attempt:
             time.sleep(0.05 * attempt)
 
-        # _FILE_LOCK serializes same-process threads; the sidecar lockfile
-        # serializes across processes.
+        # _FILE_LOCK serializes same-process threads; the sidecar lockfile serializes across processes.
         with _FILE_LOCK:
             lock_fd = _acquire_session_lock(cache.session_id)
             if lock_fd is None:
-                # Cross-process lock timed out — skip this attempt but track
-                # the consecutive count so we can bail after 3 failures.
-                consecutive_lock_timeouts += 1
+                # Cross-process lock timed out — abort only this attempt. A busy lock must never mark the cache unavailable: doing so would latch off all future saves and silently drop edits (the loss bug).
                 _LOG.debug(
                     "session lock timeout (attempt %d): %s",
                     attempt + 1, cache.session_id[:16],
@@ -3151,16 +3117,7 @@ def save(cache: SessionCache) -> None:
                         tokens_saved=0,
                         detail=cache.session_id[:32],
                     )
-                if consecutive_lock_timeouts >= 3:
-                    _LOG.warning(
-                        "session save: 3 consecutive lock timeouts — "
-                        "marking cache unavailable (session=%s)",
-                        cache.session_id[:16],
-                    )
-                    cache.unavailable = True
-                    return
                 continue
-            consecutive_lock_timeouts = 0
             try:
                 # CAS: re-read on-disk state inside the lock.
                 # Fast path: if the file's mtime+size match the fingerprint we

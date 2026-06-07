@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pathlib
-import sys
 import time
 from unittest.mock import patch
 
@@ -3142,8 +3141,15 @@ class TestSessionLockfile:
         assert lp.parent == json_path.parent
         assert lp.name == json_path.name + ".lock"
 
-    def test_acquire_and_release_creates_and_removes_lockfile(self, tmp_data_dir):
-        """Acquiring the lock creates the sidecar file; releasing removes it."""
+    def test_acquire_creates_lockfile_that_persists_after_release(self, tmp_data_dir):
+        """Acquiring creates the sidecar file; releasing leaves it on disk.
+
+        The OS advisory lock lives on a persistent fd, not on the file's
+        existence, so the lockfile is never unlinked. Deleting it on release was
+        the source of the self-orphan livelock: a peer holding a transient handle
+        to the file made the unlink fail on Windows, orphaning a lockfile whose
+        recorded PID was still live, which wedged every later acquire forever.
+        """
         from token_goat.session import (
             _acquire_session_lock,
             _release_session_lock,
@@ -3159,183 +3165,89 @@ class TestSessionLockfile:
         assert lock_path.exists(), "lockfile must exist while held"
 
         _release_session_lock(sid, fd)
-        assert not lock_path.exists(), "lockfile must be removed after release"
+        assert lock_path.exists(), "lockfile is persistent and must survive release"
 
-    def test_acquire_writes_pid_to_lockfile(self, tmp_data_dir):
-        """The lockfile contains the acquiring process's PID."""
-        import os as _os
+    def test_second_acquire_returns_none_while_lock_held(self, tmp_data_dir, monkeypatch):
+        """While a live fd holds the OS advisory lock, a contender acquire returns None.
 
-        from token_goat.session import (
-            _acquire_session_lock,
-            _release_session_lock,
-            _session_lock_path,
-        )
-
-        sid = "lock_pid"
-        fd = _acquire_session_lock(sid)
-        assert fd is not None
-        try:
-            content = _session_lock_path(sid).read_text(encoding="utf-8").strip()
-            assert content == str(_os.getpid())
-        finally:
-            _release_session_lock(sid, fd)
-
-    def test_acquire_refuses_lock_on_pid_write_failure(self, tmp_data_dir):
-        """Both PID write attempts fail; lock is refused and cleaned up."""
-        from unittest.mock import patch
-
-        from token_goat.session import _acquire_session_lock, _session_lock_path
-
-        sid = "lock_write_fail"
-        with patch("token_goat.session.os.write", side_effect=OSError("write failed")):
-            fd = _acquire_session_lock(sid)
-            assert fd is None, "Lock should be refused when PID write fails twice"
-            lock_path = _session_lock_path(sid)
-            assert not lock_path.exists(), "Lock file should be cleaned up"
-
-    def test_lock_is_stale_absent_file_returns_true(self, tmp_data_dir):
-        """A lockfile that does not exist is treated as stale (already gone)."""
-        from token_goat.session import _lock_is_stale, _session_lock_path
-
-        lp = _session_lock_path("stale_absent")
-        assert not lp.exists()
-        assert _lock_is_stale(lp) is True
-
-    def test_lock_is_stale_old_file_returns_true(self, tmp_data_dir):
-        """A lockfile older than _LOCK_STALE_SECS with a live PID is still stale by age."""
-        import os as _os
-        import time as _time
-
-        from token_goat.session import (
-            _LOCK_STALE_SECS,
-            _lock_is_stale,
-            _session_lock_path,
-        )
-
-        sid = "stale_old"
-        lp = _session_lock_path(sid)
-        lp.parent.mkdir(parents=True, exist_ok=True)
-        lp.write_text(str(_os.getpid()), encoding="utf-8")
-
-        # Back-date mtime beyond stale threshold.
-        old_mtime = _time.time() - _LOCK_STALE_SECS - 5
-        _os.utime(lp, (old_mtime, old_mtime))
-
-        assert _lock_is_stale(lp) is True
-        lp.unlink(missing_ok=True)
-
-    def test_lock_is_stale_fresh_live_pid_returns_false(self, tmp_data_dir):
-        """A lockfile with a live PID and recent mtime is not stale."""
-        import os as _os
-
-        from token_goat.session import _lock_is_stale, _session_lock_path
-
-        sid = "stale_live"
-        lp = _session_lock_path(sid)
-        lp.parent.mkdir(parents=True, exist_ok=True)
-        lp.write_text(str(_os.getpid()), encoding="utf-8")
-
-        assert _lock_is_stale(lp) is False
-        lp.unlink(missing_ok=True)
-
-    def test_lock_is_stale_dead_pid_returns_true(self, tmp_data_dir):
-        """A lockfile whose PID no longer exists is stale regardless of mtime."""
-        import subprocess as _subprocess
-
-        from token_goat.session import _lock_is_stale, _session_lock_path
-
-        sid = "stale_dead_pid"
-        lp = _session_lock_path(sid)
-        lp.parent.mkdir(parents=True, exist_ok=True)
-
-        # Spawn a short-lived process and collect its PID after it has exited,
-        # guaranteeing the PID is definitely dead (not just unreachable).
-        proc = _subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(0)"])
-        dead_pid = proc.pid
-        proc.wait(timeout=5)
-        # proc.wait() guarantees the process has exited; no sleep needed.
-
-        lp.write_text(str(dead_pid), encoding="utf-8")
-
-        # On most platforms a recently-exited PID is immediately gone; on some
-        # systems it may linger briefly as a zombie.  Skip rather than flake if
-        # the OS is still holding the PID.
-        try:
-            import os as _os
-            _os.kill(dead_pid, 0)
-            # If kill(0) succeeds the PID is still live (zombie or reused) — skip.
-            pytest.skip("dead PID was reused or still a zombie; cannot test stale-check")
-        except (ProcessLookupError, OSError):
-            pass  # PID is genuinely gone — proceed
-
-        assert _lock_is_stale(lp) is True
-        lp.unlink(missing_ok=True)
-
-    @pytest.mark.slow
-    def test_second_acquire_returns_none_within_timeout(self, tmp_data_dir):
-        """A second acquire attempt while the lock is held returns None (timeout).
-
-        Marked ``slow``: this test intentionally spins in the lock-poll loop for
-        the full ``_LOCK_TIMEOUT_SECS`` (5 s of real wall time), and that 5 s
-        can stretch past the per-test timeout on a heavily loaded Windows CI
-        runner — when it does, pytest-timeout broadcasts CTRL_C_EVENT and the
-        xdist worker dies with a `Windows fatal exception: access violation`.
-        The cross-process invariant is still covered by the threaded sibling
-        tests in :class:`TestSessionLockfileConcurrent`.
+        This is the cross-process mutual-exclusion invariant. We hold the lock on
+        a real fd exactly as a peer process would, then assert a second acquire
+        cannot take it. The timeout is shrunk so the test stays fast and runs in
+        the default (non-slow) tier that every gating path executes.
         """
         import os as _os
-        import time as _time
 
+        import token_goat.session as _sess
         from token_goat.session import (
-            _LOCK_POLL_SECS,
-            _LOCK_TIMEOUT_SECS,
             _acquire_session_lock,
+            _os_advisory_lock,
+            _os_advisory_unlock,
             _session_lock_path,
         )
 
+        monkeypatch.setattr(_sess, "_LOCK_TIMEOUT_SECS", 0.2)
+
         sid = "lock_contention"
-        lp = _session_lock_path(sid)
-        lp.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = _session_lock_path(sid)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Write a "live" lockfile manually (our own PID, fresh mtime).
-        lp.write_text(str(_os.getpid()), encoding="utf-8")
+        # Hold the lock on a real fd, exactly as the peer process would.
+        holder_fd = _os.open(str(lock_path), _os.O_RDWR | _os.O_CREAT, 0o600)
+        assert _os_advisory_lock(holder_fd), "could not take the holding lock"
+        try:
+            contender = _acquire_session_lock(sid)
+            assert contender is None, "second acquire must time out while lock is held"
+        finally:
+            _os_advisory_unlock(holder_fd)
+            _os.close(holder_fd)
 
-        # Second acquire should time out.
-        t0 = _time.monotonic()
-        fd = _acquire_session_lock(sid)
-        elapsed = _time.monotonic() - t0
+    def test_lock_auto_releases_when_holder_fd_closes(self, tmp_data_dir):
+        """Closing the holder's fd frees the lock even though the file remains.
 
-        # Must have timed out.
-        assert fd is None, "expected None when lock is already held"
-        # Must not have spun far beyond the configured timeout.
-        assert elapsed < _LOCK_TIMEOUT_SECS + _LOCK_POLL_SECS * 5 + 0.5
-
-        lp.unlink(missing_ok=True)
-
-    def test_stale_lock_is_reclaimed_automatically(self, tmp_data_dir):
-        """A stale lockfile is reclaimed transparently; acquire succeeds."""
+        Regression for the self-orphan livelock. An OS advisory lock is dropped
+        by the kernel the instant the owning fd closes (or the process dies), so a
+        fresh acquire must succeed despite the leftover lockfile on disk. Under
+        the old PID-sidecar scheme this exact scenario wedged forever.
+        """
         import os as _os
-        import time as _time
 
         from token_goat.session import (
-            _LOCK_STALE_SECS,
+            _acquire_session_lock,
+            _os_advisory_lock,
+            _release_session_lock,
+            _session_lock_path,
+        )
+
+        sid = "lock_autorelease"
+        lock_path = _session_lock_path(sid)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Simulate a peer that grabbed the lock then died without cleanup.
+        holder_fd = _os.open(str(lock_path), _os.O_RDWR | _os.O_CREAT, 0o600)
+        assert _os_advisory_lock(holder_fd)
+        _os.close(holder_fd)
+
+        assert lock_path.exists(), "persistent lockfile must remain on disk"
+
+        fd = _acquire_session_lock(sid)
+        assert fd is not None, "acquire must succeed once the holder fd is closed"
+        _release_session_lock(sid, fd)
+
+    def test_acquire_succeeds_over_unlocked_leftover_file(self, tmp_data_dir):
+        """A leftover lockfile that nobody holds does not block acquisition."""
+        from token_goat.session import (
             _acquire_session_lock,
             _release_session_lock,
             _session_lock_path,
         )
 
-        sid = "lock_stale_reclaim"
+        sid = "lock_leftover"
         lp = _session_lock_path(sid)
         lp.parent.mkdir(parents=True, exist_ok=True)
+        lp.write_text("leftover from a crashed run", encoding="utf-8")
 
-        # Plant a stale lockfile: dead PID, old mtime.
-        lp.write_text("99999999", encoding="utf-8")
-        old_mtime = _time.time() - _LOCK_STALE_SECS - 10
-        _os.utime(lp, (old_mtime, old_mtime))
-
-        # Acquire must succeed despite the pre-existing stale file.
         fd = _acquire_session_lock(sid)
-        assert fd is not None, "expected stale lock to be reclaimed and acquire to succeed"
+        assert fd is not None, "a stale unlocked lockfile must not block acquire"
         _release_session_lock(sid, fd)
 
     def test_save_holds_lock_during_write(self, tmp_data_dir):
@@ -3386,40 +3298,41 @@ class TestSessionLockfile:
         p = session.paths.session_cache_path(sid)
         assert not p.exists(), "save() wrote session file despite lock timeout"
 
-    def test_save_marks_unavailable_after_three_consecutive_lock_timeouts(self, tmp_data_dir):
-        """After 3 consecutive lock timeouts save() marks cache.unavailable = True.
+    def test_lock_timeout_does_not_mark_cache_unavailable(self, tmp_data_dir):
+        """Repeated lock timeouts must NOT latch cache.unavailable = True.
 
-        Subsequent saves must no-op immediately without attempting to acquire
-        the lock again.  save() internally retries up to 3 times, so a single
-        call with lock always returning None exhausts the budget.
+        Regression for the cross-process livelock cascade: the old lock-timeout
+        latch flipped cache.unavailable after 3 consecutive timeouts, after which
+        every later save() short-circuited at its top guard and silently dropped
+        edits until a peer bumped the file mtime and a fresh load() reset the
+        flag.  With the OS advisory lock there is no such latch -- a timeout just
+        skips this one write and the next save() retries.  This test fails on the
+        pre-fix code (unavailable latched True) and passes once the latch is gone.
+        It is intentionally fast and non-slow so it runs in the -m "not slow"
+        gating suites that the original cross-process test was excluded from.
         """
+        import token_goat.session as _sess
         from token_goat.session import _fresh_cache
 
-        sid = "lock-timeout-unavailable"
+        sid = "lock-timeout-no-latch"
         cache = _fresh_cache(sid)
 
-        import token_goat.session as _sess
+        # Four consecutive timed-out saves -- more than the old 3-strike latch.
         with patch.object(_sess, "_acquire_session_lock", return_value=None):
-            # save() has a 3-attempt loop internally; one call exhausts all 3.
-            _sess.save(cache)
+            for _ in range(4):
+                _sess.save(cache)
 
-        assert cache.unavailable, (
-            "cache must be marked unavailable after 3 consecutive lock timeouts"
+        assert not cache.unavailable, (
+            "lock timeout must not latch cache.unavailable -- that latch caused "
+            "the silent-drop cascade this fix removes"
         )
 
-        # A subsequent save must skip immediately (lock never attempted again).
-        acquire_call_count = [0]
-
-        def counting_acquire(sid_arg):  # noqa: ARG001
-            acquire_call_count[0] += 1
-            return None
-
-        with patch.object(_sess, "_acquire_session_lock", counting_acquire):
-            _sess.save(cache)
-
-        assert acquire_call_count[0] == 0, (
-            "save() must not attempt to acquire lock when cache is already unavailable"
+        # Recovery: with the lock obtainable again, an edit persists normally.
+        session.mark_file_edited(sid, "/proj/recovered.py", cache=cache)
+        assert session.paths.session_cache_path(sid).exists(), (
+            "edit after lock recovery must write the session file"
         )
+        assert cache.edited_files, "recovered edit must be recorded in edited_files"
 
 
 # ---------------------------------------------------------------------------
