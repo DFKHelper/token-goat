@@ -1159,6 +1159,89 @@ def test_hook_wrapper_content_short_circuits_when_module_absent(tmp_path, monkey
     assert "__init__.py" in content
 
 
+def test_hook_wrapper_gate_path_exists_for_current_interpreter():
+    """Regression: the wrapper must never gate on a non-existent sentinel.
+
+    The previous implementation probed only ``site-packages/token_goat/__init__.py``.
+    For an *editable* install that file does not exist (the package is linked via
+    a ``.pth`` into ``src/``), so the generator fell back to a guessed path and
+    baked an ``if not exist "<phantom>"`` gate that was permanently true — the
+    wrapper echoed ``{"continue":true}`` on every call and never forwarded,
+    silently disabling every token-goat hook.
+
+    Invariant: if the generated wrapper contains an existence gate, the gated
+    path must exist for the interpreter that generated it.  Otherwise the wrapper
+    short-circuits on every invocation.  This fails on the pre-fix code under an
+    editable install (the project's own dev/CI layout) and passes once the
+    sentinel is resolved via ``importlib.util.find_spec``.
+    """
+    import re  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from token_goat import paths as paths_mod  # noqa: PLC0415
+
+    content = paths_mod.hook_wrapper_content()
+    assert "token_goat.cli" in content  # must always forward
+
+    if sys.platform == "win32":
+        match = re.search(r'if not exist "([^"]+)"', content)
+    else:
+        match = re.search(r'if \[ ! -f "([^"]+)" \]', content)
+
+    if match is not None:
+        gated = Path(match.group(1))
+        assert gated.exists(), (
+            f"wrapper gates on non-existent sentinel {gated!r}; it would "
+            'short-circuit every hook to {"continue":true}'
+        )
+        assert gated.name == "__init__.py"
+        assert gated.parent.name == "token_goat"
+
+
+def test_hook_wrapper_ungated_when_no_sentinel_found(tmp_path, monkeypatch):
+    """When no existing ``token_goat/__init__.py`` can be located, the wrapper
+    must forward unconditionally rather than gate on a phantom path.
+
+    Regression for the editable-install no-op: gating on a non-existent sentinel
+    made the wrapper emit ``{"continue":true}`` on every invocation, disabling
+    all hooks.  Here we force *both* the ``find_spec`` origin and the
+    site-packages fallbacks to miss, and assert the wrapper has no gate and still
+    forwards to ``token_goat.cli``.
+    """
+    import importlib.util as _ilu  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from token_goat import paths as paths_mod  # noqa: PLC0415
+
+    # Point sys.executable at an empty tmp venv so the site-packages fallbacks miss.
+    fake_py = tmp_path / "Scripts" / "python.exe"
+    fake_py.parent.mkdir(parents=True)
+    fake_py.write_text("", encoding="utf-8")
+    monkeypatch.setattr(paths_mod.sys, "executable", str(fake_py))
+
+    # Capture the real find_spec BEFORE patching so the delegation branch can't
+    # recurse into the patched name (see the builtins.__import__ patch trap).
+    _real_find_spec = _ilu.find_spec
+
+    def _fake_find_spec(name, *args, **kwargs):
+        if name == "token_goat":
+            return _ilu.spec_from_file_location(
+                "token_goat", str(tmp_path / "nope" / "__init__.py")
+            )
+        return _real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr("importlib.util.find_spec", _fake_find_spec)
+
+    content = paths_mod.hook_wrapper_content()
+
+    assert "token_goat.cli" in content
+    assert '{"continue":true}' not in content
+    if sys.platform == "win32":
+        assert "if not exist" not in content
+    else:
+        assert "! -f" not in content
+
+
 def test_is_token_goat_hook_recognises_both_markers():
     """``_is_token_goat_hook`` must match both legacy and wrapper forms."""
     assert install._is_token_goat_hook(
