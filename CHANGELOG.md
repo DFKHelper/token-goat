@@ -30,6 +30,10 @@ The pre-read hook tightens its large-file threshold as the window fills. A file 
 
 **Hook wrapper is written as bytes to stop CRLF doubling.** `hook_wrapper_content()` hand-bakes platform-correct line endings — `\r\n` on Windows — then was written through `atomic_write_text`, whose text-mode handle translated every `\n` to `\r\n` a second time, doubling each line ending to `\r\r\n` on disk. `cmd.exe` tolerated the stray carriage return so forwarding still worked, but `doctor` does a byte-exact compare of the on-disk wrapper against the regenerated content and warned `differs from expected — run token-goat install to refresh` on every run, a nag that reinstalling could never clear because it rewrote the same doubled bytes. The wrapper now goes through `atomic_write_bytes`, preserving the authored endings verbatim.
 
+### Session-cache integrity
+
+**Concurrent session saves no longer drop an edit.** The `save()` fast path skipped its compare-and-swap re-read and merge whenever the on-disk `(st_mtime, st_size)` fingerprint still matched the one captured at load. That fingerprint aliases: two caches whose keys are the same length serialize to byte-identical JSON sizes, and a float `st_mtime` rounds two sub-microsecond writes to the same value. When two writers collided on both fields the second skipped the merge and overwrote the first, losing exactly one edit — the 200-edit concurrency stress test intermittently saw 199. The fast path now consults an in-process version registry so a same-process writer that already advanced the version forces the stale save back through the merge, and the fingerprint is taken from integer `st_mtime_ns` instead of the rounded float, so a cross-process skip now requires a true nanosecond-and-size collision rather than a rounding coincidence.
+
 ## [1.4.1] - 2026-06-06
 
 Three bug fixes surfaced by the pre-push WSL test suite.
