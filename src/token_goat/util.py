@@ -48,7 +48,9 @@ def get_logger(name: str) -> Logger:
 
 
 # Compiled once at import time — avoids recompiling on every normalize_path call.
-_WSL_PATH_RE = re.compile(r"^/mnt/([a-z])/(.*)$", re.DOTALL)
+# Accept either case for the drive letter ([a-zA-Z]); the captured group is lowercased
+# below so /mnt/C/foo and /mnt/c/foo collapse to the same canonical key.
+_WSL_PATH_RE = re.compile(r"^/mnt/([a-zA-Z])/(.*)$", re.DOTALL)
 
 
 def normalize_path(path: str | Path) -> str:
@@ -92,7 +94,7 @@ def normalize_path(path: str | Path) -> str:
     # Step 2: convert WSL /mnt/<single-letter-drive>/rest → <drive>:/rest
     m = _WSL_PATH_RE.match(s)
     if m:
-        drive_letter = m.group(1)  # already lowercase due to [a-z] in regex
+        drive_letter = m.group(1).lower()  # lowercase so /mnt/C and /mnt/c agree
         rest = m.group(2)
         s = f"{drive_letter}:/{rest}"
     else:

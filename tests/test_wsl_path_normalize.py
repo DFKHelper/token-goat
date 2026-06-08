@@ -27,11 +27,24 @@ class TestNormalizePath:
         """WSL path with nested subdirectories converts correctly."""
         assert normalize_path("/mnt/c/Users/zelys/project/src/foo.py") == "c:/Users/zelys/project/src/foo.py"
 
-    def test_wsl_uppercase_drive_in_regex_does_not_apply(self) -> None:
-        """The /mnt/<drive>/ pattern only matches lowercase single letters."""
-        # /mnt/c/ → c:/  (lowercase drive letter preserved)
-        result = normalize_path("/mnt/c/bar")
-        assert result == "c:/bar"
+    def test_wsl_uppercase_c_drive(self) -> None:
+        """WSL /mnt/C/... (uppercase drive) normalizes to c:/... — drive lowercased.
+
+        Regression: the pre-fix regex was ``[a-z]`` only, so an uppercase /mnt/C/
+        path matched neither the WSL branch (regex miss) nor the Windows
+        drive-lowercasing branch (s[1] != ':'), and was returned fully
+        unnormalized, violating the documented WSL-conversion + lowercasing
+        contract and fragmenting the session/cache key for the same physical file.
+        """
+        assert normalize_path("/mnt/C/bar") == "c:/bar"
+
+    def test_wsl_uppercase_d_drive(self) -> None:
+        """WSL /mnt/D/... (uppercase non-C drive) normalizes to d:/..."""
+        assert normalize_path("/mnt/D/workspace") == "d:/workspace"
+
+    def test_wsl_uppercase_and_lowercase_same_key(self) -> None:
+        """/mnt/C/foo/bar and /mnt/c/foo/bar collapse to one canonical key."""
+        assert normalize_path("/mnt/C/foo/bar") == normalize_path("/mnt/c/foo/bar")
 
     def test_wsl_d_drive(self) -> None:
         """WSL /mnt/d/... converts to d:/..."""
