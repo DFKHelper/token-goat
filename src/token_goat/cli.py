@@ -5785,7 +5785,7 @@ def cmd_install(
         "--target",
         help=(
             "Install hooks for a specific tool. May be repeated. "
-            "Choices: claude, codex, opencode, openclaw, all. "
+            "Choices: claude, codex, gemini, opencode, openclaw, all. "
             "Overrides --codex/--opencode/--openclaw when provided."
         ),
     ),

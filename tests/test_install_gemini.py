@@ -300,3 +300,32 @@ def test_event_names_are_gemini_format(tmp_path, monkeypatch):
         assert claude_name not in hook_events, (
             f"Claude event name {claude_name!r} should not appear in Gemini settings"
         )
+
+
+# ---------------------------------------------------------------------------
+# 13. `install --target` help advertises every valid target (incl. gemini)
+# ---------------------------------------------------------------------------
+
+
+def test_install_target_help_lists_every_valid_target():
+    """The --target help string must name every member of _VALID_TARGETS.
+
+    Regression: gemini is a real install target (_VALID_TARGETS) and is fully
+    wired (patch_gemini_settings), but the --target help choices list silently
+    omitted it, so `token-goat install --help` advertised no Gemini path and
+    the README told users to run a non-existent `install --gemini` flag.
+    """
+    from typer.testing import CliRunner
+
+    from token_goat import cli
+    from token_goat.cli import _VALID_TARGETS
+
+    result = CliRunner().invoke(cli.app, ["install", "--help"])
+    assert result.exit_code == 0
+    # Typer may wrap/space the help text; strip whitespace before substring checks.
+    help_text = " ".join(result.stdout.split())
+    for target in _VALID_TARGETS:
+        assert target in help_text, (
+            f"--target help omits valid target {target!r}; choices list is out of "
+            f"sync with _VALID_TARGETS"
+        )
