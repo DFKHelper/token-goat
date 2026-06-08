@@ -38,7 +38,7 @@ jobs:
         env:
           TOKEN_GOAT_NO_WORKER_SPAWN: "1"
           TOKEN_GOAT_HARNESS_OVERRIDE: "claudecode"
-        run: uv run pytest -n auto -m "not slow" -rfE --tb=short
+        run: uv run pytest -n auto -m "not slow" -rfER --tb=short
 
   test-windows:
     # Non-gating Windows compat check. The Windows-2022 runner produces
@@ -63,7 +63,7 @@ jobs:
         run: |
           for attempt in 1 2 3; do
             echo "=== Test attempt $attempt of 3 ==="
-            uv run pytest -n 0 -m "not slow" -rfE --tb=short && exit 0
+            uv run pytest -n 0 -m "not slow" -rfER --tb=short && exit 0
             echo "=== Attempt $attempt failed; retrying ==="
           done
           exit 1
@@ -73,7 +73,7 @@ jobs:
         env:
           TOKEN_GOAT_NO_WORKER_SPAWN: "1"
           TOKEN_GOAT_HARNESS_OVERRIDE: "claudecode"
-        run: uv run pytest -m "slow" -rfE --tb=short
+        run: uv run pytest -m "slow" -rfER --tb=short
       - name: Kill leftover detached worker daemons
         if: always()
         run: |
