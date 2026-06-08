@@ -2240,6 +2240,47 @@ class TestTruncateSymbolBody:
         text = "SOME_CONST = 42"
         assert read_replacement.truncate_symbol_body(text) == text
 
+    def test_large_docstring_small_body_is_capped(self):
+        """A big docstring over a tiny body must still be truncated, not leaked whole.
+
+        Regression: the symbol clears TRUNCATE_THRESHOLD purely on docstring length
+        (70 doc lines + 2 body lines = 73 > 60), but the real code body is only 2
+        lines (<= HEAD+TAIL = 20). The small-body guard previously returned the raw
+        ``text`` unchanged, leaking the entire un-capped docstring and defeating
+        truncation exactly when savings are largest. The docstring cap must apply.
+        """
+        doc_lines = "\n".join(f'    line {i} of a very long docstring' for i in range(70))
+        text = f'def f(x):\n    """\n{doc_lines}\n    """\n    x = x + 1\n    return x'
+        original_lines = text.count("\n") + 1
+        assert original_lines > read_replacement.TRUNCATE_THRESHOLD  # precondition
+        result = read_replacement.truncate_symbol_body(text)
+        result_lines = result.count("\n") + 1
+        # Truncation actually fired: far fewer lines than the original.
+        assert result_lines < original_lines, "large docstring leaked un-truncated"
+        # The docstring-cap note is present and a deep docstring line is gone.
+        assert "(docstring truncated)" in result
+        assert "line 60 of a very long docstring" not in result
+        # Signature and the real body are both preserved.
+        assert result.startswith("def f(x):")
+        assert "return x" in result
+
+    def test_small_body_without_docstring_returned_verbatim(self):
+        """No docstring + small body keeps exact bytes (the unchanged-path guard).
+
+        When nothing was capped, the small-body branch must return the original
+        ``text`` verbatim (including its trailing newline) rather than a round-tripped
+        join. This pins the behavior that the docstring-cap fix must NOT disturb.
+        """
+        # >60 lines total, all in a comma-continued signature (each non-final sig
+        # line ends with ',' so the boundary scan keeps going to the final ':'),
+        # 2-line body, no docstring. Drives total_real (==2) into the small-body
+        # guard with doc_was_capped False.
+        sig = "def f(x,\n" + "\n".join(f"    arg{i}," for i in range(60)) + "\n    y):"
+        text = f"{sig}\n    x = 1\n    return x\n"
+        assert (text.count("\n") + 1) > read_replacement.TRUNCATE_THRESHOLD  # precondition
+        result = read_replacement.truncate_symbol_body(text)
+        assert result == text
+
     def test_multiline_signature_fully_preserved(self):
         """A signature spanning several lines (first line ends with ',') is kept whole.
 

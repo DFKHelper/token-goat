@@ -856,6 +856,7 @@ def truncate_symbol_body(text: str, *, full: bool = False) -> str:
     # Phase 2: detect and extract docstring (Python-style triple quotes).
     # ------------------------------------------------------------------
     docstring_lines: list[str] = []
+    doc_was_capped = False  # True when the docstring exceeded the cap and was trimmed
     body_start_offset = 0  # index into body_lines where the real body begins
 
     # Find first non-blank body line.
@@ -875,6 +876,7 @@ def truncate_symbol_body(text: str, *, full: bool = False) -> str:
             docstring_lines = raw_doc[:TRUNCATE_DOCSTRING_LINES] + [
                 f"{raw_doc[0][:len(raw_doc[0]) - len(raw_doc[0].lstrip())]}    # ... (docstring truncated)"
             ]
+            doc_was_capped = True
         body_start_offset = doc_end_idx + 1
 
     real_body = body_lines[body_start_offset:]
@@ -883,8 +885,17 @@ def truncate_symbol_body(text: str, *, full: bool = False) -> str:
     # Phase 3: apply head + tail truncation to the real body.
     # ------------------------------------------------------------------
     total_real = len(real_body)
-    # Guard: if the real body after sig + docstring is within threshold, emit in full.
+    # Guard: the real code body is small enough that head/tail truncation would be
+    # a no-op (or yield a nonsensical non-positive ellipsis count). Skip the
+    # ellipsis — but still honor the docstring cap. Returning the raw ``text`` here
+    # would leak an un-capped multi-line docstring whenever the symbol cleared the
+    # line threshold purely on docstring length (e.g. a 70-line docstring over a
+    # 2-line body), defeating truncation exactly when savings are largest. When no
+    # docstring was capped, the assembled view equals the original, so return
+    # ``text`` verbatim to preserve its exact bytes (incl. trailing newline).
     if total_real <= TRUNCATE_HEAD_LINES + TRUNCATE_TAIL_LINES:
+        if doc_was_capped:
+            return "\n".join(sig_lines + docstring_lines + real_body)
         return text
 
     head = real_body[:TRUNCATE_HEAD_LINES]
