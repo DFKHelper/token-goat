@@ -163,17 +163,70 @@ def test_denormalize_permission_decision_reason_propagated():
     assert result["reason"] == "blocked by policy"
 
 
-def test_denormalize_additional_context_propagated_as_reason():
+def test_denormalize_additional_context_preserved_in_hook_specific_output():
+    """additionalContext must ride Gemini's native injection channel, not ``reason``.
+
+    Regression: token-goat previously flattened ``hookSpecificOutput.additionalContext``
+    into the top-level ``reason`` field. Per the Gemini hooks contract, ``reason``
+    is only surfaced on a *deny* (sent to the agent as a tool error); on an allow
+    it is advisory and ignored. Context injection must therefore use the native
+    ``hookSpecificOutput.additionalContext`` channel ("injected as the first turn"
+    at SessionStart, "appended to the tool result" at AfterTool). The old mapping
+    silently dropped every session-memory / post-read / skill hint on the allow
+    path — which is where token-goat emits virtually all of them.
+    """
     response = {
         "continue": True,
         "hookSpecificOutput": {"additionalContext": "hint text here"},
     }
     result = denormalize_response(response, harness="gemini")
     assert result["decision"] == "allow"
-    assert result["reason"] == "hint text here"
+    # additionalContext lands in the native channel, NOT reason.
+    assert result["hookSpecificOutput"]["additionalContext"] == "hint text here"
+    assert "reason" not in result
 
 
-def test_denormalize_permission_reason_takes_precedence_over_additional_context():
+def test_denormalize_top_level_system_message_preserved():
+    """Gemini natively renders a top-level ``systemMessage`` — it must survive.
+
+    Regression: the Gemini denormalize branch dropped the top-level
+    ``systemMessage`` entirely, discarding token-goat's PreCompress compaction
+    manifest and the SessionStart git-orientation brief for every Gemini user.
+    """
+    response = {"continue": True, "systemMessage": "## Compaction manifest\nedited: a.py"}
+    result = denormalize_response(response, harness="gemini")
+    assert result["systemMessage"] == "## Compaction manifest\nedited: a.py"
+    assert result["decision"] == "allow"
+
+
+def test_denormalize_session_start_both_channels_preserved():
+    """A SessionStart-shaped response carries brief (systemMessage) + memory (additionalContext).
+
+    Both must reach Gemini intact: the brief via the native top-level
+    ``systemMessage`` and the project memory via ``hookSpecificOutput.additionalContext``.
+    """
+    response = {
+        "continue": True,
+        "systemMessage": "git brief: on branch main, 2 commits ahead",
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "project memory: ship dates are absolute",
+        },
+    }
+    result = denormalize_response(response, harness="gemini")
+    assert result["systemMessage"] == "git brief: on branch main, 2 commits ahead"
+    assert (
+        result["hookSpecificOutput"]["additionalContext"]
+        == "project memory: ship dates are absolute"
+    )
+
+
+def test_denormalize_permission_reason_and_additional_context_both_preserved():
+    """On a deny carrying both fields: reason → top-level, additionalContext → native channel.
+
+    They no longer compete for ``reason`` — each rides its own Gemini field, so a
+    deny can both block (reason) and inject context (additionalContext).
+    """
     response = {
         "continue": False,
         "hookSpecificOutput": {
@@ -182,7 +235,9 @@ def test_denormalize_permission_reason_takes_precedence_over_additional_context(
         },
     }
     result = denormalize_response(response, harness="gemini")
+    assert result["decision"] == "deny"
     assert result["reason"] == "explicit deny"
+    assert result["hookSpecificOutput"]["additionalContext"] == "secondary note"
 
 
 def test_denormalize_no_hso_no_reason_key():

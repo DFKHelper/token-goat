@@ -298,13 +298,32 @@ def denormalize_response(response: dict[str, object], harness: Harness = "claude
 
     if harness == "gemini":
         out: dict[str, object] = {}
-        # Map continue→decision: False→"deny", True (or absent)→"allow"
+        # Map continue→decision: False→"deny", True (or absent)→"allow".
+        # For SessionStart/PreCompress Gemini treats decision as advisory, but
+        # emitting it is harmless and keeps the wire shape uniform.
         continue_val = response.get("continue", True)
         out["decision"] = "allow" if continue_val else "deny"
-        # Propagate reason from hookSpecificOutput.permissionDecisionReason if present.
+        # Gemini natively renders a top-level ``systemMessage`` (SessionStart
+        # git brief, PreCompress compaction manifest). Preserve it — dropping it
+        # silently discarded token-goat's entire compaction manifest and the
+        # session-start orientation brief for every Gemini user.
+        sysmsg = response.get("systemMessage")
+        if isinstance(sysmsg, str) and sysmsg:
+            out["systemMessage"] = sysmsg
         hso = response.get("hookSpecificOutput")
         if isinstance(hso, dict):
-            reason = hso.get("permissionDecisionReason") or hso.get("additionalContext")
+            # ``reason`` is only surfaced by Gemini on a *deny* (sent to the
+            # agent as a tool error); on an allow it is advisory and ignored.
+            # Context injection (session memory, post-read/skill hints) MUST
+            # therefore ride ``hookSpecificOutput.additionalContext`` — Gemini's
+            # native channel ("injected as the first turn" at SessionStart,
+            # "appended to the tool result" at AfterTool). Flattening
+            # additionalContext into ``reason`` silently dropped every hint on
+            # the allow path, where token-goat emits virtually all of them.
+            add_ctx = hso.get("additionalContext")
+            if isinstance(add_ctx, str) and add_ctx:
+                out["hookSpecificOutput"] = {"additionalContext": add_ctx}
+            reason = hso.get("permissionDecisionReason")
             if reason:
                 out["reason"] = reason
         # Pass through diagnostic fields for debugging.
