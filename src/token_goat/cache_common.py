@@ -291,8 +291,23 @@ def evict_cache_dir(
             if _stat_module.S_ISLNK(st.st_mode):
                 _log.warning("%s: skipping symlink in cache dir: %s", log_name, fp.name)
                 continue
-            entries.append((fp, float(st.st_mtime), int(st.st_size)))
-            total += int(st.st_size)
+            entry_size = int(st.st_size)
+            # A gzip-compressed entry (store_blob_gz) keeps its real bytes in a
+            # ``<id>.gz`` sibling and writes a 0-byte ``<id>.txt`` stub.  Counting
+            # only the stub would make every compressed entry contribute 0 bytes,
+            # silently defeating the byte cap and leaving the .gz body unfreed.
+            # Attribute the .gz size to its owning .txt entry so the cap and the
+            # eviction accounting both see the bytes that are actually on disk.
+            gz_path = fp.with_name(fp.stem + _GZ_SUFFIX)
+            try:
+                gz_st = os.lstat(gz_path)
+            except OSError:
+                pass
+            else:
+                if not _stat_module.S_ISLNK(gz_st.st_mode):
+                    entry_size += int(gz_st.st_size)
+            entries.append((fp, float(st.st_mtime), entry_size))
+            total += entry_size
     except OSError:
         return 0
 
@@ -312,24 +327,34 @@ def evict_cache_dir(
     # touch only files whose names we would have generated.
     try:
         for sp in d.iterdir():
-            if not sp.name.endswith(".json"):
+            # Reap orphaned companions of both kinds: a ``.json`` sidecar or a
+            # ``.gz`` compressed body whose owning ``.txt`` stub was deleted
+            # out-of-band (a prior eviction whose body unlink ran before the
+            # companion unlink could, or a manual ``rm cache/*.txt``).  Without
+            # a .txt stub the companion is invisible to the LRU scan above, so
+            # it would otherwise live forever.
+            if sp.name.endswith(".json"):
+                companion_kind = "sidecar"
+            elif sp.name.endswith(_GZ_SUFFIX):
+                companion_kind = "gz body"
+            else:
                 continue
             # Validate that the corresponding .txt name would be a cache file
-            # we own.  This prevents the sweep from deleting unrelated .json
-            # files that happen to live in the cache dir.
+            # we own.  This prevents the sweep from deleting unrelated .json /
+            # .gz files that happen to live in the cache dir.
             body_name = sp.stem + ".txt"
             if not OUTPUT_FILENAME_RE.match(body_name):
                 continue
-            body = sp.with_suffix(".txt")
+            body = sp.with_name(body_name)
             if body.exists():
                 continue
             try:
                 # missing_ok=True handles the concurrent-delete race: if another
-                # process already removed this orphan sidecar between the body.exists()
+                # process already removed this orphan between the body.exists()
                 # check above and this unlink, we treat it as success.
                 sp.unlink(missing_ok=True)
             except OSError as exc:
-                _log.debug("%s: orphan sidecar removal failed: %s: %s", log_name, sp.name, exc)
+                _log.debug("%s: orphan %s removal failed: %s: %s", log_name, companion_kind, sp.name, exc)
     except OSError:
         pass
 
@@ -371,6 +396,15 @@ def evict_cache_dir(
             pass  # already removed by a concurrent eviction pass — harmless
         except OSError as exc:
             _log.debug("%s: sidecar cleanup failed for %s: %s", log_name, sidecar.name, exc)
+        # Free the compressed body too.  Plain (uncompressed) entries have no
+        # .gz sibling, so FileNotFoundError here is the common, harmless case.
+        gz_sibling = fp.with_name(fp.stem + _GZ_SUFFIX)
+        try:
+            gz_sibling.unlink()
+        except FileNotFoundError:
+            pass  # uncompressed entry, or already removed by a concurrent pass
+        except OSError as exc:
+            _log.debug("%s: gz body cleanup failed for %s: %s", log_name, gz_sibling.name, exc)
     if removed:
         _log.info(
             "%s: evicted %d entries (bytes cap=%d, count cap=%d)",

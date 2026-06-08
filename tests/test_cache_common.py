@@ -578,6 +578,119 @@ class TestEvictCacheDir:
         assert rogue.exists(), "rogue .json with invalid stem must NOT be swept"
 
     # ------------------------------------------------------------------
+    # Compressed (.gz) companion bodies
+    # ------------------------------------------------------------------
+    #
+    # store_blob_gz keeps the real bytes in a ``<id>.gz`` sibling and writes a
+    # 0-byte ``<id>.txt`` stub.  Eviction must (a) count the .gz toward the byte
+    # cap, (b) delete the .gz when it evicts the owning .txt, and (c) reap an
+    # orphan .gz whose .txt stub is gone.  Before the fix, the byte cap ignored
+    # every compressed entry and the .gz body leaked permanently on eviction.
+
+    def test_gz_body_counts_toward_byte_budget(self, tmp_path: Path) -> None:
+        """The .gz sibling's bytes count toward the cap, not just the 0-byte stub.
+
+        Regression: a compressed entry's .txt stub is empty, so counting only
+        .txt made `total` 0 and the byte cap never fired — a web cache of large
+        pages could grow without bound while reporting itself within budget.
+        """
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        name = _valid_name("001")
+        # Realistic compressed entry: empty .txt stub + a fat .gz body.
+        _plant(d, f"{name}.txt", b"", t)
+        gz = d / f"{name}.gz"
+        gz.write_bytes(b"Z" * 200)
+        os.utime(gz, (t, t))
+
+        # Cap 150 < 200 gz bytes → must evict.  Without the fix total reads 0
+        # and nothing is removed.
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=150)
+        assert removed == 1
+        assert not (d / f"{name}.txt").exists()
+        assert not gz.exists(), ".gz body must be freed, not orphaned"
+
+    def test_gz_body_removed_with_owning_stub(self, tmp_path: Path) -> None:
+        """Evicting the .txt stub also unlinks its .gz body (no orphan left)."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        old, new = _valid_name("001"), _valid_name("002")
+        # Old compressed entry (should be evicted) — stub 0 bytes, gz 120 bytes.
+        _plant(d, f"{old}.txt", b"", t - 100)
+        old_gz = d / f"{old}.gz"
+        old_gz.write_bytes(b"Z" * 120)
+        os.utime(old_gz, (t - 100, t - 100))
+        # Newer plain entry that should survive.
+        _plant(d, f"{new}.txt", b"X" * 50, t)
+
+        # total = 120 (old gz) + 50 (new txt) = 170; cap 100 → old entry evicted.
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=100)
+        assert removed == 1
+        assert not (d / f"{old}.txt").exists()
+        assert not old_gz.exists(), "old .gz body must be unlinked with its stub"
+        assert (d / f"{new}.txt").exists(), "newer entry must survive"
+
+    def test_orphan_gz_swept_when_stub_absent(self, tmp_path: Path) -> None:
+        """A .gz whose .txt stub is gone is reaped by the orphan sweep.
+
+        Mirrors the .json orphan-sidecar sweep: without a stub the .gz is
+        invisible to the LRU scan, so it would otherwise leak forever.
+        """
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        # Keep one real entry so the dir exists and the sweep runs.
+        keep = _valid_name("001")
+        _plant(d, f"{keep}.txt", b"X" * 10, t)
+        # Orphan .gz with a valid stem but no .txt sibling.
+        orphan = d / f"{_valid_name('002')}.gz"
+        orphan.write_bytes(b"Z" * 64)
+
+        # Caps satisfied: sweep still runs (it precedes the early-return).
+        evict_cache_dir(
+            cache_dir_fn=fn, log_name="test_cache",
+            max_total_bytes=10_000, max_file_count=4096,
+        )
+        assert not orphan.exists(), "orphan .gz (no stub) must be swept"
+        assert (d / f"{keep}.txt").exists()
+
+    def test_unrelated_gz_not_deleted_by_sweep(self, tmp_path: Path) -> None:
+        """A .gz whose stem is NOT a valid cache filename must be left alone."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        t = time.time()
+        real_name = _valid_name("001")
+        _plant(d, f"{real_name}.txt", b"X" * 10, t)
+        # Invalid stem (dot in the middle) — token-goat did not write this.
+        unrelated = d / "user.backup.gz"
+        unrelated.write_bytes(b"\x1f\x8b\x08")  # gzip magic, but not ours
+
+        evict_cache_dir(
+            cache_dir_fn=fn, log_name="test_cache",
+            max_total_bytes=10_000, max_file_count=4096,
+        )
+        assert unrelated.exists(), "unrelated .gz (caps OK) must NOT be swept"
+        evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=1)
+        assert unrelated.exists(), "unrelated .gz (eviction) must NOT be swept"
+
+    def test_store_blob_gz_entry_evicted_end_to_end(self, tmp_path: Path) -> None:
+        """An entry written by the real store_blob_gz is fully evicted (stub + body)."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        output_id = _valid_name("001")
+        gz_path = store_blob_gz(output_id, "x" * 5000, fn, "test_cache")
+        assert gz_path is not None and gz_path.exists()
+        assert (d / f"{output_id}.txt").exists()
+
+        # Force eviction by a tiny byte cap; the compressed body alone exceeds it.
+        removed = evict_cache_dir(cache_dir_fn=fn, log_name="test_cache", max_total_bytes=1)
+        assert removed == 1
+        assert not gz_path.exists(), "store_blob_gz body must be freed on eviction"
+        assert not (d / f"{output_id}.txt").exists()
+
+    # ------------------------------------------------------------------
     # Non-.txt files are ignored
     # ------------------------------------------------------------------
 
