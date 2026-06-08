@@ -130,6 +130,33 @@ class TestInvalidateForPath:
         compact_after = [f for f in cache_dir.iterdir() if f.name.endswith("-compact")]
         assert len(compact_after) == 0
 
+    def test_compact_removal_with_mixed_case_skill(self, tmp_data_dir):
+        """Compact removal works for mixed-case namespaced names (regression).
+
+        _compact_file_id lowercases the safe-name segment, so a skill named
+        "userSettings:brainstorming" writes its compact as
+        "...-usersettings_brainstormingn-compact". invalidate_for_path previously
+        built the purge suffix from the un-lowercased meta.skill_name, so the
+        suffix ("...-userSettings_brainstormingn-compact") never matched the
+        on-disk file and the stale compact survived the edit. Fails pre-fix
+        (compact_after == 1), passes post-fix (compact_after == 0).
+        """
+        source = "/plugins/core/skills/brainstorming/SKILL.md"
+        meta = skill_cache.store_output(
+            "sess_mc", "userSettings:brainstorming", "body " * 200, source_path=source
+        )
+        assert meta is not None
+        skill_cache.write_sidecar(meta)
+        skill_cache.store_compact("sess_mc", "userSettings:brainstorming", "compact body")
+        cache_dir = tmp_data_dir / "skills"
+        compact_before = [f for f in cache_dir.iterdir() if f.name.endswith("-compact")]
+        assert compact_before, "compact file should exist before invalidation"
+
+        n = skill_cache.invalidate_for_path(source)
+        assert n == 1
+        compact_after = [f for f in cache_dir.iterdir() if f.name.endswith("-compact")]
+        assert len(compact_after) == 0, "stale compact for mixed-case skill was not purged"
+
     def test_other_skills_not_removed(self, tmp_data_dir):
         """Only entries matching the given path are removed; others are untouched."""
         source_a = "/skills/ralph/SKILL.md"

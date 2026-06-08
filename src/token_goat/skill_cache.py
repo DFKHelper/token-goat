@@ -999,7 +999,12 @@ def invalidate_for_path(file_path: str) -> int:
             continue
         # Match found: collect the compact suffix pattern BEFORE removing files
         # so the suffix is available even after the body .txt is deleted.
-        safe_name = meta.skill_name.replace(":", "_")
+        # Must mirror _compact_file_id exactly — it lowercases the safe name, so
+        # a mixed-case skill name (e.g. "userSettings:brainstorming") writes a
+        # compact file as "...-usersettings_brainstormingn-compact". Without the
+        # same .lower() here the purge suffix never matches and the stale compact
+        # survives a skill edit.
+        safe_name = meta.skill_name.lower().replace(":", "_")
         if ":" in meta.skill_name:
             safe_name += "n"
         compact_suffixes.add(f"-{safe_name}-compact")
