@@ -2240,6 +2240,28 @@ class TestTruncateSymbolBody:
         text = "SOME_CONST = 42"
         assert read_replacement.truncate_symbol_body(text) == text
 
+    def test_multiline_signature_fully_preserved(self):
+        """A signature spanning several lines (first line ends with ',') is kept whole.
+
+        Characterization test for the signature-boundary scan: when the first line
+        ends with a continuation comma the loop must keep scanning until the line
+        that ends with ``:`` rather than treating line 0 as the sole signature line.
+        Regresses the ``not stripped.endswith((":", "{", ","))`` guard — if the comma
+        were dropped from that tuple the trailing signature params would be lost.
+        """
+        sig = "def long_function(x,\n                  y,\n                  z):"
+        body = "\n".join(f"    x = x + {i}  # body line {i}" for i in range(70))
+        text = f"{sig}\n    return x + y + z\n{body}\n    return x"
+        result = read_replacement.truncate_symbol_body(text)
+        # Whole multi-line signature survives, in order, at the head of the output.
+        assert result.startswith(sig)
+        # All three parameter lines are present (none clipped by an early break).
+        assert "def long_function(x," in result
+        assert "                  y," in result
+        assert "                  z):" in result
+        # And it still truncated (sanity: we exercised the truncation path).
+        assert "lines truncated" in result
+
 
 class TestTokenEstimateHeader:
     """Tests for read_replacement.token_estimate_header."""

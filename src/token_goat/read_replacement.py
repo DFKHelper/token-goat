@@ -845,7 +845,7 @@ def truncate_symbol_body(text: str, *, full: bool = False) -> str:
             sig_end_idx = i
             break
         # If first line doesn't look like a header, treat it as the sole sig line.
-        if i == 0 and not stripped.endswith((":""{", ",")):
+        if i == 0 and not stripped.endswith((":", "{", ",")):
             sig_end_idx = 0
             break
 
