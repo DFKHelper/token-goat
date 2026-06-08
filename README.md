@@ -159,7 +159,7 @@ $ ls -lh screenshot.png
 # Without token-goat: Claude reads the 1.2 MB PNG.
 # With token-goat: hook re-encodes as WebP and substitutes the cached copy.
 
-$ token-goat shrink-image screenshot.png
+$ token-goat image-shrink screenshot.png
 out: ~74 KB WebP   (94% smaller)
 ```
 
