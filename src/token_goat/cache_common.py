@@ -215,6 +215,7 @@ def evict_cache_dir(
     log_name: str,
     max_total_bytes: int,
     max_file_count: int = 4096,
+    protect_ids: frozenset[str] | None = None,
 ) -> int:
     """Evict the oldest ``.txt`` entries from a cache directory until the total
     on-disk size is at or under *max_total_bytes* AND the file count is at or
@@ -250,6 +251,16 @@ def evict_cache_dir(
         4096 prevents unbounded growth when many sub-1 KB entries accumulate —
         Windows NTFS ``iterdir`` on tens of thousands of files adds measurable
         hook cold-start latency (~200–500 ms).
+    protect_ids:
+        Output ids (the ``<id>`` stem of an ``<id>.txt`` body file) that must
+        never be evicted by this call, regardless of mtime.  The just-written
+        entry of a ``store_output`` call passes its own id here so a coarse
+        Windows ``st_mtime`` tie — which the stable oldest-first sort would
+        otherwise break by arbitrary ``iterdir`` order — can never evict the
+        freshest entry (MRU protection).  Protected bytes still count toward
+        the byte/count caps, so if a protected entry alone exceeds the cap the
+        loop stops with it intact (best-effort: an oversized fresh entry is
+        kept rather than deleted or looped on forever).
 
     Returns
     -------
@@ -366,6 +377,15 @@ def evict_cache_dir(
     for fp, _mtime, size in entries:
         if total <= max_total_bytes and remaining <= max_file_count:
             break
+        # MRU protection: never evict an id the caller just wrote. Coarse
+        # Windows st_mtime can tie the fresh entry with older ones; the stable
+        # sort then falls back to arbitrary iterdir order, which could place the
+        # newest file first and delete it. Skipping it here is deterministic
+        # regardless of timestamp granularity. Its bytes still count toward
+        # total, so other candidates keep being evicted; if only protected
+        # entries remain over cap, the loop exhausts them and stops (best-effort).
+        if protect_ids and fp.stem in protect_ids:
+            continue
         # Concurrent-eviction safety: two worker processes may both reach this
         # loop with the same set of candidate files.  The first to call unlink()
         # succeeds; the second receives FileNotFoundError (a subclass of OSError).

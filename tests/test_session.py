@@ -2886,7 +2886,12 @@ class TestSessionCAS:
         def worker(path: str) -> None:
             try:
                 c = session.load(sid)
-                barrier.wait(timeout=5)  # sync both threads to maximise race window
+                # Generous timeout: under heavy xdist CPU contention on a slow
+                # Windows runner the second thread can be scheduled late; a tight
+                # barrier would raise BrokenBarrierError (a starvation artifact,
+                # not a CAS bug). We only need both threads to overlap, not to
+                # meet within milliseconds.
+                barrier.wait(timeout=30)  # sync both threads to maximise race window
                 session.mark_file_edited(sid, path, cache=c)
             except Exception as exc:  # noqa: BLE001
                 errors.append(exc)
@@ -2895,11 +2900,17 @@ class TestSessionCAS:
         t2 = threading.Thread(target=worker, args=("/thread/file_b.py",))
         t1.start()
         t2.start()
-        t1.join(timeout=10)
-        t2.join(timeout=10)
+        t1.join(timeout=30)
+        t2.join(timeout=30)
 
         assert not errors, f"thread errors: {errors}"
 
+        # This test asserts CAS *disk* persistence. The process-local load cache
+        # is an orthogonal layer that can return a pre-merge object when a coarse
+        # Windows mtime aliases the final-save timestamp — a confound that has
+        # nothing to do with whether both edits reached disk. Drop the proc-cache
+        # entry so the final load() reads the authoritative on-disk JSON.
+        session._proc_load_cache.pop(sid, None)
         final = session.load(sid)
         assert "/thread/file_a.py" in final.edited_files, "file_a lost"
         assert "/thread/file_b.py" in final.edited_files, "file_b lost"
@@ -3874,6 +3885,62 @@ class TestProcLoadCache:
         # The freshly loaded object should contain c.py
         norm = session._normalize_path("c.py")
         assert norm in loaded2.files, "updated file should appear in the freshly loaded cache"
+
+    def test_save_refreshes_proc_load_cache(self, tmp_data_dir):
+        """save() must refresh an existing proc-load-cache entry with the
+        just-written object.
+
+        Regression for the Windows coarse-mtime staleness flake behind
+        ``test_concurrent_threads_both_edits_preserved``: a prior ``load()``
+        caches ``(obj, mtime)``; the freshness check is purely
+        ``cached_mtime == cur_mtime``.  When a later ``save()``'s post-write
+        mtime aliases that cached mtime (Windows ``st_mtime`` granularity is
+        coarse enough that two writes can share a timestamp), the proc-cache
+        would keep serving the *pre-save* object on the next in-process
+        ``load()`` even though the disk is correct.  ``save()`` now overwrites
+        the entry with the object it just persisted, so the freshest state
+        always wins regardless of timestamp granularity.
+
+        Fails pre-fix: ``save()`` left the proc-cache untouched, so the stale
+        shadow object below survives the save.  Passes post-fix.
+        """
+        self._clear_proc_cache()
+        sid = "proc-cache-refresh-" + "d" * 14
+
+        # Seed an on-disk session and prime the proc cache via load().
+        session.mark_file_read(sid, "seed.py", offset=0, limit=4)
+        c = session.load(sid)
+        primed = session._proc_load_cache.get(sid)
+        assert primed is not None, "load() should prime the proc-cache for an on-disk session"
+        assert primed[0] is c
+
+        # Simulate the failure precondition: a DISTINCT pre-merge object shadows
+        # the cache entry under the same mtime, exactly what a concurrent
+        # thread's earlier load() would leave behind. Without the refresh,
+        # save() leaves this stale object in place.
+        aliased_mtime = primed[1]
+        stale = session._fresh_cache(sid)
+        assert stale is not c
+        session._proc_load_cache[sid] = (stale, aliased_mtime)
+
+        # Mutate and persist the real cache through the normal mutation path
+        # (mark_file_edited -> _commit_mutation -> save).
+        session.mark_file_edited(sid, "/edited/file.py", cache=c)
+
+        entry = session._proc_load_cache.get(sid)
+        assert entry is not None, "save must not drop the proc-cache entry"
+        assert entry[0] is c, (
+            "save must refresh the proc-cache with the just-saved object, not leave "
+            "the stale pre-merge shadow object in place (the flake)"
+        )
+        edited_key = session._normalize_path("/edited/file.py")
+        assert edited_key in c.edited_files
+
+        # A subsequent in-process load() must observe the edit, never the stale
+        # shadow object — even though its cached mtime aliased the disk mtime.
+        reloaded = session.load(sid)
+        assert reloaded is not stale, "load() must not serve the stale shadow object"
+        assert edited_key in reloaded.edited_files
 
     def test_cache_cap_enforced(self, tmp_data_dir):
         """Cache does not grow beyond _PROC_LOAD_CACHE_MAX entries."""

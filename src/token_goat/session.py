@@ -3196,6 +3196,9 @@ def save(cache: SessionCache) -> None:
                         st2 = os.stat(p)
                         cache._disk_mtime_ns = st2.st_mtime_ns
                         cache._disk_size = st2.st_size
+                        # Refresh the process-local load cache so a subsequent in-process load() returns this just-written state instead of a stale object cached under an aliased mtime. Windows mtime granularity is coarse enough that the post-save timestamp can equal the one a prior load() cached, which would otherwise serve the pre-save object on a proc-cache hit. Only refresh an existing entry — inserting new keys here would bypass load()'s LRU-cap accounting.
+                        if cache.session_id in _proc_load_cache:
+                            _proc_load_cache[cache.session_id] = (cache, st2.st_mtime)
                     except OSError:
                         pass
                 except OSError as exc:

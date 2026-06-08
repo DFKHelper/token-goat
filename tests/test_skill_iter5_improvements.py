@@ -122,6 +122,105 @@ class TestSkillCacheLRUEviction:
         assert existing_loaded is not None
         assert large_loaded is not None
 
+    def test_evict_cache_dir_protects_mru_entry_with_oldest_mtime(self, tmp_data_dir):
+        """Helper-level regression for the MRU-eviction flake.
+
+        On Windows a coarse ``st_mtime`` can make the just-written (MRU) entry
+        tie with — or, once the stable oldest-first sort falls back to arbitrary
+        ``iterdir`` order, sort *before* — genuinely older entries, so eviction
+        could delete the freshest file.  ``evict_cache_dir(protect_ids={id})``
+        must keep that entry regardless of its timestamp.  The baseline run
+        (no ``protect_ids``) deletes it, proving the setup genuinely drives the
+        MRU file to the front of the victim list rather than passing vacuously.
+
+        Fails pre-fix: ``evict_cache_dir`` had no ``protect_ids`` parameter, so
+        the protected call raises ``TypeError`` and the MRU entry cannot be
+        spared.  Passes post-fix.
+        """
+        import os  # noqa: PLC0415
+
+        from token_goat import cache_common  # noqa: PLC0415
+
+        body_old = "# Old\n\n" + ("old. " * 100)
+        body_new = "# New\n\n" + ("new. " * 100)
+        cap = len(body_new.encode("utf-8")) + 100  # only one body fits under the cap
+        out_dir = skill_cache._skill_outputs_dir()
+
+        def _setup() -> tuple[str, str]:
+            # Large per-store cap so store_output's own internal eviction is a
+            # no-op here; we drive eviction manually with the tight cap below.
+            m_old = skill_cache.store_output(
+                "sess-protect", "old-skill", body_old, max_total_bytes=10_000_000
+            )
+            m_new = skill_cache.store_output(
+                "sess-protect", "new-skill", body_new, max_total_bytes=10_000_000
+            )
+            assert m_old is not None and m_new is not None
+            old_p = out_dir / f"{m_old.output_id}.txt"
+            new_p = out_dir / f"{m_new.output_id}.txt"
+            assert old_p.exists() and new_p.exists()
+            # Adversarial coarse-mtime condition: force the MRU (new) entry to
+            # carry the OLDEST timestamp — the worst case the tie can degrade to.
+            base = old_p.stat().st_mtime
+            os.utime(old_p, (base, base))
+            os.utime(new_p, (base - 5.0, base - 5.0))
+            return m_old.output_id, m_new.output_id
+
+        # --- Baseline: no protection -> the MRU entry (oldest mtime) is evicted. ---
+        old_id, new_id = _setup()
+        cache_common.evict_cache_dir(
+            cache_dir_fn=skill_cache._skill_outputs_dir,
+            log_name="skill_cache",
+            max_total_bytes=cap,
+        )
+        assert not (out_dir / f"{new_id}.txt").exists(), (
+            "baseline: without protect_ids the MRU entry with the oldest mtime is "
+            "evicted (this is the bug the fix prevents)"
+        )
+
+        # Clean slate for the protected run.
+        for f in out_dir.glob("*.txt"):
+            f.unlink()
+
+        # --- Fix: protect the MRU id -> it survives, the older sibling evicts. ---
+        old_id, new_id = _setup()
+        cache_common.evict_cache_dir(
+            cache_dir_fn=skill_cache._skill_outputs_dir,
+            log_name="skill_cache",
+            max_total_bytes=cap,
+            protect_ids=frozenset({new_id}),
+        )
+        assert (out_dir / f"{new_id}.txt").exists(), (
+            "fix: protect_ids must keep the freshest entry even when its mtime sorts oldest"
+        )
+        assert not (out_dir / f"{old_id}.txt").exists(), (
+            "fix: the genuinely older sibling must still be evicted to honor the cap"
+        )
+
+    def test_store_output_forwards_protect_id_to_eviction(self, tmp_data_dir, monkeypatch):
+        """store_output must forward the id it just wrote to the eviction helper
+        as a protected id, so the freshest entry can never be the victim of its
+        own store call's cap enforcement.
+
+        Fails pre-fix: store_output called the eviction helper without a
+        protected id, so the captured ``protect_ids`` would be ``None``.  Passes
+        post-fix.
+        """
+        captured: dict[str, object] = {}
+
+        def _spy(*args: object, **kwargs: object) -> int:
+            captured["protect_ids"] = kwargs.get("protect_ids")
+            return 0
+
+        # evict_cache_dir is imported into skill_cache's namespace; patch there.
+        monkeypatch.setattr(skill_cache, "evict_cache_dir", _spy)
+
+        meta = skill_cache.store_output("sess-forward", "fwd-skill", "# Body\n\n" + ("x " * 50))
+        assert meta is not None
+        assert captured.get("protect_ids") == frozenset({meta.output_id}), (
+            "store_output must protect the just-written id during its own eviction pass"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Improvement 2: Cross-session compact isolation

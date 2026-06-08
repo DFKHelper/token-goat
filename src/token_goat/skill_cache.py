@@ -838,8 +838,9 @@ def store_output(
 
         # Best-effort eviction.  We do not wait or retry: if the directory
         # walk fails (e.g. concurrent worker activity, antivirus lock) the
-        # cap is enforced on the next call.
-        evict_old_entries(max_total_bytes=max_total_bytes)
+        # cap is enforced on the next call.  Protect the id we just wrote so a
+        # coarse-mtime tie can never evict this very entry (MRU protection).
+        evict_old_entries(max_total_bytes=max_total_bytes, protect_id=out_id)
 
         _LOG.debug(
             "skill_cache: stored id=%s skill=%s bytes=%d truncated=%s compressed=%s",
@@ -871,6 +872,7 @@ def evict_old_entries(
     *,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     max_compact_files: int = MAX_COMPACT_FILE_COUNT,
+    protect_id: str | None = None,
 ) -> int:
     """Evict the oldest body entries until total size is at or under *max_total_bytes*.
 
@@ -881,6 +883,10 @@ def evict_old_entries(
     accumulate indefinitely.  The oldest compacts (by mtime) are removed first
     when the count exceeds *max_compact_files*.
 
+    *protect_id*, when given, is the output id the caller just wrote; it is
+    forwarded as the protected set so a coarse-mtime tie can never evict the
+    freshest entry (see :func:`cache_common.evict_cache_dir`).
+
     Returns the number of body files removed by the LRU eviction (the compact
     count eviction runs separately and does not add to this total).
     """
@@ -888,6 +894,7 @@ def evict_old_entries(
         cache_dir_fn=_skill_outputs_dir,
         log_name="skill_cache",
         max_total_bytes=max_total_bytes,
+        protect_ids=frozenset({protect_id}) if protect_id else None,
     )
     _evict_compact_files(max_compact_files=max_compact_files)
     return removed

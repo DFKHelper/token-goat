@@ -2,6 +2,18 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+Two Windows coarse-`mtime` correctness fixes. Both reproduce only when two writes land close enough together to share a filesystem timestamp — common on NTFS under load — which is why they surfaced as intermittent CI flakes rather than deterministic failures. Each ships with a deterministic regression test that fails on the pre-fix code and passes on the fixed code.
+
+### Freshest cache entry survives its own store call's eviction
+
+`evict_cache_dir` sorts eviction candidates oldest-first by `float(st_mtime)` with a stable sort. When the just-written (MRU) entry shares a coarse `st_mtime` with older siblings, the stable sort falls back to arbitrary `iterdir` order, which on NTFS can place the newest file first and evict it — so a `store_output` call could delete the very entry it had just written. `evict_cache_dir` now accepts a `protect_ids` set that is excluded from the victim list regardless of timestamp, and `skill_cache.store_output` passes the id it just wrote. Protected bytes still count toward the cap, so other candidates keep evicting; if only protected entries remain over cap the loop stops best-effort rather than deleting the fresh entry or looping forever. This is correct MRU policy and deterministic independent of `mtime` granularity.
+
+### save() refreshes the process-local load cache
+
+`session.load()` caches `(object, mtime)` per session and serves the cached object whenever `cached_mtime == current_mtime`. When a later `save()`'s post-write timestamp aliased the mtime a previous `load()` had cached, the proc-cache kept serving the stale pre-save object on the next in-process `load()` even though the on-disk JSON was correct and complete. `save()` now overwrites an existing proc-cache entry with the object it just persisted on every successful write, so the freshest state always wins. Only existing entries are refreshed — inserting new keys here would bypass `load()`'s LRU-cap accounting. The concurrency test that exercised this path also drops the proc-cache entry before its final assertion so it reads authoritative disk truth, and its barrier/join timeouts were widened so heavy xdist CPU contention cannot misread thread-scheduling latency as a lost edit.
+
 ## [1.5.1] - 2026-06-08
 
 A round of correctness fixes for the cache size accounting, surgical reads, path normalization, and the Gemini hook bridge, plus two documentation corrections. No behavior changes to the happy path — these close gaps that surfaced under mixed-case names, uppercase WSL drives, compressed cache entries, and the Gemini wire format.
