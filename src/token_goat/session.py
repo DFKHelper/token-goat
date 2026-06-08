@@ -184,6 +184,18 @@ def _safe_parse(
 SESSION_SCHEMA_VERSION = 1
 _FILE_LOCK = threading.Lock()  # in-process; multi-process safe enough via atomic write
 
+# In-process record of the highest session version this process has written, keyed
+# by session id.  Guarded by _FILE_LOCK (read/written only inside save()'s critical
+# section).  The save() fast path skips the CAS re-read+merge when the on-disk
+# (mtime_ns, size) fingerprint matches what load() recorded — but that fingerprint
+# can ALIAS: two same-process threads adding equal-length keys can produce byte-
+# identical JSON (same size) written within one mtime tick (same mtime_ns), so both
+# threads trust a stale fingerprint and the second clobbers the first (lost update).
+# This registry breaks the aliasing exactly: version is monotonic and never collides,
+# so if another thread advanced the on-disk version past the loaded cache's version,
+# the fast path is bypassed and the full CAS+merge runs regardless of the fingerprint.
+_LAST_SAVED_VERSION: dict[str, int] = {}
+
 # ---------------------------------------------------------------------------
 # Process-local load cache
 # ---------------------------------------------------------------------------
@@ -1277,8 +1289,10 @@ class SessionCache:
     _json_cache: str | None = field(default=None, repr=False, compare=False)
     # Disk-state fingerprint recorded by load() so save() can skip the CAS
     # from_dict round-trip when no concurrent writer has changed the file.
-    # Both fields are 0.0/0 for freshly-created (unsaved) caches.  Not persisted.
-    _disk_mtime: float = field(default=0.0, repr=False, compare=False)
+    # Both fields are 0 for freshly-created (unsaved) caches.  Not persisted.
+    # mtime is stored in integer nanoseconds (st_mtime_ns) — the float st_mtime
+    # rounds at ~0.5us near the epoch and aliased under sub-microsecond writes.
+    _disk_mtime_ns: int = field(default=0, repr=False, compare=False)
     _disk_size: int = field(default=0, repr=False, compare=False)
     # Dirty flag set by mark_hint_seen() to defer its save() until the next
     # post-read/post-bash/post-edit save() picks it up.  Not persisted.
@@ -2885,7 +2899,7 @@ def load(session_id: str) -> SessionCache:
         # round-trip when no concurrent writer has touched the file.
         try:
             st = p.stat()
-            cache._disk_mtime = st.st_mtime
+            cache._disk_mtime_ns = st.st_mtime_ns
             cache._disk_size = st.st_size
             _cur_mtime = st.st_mtime
         except OSError:
@@ -3126,10 +3140,16 @@ def save(cache: SessionCache) -> None:
                 disk_cache: SessionCache | None = None
                 p = paths.session_cache_path(cache.session_id)
                 _skip_cas = False
-                if cache._disk_mtime != 0.0 or cache._disk_size != 0:
+                # The fingerprint fast path is only sound when no other writer has
+                # advanced the on-disk version since this cache loaded.  An in-process
+                # thread that already wrote a newer version is invisible to a (mtime,
+                # size) fingerprint when its write aliased — so consult the version
+                # registry first: if a same-process save outran us, force full CAS.
+                _in_proc_ahead = _LAST_SAVED_VERSION.get(cache.session_id, -1) > cache.version
+                if not _in_proc_ahead and (cache._disk_mtime_ns != 0 or cache._disk_size != 0):
                     try:
                         st = os.stat(p)
-                        if st.st_mtime == cache._disk_mtime and st.st_size == cache._disk_size:
+                        if st.st_mtime_ns == cache._disk_mtime_ns and st.st_size == cache._disk_size:
                             _skip_cas = True
                     except OSError:
                         pass  # file may not exist yet; fall through to full CAS
@@ -3166,11 +3186,15 @@ def save(cache: SessionCache) -> None:
 
                 try:
                     paths.atomic_write_text(p, cache.to_json())
+                    # Record the version we just wrote so a concurrent same-process
+                    # thread holding an older cache is forced through full CAS even if
+                    # its fingerprint aliases ours (the lost-update guard).
+                    _LAST_SAVED_VERSION[cache.session_id] = cache.version
                     # Update fingerprint so subsequent saves in the same process
                     # also benefit from the fast-path skip.
                     try:
                         st2 = os.stat(p)
-                        cache._disk_mtime = st2.st_mtime
+                        cache._disk_mtime_ns = st2.st_mtime_ns
                         cache._disk_size = st2.st_size
                     except OSError:
                         pass

@@ -2860,7 +2860,7 @@ class TestSessionCAS:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(_json.dumps(stale_data), encoding="utf-8")
         # Corrupt the fingerprint so the fast-path CAS skip does NOT fire.
-        c._disk_mtime = 0.0
+        c._disk_mtime_ns = 0
         c._disk_size = 0
 
         session.save(c)
@@ -3458,18 +3458,74 @@ class TestSessionLockfileConcurrent:
             f"expected 200 unique edited files, got {total}"
         )
 
+    def test_stale_version_with_aliased_fingerprint_forces_merge(self, tmp_data_dir):
+        """Regression: deterministic reproduction of the fast-path lost-update bug.
+
+        The save() fast path skips the CAS re-read+merge when the on-disk
+        (mtime_ns, size) fingerprint matches what the cache recorded at load.
+        That fingerprint can ALIAS — two same-process writers adding equal-length
+        keys produce byte-identical JSON written within one mtime tick — so a
+        stale-version cache mistakes "someone already wrote" for "nobody wrote
+        since I loaded" and clobbers the prior write.
+
+        This drives the exact aliasing precondition without thread-timing luck:
+        two distinct caches load at the same version, ``a`` commits (advancing the
+        on-disk version), then ``b``'s fingerprint is pointed at the post-``a`` disk
+        state. The in-process version registry must still force ``b`` through a full
+        CAS+merge because a same-process writer advanced the version past ``b``'s.
+        Pre-fix this asserts-fails (``a``'s edit is lost); post-fix both survive.
+        """
+        import os as _os
+
+        from token_goat import paths as tg_paths
+
+        sid = "alias_stale_version"
+        session.save(session.load(sid))  # disk now at version 1
+        p = tg_paths.session_cache_path(sid)
+
+        # Two *distinct* caches both observing version 1 (the proc-load cache
+        # would otherwise hand back one shared object for both load() calls).
+        session._proc_load_cache.clear()
+        a = session.load(sid)
+        session._proc_load_cache.clear()
+        b = session.load(sid)
+        assert a is not b
+        a.edited_files["/edit/aaa.py"] = 1
+        b.edited_files["/edit/bbb.py"] = 1
+
+        # 'a' commits first, advancing the on-disk version to 2.
+        session.save(a)
+
+        # Force the aliasing precondition: point 'b' at the current on-disk
+        # fingerprint so the fast path sees a match, even though 'b' still holds
+        # the pre-'a' version. Only the version registry distinguishes this from
+        # a genuinely uncontended save.
+        st = _os.stat(p)
+        b._disk_mtime_ns = st.st_mtime_ns
+        b._disk_size = st.st_size
+
+        session.save(b)
+
+        session._proc_load_cache.clear()
+        final = session.load(sid)
+        assert "/edit/aaa.py" in final.edited_files, (
+            "lost update: the first writer's edit was clobbered by a stale-version "
+            "save whose (mtime_ns, size) fingerprint aliased the on-disk state"
+        )
+        assert "/edit/bbb.py" in final.edited_files
+
 
 class TestDiskMtimeFingerprint:
     """Item 2: save() skips from_dict round-trip on uncontended path.
 
-    SessionCache._disk_mtime and _disk_size are populated by load() and
+    SessionCache._disk_mtime_ns and _disk_size are populated by load() and
     updated after each successful save(), allowing save() to skip the
     CAS from_dict deserialization when no concurrent writer has changed
     the file.
     """
 
     def test_load_sets_disk_fingerprint(self, tmp_data_dir):
-        """load() populates _disk_mtime and _disk_size after reading the file."""
+        """load() populates _disk_mtime_ns and _disk_size after reading the file."""
         from token_goat import paths as tg_paths
         sid = "aabbcc" * 6
         cache = session.load(sid)
@@ -3478,19 +3534,19 @@ class TestDiskMtimeFingerprint:
         reloaded = session.load(sid)
         p = tg_paths.session_cache_path(sid)
         st = p.stat()
-        assert reloaded._disk_mtime == st.st_mtime
+        assert reloaded._disk_mtime_ns == st.st_mtime_ns
         assert reloaded._disk_size == st.st_size
 
     def test_fresh_cache_has_zero_fingerprint(self, tmp_data_dir):
-        """A brand-new (unsaved) cache has _disk_mtime == 0.0 and _disk_size == 0."""
+        """A brand-new (unsaved) cache has _disk_mtime_ns == 0 and _disk_size == 0."""
         sid = "ccddee" * 6
         cache = session.load(sid)
         # File doesn't exist yet — fingerprint stays zero
-        assert cache._disk_mtime == 0.0
+        assert cache._disk_mtime_ns == 0
         assert cache._disk_size == 0
 
     def test_save_updates_fingerprint(self, tmp_data_dir):
-        """After save(), _disk_mtime and _disk_size reflect the written file."""
+        """After save(), _disk_mtime_ns and _disk_size reflect the written file."""
         from token_goat import paths as tg_paths
         sid = "ddeeff" * 6
         cache = session.load(sid)
@@ -3498,7 +3554,7 @@ class TestDiskMtimeFingerprint:
 
         p = tg_paths.session_cache_path(sid)
         st = p.stat()
-        assert cache._disk_mtime == st.st_mtime
+        assert cache._disk_mtime_ns == st.st_mtime_ns
         assert cache._disk_size == st.st_size
 
     def test_cas_merge_still_fires_on_concurrent_write(self, tmp_data_dir):
