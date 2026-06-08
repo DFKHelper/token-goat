@@ -2,6 +2,35 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [1.5.1] - 2026-06-08
+
+A round of correctness fixes for the cache size accounting, surgical reads, path normalization, and the Gemini hook bridge, plus two documentation corrections. No behavior changes to the happy path — these close gaps that surfaced under mixed-case names, uppercase WSL drives, compressed cache entries, and the Gemini wire format.
+
+### Cache size accounting counts compressed bodies
+
+Compressed cache entries store a zero-byte `<id>.txt` stub next to the real payload in an `<id>.gz` sibling. The size-accounting paths that iterate over `.txt` stubs — `evict_cache_dir`, `list_cache_outputs`, and the metadata stat loader — were measuring only the stub, so a cache full of compressed entries reported a near-zero footprint and never tripped LRU eviction. A single `gz_companion_size()` helper now lstats the `.gz` sibling and is added wherever iteration is filtered to `.txt` stubs, so the byte cap and oldest-first eviction see the true on-disk size. The whole-directory `iterdir()` sums in `doctor`, `clean-cache`, and `prune-cache` deliberately do not call it — they already count the `.gz` file as its own entry, and adding the companion there would double-count.
+
+### Surgical reads cap oversized docstrings
+
+`truncate_symbol_body` leaked an un-capped docstring through its small-body guard: a symbol with a short code body but a 60-plus-line docstring skipped the line cap entirely and returned the whole thing. The guard now applies the cap to the docstring independently of the code body, and the signature-boundary tuple it returns is corrected so the trailing class/def line is preserved rather than dropped.
+
+### Uppercase WSL drive letters normalize
+
+`normalize_path` converted `/mnt/c/...` to `c:/...` but its WSL regex matched only a lowercase `[a-z]` drive, so an uppercase `/mnt/C/...` matched neither the WSL branch nor the Windows drive-lowercasing branch and was returned fully unnormalized — fragmenting the session and cache key for the same physical file depending on how WSL reported the mount. The regex now accepts `[a-zA-Z]` and lowercases the captured drive, so `/mnt/C/foo` and `/mnt/c/foo` collapse to one canonical key.
+
+### Compacts purge for mixed-case skill names
+
+`invalidate_for_path` rebuilt the compact-file purge suffix from the raw skill name, but `_compact_file_id` lowercases the safe-name segment when it writes the file. A mixed-case skill such as `userSettings:brainstorming` was stored under `...-usersettings_brainstormingn-compact` while the purge suffix kept the original casing, so the `endswith` match missed and a stale compact survived the edit — `--compact` recall then served pre-edit content. The purge path now lowercases the segment the same way the writer does.
+
+### Gemini hook bridge preserves systemMessage
+
+The Gemini wire-format response handling dropped the hook `systemMessage` and folded everything into one channel. It now preserves `systemMessage` and routes `additionalContext` to Gemini's native channel, so compaction manifests and read hints reach the model the way they do under Claude Code and Codex.
+
+### Documentation
+
+- Install docs advertised a phantom `--gemini` flag; the supported path is `install --target gemini`, and the docs now say so.
+- The worked example in the README referred to `shrink-image`; the command is `image-shrink`.
+
 ## [1.5.0] - 2026-06-07
 
 Context-pressure awareness: one source of truth for how full the window is, and hints that get terser as it fills. Ships alongside three install fixes that restore hook forwarding under editable installs and silence a recurring `doctor` warning.
