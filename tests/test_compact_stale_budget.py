@@ -27,6 +27,7 @@ import unittest.mock
 from compact_test_helpers import DataDirMixin
 
 from token_goat.compact import (
+    ContextPressure,
     _compute_stale_compact_fraction,  # type: ignore[attr-defined]
     compute_adaptive_budget,
 )
@@ -294,3 +295,109 @@ class TestBuildManifestAdaptiveStaleWiring(DataDirMixin):
             f"stale_compact_fraction passed to compute_adaptive_budget should be in [0, 1]; "
             f"got {captured_fraction[0]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Sub-area J — context-pressure caps the budget (the stuck-compact fail-safe)
+# ---------------------------------------------------------------------------
+
+
+def _complex_mature_cache():
+    """A mature, maximally-complex cache whose *uncapped* budget hits the ceiling.
+
+    Every bonus is maxed and the session is mature (age > 3600 s → 1.4× factor),
+    so the uncapped budget saturates at the 800-token ceiling.  This makes the
+    context-pressure caps (300 / 500) strictly lower than the uncapped value,
+    so a test asserting ``<= 300`` / ``<= 500`` actually exercises the cap rather
+    than coincidentally passing because the budget was already small.
+    """
+    files = {}
+    for i in range(6):
+        e = unittest.mock.MagicMock()
+        e.symbols_read = ["sym"]
+        files[f"f{i}.py"] = e
+    return _minimal_cache(
+        edited_files={f"e{i}.py": {} for i in range(6)},
+        files=files,
+        bash_history=["ran a command"],
+        web_history=["fetched a url"],
+    )
+
+
+# Bonuses that push the uncapped budget to its ceiling for the complex cache.
+_MAX_KW = dict(
+    age_seconds=7200.0,  # mature → 1.4× factor
+    has_pending_diff=True,
+    has_uncommitted_changes=True,
+    stale_compact_fraction=1.0,
+)
+
+
+class TestContextPressureCaps:
+    """compute_adaptive_budget shrinks the manifest under context pressure.
+
+    A large manifest emitted at high context fill worsens the stuck-compact loop
+    (repeated compactions that never drop context below ~80%), so critical/hot
+    tiers cap the budget aggressively.  These tests lock in those caps — without
+    them a silent regression (cap removed, values swapped, guard inverted) would
+    pass every other test in the suite.
+    """
+
+    def _uncapped(self):
+        return compute_adaptive_budget(_complex_mature_cache(), **_MAX_KW)
+
+    def test_uncapped_budget_saturates_ceiling(self):
+        """Sanity: the complex cache's uncapped budget is high enough to be capped."""
+        # If this drops below 500 the cap assertions below would be vacuous.
+        assert self._uncapped() > 500
+
+    def test_critical_caps_at_300(self):
+        """A critical-fill context caps the budget at 300 tokens."""
+        cp = ContextPressure(fill_fraction=0.95, tier="critical")
+        budget = compute_adaptive_budget(
+            _complex_mature_cache(), context_pressure=cp, **_MAX_KW
+        )
+        assert budget <= 300
+        # And it genuinely shrank relative to the uncapped value.
+        assert budget < self._uncapped()
+
+    def test_hot_caps_at_500(self):
+        """A hot-fill context caps the budget at 500 tokens."""
+        cp = ContextPressure(fill_fraction=0.75, tier="hot")
+        budget = compute_adaptive_budget(
+            _complex_mature_cache(), context_pressure=cp, **_MAX_KW
+        )
+        assert budget <= 500
+        assert budget < self._uncapped()
+
+    def test_critical_is_tighter_than_hot(self):
+        """Critical pressure caps strictly lower than hot pressure."""
+        crit = compute_adaptive_budget(
+            _complex_mature_cache(),
+            context_pressure=ContextPressure(fill_fraction=0.95, tier="critical"),
+            **_MAX_KW,
+        )
+        hot = compute_adaptive_budget(
+            _complex_mature_cache(),
+            context_pressure=ContextPressure(fill_fraction=0.75, tier="hot"),
+            **_MAX_KW,
+        )
+        assert crit < hot
+
+    def test_cool_and_warm_do_not_cap(self):
+        """cool/warm pressure leaves the budget identical to no-pressure (uncapped)."""
+        uncapped = self._uncapped()
+        for tier, fill in (("cool", 0.10), ("warm", 0.60)):
+            budget = compute_adaptive_budget(
+                _complex_mature_cache(),
+                context_pressure=ContextPressure(fill_fraction=fill, tier=tier),
+                **_MAX_KW,
+            )
+            assert budget == uncapped, f"{tier} pressure must not cap the budget"
+
+    def test_none_pressure_is_uncapped(self):
+        """Omitting context_pressure leaves the budget uncapped (back-compat)."""
+        explicit_none = compute_adaptive_budget(
+            _complex_mature_cache(), context_pressure=None, **_MAX_KW
+        )
+        assert explicit_none == self._uncapped()
