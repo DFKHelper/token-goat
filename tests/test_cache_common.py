@@ -15,7 +15,10 @@ from token_goat.cache_common import (
     build_output_id,
     evict_cache_dir,
     get_cache_dir,
+    gz_companion_size,
+    list_cache_outputs,
     load_blob_gz,
+    load_output_meta_stat,
     load_sidecar_json,
     safe_cache_op,
     safe_session_fragment,
@@ -1394,3 +1397,80 @@ class TestStoreBlobGz:
 
         result = load_blob_gz("bad-id-0001", dir_fn, "test_cache")
         assert result is None
+
+
+class TestGzCompanionSizeAccounting:
+    """The metadata/listing helpers must report a compressed entry's true on-disk size.
+
+    store_blob_gz keeps the real bytes in a ``<id>.gz`` sibling behind a 0-byte
+    ``<id>.txt`` stub.  Before the fix, load_output_meta_stat and list_cache_outputs
+    stat'd only the stub, so every compressed entry reported ~0 bytes — wrong in
+    ``web-output --list`` / ``bash-history`` / ``doctor`` and in get_output_size's
+    no-sidecar fallback.  Eviction already counted the sibling; these helpers now
+    share the same gz_companion_size source of truth.
+    """
+
+    def test_gz_companion_size_returns_sibling_bytes(self, tmp_path: Path) -> None:
+        name = _valid_name("001")
+        txt = _plant(tmp_path, f"{name}.txt", b"", time.time())
+        (tmp_path / f"{name}.gz").write_bytes(b"Z" * 321)
+        assert gz_companion_size(txt) == 321
+
+    def test_gz_companion_size_zero_when_no_sibling(self, tmp_path: Path) -> None:
+        name = _valid_name("001")
+        txt = _plant(tmp_path, f"{name}.txt", b"X" * 40, time.time())
+        # An uncompressed entry has no .gz sibling.
+        assert gz_companion_size(txt) == 0
+
+    def test_load_output_meta_stat_includes_gz_size(self, tmp_path: Path) -> None:
+        """A compressed entry reports stub + .gz bytes, not the 0-byte stub alone."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        name = _valid_name("001")
+        _plant(d, f"{name}.txt", b"", time.time())  # 0-byte stub
+        (d / f"{name}.gz").write_bytes(b"Z" * 500)
+
+        meta = load_output_meta_stat(name, fn, "test_cache")
+        assert meta is not None
+        assert meta["size_bytes"] == 500, "compressed entry must report its .gz body size"
+
+    def test_list_cache_outputs_includes_gz_size(self, tmp_path: Path) -> None:
+        """list_cache_outputs reports the on-disk footprint including the .gz sibling."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        name = _valid_name("001")
+        _plant(d, f"{name}.txt", b"", time.time())
+        (d / f"{name}.gz").write_bytes(b"Z" * 750)
+
+        rows = list_cache_outputs(fn)
+        assert len(rows) == 1
+        assert rows[0]["output_id"] == name
+        assert rows[0]["size_bytes"] == 750
+
+    def test_uncompressed_entry_size_unchanged(self, tmp_path: Path) -> None:
+        """An entry with no .gz sibling still reports exactly its .txt byte count."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        name = _valid_name("001")
+        _plant(d, f"{name}.txt", b"X" * 123, time.time())
+
+        meta = load_output_meta_stat(name, fn, "test_cache")
+        assert meta is not None and meta["size_bytes"] == 123
+        rows = list_cache_outputs(fn)
+        assert rows[0]["size_bytes"] == 123
+
+    def test_real_store_blob_gz_entry_reports_compressed_size(self, tmp_path: Path) -> None:
+        """End-to-end: an entry written by store_blob_gz lists with a non-zero size."""
+        d = tmp_path / "cache"
+        fn = _make_cache_dir_fn(d)
+        name = _valid_name("001")
+        gz_path = store_blob_gz(name, "x" * 5000, fn, "test_cache")
+        assert gz_path is not None and gz_path.exists()
+        on_disk = gz_path.stat().st_size
+
+        meta = load_output_meta_stat(name, fn, "test_cache")
+        assert meta is not None
+        assert meta["size_bytes"] == on_disk, "must equal the real .gz body, not 0"
+        assert meta["size_bytes"] > 0
+        rows = list_cache_outputs(fn)
+        assert rows[0]["size_bytes"] == on_disk

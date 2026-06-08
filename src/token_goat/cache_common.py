@@ -291,21 +291,12 @@ def evict_cache_dir(
             if _stat_module.S_ISLNK(st.st_mode):
                 _log.warning("%s: skipping symlink in cache dir: %s", log_name, fp.name)
                 continue
-            entry_size = int(st.st_size)
-            # A gzip-compressed entry (store_blob_gz) keeps its real bytes in a
-            # ``<id>.gz`` sibling and writes a 0-byte ``<id>.txt`` stub.  Counting
-            # only the stub would make every compressed entry contribute 0 bytes,
-            # silently defeating the byte cap and leaving the .gz body unfreed.
-            # Attribute the .gz size to its owning .txt entry so the cap and the
-            # eviction accounting both see the bytes that are actually on disk.
-            gz_path = fp.with_name(fp.stem + _GZ_SUFFIX)
-            try:
-                gz_st = os.lstat(gz_path)
-            except OSError:
-                pass
-            else:
-                if not _stat_module.S_ISLNK(gz_st.st_mode):
-                    entry_size += int(gz_st.st_size)
+            # A gzip-compressed entry keeps its real bytes in a ``<id>.gz``
+            # sibling behind a 0-byte ``<id>.txt`` stub; attribute the sibling's
+            # size to its owning entry so the byte cap and eviction accounting
+            # both see the bytes actually on disk (else the cap is silently
+            # defeated and the .gz body never freed).
+            entry_size = int(st.st_size) + gz_companion_size(fp)
             entries.append((fp, float(st.st_mtime), entry_size))
             total += entry_size
     except OSError:
@@ -793,7 +784,11 @@ def load_output_meta_stat(
         return None
     return OutputStatDict(
         output_id=output_id,
-        size_bytes=int(st.st_size),
+        # True on-disk footprint: the ``.txt`` stub plus its ``.gz`` sibling, if
+        # any.  A compressed entry's stub is 0 bytes, so the sibling carries the
+        # real size — counting only the stub would report ~0 to ``--list`` and
+        # ``doctor`` and to get_output_size's no-sidecar fallback.
+        size_bytes=int(st.st_size) + gz_companion_size(path),
         mtime=float(st.st_mtime),
     )
 
@@ -823,7 +818,9 @@ def list_cache_outputs(cache_dir_fn: Callable[[], Path]) -> list[OutputStatDict]
                 continue
             results.append(OutputStatDict(
                 output_id=fp.stem,
-                size_bytes=int(st.st_size),
+                # On-disk footprint includes the ``.gz`` sibling for compressed
+                # entries (whose ``.txt`` stub is 0 bytes); see load_output_meta_stat.
+                size_bytes=int(st.st_size) + gz_companion_size(fp),
                 mtime=float(st.st_mtime),
             ))
     except OSError:
@@ -837,6 +834,30 @@ def list_cache_outputs(cache_dir_fn: Callable[[], Path]) -> list[OutputStatDict]
 # balances speed and ratio well for text content (HTML, JSON, Markdown).
 _GZ_SUFFIX: str = ".gz"
 _GZ_LEVEL: int = 6
+
+
+def gz_companion_size(txt_path: Path) -> int:
+    """Return the byte size of the ``<id>.gz`` sibling of a ``.txt`` stub, or 0.
+
+    A gzip-compressed cache entry (:func:`store_blob_gz`) keeps its real bytes in
+    a ``<id>.gz`` sibling and writes a 0-byte ``<id>.txt`` stub.  Any code that
+    reports an entry's on-disk footprint from the ``.txt`` stat alone therefore
+    under-reports compressed entries as ~0 bytes.  This helper is the single
+    source of truth for the sibling's contribution — used by eviction accounting
+    (so the byte cap counts the bytes actually on disk) and by the metadata /
+    listing functions (so ``--list`` and ``doctor`` show the true footprint).
+
+    Never raises: a missing sibling (the common, uncompressed case) or any stat
+    failure returns 0.  Symlinks are ignored to match the eviction path's
+    refusal to follow links inside the cache directory.
+    """
+    try:
+        gz_st = os.lstat(txt_path.with_name(txt_path.stem + _GZ_SUFFIX))
+    except OSError:
+        return 0
+    if _stat_module.S_ISLNK(gz_st.st_mode):
+        return 0
+    return int(gz_st.st_size)
 
 
 def store_blob_gz(
