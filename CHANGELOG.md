@@ -2,9 +2,9 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [1.5.0] - 2026-06-07
 
-Context-pressure awareness: one source of truth for how full the window is, and hints that get terser as it fills.
+Context-pressure awareness: one source of truth for how full the window is, and hints that get terser as it fills. Ships alongside three install fixes that restore hook forwarding under editable installs and silence a recurring `doctor` warning.
 
 ### Centralized context-pressure model
 
@@ -21,6 +21,14 @@ The pre-read hook tightens its large-file threshold as the window fills. A file 
 ### Smaller manifests under pressure
 
 `compute_adaptive_budget` now weighs context pressure when it sizes the compaction manifest. Once the window runs hot the budget is capped at 500 tokens, and at critical it drops to 300, so the manifest stops adding to the very problem it exists to summarize.
+
+### Install robustness
+
+**Hooks no longer silently disable themselves under an editable install.** The `tg-hook` wrapper carries an `if not exist "<sentinel>"` gate that short-circuits to a bare `{"continue":true}` during the `uv tool install --reinstall` race, when the venv's `token_goat` module is briefly absent. The sentinel used to be a hardcoded `site-packages/token_goat/__init__.py` path, which never exists under an editable install (`uv sync`, the project `.venv`), so the gate stayed permanently true and every hook no-op'd — the whole tool went dark with no error. The wrapper now resolves the sentinel through `importlib.util.find_spec("token_goat").origin`, which points at `src/token_goat/__init__.py` for editable installs and `site-packages/...` for regular ones, and falls back to an ungated wrapper when no sentinel resolves. A live handler emits `{"continue": true, "_tg_elapsed_ms": N}`; the `_tg_elapsed_ms` field is the tell that forwarding actually ran.
+
+**Re-install purges orphaned `tokenwise` entries.** After the `tokenwise` → `token-goat` rename, a re-install left the old hook and permission lines stranded in `settings.json` and the Codex `config.toml`, so both harnesses kept invoking a binary that no longer existed. `patch_settings_json` and `patch_codex_config` now strip any pre-rename `tokenwise` command and permission entry before writing the current ones.
+
+**Hook wrapper is written as bytes to stop CRLF doubling.** `hook_wrapper_content()` hand-bakes platform-correct line endings — `\r\n` on Windows — then was written through `atomic_write_text`, whose text-mode handle translated every `\n` to `\r\n` a second time, doubling each line ending to `\r\r\n` on disk. `cmd.exe` tolerated the stray carriage return so forwarding still worked, but `doctor` does a byte-exact compare of the on-disk wrapper against the regenerated content and warned `differs from expected — run token-goat install to refresh` on every run, a nag that reinstalling could never clear because it rewrote the same doubled bytes. The wrapper now goes through `atomic_write_bytes`, preserving the authored endings verbatim.
 
 ## [1.4.1] - 2026-06-06
 
