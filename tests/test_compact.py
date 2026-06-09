@@ -6591,7 +6591,8 @@ class TestDynamicMaxFilesRead:
         result = compact.build_manifest(sid, max_tokens=2000)
         # Count entries under **Files:**
         if "**Files:**" in result:
-            files_section = result.split("**Files:**")[1].split("**")[0]
+            # Stop the slice at the next ### header (e.g. ### Compact Directives) so its bullets are not miscounted as file entries.
+            files_section = result.split("**Files:**")[1].split("**")[0].split("\n### ")[0]
             file_entries = [ln for ln in files_section.splitlines() if ln.strip().startswith("-")]
             assert len(file_entries) <= 6  # 4 + 2 mature bonus max
 
@@ -6610,7 +6611,8 @@ class TestDynamicMaxFilesRead:
         _session_mod.save(cache)
         result = compact.build_manifest(sid, max_tokens=2000)
         if "**Files:**" in result:
-            files_section = result.split("**Files:**")[1].split("**")[0]
+            # Stop the slice at the next ### header (e.g. ### Compact Directives) so its bullets are not miscounted as file entries.
+            files_section = result.split("**Files:**")[1].split("**")[0].split("\n### ")[0]
             file_entries = [ln for ln in files_section.splitlines() if ln.strip().startswith("-")]
             assert len(file_entries) <= 8  # 6 + 2 mature bonus max
 
@@ -6629,7 +6631,8 @@ class TestDynamicMaxFilesRead:
         _session_mod.save(cache)
         result = compact.build_manifest(sid, max_tokens=3000)
         if "**Files:**" in result:
-            files_section = result.split("**Files:**")[1].split("**")[0]
+            # Stop the slice at the next ### header (e.g. ### Compact Directives) so its bullets are not miscounted as file entries.
+            files_section = result.split("**Files:**")[1].split("**")[0].split("\n### ")[0]
             file_entries = [ln for ln in files_section.splitlines() if ln.strip().startswith("-")]
             # With default max (10) + mature bonus (2), up to 12 entries are allowed
             assert len(file_entries) <= 12
@@ -6649,7 +6652,8 @@ class TestDynamicMaxFilesRead:
         _session_mod.save(cache)
         result = compact.build_manifest(sid, max_tokens=2000)
         if "**Files:**" in result:
-            files_section = result.split("**Files:**")[1].split("**")[0]
+            # Stop the slice at the next ### header (e.g. ### Compact Directives) so its bullets are not miscounted as file entries.
+            files_section = result.split("**Files:**")[1].split("**")[0].split("\n### ")[0]
             file_entries = [ln for ln in files_section.splitlines() if ln.strip().startswith("-")]
             # >=10 path: max=4, mature bonus=+2 → max 6
             assert len(file_entries) <= 6
@@ -8767,8 +8771,8 @@ class TestManifestSectionOrder:
         # Extract the section names from the _section_groups assignment in order.
         # We look for the pattern ("name", ...) inside the list.
         import re
-        # Match all ("name", ...) tuple opens in the _section_groups list.
-        names_in_order = re.findall(r'\("(\w+)",[^)]*,\s*(?:True|False)\)', src)
+        # Match all ("name", lines, protected) tuples in the _section_groups list. The third element is a protected flag that is usually a True/False literal but may be a computed variable (e.g. the wide-session map-pointer's _syms_protected), so accept any identifier there rather than only the boolean literals.
+        names_in_order = re.findall(r'\("(\w+)",[^)]*,\s*\w+\)', src)
         assert names_in_order, "Could not parse _section_groups from _render source"
 
         def _pos(name: str) -> int:

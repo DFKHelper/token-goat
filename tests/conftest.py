@@ -498,6 +498,29 @@ def isolate_worker_autostart(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _pin_claudecode_harness(monkeypatch):
+    """Pin the detected harness to claudecode so manifest output is environment-independent.
+
+    compact.build_manifest() resolves the harness via detect_harness(config.harness);
+    with the default config value "auto" that falls through to ambient env probes
+    (CLAUDE_CODE_SESSION_ID / ANTHROPIC_API_KEY -> "claudecode", otherwise "generic").
+    On a Claude Code dev machine those keys are present, so the whole suite rendered the
+    full-section claudecode manifest and passed; on a plain shell or CI the identical
+    tests resolved to "generic" — which strips the bash/web/symbol/skill sections — and
+    51 manifest assertions failed. Setting TOKEN_GOAT_HARNESS_OVERRIDE removes that
+    ambient dependency for every test, reproducing the dev-machine behaviour everywhere.
+
+    Tests that intentionally exercise a different harness are unaffected: they either
+    pass an explicit ``harness=`` argument (bypassing env detection entirely), pin it via
+    config through ``_load_config`` (detect_harness returns a non-"auto" config_override
+    directly, never consulting the env var), or ``delenv`` this override in their own body
+    (the function-scoped monkeypatch runs after this fixture, so the test wins).
+    """
+    monkeypatch.setenv("TOKEN_GOAT_HARNESS_OVERRIDE", "claudecode")
+    yield
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _suppress_real_spawns():
     """Block spawn_detached() and spawn_index_detached() from forking real processes.

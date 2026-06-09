@@ -668,6 +668,10 @@ _MAX_MANIFEST_TOKENS_CAP: Final[int] = 4_000
 # Directives appended after sidecar write — seen by the compaction LLM but excluded from the SHA/fingerprint.
 _COMPACT_DIRECTIVES: Final[str] = ("\n### Compact Directives\n- `skill_listing` messages (the full available-skills list) are auto-regenerated at session start — replace each with: `[skill_listing: auto-injected]`\n- `hook_success` / `hook_error` messages are diagnostic telemetry — collapse all to: `[N hook events]`")
 _DIRECTIVE_TOKEN_RESERVE: Final[int] = -(-len(_COMPACT_DIRECTIVES) // 3)  # ceiling div
+# Minimum budget at which the boilerplate directives are appended. Below this the directives would consume a disproportionate share of the budget and crowd out the protected session payload (edited/read files) the manifest exists to preserve, so they are skipped entirely and the body keeps the full budget. Set to 2x the reserve so once directives DO attach the body still retains at least half the budget. Tying the reserve to actual append also fixes the prior bug where body_budget collapsed to 1 at tiny budgets while reserving 93 tokens for directives that the append gate then never added.
+_DIRECTIVE_APPEND_MIN_TOKENS: Final[int] = 2 * _DIRECTIVE_TOKEN_RESERVE
+# Minimum variable-section budget (sec_budget_max) at which the wide-session map-pointer is guaranteed its own slot even when the proportional symbols slice is 0. The pointer summarizes ALL file access (not just symbol reads), so it must not be starved by an empty symbols section when the overall budget has room; below this floor the budget is tight enough that protected top-files take priority and the pointer defers to sym_budget.
+_WIDE_POINTER_MIN_SECTION_BUDGET: Final[int] = 100
 # Manifest delta-cache TTL (item #19).  If less than this many seconds have elapsed
 # since the last emit AND the rendered text is byte-for-byte identical, return a
 # brief stub instead of rebuilding.  Force a full rebuild after 10 min regardless.
@@ -4420,7 +4424,10 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
 
     # Cache miss or TTL expired: render the full manifest.
     cfg = _load_config()
-    body_budget = max(1, max_tokens - _DIRECTIVE_TOKEN_RESERVE)
+    # Reserve directive space iff we will actually append directives (see _DIRECTIVE_APPEND_MIN_TOKENS); otherwise the body gets the full budget instead of being starved for boilerplate that never attaches.
+    _will_append_directives = max_tokens >= _DIRECTIVE_APPEND_MIN_TOKENS
+    _reserve = _DIRECTIVE_TOKEN_RESERVE if _will_append_directives else 0
+    body_budget = max(1, max_tokens - _reserve)
     full_manifest = _build_manifest_from_cache(
         cache, session_id, body_budget, **_compact_render_kwargs(cfg)
     )
@@ -4454,15 +4461,6 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     sha = _short_content_hash(full_manifest)
     _write_manifest_sidecar(session_id, sha, fingerprint, now, counts=current_counts)
     _manifest_sha_written_this_process.add(session_id)
-    # Also save the full manifest text so `compact-hint --diff` can produce a
-    # unified diff between the prior emit and the current one.  Silently skip on
-    # any error — this is a developer-tooling sidecar, never a critical path.
-    try:
-        text_sidecar = paths.manifest_text_sidecar_path(session_id)
-        paths.ensure_dir(text_sidecar.parent)
-        paths.atomic_write_text(text_sidecar, full_manifest)
-    except Exception:  # noqa: BLE001
-        pass
 
     # Also update the session-JSON fields so legacy callers and stats remain consistent.
     from . import (
@@ -4473,9 +4471,18 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     cache._invalidate_json_cache()
     session_mod.save(cache)
 
-    # Skip directives when the budget is too small to fit them without blowing through the limit.
-    if max_tokens > _DIRECTIVE_TOKEN_RESERVE:
+    # Append directives BEFORE persisting the text sidecar (and returning) so the stored copy is byte-identical to the emitted value: `compact-hint --diff` diffs the prior emit against the next, and storing the pre-directive body would make every diff spuriously show the constant directives as added/removed. Skip directives when the budget is too small to fit them without blowing through the limit.
+    if _will_append_directives:
         full_manifest += _COMPACT_DIRECTIVES
+
+    # Save the full manifest text so `compact-hint --diff` can produce a unified diff between the prior emit and the current one. Silently skip on any error — this is a developer-tooling sidecar, never a critical path.
+    try:
+        text_sidecar = paths.manifest_text_sidecar_path(session_id)
+        paths.ensure_dir(text_sidecar.parent)
+        paths.atomic_write_text(text_sidecar, full_manifest)
+    except Exception:  # noqa: BLE001
+        pass
+
     return full_manifest
 
 
@@ -5993,14 +6000,19 @@ def _render(
     # the per-file symbol listing consumes 200–300 tokens the compaction LLM
     # can't usefully retain.  Emit a single actionable pointer instead.
     _wide_session = len(cache.files) >= wide_session_threshold
+    # Only the cheap single-line wide-session pointer is force-protected from the safety-trim; large per-file symbol listings and orchestrator commits stay droppable.
+    _syms_protected = False
     if _wide_session:
         _wide_line = (
             f"**Symbols Accessed:** {len(cache.files)} files accessed"
             " — use `token-goat map --compact` to re-orient."
         )
         _wide_cost = _token_count(_wide_line)
-        sym_lines: list[str] = [_wide_line] if _wide_cost <= sym_budget else []
+        # The map-pointer IS the symbols-section content in a wide session, so don't let it be starved when the proportional symbols slice is 0 (no distinct symbol reads): floor its budget at its own cost when the overall section budget has room (sec_budget_max >= _WIDE_POINTER_MIN_SECTION_BUDGET). At tighter budgets keep deferring to sym_budget so protected top-files win the contested space.
+        _pointer_budget = max(sym_budget, _wide_cost) if sec_budget_max >= _WIDE_POINTER_MIN_SECTION_BUDGET else sym_budget
+        sym_lines: list[str] = [_wide_line] if _wide_cost <= _pointer_budget else []
         sym_used: int = _wide_cost if sym_lines else 0
+        _syms_protected = bool(sym_lines)
     else:
         # Item #8: suppress symbol-detail lines for files that already appear in
         # the **Files:** read list (top_files).  The read entry implies the file
@@ -6168,6 +6180,7 @@ def _render(
         sym_lines = [_orch_header_line, "### Recent Commits"]
         sym_lines.extend(_orch_commits)
         sym_used = _token_count("\n".join(sym_lines))
+        _syms_protected = False  # orchestrator commits are droppable, not the force-protected pointer
         # Suppress bash history and what_worked — too noisy in orchestrator loops.
         bash_lines = []
         bash_used = 0
@@ -6650,7 +6663,7 @@ def _render(
         ("session_goal",  session_goal_lines,    False),
         ("bash",          bash_lines,            False),
         ("what_worked",   what_worked_lines,     False),
-        ("syms",          sym_lines,             False),
+        ("syms",          sym_lines,             _syms_protected),
         ("web",           web_lines,             False),
         ("glob",          glob_lines,            False),
         ("dep_changes",   dep_change_lines,      False),
@@ -6859,6 +6872,10 @@ def _render(
         _live_groups = list(_section_groups)
         _solved = False
         for _drop_name in _droppable_names_in_drop_order:
+            # Respect the protected flag: a group explicitly marked protected (e.g. the wide-session map-pointer) must survive the safety trim even though its name appears in the droppable list for its unprotected variant (large per-file symbol listings).
+            _named = next(((n, _l, _p) for (n, _l, _p) in _live_groups if n == _drop_name), None)
+            if _named is not None and _named[2]:
+                continue
             # Phase 1: try truncating the section to 3 items before dropping.
             _truncate_idx = next(
                 (i for i, (n, _l, _p) in enumerate(_live_groups) if n == _drop_name),
@@ -6919,20 +6936,26 @@ def _render(
                 if _name in _pop_floor_names
             )
             _pop_floor = max(3, _pop_floor)
+            # Pin the protected wide-session map-pointer (cheap, single high-value line) like the legend so the popper sheds large protected detail (e.g. edited file lines, where only the header must survive) before this pointer. Pulled out of the popped body and re-appended below it.
+            _pinned_lines: list[str] = []
             _body_lines: list[str] = []
-            for _name, _lines, _ in _live_groups:
-                _body_lines.extend(_lines)
+            for _name, _lines, _prot in _live_groups:
+                if _name == "syms" and _prot:
+                    _pinned_lines.extend(_lines)
+                else:
+                    _body_lines.extend(_lines)
             _legend_suffix = [legend_line] if legend_line is not None else []
+            _pinned_suffix = _pinned_lines + _legend_suffix
             _trimmed = _body_lines[:]
             while len(_trimmed) > _pop_floor and estimate_tokens(
                 "\n".join(
                     _strip_common_prefix_from_sections(
-                        _trimmed + _legend_suffix, _applied_prefix,
-                    ) if _applied_prefix else _trimmed + _legend_suffix
+                        _trimmed + _pinned_suffix, _applied_prefix,
+                    ) if _applied_prefix else _trimmed + _pinned_suffix
                 )
             ) > max_tokens:
                 _trimmed.pop()
-            _final = _trimmed + _legend_suffix
+            _final = _trimmed + _pinned_suffix
             if _applied_prefix:
                 _final = _strip_common_prefix_from_sections(_final, _applied_prefix)
             result = "\n".join(_final).rstrip()
