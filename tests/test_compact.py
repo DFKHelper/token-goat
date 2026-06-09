@@ -3381,14 +3381,38 @@ class TestComputeAdaptiveBudgetWithAge:
         assert budget_active > budget_no_age
 
     def test_mature_session_increases_budget(self, tmp_data_dir):
-        """Mature session (> 60 min) multiplies budget by 1.4, capped at 800."""
+        """Mature session (> 60 min) with sufficient activity multiplies budget by 1.4.
+
+        Activity-density multiplier: density = edits/max(1, age_minutes).  Sessions
+        with density >= 0.3 edits/min retain the full mature (1.4) factor; low-density
+        sessions are capped at the active (1.0) factor.  At age=7200s (120min) the
+        threshold is 0.3 × 120 = 36 edits.
+        """
+        import token_goat.session as _session_mod  # noqa: PLC0415
         sid = "mature-age-budget"
-        # 2 edits → raw = 200 + 100 = 300; × 1.4 = 420
+        # 36 edits in 120 min → density = 0.30/min ≥ threshold → full mature factor (1.4)
+        # raw = 200 + min(200, 36 × 50) = 200 + 200 = 400; × 1.4 = 560
+        cache = session.load(sid)
+        with unittest.mock.patch.object(_session_mod, "save", return_value=None):
+            for i in range(36):
+                cache = session.mark_file_edited(sid, f"/proj/e{i}.py", cache=cache)
+        _session_mod.save(cache)
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=7200)
+        assert budget == 560
+
+    def test_mature_session_low_activity_downgraded(self, tmp_data_dir):
+        """Mature session with low edit density is capped at active-tier factor (1.0).
+
+        2 edits in 120 min → density = 0.017/min < 0.3 threshold → cap at 1.0 (not 1.4).
+        raw = 200 + 100 = 300; × 1.0 = 300.
+        """
+        sid = "mature-low-activity"
         session.mark_file_edited(sid, "/proj/a.py")
         session.mark_file_edited(sid, "/proj/b.py")
         cache = session.load(sid)
         budget = compact.compute_adaptive_budget(cache, age_seconds=7200)
-        assert budget == 420
+        assert budget == 300
 
     def test_mature_session_capped_at_800(self, tmp_data_dir):
         """Mature session with maximum complexity is capped at 800 tokens."""

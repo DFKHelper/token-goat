@@ -69,7 +69,10 @@ class TestDiffHintEndToEnd:
         """
         (tmp_path / ".git").mkdir()
         src = tmp_path / "settings_full.py"
-        lines = [f"OPTION_{i} = {i}\n" for i in range(200)]
+        # 500 lines (~7,500 chars / 3.5 ≈ 2,143 tokens) — savings exceed the
+        # configurable diff_hint_min_tokens_saved default (1,000) so the diff
+        # hint fires regardless of project config.
+        lines = [f"OPTION_{i} = {i}\n" for i in range(500)]
         src.write_text("".join(lines), encoding="utf-8")
 
         sid = "diff-e2e-full-block"
@@ -83,8 +86,8 @@ class TestDiffHintEndToEnd:
         # Three widely separated edits → three hunks → full unified diff block
         # (not the micro-diff one-liner summary).
         lines[0] = "OPTION_0 = 999\n"
-        lines[100] = "OPTION_100 = 999\n"
-        lines[199] = "OPTION_199 = 999\n"
+        lines[250] = "OPTION_250 = 999\n"
+        lines[499] = "OPTION_499 = 999\n"
         src.write_text("".join(lines), encoding="utf-8")
         _assert_continue(_post_edit_sync({
             "session_id": sid,

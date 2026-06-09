@@ -335,6 +335,8 @@ class _HintsToml(TypedDict, total=False):
     backoff_thresholds: list[int]
     git_hint_max_ms: int
     min_session_hint_savings_bytes: int
+    diff_hint_min_tokens_saved: int
+    prompt_triggers: list[dict[str, Any]]
 
 
 class _WebFetchToml(TypedDict, total=False):
@@ -850,6 +852,30 @@ class StatsConfig:
 
 
 @dataclass
+class PromptTrigger:
+    """A keyword-to-hint rule for the UserPromptSubmit hook.
+
+    When any word in *keywords* appears (case-insensitive, whole-word) in the
+    user's prompt, *hint* is appended to the session-context summary that
+    token-goat injects as ``additionalContext``.  This pre-populates relevant
+    context before the model searches for it, saving tool-call round-trips.
+
+    Configure via ``[[hints.prompt_triggers]]`` in config.toml::
+
+        [[hints.prompt_triggers]]
+        keywords = ["release", "publish", "tag", "changelog"]
+        hint = "Release: bump pyproject + uv lock, CHANGELOG, push main, create tag"
+
+        [[hints.prompt_triggers]]
+        keywords = ["commit", "push"]
+        hint = "Git: SSH fallback if auth fails; no Co-Authored-By lines"
+    """
+
+    keywords: list[str]
+    hint: str
+
+
+@dataclass
 class HintsConfig:
     """Configuration for adaptive hint suppression, quiet-hours, verbose suppression, and the
     structured-JSON sidecar.
@@ -965,6 +991,18 @@ class HintsConfig:
     # at 50 %, 70 %, and every turn above 85 % estimated context fill.  Opt-out
     # via ``[hints] context_threshold_advisory = false`` in config.toml.
     context_threshold_advisory: bool = True
+    # Minimum tokens saved (full-file tokens minus diff tokens) before a diff-hint
+    # is emitted.  The module-level default of 250 is the breakeven with the
+    # ~80-token hint preamble; raising to 1000 keeps only diffs that meaningfully
+    # offset context cost.  Override via ``[hints] diff_hint_min_tokens_saved = N``
+    # in config.toml.  Clamped to [0, 100_000].
+    diff_hint_min_tokens_saved: int = 1000
+    # Keyword-triggered hint rules.  Each rule fires when any of its keywords
+    # appears (whole-word, case-insensitive) in the user's prompt, appending
+    # the rule's hint text to the session-context summary injected by
+    # UserPromptSubmit.  Default empty — configure per-project via
+    # ``[[hints.prompt_triggers]]`` in config.toml.
+    prompt_triggers: list[PromptTrigger] = field(default_factory=list)
 
 
 @dataclass
@@ -1346,6 +1384,32 @@ def _validated_int_list(val: object, default: list[int], name: str) -> list[int]
     return valid
 
 
+def _parse_prompt_triggers(val: object) -> list[PromptTrigger]:
+    """Parse ``[[hints.prompt_triggers]]`` TOML array into :class:`PromptTrigger` objects.
+
+    Each entry must be a table with a ``keywords`` list-of-strings and a ``hint`` string.
+    Malformed entries are skipped with a warning; the rest are returned.
+    """
+    if not isinstance(val, list):
+        _LOG.warning("config: hints.prompt_triggers must be a list of tables; ignoring")
+        return []
+    result: list[PromptTrigger] = []
+    for i, entry in enumerate(val):
+        if not isinstance(entry, dict):
+            _LOG.warning("config: hints.prompt_triggers[%d] must be a table; skipping", i)
+            continue
+        kws = entry.get("keywords", [])
+        hint = entry.get("hint", "")
+        if not isinstance(kws, list) or not all(isinstance(k, str) for k in kws):
+            _LOG.warning("config: hints.prompt_triggers[%d].keywords must be list[str]; skipping", i)
+            continue
+        if not isinstance(hint, str) or not hint.strip():
+            _LOG.warning("config: hints.prompt_triggers[%d].hint must be a non-empty string; skipping", i)
+            continue
+        result.append(PromptTrigger(keywords=[k.lower() for k in kws if k.strip()], hint=hint.strip()))
+    return result
+
+
 _VALID_HARNESS_VALUES: Final[frozenset[str]] = frozenset(
     ["auto", "claudecode", "codex", "opencode", "generic"]
 )
@@ -1716,6 +1780,11 @@ def load() -> Config:
             hints_raw.get("min_session_hint_savings_bytes", 512), 512, 0, 1_000_000,
             "hints.min_session_hint_savings_bytes",
         ),
+        diff_hint_min_tokens_saved=_validated_int(
+            hints_raw.get("diff_hint_min_tokens_saved", 1000), 1000, 0, 100_000,
+            "hints.diff_hint_min_tokens_saved",
+        ),
+        prompt_triggers=_parse_prompt_triggers(hints_raw.get("prompt_triggers", [])),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
     _apply_env_enable(hints_cfg, "json_sidecar", _ENV_HINT_JSON_SIDECAR, "hints.json_sidecar")

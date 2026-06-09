@@ -3763,6 +3763,32 @@ def _session_age_tier(age_seconds: float) -> str:
     return "mature"
 
 
+def _compute_activity_multiplier(age_seconds: float, edit_count: int) -> float:
+    """Return an adaptive tier multiplier that considers both session age and edit density.
+
+    Starts from the age-based tier factor and applies a downgrade when the session
+    has been running long but accumulated little edit activity — a long idle session
+    should not consume the same manifest budget as a long busy one.
+
+    Age factors:  young(<10min)=0.6  active(10-60min)=1.0  mature(>60min)=1.4
+    Density downgrade: when age >= 10 min and edits/minute < 0.3, cap at 1.0 (active).
+    Density is not meaningful for very short sessions, so sessions below 10 min
+    always use their age factor unchanged.
+    """
+    tier = _session_age_tier(age_seconds)
+    age_factors = {"young": 0.6, "active": 1.0, "mature": 1.4}
+    factor = age_factors[tier]
+
+    if age_seconds >= 600:  # only apply density logic once session is past the young threshold
+        age_minutes = age_seconds / 60.0
+        density = edit_count / max(1.0, age_minutes)
+        if density < 0.3:
+            # Low-activity session: cap at active-tier factor even if age would give mature.
+            factor = min(factor, 1.0)
+
+    return factor
+
+
 def _compute_stale_compact_fraction(session_id: str, skill_history: dict) -> float:  # type: ignore[type-arg]
     """Return the fraction of loaded skills whose compact is missing or stale.
 
@@ -3829,7 +3855,9 @@ def compute_adaptive_budget(
         + 50 tokens if there are pending git changes (git diff --stat HEAD non-empty)
         + 10 tokens if there are uncommitted changes (git diff/status non-empty)
         + min(60, round(stale_compact_fraction × 60)) if skills have stale/missing compacts
-        × tier multiplier (young=0.6, active=1.0, mature=1.4)
+        × activity multiplier: age-based tier, with density downgrade for idle sessions
+            age tiers: young(<10min)=0.6  active(10-60min)=1.0  mature(>60min)=1.4
+            density downgrade: if age>=10min and edits/min<0.3 → cap multiplier at 1.0
         Capped to [200, 800], then further capped by context pressure:
             critical → max 300 (force aggressive compaction)
             hot      → max 500
@@ -3901,11 +3929,9 @@ def compute_adaptive_budget(
         + stale_bonus
     )
 
-    # Apply session-age tier multiplier: young sessions need less manifest space
-    # (little context has accumulated); mature sessions need more.
-    tier = _session_age_tier(age_seconds)
-    tier_factors = {"young": 0.6, "active": 1.0, "mature": 1.4}
-    factor = tier_factors[tier]
+    # Apply activity multiplier: combines age tier and edit-density so a long
+    # idle session doesn't inflate the budget the same way a busy session does.
+    factor = _compute_activity_multiplier(age_seconds, edited_count)
     total = int(round(raw_total * factor))
 
     # Context-pressure cap: shrink the manifest at high fill so the compaction LLM compresses aggressively rather than preserving everything (large manifest at high fill worsens the stuck-compact loop where repeated compactions never reduce context below ~80%).

@@ -1770,13 +1770,33 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
     except Exception:  # noqa: BLE001
         pass
 
-    if not parts and _ctx_advisory_prefix is None:
+    # Keyword-triggered hints: check prompt words against configured prompt_triggers.
+    # Fires even when parts is empty so keyword hints can stand alone.
+    _keyword_hints: list[str] = []
+    try:
+        from . import config as _cfg_kw  # noqa: PLC0415
+
+        _triggers = _cfg_kw.load().hints.prompt_triggers
+        if _triggers and isinstance(_raw_prompt, str) and _raw_prompt.strip():
+            import re as _re  # noqa: PLC0415
+            _prompt_words = set(_re.sub(r"[^a-z0-9]", " ", _raw_prompt.lower()).split())
+            for _trig in _triggers:
+                if any(kw in _prompt_words for kw in _trig.keywords):
+                    _keyword_hints.append(_trig.hint)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not parts and _ctx_advisory_prefix is None and not _keyword_hints:
         return CONTINUE()
 
+    _summary_parts = list(parts)
+    for _kh in _keyword_hints:
+        _summary_parts.append(f"hint: {_kh}")
+
     if _ctx_advisory_prefix is not None:
-        summary = "[" + _ctx_advisory_prefix + " | ".join(parts) + "]"
+        summary = "[" + _ctx_advisory_prefix + " | ".join(_summary_parts) + "]"
     else:
-        summary = "[" + " | ".join(parts) + "]"
+        summary = "[" + " | ".join(_summary_parts) + "]"
     _LOG.debug("user-prompt-submit: injecting context summary: %s", summary)
     return {
         "continue": True,

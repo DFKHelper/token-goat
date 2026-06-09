@@ -1835,6 +1835,11 @@ def _build_diff_hint_inner(
     current_text: str,
 ) -> ReadHint | None:
     """Inner implementation of :func:`build_diff_hint`; may raise."""
+    try:
+        _min_tokens_saved = config.load().hints.diff_hint_min_tokens_saved
+    except Exception:  # noqa: BLE001 — config unavailable; fall back to module constant
+        _min_tokens_saved = _DIFF_HINT_MIN_TOKENS_SAVED
+
     # Integrity-gated load: when the session cache has a recorded sha for this
     # snapshot, pass it to snapshots.load so a corrupted / partially-written /
     # evicted-and-rewritten-under-same-key snapshot file is detected and
@@ -1910,7 +1915,7 @@ def _build_diff_hint_inner(
         full_tokens_micro = _est_tokens_from_chars(len(current_text))
         # A one-liner hint costs ~8 tokens; saving is full-read minus that.
         tokens_saved_micro = max(0, full_tokens_micro - 8)
-        if tokens_saved_micro < _DIFF_HINT_MIN_TOKENS_SAVED:
+        if tokens_saved_micro < _min_tokens_saved:
             return None
         prose_micro = ReadHint(
             _apply_terse(f"`{fname}` changed: {summary_change}{line_str}"),
@@ -1961,10 +1966,10 @@ def _build_diff_hint_inner(
     full_tokens = _est_tokens_from_chars(len(current_text))
     diff_tokens = _est_tokens_from_chars(diff_bytes)
     tokens_saved = max(0, full_tokens - diff_tokens)
-    if tokens_saved < _DIFF_HINT_MIN_TOKENS_SAVED:
+    if tokens_saved < _min_tokens_saved:
         _LOG.debug(
             "build_diff_hint: saving too small (%d < %d) for %s — suppressing",
-            tokens_saved, _DIFF_HINT_MIN_TOKENS_SAVED, fname,
+            tokens_saved, _min_tokens_saved, fname,
         )
         return None
 
