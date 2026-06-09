@@ -12,8 +12,6 @@ Three fixes: Codex hook wire-format compatibility, and two Windows coarse-`mtime
 
 Codex 0.137.0 validates every hook response against embedded JSON schemas with `additionalProperties: false`, so any unrecognised key causes "hook returned invalid … JSON output" for the entire response — including `SessionStart`, `PreToolUse`, and `PostToolUse`. The root cause was `_tg_elapsed_ms` (and sibling `_tg_handler`/`_tg_error` fields) added by the internal `dispatch()` function and then emitted verbatim. The `denormalize_response` Codex branch now strips all `_tg_*` keys before output. The same path also injects the required `hookEventName` const field into `hookSpecificOutput` — Codex requires it on every `hookSpecificOutput` shape and token-goat was not emitting it because Claude Code does not require it. A `_codex_hook_event_name()` helper resolves the correct value (e.g. `"pre-read"` → `"PreToolUse"`) from the hook registry. The old camelCase→snake_case key conversion (`_translate_hso_to_codex`) is no longer applied — Codex 0.137.0+ uses camelCase throughout `hookSpecificOutput`.
 
-### Freshest cache entry survives its own store call's eviction
-
 Two Windows coarse-`mtime` correctness fixes. Both reproduce only when two writes land close enough together to share a filesystem timestamp — common on NTFS under load — which is why they surfaced as intermittent CI flakes rather than deterministic failures. Each ships with a deterministic regression test that fails on the pre-fix code and passes on the fixed code.
 
 ### Freshest cache entry survives its own store call's eviction
