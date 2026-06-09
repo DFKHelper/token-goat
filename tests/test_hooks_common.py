@@ -390,53 +390,44 @@ def test_denormalize_response_with_system_message_claude():
 
 
 def test_denormalize_response_camel_case_no_hso():
-    """Response with continue but no hookSpecificOutput returns dict unchanged."""
+    # No hookSpecificOutput and no _tg_* keys → equivalent content, _tg_* would be stripped.
     resp = {"continue": True}
     result = denormalize_response(resp, harness="codex")
-    assert result is resp
+    assert result.get("continue") is True
+    assert "hookSpecificOutput" not in result
 
 
-def test_denormalize_response_slow_path_has_snake_keys():
-    """Slow-path triggers when snake_case keys are present in hookSpecificOutput.
-
-    Snake_case input keys are left untouched (not in the camelCase->snake_case mapping),
-    while any camelCase keys present are translated.
-    """
+def test_denormalize_response_codex_preserves_camel_and_existing_snake():
+    # Codex 0.137.0+ uses camelCase — all keys pass through unchanged.
     resp = {
         "continue": True,
         "hookSpecificOutput": {
-            "hook_event_name": "PreToolUse",  # snake_case key (not in mapping, stays)
-            "additionalContext": "will translate",  # camelCase (in mapping, becomes snake_case)
+            "hook_event_name": "PreToolUse",
+            "additionalContext": "hint",
         },
     }
     result = denormalize_response(resp, harness="codex")
-    # Slow path was triggered (snake_case present), so copy is made.
-    assert result is not resp
     hso = result["hookSpecificOutput"]
-    assert "hook_event_name" in hso  # Untouched (was snake_case)
-    assert "additional_context" in hso  # Translated from camelCase
+    assert hso["hook_event_name"] == "PreToolUse"
+    assert hso["additionalContext"] == "hint"
 
 
-def test_denormalize_response_mixed_keys_triggers_slow_path():
-    """Presence of any snake_case key in hookSpecificOutput triggers the slow-path remap."""
+def test_denormalize_response_mixed_keys_all_preserved():
+    # No translation occurs; both camelCase and any pre-existing snake_case pass through.
     resp = {
         "continue": True,
         "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",  # camelCase — gets translated
-            "additional_context": "mixed",  # snake_case — triggers slow-path, stays as-is
+            "hookEventName": "PreToolUse",
+            "additional_context": "mixed",
         },
     }
     result = denormalize_response(resp, harness="codex")
-    # Should remap the camelCase key.
-    assert result is not resp
     hso = result["hookSpecificOutput"]
-    assert "hook_event_name" in hso  # hookEventName translated
-    assert "additional_context" in hso  # Stayed as-is (already snake_case)
-    assert "hookEventName" not in hso  # Original camelCase removed
+    assert hso["hookEventName"] == "PreToolUse"
+    assert hso["additional_context"] == "mixed"
 
 
-def test_denormalize_response_translates_updated_input_for_codex():
-    """updatedInput must translate to updated_input for Codex wire format."""
+def test_denormalize_response_updated_input_preserved_for_codex():
     resp = {
         "continue": True,
         "hookSpecificOutput": {
@@ -447,13 +438,13 @@ def test_denormalize_response_translates_updated_input_for_codex():
     }
     result = denormalize_response(resp, harness="codex")
     hso = result["hookSpecificOutput"]
-    assert "updated_input" in hso
-    assert "additional_context" in hso
-    assert hso["updated_input"] == {"file_path": "/shrunk.png"}
+    assert hso["updatedInput"] == {"file_path": "/shrunk.png"}
+    assert hso["additionalContext"] == "image shrunk"
+    assert "updated_input" not in hso
+    assert "additional_context" not in hso
 
 
-def test_denormalize_response_translates_permission_decision_for_codex():
-    """permissionDecision must translate to permission_decision for Codex wire format."""
+def test_denormalize_response_permission_decision_preserved_for_codex():
     resp = {
         "continue": False,
         "hookSpecificOutput": {
@@ -465,9 +456,9 @@ def test_denormalize_response_translates_permission_decision_for_codex():
     }
     result = denormalize_response(resp, harness="codex")
     hso = result["hookSpecificOutput"]
-    assert "permission_decision" in hso
-    assert "permission_decision_reason" in hso
-    assert hso["permission_decision"] == "deny"
+    assert hso["permissionDecision"] == "deny"
+    assert hso["permissionDecisionReason"] == "blocked"
+    assert "permission_decision" not in hso
 
 
 # ---------------------------------------------------------------------------

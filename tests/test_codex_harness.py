@@ -14,11 +14,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 
 # ---------------------------------------------------------------------------
-# 1. denormalize_response: camelCase → snake_case for harness=codex
+# 1. denormalize_response: Codex path preserves camelCase keys unchanged
 # ---------------------------------------------------------------------------
 
 
-def test_denormalize_camel_to_snake():
+def test_denormalize_codex_preserves_camel_case():
+    # Codex 0.137.0+ uses camelCase in hookSpecificOutput — keys must not be converted.
     response = {
         "continue": True,
         "hookSpecificOutput": {
@@ -31,17 +32,15 @@ def test_denormalize_camel_to_snake():
     }
     result = hooks_cli.denormalize_response(response, harness="codex")
     hso = result["hookSpecificOutput"]
-    assert "hook_event_name" in hso
-    assert "additional_context" in hso
-    assert "updated_input" in hso
-    assert "permission_decision" in hso
-    assert "permission_decision_reason" in hso
-    # Old keys must be gone
-    assert "hookEventName" not in hso
-    assert "additionalContext" not in hso
-    assert "updatedInput" not in hso
-    assert "permissionDecision" not in hso
-    assert "permissionDecisionReason" not in hso
+    assert hso["hookEventName"] == "PreToolUse"
+    assert hso["additionalContext"] == "some hint"
+    assert hso["updatedInput"] == {"file_path": "/tmp/x.png"}
+    assert hso["permissionDecision"] == "allow"
+    assert hso["permissionDecisionReason"] == "fine"
+    # No snake_case conversion must have occurred
+    assert "additional_context" not in hso
+    assert "updated_input" not in hso
+    assert "permission_decision" not in hso
 
 
 # ---------------------------------------------------------------------------
@@ -62,14 +61,16 @@ def test_denormalize_claude_passthrough():
 
 
 # ---------------------------------------------------------------------------
-# 3. denormalize_response with no hookSpecificOutput → untouched
+# 3. denormalize_response with no hookSpecificOutput → _tg_* keys stripped, continue preserved
 # ---------------------------------------------------------------------------
 
 
 def test_denormalize_no_hso():
-    response = {"continue": True}
+    response = {"continue": True, "_tg_elapsed_ms": 12, "_tg_handler": "pre_read"}
     result = hooks_cli.denormalize_response(response, harness="codex")
     _assert_continue(result)
+    assert "_tg_elapsed_ms" not in result
+    assert "_tg_handler" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -130,20 +131,11 @@ def test_dispatch_bash_non_read(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 7. CLI subprocess: --harness=codex returns snake_case keys
+# 7. CLI subprocess: --harness=codex strips _tg_* keys and returns continue:True
 # ---------------------------------------------------------------------------
 
 
-def test_cli_pre_read_codex_snake_case(tmp_path):
-    """End-to-end subprocess test: hook pre-read --harness codex with a Bash
-    payload that hits image-shrink path should return snake_case in output."""
-    # We need a payload that will actually produce hookSpecificOutput.
-    # Use an image path that exists in the project so image_shrink can try (it
-    # will skip if not a real image or below threshold, but that still gives
-    # us a clean continue:True). What matters is the key shape on a response
-    # that does produce hookSpecificOutput — we test that with a direct
-    # dispatch call above. Here we just verify the subprocess doesn't crash
-    # and the output is valid JSON with continue:True when harness=codex.
+def test_cli_pre_read_codex_no_tg_keys(tmp_path):
     payload = {
         "session_id": "codex-cli-test",
         "cwd": str(tmp_path),
@@ -161,22 +153,17 @@ def test_cli_pre_read_codex_snake_case(tmp_path):
     assert result.returncode == 0, f"stderr: {result.stderr}"
     data = json.loads(result.stdout)
     assert data.get("continue") is True
+    assert not any(k.startswith("_tg_") for k in data), f"_tg_* key leaked into Codex output: {list(data)}"
 
 
 # ---------------------------------------------------------------------------
-# 8. CLI subprocess: --harness=codex with image read path returns snake_case
+# 8. CLI subprocess: --harness=codex image read preserves camelCase + injects hookEventName
 # ---------------------------------------------------------------------------
 
 
-def test_cli_pre_read_codex_image_snake_case(tmp_path):
-    """When a Read on an image fires image-shrink and returns updatedInput,
-    the Codex harness must translate that to updated_input in the output."""
-    # Create a dummy PNG that is above the size threshold (>100 KB)
-    # We'll create a large fake PNG-like file
+def test_cli_pre_read_codex_image_camel_case(tmp_path):
     test_img = tmp_path / "big.png"
-    # PNG header + enough bytes to exceed the 100 KB threshold
-    png_header = b"\x89PNG\r\n\x1a\n" + b"\x00" * (110 * 1024)
-    test_img.write_bytes(png_header)
+    test_img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (110 * 1024))
 
     payload = {
         "session_id": "codex-img-test",
@@ -195,22 +182,22 @@ def test_cli_pre_read_codex_image_snake_case(tmp_path):
     assert result.returncode == 0, f"stderr: {result.stderr}"
     data = json.loads(result.stdout)
     assert data.get("continue") is True
-    # If image-shrink fired and produced hookSpecificOutput, verify snake_case
+    assert not any(k.startswith("_tg_") for k in data), f"_tg_* key leaked: {list(data)}"
     hso = data.get("hookSpecificOutput")
     if hso:
-        assert "hookEventName" not in hso, "camelCase key leaked into Codex output"
-        assert "updatedInput" not in hso, "camelCase key leaked into Codex output"
-        assert "additionalContext" not in hso, "camelCase key leaked into Codex output"
+        # camelCase must be preserved; snake_case must not appear
+        assert "updatedInput" in hso or "additionalContext" in hso or "hookEventName" in hso
+        assert "updated_input" not in hso
+        assert "additional_context" not in hso
 
 
 # ---------------------------------------------------------------------------
-# 9. denormalize_response: nested dict inside hookSpecificOutput is recursively
-#    translated (item 1 — recursive _translate_hso_to_codex)
+# 9. denormalize_response: all camelCase keys inside hookSpecificOutput are preserved
 # ---------------------------------------------------------------------------
 
 
 def test_denormalize_nested_dict_in_hso():
-    """Nested dicts inside hookSpecificOutput must also have camelCase keys translated."""
+    # Codex 0.137.0+ uses camelCase — no translation at any nesting level.
     response = {
         "continue": True,
         "hookSpecificOutput": {
@@ -218,56 +205,100 @@ def test_denormalize_nested_dict_in_hso():
             "updatedInput": {
                 "filePath": "/tmp/img.png",
                 "hookEventName": "nested-event",
-                "nestedDict": {
-                    "permissionDecision": "allow",
-                },
+                "nestedDict": {"permissionDecision": "allow"},
             },
         },
     }
     result = hooks_cli.denormalize_response(response, harness="codex")
     hso = result["hookSpecificOutput"]
-    # Top-level translation
-    assert "additional_context" in hso
-    assert "additionalContext" not in hso
-    # First-level nested dict
-    updated = hso["updated_input"]
+    assert hso["additionalContext"] == "outer hint"
+    assert "additional_context" not in hso
+    updated = hso["updatedInput"]
     assert isinstance(updated, dict)
-    assert "hook_event_name" in updated, "nested camelCase key not translated"
-    assert "hookEventName" not in updated
-    # Second-level nested dict
+    assert updated["filePath"] == "/tmp/img.png"
+    assert updated["hookEventName"] == "nested-event"
+    assert "hook_event_name" not in updated
     nested = updated["nestedDict"]
-    assert isinstance(nested, dict)
-    assert "permission_decision" in nested, "doubly-nested camelCase key not translated"
-    assert "permissionDecision" not in nested
+    assert nested["permissionDecision"] == "allow"
+    assert "permission_decision" not in nested
 
 
 def test_denormalize_nested_dict_non_mapped_keys_preserved():
-    """Keys not in the camelCase map must be preserved unchanged, even nested."""
+    # All keys (known or unknown) must pass through unchanged for Codex.
     response = {
         "continue": True,
         "hookSpecificOutput": {
             "customField": "value",
-            "innerData": {
-                "myCustomKey": 42,
-                "additionalContext": "nested hint",
-            },
+            "innerData": {"myCustomKey": 42, "additionalContext": "nested hint"},
         },
     }
     result = hooks_cli.denormalize_response(response, harness="codex")
     hso = result["hookSpecificOutput"]
-    # Non-mapped top-level key preserved as-is
-    assert hso.get("customField") == "value"
-    inner = hso.get("innerData")
-    assert isinstance(inner, dict)
-    # Non-mapped key inside nested dict preserved
-    assert inner.get("myCustomKey") == 42
-    # Mapped key inside nested dict translated
-    assert "additional_context" in inner
-    assert "additionalContext" not in inner
+    assert hso["customField"] == "value"
+    inner = hso["innerData"]
+    assert inner["myCustomKey"] == 42
+    assert inner["additionalContext"] == "nested hint"
+    assert "additional_context" not in inner
 
 
 # ---------------------------------------------------------------------------
-# 10. normalize_payload: Codex tool name → PascalCase internal name
+# 10. denormalize_response: _tg_* diagnostic keys stripped for Codex
+# ---------------------------------------------------------------------------
+
+
+def test_denormalize_codex_strips_tg_diagnostic_keys():
+    # _tg_elapsed_ms/_tg_handler are added by dispatch(); all Codex schemas have
+    # additionalProperties:false so any unknown key causes "hook returned invalid JSON output".
+    response = {
+        "continue": True,
+        "_tg_elapsed_ms": 42,
+        "_tg_handler": "pre_read",
+        "_tg_error": None,
+        "hookSpecificOutput": {"additionalContext": "hint"},
+    }
+    result = hooks_cli.denormalize_response(response, harness="codex", event="pre-read")
+    assert result["continue"] is True
+    assert "_tg_elapsed_ms" not in result
+    assert "_tg_handler" not in result
+    assert "_tg_error" not in result
+
+
+# ---------------------------------------------------------------------------
+# 11. denormalize_response: hookEventName injected when absent
+# ---------------------------------------------------------------------------
+
+
+def test_denormalize_codex_injects_hook_event_name():
+    # Codex requires hookEventName as a const field in every hookSpecificOutput shape.
+    response = {"continue": True, "hookSpecificOutput": {"additionalContext": "hint"}}
+    result = hooks_cli.denormalize_response(response, harness="codex", event="pre-read")
+    hso = result["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert hso["additionalContext"] == "hint"
+
+
+def test_denormalize_codex_hook_event_name_not_overwritten():
+    # If hookEventName is already present, do not overwrite it.
+    response = {"continue": True, "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "x"}}
+    result = hooks_cli.denormalize_response(response, harness="codex", event="pre-read")
+    assert result["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+
+
+def test_denormalize_codex_session_start_event_name():
+    response = {"continue": True, "hookSpecificOutput": {"additionalContext": "brief"}}
+    result = hooks_cli.denormalize_response(response, harness="codex", event="session-start")
+    assert result["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+
+
+def test_denormalize_codex_unknown_event_no_injection():
+    # Unknown event → hookEventName must NOT be injected (would be wrong value).
+    response = {"continue": True, "hookSpecificOutput": {"additionalContext": "x"}}
+    result = hooks_cli.denormalize_response(response, harness="codex", event="unknown-event-xyz")
+    assert "hookEventName" not in result["hookSpecificOutput"]
+
+
+# ---------------------------------------------------------------------------
+# 12. normalize_payload: Codex tool name → PascalCase internal name
 # ---------------------------------------------------------------------------
 
 

@@ -277,16 +277,17 @@ def test_claude_harness_passthrough():
 
 
 def test_codex_harness_translates_hso_keys():
-    """Codex harness must translate camelCase hookSpecificOutput keys to snake_case."""
+    # Codex 0.137.0+ uses camelCase — keys pass through unchanged.
     response = {
         "continue": True,
         "hookSpecificOutput": {"additionalContext": "ctx", "permissionDecision": "allow"},
     }
     result = denormalize_response(response, harness="codex")
     hso = result["hookSpecificOutput"]
-    assert "additional_context" in hso
-    assert "permission_decision" in hso
-    assert "additionalContext" not in hso
+    assert hso["additionalContext"] == "ctx"
+    assert hso["permissionDecision"] == "allow"
+    assert "additional_context" not in hso
+    assert "permission_decision" not in hso
 
 
 def test_codex_harness_no_hso_passthrough():

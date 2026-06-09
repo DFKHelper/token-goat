@@ -208,6 +208,7 @@ def test_denormalize_response_claude_unchanged() -> None:
 
 
 def test_denormalize_response_codex_camel_to_snake() -> None:
+    # Codex 0.137.0+ uses camelCase — keys pass through unchanged.
     response: dict[str, Any] = {
         "continue": True,
         "hookSpecificOutput": {
@@ -217,10 +218,10 @@ def test_denormalize_response_codex_camel_to_snake() -> None:
     }
     result = denormalize_response(response, harness="codex")
     hso = result["hookSpecificOutput"]
-    assert "additional_context" in hso
-    assert "updated_input" in hso
-    assert "additionalContext" not in hso
-    assert "updatedInput" not in hso
+    assert hso["additionalContext"] == "ctx"
+    assert hso["updatedInput"] == {"file_path": "/tmp/x"}
+    assert "additional_context" not in hso
+    assert "updated_input" not in hso
 
 
 def test_denormalize_response_codex_permission_keys() -> None:
@@ -233,8 +234,9 @@ def test_denormalize_response_codex_permission_keys() -> None:
     }
     result = denormalize_response(response, harness="codex")
     hso = result["hookSpecificOutput"]
-    assert hso.get("permission_decision") == "allow"
-    assert hso.get("permission_decision_reason") == "safe"
+    assert hso["permissionDecision"] == "allow"
+    assert hso["permissionDecisionReason"] == "safe"
+    assert "permission_decision" not in hso
 
 
 def test_denormalize_response_no_hso_key() -> None:
@@ -250,14 +252,15 @@ def test_denormalize_response_non_dict_hso() -> None:
 
 
 def test_denormalize_response_hook_event_name_key() -> None:
+    # hookEventName already present → preserved as-is (no injection needed).
     response: dict[str, Any] = {
         "continue": True,
         "hookSpecificOutput": {"hookEventName": "PreToolUse"},
     }
     result = denormalize_response(response, harness="codex")
     hso = result["hookSpecificOutput"]
-    assert "hook_event_name" in hso
-    assert hso["hook_event_name"] == "PreToolUse"
+    assert hso["hookEventName"] == "PreToolUse"
+    assert "hook_event_name" not in hso
 
 
 def test_denormalize_response_unknown_keys_preserved() -> None:
@@ -267,8 +270,9 @@ def test_denormalize_response_unknown_keys_preserved() -> None:
     }
     result = denormalize_response(response, harness="codex")
     hso = result["hookSpecificOutput"]
-    assert hso.get("customField") == "value"
-    assert "additional_context" in hso
+    assert hso["customField"] == "value"
+    assert hso["additionalContext"] == "ctx"
+    assert "additional_context" not in hso
 
 
 # ---------------------------------------------------------------------------

@@ -200,7 +200,8 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
 
 
 #: Mapping of camelCase ``hookSpecificOutput`` keys to their Codex snake_case equivalents.
-#: Keyed by the Claude (outbound) name; value is the Codex wire-format name.
+#: NOTE: Codex 0.137.0+ uses camelCase throughout ``hookSpecificOutput``, so this
+#: table is no longer applied in ``denormalize_response``.  Kept for reference.
 _HSO_CAMEL_TO_SNAKE: dict[str, str] = {
     "additionalContext": "additional_context",
     "updatedInput": "updated_input",
@@ -261,16 +262,10 @@ _GEMINI_INPUT_KEY_MAP: dict[str, dict[str, str]] = {
 
 
 def _translate_hso_to_codex(hso: dict[str, object]) -> dict[str, object]:
-    """Convert camelCase hookSpecificOutput keys to snake_case for Codex wire format.
-
-    Recursively translates nested dicts so that sub-objects inside
-    ``hookSpecificOutput`` (e.g. a nested ``updatedInput`` dict whose values
-    are themselves dicts) are also converted.  Non-dict values are left as-is.
-    """
+    """No longer called — Codex 0.137.0+ uses camelCase in hookSpecificOutput; kept for reference."""
     translated: dict[str, object] = {}
     for key, val in hso.items():
         new_key = _HSO_CAMEL_TO_SNAKE.get(key, key)
-        # Recurse into nested dicts so translation applies at every level.
         if isinstance(val, dict):
             translated[new_key] = _translate_hso_to_codex(val)
         else:
@@ -278,22 +273,30 @@ def _translate_hso_to_codex(hso: dict[str, object]) -> dict[str, object]:
     return translated
 
 
-def denormalize_response(response: dict[str, object], harness: Harness = "claude") -> dict[str, object]:
-    """Translate token-goat's internal response format to harness-specific wire format.
+def _codex_hook_event_name(event: str) -> str:
+    """Resolve the Codex hookEventName const (e.g. "pre-read" → "PreToolUse") from the hook registry."""
+    from . import hook_registry as _reg  # lazy: avoids top-level circular-import risk
+    ev = _reg._BY_NAME.get(event)
+    if ev is None:
+        return ""
+    return ev.claude_event or ev.codex_event or ""
 
-    Claude: hookSpecificOutput.{additionalContext, updatedInput, permissionDecision, ...}
-    Codex:  hookSpecificOutput.{additional_context, updated_input, permission_decision, ...}
 
-    Accepts ``dict[str, object]`` (the enriched result from ``dispatch`` which adds
-    ``_tg_elapsed_ms``) rather than the narrower ``HookResponse`` TypedDict, so
-    the diagnostic key is preserved in the output.
-    """
+def denormalize_response(
+    response: dict[str, object],
+    harness: Harness = "claude",
+    event: str = "",
+) -> dict[str, object]:
+    """Translate token-goat's internal response dict to the harness wire format."""
     if harness == "codex":
-        hso = response.get("hookSpecificOutput")
-        if not isinstance(hso, dict):
-            return response
-        result = dict(response)
-        result["hookSpecificOutput"] = _translate_hso_to_codex(hso)
+        # All Codex output schemas declare additionalProperties:false — _tg_* keys from dispatch() cause "hook returned invalid JSON output".
+        result: dict[str, object] = {k: v for k, v in response.items() if not k.startswith("_tg_")}
+        # Codex requires hookEventName as a typed const in every hookSpecificOutput shape; inject it when absent.
+        hso = result.get("hookSpecificOutput")
+        if isinstance(hso, dict) and "hookEventName" not in hso:
+            hen = _codex_hook_event_name(event)
+            if hen:
+                result["hookSpecificOutput"] = {"hookEventName": hen, **hso}
         return result
 
     if harness == "gemini":
@@ -564,7 +567,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
         # If translation fails, emit the un-denormalized dict: the harness sees
         # unexpected keys and ignores them — still better than bare CONTINUE.
         try:
-            result = dict(denormalize_response(dispatched, harness))
+            result = dict(denormalize_response(dispatched, harness, event))
         except Exception as _denorm_exc:  # noqa: BLE001
             _LOG.warning(
                 "denormalize_response failed for %s (%s): %s — emitting raw dispatch output",

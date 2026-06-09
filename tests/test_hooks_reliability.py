@@ -675,7 +675,7 @@ class TestDenormalizeResponse:
         assert result["hookSpecificOutput"]["additionalContext"] == "hint"
 
     def test_codex_harness_translates_camel_to_snake(self):
-        """Codex harness must translate additionalContext → additional_context."""
+        # Codex 0.137.0+ uses camelCase — keys pass through unchanged.
         resp = {
             "continue": True,
             "hookSpecificOutput": {
@@ -685,11 +685,11 @@ class TestDenormalizeResponse:
         }
         result = denormalize_response(resp, harness="codex")
         hso = result["hookSpecificOutput"]
-        assert "additional_context" in hso, f"Expected snake_case key, got: {hso}"
-        assert "additionalContext" not in hso
+        assert hso["hookEventName"] == "PreToolUse"
+        assert hso["additionalContext"] == "you already read this file"
+        assert "additional_context" not in hso
 
     def test_codex_harness_translates_nested_updated_input(self):
-        """updatedInput nested inside hookSpecificOutput must also be translated."""
         resp = {
             "continue": True,
             "hookSpecificOutput": {
@@ -700,5 +700,6 @@ class TestDenormalizeResponse:
         }
         result = denormalize_response(resp, harness="codex")
         hso = result["hookSpecificOutput"]
-        assert "updated_input" in hso
-        assert "updatedInput" not in hso
+        assert hso["updatedInput"] == {"file_path": "/shrunken.jpg"}
+        assert hso["additionalContext"] == "shrunk"
+        assert "updated_input" not in hso

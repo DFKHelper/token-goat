@@ -610,7 +610,7 @@ class TestWireFormatRoundTrip:
         assert denorm["hookSpecificOutput"]["additionalContext"] == "hint text"
 
     def test_codex_harness_round_trip(self) -> None:
-        """Codex harness: snake_case tool names remapped, HSO keys translated to snake_case."""
+        # Codex 0.137.0+: tool names remapped to PascalCase, HSO keys preserved as camelCase.
         from token_goat.hooks_cli import denormalize_response, normalize_payload
 
         payload = {
@@ -634,13 +634,12 @@ class TestWireFormatRoundTrip:
         denorm = denormalize_response(response, harness="codex")
         hso = denorm["hookSpecificOutput"]
         assert isinstance(hso, dict)
-        assert "additional_context" in hso
-        assert "updated_input" in hso
-        assert "permission_decision" in hso
-        assert "hook_event_name" in hso
-        # Original camelCase keys must be absent
-        assert "additionalContext" not in hso
-        assert "updatedInput" not in hso
+        assert hso["additionalContext"] == "ctx"
+        assert hso["updatedInput"] == {"new_string": "b2"}
+        assert hso["permissionDecision"] == "allow"
+        assert hso["hookEventName"] == "PreToolUse"
+        assert "additional_context" not in hso
+        assert "updated_input" not in hso
 
     def test_gemini_harness_round_trip(self) -> None:
         """Gemini harness: tool names remapped, response translated to decision/reason."""

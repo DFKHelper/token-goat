@@ -352,19 +352,16 @@ class TestSafeRun:
         assert parsed["continue"] is True
 
     def test_safe_run_codex_harness_denormalizes_output(self, tmp_path, capsys, monkeypatch):
-        """safe_run with harness=codex must translate camelCase HSO keys to snake_case."""
+        # safe_run with harness=codex: camelCase preserved, _tg_* stripped.
         import json
 
-        # Inject a handler that returns a camelCase hookSpecificOutput
         from token_goat import hooks_cli as hc
 
         def patched_dispatch(event, payload):
             return {
                 "continue": True,
-                "hookSpecificOutput": {
-                    "additionalContext": "hello",
-                    "updatedInput": {"x": 1},
-                },
+                "_tg_elapsed_ms": 5,
+                "hookSpecificOutput": {"additionalContext": "hello", "updatedInput": {"x": 1}},
             }
 
         monkeypatch.setattr(hc, "dispatch", patched_dispatch)
@@ -374,9 +371,11 @@ class TestSafeRun:
         hc.safe_run("pre-read", input_file=payload_file, harness="codex")
         out = capsys.readouterr().out
         parsed = json.loads(out)
+        assert "_tg_elapsed_ms" not in parsed
         hso = parsed.get("hookSpecificOutput", {})
-        assert "additional_context" in hso, f"expected snake_case key, got: {hso}"
-        assert "updatedInput" not in hso
+        assert hso["additionalContext"] == "hello"
+        assert hso["updatedInput"] == {"x": 1}
+        assert "additional_context" not in hso
 
     def test_safe_run_with_invalid_payload_file_emits_continue(self, tmp_path, capsys):
         """safe_run must emit continue:true even when the payload file is corrupt."""

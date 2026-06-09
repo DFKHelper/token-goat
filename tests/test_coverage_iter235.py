@@ -101,50 +101,51 @@ class TestDenormalizeResponse:
         assert result["hookSpecificOutput"]["additionalContext"] == "hello"
 
     def test_codex_translates_additional_context(self):
+        # Codex 0.137.0+ uses camelCase — no conversion occurs.
         resp = {"hookSpecificOutput": {"additionalContext": "ctx"}}
         result = denormalize_response(resp, harness="codex")
         hso = result["hookSpecificOutput"]
-        assert "additional_context" in hso
-        assert "additionalContext" not in hso
-        assert hso["additional_context"] == "ctx"
+        assert hso["additionalContext"] == "ctx"
+        assert "additional_context" not in hso
 
     def test_codex_translates_updated_input(self):
         resp = {"hookSpecificOutput": {"updatedInput": "new-input"}}
         result = denormalize_response(resp, harness="codex")
         hso = result["hookSpecificOutput"]
-        assert hso.get("updated_input") == "new-input"
-        assert "updatedInput" not in hso
+        assert hso["updatedInput"] == "new-input"
+        assert "updated_input" not in hso
 
     def test_codex_translates_permission_decision(self):
         resp = {"hookSpecificOutput": {"permissionDecision": "allow"}}
         result = denormalize_response(resp, harness="codex")
         hso = result["hookSpecificOutput"]
-        assert hso.get("permission_decision") == "allow"
-        assert "permissionDecision" not in hso
+        assert hso["permissionDecision"] == "allow"
+        assert "permission_decision" not in hso
 
     def test_codex_missing_hook_specific_output_returns_unchanged(self):
         resp = {"continue": True}
         result = denormalize_response(resp, harness="codex")
-        assert result is resp
+        assert result.get("continue") is True
 
     def test_codex_non_dict_hook_specific_output_returns_unchanged(self):
         resp = {"hookSpecificOutput": "string-value"}
         result = denormalize_response(resp, harness="codex")
-        assert result is resp
+        assert result["hookSpecificOutput"] == "string-value"
 
     def test_codex_preserves_tg_elapsed_ms(self):
+        # _tg_* keys are stripped for Codex (additionalProperties:false on all schemas).
         resp = {"hookSpecificOutput": {"additionalContext": "x"}, "_tg_elapsed_ms": 42}
         result = denormalize_response(resp, harness="codex")
-        assert result["_tg_elapsed_ms"] == 42
+        assert "_tg_elapsed_ms" not in result
 
     def test_codex_multiple_keys_translated(self):
         resp = {"hookSpecificOutput": {"additionalContext": "ctx", "updatedInput": "inp"}}
         result = denormalize_response(resp, harness="codex")
         hso = result["hookSpecificOutput"]
-        assert "additional_context" in hso
-        assert "updated_input" in hso
-        assert "additionalContext" not in hso
-        assert "updatedInput" not in hso
+        assert hso["additionalContext"] == "ctx"
+        assert hso["updatedInput"] == "inp"
+        assert "additional_context" not in hso
+        assert "updated_input" not in hso
 
 
 # ---------------------------------------------------------------------------
