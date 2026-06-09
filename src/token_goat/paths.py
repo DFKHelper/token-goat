@@ -8,6 +8,8 @@ __all__ = [
     "atomic_write_text",
     "claude_config_dir",
     "claude_plugins_dir",
+    "claude_projects_dir",
+    "claude_session_tool_results_dir",
     "claude_skills_dir",
     "config_path",
     "data_dir",
@@ -36,6 +38,7 @@ __all__ = [
     "manifest_sha_sidecar_path",
     "manifest_text_sidecar_path",
     "precompact_estimate_path",
+    "baseline_advisory_sent_path",
     "recovery_pending_path",
     "skill_pregen_sentinel_path",
     "sentinels_dir",
@@ -716,6 +719,25 @@ def recovery_pending_path(session_id: str) -> Path:
     return _safe_child_path(sentinels_dir(), f"recovery_pending_{safe_id}", "", "session_id")
 
 
+def baseline_advisory_sent_path(session_id: str) -> Path:
+    """Path to ``sentinels/baseline_advisory_{session_id}``.
+
+    Written by the SessionStart handler the first time it emits the
+    environmental-baseline advisory for a session, so the advisory fires at most
+    once per session even though SessionStart re-runs on resume and compact.
+
+    The file's contents are irrelevant — its existence is the flag.
+
+    Raises ``ValueError`` if *session_id* contains a null byte or escapes the
+    ``sentinels/`` directory.
+
+    On Windows, colons in *session_id* are sanitized to underscores before
+    path construction to prevent silent NTFS Alternate Data Stream creation.
+    """
+    safe_id = _sanitize_session_id_for_filename(session_id)
+    return _safe_child_path(sentinels_dir(), f"baseline_advisory_{safe_id}", "", "session_id")
+
+
 def precompact_estimate_path(session_id: str) -> Path:
     """Path to ``sentinels/precompact_estimate_{session_id}``.
 
@@ -795,6 +817,53 @@ def manifest_text_sidecar_path(session_id: str) -> Path:
 def claude_config_dir() -> Path:
     """Path to Claude Code's config directory (~/.claude)."""
     return Path.home() / ".claude"
+
+
+def claude_projects_dir() -> Path:
+    """Path to Claude Code's per-project session store (``~/.claude/projects``).
+
+    Each subdirectory is one project; its name is a slug of the project's
+    absolute path (non-alphanumerics collapsed to ``-``). Inside live
+    ``<session-id>.jsonl`` transcripts and, for sessions that persisted large
+    tool/hook output, a sibling ``<session-id>/tool-results/`` directory holding
+    one ``hook-<uuid>-stdout.txt`` per persisted hook dump.
+    """
+    return claude_config_dir() / "projects"
+
+
+def claude_session_tool_results_dir(session_id: str) -> Path | None:
+    """Return the ``tool-results`` directory for *session_id*, or ``None``.
+
+    Scans :func:`claude_projects_dir` for the project that owns *session_id*
+    rather than reconstructing Claude Code's path-slug scheme (which token-goat
+    deliberately does not reimplement). Returns the first existing
+    ``<project>/<session_id>/tool-results`` directory.
+
+    *session_id* is validated as a bare path segment — no separators, ``..``,
+    or null byte — so a crafted value cannot escape the projects root via the
+    join. Returns ``None`` on any validation failure, a missing projects root,
+    or when no project owns the session. Never raises.
+    """
+    if not session_id or "\x00" in session_id:
+        return None
+    if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+        return None
+    root = claude_projects_dir()
+    try:
+        if not root.is_dir():
+            return None
+        for proj_dir in root.iterdir():
+            try:
+                if not proj_dir.is_dir():
+                    continue
+                candidate = proj_dir / session_id / "tool-results"
+                if candidate.is_dir():
+                    return candidate
+            except OSError:
+                continue
+    except OSError:
+        return None
+    return None
 
 
 def claude_skills_dir() -> Path:

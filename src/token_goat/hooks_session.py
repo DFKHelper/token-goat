@@ -1570,6 +1570,66 @@ def _read_source(payload: HookPayload) -> str:
     return "startup"
 
 
+def _maybe_baseline_advisory(session_id: str | None, cwd: str | None) -> str | None:
+    """Return a one-line environmental-baseline advisory, or ``None``.
+
+    Opt-in via ``[hints] baseline_budget_tokens`` (default 0 = off). When the
+    budget is positive and the cheap *fixed* baseline — the recurring
+    every-session sources a fresh window pays for (both CLAUDE.md files,
+    MEMORY.md, MCP instruction blocks, and any other plugin's recurring
+    SessionStart dump) — exceeds it, emit one quiet line pointing at
+    ``token-goat baseline`` for the per-source breakdown.
+
+    The estimate is file-stat based (no transcript parse) and uses the same
+    ``bytes // 4`` convention as ``token-goat doctor`` so the numbers reconcile.
+    Only the *fixed* total is gated on: variable, prompt-driven pushes are
+    deliberately excluded so a one-off does not trip a recurring advisory.
+
+    Deduped to once per session via a sentinel written only when the advisory
+    actually fires — so an under-counting cold start (dumps not yet on disk)
+    can still trip on a later resume. Fully fail-soft: any error returns
+    ``None`` and the sentinel is left untouched.
+    """
+    if not session_id:
+        return None
+    try:
+        from . import config as _config  # noqa: PLC0415
+
+        budget = _config.load().hints.baseline_budget_tokens
+    except Exception:  # noqa: BLE001
+        return None
+    if budget <= 0:
+        return None
+    try:
+        from . import paths as _paths  # noqa: PLC0415
+
+        sentinel = _paths.baseline_advisory_sent_path(session_id)
+        if sentinel.exists():
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from pathlib import Path  # noqa: PLC0415
+
+        from . import baseline as _baseline  # noqa: PLC0415
+
+        base = Path(cwd) if cwd else Path.cwd()
+        fixed = _baseline.collect_baseline(base, session_id).fixed_tokens
+    except Exception:  # noqa: BLE001
+        return None
+    if fixed <= budget:
+        return None
+    try:
+        _paths.atomic_write_text(sentinel, "1")
+    except Exception:  # noqa: BLE001
+        _LOG.debug("session-start: baseline advisory sentinel write failed", exc_info=True)
+    return (
+        f"[token-goat] Environmental baseline is ~{fixed:,} fixed tokens "
+        f"(over the {budget:,}-token budget). Run `token-goat baseline` to see "
+        "which sources cost the most and how to trim them."
+    )
+
+
 def session_start(payload: HookPayload) -> HookResponse:
     """Run the appropriate session-lifecycle action for the inbound source.
 
@@ -1653,6 +1713,11 @@ def session_start(payload: HookPayload) -> HookResponse:
         additional_ctx_parts.append(mem_ctx)
     if stale_hint:
         additional_ctx_parts.append(stale_hint)
+    # Opt-in environmental-baseline advisory (default off). Folded in here so it
+    # rides the existing additionalContext response; deduped once-per-session.
+    baseline_advisory = _maybe_baseline_advisory(session_id, cwd)
+    if baseline_advisory:
+        additional_ctx_parts.append(baseline_advisory)
     combined_mem: str | None = "\n\n".join(additional_ctx_parts) if additional_ctx_parts else None
 
     # Combine brief (systemMessage) and project memory (additionalContext) into

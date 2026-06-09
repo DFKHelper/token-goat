@@ -52,6 +52,7 @@ with contextlib.suppress(AttributeError, OSError):
 
 import typer
 
+from . import baseline as baseline_mod
 from . import config as config_mod
 from . import hooks_cli
 from .hooks_common import is_real_int
@@ -5094,6 +5095,49 @@ def cmd_skill_size(
     typer.echo()
     total_k = total_overhead / 1_000.0
     typer.echo(f"Total overhead at 100 turns: ~{total_k:.0f}k tokens")
+
+
+@app.command("baseline", rich_help_panel="Core")
+def cmd_baseline(
+    session_id: str | None = _OPT_SESSION_ID,
+    json_output: bool = _OPT_JSON,
+    subagent: bool = typer.Option(  # noqa: B008
+        False,
+        "--subagent",
+        help="Show only the fixed sources a freshly spawned subagent inherits, framed as its starting context fill.",
+    ),
+    window: int = typer.Option(  # noqa: B008
+        baseline_mod.DEFAULT_WINDOW_TOKENS,
+        "--window",
+        help="Context-window size (tokens) used as the pct-of-window denominator. Default 200,000 (the model window).",
+    ),
+) -> None:
+    """Attribute the session's environmental context baseline (the "expense report").
+
+    Scans the persisted SessionStart/UserPromptSubmit hook dumps, both CLAUDE.md
+    files, this project's MEMORY.md, and the configured MCP servers; costs each at
+    ~4 bytes/token (matching ``token-goat doctor``); and ranks them by token cost
+    with an owner (you / harness / ``plugin:<name>``) and a concrete fix. This is
+    the invisible context a spawned subagent inherits before it does any work.
+
+    Read-only. Complements ``token-goat doctor`` (which covers skills and
+    conversation) — skill cost is not repeated here; run the doctor for that.
+
+    Detection picks the current session from ``CLAUDE_SESSION_ID``, the
+    ``--session-id`` flag, or the most-recently-active session.
+
+    Examples::
+
+        token-goat baseline
+        token-goat baseline --subagent
+        token-goat baseline --json
+        token-goat baseline --window 1000000
+    """
+    report = baseline_mod.collect_baseline(Path.cwd(), session_id, window_tokens=window)
+    if json_output:
+        _emit_json(report.as_dict())
+    for line in baseline_mod.format_report(report, subagent=subagent):
+        typer.echo(line)
 
 
 @app.command("skill-list", rich_help_panel="Core")

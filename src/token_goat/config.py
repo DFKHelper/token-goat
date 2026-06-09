@@ -79,6 +79,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_LARGE_READ_BYTES",
     "TOKEN_GOAT_OVERFLOW_GUARD",
     "TOKEN_GOAT_OVERFLOW_MAX_TOKENS",
+    "TOKEN_GOAT_BASELINE_BUDGET_TOKENS",
 )
 
 
@@ -113,6 +114,7 @@ _ENV_BASH_DEDUP_MIN_BYTES: Final[str] = "TOKEN_GOAT_BASH_DEDUP_MIN_BYTES"  # int
 _ENV_WEB_DEDUP_MIN_BYTES: Final[str] = "TOKEN_GOAT_WEB_DEDUP_MIN_BYTES"  # integer override (bytes)
 _ENV_GREP_DEDUP_MIN_MATCHES: Final[str] = "TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES"  # integer override (result count)
 _ENV_LARGE_READ_BYTES: Final[str] = "TOKEN_GOAT_LARGE_READ_BYTES"  # integer override (bytes); 0 disables the large-read redirect
+_ENV_BASELINE_BUDGET_TOKENS: Final[str] = "TOKEN_GOAT_BASELINE_BUDGET_TOKENS"  # integer override (tokens); 0 disables the session-start baseline advisory
 _ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD"  # integer override
 _ENV_WEB_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_FILES"  # integer override (file count)
 _ENV_WEB_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_BYTES"  # integer override (bytes)
@@ -339,6 +341,7 @@ class _HintsToml(TypedDict, total=False):
     min_session_hint_savings_bytes: int
     diff_hint_min_tokens_saved: int
     large_read_redirect_bytes: int
+    baseline_budget_tokens: int
     prompt_triggers: list[dict[str, Any]]
 
 
@@ -1002,6 +1005,8 @@ class HintsConfig:
     diff_hint_min_tokens_saved: int = 1000
     # Minimum on-disk file size (bytes) at which a full Read is denied and redirected to surgical reads (skeleton/section/semantic/symbol) or an offset/limit window. Default 45000 (~45 KB) catches the 47-86 KB recon-dump / large-transcript class that overflows a near-full subagent window while leaving typical source reads untouched. A Read that already sets offset or limit is exempt (it is deliberately windowed, and the redirect itself points there — so exempting it also prevents a redirect loop). 0 disables. Override via TOKEN_GOAT_LARGE_READ_BYTES or [hints] large_read_redirect_bytes. Clamped to [0, 100_000_000].
     large_read_redirect_bytes: int = 45_000
+    # Token budget for the session-start environmental-baseline advisory. When >0 and the cheap fixed baseline (other plugins' SessionStart dumps + CLAUDE.md + MEMORY.md + MCP blocks) exceeds this many estimated tokens, session_start appends one quiet line pointing at `token-goat baseline`, once per session. Default 0 disables the advisory entirely. Override via TOKEN_GOAT_BASELINE_BUDGET_TOKENS or [hints] baseline_budget_tokens. Clamped to [0, 10_000_000].
+    baseline_budget_tokens: int = 0
     # Keyword-triggered hint rules.  Each rule fires when any of its keywords
     # appears (whole-word, case-insensitive) in the user's prompt, appending
     # the rule's hint text to the session-context summary injected by
@@ -1793,6 +1798,10 @@ def load() -> Config:
             hints_raw.get("large_read_redirect_bytes", 45_000), 45_000, 0, 100_000_000,
             "hints.large_read_redirect_bytes",
         ),
+        baseline_budget_tokens=_validated_int(
+            hints_raw.get("baseline_budget_tokens", 0), 0, 0, 10_000_000,
+            "hints.baseline_budget_tokens",
+        ),
         prompt_triggers=_parse_prompt_triggers(hints_raw.get("prompt_triggers", [])),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
@@ -1818,6 +1827,11 @@ def load() -> Config:
         _ENV_LARGE_READ_BYTES,
         hints_cfg.large_read_redirect_bytes,
         0, 100_000_000, "hints.large_read_redirect_bytes"
+    )
+    hints_cfg.baseline_budget_tokens = _env_int(
+        _ENV_BASELINE_BUDGET_TOKENS,
+        hints_cfg.baseline_budget_tokens,
+        0, 10_000_000, "hints.baseline_budget_tokens"
     )
 
     wf_raw: _WebFetchToml = cast("_WebFetchToml", raw.get("webfetch", {}))
