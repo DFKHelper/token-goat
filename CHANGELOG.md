@@ -2,7 +2,9 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [1.6.0] - 2026-06-09
+
+Three changes, all aimed at the fixed context floor a spawned subagent inherits before it does any work: a deny-redirect guard that stops oversized reads and content-mode greps at the tool boundary before they overflow the window, a new `token-goat baseline` command that measures and attributes that floor source by source, and an opt-in SessionStart advisory that surfaces it once when it crosses a configured budget.
 
 ### Oversized-read deny-redirect guards subagent context windows
 

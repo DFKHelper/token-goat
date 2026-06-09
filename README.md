@@ -101,6 +101,8 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Manifest too large or unstructured after compaction | Manifest gains `### MUST_PRESERVE` sealed block, `### What Worked` (last 2 green test runs), inline git diffs, and `### TODOs` from TaskList |
 | CSV/JSON/JSONL/log file re-read when only structure changed | Pre-Read hint for structured files (CSV headers, JSON keys, log format), ~70% smaller than full read |
 | Index-only files (lockfiles, source maps, bundles) read on every session | Pre-Read suppression for read-only files (package-lock.json, *.map, dist/), skipped unless explicitly edited |
+| Subagent reads a 47–86 KB recon dump (or greps a 73 KB transcript) and overflows its window | `pre_read` denies a full Read at or above `large_read_redirect_bytes` (~45 KB default), and a `content`-mode Grep over one oversized file, redirecting both to surgical reads or a windowed `offset`/`limit` |
+| Subagent overflows at "hello" with no idea why | `token-goat baseline` attributes the fixed environmental floor — other plugins' hook dumps, both CLAUDE.md files, MEMORY.md, MCP servers — by owner, suggested fix, and fixed-vs-variable cost |
 | Unchanged files produce duplicate hints across sessions | Hint fingerprint includes file path; unchanged-file short-circuit skips re-read pre-check entirely |
 | Dedup hints fire even when agent ignores them | Curator pass skips dedup hints when the agent's preceding action pattern suggests they'll be ignored |
 | Bash dedup hints conflict with other compression | `token-goat compress` can be called as dedup-vs-hint filter; one-call access to cached output |
