@@ -6238,8 +6238,8 @@ class TestHumanizeBytes:
         session.mark_file_read(sid, "src/foo.py", offset=0, limit=50)
         result = compact.build_manifest(sid)
         h3_lines = [ln for ln in result.splitlines() if ln.startswith("### ")]
-        # Only ### MUST_PRESERVE is allowed (for the sealed block header)
-        allowed_h3 = {"### MUST_PRESERVE"}
+        # Only ### MUST_PRESERVE and ### Compact Directives are allowed
+        allowed_h3 = {"### MUST_PRESERVE", "### Compact Directives"}
         unexpected = [ln for ln in h3_lines if ln not in allowed_h3]
         assert unexpected == [], f"unexpected ### headers: {unexpected}"
 
