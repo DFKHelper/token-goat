@@ -1893,6 +1893,150 @@ def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
     return pre_tool_use_with_context(hint_text)
 
 
+def _read_is_windowed(tool_input: dict[str, object]) -> bool:
+    """True when a Read already bounds its output via an explicit offset or limit.
+
+    A deliberately windowed read is already surgical, so the large-read redirect
+    must let it through.  This also breaks any redirect loop: the redirect tells
+    the agent to re-issue *with* offset/limit, and that retry has to be allowed.
+    """
+    return tool_input.get("offset") is not None or tool_input.get("limit") is not None
+
+
+def _human_bytes(n: int) -> str:
+    """Format a byte count as KB or MB with one decimal place (e.g. ``73 KB``)."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f} MB"
+    return f"{n / 1_000:.0f} KB"
+
+
+def _large_read_threshold() -> int:
+    """Return the configured large-read redirect threshold in bytes (0 = disabled)."""
+    from . import config as _config_mod  # noqa: PLC0415
+    try:
+        return _config_mod.load().hints.large_read_redirect_bytes
+    except Exception:  # noqa: BLE001 — fail-soft: a config error must not break reads.
+        return 0
+
+
+def _handle_large_read_redirect(
+    file_path: str, tool_input: dict[str, object], floor: int = 0
+) -> HookResponse | None:
+    """Deny a full Read of an oversized file and redirect to surgical reads.
+
+    Fires only when the configured ``hints.large_read_redirect_bytes`` threshold is
+    > 0, the file is not a known binary type (skeleton/section/semantic cannot help
+    there), the Read is not already windowed (:func:`_read_is_windowed`), and the
+    file's on-disk size meets or exceeds the *effective* threshold.
+
+    A full read of a 45 KB+ file can overflow a context window already near-full from
+    the harness-injected session baseline — the dominant death mode for spawned
+    subagents reading large recon dumps or transcripts.  The deny points at
+    token-goat's surgical commands and at offset/limit windowing as the universal
+    escape hatch (which works even for unindexed files like transcripts).
+
+    *floor* raises the size gate for this call only: the effective threshold is
+    ``max(configured_threshold, floor)``.  ``pre_read`` invokes this twice — once
+    early with ``floor=_LARGE_FILE_HINT_SKIP_BYTES`` to hard-deny the catastrophic
+    ≥10 MB tier (those files are skipped wholesale by the hint pipeline and reach no
+    type-specific handler), and once as a fallback (``floor=0``) after the
+    skill/index/structured/diff handlers have had first claim.  A 0 (disabled)
+    configured threshold disables BOTH calls regardless of floor.
+
+    Session-independent and intentionally NOT deduped: a repeated attempt to read the
+    whole file *should* be denied again; only a windowed retry passes through.
+    Fail-soft — any stat/config error returns None so the read proceeds normally.
+    """
+    threshold = _large_read_threshold()
+    if threshold <= 0:
+        return None
+    effective = max(threshold, floor)  # floor lets the early call gate at the 10 MB ceiling without changing the configured threshold
+    if _read_is_windowed(tool_input):
+        return None
+    if Path(file_path).suffix.lower() in _BINARY_EXTENSIONS:
+        return None
+    try:
+        size = Path(file_path).stat().st_size
+    except OSError:
+        return None
+    if size < effective:
+        return None
+
+    name = Path(file_path).name
+    size_h = _human_bytes(size)
+    approx_k = max(1, size // 3 // 1000)  # ~3 chars/token, displayed in thousands
+    reason = (
+        f"{name} is {size_h} — a full read may overflow the context window; "
+        f"use a surgical read or re-issue Read with offset/limit to window it."
+    )
+    context = (
+        f"`{name}` is {size_h} (~{approx_k}k tokens) — reading it whole can overflow a "
+        f"context window already loaded with the session baseline (the common failure mode "
+        f"for spawned subagents). Read only what you need instead:\n"
+        f'  - `token-goat skeleton "{file_path}"` — structure / symbol list\n'
+        f'  - `token-goat section "{file_path}::<Heading>"` — one section\n'
+        f'  - `token-goat semantic "<what you need>"` — search by meaning\n'
+        f"  - `token-goat symbol <NAME>` — jump to a definition\n"
+        f"Or re-issue this Read with `offset`/`limit` to window it — windowed reads pass "
+        f"through unchanged, and unindexed files (transcripts, logs) support that path too."
+    )
+    with contextlib.suppress(Exception):
+        from . import db  # noqa: PLC0415
+        db.record_stat(None, "large_read_redirect", detail=f"{sanitize_log_str(file_path)} size={size}")
+    return deny_redirect(reason, context)
+
+
+def _handle_large_grep_redirect(payload: HookPayload) -> HookResponse | None:
+    """Deny a content-mode Grep over a single oversized file; redirect to bounded search.
+
+    Narrow by design: fires only when ``output_mode`` is ``"content"`` (the expensive
+    mode that streams matching lines), no ``head_limit`` is set (a capped grep is
+    already bounded — and exempting it prevents a redirect loop), and ``path`` points
+    at a single existing file at or above the large-read threshold.  Directory greps
+    and the cheap ``files_with_matches`` / ``count`` modes are left untouched: the risk
+    is a content dump of a 45 KB+ transcript, not a normal repo-wide search.
+    """
+    threshold = _large_read_threshold()
+    if threshold <= 0:
+        return None
+    tool_input = get_tool_input(payload)
+    if tool_input.get("output_mode") != "content" or tool_input.get("head_limit") is not None:
+        return None
+    path = tool_input.get("path")
+    if not isinstance(path, str) or not path:
+        return None
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return None
+        size = p.stat().st_size
+    except OSError:
+        return None
+    if size < threshold:
+        return None
+
+    name = p.name
+    size_h = _human_bytes(size)
+    pattern = tool_input.get("pattern")
+    pat_s = pattern if isinstance(pattern, str) and pattern else "<pattern>"
+    reason = (
+        f"Content grep over {name} ({size_h}) can return a large slice of the file — "
+        f"narrow the search to avoid overflowing context."
+    )
+    context = (
+        f"`{name}` is {size_h}; a `content`-mode Grep over it can stream back a large "
+        f"fraction of the file. Prefer a bounded search:\n"
+        f'  - `token-goat semantic "{pat_s}"` — ranked matches by meaning\n'
+        f'  - `token-goat section "{path}::<Heading>"` — the relevant section only\n'
+        f"  - re-run Grep with `head_limit` set to cap the lines returned\n"
+        f"  - or Read with `offset`/`limit` to window the file directly."
+    )
+    with contextlib.suppress(Exception):
+        from . import db  # noqa: PLC0415
+        db.record_stat(None, "large_grep_redirect", detail=f"{sanitize_log_str(path)} size={size}")
+    return deny_redirect(reason, context)
+
+
 def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     """Return cached Glob results or a dedup hint when the same pattern ran recently.
 
@@ -2338,6 +2482,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
         symbol_redirect = _handle_grep_symbol_redirect(payload)
         if symbol_redirect is not None:
             return symbol_redirect
+        large_grep = _handle_large_grep_redirect(payload)
+        if large_grep is not None:
+            return large_grep
         return CONTINUE()
 
     if tool_name == "Glob":
@@ -2361,6 +2508,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
     shrink_response = _try_shrink_image(file_path, tool_input)
     if shrink_response:
         return shrink_response
+
+    # Catastrophic-tier guard: hard-deny a full read of a >=10 MB file here, before the binary/large skip and session gate below drop it from the hint pipeline entirely. Such files reach no type-specific handler, so this early position is the only place to catch them; it also covers sessionless and cache-load-failure huge reads. The 45 KB-10 MB band is handled by the fallback call later (after the skill/index/structured/diff handlers get first claim) so those richer redirects are not preempted.
+    large_read = _handle_large_read_redirect(
+        file_path, tool_input, floor=_LARGE_FILE_HINT_SKIP_BYTES
+    )
+    if large_read is not None:
+        return large_read
 
     # Skip all hint logic for binary files and very large unindexed files.
     # These files are never indexed by token-goat so session hints, diff hints,
@@ -2563,6 +2717,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
                         hint_items.append(HintItem(diff_text, HINT_PRIORITY_HIGH))
 
         if not hint_items:
+            # Large-read fallback (45 KB-10 MB band): no recovery/skill/index/structured/unchanged/serve-diff/diff hint claimed this read, so it is a full read of a large file with no cheaper context already available. Hard-deny and redirect to surgical/windowed reads before build_read_hint softens it to an advisory — the user-chosen mechanism is a deny, not a nudge. Placed after the diff block so serve_diff_on_reread and real diff hints (which populate hint_items above) always win; windowed/binary/small/under-threshold reads return None and fall through to the normal hint logic below.
+            large_read = _handle_large_read_redirect(file_path, tool_input)
+            if large_read is not None:
+                return large_read
             # Per-file hint cooldown: if a tokens_saved>0 session hint was already
             # emitted for this file this session AND the file has not been edited
             # since then, suppress the hint to reduce noise.  Record the suppression

@@ -76,6 +76,7 @@ _CONFIG_ENV_KEYS: tuple[str, ...] = (
     "TOKEN_GOAT_LAZY_SKILL_INJECTION",
     "TOKEN_GOAT_SERVE_DIFF_ON_REREAD",
     "TOKEN_GOAT_SESSION_HINT_MIN_BYTES",
+    "TOKEN_GOAT_LARGE_READ_BYTES",
     "TOKEN_GOAT_OVERFLOW_GUARD",
     "TOKEN_GOAT_OVERFLOW_MAX_TOKENS",
 )
@@ -111,6 +112,7 @@ _ENV_HINT_JSON_SIDECAR: Final[str] = "TOKEN_GOAT_HINT_JSON_SIDECAR"  # set to "1
 _ENV_BASH_DEDUP_MIN_BYTES: Final[str] = "TOKEN_GOAT_BASH_DEDUP_MIN_BYTES"  # integer override (bytes)
 _ENV_WEB_DEDUP_MIN_BYTES: Final[str] = "TOKEN_GOAT_WEB_DEDUP_MIN_BYTES"  # integer override (bytes)
 _ENV_GREP_DEDUP_MIN_MATCHES: Final[str] = "TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES"  # integer override (result count)
+_ENV_LARGE_READ_BYTES: Final[str] = "TOKEN_GOAT_LARGE_READ_BYTES"  # integer override (bytes); 0 disables the large-read redirect
 _ENV_REPOMAP_COMPACT_THRESHOLD: Final[str] = "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD"  # integer override
 _ENV_WEB_CACHE_MAX_FILES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_FILES"  # integer override (file count)
 _ENV_WEB_CACHE_MAX_BYTES: Final[str] = "TOKEN_GOAT_WEB_CACHE_MAX_BYTES"  # integer override (bytes)
@@ -336,6 +338,7 @@ class _HintsToml(TypedDict, total=False):
     git_hint_max_ms: int
     min_session_hint_savings_bytes: int
     diff_hint_min_tokens_saved: int
+    large_read_redirect_bytes: int
     prompt_triggers: list[dict[str, Any]]
 
 
@@ -997,6 +1000,8 @@ class HintsConfig:
     # offset context cost.  Override via ``[hints] diff_hint_min_tokens_saved = N``
     # in config.toml.  Clamped to [0, 100_000].
     diff_hint_min_tokens_saved: int = 1000
+    # Minimum on-disk file size (bytes) at which a full Read is denied and redirected to surgical reads (skeleton/section/semantic/symbol) or an offset/limit window. Default 45000 (~45 KB) catches the 47-86 KB recon-dump / large-transcript class that overflows a near-full subagent window while leaving typical source reads untouched. A Read that already sets offset or limit is exempt (it is deliberately windowed, and the redirect itself points there — so exempting it also prevents a redirect loop). 0 disables. Override via TOKEN_GOAT_LARGE_READ_BYTES or [hints] large_read_redirect_bytes. Clamped to [0, 100_000_000].
+    large_read_redirect_bytes: int = 45_000
     # Keyword-triggered hint rules.  Each rule fires when any of its keywords
     # appears (whole-word, case-insensitive) in the user's prompt, appending
     # the rule's hint text to the session-context summary injected by
@@ -1784,6 +1789,10 @@ def load() -> Config:
             hints_raw.get("diff_hint_min_tokens_saved", 1000), 1000, 0, 100_000,
             "hints.diff_hint_min_tokens_saved",
         ),
+        large_read_redirect_bytes=_validated_int(
+            hints_raw.get("large_read_redirect_bytes", 45_000), 45_000, 0, 100_000_000,
+            "hints.large_read_redirect_bytes",
+        ),
         prompt_triggers=_parse_prompt_triggers(hints_raw.get("prompt_triggers", [])),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
@@ -1804,6 +1813,11 @@ def load() -> Config:
         "TOKEN_GOAT_SESSION_HINT_MIN_BYTES",
         hints_cfg.min_session_hint_savings_bytes,
         0, 1_000_000, "hints.min_session_hint_savings_bytes"
+    )
+    hints_cfg.large_read_redirect_bytes = _env_int(
+        _ENV_LARGE_READ_BYTES,
+        hints_cfg.large_read_redirect_bytes,
+        0, 100_000_000, "hints.large_read_redirect_bytes"
     )
 
     wf_raw: _WebFetchToml = cast("_WebFetchToml", raw.get("webfetch", {}))

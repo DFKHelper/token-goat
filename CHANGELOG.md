@@ -4,6 +4,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Oversized-read deny-redirect guards subagent context windows
+
+A spawned subagent inherits a large fixed baseline before it does any work — the full CLAUDE.md, the memory index, every loaded skill body, the MCP instruction blocks, and any SessionStart hook dumps from other plugins. That baseline alone can nearly fill the window, so the first attempt to Read a 47–86 KB recon dump, or to grep a 73 KB transcript in `content` mode, overflows the window and kills the agent. An advisory hint is too weak to prevent it; the read has to be stopped at the tool boundary.
+
+`pre_read` now denies a full Read whose on-disk size is at or above `hints.large_read_redirect_bytes` (default 45000 / ~45 KB) and redirects to the surgical alternatives — `token-goat skeleton`/`section`/`semantic`/`symbol` — or to re-issuing the Read with `offset`/`limit` to window it. The guard runs in two tiers so it never preempts a richer, type-specific redirect: a catastrophic ≥10 MB tier fires early (these files are dropped wholesale by the hint pipeline and reach no handler, and the early position also covers sessionless and cache-load-failure reads), while the 45 KB–10 MB band fires as a fallback only after the skill-body, index-only, structured-file, and serve-diff/diff handlers have had first claim. A Read that already sets `offset` or `limit` is exempt — it is deliberately windowed, and exempting it also prevents a redirect loop since the deny itself points there. Binary files are exempt (surgical reads cannot help). Setting the threshold to 0 disables the guard; `TOKEN_GOAT_LARGE_READ_BYTES` overrides it per environment.
+
+The same threshold gates a content-mode Grep over a single oversized file: `output_mode=content` with no `head_limit` over one file at or above the threshold is denied and redirected to a bounded search (`head_limit`, an `offset`/`limit` window, or `token-goat semantic`/`section`). The cheap `files_with_matches` default, an explicit `head_limit`, directory targets, and small files all pass through unchanged.
+
 ## [1.5.3] - 2026-06-08
 
 Four improvements: compact directives that tell the compaction LLM to suppress regenerated noise, compound-command bash compression, repetitive-JSON diff hunk compression, and a new `indexing.skip_dirs` config option.
