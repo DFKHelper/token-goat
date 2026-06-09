@@ -242,6 +242,8 @@ Token-goat tracks how close a session is to the autocompact trigger and tightens
 
 ## Install
 
+> **Easiest install:** paste this repo's URL into your AI and ask it to install token-goat properly. It will handle uv, run the commands, check codecs, and confirm everything is working.
+
 **Windows requirements:** Windows 10 or 11 · Python 3.12 or 3.13 · [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`)
 
 **Linux / WSL requirements:** Python 3.12 or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
