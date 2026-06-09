@@ -507,3 +507,242 @@ class TestGitFilterFallback:
         f = bc.select_filter(["git", "ls-files"])
         assert f is not None
         assert f.name == "git"
+
+
+# ---------------------------------------------------------------------------
+# _is_repetitive_json_hunk
+# ---------------------------------------------------------------------------
+
+
+class TestIsRepetitiveJsonHunk:
+    @staticmethod
+    def _jsonl_hunk(n: int, keys: dict | None = None) -> list[str]:
+        import json
+        if keys is None:
+            keys = {"ts": "2026-01-01", "entity": "campaign", "success": True}
+        return [f'+{json.dumps({**keys, "i": i})}' for i in range(n)]
+
+    def test_returns_false_for_small_hunk(self) -> None:
+        lines = self._jsonl_hunk(5)
+        assert bc._is_repetitive_json_hunk(lines) is False
+
+    def test_returns_true_for_uniform_jsonl(self) -> None:
+        lines = self._jsonl_hunk(50)
+        assert bc._is_repetitive_json_hunk(lines) is True
+
+    def test_returns_false_for_plain_code_lines(self) -> None:
+        lines = [f"+    result = compute_{i}(x)" for i in range(50)]
+        assert bc._is_repetitive_json_hunk(lines) is False
+
+    def test_returns_false_when_key_sets_too_diverse(self) -> None:
+        import json
+        lines = [f'+{json.dumps({"key_" + str(i): i})}' for i in range(50)]
+        assert bc._is_repetitive_json_hunk(lines) is False
+
+    def test_returns_false_for_mixed_json_and_code(self) -> None:
+        import json
+        json_lines = [f'+{json.dumps({"x": i})}' for i in range(20)]
+        code_lines = [f"+x = {i}" for i in range(30)]
+        # Only 40% JSON → below 75% threshold
+        assert bc._is_repetitive_json_hunk(json_lines + code_lines) is False
+
+
+# ---------------------------------------------------------------------------
+# GitDiffFilter: JSONL hunk → semantic summary
+# ---------------------------------------------------------------------------
+
+
+class TestGitDiffFilterJsonlHunk:
+    @staticmethod
+    def _make_jsonl_diff(n: int) -> str:
+        import json
+        record = {"ts": "2026-01-01T00:00:00Z", "entity": "campaign", "op": "create", "success": True}
+        added = "\n".join(f'+{json.dumps({**record, "i": i})}' for i in range(n))
+        return (
+            "diff --git a/audit.jsonl b/audit.jsonl\n"
+            "--- a/audit.jsonl\n"
+            "+++ b/audit.jsonl\n"
+            "@@ -1,3 +1,100 @@\n"
+            " existing_line\n"
+            + added
+        )
+
+    def test_large_jsonl_hunk_gets_semantic_summary(self) -> None:
+        diff = self._make_jsonl_diff(100)
+        f = bc.GitDiffFilter()
+        result = _apply(f, diff, ["git", "diff"])
+        assert "repetitive JSON/JSONL block" in result
+        assert "+100 JSON records added" in result
+
+    def test_semantic_summary_includes_sample_lines(self) -> None:
+        diff = self._make_jsonl_diff(100)
+        f = bc.GitDiffFilter()
+        result = _apply(f, diff, ["git", "diff"])
+        # Must include at least one actual JSON line as a sample
+        assert '{"ts":' in result or '"entity"' in result
+
+    def test_semantic_summary_includes_bash_output_hint(self) -> None:
+        diff = self._make_jsonl_diff(100)
+        f = bc.GitDiffFilter()
+        result = _apply(f, diff, ["git", "diff"])
+        assert "bash-output" in result
+
+    def test_small_jsonl_hunk_uses_normal_truncation(self) -> None:
+        diff = self._make_jsonl_diff(5)
+        f = bc.GitDiffFilter()
+        result = _apply(f, diff, ["git", "diff"])
+        assert "repetitive JSON/JSONL block" not in result
+
+    def test_diff_header_preserved_in_semantic_summary(self) -> None:
+        diff = self._make_jsonl_diff(100)
+        f = bc.GitDiffFilter()
+        result = _apply(f, diff, ["git", "diff"])
+        assert "diff --git a/audit.jsonl" in result
+
+    def test_regression_session_e10faf71_jsonl_pattern(self) -> None:
+        """611-line JSONL append (the pattern that caused the 80% compact failure) is compressed to a semantic summary."""
+        import json
+        record = {
+            "ts": "2026-06-08T22:46:10.327Z",
+            "run_id": "local-1780958770327",
+            "platform": "google_ads",
+            "entity_type": "campaign",
+            "operation": "create",
+            "resource_name": None,
+            "campaign_name": None,
+            "before": None,
+            "after": None,
+            "module": "TestModule",
+            "success": True,
+        }
+        added = "\n".join(f'+{json.dumps({**record, "i": i})}' for i in range(611))
+        diff = (
+            "diff --git a/memory/ads/mutation-audit-log.jsonl b/memory/ads/mutation-audit-log.jsonl\n"
+            "--- a/memory/ads/mutation-audit-log.jsonl\n"
+            "+++ b/memory/ads/mutation-audit-log.jsonl\n"
+            "@@ -2403,3 +2403,611 @@\n"
+            " existing_record\n"
+            + added
+        )
+        f = bc.GitDiffFilter()
+        result = _apply(f, diff, ["git", "diff"])
+        assert "repetitive JSON/JSONL block" in result
+        # Result must be dramatically smaller than input
+        assert len(result) < len(diff) * 0.1
+
+
+# ---------------------------------------------------------------------------
+# Compound &&-command wrapping
+# ---------------------------------------------------------------------------
+
+
+class TestDetectSingleSegment:
+    def test_detects_git_diff(self) -> None:
+        result = bc._detect_single_segment("git diff")
+        assert result is not None
+        filter_, _ = result
+        assert filter_.name == "git-diff"
+
+    def test_detects_git_log(self) -> None:
+        result = bc._detect_single_segment("git log --oneline -5")
+        assert result is not None
+        filter_, _ = result
+        assert filter_.name == "git-log"
+
+    def test_rejects_pipe_inside_segment(self) -> None:
+        assert bc._detect_single_segment("git log | head -10") is None
+
+    def test_rejects_semicolon_inside_segment(self) -> None:
+        assert bc._detect_single_segment("git diff; echo done") is None
+
+    def test_rejects_logical_or(self) -> None:
+        assert bc._detect_single_segment("git diff || echo failed") is None
+
+    def test_rejects_command_substitution(self) -> None:
+        assert bc._detect_single_segment("git log $(git rev-parse HEAD)") is None
+
+    def test_returns_none_for_unknown_command(self) -> None:
+        assert bc._detect_single_segment("my_totally_unregistered_tool --flag") is None
+
+
+class TestTryWrapCompoundSegments:
+    @staticmethod
+    def _wrapper(filter_name: str, seg: str) -> str | None:
+        return f"wrapped[{filter_name}]({seg})"
+
+    def test_wraps_both_segments(self) -> None:
+        result = bc.try_wrap_compound_segments(
+            "git diff && git log --oneline -5",
+            wrapper_args=self._wrapper,
+        )
+        assert result is not None
+        assert "wrapped[git-diff](git diff)" in result
+        assert "wrapped[git-log](git log --oneline -5)" in result
+        assert " && " in result
+
+    def test_preserves_order(self) -> None:
+        result = bc.try_wrap_compound_segments(
+            "git diff && git log --oneline -5",
+            wrapper_args=self._wrapper,
+        )
+        assert result is not None
+        assert result.index("git-diff") < result.index("git-log")
+
+    def test_leaves_unknown_segment_unwrapped(self) -> None:
+        result = bc.try_wrap_compound_segments(
+            "git diff && echo hello",
+            wrapper_args=self._wrapper,
+        )
+        assert result is not None
+        assert "wrapped[git-diff](git diff)" in result
+        assert "echo hello" in result
+        assert "wrapped" not in result.split("&&")[1]
+
+    def test_returns_none_when_no_segment_matches(self) -> None:
+        result = bc.try_wrap_compound_segments(
+            "echo foo && echo bar",
+            wrapper_args=self._wrapper,
+        )
+        assert result is None
+
+    def test_returns_none_for_pipe(self) -> None:
+        assert bc.try_wrap_compound_segments("git diff | grep foo", wrapper_args=self._wrapper) is None
+
+    def test_returns_none_for_semicolon(self) -> None:
+        assert bc.try_wrap_compound_segments("git diff; git log", wrapper_args=self._wrapper) is None
+
+    def test_returns_none_for_logical_or(self) -> None:
+        assert bc.try_wrap_compound_segments("git diff || git log", wrapper_args=self._wrapper) is None
+
+    def test_returns_none_for_single_command(self) -> None:
+        assert bc.try_wrap_compound_segments("git diff", wrapper_args=self._wrapper) is None
+
+    def test_three_segment_compound(self) -> None:
+        result = bc.try_wrap_compound_segments(
+            "git diff && git log --oneline -5 && git status",
+            wrapper_args=self._wrapper,
+        )
+        assert result is not None
+        parts = result.split(" && ")
+        assert len(parts) == 3
+
+    def test_wrapper_returning_none_leaves_segment_unwrapped(self) -> None:
+        def disabled_wrapper(filter_name: str, seg: str) -> str | None:
+            if filter_name == "git-diff":
+                return None  # simulate disabled filter
+            return f"wrapped({seg})"
+
+        result = bc.try_wrap_compound_segments(
+            "git diff && git log --oneline -5",
+            wrapper_args=disabled_wrapper,
+        )
+        assert result is not None
+        assert result.startswith("git diff")  # left unwrapped
+        assert "wrapped(git log" in result
+
+    def test_all_disabled_returns_none(self) -> None:
+        result = bc.try_wrap_compound_segments(
+            "git diff && git log --oneline -5",
+            wrapper_args=lambda f, s: None,  # all disabled
+        )
+        assert result is None

@@ -4,6 +4,28 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-06-08
+
+Four improvements: compact directives that tell the compaction LLM to suppress regenerated noise, compound-command bash compression, repetitive-JSON diff hunk compression, and a new `indexing.skip_dirs` config option.
+
+### Compact directives suppress skill_listing and hook_success reproduction
+
+After compaction, the conversation often refills quickly because the compaction LLM faithfully reproduces the `skill_listing` blob (the full skills catalog, ~14–28K tokens) and every `hook_success`/`hook_error` telemetry event. These are autoregenerating noise — `skill_listing` is re-injected fresh at every session start and hook events are ephemeral status lines — but the compaction LLM has no way to know that without being told.
+
+`build_manifest()` now appends a `### Compact Directives` footer after the sidecar SHA write (so the fingerprint is unaffected) instructing the compaction LLM to replace each `skill_listing` message with `[skill_listing: auto-injected]` and collapse all `hook_success`/`hook_error` events to a single `[N hook events]` line. A `_DIRECTIVE_TOKEN_RESERVE` is subtracted from `max_tokens` before building the manifest body, so the total output stays within the caller's budget.
+
+### Compound `&&` command bash compression
+
+The bash compress hook previously skipped commands it couldn't recognize as a single filter — a compound like `git diff && git log` matched no single `detect_from_command` rule, so both halves ran uncompressed. The hook now falls back to `bash_compress.try_wrap_compound_segments`, which splits the command on `&&` boundaries and wraps each recognizable segment with its own filter. Segments that don't match any filter pass through unchanged. Unrecognized compound commands are skipped as before, so there are no false positives.
+
+### Repetitive-JSON diff hunk compression
+
+`_compress_git_diff_body` now detects diff hunks where ≥75% of added lines parse as JSON dicts and all parsed objects share ≤5 distinct key-sets — the signature of machine-generated JSONL (audit logs, test fixtures, mutation records). These hunks are replaced with a one-line summary (`[token-goat: N repetitive JSON-object lines omitted]`) instead of head+tail truncation, so a 500-line JSONL diff becomes one line rather than 60 lines.
+
+### `indexing.skip_dirs` config option
+
+`config.toml` now supports `[indexing] skip_dirs = ["dir1", "dir2"]`. These basenames are merged with the built-in `SKIP_DIRS` frozenset during `iter_source_files`, so project-specific generated directories — temporary venvs, build sandboxes, unusual artifact directories — can be excluded without touching token-goat source. The list is validated at load time; non-string entries are silently dropped with a warning.
+
 ## [1.5.2] - 2026-06-08
 
 Three fixes: Codex hook wire-format compatibility, and two Windows coarse-`mtime` correctness issues in the cache and session layers.

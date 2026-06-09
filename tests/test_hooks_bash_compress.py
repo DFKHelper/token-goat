@@ -83,9 +83,18 @@ class TestNoRewrite:
         result = _dispatch(_payload("pytest > out.txt"))
         assert "hookSpecificOutput" not in result
 
-    def test_chain_not_wrapped(self, tmp_data_dir, monkeypatch):
+    def test_chain_with_known_segment_is_compound_wrapped(self, tmp_data_dir, monkeypatch):
+        # pytest is a known filter; deploy is not. The known segment gets wrapped, deploy stays as-is.
         monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
         result = _dispatch(_payload("pytest && deploy"))
+        hso = result.get("hookSpecificOutput", {})
+        new_cmd = hso.get("updatedInput", {}).get("command", "")
+        assert "compress" in new_cmd
+        assert "deploy" in new_cmd
+
+    def test_chain_with_all_unknown_segments_not_wrapped(self, tmp_data_dir, monkeypatch):
+        monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
+        result = _dispatch(_payload("totally-bogus-1 && totally-bogus-2"))
         assert "hookSpecificOutput" not in result
 
     def test_already_wrapped_command_not_double_wrapped(self, tmp_data_dir, monkeypatch):

@@ -249,6 +249,7 @@ __all__ = [
     "ClineFilter",
 ]
 
+import json as _json
 import math
 import re
 import shlex
@@ -5108,6 +5109,34 @@ def _compress_git_diff_stat(stdout: str, stderr: str) -> str:
     return out
 
 
+def _is_repetitive_json_hunk(hunk_lines: list[str]) -> bool:
+    """Return True when the hunk is dominated by repetitive JSON-object lines.
+
+    Triggers when ≥75% of added lines parse as JSON dicts and all parsed
+    objects share ≤5 distinct key-sets — i.e. machine-generated structured
+    data such as JSONL audit logs, test fixtures, or mutation records.
+    """
+    added = [ln[1:] for ln in hunk_lines if ln.startswith("+") and not ln.startswith("+++")]
+    if len(added) < 8:
+        return False
+    valid: int = 0
+    key_sets: set[frozenset[str]] = set()
+    for line in added:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            obj = _json.loads(stripped)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(obj, dict):
+            valid += 1
+            key_sets.add(frozenset(obj.keys()))
+    if valid < 8:
+        return False
+    return valid / len(added) >= 0.75 and len(key_sets) <= 5
+
+
 def _compress_git_diff_body(stdout: str, stderr: str) -> str:
     """Compress full diff body: binary summaries + large-hunk truncation."""
     _MAX_HUNK_LINES = 50
@@ -5155,14 +5184,29 @@ def _compress_git_diff_body(stdout: str, stderr: str) -> str:
                 if ln.startswith("+") or ln.startswith("-")
             ]
             if len(changed) > _MAX_HUNK_LINES:
-                head = hunk_lines[:_HUNK_HEAD_KEEP]
-                tail = hunk_lines[-_HUNK_TAIL_KEEP:]
-                omitted = len(hunk_lines) - _HUNK_HEAD_KEEP - _HUNK_TAIL_KEEP
-                compressed_hunks.append(
-                    "\n".join(head)
-                    + f"\n... {omitted} lines omitted by token-goat ...\n"
-                    + "\n".join(tail)
-                )
+                if _is_repetitive_json_hunk(hunk_lines):
+                    # Machine-generated JSON/JSONL: emit semantic summary + 2-line sample so the compaction LLM understands what changed without keeping hundreds of near-identical records.
+                    n_added = sum(1 for ln in hunk_lines if ln.startswith("+") and not ln.startswith("+++"))
+                    n_removed = sum(1 for ln in hunk_lines if ln.startswith("-") and not ln.startswith("---"))
+                    sample = [ln for ln in hunk_lines if ln.startswith("+") and not ln.startswith("+++")][:2]
+                    parts = [f"+{n_added} JSON records added"]
+                    if n_removed:
+                        parts.append(f"-{n_removed} removed")
+                    compressed_hunks.append(
+                        hunk_lines[0]
+                        + f"\n[token-goat: repetitive JSON/JSONL block ({', '.join(parts)}); 2-line sample:]\n"
+                        + "\n".join(sample)
+                        + "\n[use `token-goat bash-output <id>` for full content]"
+                    )
+                else:
+                    head = hunk_lines[:_HUNK_HEAD_KEEP]
+                    tail = hunk_lines[-_HUNK_TAIL_KEEP:]
+                    omitted = len(hunk_lines) - _HUNK_HEAD_KEEP - _HUNK_TAIL_KEEP
+                    compressed_hunks.append(
+                        "\n".join(head)
+                        + f"\n... {omitted} lines omitted by token-goat ...\n"
+                        + "\n".join(tail)
+                    )
             else:
                 compressed_hunks.append(hunk)
         out_blocks.append("\n".join(compressed_hunks))
@@ -20849,6 +20893,82 @@ def detect_from_command(command: str) -> tuple[Filter, list[str]] | None:
     if filter_ is None:
         return None
     return filter_, _strip_prefixes(argv)
+
+
+_COMPOUND_AND_RE: Final[re.Pattern[str]] = re.compile(r"\s*&&\s*")
+
+
+def _detect_single_segment(segment: str) -> tuple[Filter, list[str]] | None:
+    """Like detect_from_command but for a single &&-split segment (no compound guard).
+
+    Callers guarantee the segment was obtained by splitting on ``&&`` and
+    contains no further compound operators.  Still rejects ``||``, ``|``,
+    ``;``, ``$()``, and backtick substitution inside the segment.
+    """
+    segment = segment.strip()
+    if not segment or len(segment) > 65_536:
+        return None
+    if any(op in segment for op in ("||", "$(", "`")):
+        return None
+    if "|" in segment or ";" in segment:
+        return None
+    try:
+        argv = shlex.split(segment, posix=True)
+    except ValueError:
+        return None
+    if any(_REDIRECT_TOKEN_RE.match(tok) for tok in argv):
+        return None
+    filter_ = select_filter(argv)
+    if filter_ is None:
+        return None
+    return filter_, _strip_prefixes(argv)
+
+
+def try_wrap_compound_segments(
+    command: str,
+    *,
+    wrapper_args: Callable[[str, str], str | None],
+) -> str | None:
+    """Wrap each ``&&``-joined segment of a compound command independently.
+
+    For a command like ``git diff && git log --oneline -5``, each segment is
+    individually recognised and rewritten through the compression wrapper so
+    the full compound still executes but its output lands compressed in context.
+
+    ``wrapper_args(filter_name, segment)`` returns the wrapped command string
+    for one segment, or ``None`` to leave that segment unchanged (e.g. when the
+    filter is disabled).
+
+    Returns the rewritten compound command when at least one segment was
+    wrapped, or ``None`` when the command is not a safe ``&&``-compound or no
+    segment matched a filter.
+    """
+    if not command or "||" in command or "|" in command or ";" in command:
+        return None
+    if "$(" in command or "`" in command:
+        return None
+    if "&&" not in command:
+        return None
+    segments = [s.strip() for s in _COMPOUND_AND_RE.split(command)]
+    if not (2 <= len(segments) <= 8):
+        return None
+    wrapped_segments: list[str] = []
+    any_wrapped = False
+    for seg in segments:
+        if not seg:
+            return None  # empty segment (e.g. trailing &&) — bail
+        detected = _detect_single_segment(seg)
+        if detected is not None:
+            filter_, _ = detected
+            wrapped = wrapper_args(filter_.name, seg)
+            if wrapped is not None:
+                wrapped_segments.append(wrapped)
+                any_wrapped = True
+                continue
+        wrapped_segments.append(seg)
+    if not any_wrapped:
+        return None
+    return " && ".join(wrapped_segments)
 
 
 def compress_output(

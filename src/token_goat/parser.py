@@ -538,6 +538,7 @@ def iter_source_files(
     *,
     skip_threshold: int = MAX_FILE_SIZE,
     ext_filter: frozenset[str] | None = None,
+    extra_skip_dirs: frozenset[str] = frozenset(),
 ) -> Iterable[Path]:
     """Yield absolute paths of indexable source files under the project root.
 
@@ -555,20 +556,24 @@ def iter_source_files(
         ext_filter: When not None, only yield files whose suffix (lowercased,
             with leading dot) is in this set.  E.g. ``frozenset({".py", ".pyi"})``.
             Has no effect on basename-matched files (e.g. ``.env``).
+        extra_skip_dirs: Additional directory basenames to skip, merged with
+            the built-in ``SKIP_DIRS`` frozenset.  Populated from
+            ``config.indexing.skip_dirs`` in ``index_project``.
     """
     root = project.root
     resolved_root = root.resolve()
+    _effective_skip_dirs = SKIP_DIRS | extra_skip_dirs if extra_skip_dirs else SKIP_DIRS
     skipped_dirs = 0
     skipped_symlinks = 0
     skipped_oversized = 0
     skipped_generated = 0
     for dirpath, dirs, files in os.walk(root):
         initial_dirs = dirs[:]
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [d for d in dirs if d not in _effective_skip_dirs]
         skipped_dirs += len(initial_dirs) - len(dirs)
         base = Path(dirpath)
         for name in files:
-            if name in SKIP_DIRS:
+            if name in _effective_skip_dirs:
                 continue
             # Skip generated/lockfile artifacts (package-lock.json, *.min.js, etc.)
             # before the extension check — these have valid extensions in
@@ -915,11 +920,13 @@ def index_project(
     # Load configurable large-file thresholds.  Fail soft: if config is
     # unavailable (e.g. during tests that don't want any TOML on disk), fall
     # back to the hardcoded defaults defined in this module.
+    _extra_skip_dirs: frozenset[str] = frozenset()
     try:
         from . import config as _config  # noqa: PLC0415
         _idx_cfg = _config.load().indexing
         _skip_threshold = _idx_cfg.large_file_skip_kb * 1024
         _symbol_only_threshold = _idx_cfg.large_file_symbol_only_kb * 1024
+        _extra_skip_dirs = frozenset(_idx_cfg.skip_dirs)
     except Exception:  # noqa: BLE001
         _skip_threshold = MAX_FILE_SIZE
         _symbol_only_threshold = 0
@@ -948,7 +955,7 @@ def index_project(
     _skipped_large: list[LargeFileInfo] = []
     if _skip_threshold < MAX_FILE_SIZE * 100:  # only scan when threshold is meaningful
         try:
-            for _lp in iter_source_files(project, skip_threshold=MAX_FILE_SIZE * 100):
+            for _lp in iter_source_files(project, skip_threshold=MAX_FILE_SIZE * 100, extra_skip_dirs=_extra_skip_dirs):
                 try:
                     _lp_size = _lp.stat().st_size
                 except OSError:
@@ -970,7 +977,7 @@ def index_project(
         except Exception:  # noqa: BLE001
             pass  # fail-soft: large-file scanning must never abort indexing
 
-    files = list(iter_source_files(project, skip_threshold=_skip_threshold, ext_filter=ext_filter))
+    files = list(iter_source_files(project, skip_threshold=_skip_threshold, ext_filter=ext_filter, extra_skip_dirs=_extra_skip_dirs))
     n_total = len(files)
     if n_total == 0:
         _LOG.debug(

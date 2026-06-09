@@ -360,6 +360,7 @@ class _IndexingToml(TypedDict, total=False):
 
     large_file_symbol_only_kb: int
     large_file_skip_kb: int
+    skip_dirs: list[str]
 
 
 class _ContextToml(TypedDict, total=False):
@@ -1088,10 +1089,17 @@ class IndexingConfig:
         large_file_skip_kb: Files larger than this many KB are skipped entirely
             with a warning. Must be >= large_file_symbol_only_kb. Default 2048 KB.
             Valid range: 1 KB to 1 GB (1048576 KB).
+        skip_dirs: Additional directory basenames to exclude during indexing,
+            merged with the built-in ``SKIP_DIRS`` set in ``parser.py``.
+            Useful for project-specific generated environments (e.g. test venvs,
+            build sandboxes) that don't match a standard skip pattern.
+            Stored as a list; converted to a frozenset at parse time.
+            Example: ``skip_dirs = ["tmptg-py313-venv", "tmptg-py313b"]``.
     """
 
     large_file_symbol_only_kb: int = 500
     large_file_skip_kb: int = 2048
+    skip_dirs: list[str] = field(default_factory=list)
 
 
 #: Valid profile values for :attr:`CompressionConfig.profile`.
@@ -1810,9 +1818,15 @@ def load() -> Config:
             _idx_skip_kb, _idx_symbol_only_kb,
         )
         _idx_skip_kb = _idx_symbol_only_kb
+    _idx_skip_dirs_raw = idx_raw.get("skip_dirs", [])
+    if not isinstance(_idx_skip_dirs_raw, list):
+        _LOG.warning("config: indexing.skip_dirs must be a list; ignoring")
+        _idx_skip_dirs_raw = []
+    _idx_skip_dirs: list[str] = [str(d) for d in _idx_skip_dirs_raw if isinstance(d, str)]
     idx_cfg = IndexingConfig(
         large_file_symbol_only_kb=_idx_symbol_only_kb,
         large_file_skip_kb=_idx_skip_kb,
+        skip_dirs=_idx_skip_dirs,
     )
 
     cmp_raw: _CompressionToml = cast("_CompressionToml", raw.get("compression", {}))
@@ -2019,6 +2033,7 @@ def save(config: Config) -> None:
         "indexing": {
             "large_file_symbol_only_kb": config.indexing.large_file_symbol_only_kb,
             "large_file_skip_kb": config.indexing.large_file_skip_kb,
+            "skip_dirs": config.indexing.skip_dirs,
         },
         "compression": {
             "profile": config.compression.profile,

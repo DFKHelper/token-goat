@@ -243,44 +243,62 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     if stripped.startswith(("token-goat", "token_goat")) or "token_goat.cli" in stripped:
         return None
 
-    detected = bash_compress.detect_from_command(cmd)
-    if detected is None:
-        return None
-    filter_, _ = detected
-
-    if filter_.name in cfg.disabled_filters:
-        _LOG.debug("bash_compress: filter %s disabled by config; skipping", filter_.name)
-        return None
-
-    # Resolve the compression profile based on active harness + config setting.
-    # Read harness from the payload (stamped by normalize_payload); fall back to "claude".
     harness = str(payload.get("_tg_harness", "claude"))
     effective_profile = _resolve_compression_profile(harness, cfg_obj.compression.profile)
 
-    # Build the wrapper invocation.  paths.python_runner_command gives us the
-    # exact ``pythonw -m token_goat.cli`` form already used by the hook
-    # entries, so the rewritten command works in any environment where the
-    # hooks themselves work.
-    wrapper = paths_mod.python_runner_command(
-        "compress",
-        "--filter", filter_.name,
-        "--timeout", str(cfg.timeout_seconds),
-        "--profile", effective_profile,
-        "--cmd", cmd,
-    )
-    rewritten_input: dict[str, object] = dict(tool_input)
-    rewritten_input["command"] = wrapper
+    def _mk_wrapper(filter_name: str, seg: str) -> str | None:
+        if filter_name in cfg.disabled_filters:
+            return None
+        return paths_mod.python_runner_command(
+            "compress",
+            "--filter", filter_name,
+            "--timeout", str(cfg.timeout_seconds),
+            "--profile", effective_profile,
+            "--cmd", seg,
+        )
+
+    detected = bash_compress.detect_from_command(cmd)
+    if detected is not None:
+        filter_, _ = detected
+        if filter_.name in cfg.disabled_filters:
+            _LOG.debug("bash_compress: filter %s disabled by config; skipping", filter_.name)
+            return None
+        wrapper = _mk_wrapper(filter_.name, cmd)
+        if wrapper is None:
+            return None
+        rewritten_input: dict[str, object] = dict(tool_input)
+        rewritten_input["command"] = wrapper
+        _LOG.info(
+            "bash_compress: wrapping command with %s filter profile=%s (orig=%s)",
+            filter_.name,
+            effective_profile,
+            sanitize_log_str(cmd, max_len=200),
+        )
+        return pre_tool_use_with_update(
+            rewritten_input,
+            (
+                f"Note: command auto-wrapped by token-goat ({filter_.name} filter) "
+                "to compress its output before it lands in context. "
+                "Set TOKEN_GOAT_BASH_COMPRESS=0 to disable."
+            ),
+        )
+
+    # Fallback: wrap each &&-segment independently — handles compound commands like ``git diff && git log`` where the compound guard would otherwise skip compression and let large output (e.g. JSONL diffs) enter context uncompressed.
+    rewritten_cmd = bash_compress.try_wrap_compound_segments(cmd, wrapper_args=_mk_wrapper)
+    if rewritten_cmd is None:
+        return None
+    rewritten_input = dict(tool_input)
+    rewritten_input["command"] = rewritten_cmd
     _LOG.info(
-        "bash_compress: wrapping command with %s filter profile=%s (orig=%s)",
-        filter_.name,
+        "bash_compress: compound-wrapped command profile=%s (orig=%s)",
         effective_profile,
         sanitize_log_str(cmd, max_len=200),
     )
     return pre_tool_use_with_update(
         rewritten_input,
         (
-            f"Note: command auto-wrapped by token-goat ({filter_.name} filter) "
-            "to compress its output before it lands in context. "
+            "Note: compound command auto-wrapped by token-goat to compress each "
+            "stage's output before it lands in context. "
             "Set TOKEN_GOAT_BASH_COMPRESS=0 to disable."
         ),
     )

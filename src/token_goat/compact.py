@@ -665,6 +665,9 @@ _GREP_RECENCY_HALF_LIFE_SECS: Final[float] = 1800.0  # 30 minutes
 # causing the manifest construction pass to allocate and render all sections before
 # the trim loop brings it back down — a pointless memory/CPU spike with no benefit.
 _MAX_MANIFEST_TOKENS_CAP: Final[int] = 4_000
+# Directives appended after sidecar write — seen by the compaction LLM but excluded from the SHA/fingerprint.
+_COMPACT_DIRECTIVES: Final[str] = ("\n### Compact Directives\n- `skill_listing` messages (the full available-skills list) are auto-regenerated at session start — replace each with: `[skill_listing: auto-injected]`\n- `hook_success` / `hook_error` messages are diagnostic telemetry — collapse all to: `[N hook events]`")
+_DIRECTIVE_TOKEN_RESERVE: Final[int] = len(_COMPACT_DIRECTIVES) // 3
 # Manifest delta-cache TTL (item #19).  If less than this many seconds have elapsed
 # since the last emit AND the rendered text is byte-for-byte identical, return a
 # brief stub instead of rebuilding.  Force a full rebuild after 10 min regardless.
@@ -4391,8 +4394,9 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
 
     # Cache miss or TTL expired: render the full manifest.
     cfg = _load_config()
+    body_budget = max(1, max_tokens - _DIRECTIVE_TOKEN_RESERVE)
     full_manifest = _build_manifest_from_cache(
-        cache, session_id, max_tokens, **_compact_render_kwargs(cfg)
+        cache, session_id, body_budget, **_compact_render_kwargs(cfg)
     )
     if not full_manifest:
         return full_manifest
@@ -4443,6 +4447,9 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     cache._invalidate_json_cache()
     session_mod.save(cache)
 
+    # Skip directives when the budget is too small to fit them without blowing through the limit.
+    if max_tokens > _DIRECTIVE_TOKEN_RESERVE:
+        full_manifest += _COMPACT_DIRECTIVES
     return full_manifest
 
 
