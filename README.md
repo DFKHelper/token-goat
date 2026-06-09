@@ -31,7 +31,7 @@ Restart your AI sessions. Run <code>token-goat stats</code> a couple of minutes 
 <p align="center">
   <a href="https://pypi.org/project/token-goat/"><img src="https://img.shields.io/pypi/v/token-goat?label=PyPI&logo=pypi&logoColor=white" alt="PyPI version"></a>
   <a href="https://github.com/DFKHelper/token-goat/actions/workflows/ci.yml"><img src="https://github.com/DFKHelper/token-goat/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
-  <a href="https://pypi.org/project/token-goat/"><img src="https://img.shields.io/pypi/pyversions/token-goat?logo=python&logoColor=white" alt="Python 3.11 | 3.12 | 3.13"></a>
+  <a href="https://pypi.org/project/token-goat/"><img src="https://img.shields.io/pypi/pyversions/token-goat?logo=python&logoColor=white" alt="Python 3.12 | 3.13"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey" alt="PolyForm Noncommercial"></a>
 </p>
 
@@ -44,6 +44,14 @@ Restart your AI sessions. Run <code>token-goat stats</code> a couple of minutes 
 
 <p align="center">
   Built and continually improved, free, by one person. If it saves you tokens, drop a ⭐️ at the top of this page. One click. Makes my day. Also, if you'd like anything added, drop me a line.
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> &nbsp;·&nbsp;
+  <a href="#cli">CLI</a> &nbsp;·&nbsp;
+  <a href="#what-gets-installed">What gets installed?</a> &nbsp;·&nbsp;
+  <a href="#stats-display">Stats</a> &nbsp;·&nbsp;
+  <a href="#security-privacy-and-uninstall">Security & uninstall</a>
 </p>
 
 ---
@@ -234,11 +242,11 @@ Token-goat tracks how close a session is to the autocompact trigger and tightens
 
 ## Install
 
-**Windows requirements:** Windows 10 or 11 · Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`)
+**Windows requirements:** Windows 10 or 11 · Python 3.12 or 3.13 · [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`)
 
-**Linux / WSL requirements:** Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+**Linux / WSL requirements:** Python 3.12 or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
-**macOS requirements (untested):** Python 3.11, 3.12, or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+**macOS requirements (untested):** Python 3.12 or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 
 ```
 uv tool install token-goat
@@ -734,7 +742,7 @@ Reverses everything in [What gets installed?](#what-gets-installed): the schedul
 
 I built this because long Claude Code and Codex sessions on my machine kept burning context in the same ways: screenshots landing at 2-3 MB, the agent re-reading a file it parsed hours earlier in the same conversation, compactions that forgot which functions were edited. Each felt preventable.
 
-This is a solo project. I use it daily on Windows 11. Tests run across Python 3.11, 3.12, and 3.13.
+This is a solo project. I use it daily on Windows 11. Tests run across Python 3.12 and 3.13.
 
 ## Requests and issues
 
