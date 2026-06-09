@@ -74,7 +74,7 @@ from .cache_common import (
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
-from .util import get_logger, strip_ansi
+from .util import get_logger, normalize_path, strip_ansi
 
 _LOG = get_logger("bash_cache")
 
@@ -274,9 +274,16 @@ def command_hash(command: str, cwd: str | None = None) -> str:
 
     The command string is normalized (whitespace, path seps, flag ordering) before
     hashing to increase cache hit rate for semantically identical commands.
+
+    *cwd* is likewise normalized (drive-letter case, path separators, WSL ``/mnt/c``
+    form) so the same physical directory reached via different representations
+    (``C:\\proj`` from a Windows tool vs ``c:/proj`` vs ``/mnt/c/proj`` from WSL)
+    shares one cache key. Normalization is string-only: symlinks and junctions are
+    not resolved, so distinct logical paths to one directory cache-miss rather than
+    risk a wrong-project hit (conservative, never incorrect).
     """
     normalized = normalize_command_for_cache_key(command)
-    key = normalized if cwd is None else f"{cwd}\x00{normalized}"
+    key = normalized if cwd is None else f"{normalize_path(cwd)}\x00{normalized}"
     return short_content_hash(key)
 
 

@@ -614,6 +614,50 @@ class TestCommandHashCwdScoping:
         assert result is not None
         assert result.cmd_sha == bash_cache.command_hash(cmd, cwd)
 
+    # Regression: command_hash keyed on the raw cwd string, so one directory addressed as C:\proj vs c:/proj vs /mnt/c/proj produced three distinct keys and three cache misses — a dominant source of redundant git/pytest recompute on Windows + WSL. These lock in that those representations now share one key, while genuinely different paths still don't.
+
+    def test_cwd_drive_letter_case_shares_hash(self):
+        """Same dir differing only in drive-letter case shares a cache key."""
+        h_upper = bash_cache.command_hash("git status", "C:/Projects/token-goat")
+        h_lower = bash_cache.command_hash("git status", "c:/Projects/token-goat")
+        assert h_upper == h_lower
+
+    def test_cwd_path_separator_shares_hash(self):
+        """Same dir differing only in path separators shares a cache key."""
+        h_back = bash_cache.command_hash("git status", "C:\\Projects\\token-goat")
+        h_fwd = bash_cache.command_hash("git status", "c:/Projects/token-goat")
+        assert h_back == h_fwd
+
+    def test_cwd_wsl_form_shares_hash_with_windows_form(self):
+        """WSL /mnt/c form and Windows c: form of one dir share a cache key."""
+        h_wsl = bash_cache.command_hash("git status", "/mnt/c/Projects/token-goat")
+        h_win = bash_cache.command_hash("git status", "C:\\Projects\\token-goat")
+        assert h_wsl == h_win
+
+    def test_cwd_posix_case_variance_stays_distinct(self):
+        """Safety: on a case-sensitive FS, /srv/Foo and /srv/foo are different
+        directories and must NOT collide. normalize_path folds only the drive
+        letter, never the path body — this guards against a future over-eager
+        lowercase that would serve one project's cached output for another."""
+        h1 = bash_cache.command_hash("git status", "/srv/Foo")
+        h2 = bash_cache.command_hash("git status", "/srv/foo")
+        assert h1 != h2
+
+    def test_find_cached_for_command_matches_across_cwd_representation(self, tmp_data_dir):
+        """End-to-end: output stored under the Windows-form cwd is found when the
+        lookup arrives with the forward-slash form of the same directory. This is
+        the cross-session cache hit the cwd normalization actually unlocks."""
+        cmd = "git status"
+        meta = bash_cache.store_output(
+            "sess-pathvar", cmd, "X" * 500, "", 0, cwd="C:\\Projects\\token-goat"
+        )
+        assert meta is not None
+        bash_cache.write_sidecar(meta)
+
+        result = bash_cache.find_cached_for_command(cmd, cwd="c:/Projects/token-goat")
+        assert result is not None
+        assert result.cmd_sha == meta.cmd_sha
+
 
 class TestGetRecentErrorOutputs:
     """Tests for get_recent_error_outputs function."""
