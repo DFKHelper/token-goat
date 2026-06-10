@@ -434,6 +434,37 @@ class TestPostSkillHook:
         compact_text = skill_cache.get_compact(sid, "ralph")
         assert compact_text is None
 
+    def test_duplicate_load_advances_skill_ts(self, tmp_data_dir):
+        """Regression: post_skill must advance skill_ts on duplicate loads.
+
+        The early-return path (prior_entry is not None) previously returned
+        without calling mark_skill_loaded, leaving skill_ts frozen at the
+        initial load time.  _compaction_occurred_after then permanently returns
+        True (sidecar > frozen ts), disarming dedup for every subsequent load.
+
+        Fix: mark_skill_loaded is called before the early return so skill_ts
+        advances past the sidecar mtime, restoring dedup for the next epoch.
+        """
+        import time
+
+        sid = "session-ts-advance"
+        body = "# Ralph\n\n" + ("rule. " * 200)
+
+        # First load — populates skill_history, sets skill_ts = T1.
+        fire_skill_hook(sid, "ralph", body)
+        ts_after_first = session.load(sid).skill_history["ralph"].ts
+
+        time.sleep(0.05)  # ensure clock advances
+
+        # Second (duplicate) load — with the fix, mark_skill_loaded is called.
+        fire_skill_hook(sid, "ralph", body)
+        ts_after_second = session.load(sid).skill_history["ralph"].ts
+
+        assert ts_after_second > ts_after_first, (
+            "skill_ts must advance on duplicate post_skill so "
+            "_compaction_occurred_after does not return True permanently"
+        )
+
 
 # ---------------------------------------------------------------------------
 # compact manifest section

@@ -79,6 +79,7 @@ def _make_cfg(**overrides):
         inline_snippets=True,
         pre_skill_enabled=True,
         first_load_compact=False,
+        post_compact_full_loads=False,
     )
     defaults.update(overrides)
     return SkillPreservationConfig(**defaults)
@@ -190,9 +191,43 @@ class TestPreSkillRepeatLoadDedup:
         assert "brainstorming" in ctx
         assert "skill-body" in ctx
 
-    def test_repeat_load_after_compaction_allows_reload(self, tmp_data_dir, monkeypatch):
-        """When compaction fired after the skill was loaded, allow the reload."""
-        _patch_cfg(monkeypatch)
+    def test_repeat_load_after_compaction_serves_compact_by_default(self, tmp_data_dir, monkeypatch):
+        """Default (post_compact_full_loads=False) + compact available: deny with compact."""
+        _patch_cfg(monkeypatch)  # post_compact_full_loads=False is the default
+        entry = _make_skill_entry("ralph", run_count=1, ts=time.time() - 120)
+        with (
+            patch.object(session, "lookup_skill_entry", return_value=entry),
+            patch.object(skill_cache, "get_compact", return_value=_COMPACT_BODY),
+            patch("token_goat.hooks_skill._compaction_occurred_after", return_value=True),
+        ):
+            resp = pre_skill(_payload("ralph"))
+
+        assert resp.get("continue") is True
+        hso = resp.get("hookSpecificOutput", {})
+        assert hso.get("permissionDecision") == "deny"
+        assert _COMPACT_BODY.strip()[:30] in hso.get("additionalContext", "")
+
+    def test_repeat_load_after_compaction_no_compact_allows_reload(self, tmp_data_dir, monkeypatch):
+        """Default (post_compact_full_loads=False) + NO compact: allow full reload.
+
+        Without a compact, a deny response would be pointer-only, leaving the model
+        without operative rules.  pre_skill must fall back to a full reload.
+        """
+        _patch_cfg(monkeypatch)  # post_compact_full_loads=False
+        entry = _make_skill_entry("ralph", run_count=1, ts=time.time() - 120)
+        with (
+            patch.object(session, "lookup_skill_entry", return_value=entry),
+            patch.object(skill_cache, "get_compact", return_value=None),
+            patch("token_goat.hooks_skill._compaction_occurred_after", return_value=True),
+        ):
+            resp = pre_skill(_payload("ralph"))
+
+        assert resp.get("continue") is True
+        assert "hookSpecificOutput" not in resp
+
+    def test_repeat_load_after_compaction_allows_reload_opt_in(self, tmp_data_dir, monkeypatch):
+        """post_compact_full_loads=True: full body reload allowed after compaction (opt-in)."""
+        _patch_cfg(monkeypatch, post_compact_full_loads=True)
         entry = _make_skill_entry("ralph", run_count=1, ts=time.time() - 120)
         with (
             patch.object(session, "lookup_skill_entry", return_value=entry),

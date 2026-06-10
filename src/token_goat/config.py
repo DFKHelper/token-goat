@@ -275,6 +275,7 @@ class _SkillPreservationToml(TypedDict, total=False):
     inline_snippets: bool
     pre_skill_enabled: bool
     first_load_compact: bool
+    post_compact_full_loads: bool
 
 
 class _ImageShrinkToml(TypedDict, total=False):
@@ -682,6 +683,10 @@ class SkillPreservationConfig:
             ``False`` (safe default: full body on first load, compact on
             subsequent loads only).  Enable only after verifying that your
             skill compacts are functional standalones.
+        post_compact_full_loads: When ``False`` (default), the pre-skill hook
+            serves the compact form even after a compaction event — dedup stays
+            armed through the entire session.  Set to ``True`` to allow one
+            full body reload per compaction epoch (the pre-1.7 behaviour).
     """
 
     enabled: bool = True
@@ -694,6 +699,7 @@ class SkillPreservationConfig:
     inline_snippets: bool = True
     pre_skill_enabled: bool = True
     first_load_compact: bool = False
+    post_compact_full_loads: bool = False
 
 
 @dataclass
@@ -1673,6 +1679,9 @@ def load() -> Config:
         ),
         first_load_compact=_validated_bool(
             sp_raw.get("first_load_compact", False), False, "skill_preservation.first_load_compact",
+        ),
+        post_compact_full_loads=_validated_bool(
+            sp_raw.get("post_compact_full_loads", False), False, "skill_preservation.post_compact_full_loads",
         ),
     )
     _apply_env_disable(sp, "enabled", _ENV_SKILL_PRESERVATION, "skill_preservation")

@@ -4,6 +4,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **Skill dedup permanently disarmed after first compaction.** `post_skill`'s early-return path (duplicate body already in session) returned without calling `session.mark_skill_loaded()`, leaving `skill_ts` frozen at the initial load time. After any compaction sidecar update, `_compaction_occurred_after(skill_ts)` returned `True` permanently, so `pre_skill` passed every subsequent load through without deduplication. Fix: `mark_skill_loaded` is now called before the early return, advancing `skill_ts` past the current sidecar mtime so the next load is correctly deduped. The early-return is also gated on a `content_sha` equality check — if the skill body changed between loads, the code falls through to the normal `store_output` path so the new body is cached with a correct `output_id`/`content_sha`.
+
+### Added
+
+- **`post_compact_full_loads` config knob** (`[skill_preservation] post_compact_full_loads`, default `false`). With the default, `pre_skill` serves the cached compact even after a compaction event (dedup stays armed for the whole session). Set to `true` to restore the pre-1.7 behaviour of allowing one full body reload per compaction epoch. When `false` and no compact is cached for the skill (new install, no `<!-- COMPACT_END -->` marker, and auto-extract hasn't run yet), the hook falls back to allowing the full reload so the model is never left without operative rules.
+
 ### Added
 
 - **MCP screenshot deny-redirect.** `pre_screenshot` hook (new `PreToolUse` matcher `mcp__.*take_screenshot|mcp__.*browser_take_screenshot`) denies chrome-devtools and playwright screenshot calls that don't include a `filePath`/`file_path` argument, redirecting the model to re-issue with `filePath` and then Read the saved file. The subsequent Read flows through the existing image-shrink pipeline, which compresses the result before it reaches the model (~39K tokens/call raw). Calls that already provide `filePath` pass through unchanged. Config: `[images] screenshot_redirect = true` (default on).

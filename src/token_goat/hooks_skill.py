@@ -404,13 +404,29 @@ def pre_skill(payload: HookPayload) -> HookResponse:
     if prior_entry is not None:
         skill_ts = prior_entry.ts
         if _compaction_occurred_after(session_id, skill_ts):
-            # Compaction may have evicted the body; allow the reload.
+            if cfg.post_compact_full_loads:
+                # Opt-in: allow one full body reload per compaction epoch.
+                _LOG.debug(
+                    "pre-skill: compaction detected after skill load (skill=%s ts=%.0f); allowing reload",
+                    sanitize_log_str(skill_name, max_len=80),
+                    skill_ts,
+                )
+                return CONTINUE()
+            # Default (post_compact_full_loads=False): serve compact after compaction, but
+            # only when a compact is actually cached.  Without a compact the deny response
+            # would be a recall-pointer-only hint, leaving the model without operative rules.
+            # In that case fall back to a full reload so the rules are restored.
+            if not skill_cache.get_compact(session_id, skill_name):
+                _LOG.debug(
+                    "pre-skill: compaction for %s; no compact cached — allowing full reload",
+                    sanitize_log_str(skill_name, max_len=80),
+                )
+                return CONTINUE()
+            # Compact available — fall through to the dedup path; it will serve it.
             _LOG.debug(
-                "pre-skill: compaction detected after skill load (skill=%s ts=%.0f); allowing reload",
+                "pre-skill: compaction detected for %s; post_compact_full_loads=False — serving compact",
                 sanitize_log_str(skill_name, max_len=80),
-                skill_ts,
             )
-            return CONTINUE()
 
         run_count = prior_entry.run_count
         body_tokens = prior_entry.body_bytes // 4  # rough: 4 bytes/token
@@ -579,13 +595,20 @@ def post_skill(payload: HookPayload) -> HookResponse:
 
     from . import session, skill_cache  # noqa: PLC0415
 
-    # Check whether this skill was already loaded in this session.  When it was,
-    # the body is already in context (from the earlier Skill tool result) and the
-    # compaction manifest already lists it.  Emit a systemMessage so the model
-    # knows it can use the cached body via ``token-goat skill-body`` rather than
-    # treating this as a fresh first load.
+    # Compute body SHA before the duplicate-load check so we can compare
+    # against the stored content_sha.  skill_cache.content_hash is a thin
+    # wrapper around SHA-256[:16]; fast enough in the hook path.
+    body_sha = skill_cache.content_hash(body)
+
+    # Check whether this skill was already loaded in this session with the same
+    # body.  When it was, the body is already in context and the compaction
+    # manifest already lists it.  Emit a systemMessage so the model knows it can
+    # use the cached body via ``token-goat skill-body``.
+    # Only take the early-return when the body SHA matches: if the skill file
+    # changed between loads, fall through to the normal store_output path so the
+    # new body is cached with the correct output_id/content_sha.
     prior_entry = session.lookup_skill_entry(session_id, skill_name)
-    if prior_entry is not None:
+    if prior_entry is not None and prior_entry.content_sha == body_sha:
         run_count = getattr(prior_entry, "run_count", 1)
         body_tokens = body_size // 4  # rough estimate: 4 chars/token
         reload_msg = (
@@ -599,6 +622,25 @@ def post_skill(payload: HookPayload) -> HookResponse:
             "post-skill: duplicate load for skill %s (run_count=%d); emitting reload hint",
             sanitize_log_str(skill_name, max_len=80), run_count,
         )
+        # Advance skill_ts so _compaction_occurred_after returns False for the next load.
+        # Without this, skill_ts stays at the pre-compaction value, making
+        # _compaction_occurred_after permanently True and disarming dedup forever.
+        # SHA already confirmed equal above — safe to reuse prior_entry.output_id.
+        try:
+            session.mark_skill_loaded(
+                session_id=session_id,
+                skill_name=skill_name,
+                output_id=prior_entry.output_id,
+                content_sha=prior_entry.content_sha,
+                body_bytes=body_size,
+                truncated=prior_entry.truncated,
+                source_path=getattr(prior_entry, "source_path", ""),
+            )
+        except (ValueError, OSError) as exc:
+            _LOG.debug(
+                "post-skill: session ts-advance failed for %s: %s",
+                sanitize_log_str(skill_name, max_len=80), exc,
+            )
         resp = CONTINUE()
         resp["systemMessage"] = reload_msg
         return resp
