@@ -341,6 +341,8 @@ class _HintsToml(TypedDict, total=False):
     min_session_hint_savings_bytes: int
     diff_hint_min_tokens_saved: int
     large_read_redirect_bytes: int
+    reread_deny: bool
+    reread_deny_min_bytes: int
     baseline_budget_tokens: int
     prompt_triggers: list[dict[str, Any]]
 
@@ -1006,6 +1008,10 @@ class HintsConfig:
     diff_hint_min_tokens_saved: int = 1000
     # Minimum on-disk file size (bytes) at which a full Read is denied and redirected to surgical reads (skeleton/section/semantic/symbol) or an offset/limit window. Default 45000 (~45 KB) catches the 47-86 KB recon-dump / large-transcript class that overflows a near-full subagent window while leaving typical source reads untouched. A Read that already sets offset or limit is exempt (it is deliberately windowed, and the redirect itself points there — so exempting it also prevents a redirect loop). 0 disables. Override via TOKEN_GOAT_LARGE_READ_BYTES or [hints] large_read_redirect_bytes. Clamped to [0, 100_000_000].
     large_read_redirect_bytes: int = 45_000
+    # When True, deny re-reads of a file window already in context this session. The file must be unchanged since last read (last_edit_ts <= last_read_ts); the anti-loop guard allows the second identical attempt through so the model is never hard-blocked. Opt-out via [hints] reread_deny = false. Default on.
+    reread_deny: bool = True
+    # Minimum on-disk file size (bytes) before reread_deny fires. Files smaller than this threshold are never denied — the token saving is negligible compared to the hint cost (~25 tokens). Default 2048 (~512 tokens). Set to 0 to deny all sizes.
+    reread_deny_min_bytes: int = 2048
     # Token budget for the session-start environmental-baseline advisory. When >0 and the cheap fixed baseline (other plugins' SessionStart dumps + CLAUDE.md + MEMORY.md + MCP blocks) exceeds this many estimated tokens, session_start appends one quiet line pointing at `token-goat baseline`, once per session. Default 0 disables the advisory entirely. Override via TOKEN_GOAT_BASELINE_BUDGET_TOKENS or [hints] baseline_budget_tokens. Clamped to [0, 10_000_000].
     baseline_budget_tokens: int = 0
     # Keyword-triggered hint rules.  Each rule fires when any of its keywords
@@ -1798,6 +1804,13 @@ def load() -> Config:
         large_read_redirect_bytes=_validated_int(
             hints_raw.get("large_read_redirect_bytes", 45_000), 45_000, 0, 100_000_000,
             "hints.large_read_redirect_bytes",
+        ),
+        reread_deny=_validated_bool(
+            hints_raw.get("reread_deny", True), True, "hints.reread_deny"
+        ),
+        reread_deny_min_bytes=_validated_int(
+            hints_raw.get("reread_deny_min_bytes", 2048), 2048, 0, 100_000_000,
+            "hints.reread_deny_min_bytes",
         ),
         baseline_budget_tokens=_validated_int(
             hints_raw.get("baseline_budget_tokens", 0), 0, 0, 10_000_000,

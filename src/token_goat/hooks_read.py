@@ -2397,6 +2397,136 @@ def _flush_pending_hint_save(cache: object) -> None:
         pass
 
 
+# mirrors session.py _UNKNOWN_END_SENTINEL — stored when a Read has no limit
+_SESSION_UNKNOWN_END = 99_999
+
+
+def _window_is_covered(
+    line_ranges: list[tuple[int, int]],
+    req_start: int,
+    req_end: int | None,
+) -> bool:
+    """Return True if [req_start, req_end] is fully covered by the recorded ranges.
+
+    req_end=None means unbounded (the Read has no limit). An unbounded request is
+    covered only by the full-file sentinel (0, 0) or a prior unbounded range.
+    """
+    if (0, 0) in line_ranges:
+        return True  # full-file sentinel: whole file already tracked
+    if req_end is None:
+        # Stored unbounded reads have span == _SESSION_UNKNOWN_END (re = rs + 99_999).
+        # Check (re - rs) not (re >= req_start + sentinel): the latter fails when req_start > rs
+        # (later-start unbounded re-read after an earlier full-file read slips through).
+        return any(rs <= req_start and (re - rs) >= _SESSION_UNKNOWN_END for rs, re in line_ranges)
+    return any(rs <= req_start and re >= req_end for rs, re in line_ranges)
+
+
+def _format_read_ranges(line_ranges: list[tuple[int, int]]) -> str:
+    """Format recorded line_ranges for a deny message (short, human-readable)."""
+    if (0, 0) in line_ranges:
+        return "full file"
+    parts = []
+    for s, e in line_ranges[:5]:
+        parts.append(f"{s}+" if e >= s + _SESSION_UNKNOWN_END else f"{s}–{e}")
+    if len(line_ranges) > 5:
+        parts.append(f"+{len(line_ranges) - 5} more")
+    return ", ".join(parts)
+
+
+def _handle_reread_deny(
+    session_id: str,
+    file_path: str,
+    tool_input: dict[str, object],
+    cache: object,
+) -> HookResponse | None:
+    """Deny a Read whose window is already in context from this session.
+
+    Fires when the file has a session FileEntry (was read before), the file was NOT
+    edited since its last read (last_edit_ts <= last_read_ts), the requested window
+    is fully contained in the recorded line_ranges, and the file is large enough that
+    saving the re-read is worth the deny cost.
+
+    Anti-loop guard: the denial is recorded as a hint fingerprint; a second identical
+    request for the same (path, window) passes through unconditionally so the model
+    is never hard-blocked.
+    """
+    try:
+        from . import config as _cfg_mod  # noqa: PLC0415
+
+        hints_cfg = _cfg_mod.load().hints
+        if not hints_cfg.reread_deny:
+            return None
+        min_bytes = hints_cfg.reread_deny_min_bytes
+    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+        return None
+
+    if cache is None:
+        return None
+
+    try:
+        _sess = _get_session()
+        key = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
+        entry = cache.files.get(key)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        return None
+
+    if entry is None:
+        return None  # first read this session — no history to match against
+
+    # Only fire when the file has NOT been edited since it was last read.
+    # If it was edited, the diff-hint path (below in pre_read) handles it.
+    if entry.last_edit_ts > entry.last_read_ts:
+        return None
+
+    # Size gate: skip tiny files where the hint cost (~25 tok) exceeds the saving.
+    if min_bytes > 0:
+        try:
+            if Path(file_path).stat().st_size < min_bytes:
+                return None
+        except OSError:
+            return None
+
+    # Parse the requested window (1-indexed inclusive).
+    raw_offset = tool_input.get("offset")
+    raw_limit = tool_input.get("limit")
+    req_start: int = max(0, int(raw_offset)) + 1 if is_real_int(raw_offset) else 1
+    req_end: int | None
+    if is_real_int(raw_limit) and int(raw_limit) > 0:
+        req_end = req_start + int(raw_limit) - 1
+    else:
+        req_end = None  # unbounded — whole file from req_start
+
+    if not _window_is_covered(entry.line_ranges, req_start, req_end):
+        return None
+
+    # Anti-loop guard: allow the read through on the second identical attempt.
+    _end_tag = str(req_end) if req_end is not None else "eof"
+    deny_fp = f"reread_deny:{key}:{req_start}:{_end_tag}"
+    try:
+        if cache.has_hint_fingerprint(deny_fp):  # type: ignore[attr-defined]
+            _LOG.debug("reread_deny: anti-loop pass-through for %s (%d+)", sanitize_log_str(file_path), req_start)
+            return None
+        cache.mark_hint_seen(deny_fp)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+        return None
+
+    name = Path(file_path).name
+    prior = _format_read_ranges(entry.line_ranges)
+    window_str = f"lines {req_start}–{req_end}" if req_end is not None else f"lines {req_start}+"
+    reason = f"{name} {window_str} already in context this session — re-read is redundant."
+    context = (
+        f"`{name}` {window_str} is already in context (prior reads this session: {prior}). "
+        f"The file is unchanged. Use what is already in context, or read only the new lines:\n"
+        f"  `token-goat symbol <NAME>` — jump to a definition\n"
+        f'  `token-goat read "{file_path}::SymbolName"` — extract one symbol\n'
+        f"  Re-issue this Read with `offset`/`limit` set to just the lines you need.\n"
+        f"(A second identical request passes through automatically if you genuinely need it.)"
+    )
+    with contextlib.suppress(Exception):
+        record_cached_stat("reread_deny", sanitize_log_str(file_path, max_len=512))
+    return deny_redirect(reason, context)
+
+
 def pre_read(payload: HookPayload) -> HookResponse:
     """Pre-read hook: image shrinking, dedup hints, and diff-aware re-read hints.
 
@@ -2611,6 +2741,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # Session cache required for all hint paths below — bail early if unavailable.
         if cache is None:
             return CONTINUE()
+
+        # Re-read deny: file window already in context and file is unchanged.
+        # Fires after skill/index/structured/unchanged handlers (which have richer redirects);
+        # before the diff block (which handles the edited-file case).
+        _reread_deny = _handle_reread_deny(session_id, file_path, tool_input, cache)
+        if _reread_deny is not None:
+            return _reread_deny
 
         # Diff-aware path: file was read AND edited in this session AND we have
         # a snapshot to compare against.  When applicable, the diff hint replaces
