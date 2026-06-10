@@ -1,6 +1,6 @@
 [project]
 name = "token-goat"
-version = "1.6.0"
+version = "1.7.0"
 description = "Token optimizer for Claude Code, Codex CLI, opencode, and openclaw on Windows, macOS, Linux, and WSL. It runs automatically: oversized images are shrunk before they reach the model, files already touched this session aren't re-read, noisy command output is compressed through 130 built-in filters (pytest, docker, npm, cargo, git, and more), and a session manifest rebuilds your edits and loaded skills after every compaction. Repeated Grep and WebFetch calls return cached results, large skill bodies load as ~400-token compacts instead of 10-65k each turn, and oversized reads are redirected to surgical slices before they overflow a subagent's window. The CLI (symbol, read, section, semantic, skeleton, map) replaces full-file reads with narrow extracts, and baseline shows which sources fill the context window before any work begins."
 readme = "README.md"
 requires-python = ">=3.11,<3.15"

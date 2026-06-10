@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-06-10
+
 ### Fixed
 
 - **Skill dedup permanently disarmed after first compaction.** `post_skill`'s early-return path (duplicate body already in session) returned without calling `session.mark_skill_loaded()`, leaving `skill_ts` frozen at the initial load time. After any compaction sidecar update, `_compaction_occurred_after(skill_ts)` returned `True` permanently, so `pre_skill` passed every subsequent load through without deduplication. Fix: `mark_skill_loaded` is now called before the early return, advancing `skill_ts` past the current sidecar mtime so the next load is correctly deduped. The early-return is also gated on a `content_sha` equality check — if the skill body changed between loads, the code falls through to the normal `store_output` path so the new body is cached with a correct `output_id`/`content_sha`.
@@ -14,11 +16,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Stable-doc compact serving** (`token-goat compact-doc`). Large reference markdown documents (`.md`/`.markdown`) can now be pre-compacted into a sidecar summary that `pre_read` serves in place of the full file, saving 80–95% of context tokens on the first read of each new session. The compact is built extractively (headings + first N lines per section, no LLM) and stored in the token-goat data dir as a SHA-keyed sidecar. On reads, `pre_read` checks for a fresh sidecar (source hash match) and deny-redirects to it when found; stale sidecars (emitted when the source file is edited) trigger an advisory instead. `skill_cache.invalidate_for_path` automatically marks the sidecar stale after an edit so the model is never silently served an outdated compact. Config: `[hints] stable_doc_compacts = true` (default on). CLI: `token-goat compact-doc <path> [--force] [--sentences N] [--show]`.
 
-### Added
-
 - **MCP screenshot deny-redirect.** `pre_screenshot` hook (new `PreToolUse` matcher `mcp__.*take_screenshot|mcp__.*browser_take_screenshot`) denies chrome-devtools and playwright screenshot calls that don't include a `filePath`/`file_path` argument, redirecting the model to re-issue with `filePath` and then Read the saved file. The subsequent Read flows through the existing image-shrink pipeline, which compresses the result before it reaches the model (~39K tokens/call raw). Calls that already provide `filePath` pass through unchanged. Config: `[images] screenshot_redirect = true` (default on).
 
 - **Baseline v2: skill listing cost + per-server MCP rows + `--usage` flag.** `token-goat baseline` now costs the skill listing injected on every session start and subagent spawn (estimated at ~71 tok/entry from SKILL.md frontmatter where available), replacing the single aggregate "MCP instruction blocks" row with one row per configured server so each appears as an individually removable line item. The new `--usage` flag streams project transcripts to annotate each skill and MCP row with historical call counts, flagging zero-use entries as removal candidates. New public API: `scan_transcript_usage(projects_root)` → `({skill: count}, {mcp_prefix: count})`.
+
+- **Session window denial for in-context file reads.** `pre_read` now denies re-reads of file content already present in the current context window, redirecting the model to use the already-loaded text or a surgical `token-goat read` command instead. Triggered when a file's post-read record is present in the session cache. Config: `[hints] deny_reread = true` (default on).
 
 ## [1.6.0] - 2026-06-09
 
