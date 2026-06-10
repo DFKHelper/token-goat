@@ -229,6 +229,7 @@ def tmp_data_dir(tmp_path):
       uncommitted-changes or diff-stat sections of the manifest.
     """
     from token_goat import compact as _compact_mod
+    from token_goat import config as _config_mod
     from token_goat import session as _session_mod
 
     def _clear_caches() -> None:
@@ -239,6 +240,7 @@ def tmp_data_dir(tmp_path):
         _compact_mod._is_git_repo_cache.clear()
         _compact_mod._whole_diff_cache.clear()
         _compact_mod._blocker_preview_cache.clear()
+        _config_mod._config_mtime_cache = None
 
     _clear_caches()
     with patch.object(paths, 'data_dir', return_value=tmp_path):

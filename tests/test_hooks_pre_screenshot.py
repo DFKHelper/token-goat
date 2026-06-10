@@ -138,14 +138,16 @@ class TestPreScreenshotConfigDisabled:
     """When screenshot_redirect is disabled in config, all calls pass through."""
 
     def test_disabled_config_passes_through(self, tmp_data_dir, monkeypatch):
+        import copy
+
         from token_goat import config as cfg_mod
 
         original_load = cfg_mod.load
 
         def patched_load():
-            cfg = original_load()
-            cfg.image_shrink.screenshot_redirect = False
-            return cfg
+            cfg_copy = copy.deepcopy(original_load())
+            cfg_copy.image_shrink.screenshot_redirect = False
+            return cfg_copy
 
         monkeypatch.setattr(cfg_mod, "load", patched_load)
         payload = {
