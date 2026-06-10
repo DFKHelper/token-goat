@@ -1047,6 +1047,21 @@ def invalidate_for_path(file_path: str) -> int:
         except OSError as exc:
             _LOG.debug("skill_cache.invalidate_for_path: compact scan failed: %s", exc)
 
+    # Mark any doc compact sidecar stale so pre_read stops serving it.
+    try:
+        from pathlib import Path as _Path  # noqa: PLC0415
+
+        from . import doc_compact as _dc  # noqa: PLC0415
+        from .project import find_project  # noqa: PLC0415
+        _abs = _Path(norm_path)
+        _proj = find_project(_abs.parent)
+        if _proj is not None:
+            _cpath = _dc.find_compact_for_path(_abs, _proj.hash)
+            if _cpath is not None:
+                _dc.mark_compact_stale(_cpath)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug("skill_cache.invalidate_for_path: doc_compact stale failed: %s", exc)
+
     if removed > 0:
         _LOG.info(
             "skill_cache.invalidate_for_path: removed %d entr%s for path %s",

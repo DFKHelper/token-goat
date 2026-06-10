@@ -1134,6 +1134,48 @@ def _handle_index_only_file(
     )
 
 
+def _handle_doc_compact(
+    file_path: str,
+    cwd: str | None,
+    cache: object,
+) -> HookResponse | None:
+    """Serve a user-created compact sidecar for a large markdown reference doc.
+
+    When a fresh compact sidecar exists, returns a deny-redirect that serves the
+    compact body instead of the full file.  For large uncompacted markdown with
+    indexed sections, returns a section-map hint.  Returns None for non-markdown
+    files, small files, and when stable_doc_compacts is disabled.
+    """
+    from .hints import DOC_COMPACT_SERVE_SENTINEL, build_doc_compact_hint  # noqa: PLC0415
+
+    hint = build_doc_compact_hint(file_path, cwd, cache=cache)  # type: ignore[arg-type]
+    if hint is None:
+        return None
+
+    hint_text = str(hint)
+    if hint_text.startswith(DOC_COMPACT_SERVE_SENTINEL):
+        # Compact serve: deny the full read, inject compact body as context.
+        content = hint_text[len(DOC_COMPACT_SERVE_SENTINEL):]
+        from .db import record_stat  # noqa: PLC0415
+        tokens_saved = hint.tokens_saved
+        if tokens_saved > 0:
+            try:
+                from .project import find_project  # noqa: PLC0415
+                _proj = find_project(validate_cwd(cwd) or Path())
+                record_stat(
+                    _proj.hash if _proj else None,
+                    "doc_compact_served",
+                    tokens_saved=tokens_saved,
+                    detail=file_path,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return deny_redirect("doc-compact: serving compact instead of full file", content)
+
+    # Section-map hint or stale warning: let the read proceed, inject hint.
+    return pre_tool_use_with_context(hint_text)
+
+
 def _handle_structured_file(
     session_id: str,
     file_path: str,
@@ -2703,6 +2745,14 @@ def pre_read(payload: HookPayload) -> HookResponse:
         index_only_response = _handle_index_only_file(session_id, file_path, tool_input, cache)
         if index_only_response is not None:
             return index_only_response
+
+        # Stable-doc compact serving: fires before session/diff hints so a user-created
+        # compact sidecar is served on first read (not just re-reads).  For fresh
+        # compacts this is a deny-redirect that serves the compact body instead of the
+        # full file.  For large uncompacted markdown it emits a section-map suggestion.
+        doc_compact_response = _handle_doc_compact(file_path, cwd, cache)
+        if doc_compact_response is not None:
+            return doc_compact_response
 
         # Structured-file hint: fires before session/diff hints so a first-time read
         # of a large CSV/JSON/log is intercepted immediately.  Short-circuits when

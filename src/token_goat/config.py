@@ -1025,6 +1025,9 @@ class HintsConfig:
     # the rule's hint text to the session-context summary injected by
     # UserPromptSubmit.  Default empty — configure per-project via
     # ``[[hints.prompt_triggers]]`` in config.toml.
+    # When True, pre_read serves a user-created compact sidecar for large reference docs when one exists and is fresh (source hash matches). Compact must be created explicitly with `token-goat compact-doc <path>`. Default on; disable via [hints] stable_doc_compacts = false.
+    stable_doc_compacts: bool = True
+
     prompt_triggers: list[PromptTrigger] = field(default_factory=list)
 
 

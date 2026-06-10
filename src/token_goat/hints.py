@@ -4346,3 +4346,184 @@ def build_pinned_hint(
 
     return None
 
+
+# ---------------------------------------------------------------------------
+# Stable-doc compact hints
+# ---------------------------------------------------------------------------
+
+# Minimum file size (bytes) before section-map / compact hints fire.
+_DOC_COMPACT_MIN_BYTES = 5_000
+# Minimum indexed section count before section-map hints fire.
+_DOC_COMPACT_MIN_SECTIONS = 5
+# Maximum heading entries shown inline in section-map / compact hints.
+_DOC_COMPACT_SECTION_MAP_MAX = 10
+
+# Sentinel prefix: hooks_read detects this to deny the read and serve the compact.
+DOC_COMPACT_SERVE_SENTINEL = "\x00doc-compact-serve\x00"
+
+
+def build_doc_compact_hint(
+    file_path: str,
+    cwd: str | None,
+    *,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    """Return a hint for a large reference doc: serve compact or suggest one.
+
+    Three outcomes:
+    - Compact exists and is fresh: returns a ReadHint whose text begins with
+      DOC_COMPACT_SERVE_SENTINEL.  hooks_read interprets this as a deny-redirect
+      and serves the compact body instead of the full file.
+    - Compact is stale: returns a short advisory letting the full read proceed.
+    - No compact, large markdown with sections: returns a section-map hint
+      suggesting token-goat compact-doc for future savings.
+    - Compact disabled, file not markdown, or too small: returns None.
+
+    Never raises.
+    """
+    try:
+        return _build_doc_compact_hint_inner(file_path, cwd, cache=cache)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.debug(
+            "build_doc_compact_hint: unexpected error for %r: %s", file_path, exc,
+            exc_info=True,
+        )
+        return None
+
+
+def _build_doc_compact_hint_inner(
+    file_path: str,
+    cwd: str | None,
+    *,
+    cache: session.SessionCache | None = None,
+) -> ReadHint | None:
+    # Config gate
+    try:
+        if not config.load().hints.stable_doc_compacts:
+            return None
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Only handle markdown files
+    fp_lower = file_path.lower()
+    if not (fp_lower.endswith(".md") or fp_lower.endswith(".markdown")):
+        return None
+
+    # Resolve to absolute path
+    try:
+        abs_path = Path(file_path)
+        if not abs_path.is_absolute() and cwd:
+            abs_path = (Path(cwd) / file_path).resolve()
+        if not abs_path.exists():
+            return None
+    except (OSError, ValueError):
+        return None
+
+    cwd_path = validate_cwd(cwd, caller="build_doc_compact_hint")
+    if cwd_path is None:
+        return None
+
+    project = find_project(cwd_path)
+    if project is None:
+        return None
+
+    try:
+        rel = abs_path.relative_to(project.root).as_posix()
+    except ValueError:
+        return None
+
+    fname = _sanitize_hint_path(abs_path.name)
+    recall_path = _sanitize_hint_path(rel)
+
+    from . import doc_compact as _dc  # noqa: PLC0415
+
+    compact_p = _dc.find_compact_for_path(abs_path, project.hash)
+
+    if compact_p is not None:
+        header = _dc.read_compact_header(compact_p)
+        if header is not None and header[0] == "STALE":
+            return ReadHint(
+                _apply_terse(
+                    f"doc-compact: compact for `{fname}` is stale (source was edited). "
+                    f"Run `token-goat compact-doc \"{recall_path}\"` to refresh."
+                ),
+                0,
+            )
+
+        if _dc.is_compact_fresh(compact_p, abs_path):
+            body = _dc.read_compact_body(compact_p)
+            if body:
+                headings = _dc.get_section_headings(
+                    rel, project.hash, limit=_DOC_COMPACT_SECTION_MAP_MAX
+                )
+                try:
+                    file_bytes = abs_path.stat().st_size
+                    compact_bytes = compact_p.stat().st_size
+                    full_tokens = max(1, file_bytes // 4)
+                    compact_tokens = compact_bytes // 4
+                    pct = int(100 - compact_tokens * 100 / full_tokens)
+                except OSError:
+                    full_tokens = 0
+                    compact_tokens = 0
+                    pct = 0
+                section_line = _format_section_map(headings)
+                size_note = (
+                    f"~{compact_tokens} tokens, {pct}% smaller than full file"
+                    if full_tokens > 0
+                    else "compact"
+                )
+                hint_lines = [
+                    f"doc-compact: serving compact for `{fname}` ({size_note}).",
+                ]
+                if section_line:
+                    hint_lines.append(f"  Sections: {section_line}")
+                hint_lines.append(
+                    f"  Full content: `token-goat read \"{recall_path}\"` to bypass."
+                )
+                hint_lines.append("")
+                hint_lines.append(body.rstrip())
+                serve_text = DOC_COMPACT_SERVE_SENTINEL + "\n".join(hint_lines)
+                tokens_saved = max(0, full_tokens - compact_tokens)
+                return ReadHint(serve_text, tokens_saved)
+
+    # No compact: if large markdown with sections, emit section-map hint
+    try:
+        stat_size = abs_path.stat().st_size
+    except OSError:
+        return None
+
+    if stat_size < _DOC_COMPACT_MIN_BYTES:
+        return None
+
+    headings = _dc.get_section_headings(
+        rel, project.hash, limit=_DOC_COMPACT_SECTION_MAP_MAX
+    )
+    if len(headings) < _DOC_COMPACT_MIN_SECTIONS:
+        return None
+
+    full_tokens = stat_size // 4
+    compact_est = full_tokens // 10
+    section_line = _format_section_map(headings)
+    hint_text = (
+        f"doc-compact: `{fname}` has {len(headings)} sections (~{full_tokens} tokens). "
+        f"Sections: {section_line}. "
+        f"Use `token-goat section \"{recall_path}::Heading\"` for targeted reads. "
+        f"Run `token-goat compact-doc \"{recall_path}\"` for a reusable compact "
+        f"(~{compact_est} tokens on future reads)."
+    )
+    return ReadHint(_apply_terse(hint_text), 0)
+
+
+def _format_section_map(headings: list[str], max_items: int = 8) -> str:
+    """Format a list of headings as a compact inline string."""
+    if not headings:
+        return ""
+    preview = []
+    for h in headings[:max_items]:
+        preview.append(h if h.startswith("#") else f"## {h}")
+    overflow = len(headings) - len(preview)
+    result = " · ".join(preview)
+    if overflow > 0:
+        result += f" [+{overflow} more]"
+    return result
+

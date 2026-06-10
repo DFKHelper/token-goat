@@ -4861,6 +4861,93 @@ def cmd_skill_compact(
         typer.echo(compact_display)
 
 
+@app.command("compact-doc", rich_help_panel="Core")
+def cmd_compact_doc(
+    path: Path = typer.Argument(..., help="Path to the reference document to compact (must be .md or .markdown)."),  # noqa: B008
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing compact even if it is already fresh."),  # noqa: B008
+    sentences: int = typer.Option(  # noqa: B008
+        2,
+        "--sentences",
+        "-s",
+        help="Number of content lines to extract per section heading (default 2).",
+    ),
+    show: bool = typer.Option(False, "--show", help="Print the compact body to stdout after writing."),  # noqa: B008
+) -> None:
+    """Create an extractive compact sidecar for a large reference document.
+
+    The compact is a headings + first-N-sentences-per-section summary stored
+    beside the project's token-goat data dir.  On the next session, pre_read
+    serves the compact instead of the full file, saving 80–95% of context
+    tokens on the first read.
+
+    The compact is invalidated automatically when the source file is edited.
+    Re-run this command (or use --force) to regenerate it.
+
+    Examples::
+
+        token-goat compact-doc docs/api-reference.md
+        token-goat compact-doc docs/api-reference.md --force
+        token-goat compact-doc docs/api-reference.md --sentences 3 --show
+    """
+    from . import doc_compact as _dc  # noqa: PLC0415
+    from .project import find_project  # noqa: PLC0415
+
+    abs_path = Path(path).resolve()
+    if not abs_path.exists():
+        _error(f"File not found: {abs_path}")
+        raise typer.Exit(1)
+    suffix = abs_path.suffix.lower()
+    if suffix not in {".md", ".markdown"}:
+        _error(f"Only .md / .markdown files are supported (got {suffix!r}).")
+        raise typer.Exit(1)
+
+    proj = find_project(abs_path.parent)
+    if proj is None:
+        _error("Could not find a token-goat project for this path. Is token-goat installed in this repo?")
+        raise typer.Exit(1)
+
+    compact_path = _dc.compact_path_for(abs_path, proj.hash)
+
+    if compact_path.exists() and not force and _dc.is_compact_fresh(compact_path, abs_path):
+            typer.echo(f"Compact is already fresh: {compact_path}")
+            body = _dc.read_compact_body(compact_path)
+            if body:
+                full_bytes = abs_path.stat().st_size
+                compact_bytes = len(body.encode())
+                full_tok = max(1, full_bytes // 4)
+                compact_tok = max(1, compact_bytes // 4)
+                pct = int(compact_tok * 100 / full_tok)
+                typer.echo(f"Size: {compact_tok:,} tokens ({pct}% of original {full_tok:,} tokens) — use --force to regenerate")
+            raise typer.Exit(0)
+
+    try:
+        source_text = abs_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _error(f"Cannot read {abs_path}: {exc}")
+        raise typer.Exit(1) from exc
+
+    body = _dc.build_extractive_compact(source_text, max_sentences=sentences)
+
+    try:
+        rel = abs_path.relative_to(Path.cwd())
+    except ValueError:
+        rel = abs_path
+
+    _dc.write_compact(compact_path, abs_path, body, source_rel=str(rel))
+
+    full_bytes = abs_path.stat().st_size
+    compact_bytes = len(body.encode())
+    full_tok = max(1, full_bytes // 4)
+    compact_tok = max(1, compact_bytes // 4)
+    pct = int(compact_tok * 100 / full_tok)
+    typer.echo(f"Compact written: {compact_path}")
+    typer.echo(f"Size: {compact_tok:,} tokens ({pct}% of original {full_tok:,} tokens)")
+
+    if show:
+        typer.echo("")
+        typer.echo(body)
+
+
 @app.command("skill-history", rich_help_panel="Core")
 def cmd_skill_history(
     json_output: bool = _OPT_JSON,
