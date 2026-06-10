@@ -23,9 +23,14 @@ from token_goat.baseline import (
     BaselineReport,
     BaselineRow,
     _memory_is_already_lazy,
+    _parse_skill_md_frontmatter,
+    _read_enabled_plugin_names,
     _read_mcp_server_names,
+    _skill_listing_entry_bytes,
+    _tally_tool_calls,
     _tokens_from_bytes,
     collect_baseline,
+    scan_transcript_usage,
 )
 
 _SESSION_ID = "sess-0123456789abcdef"
@@ -163,13 +168,18 @@ def test_collect_baseline_memory_already_lazy(synth_session: dict) -> None:
     assert "index" in mem.detail.lower()
 
 
-def test_collect_baseline_mcp_inventory_row(synth_session: dict) -> None:
+def test_collect_baseline_mcp_per_server_rows(synth_session: dict) -> None:
     report = collect_baseline(synth_session["cwd"], synth_session["session_id"])
-    mcp = _row_by(report.rows, "MCP instruction blocks")
-    assert mcp.owner == "harness"
-    assert mcp.fix == "disable-mcp"
-    assert mcp.tokens == 0  # not costed in v1 (lives on the server)
-    assert mcp.kind == "fixed"
+    # synth_session wires up alpha + beta; each becomes its own 0-token row.
+    alpha = _row_by(report.rows, "MCP: alpha")
+    beta = _row_by(report.rows, "MCP: beta")
+    for mcp in (alpha, beta):
+        assert mcp.owner == "harness"
+        assert mcp.fix == "disable-mcp"
+        assert mcp.tokens == 0
+        assert mcp.n_bytes == 0
+        assert mcp.kind == "fixed"
+        assert "server" in mcp.detail
 
 
 def test_collect_baseline_token_sums_and_bucketing(synth_session: dict) -> None:
@@ -406,3 +416,258 @@ def test_advisory_requires_session_id(
     monkeypatch.setenv("TOKEN_GOAT_BASELINE_BUDGET_TOKENS", "100")
     _stub_fixed(monkeypatch, 5000)
     assert hooks_session._maybe_baseline_advisory(None, None) is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_skill_md_frontmatter
+# ---------------------------------------------------------------------------
+
+def test_parse_skill_md_frontmatter_full(tmp_path: Path) -> None:
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text(
+        '---\nname: ralph\nversion: "7"\ndescription: A rapid iteration framework\n---\n\n# Body\n',
+        encoding="utf-8",
+    )
+    name, desc = _parse_skill_md_frontmatter(skill_md)
+    assert name == "ralph"
+    assert "rapid iteration" in desc
+
+
+def test_parse_skill_md_frontmatter_multiline_desc(tmp_path: Path) -> None:
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text(
+        "---\nname: foo\ndescription: |\n  First line of desc.\n  Second line.\n---\n",
+        encoding="utf-8",
+    )
+    name, desc = _parse_skill_md_frontmatter(skill_md)
+    assert name == "foo"
+    assert "First line" in desc
+
+
+def test_parse_skill_md_frontmatter_no_frontmatter(tmp_path: Path) -> None:
+    skill_md = tmp_path / "SKILL.md"
+    skill_md.write_text("# No frontmatter here\n\nBody text.\n", encoding="utf-8")
+    assert _parse_skill_md_frontmatter(skill_md) == ("", "")
+
+
+def test_parse_skill_md_frontmatter_missing_file(tmp_path: Path) -> None:
+    assert _parse_skill_md_frontmatter(tmp_path / "SKILL.md") == ("", "")
+
+
+# ---------------------------------------------------------------------------
+# _skill_listing_entry_bytes
+# ---------------------------------------------------------------------------
+
+def test_skill_listing_entry_bytes_with_frontmatter(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "ralph"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: ralph\ndescription: A rapid iteration framework\n---\n",
+        encoding="utf-8",
+    )
+    n = _skill_listing_entry_bytes(skill_dir)
+    # Must be > 0 and strictly less than the fallback (real frontmatter is shorter)
+    assert n > 0
+
+
+def test_skill_listing_entry_bytes_fallback_when_no_skill_md(tmp_path: Path) -> None:
+    from token_goat.baseline import _AVG_SKILL_LISTING_ENTRY_BYTES
+
+    skill_dir = tmp_path / "unnamed"
+    skill_dir.mkdir()
+    assert _skill_listing_entry_bytes(skill_dir) == _AVG_SKILL_LISTING_ENTRY_BYTES
+
+
+# ---------------------------------------------------------------------------
+# _read_enabled_plugin_names
+# ---------------------------------------------------------------------------
+
+def test_read_enabled_plugin_names_returns_true_keys(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        '{"enabledPlugins": {"foo@market": true, "bar@market": false, "baz@market": true}}',
+        encoding="utf-8",
+    )
+    result = _read_enabled_plugin_names(settings)
+    assert sorted(result) == ["baz@market", "foo@market"]
+
+
+def test_read_enabled_plugin_names_missing_file(tmp_path: Path) -> None:
+    assert _read_enabled_plugin_names(tmp_path / "no-settings.json") == []
+
+
+def test_read_enabled_plugin_names_malformed(tmp_path: Path) -> None:
+    settings = tmp_path / "settings.json"
+    settings.write_text("not json", encoding="utf-8")
+    assert _read_enabled_plugin_names(settings) == []
+
+
+# ---------------------------------------------------------------------------
+# _scan_skill_listing via collect_baseline
+# ---------------------------------------------------------------------------
+
+def test_scan_skill_listing_no_skills_dir_adds_note(synth_session: dict) -> None:
+    # synth_session patches claude_config_dir to a dir with no skills/ subdir.
+    report = collect_baseline(synth_session["cwd"], synth_session["session_id"])
+    assert not any("Skill listing" in r.source for r in report.rows)
+    assert any("skill" in n.lower() for n in report.notes)
+
+
+def test_scan_skill_listing_row_added_when_skills_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from token_goat import paths as paths_mod
+
+    claude_cfg = tmp_path / ".claude"
+    skills_dir = claude_cfg / "skills"
+    # Two user skills with SKILL.md frontmatter.
+    for skill_name in ("ralph", "superman"):
+        sd = skills_dir / skill_name
+        sd.mkdir(parents=True)
+        (sd / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: {skill_name} skill desc\n---\n",
+            encoding="utf-8",
+        )
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    monkeypatch.setattr(paths_mod, "claude_config_dir", lambda: claude_cfg)
+    monkeypatch.setattr(paths_mod, "claude_projects_dir", lambda: projects_root)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+
+    report = collect_baseline(cwd)
+    skill_row = _row_by(report.rows, "Skill listing")
+    assert skill_row.tokens > 0
+    assert skill_row.tokens == skill_row.n_bytes // 4
+    assert skill_row.owner == "you"
+    assert skill_row.fix == "archive-unused"
+    assert skill_row.kind == "fixed"
+    assert "2" in skill_row.source  # "Skill listing (2 skills)"
+    assert "user" in skill_row.detail
+
+
+def test_scan_skill_listing_usage_annotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import patch
+
+    import token_goat.baseline as baseline_mod
+    from token_goat import paths as paths_mod
+
+    claude_cfg = tmp_path / ".claude"
+    skills_dir = claude_cfg / "skills"
+    for skill_name in ("ralph", "superman", "unused-skill"):
+        sd = skills_dir / skill_name
+        sd.mkdir(parents=True)
+        (sd / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: desc\n---\n", encoding="utf-8"
+        )
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    monkeypatch.setattr(paths_mod, "claude_config_dir", lambda: claude_cfg)
+    monkeypatch.setattr(paths_mod, "claude_projects_dir", lambda: projects_root)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+
+    skill_usage = {"ralph": 5, "superman": 2}  # unused-skill absent → 0 calls
+    with patch.object(baseline_mod, "scan_transcript_usage", return_value=(skill_usage, {})):
+        report = collect_baseline(cwd, usage=True)
+
+    skill_row = _row_by(report.rows, "Skill listing")
+    assert "2/3" in skill_row.detail  # 2 of 3 ever used
+    assert "unused-skill" in skill_row.detail
+
+
+# ---------------------------------------------------------------------------
+# _tally_tool_calls + scan_transcript_usage
+# ---------------------------------------------------------------------------
+
+def test_tally_tool_calls_counts_skill_invocations() -> None:
+    skill_counts: dict[str, int] = {}
+    mcp_counts: dict[str, int] = {}
+    line = '{"message": {"content": [{"type": "tool_use", "name": "Skill", "input": {"skill": "ralph"}}]}}'
+    _tally_tool_calls(line, skill_counts, mcp_counts)
+    assert skill_counts == {"ralph": 1}
+    assert mcp_counts == {}
+
+
+def test_tally_tool_calls_counts_mcp_invocations() -> None:
+    skill_counts: dict[str, int] = {}
+    mcp_counts: dict[str, int] = {}
+    line = '{"message": {"content": [{"type": "tool_use", "name": "mcp__vercel__deploy", "input": {}}]}}'
+    _tally_tool_calls(line, skill_counts, mcp_counts)
+    assert mcp_counts == {"vercel": 1}
+    assert skill_counts == {}
+
+
+def test_tally_tool_calls_ignores_non_tool_use_blocks() -> None:
+    skill_counts: dict[str, int] = {}
+    mcp_counts: dict[str, int] = {}
+    line = '{"message": {"content": [{"type": "text", "text": "Skill mcp__ just some text"}]}}'
+    _tally_tool_calls(line, skill_counts, mcp_counts)
+    assert skill_counts == {}
+    assert mcp_counts == {}
+
+
+def test_tally_tool_calls_ignores_malformed_json() -> None:
+    skill_counts: dict[str, int] = {}
+    mcp_counts: dict[str, int] = {}
+    _tally_tool_calls("not json at all", skill_counts, mcp_counts)
+    assert skill_counts == {}
+    assert mcp_counts == {}
+
+
+def test_scan_transcript_usage_reads_jsonl(tmp_path: Path) -> None:
+    proj = tmp_path / "projects" / "slug" / "sess-abc"
+    proj.mkdir(parents=True)
+    jsonl = proj / "transcript.jsonl"
+    jsonl.write_text(
+        '{"message": {"content": [{"type": "tool_use", "name": "Skill", "input": {"skill": "ralph"}}]}}\n'
+        '{"message": {"content": [{"type": "tool_use", "name": "Skill", "input": {"skill": "ralph"}}]}}\n'
+        '{"message": {"content": [{"type": "tool_use", "name": "mcp__stripe__charge", "input": {}}]}}\n',
+        encoding="utf-8",
+    )
+    skill_counts, mcp_counts = scan_transcript_usage(tmp_path / "projects")
+    assert skill_counts["ralph"] == 2
+    assert mcp_counts["stripe"] == 1
+
+
+def test_scan_transcript_usage_missing_root_returns_empty(tmp_path: Path) -> None:
+    skill_counts, mcp_counts = scan_transcript_usage(tmp_path / "no-such-dir")
+    assert skill_counts == {}
+    assert mcp_counts == {}
+
+
+def test_collect_baseline_mcp_usage_annotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import patch
+
+    import token_goat.baseline as baseline_mod
+    from token_goat import paths as paths_mod
+
+    claude_cfg = tmp_path / ".claude"
+    claude_cfg.mkdir()
+    cwd = tmp_path / "work"
+    cwd.mkdir()
+    (cwd / ".mcp.json").write_text(
+        '{"mcpServers": {"used-server": {}, "zero-server": {}}}', encoding="utf-8"
+    )
+    projects_root = tmp_path / "projects"
+    projects_root.mkdir()
+    monkeypatch.setattr(paths_mod, "claude_config_dir", lambda: claude_cfg)
+    monkeypatch.setattr(paths_mod, "claude_projects_dir", lambda: projects_root)
+    monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+
+    mcp_usage = {"used_server": 3}  # normalised: "used-server" → "used_server"
+    with patch.object(baseline_mod, "scan_transcript_usage", return_value=({}, mcp_usage)):
+        report = collect_baseline(cwd, usage=True)
+
+    used = _row_by(report.rows, "MCP: used-server")
+    zero = _row_by(report.rows, "MCP: zero-server")
+    assert "3" in used.detail or "calls" in used.detail
+    assert "removal candidate" in zero.detail

@@ -21,8 +21,10 @@ baseline total reconciles with the doctor rather than contradicting it.
 
 What this module deliberately does *not* do (see ``docs/plans`` design doc):
 
-* It does not measure the skill catalog / loaded-skill cost — ``token-goat doctor``
-  already does that well; duplicating it here would drift. The report points there.
+* It does not measure the loaded-skill *body* cost (the full SKILL.md injected when a
+  skill is invoked) — ``token-goat doctor`` already covers that; the report points
+  there.  The skill *listing* (injected on every session start and subagent spawn) is
+  now costed here.
 * It does not reconcile against the transcript (``--exact``) or detect
   loaded-but-unused MCP servers — both are schema-coupled and deferred.
 * It does not edit or suppress any injection (impossible — hooks are append-only);
@@ -34,6 +36,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -68,6 +71,14 @@ _PLUGIN_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("=== remember ===", "plugin:remember"),
     ("remember", "plugin:remember"),
 )
+
+# Fallback per-skill-entry byte estimate for the listing injected on every session
+# start and subagent spawn.  Derived from an audit of the skill listing format:
+# 71 tok/entry × 4 bytes/tok ≈ 284 bytes per entry.
+_AVG_SKILL_LISTING_ENTRY_BYTES = 284
+
+# Max number of transcript .jsonl files scanned by scan_transcript_usage.
+_USAGE_MAX_FILES = 2000
 
 
 def _tokens_from_bytes(n_bytes: int) -> int:
@@ -456,14 +467,236 @@ def _read_mcp_server_names(path: Path) -> list[str]:
     return names
 
 
-def _scan_mcp(cwd: Path, rows: list[BaselineRow], notes: list[str]) -> None:
-    """Inventory configured MCP servers (instruction-block cost not costed in v1).
+def _parse_skill_md_frontmatter(path: Path) -> tuple[str, str]:
+    """Return (name, description_first_line) from a SKILL.md YAML frontmatter block.
 
-    Each connected MCP server injects an instruction block into the system
-    prompt, but that text lives on the server, not on disk, so v1 cannot cost it
-    precisely (a transcript cross-reference is deferred).  We therefore emit a
-    single visible 0-token inventory row — so the fixable surface is listed —
-    plus a note naming the servers and how to disable unused ones.
+    Returns ("", "") when the file is absent, unreadable, or has no frontmatter.
+    """
+    try:
+        head = path.read_bytes()[:512].decode("utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    if not head.startswith("---"):
+        return "", ""
+    name = ""
+    desc_first = ""
+    in_desc = False
+    for line in head.splitlines()[1:]:
+        if line.startswith("---"):
+            break
+        if line.startswith("name:") and not name:
+            name = line[5:].strip().strip("\"'")
+        elif line.startswith("description:") and not desc_first:
+            val = line[12:].strip()
+            if val and val != "|":
+                desc_first = val[:150]
+                in_desc = False
+            else:
+                in_desc = True
+        elif in_desc and line.startswith("  ") and not desc_first:
+            desc_first = line.strip()[:150]
+            in_desc = False
+    return name, desc_first
+
+
+def _skill_listing_entry_bytes(skill_dir: Path) -> int:
+    """Estimate the listing bytes for one skill entry.
+
+    Reads SKILL.md frontmatter for a real name + description length.  Falls back
+    to :data:`_AVG_SKILL_LISTING_ENTRY_BYTES` when the file is absent or has no
+    parseable description.
+    """
+    name, desc = _parse_skill_md_frontmatter(skill_dir / "SKILL.md")
+    if not name:
+        name = skill_dir.name
+    if not desc:
+        return _AVG_SKILL_LISTING_ENTRY_BYTES
+    raw = len(name) + 2 + len(desc)
+    return max(4, raw + raw // 3)
+
+
+def _read_enabled_plugin_names(settings_path: Path) -> list[str]:
+    """Return enabled ``plugin@marketplace`` keys from ``settings.json``."""
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    enabled = data.get("enabledPlugins", {})
+    if not isinstance(enabled, dict):
+        return []
+    return [str(k) for k, v in enabled.items() if v is True]
+
+
+def _enumerate_plugin_skill_dirs(
+    enabled_plugin_names: list[str], marketplaces_root: Path
+) -> list[tuple[str, Path]]:
+    """Return ``(plugin_slug, skill_dir)`` pairs for all enabled plugins.
+
+    Resolves via ``marketplaces_root/<marketplace>/plugins/<plugin>/skills/``.
+    Silently skips any entry that cannot be read.
+    """
+    results: list[tuple[str, Path]] = []
+    for entry in enabled_plugin_names:
+        if "@" not in entry:
+            continue
+        plugin_slug, marketplace = entry.rsplit("@", 1)
+        skills_dir = marketplaces_root / marketplace / "plugins" / plugin_slug / "skills"
+        with contextlib.suppress(OSError):
+            if skills_dir.is_dir():
+                for skill_dir in skills_dir.iterdir():
+                    if skill_dir.is_dir():
+                        results.append((plugin_slug, skill_dir))
+    return results
+
+
+def _scan_skill_listing(
+    rows: list[BaselineRow], notes: list[str], *, skill_usage: dict[str, int] | None = None
+) -> None:
+    """Cost the skill listing injected on every session start and subagent spawn."""
+    user_skills_dir = paths.claude_skills_dir()
+    user_skill_dirs: list[Path] = []
+    with contextlib.suppress(OSError):
+        if user_skills_dir.is_dir():
+            user_skill_dirs = [d for d in user_skills_dir.iterdir() if d.is_dir()]
+    settings_path = paths.claude_config_dir() / "settings.json"
+    enabled_plugins = _read_enabled_plugin_names(settings_path)
+    marketplaces_root = paths.claude_plugins_dir() / "marketplaces"
+    plugin_skill_entries = _enumerate_plugin_skill_dirs(enabled_plugins, marketplaces_root)
+    total_skill_dirs = user_skill_dirs + [d for _, d in plugin_skill_entries]
+    if not total_skill_dirs:
+        notes.append(
+            "Skill listing: no skill dirs found (empty skills dir and no enabled plugin skills)."
+        )
+        return
+    total_bytes = sum(_skill_listing_entry_bytes(d) for d in total_skill_dirs)
+    total_tokens = total_bytes // 4
+    n_user = len(user_skill_dirs)
+    n_plugin = len(plugin_skill_entries)
+    detail_parts = [
+        f"{n_user} user + {n_plugin} plugin skills",
+        "re-pays on every session start and subagent spawn",
+    ]
+    if skill_usage is not None:
+        all_names = {d.name for d in total_skill_dirs}
+        ever_used = sum(1 for name in all_names if skill_usage.get(name, 0) > 0)
+        zero_use = sorted(name for name in all_names if skill_usage.get(name, 0) == 0)
+        detail_parts.append(f"{ever_used}/{len(all_names)} skills ever called")
+        if zero_use:
+            preview = ", ".join(zero_use[:5])
+            suffix = f" + {len(zero_use) - 5} more" if len(zero_use) > 5 else ""
+            detail_parts.append(f"zero-use: {preview}{suffix}")
+    rows.append(
+        BaselineRow(
+            source=f"Skill listing ({len(total_skill_dirs)} skills)",
+            n_bytes=total_bytes,
+            tokens=total_tokens,
+            owner="you",
+            fix="archive-unused",
+            kind="fixed",
+            detail="; ".join(detail_parts),
+        )
+    )
+
+
+def _normalize_server_name(name: str) -> str:
+    """Normalize an MCP server name to lowercase alphanum+underscore for fuzzy matching."""
+    return re.sub(r"[^a-z0-9]", "_", name.lower())
+
+
+def _mcp_call_count(server_name: str, mcp_counts: dict[str, int]) -> int:
+    """Exact call count for *server_name* matched against transcript tool-name prefixes.
+
+    Normalizes both sides with :func:`_normalize_server_name` so punctuation and
+    casing differences (e.g. "claude.ai Vercel" vs "claude_ai_Vercel") resolve to
+    the same key without the false-positive risk of substring matching.
+    """
+    norm = _normalize_server_name(server_name)
+    return sum(
+        count for key, count in mcp_counts.items() if _normalize_server_name(key) == norm
+    )
+
+
+def _tally_tool_calls(
+    line: str, skill_counts: dict[str, int], mcp_counts: dict[str, int]
+) -> None:
+    """Parse one JSONL transcript line and tally Skill and MCP tool calls in-place."""
+    try:
+        obj = json.loads(line)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if not isinstance(obj, dict):
+        return
+    msg = obj.get("message", obj)
+    if not isinstance(msg, dict):
+        return
+    content = msg.get("content", [])
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        name = block.get("name", "")
+        if not isinstance(name, str):
+            continue
+        if name == "Skill":
+            inp = block.get("input", {})
+            if isinstance(inp, dict):
+                skill = inp.get("skill", "")
+                if skill and isinstance(skill, str):
+                    skill_counts[skill] = skill_counts.get(skill, 0) + 1
+        elif name.startswith("mcp__"):
+            parts = name.split("__", 2)
+            if len(parts) >= 2:
+                server = parts[1]
+                mcp_counts[server] = mcp_counts.get(server, 0) + 1
+
+
+def scan_transcript_usage(
+    projects_root: Path | None = None,
+    *,
+    max_files: int = _USAGE_MAX_FILES,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Stream project transcripts and tally Skill and MCP tool calls.
+
+    Returns ``({skill_name: call_count}, {mcp_server_prefix: call_count})``.
+    Reads the *max_files* most-recently-modified ``.jsonl`` files under
+    *projects_root* (defaults to :func:`~token_goat.paths.claude_projects_dir`).
+    Never raises.
+
+    Note: discovery (``rglob("*.jsonl")``) scales with the total number of transcript
+    files on disk before the cap is applied. On heavily-used installs this may take a
+    moment; the cap only bounds parsing, not file enumeration.
+    """
+    root = projects_root if projects_root is not None else paths.claude_projects_dir()
+    skill_counts: dict[str, int] = {}
+    mcp_counts: dict[str, int] = {}
+    try:
+        jsonl_files = sorted(
+            (p for p in root.rglob("*.jsonl")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:max_files]
+    except OSError:
+        return skill_counts, mcp_counts
+    for jsonl_path in jsonl_files:
+        try:
+            with open(jsonl_path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if '"Skill"' not in line and '"mcp__' not in line:
+                        continue
+                    _tally_tool_calls(line, skill_counts, mcp_counts)
+        except OSError:
+            continue
+    return skill_counts, mcp_counts
+
+
+def _scan_mcp(cwd: Path, rows: list[BaselineRow], notes: list[str], *, mcp_usage: dict[str, int] | None = None) -> None:
+    """Enumerate configured MCP servers — one 0-token row per server.
+
+    The instruction block each server injects lives on the server, not on disk, so
+    it cannot be costed from local files.  We emit a visible 0-token row per server
+    so each appears as a removable line item.  With ``--usage`` the row's detail also
+    reports historical call count so zero-use servers stand out as removal candidates.
     """
     server_names: list[str] = []
     with contextlib.suppress(Exception):
@@ -480,17 +713,27 @@ def _scan_mcp(cwd: Path, rows: list[BaselineRow], notes: list[str]) -> None:
     if not unique:
         notes.append("MCP: no configured servers found in .mcp.json / ~/.claude.json.")
         return
-    rows.append(
-        BaselineRow(
-            source=f"MCP instruction blocks ({len(unique)} servers)",
-            n_bytes=0,
-            tokens=0,
-            owner="harness",
-            fix="disable-mcp",
-            kind="fixed",
-            detail="not costed in v1 (lives on the server, not on disk)",
+    for server in unique:
+        detail_parts: list[str] = [
+            "schema not costed (lives on the server); re-pays on every subagent spawn"
+        ]
+        if mcp_usage is not None:
+            calls = _mcp_call_count(server, mcp_usage)
+            if calls == 0:
+                detail_parts.append("0 calls ever — removal candidate")
+            else:
+                detail_parts.append(f"{calls:,} calls ever")
+        rows.append(
+            BaselineRow(
+                source=f"MCP: {server}",
+                n_bytes=0,
+                tokens=0,
+                owner="harness",
+                fix="disable-mcp",
+                kind="fixed",
+                detail="; ".join(detail_parts),
+            )
         )
-    )
     notes.append(
         f"MCP: {len(unique)} server(s) configured ({', '.join(sorted(unique))}) — "
         "not all are necessarily active this session (plugin-bundled servers are not "
@@ -509,6 +752,7 @@ def collect_baseline(
     session_id: str | None = None,
     *,
     window_tokens: int = DEFAULT_WINDOW_TOKENS,
+    usage: bool = False,
 ) -> BaselineReport:
     """Scan and attribute the session's environmental baseline.
 
@@ -521,6 +765,8 @@ def collect_baseline(
         session_id: Explicit session id; falls back to ``CLAUDE_SESSION_ID`` then
             the newest ``tool-results`` directory.
         window_tokens: Denominator for pct-of-window (default the 200k model window).
+        usage: When ``True``, stream project transcripts to annotate rows with
+            historical call counts and flag zero-use skills / MCP servers.
 
     Returns:
         A populated :class:`BaselineReport`.  Never raises for ordinary
@@ -530,13 +776,22 @@ def collect_baseline(
     notes: list[str] = []
     sid, tool_results = _resolve_session(session_id)
 
+    skill_usage: dict[str, int] | None = None
+    mcp_usage: dict[str, int] | None = None
+    if usage:
+        skill_usage, mcp_usage = scan_transcript_usage()
+
     _scan_hook_dumps(tool_results, rows, notes)
     _scan_claude_md(cwd, rows, notes)
     _scan_memory_md(tool_results, cwd, rows, notes)
-    _scan_mcp(cwd, rows, notes)
+    _scan_skill_listing(rows, notes, skill_usage=skill_usage)
+    _scan_mcp(cwd, rows, notes, mcp_usage=mcp_usage)
 
     rows.sort(key=lambda r: r.tokens, reverse=True)
-    notes.append("Skill catalog & loaded-skill cost: run `token-goat doctor`.")
+    notes.append(
+        "Loaded-skill body cost: run `token-goat doctor` "
+        "(skills invoked in a session load their full SKILL.md separately)."
+    )
     return BaselineReport(
         rows=rows,
         window_tokens=window_tokens,

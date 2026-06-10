@@ -5111,17 +5111,23 @@ def cmd_baseline(
         "--window",
         help="Context-window size (tokens) used as the pct-of-window denominator. Default 200,000 (the model window).",
     ),
+    usage: bool = typer.Option(  # noqa: B008
+        False,
+        "--usage",
+        help="Annotate rows with historical call counts from project transcripts; flags zero-use skills and MCP servers as removal candidates.",
+    ),
 ) -> None:
     """Attribute the session's environmental context baseline (the "expense report").
 
     Scans the persisted SessionStart/UserPromptSubmit hook dumps, both CLAUDE.md
-    files, this project's MEMORY.md, and the configured MCP servers; costs each at
-    ~4 bytes/token (matching ``token-goat doctor``); and ranks them by token cost
-    with an owner (you / harness / ``plugin:<name>``) and a concrete fix. This is
-    the invisible context a spawned subagent inherits before it does any work.
+    files, this project's MEMORY.md, the skill listing, and the configured MCP
+    servers; costs each at ~4 bytes/token (matching ``token-goat doctor``); and
+    ranks them by token cost with an owner (you / harness / ``plugin:<name>``) and a
+    concrete fix. This is the invisible context a spawned subagent inherits before it
+    does any work.
 
-    Read-only. Complements ``token-goat doctor`` (which covers skills and
-    conversation) — skill cost is not repeated here; run the doctor for that.
+    Read-only. Complements ``token-goat doctor`` (which covers loaded-skill bodies
+    and conversation) — loaded-skill body cost is not repeated here.
 
     Detection picks the current session from ``CLAUDE_SESSION_ID``, the
     ``--session-id`` flag, or the most-recently-active session.
@@ -5130,10 +5136,11 @@ def cmd_baseline(
 
         token-goat baseline
         token-goat baseline --subagent
+        token-goat baseline --usage
         token-goat baseline --json
         token-goat baseline --window 1000000
     """
-    report = baseline_mod.collect_baseline(Path.cwd(), session_id, window_tokens=window)
+    report = baseline_mod.collect_baseline(Path.cwd(), session_id, window_tokens=window, usage=usage)
     if json_output:
         _emit_json(report.as_dict())
     for line in baseline_mod.format_report(report, subagent=subagent):
