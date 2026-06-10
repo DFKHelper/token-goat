@@ -3786,3 +3786,30 @@ def post_bash(payload: HookPayload) -> HookResponse:
         meta.output_id, total_bytes, exit_code, meta.truncated,
     )
     return CONTINUE()
+
+
+def pre_screenshot(payload: HookPayload) -> HookResponse:
+    """Deny MCP screenshot calls without filePath; force save-to-disk so image-shrink applies."""
+    import tempfile  # noqa: PLC0415
+
+    from . import config as _cfg_mod  # noqa: PLC0415
+
+    cfg = _cfg_mod.load().image_shrink
+    if not cfg.screenshot_redirect:
+        return CONTINUE()
+
+    tool_input = get_tool_input(payload)
+    # Already saving to disk — subsequent Read will hit image-shrink automatically.
+    if tool_input.get("filePath") or tool_input.get("file_path"):
+        return CONTINUE()
+
+    tmp_path = Path(tempfile.gettempdir()) / "tg-screenshot.png"
+    reason = "Screenshot result not saved — add filePath to capture to disk first."
+    context = (
+        "MCP screenshot tools return raw image bytes that bypass image-shrink and consume "
+        "~39K tokens per call. Re-issue with `filePath` set to save to disk, then Read that "
+        "path — the Read hook will compress it automatically.\n"
+        f'  Example: add `"filePath": "{tmp_path}"` to this tool call, '
+        f"then `Read({{\"file_path\": \"{tmp_path}\"}})`."
+    )
+    return deny_redirect(reason, context)

@@ -6318,6 +6318,15 @@ def post_skill(
     hooks_cli.safe_run("post-skill", input_file, _parse_harness(harness))
 
 
+@hook_app.command("pre-screenshot", context_settings=_HOOK_CTX)
+def pre_screenshot(
+    input_file: Path | None = _INPUT_OPT,
+    harness: str = _HARNESS_OPT,
+) -> None:
+    """Hook: pre-screenshot event (redirects MCP screenshots without filePath so image-shrink applies)."""
+    hooks_cli.safe_run("pre-screenshot", input_file, _parse_harness(harness))
+
+
 def _compact_hint_watch(
     session_id: str,
     auto: bool,

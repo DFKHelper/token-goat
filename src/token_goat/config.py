@@ -798,6 +798,7 @@ class ImageShrinkConfig:
     max_image_pixels: int = 16_000_000
     orphan_sweep_enabled: bool = True
     orphan_age_secs: int = 604800  # 7 days
+    screenshot_redirect: bool = True
 
 
 @dataclass
