@@ -37,6 +37,19 @@ class TestPreScreenshotDenyWithoutFilePath:
         output = hso.get("additionalContext", "") + " " + hso.get("permissionDecisionReason", "")
         assert "filePath" in output or "file_path" in output
 
+    def test_deny_message_mentions_both_param_variants(self, tmp_data_dir):
+        # Deny message must show both "filePath" (chrome-devtools) and "filename" (playwright).
+        payload = {
+            "tool_name": "mcp__plugin_playwright_playwright__browser_take_screenshot",
+            "tool_input": {},
+        }
+        result = hooks_cli.pre_screenshot(payload)
+        _assert_deny(result)
+        hso = result.get("hookSpecificOutput", {})
+        output = hso.get("additionalContext", "") + " " + hso.get("permissionDecisionReason", "")
+        assert "filePath" in output
+        assert "filename" in output
+
     def test_deny_message_mentions_image_shrink(self, tmp_data_dir):
         payload = {
             "tool_name": "mcp__plugin_playwright_playwright__browser_take_screenshot",
@@ -61,7 +74,17 @@ class TestPreScreenshotAllowWithFilePath:
         result = hooks_cli.pre_screenshot(payload)
         _assert_continue(result)
 
-    def test_playwright_with_file_path_allowed(self, tmp_data_dir):
+    def test_playwright_with_filename_allowed(self, tmp_data_dir):
+        # Playwright uses "filename", not "filePath" — this is the critical escape path.
+        payload = {
+            "tool_name": "mcp__plugin_playwright_playwright__browser_take_screenshot",
+            "tool_input": {"filename": "/tmp/shot.png", "type": "png"},
+        }
+        result = hooks_cli.pre_screenshot(payload)
+        _assert_continue(result)
+
+    def test_playwright_file_path_also_accepted(self, tmp_data_dir):
+        # filePath is accepted for all tools as a belt-and-suspenders fallback.
         payload = {
             "tool_name": "mcp__plugin_playwright_playwright__browser_take_screenshot",
             "tool_input": {"filePath": "/tmp/shot.png", "type": "png"},

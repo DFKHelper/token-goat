@@ -3789,7 +3789,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
 
 
 def pre_screenshot(payload: HookPayload) -> HookResponse:
-    """Deny MCP screenshot calls without filePath; force save-to-disk so image-shrink applies."""
+    """Deny MCP screenshot calls without a save-to-disk arg; force save so image-shrink applies."""
     import tempfile  # noqa: PLC0415
 
     from . import config as _cfg_mod  # noqa: PLC0415
@@ -3799,17 +3799,19 @@ def pre_screenshot(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     tool_input = get_tool_input(payload)
-    # Already saving to disk — subsequent Read will hit image-shrink automatically.
-    if tool_input.get("filePath") or tool_input.get("file_path"):
+    # chrome-devtools uses "filePath"; playwright uses "filename"; accept all three.
+    if tool_input.get("filePath") or tool_input.get("file_path") or tool_input.get("filename"):
         return CONTINUE()
 
-    tmp_path = Path(tempfile.gettempdir()) / "tg-screenshot.png"
-    reason = "Screenshot result not saved — add filePath to capture to disk first."
+    # Unique path per call — avoids concurrent-call overwrites.
+    tmp_path = tempfile.mktemp(suffix=".png", prefix="tg-screenshot-")  # noqa: S306
+    reason = "Screenshot result not saved — add the save-to-disk argument first."
     context = (
         "MCP screenshot tools return raw image bytes that bypass image-shrink and consume "
-        "~39K tokens per call. Re-issue with `filePath` set to save to disk, then Read that "
-        "path — the Read hook will compress it automatically.\n"
-        f'  Example: add `"filePath": "{tmp_path}"` to this tool call, '
-        f"then `Read({{\"file_path\": \"{tmp_path}\"}})`."
+        "~39K tokens per call. Re-issue with the save argument set, then Read the path — "
+        "the Read hook will compress it automatically.\n"
+        "  chrome-devtools: add `\"filePath\": \"" + tmp_path + "\"` to this tool call\n"
+        "  playwright:      add `\"filename\": \"" + tmp_path + "\"` to this tool call\n"
+        f"  then `Read({{\"file_path\": \"{tmp_path}\"}})`."
     )
     return deny_redirect(reason, context)
