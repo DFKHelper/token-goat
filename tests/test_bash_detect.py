@@ -74,6 +74,73 @@ class TestDetectEdgeCases:
         assert bash_detect.detect(["totally_unknown", "pytest"]) is None
 
 
+class TestBashDetectTableSync:
+    """_BINARY_TO_FILTER must stay in sync with bash_compress.FILTERS.
+
+    These tests fail if a new binary is added to bash_compress.FILTERS without
+    updating bash_detect._BINARY_TO_FILTER, silently losing the fast-path bypass
+    that avoids the 75 ms bash_compress import on every unrecognised command.
+    """
+
+    def _expected_table(self):
+        """Build expected {binary: first_match_filter_name} from bash_compress.FILTERS."""
+        from token_goat.bash_compress import FILTERS
+        expected: dict[str, str] = {}
+        for f in FILTERS:
+            for binary in f.binaries:
+                b = binary.lower()
+                if b not in expected:
+                    expected[b] = f.name
+        return expected
+
+    def test_no_binaries_missing_from_detect_table(self) -> None:
+        """Every binary in bash_compress.FILTERS must appear in _BINARY_TO_FILTER."""
+        from token_goat.bash_detect import _BINARY_TO_FILTER
+        expected = self._expected_table()
+        missing = sorted(b for b in expected if b not in _BINARY_TO_FILTER)
+        assert not missing, (
+            "Binaries in bash_compress.FILTERS but absent from bash_detect._BINARY_TO_FILTER "
+            "(add them or run the generation script):\n  " + "\n  ".join(missing)
+        )
+
+    def test_no_stale_entries_in_detect_table(self) -> None:
+        """Every entry in _BINARY_TO_FILTER must point to a real filter name in FILTERS."""
+        from token_goat.bash_compress import FILTERS
+        from token_goat.bash_detect import _BINARY_TO_FILTER
+        valid_names = {f.name for f in FILTERS}
+        stale = {b: n for b, n in _BINARY_TO_FILTER.items() if n not in valid_names}
+        assert not stale, (
+            "Entries in bash_detect._BINARY_TO_FILTER reference non-existent filter names: "
+            + str(stale)
+        )
+
+    def test_detect_uses_first_match_filter(self) -> None:
+        """Each binary must map to the first matching filter in FILTERS order."""
+        from token_goat.bash_detect import _BINARY_TO_FILTER
+        expected = self._expected_table()
+        mismatched = {
+            b: (expected[b], _BINARY_TO_FILTER[b])
+            for b in expected
+            if b in _BINARY_TO_FILTER and expected[b] != _BINARY_TO_FILTER[b]
+        }
+        assert not mismatched, (
+            "Binary→filter mismatch (expected first-match from FILTERS, got different):\n"
+            + "\n".join(
+                f"  {b!r}: expected {exp!r}, got {act!r}"
+                for b, (exp, act) in sorted(mismatched.items())
+            )
+        )
+
+    def test_table_size_matches_filters(self) -> None:
+        """Table entry count must equal the number of distinct binaries across all FILTERS."""
+        from token_goat.bash_detect import _BINARY_TO_FILTER
+        expected = self._expected_table()
+        assert len(_BINARY_TO_FILTER) == len(expected), (
+            f"Size mismatch: FILTERS has {len(expected)} distinct binaries, "
+            f"_BINARY_TO_FILTER has {len(_BINARY_TO_FILTER)}"
+        )
+
+
 class TestBashCompressNotImportedForUnknownBinary:
     """_handle_bash_compress must not import bash_compress for unrecognised commands.
 

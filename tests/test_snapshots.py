@@ -886,3 +886,177 @@ class TestSymbolChangedIntegrity:
             current_text=body,
         )
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# Content-hash dedup
+# ---------------------------------------------------------------------------
+
+class TestStoreContentHashDedup:
+    """store() skips the disk write when content is identical to the existing snapshot."""
+
+    def test_same_content_skips_write(self, tmp_data_dir, monkeypatch):
+        from token_goat import paths as _tg_paths
+        write_log: list = []
+        orig = _tg_paths.atomic_write_bytes
+
+        def spy(p, data):
+            write_log.append(p)
+            orig(p, data)
+
+        monkeypatch.setattr(_tg_paths, "atomic_write_bytes", spy)
+        content = b"def foo():\n    pass\n"
+        r1 = snapshots.store("dedup-01", "/p/file.py", content)
+        assert r1 is not None
+        writes_after_first = len(write_log)
+
+        r2 = snapshots.store("dedup-01", "/p/file.py", content)
+        assert r2 is not None
+        assert r2.content_sha == r1.content_sha
+        assert len(write_log) == writes_after_first  # no new writes for unchanged content
+
+    def test_changed_content_writes_through(self, tmp_data_dir):
+        r1 = snapshots.store("dedup-02", "/p/file.py", b"version 1")
+        r2 = snapshots.store("dedup-02", "/p/file.py", b"version 2")
+        assert r1 is not None and r2 is not None
+        assert r1.content_sha != r2.content_sha
+        assert snapshots.load("dedup-02", "/p/file.py") == b"version 2"
+
+
+# ---------------------------------------------------------------------------
+# Truncation
+# ---------------------------------------------------------------------------
+
+class TestStoreTruncation:
+    """Files above SNAPSHOT_TRUNCATE_BYTES are stored truncated with a sentinel."""
+
+    def test_oversized_body_stored_truncated(self, tmp_data_dir):
+        content = b"A" * (snapshots.SNAPSHOT_TRUNCATE_BYTES + 512)
+        r = snapshots.store("trunc-01", "/p/big.py", content)
+        assert r is not None
+        stored = snapshots.load("trunc-01", "/p/big.py")
+        assert stored is not None
+        assert len(stored) < len(content)
+        assert b"<snapshot truncated at" in stored
+        assert stored[: snapshots.SNAPSHOT_TRUNCATE_BYTES] == content[: snapshots.SNAPSHOT_TRUNCATE_BYTES]
+
+    def test_file_exactly_at_threshold_not_truncated(self, tmp_data_dir):
+        content = b"B" * snapshots.SNAPSHOT_TRUNCATE_BYTES
+        r = snapshots.store("trunc-02", "/p/exact.py", content)
+        assert r is not None
+        stored = snapshots.load("trunc-02", "/p/exact.py")
+        assert stored == content
+        assert b"<snapshot truncated at" not in stored
+
+
+# ---------------------------------------------------------------------------
+# load() integrity check
+# ---------------------------------------------------------------------------
+
+class TestLoadIntegrityCheck:
+    """load() with expected_sha rejects snapshots whose bytes don't match."""
+
+    def test_sha_mismatch_returns_none(self, tmp_data_dir):
+        r = snapshots.store("integ-01", "/p/file.py", b"original")
+        assert r is not None
+        result = snapshots.load("integ-01", "/p/file.py", expected_sha="0" * 64)
+        assert result is None
+
+    def test_correct_sha_returns_content(self, tmp_data_dir):
+        content = b"trusted content"
+        r = snapshots.store("integ-02", "/p/file.py", content)
+        assert r is not None
+        result = snapshots.load("integ-02", "/p/file.py", expected_sha=r.content_sha)
+        assert result == content
+
+    def test_none_sha_skips_integrity_check(self, tmp_data_dir):
+        content = b"no check"
+        snapshots.store("integ-03", "/p/file.py", content)
+        result = snapshots.load("integ-03", "/p/file.py", expected_sha=None)
+        assert result == content
+
+
+# ---------------------------------------------------------------------------
+# load_kind() edge cases
+# ---------------------------------------------------------------------------
+
+class TestLoadKindEdgeCases:
+    """load_kind() returns None for absent, undecodable, or unrecognised sidecar."""
+
+    def test_missing_sidecar_returns_none(self, tmp_data_dir):
+        r = snapshots.store("kind-01", "/p/file.py", b"content")
+        assert r is not None
+        sidecar = r.path.with_suffix(r.path.suffix + ".kind")
+        if sidecar.exists():
+            sidecar.unlink()
+        assert snapshots.load_kind("kind-01", "/p/file.py") is None
+
+    def test_invalid_bytes_sidecar_returns_none(self, tmp_data_dir):
+        r = snapshots.store("kind-02", "/p/file.py", b"content")
+        assert r is not None
+        sidecar = r.path.with_suffix(r.path.suffix + ".kind")
+        sidecar.write_bytes(b"\xff\xfe not ascii")
+        assert snapshots.load_kind("kind-02", "/p/file.py") is None
+
+    def test_unknown_kind_string_returns_none(self, tmp_data_dir):
+        r = snapshots.store("kind-03", "/p/file.py", b"content")
+        assert r is not None
+        sidecar = r.path.with_suffix(r.path.suffix + ".kind")
+        sidecar.write_bytes(b"not_a_valid_kind")
+        assert snapshots.load_kind("kind-03", "/p/file.py") is None
+
+    def test_predictive_kind_roundtrips(self, tmp_data_dir):
+        r = snapshots.store("kind-04", "/p/file.py", b"content", kind="predictive")
+        assert r is not None
+        assert snapshots.load_kind("kind-04", "/p/file.py") == "predictive"
+
+
+# ---------------------------------------------------------------------------
+# cleanup_stale()
+# ---------------------------------------------------------------------------
+
+class TestCleanupStale:
+    """cleanup_stale() removes old snapshots and prunes empty session dirs."""
+
+    def test_stale_snapshots_removed(self, tmp_data_dir):
+        import os
+        import time
+
+        r = snapshots.store("stale-01", "/p/file.py", b"old")
+        assert r is not None
+        old_ts = time.time() - 48 * 3600
+        os.utime(r.path, (old_ts, old_ts))
+        sidecar = r.path.with_suffix(r.path.suffix + ".kind")
+        if sidecar.exists():
+            os.utime(sidecar, (old_ts, old_ts))
+
+        removed = snapshots.cleanup_stale(max_age_hours=24.0)
+        assert removed >= 1
+        assert snapshots.load("stale-01", "/p/file.py") is None
+
+    def test_fresh_snapshots_not_removed(self, tmp_data_dir):
+        r = snapshots.store("stale-02", "/p/file.py", b"fresh")
+        assert r is not None
+        removed = snapshots.cleanup_stale(max_age_hours=24.0)
+        assert removed == 0
+        assert snapshots.load("stale-02", "/p/file.py") == b"fresh"
+
+    def test_missing_base_dir_returns_zero(self, tmp_data_dir):
+        # No snapshots stored in this test — session_snapshots dir does not exist.
+        assert snapshots.cleanup_stale(max_age_hours=1.0) == 0
+
+    def test_empty_session_dir_pruned(self, tmp_data_dir):
+        import os
+        import time
+
+        r = snapshots.store("stale-empty", "/p/file.py", b"x")
+        assert r is not None
+        session_dir = r.path.parent
+        old_ts = time.time() - 48 * 3600
+        os.utime(r.path, (old_ts, old_ts))
+        sidecar = r.path.with_suffix(r.path.suffix + ".kind")
+        if sidecar.exists():
+            os.utime(sidecar, (old_ts, old_ts))
+
+        snapshots.cleanup_stale(max_age_hours=24.0)
+        assert not session_dir.exists()
