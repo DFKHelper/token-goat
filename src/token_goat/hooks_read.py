@@ -3784,7 +3784,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Load the session cache once; all subsequent session operations share this object.
     _sess_mod = _get_session() if session_id else None
     _session_cache = _sess_mod.safe_load(session_id, caller="post_bash") if (_sess_mod and session_id) else None
-    if _session_cache is not None:
+    if _sess_mod is not None and _session_cache is not None:
         _check_ignored_bash_hint(_session_cache, display_cmd, cwd)
         with contextlib.suppress(Exception):
             _sess_mod.save(_session_cache)  # fallback save if no mark_* runs below
@@ -3802,7 +3802,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # session.greps so that subsequent pre-Grep and pre-Bash grep dedup hints
     # can fire.  Uses stdout line count as a cheap result_count estimate since
     # the harness only delivers raw text, not a structured match count.
-    if _session_cache is not None:
+    if _sess_mod is not None and _session_cache is not None:
         try:
             from . import bash_parser as _bp  # noqa: PLC0415
             _grep_intent = _bp.parse(display_cmd)
@@ -3833,7 +3833,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     #
     # Skip when exit_code is non-zero: a failed Get-Content (file not found,
     # permission denied) should not be recorded as a successful read.
-    if _session_cache is not None and exit_code in (None, 0):
+    if _sess_mod is not None and _session_cache is not None and exit_code in (None, 0):
         try:
             from . import bash_parser as _bp  # noqa: PLC0415
             _read_intent = _bp.parse(display_cmd)
@@ -3884,7 +3884,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
         # section can surface them.  A small "npm test" → "Error: missing dep"
         # output that is forgotten causes the agent to re-run the command
         # unnecessarily on the next turn.
-        if exit_code not in (None, 0) and session_id:
+        if exit_code not in (None, 0) and session_id and _sess_mod is not None:
             from . import bash_cache as _bc  # noqa: PLC0415
             _cmd_sha = _bc.command_hash(display_cmd, cwd)
             # Inline snippet capped at 200 chars so the manifest line stays short.
@@ -3918,6 +3918,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
 
     from . import bash_cache  # noqa: PLC0415
     from . import config as _config
+    assert _sess_mod is not None  # guaranteed: session_id truthy above implies _get_session() returned a module
     session = _sess_mod
 
     _bc_cfg = _config.load().bash_compress
