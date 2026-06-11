@@ -279,7 +279,7 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
             (
                 f"Note: command auto-wrapped by token-goat ({filter_.name} filter) "
                 "to compress its output before it lands in context. "
-                "Set TOKEN_GOAT_BASH_COMPRESS=0 to disable."
+                "Disable via TOKEN_GOAT_BASH_COMPRESS."
             ),
         )
 
@@ -299,7 +299,7 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
         (
             "Note: compound command auto-wrapped by token-goat to compress each "
             "stage's output before it lands in context. "
-            "Set TOKEN_GOAT_BASH_COMPRESS=0 to disable."
+            "Disable via TOKEN_GOAT_BASH_COMPRESS."
         ),
     )
 

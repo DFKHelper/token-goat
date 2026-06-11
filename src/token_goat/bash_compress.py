@@ -301,7 +301,7 @@ def _get_max_input_bytes() -> int:
 #: looking at a summary and can opt out if it needs the raw view.  Kept short
 #: so the meta-cost of the marker is dwarfed by the savings.
 _COMPRESSION_MARKER_FMT: Final[str] = (
-    "\n[token-goat: {filter} filter -{pct:.0f}%; TOKEN_GOAT_BASH_COMPRESS=0 to disable]"
+    "\n[token-goat: {filter} filter -{pct:.0f}%; disable via TOKEN_GOAT_BASH_COMPRESS]"
 )
 
 # ---------------------------------------------------------------------------
@@ -4611,7 +4611,7 @@ class MypyFilter(Filter):
         if dropped_errors:
             kept.append(
                 f"[token-goat: suppressed {dropped_errors} duplicate error lines "
-                f"(kept first 3 per unique message); re-run with TOKEN_GOAT_BASH_COMPRESS=0 "
+                f"(kept first 3 per unique message); disable via TOKEN_GOAT_BASH_COMPRESS "
                 f"for the full list]"
             )
         if dropped_notes:
@@ -7900,7 +7900,7 @@ class GrepFilter(Filter):
             out_lines.append(f"  (unattributed lines: {unattributed})")
         out_lines.append(
             f"[token-goat: grep output compressed from {len(non_empty)} lines "
-            f"to {len(out_lines)} — pass TOKEN_GOAT_BASH_COMPRESS=0 to disable]"
+            f"to {len(out_lines)} — disable via TOKEN_GOAT_BASH_COMPRESS]"
         )
         return "\n".join(out_lines)
 
@@ -13916,7 +13916,7 @@ class BlackIsortFilter(Filter):
         if reformat_extra:
             out.append(
                 f"[token-goat: +{reformat_extra} more reformatted files; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         out.extend(kept)
         return self._finalize(out)
@@ -13947,7 +13947,7 @@ class BlackIsortFilter(Filter):
         if fix_extra:
             out.append(
                 f"[token-goat: +{fix_extra} more fixed files; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         out.extend(kept)
         return self._finalize(out)
@@ -14494,7 +14494,7 @@ class LernaFilter(Filter):
         if ran_extra:
             out.append(
                 f"[token-goat: +{ran_extra} more 'Ran npm script' lines; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         out.extend(kept)
         notes: list[str] = []
@@ -14605,7 +14605,7 @@ class PrettierFilter(Filter):
         if changed_extra:
             out.append(
                 f"[token-goat: +{changed_extra} more formatted files; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         out.extend(kept)
         notes: list[str] = []
@@ -14850,7 +14850,7 @@ class OxlintFilter(Filter):
                     if rule_counts[rule] == self._KEEP_PER_RULE + 1:
                         kept.append(
                             f"  [token-goat: +? more {rule!r} in {current_file or 'file'}; "
-                            f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                            f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
                         )
                     deduplicated += 1
                     suppress_block = True
@@ -14988,7 +14988,7 @@ class PylintFilter(Filter):
                         module_has_kept_issue = True
                         kept.append(
                             f"  [token-goat: +? more {code} ({_pylint_code_name(line)}); "
-                            f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                            f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
                         )
                     deduplicated += 1
                 continue
@@ -15692,7 +15692,7 @@ class KtlintFilter(Filter):
                     if cnt == self._KEEP_PER_RULE + 1:
                         kept.append(
                             f"  [token-goat: +? more {rule} violations; "
-                            f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                            f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
                         )
                     deduplicated += 1
                 continue
@@ -15712,7 +15712,7 @@ class KtlintFilter(Filter):
                     if cnt == self._KEEP_PER_RULE + 1:
                         kept.append(
                             f"[token-goat: +? more {rule} warnings; "
-                            f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                            f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
                         )
                     deduplicated += 1
                 continue
@@ -15856,7 +15856,7 @@ class ZigFilter(Filter):
         if step_extra:
             out.append(
                 f"[token-goat: +{step_extra} more build steps; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         out.extend(kept)
 
@@ -16003,7 +16003,7 @@ class SassFilter(Filter):
         if write_extra:
             out.append(
                 f"[token-goat: +{write_extra} more compiled CSS files; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         out.extend(kept)
 
@@ -16508,7 +16508,7 @@ class ElmFilter(Filter):
         if downloading_count:
             out.append(
                 f"[token-goat: Downloaded {downloading_count} Elm package(s); "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         if compiling_count:
             out.append(
@@ -16657,7 +16657,7 @@ class JuliaFilter(Filter):
         if dep_count:
             out.append(
                 f"[token-goat: {dep_count} Julia package operation(s) (add/update/install); "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         if progress_count:
             out.append(
@@ -16932,12 +16932,12 @@ class CrystalFilter(Filter):
         if compiling_count:
             out.append(
                 f"[token-goat: collapsed {compiling_count} Crystal compilation/linking line(s); "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         if shard_progress_count:
             out.append(
                 f"[token-goat: {shard_progress_count} shard dependency action(s) "
-                f"(Using/Fetching/Installing); run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"(Using/Fetching/Installing); disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         out.extend(kept)
 
@@ -17088,7 +17088,7 @@ class VaultFilter(Filter):
                 kept.extend(list_items[:5])
                 kept.append(
                     f"[token-goat: {len(list_items) - 5} more secret path(s) omitted; "
-                    f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                    f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
                 )
 
         notes: list[str] = []
@@ -17225,7 +17225,7 @@ class PackerFilter(Filter):
         if waiting_count:
             out.append(
                 f"[token-goat: {waiting_count} SSH/WinRM connection-wait poll line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         if provisioner_count:
             out.append(
@@ -17379,7 +17379,7 @@ class NixFilter(Filter):
         if fetch_count:
             out.append(
                 f"[token-goat: fetched/substituted {fetch_count} store path(s) from binary cache; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         if build_count:
             out.append(
@@ -17544,7 +17544,7 @@ class HaskellFilter(Filter):
         if resolving_count:
             out.append(
                 f"[token-goat: {resolving_count} dependency resolution/download line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         if compiling_count:
             out.append(
@@ -17707,7 +17707,7 @@ class RCmdFilter(Filter):
         if ok_count:
             out.append(
                 f"[token-goat: {ok_count} 'checking ... OK/SKIPPED' line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full check output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         if install_section_count:
             out.append(
@@ -18394,7 +18394,7 @@ class WranglerFilter(Filter):
         if upload_count:
             out.append(
                 f"[token-goat: {upload_count} asset upload line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full list]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full list]"
             )
         if skip_count:
             out.append(
@@ -18576,7 +18576,7 @@ class HardhatFilter(Filter):
         if compiling_count:
             out.append(
                 f"[token-goat: collapsed {compiling_count} Solidity compilation step line(s); "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         if solc_timing_count:
             out.append(
@@ -18734,7 +18734,7 @@ class ServerlessFilter(Filter):
         if step_count:
             out.append(
                 f"[token-goat: collapsed {step_count} Serverless deploy step line(s); "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         out.extend(kept)
 
@@ -18883,7 +18883,7 @@ class ErlangFilter(Filter):
         if compiling_count:
             out.append(
                 f"[token-goat: {compiling_count} .erl compilation line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         if fetch_count:
             out.append(
@@ -19023,7 +19023,7 @@ class FlyFilter(Filter):
         if build_step_count:
             out.append(
                 f"[token-goat: {build_step_count} Docker build step line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         if machine_wait_count:
             out.append(
@@ -19166,7 +19166,7 @@ class ForgeFilter(Filter):
         if compiling_count:
             out.append(
                 f"[token-goat: {compiling_count} Solidity compilation step line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         out.extend(kept)
 
@@ -19311,7 +19311,7 @@ class AiderFilter(Filter):
         if applying_count:
             out.append(
                 f"[token-goat: {applying_count} 'applying edits' progress line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         out.extend(kept)
 
@@ -19646,7 +19646,7 @@ class GeminiCliFilter(Filter):
         if startup_count:
             out.append(
                 f"[token-goat: {startup_count} Gemini CLI startup status line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
         if tool_spinner_count:
             out.append(
@@ -20060,7 +20060,7 @@ class WindsurfFilter(Filter):
         if cascade_tool_count:
             notes.append(
                 f"collapsed {cascade_tool_count} Cascade tool-call line(s); "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output"
             )
         if last_context:
             notes.append(f"context: {last_context}")
@@ -20195,7 +20195,7 @@ class OpenCodeFilter(Filter):
         if tool_call_count:
             out.append(
                 f"[token-goat: {tool_call_count} tool call/result line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
 
         notes: list[str] = []
@@ -20317,7 +20317,7 @@ class ContinueFilter(Filter):
             summary = last_indexing_line or f"{indexing_count} indexing progress line(s)"
             out.append(
                 f"[token-goat: {indexing_count} indexing progress line(s) collapsed; "
-                f"last: {summary}; run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"last: {summary}; disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
 
         notes: list[str] = []
@@ -20478,7 +20478,7 @@ class ClineFilter(Filter):
         if file_read_count:
             out.append(
                 f"[token-goat: {file_read_count} file-read progress line(s) collapsed; "
-                f"run with TOKEN_GOAT_BASH_COMPRESS=0 for full output]"
+                f"disable via TOKEN_GOAT_BASH_COMPRESS for full output]"
             )
 
         notes: list[str] = []

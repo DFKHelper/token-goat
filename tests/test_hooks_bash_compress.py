@@ -57,7 +57,7 @@ class TestRewriteFires:
         result = _dispatch(_payload("pytest"))
         ctx = result["hookSpecificOutput"]["additionalContext"]
         assert "token-goat" in ctx
-        assert "TOKEN_GOAT_BASH_COMPRESS=0" in ctx
+        assert "TOKEN_GOAT_BASH_COMPRESS" in ctx
 
 
 # ---------------------------------------------------------------------------
