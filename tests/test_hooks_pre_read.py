@@ -2884,3 +2884,63 @@ class TestUnchangedFileHintFlushRegression:
             "session.save must be called in finally block when index-only "
             "early-return is taken (demonstrates finally-block invariant)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Regression: P3-9 — pre_read Bash branch uses safe_load, not bare load
+# ---------------------------------------------------------------------------
+
+class TestPreReadBashSafeLoadRegression:
+    """pre_read must survive a corrupt session file when the tool_name is 'Bash'.
+
+    Regression P3-9: the Bash branch called _sess_mod.load() (raises on corrupt
+    data) instead of _sess_mod.safe_load() (swallows corruption and returns None).
+    A bad session file would crash the hook and block every subsequent Bash call.
+    """
+
+    def test_corrupt_session_does_not_crash_bash_pre_read(self, tmp_data_dir, monkeypatch) -> None:
+        """pre_read with tool_name='Bash' must return continue even when session load raises."""
+        import token_goat.hooks_cli as hooks_cli
+        import token_goat.session as _session
+
+        # Simulate a corrupt session by making safe_load return None (its contract on error)
+        monkeypatch.setattr(_session, "safe_load", lambda *a, **kw: None)
+
+        payload = {
+            "session_id": "corrupt_bash_sess",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest tests/"},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+
+        # Must still return a continue response — never raise or return None
+        assert result is not None
+        assert result.get("continue") is True
+
+    def test_safe_load_called_in_bash_branch(self, tmp_data_dir, monkeypatch) -> None:
+        """Bash branch must call safe_load at least once for the session (not only bare load)."""
+        import token_goat.hooks_cli as hooks_cli
+        import token_goat.session as _session
+
+        safe_load_calls: list = []
+        original_safe_load = _session.safe_load
+
+        def _tracking_safe_load(sid, *a, **kw):
+            safe_load_calls.append(sid)
+            return original_safe_load(sid, *a, **kw)
+
+        monkeypatch.setattr(_session, "safe_load", _tracking_safe_load)
+
+        payload = {
+            "session_id": "bash_load_tracking",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest tests/"},
+            "cwd": "/proj",
+        }
+        hooks_cli.pre_read(payload)
+
+        # safe_load must have been called for this session (the Bash recovery-hint check uses it)
+        assert "bash_load_tracking" in safe_load_calls, (
+            "safe_load must be called in the Bash branch of pre_read (P3-9 regression)"
+        )

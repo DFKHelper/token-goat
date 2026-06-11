@@ -91,21 +91,23 @@ def normalize_path(path: str | Path) -> str:
     """
     s = str(path)
 
+    # Step 3: replace backslashes before WSL check so mixed-separator paths like
+    # /mnt/c/foo\bar are fully normalized before the regex runs.
+    if "\\" in s:
+        s = s.replace("\\", "/")
+
     # Step 2: convert WSL /mnt/<single-letter-drive>/rest → <drive>:/rest
     m = _WSL_PATH_RE.match(s)
     if m:
         drive_letter = m.group(1).lower()  # lowercase so /mnt/C and /mnt/c agree
         rest = m.group(2)
         s = f"{drive_letter}:/{rest}"
-    else:
-        # Step 3: replace backslashes with forward slashes
-        if "\\" in s:
-            s = s.replace("\\", "/")
-        # Step 4: lowercase the drive letter prefix (C: → c:) on all platforms.
-        # WSL processes emit Windows-format paths on Linux; both must produce the
-        # same cache key, so lowercasing must be unconditional.
-        if len(s) >= 2 and s[1] == ":" and s[0].isalpha() and s[0].isupper():
-            s = s[0].lower() + s[1:]
+
+    # Step 4: lowercase the drive letter prefix (C: → c:) on all platforms.
+    # WSL processes emit Windows-format paths on Linux; both must produce the
+    # same cache key, so lowercasing must be unconditional.
+    if len(s) >= 2 and s[1] == ":" and s[0].isalpha() and s[0].isupper():
+        s = s[0].lower() + s[1:]
 
     return s
 

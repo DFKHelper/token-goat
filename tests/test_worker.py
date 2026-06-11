@@ -586,34 +586,34 @@ def test_ensure_running_already_alive(tmp_data_dir, mock_worker_cmdline):
 # Dirty queue cap test
 # ---------------------------------------------------------------------------
 
-def test_enqueue_dirty_respects_max_entries_cap(tmp_data_dir, monkeypatch):
-    """enqueue_dirty enforces DIRTY_QUEUE_MAX_ENTRIES cap by evicting oldest entries."""
+def test_enqueue_dirty_byte_cap_drops_new_entries(tmp_data_dir, monkeypatch):
+    """enqueue_dirty enforces DIRTY_QUEUE_MAX_BYTES by dropping new entries (not evicting old ones).
+
+    The implementation uses a single stat() call (O(1)) to check the file size; when at or above
+    the cap, new entries are silently dropped.  Old entries are never evicted — that is done by
+    drain_dirty_queue which deduplicates as it reads.
+    """
     paths.ensure_dirs()
 
-    # Use a smaller cap for testing to avoid timeout
-    test_cap = 50
-    monkeypatch.setattr(worker, "DIRTY_QUEUE_MAX_ENTRIES", test_cap)
+    # Use a small byte cap for testing
+    test_cap_bytes = 500
+    monkeypatch.setattr(worker, "DIRTY_QUEUE_MAX_BYTES", test_cap_bytes)
 
-    # Fill the queue up to the cap
-    for i in range(test_cap):
-        worker.enqueue_dirty(f"file_{i}.py", project_hash="proj123")
-
-    # Verify queue has exactly test_cap entries
     queue_path = paths.dirty_queue_path()
-    lines = queue_path.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == test_cap
+    # Write a file that's already at the cap
+    queue_path.write_bytes(b"x" * test_cap_bytes)
+    size_before = queue_path.stat().st_size
 
-    # Add one more entry — should evict the oldest
+    # Attempt to enqueue — must be dropped
     worker.enqueue_dirty("file_new.py", project_hash="proj123")
 
-    # Queue should still be at cap (oldest was removed)
-    lines = queue_path.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == test_cap
+    # File must not have grown
+    assert queue_path.stat().st_size == size_before, (
+        "new entry must be dropped when queue is at the byte cap"
+    )
 
-    # The oldest entry should be gone, new one should be present
-    entries = [json.loads(line) for line in lines]
-    assert any(e["path"] == "file_new.py" for e in entries)
-    assert not any(e["path"] == "file_0.py" for e in entries)
+    # The queued content must not have been modified (no eviction of old entries)
+    assert queue_path.read_bytes() == b"x" * test_cap_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -2945,3 +2945,142 @@ class TestEvictionLockAutoClears:
 
         # Stale lock should have been cleared
         assert not lock_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Regression: P1-1+P2-5 — enqueue_dirty append-only + byte-size cap
+# ---------------------------------------------------------------------------
+
+class TestEnqueueDirtyRegression:
+    """enqueue_dirty must append entries (never rewrite) and enforce the byte cap via stat()."""
+
+    def test_appends_second_entry_preserves_first(self, tmp_data_dir):
+        """Regression P1-1/P2-5: two enqueue_dirty calls produce two entries; the first is preserved.
+
+        Before the fix, a read-modify-write implementation would truncate any line appended
+        between the read and the write, losing entries under concurrent writers.  With the
+        append-only implementation both entries must survive in the queue file.
+        """
+        paths.ensure_dirs()
+        worker.enqueue_dirty("a/first.py", project_hash="proj1")
+        worker.enqueue_dirty("b/second.py", project_hash="proj1")
+
+        queue_file = paths.dirty_queue_path()
+        lines = [ln for ln in queue_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(lines) == 2, f"expected 2 entries, got {len(lines)}: {lines}"
+        paths_in_queue = [json.loads(ln)["path"] for ln in lines]
+        assert "a/first.py" in paths_in_queue
+        assert "b/second.py" in paths_in_queue
+
+    def test_byte_cap_drops_entry_without_reading_file(self, tmp_data_dir):
+        """Regression P2-5: byte cap is enforced via a single stat() call, not by reading the file.
+
+        Fill the queue file to just over DIRTY_QUEUE_MAX_BYTES then attempt another enqueue.
+        The new entry must be silently dropped; the file size must not grow.
+        """
+        paths.ensure_dirs()
+        queue_file = paths.dirty_queue_path()
+        # Write a file that's exactly at the cap
+        queue_file.write_bytes(b"x" * worker.DIRTY_QUEUE_MAX_BYTES)
+        size_before = queue_file.stat().st_size
+
+        worker.enqueue_dirty("should_be_dropped.py", project_hash="proj1")
+
+        size_after = queue_file.stat().st_size
+        assert size_after == size_before, (
+            f"file grew from {size_before} to {size_after} despite byte cap"
+        )
+
+    def test_entry_appended_when_below_cap(self, tmp_data_dir):
+        """A queue file under the cap accepts new entries normally."""
+        paths.ensure_dirs()
+        queue_file = paths.dirty_queue_path()
+        queue_file.write_bytes(b"x" * (worker.DIRTY_QUEUE_MAX_BYTES - 500))
+        size_before = queue_file.stat().st_size
+
+        worker.enqueue_dirty("fits.py", project_hash="proj1")
+
+        assert queue_file.stat().st_size > size_before
+
+
+# ---------------------------------------------------------------------------
+# Regression: P1-2 — drain_dirty_queue quarantines unreadable .draining file
+# ---------------------------------------------------------------------------
+
+class TestDrainDirtyQueueQuarantineRegression:
+    """drain_dirty_queue must quarantine an unreadable .draining file instead of overwriting it.
+
+    Regression P1-2: the original recovery block re-raised OSError from read_text,
+    which crashed the worker loop without quarantining the corrupt file.  A subsequent
+    drain cycle would then rename the live dirty.txt over the .draining file, silently
+    discarding any entries in the unreadable file.
+    """
+
+    def test_unreadable_draining_file_is_quarantined(self, tmp_data_dir, monkeypatch):
+        """OSError on .draining read_text → file quarantined as .corrupt-*; function does not crash.
+
+        Regression P1-2 (pre-fix behaviour): the OSError was re-raised, crashing the worker loop.
+        On the next cycle dirty.txt would be renamed over the still-present .draining file,
+        silently discarding all entries in it.  After the fix, the .draining file is renamed to
+        a .corrupt-<ts> sidecar and the drain cycle continues normally.
+        """
+        paths.ensure_dirs()
+        queue_dir = paths.dirty_queue_path().parent
+        draining_path = paths.dirty_queue_path().with_name(paths.dirty_queue_path().name + ".draining")
+
+        # Create a .draining file so the recovery branch is entered
+        draining_path.write_text("some content", encoding="utf-8")
+
+        # Patch Path.read_text to raise only for the .draining path
+        original_read_text = draining_path.__class__.read_text
+
+        def _failing_read_text(self, *args, **kwargs):
+            if self == draining_path:
+                raise OSError("simulated read failure")
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(draining_path.__class__, "read_text", _failing_read_text)
+
+        # Must not raise; returns [] (no live queue) or None (deferred), both are acceptable
+        result = worker.drain_dirty_queue()
+        assert result is not None or result == []  # did not crash
+
+        # The .draining file must have been quarantined (renamed to .corrupt-*)
+        corrupt_files = list(queue_dir.glob("*.corrupt-*"))
+        assert corrupt_files, "expected a quarantine .corrupt-* file but found none"
+
+        # The original .draining path must be gone (was renamed)
+        assert not draining_path.exists(), ".draining file must be gone after quarantine"
+
+    def test_unreadable_draining_file_not_silently_overwritten(self, tmp_data_dir, monkeypatch):
+        """After a failed quarantine attempt, drain returns None without renaming live queue over the .draining file."""
+        paths.ensure_dirs()
+        queue_path = paths.dirty_queue_path()
+        draining_path = queue_path.with_name(queue_path.name + ".draining")
+
+        # Both files exist — draining unreadable, live queue has a new entry
+        draining_path.write_text("unreadable content", encoding="utf-8")
+        queue_path.write_text('{"path":"new.py","project_hash":null,"ts":0}\n', encoding="utf-8")
+
+        original_read_text = draining_path.__class__.read_text
+        original_rename = draining_path.__class__.rename
+
+        def _failing_read_text(self, *args, **kwargs):
+            if self == draining_path:
+                raise OSError("simulated read failure")
+            return original_read_text(self, *args, **kwargs)
+
+        def _failing_rename(self, target):
+            if self == draining_path:
+                raise OSError("simulated rename failure")
+            return original_rename(self, target)
+
+        monkeypatch.setattr(draining_path.__class__, "read_text", _failing_read_text)
+        monkeypatch.setattr(draining_path.__class__, "rename", _failing_rename)
+
+        result = worker.drain_dirty_queue()
+
+        # Must defer — not None due to missing entries, but None due to unrecoverable state
+        assert result is None
+        # The live queue must still exist (not consumed by the deferred drain cycle)
+        assert queue_path.exists()

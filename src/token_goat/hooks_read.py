@@ -223,9 +223,7 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     if not _bash_compress_enabled():
         return None
 
-    from . import bash_compress  # noqa: PLC0415
     from . import config as config_mod  # noqa: PLC0415
-    from . import paths as paths_mod  # noqa: PLC0415
 
     cfg_obj = config_mod.load()
     cfg = cfg_obj.bash_compress
@@ -242,6 +240,18 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     stripped = cmd.lstrip()
     if stripped.startswith(("token-goat", "token_goat")) or "token_goat.cli" in stripped:
         return None
+
+    # Fast pre-check via static binary lookup (O(1) dict, ~1 ms import) before
+    # committing to the full bash_compress import (~75 ms, 737 regex compiles).
+    # Compound commands (&&) may have a matching filter in a later segment, so
+    # they bypass the pre-check and always proceed to the full detection.
+    from . import bash_detect  # noqa: PLC0415
+    _first_word = cmd.split()[0] if cmd.split() else ""
+    if "&&" not in cmd and not bash_detect.detect([_first_word]):
+        return None
+
+    from . import bash_compress  # noqa: PLC0415 — deferred: only reached when a filter may apply
+    from . import paths as paths_mod  # noqa: PLC0415
 
     harness = str(payload.get("_tg_harness", "claude"))
     effective_profile = _resolve_compression_profile(harness, cfg_obj.compression.profile)
@@ -2599,7 +2609,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _bash_session_id, _bash_cwd = get_session_context(payload)
         if _bash_session_id:
             _sess_mod = _get_session()
-            _bash_cache = _sess_mod.load(_bash_session_id)
+            _bash_cache = _sess_mod.safe_load(_bash_session_id, caller="pre_read_bash")
             _recovery_text = _check_recovery_pending(_bash_session_id, _bash_cache)
             if _recovery_text:
                 return pre_tool_use_with_context(_recovery_text)
@@ -3771,49 +3781,44 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # consistently high.  Must run before any early-return so even small-output
     # reruns are counted.  Uses display_cmd (unwrapped) to match the hash stored
     # by build_bash_dedup_hint, which also hashes the unwrapped command.
-    if session_id:
-        _sess_mod = _get_session()
-        _bash_ignored_cache = _sess_mod.safe_load(session_id, caller="post_bash_ignored")
-        if _bash_ignored_cache is not None:
-            _check_ignored_bash_hint(_bash_ignored_cache, display_cmd, cwd)
-            with contextlib.suppress(Exception):
-                _sess_mod.save(_bash_ignored_cache)
+    # Load the session cache once; all subsequent session operations share this object.
+    _sess_mod = _get_session() if session_id else None
+    _session_cache = _sess_mod.safe_load(session_id, caller="post_bash") if (_sess_mod and session_id) else None
+    if _session_cache is not None:
+        _check_ignored_bash_hint(_session_cache, display_cmd, cwd)
+        with contextlib.suppress(Exception):
+            _sess_mod.save(_session_cache)  # fallback save if no mark_* runs below
 
     stdout, stderr, exit_code = _extract_bash_response(payload)
     # Sanitize at the boundary: Windows subprocess can produce surrogate-escape
     # bytes (\udcXX) in stdout/stderr that crash utf-8 serialisation downstream.
     stdout = _sanitize_surrogates(stdout)
     stderr = _sanitize_surrogates(stderr)
+    # Hard size cap before any downstream work: tail-bias truncation keeps error summaries at the end.
+    stdout, stderr, _was_truncated = _apply_output_size_cap(stdout, stderr)
 
     # Grep-pattern session recording: when the Bash command is a grep-family
     # invocation (rg, grep, ag, ack, …), record the pattern and path in
     # session.greps so that subsequent pre-Grep and pre-Bash grep dedup hints
     # can fire.  Uses stdout line count as a cheap result_count estimate since
     # the harness only delivers raw text, not a structured match count.
-    if session_id:
+    if _session_cache is not None:
         try:
             from . import bash_parser as _bp  # noqa: PLC0415
             _grep_intent = _bp.parse(display_cmd)
             if _grep_intent.kind == "grep" and _grep_intent.pattern:
-                _sess = _get_session()
-                _gc = _sess.safe_load(session_id, caller="post_bash_grep")
-                if _gc is not None:
-                    _grep_result_count = sum(
-                        1 for _ln in stdout.splitlines() if _ln.strip()
-                    ) if stdout else 0
-                    _sess.mark_grep(
-                        session_id,
-                        _grep_intent.pattern,
-                        _grep_intent.target_path,
-                        _grep_result_count,
-                        cache=_gc,
-                    )
-                    with contextlib.suppress(Exception):
-                        _sess.save(_gc)
-                    _LOG.debug(
-                        "post-bash: recorded grep pattern=%r path=%r result_count=%d",
-                        _grep_intent.pattern, _grep_intent.target_path, _grep_result_count,
-                    )
+                _grep_result_count = sum(1 for _ln in stdout.splitlines() if _ln.strip()) if stdout else 0
+                _sess_mod.mark_grep(
+                    session_id,
+                    _grep_intent.pattern,
+                    _grep_intent.target_path,
+                    _grep_result_count,
+                    cache=_session_cache,
+                )
+                _LOG.debug(
+                    "post-bash: recorded grep pattern=%r path=%r result_count=%d",
+                    _grep_intent.pattern, _grep_intent.target_path, _grep_result_count,
+                )
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: grep session record failed", exc_info=True)
 
@@ -3828,7 +3833,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     #
     # Skip when exit_code is non-zero: a failed Get-Content (file not found,
     # permission denied) should not be recorded as a successful read.
-    if session_id and exit_code in (None, 0):
+    if _session_cache is not None and exit_code in (None, 0):
         try:
             from . import bash_parser as _bp  # noqa: PLC0415
             _read_intent = _bp.parse(display_cmd)
@@ -3837,31 +3842,23 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 and _read_intent.target_path
                 and not _read_intent.is_interactive_pager
             ):
-                _sess = _get_session()
-                _rc = _sess.safe_load(session_id, caller="post_bash_read_equiv")
-                if _rc is not None:
-                    # bash_parser returns 1-indexed offset; mark_file_read expects
-                    # 0-indexed (same convention as the native Read tool payload).
-                    _raw_offset = _read_intent.offset
-                    _norm_offset = (_raw_offset - 1) if _raw_offset is not None else None
-                    # For multi-file reads (gc f1 f2 …) mark every path.
-                    # target_paths is populated for >1 file; fall back to
-                    # the singular target_path for single-file reads.
-                    _all_paths = _read_intent.target_paths or [_read_intent.target_path]
-                    for _path in _all_paths:
-                        _sess.mark_file_read(
-                            session_id,
-                            _path,
-                            _norm_offset,
-                            _read_intent.limit,
-                            cache=_rc,
-                        )
-                    with contextlib.suppress(Exception):
-                        _sess.save(_rc)
-                    _LOG.debug(
-                        "post-bash: recorded read-equivalent paths=%r offset=%s limit=%s",
-                        _all_paths, _norm_offset, _read_intent.limit,
+                # bash_parser returns 1-indexed offset; mark_file_read expects 0-indexed.
+                _raw_offset = _read_intent.offset
+                _norm_offset = (_raw_offset - 1) if _raw_offset is not None else None
+                # For multi-file reads (gc f1 f2 …) mark every path.
+                _all_paths = _read_intent.target_paths or [_read_intent.target_path]
+                for _path in _all_paths:
+                    _sess_mod.mark_file_read(
+                        session_id,
+                        _path,
+                        _norm_offset,
+                        _read_intent.limit,
+                        cache=_session_cache,
                     )
+                _LOG.debug(
+                    "post-bash: recorded read-equivalent paths=%r offset=%s limit=%s",
+                    _all_paths, _norm_offset, _read_intent.limit,
+                )
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: read-equivalent session record failed", exc_info=True)
 
@@ -3876,10 +3873,6 @@ def post_bash(payload: HookPayload) -> HookResponse:
         )
         return CONTINUE()
 
-    # Hard size cap: truncate runaway output before any downstream processing.
-    # Tail-bias truncation keeps error summaries which appear at the end.
-    stdout, stderr, _was_truncated = _apply_output_size_cap(stdout, stderr)
-
     total_bytes = len(_utf8_bytes(stdout)) + len(_utf8_bytes(stderr))
     if total_bytes < _BASH_CACHE_MIN_BYTES:
         _LOG.debug(
@@ -3893,16 +3886,14 @@ def post_bash(payload: HookPayload) -> HookResponse:
         # unnecessarily on the next turn.
         if exit_code not in (None, 0) and session_id:
             from . import bash_cache as _bc  # noqa: PLC0415
-            session = _get_session()
             _cmd_sha = _bc.command_hash(display_cmd, cwd)
             # Inline snippet capped at 200 chars so the manifest line stays short.
             _snippet = (stdout + stderr)[:200].strip()
             _output_id = f"small:{_cmd_sha[:8]}:{int(exit_code)}"
-            # Compute content hash for small outputs too.
             from . import cache_common as _cc  # noqa: PLC0415
             _output_sha = _cc.short_content_hash(stdout + stderr)
             try:
-                session.mark_bash_run(
+                _sess_mod.mark_bash_run(
                     session_id=session_id,
                     cmd_sha=_cmd_sha,
                     cmd_preview=display_cmd,
@@ -3912,6 +3903,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     exit_code=exit_code,
                     truncated=False,
                     output_sha=_output_sha,
+                    cache=_session_cache,
                 )
                 _LOG.debug(
                     "post-bash: recorded failed small command exit=%s bytes=%d cmd=%.60s",
@@ -3926,7 +3918,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
 
     from . import bash_cache  # noqa: PLC0415
     from . import config as _config
-    session = _get_session()
+    session = _sess_mod
 
     _bc_cfg = _config.load().bash_compress
     # Hash and preview the *original* command so reruns of the same logical
@@ -3961,6 +3953,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             exit_code=meta.exit_code,
             truncated=meta.truncated,
             output_sha=output_sha,
+            cache=_session_cache,
         )
     except (ValueError, OSError) as exc:
         _LOG.debug("post-bash: session record failed: %s", exc)

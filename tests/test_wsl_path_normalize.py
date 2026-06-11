@@ -132,6 +132,21 @@ class TestNormalizePath:
         win_form = normalize_path(r"C:\foo\bar")
         assert wsl_form == win_form
 
+    def test_wsl_path_with_embedded_backslash(self) -> None:
+        r"""Regression P3-8: /mnt/c/foo\bar (WSL path with Windows separator) normalizes to c:/foo/bar.
+
+        Before the fix, backslash→slash replacement was in the else-branch so it only ran
+        for non-WSL paths.  A mixed-separator WSL path like /mnt/c/foo\bar matched the WSL
+        regex, so rest captured 'foo\bar', and the result was 'c:/foo\bar' (backslash intact).
+        After the fix, backslash replacement runs BEFORE the WSL check so all separators
+        are already forward-slashes when the regex fires.
+        """
+        assert normalize_path("/mnt/c/foo\\bar") == "c:/foo/bar"
+
+    def test_wsl_path_with_multiple_embedded_backslashes(self) -> None:
+        r"""Regression P3-8: /mnt/c/a\b\c fully normalized to c:/a/b/c."""
+        assert normalize_path("/mnt/c/a\\b\\c") == "c:/a/b/c"
+
 
 class TestNormalizeKeyDelegates:
     """paths.normalize_key delegates to normalize_path and handles WSL paths."""

@@ -375,3 +375,94 @@ class TestMisshapenInputs:
 
     def test_garbage_payload_returns_continue(self, tmp_data_dir):
         _assert_continue(hooks_read.post_bash({}))
+
+
+# ---------------------------------------------------------------------------
+# Regression: P2-6 — output size cap applied before grep/read-equiv work
+# ---------------------------------------------------------------------------
+
+class TestPostBashSizeCapBeforePayloadWorkRegression:
+    """post_bash must truncate oversized output BEFORE grep or read-equiv processing.
+
+    Regression P2-6: the original code ran grep-pattern recording, read-equivalent
+    detection, and binary detection on the full untruncated payload.  A >100 MB stdout
+    would cause all that work to process the entire buffer before the cap discarded it.
+    After the fix, truncation happens immediately after sanitize_surrogates so downstream
+    processors always see a bounded input.
+    """
+
+    def test_giant_stdout_with_grep_pattern_returns_continue(self, tmp_data_dir) -> None:
+        """post_bash with stdout > cap containing grep-like content must not crash."""
+        giant = "match_pattern\n" + "X" * (4 * 1024 * 1024)
+        payload = {
+            "session_id": "sz_cap_sess_1",
+            "tool_name": "Bash",
+            "tool_input": {"command": "grep -r match_pattern ."},
+            "tool_response": {"stdout": giant, "stderr": "", "exit_code": 0},
+        }
+        _assert_continue(hooks_read.post_bash(payload))
+
+    def test_truncated_body_stored_not_full_body(self, tmp_data_dir) -> None:
+        """When stdout exceeds the cap, the stored cache entry must report truncation."""
+        giant = "X" * (4 * 1024 * 1024)
+        payload = {
+            "session_id": "sz_cap_sess_2",
+            "tool_name": "Bash",
+            "tool_input": {"command": "cat bigfile.txt"},
+            "tool_response": {"stdout": giant, "stderr": "", "exit_code": 0},
+        }
+        _assert_continue(hooks_read.post_bash(payload))
+
+        # Find the stored entry for this session and verify truncation was recorded
+        cache = session.load("sz_cap_sess_2")
+        if cache.bash_history:
+            entry = next(iter(cache.bash_history.values()))
+            assert entry.truncated is True, (
+                "oversized stdout must be stored with truncated=True"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Regression: P2-4 — post_bash must load session exactly once
+# ---------------------------------------------------------------------------
+
+class TestPostBashSingleSessionLoadRegression:
+    """post_bash must call safe_load exactly once per invocation.
+
+    Regression P2-4: the original code had four separate load/safe_load calls for
+    the same session_id within a single post_bash invocation.  Each additional load
+    opened a new race window where a concurrent writer could corrupt the file between
+    calls.  After the fix, a single safe_load at the top produces one shared cache
+    object that is passed through all downstream calls.
+    """
+
+    def test_safe_load_called_exactly_once(self, tmp_data_dir, monkeypatch) -> None:
+        """safe_load must be called exactly once for the session_id in post_bash."""
+        import token_goat.session as _session
+
+        load_call_count = 0
+        original_safe_load = _session.safe_load
+
+        def _counting_safe_load(sid, *a, **kw):
+            nonlocal load_call_count
+            if sid == "single_load_sess":
+                load_call_count += 1
+            return original_safe_load(sid, *a, **kw)
+
+        monkeypatch.setattr(_session, "safe_load", _counting_safe_load)
+
+        payload = {
+            "session_id": "single_load_sess",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest tests/ -v"},
+            "tool_response": {
+                "stdout": "PASSED test_foo\n" * 100,
+                "stderr": "",
+                "exit_code": 0,
+            },
+        }
+        _assert_continue(hooks_read.post_bash(payload))
+
+        assert load_call_count == 1, (
+            f"safe_load called {load_call_count} times for post_bash; expected exactly 1"
+        )

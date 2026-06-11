@@ -772,3 +772,72 @@ class TestGetRecentErrorOutputs:
         monkeypatch.setattr(bash_cache, "_bash_outputs_dir", bad_dir)
         result = bash_cache.get_recent_error_outputs("sess-error-fail", max_entries=5)
         assert result == []  # Fail-soft returns empty list
+
+
+# ---------------------------------------------------------------------------
+# Regression: P2-7 — eviction throttle prevents O(n) scan on every store_output
+# ---------------------------------------------------------------------------
+
+class TestEvictionThrottleRegression:
+    """store_output must only call evict_old_entries once per _EVICTION_THROTTLE_SECONDS window.
+
+    Regression P2-7: before the fix, every successful store_output call triggered a full
+    iterdir+lstat scan of the cache directory (up to 4096 files × 2 for body+sidecar).
+    With the throttle, consecutive store_output calls within the window skip eviction.
+    """
+
+    def test_eviction_not_called_twice_within_throttle_window(self, tmp_data_dir, monkeypatch):
+        """Two rapid store_output calls trigger evict_old_entries only once."""
+        call_count = 0
+
+        def _counting_evict(**kwargs):
+            nonlocal call_count
+            call_count += 1
+
+        monkeypatch.setattr(bash_cache, "evict_old_entries", _counting_evict)
+        # Reset the module-level timestamp so the first call always fires eviction
+        monkeypatch.setattr(bash_cache, "_last_eviction_ts", 0.0)
+
+        bash_cache.store_output("thr-sess-1", "pytest", "pass\n", "", 0)
+        bash_cache.store_output("thr-sess-1", "pytest", "pass2\n", "", 0)
+
+        assert call_count == 1, f"evict_old_entries called {call_count} times; expected 1"
+
+    def test_eviction_called_once_per_window(self, tmp_data_dir, monkeypatch):
+        """After the throttle window expires, the next store_output fires eviction again."""
+        call_count = 0
+
+        def _counting_evict(**kwargs):
+            nonlocal call_count
+            call_count += 1
+
+        monkeypatch.setattr(bash_cache, "evict_old_entries", _counting_evict)
+        monkeypatch.setattr(bash_cache, "_last_eviction_ts", 0.0)
+
+        # First call — fires eviction
+        bash_cache.store_output("thr-sess-2", "pytest", "pass\n", "", 0)
+        assert call_count == 1
+
+        # Expire the window by backdating the timestamp
+        monkeypatch.setattr(bash_cache, "_last_eviction_ts", 0.0)
+
+        # Second call after window expires — fires eviction again
+        bash_cache.store_output("thr-sess-2", "pytest", "pass2\n", "", 0)
+        assert call_count == 2
+
+    def test_eviction_skipped_within_window(self, tmp_data_dir, monkeypatch):
+        """store_output skips eviction when called within the throttle window."""
+        import time
+        call_count = 0
+
+        def _counting_evict(**kwargs):
+            nonlocal call_count
+            call_count += 1
+
+        monkeypatch.setattr(bash_cache, "evict_old_entries", _counting_evict)
+        # Set last eviction to "just now" so the next call is within the window
+        monkeypatch.setattr(bash_cache, "_last_eviction_ts", time.monotonic())
+
+        bash_cache.store_output("thr-sess-3", "ls", "file.py\n", "", 0)
+
+        assert call_count == 0, "evict_old_entries must not be called within the throttle window"

@@ -174,12 +174,13 @@ _MAX_QUEUE_MARKER_LEN = 64
 # drains every 2 s, so 10,000 entries represents ~5 s of rapid edits on a
 # heavily loaded machine — ample capacity while still being a safety cap.
 DIRTY_QUEUE_MAX_ENTRIES = 10_000
+# Byte-size cap for the dirty queue file. Checked via a single stat() call (O(1)) rather than
+# reading+counting lines (O(n)). ~200 bytes/entry × 10,000 entries ≈ 2 MB.
+DIRTY_QUEUE_MAX_BYTES = 2_000_000
 
-# In-process serialization for the dirty-queue read-modify-write. The OS file lock
-# (_dirty_queue_lock) protects against cross-process interleaving, but multiple
-# threads in one process (the test harness, in-process plugin bridges) share file
-# descriptions and can still interleave the truncate+rewrite; this lock makes that
-# path deterministic. Cross-process callers fall back to the OS lock alone.
+# In-process serialization for dirty-queue appends. The OS file lock (_dirty_queue_lock)
+# handles cross-process safety; this lock prevents threads in the same process (test harness,
+# in-process plugin bridges) from interleaving their append writes.
 _ENQUEUE_DIRTY_LOCK = threading.Lock()
 
 # Size cap for the worker-stderr.log crash sink. spawn_detached appends to this
@@ -812,12 +813,10 @@ def enqueue_dirty(
     the caller has already resolved the project (e.g. the post-edit hook).
     When omitted the worker resolves the project itself from *project_hash*.
 
-    Uses an OS-level lock (fcntl.flock on POSIX, msvcrt.locking on Windows)
-    to ensure the JSON line is written atomically without interleaving.
-
-    Enforces a cap on queue size (DIRTY_QUEUE_MAX_ENTRIES) to prevent unbounded
-    growth when the worker is down for a long time. When the limit is exceeded,
-    the oldest entries are discarded.
+    Append-only: never reads or rewrites the existing queue file. This eliminates
+    the POSIX rename-vs-truncate race that could lose entries. The byte-size cap
+    is enforced via a single stat() call (O(1)) rather than reading all entries.
+    Entry deduplication happens in drain_dirty_queue where it's already needed.
     """
     paths.ensure_dir(paths.dirty_queue_path().parent)
     entry: dict[str, object] = {"path": rel_path, "project_hash": project_hash, "ts": time.time()}
@@ -829,41 +828,21 @@ def enqueue_dirty(
 
     queue_path = paths.dirty_queue_path()
     lock_path = queue_path.parent / ".dirty_queue.lock"
-    # _ENQUEUE_DIRTY_LOCK serializes the read-modify-write across threads in this
-    # process; _dirty_queue_lock serializes it across processes.
     with _ENQUEUE_DIRTY_LOCK, _dirty_queue_lock(lock_path) as lock_acquired:
         if not lock_acquired:
-            # The OS lock timed out: another process holds it and may be mid-rewrite.
-            # Writing now would interleave a truncate+write and tear a line that
-            # poisons the drain. Drop this entry — a missed dirty hint is recoverable
-            # (the file is reindexed on its next edit), a torn line is not.
             _LOG.debug("dirty queue OS lock not acquired; dropping entry (fail-soft): %s", rel_path)
             return
 
-        # Read current entries to check if we need to prune.
-        entries_to_keep: list[str] = []
-        if queue_path.exists():
-            try:
-                lines = queue_path.read_text(encoding="utf-8").splitlines()
-                entries_to_keep = [line.strip() for line in lines if line.strip()]
-            except OSError:
-                pass  # If we can't read, start fresh with just the new entry.
-
-        # Cap the queue: keep the last (DIRTY_QUEUE_MAX_ENTRIES - 1) oldest entries
-        # plus the new one to stay within the limit.
-        if len(entries_to_keep) >= DIRTY_QUEUE_MAX_ENTRIES:
-            entries_to_keep = entries_to_keep[-(DIRTY_QUEUE_MAX_ENTRIES - 1) :]
-            _LOG.info(
-                "dirty queue cap reached (%d entries); evicting oldest entries to stay at %d",
-                DIRTY_QUEUE_MAX_ENTRIES,
-                len(entries_to_keep) + 1,
-            )
-
-        # Write the pruned queue plus the new entry.
+        # Byte-size cap: single stat() instead of reading all entries.
         try:
-            with queue_path.open("w", encoding="utf-8") as f:
-                for existing_line in entries_to_keep:
-                    f.write(existing_line + "\n")
+            if queue_path.exists() and queue_path.stat().st_size >= DIRTY_QUEUE_MAX_BYTES:
+                _LOG.info("dirty queue byte cap reached (%d B); dropping entry: %s", DIRTY_QUEUE_MAX_BYTES, rel_path)
+                return
+        except OSError:
+            pass  # stat failed — proceed with the append anyway
+
+        try:
+            with queue_path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except OSError as e:
             _LOG.warning("failed to write dirty queue: %s", e)
@@ -928,7 +907,18 @@ def drain_dirty_queue() -> list[DirtyQueueEntry] | None:
             _LOG.info("recovered %d entries from abandoned .draining file: %s",
                       len(raw_lines), draining.name)
         except OSError as e:
-            _LOG.warning("failed to recover abandoned .draining queue file: %s", e)
+            # Quarantine the unreadable file so the fresh-queue rename below does not silently overwrite it.
+            corrupt = draining.with_suffix(f".corrupt-{int(time.time())}")
+            try:
+                draining.rename(corrupt)
+                _LOG.warning("quarantined unreadable .draining file as %s: %s", corrupt.name, e)
+            except OSError as rename_err:
+                # Can't quarantine — skip this cycle to avoid overwriting the file.
+                _LOG.error(
+                    "cannot quarantine .draining file, skipping drain cycle: %s (read error: %s)",
+                    rename_err, e,
+                )
+                return None
 
     # Atomically claim the live queue. On POSIX, os.replace() is atomic even
     # across open writers (they keep appending to the old inode; the rename just

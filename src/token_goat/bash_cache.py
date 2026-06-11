@@ -100,6 +100,11 @@ DEFAULT_MIN_CACHE_BYTES: int = 0
 #: Note: This is per-output cap; total directory cap is DEFAULT_MAX_TOTAL_BYTES.
 DEFAULT_MAX_CACHE_BYTES: int = 50 * 1024 * 1024
 
+# Minimum gap between eviction scans. The scan does a full iterdir+lstat of up to 4096 files;
+# throttling it to once per minute makes the per-Bash-call overhead negligible.
+_EVICTION_THROTTLE_SECONDS: float = 60.0
+_last_eviction_ts: float = 0.0
+
 # OUTPUT_FILENAME_RE is imported from cache_common — shared with web_cache.
 
 # Sentinel placed at the head of every output file marking the truncation
@@ -507,7 +512,11 @@ def store_output(
     # directory walk never discards a confirmed write (the file is already on disk).
     if meta is not None:
         try:
-            evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
+            global _last_eviction_ts
+            _now = time.monotonic()
+            if _now - _last_eviction_ts >= _EVICTION_THROTTLE_SECONDS:
+                _last_eviction_ts = _now
+                evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
         except OSError as _exc:
             _LOG.warning("bash_cache: eviction failed (best-effort): %s", _exc)
     return meta
