@@ -6,7 +6,7 @@
   <b>85%</b> smaller reads &nbsp;·&nbsp; <b>97.4%</b> image compression &nbsp;·&nbsp; <b>130+</b> bash output filters &nbsp;·&nbsp; <b>94–99%</b> skill overhead cut &nbsp;·&nbsp; compaction memory
 </p>
 
-<p align="center"><b>Reduces AI token use/costs by 40–90%. Fully automated, always online.</b></p>
+<p align="center"><b>Reduces AI token use/costs by 40–90%, and improves its focus. Fully automated, always online.</b></p>
 
 <p align="center"><b>Your AI re-reads the same file three times. Every compaction causes amnesia. Every build log buries the one line that matters. You pay for all of it. Token-Goat fixes all of it — automatically.</b></p>
 
