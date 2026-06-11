@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bash-compress disable hint is now shell-neutral.** The `TOKEN_GOAT_BASH_COMPRESS=0` form shown in the hint is POSIX-shell `VAR=value` prefix assignment — valid only when prefixing a command, and broken in PowerShell and cmd.exe. All 34 runtime hint strings in `bash_compress.py` and both in `hooks_read.py` now read `disable via TOKEN_GOAT_BASH_COMPRESS` (set it to `0`, `false`, `no`, or `off`). Env-var semantics are unchanged; only the hint text changed.
+
 ## [1.7.0] - 2026-06-10
 
 ### Fixed
