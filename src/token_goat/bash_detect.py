@@ -265,5 +265,5 @@ def detect(argv: list[str]) -> str | None:
     """
     if not argv:
         return None
-    stem = Path(argv[0]).stem.lower()
+    stem = Path(argv[0].replace("\\", "/")).stem.lower()
     return _BINARY_TO_FILTER.get(stem)
