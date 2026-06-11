@@ -8,6 +8,22 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Bash-compress disable hint is now shell-neutral.** The `TOKEN_GOAT_BASH_COMPRESS=0` form shown in the hint is POSIX-shell `VAR=value` prefix assignment — valid only when prefixing a command, and broken in PowerShell and cmd.exe. All 34 runtime hint strings in `bash_compress.py` and both in `hooks_read.py` now read `disable via TOKEN_GOAT_BASH_COMPRESS` (set it to `0`, `false`, `no`, or `off`). Env-var semantics are unchanged; only the hint text changed.
 
+- **Bash pre-hook fast-path via `bash_detect` (Code-10 / P2-3).** The Bash pre-hook previously imported `bash_compress` (~75 ms) on every invocation to identify which filter to apply, even for commands that match no filter. A new `bash_detect` module contains a 227-entry binary→filter-name dict; the pre-hook now does a `<1 ms` dict lookup first and only imports `bash_compress` when `detect()` returns a filter name or the command contains `&&`. Unrecognized commands skip the import entirely.
+
+- **`enqueue_dirty` is now append-only with a byte-based cap (P1-1 / P2-5).** The previous implementation read the full queue file, filtered duplicate entries, and rewrote it on every Edit/Write hook — O(queue size) per call and vulnerable to a POSIX rename race. `enqueue_dirty` now does a single `stat()` to check the queue size against `DIRTY_QUEUE_MAX_BYTES` (2 MB) and appends the new entry atomically. When the queue is at cap, new entries are silently dropped until the worker drains it; no read, no rewrite, no race.
+
+- **Corrupt `.draining` file is quarantined instead of raising (P1-2).** When `drain_dirty_queue` could not read its renamed `.draining` file (e.g. another process renamed it after the check), it raised an `OSError` and left the worker in a broken state. The file is now renamed to `.corrupt-<timestamp>` and the drain cycle continues with an empty result; if the rename also fails the cycle is deferred silently without data loss or crash.
+
+- **`post_bash` uses a single session load/save round-trip (P2-4).** The previous implementation called `session.load()` / `session.save()` up to four times per `post_bash` invocation — once per `mark_*` helper. All helpers now accept a `cache=` kwarg and share the single object returned by `session.safe_load()` at the top of the function; one `session.save()` at the end writes the merged result.
+
+- **Output size cap applied before payload work in `post_bash` (P2-6).** `_apply_output_size_cap` was previously called after grep filtering and session writes, so a 4 MB stdout triggered the full expensive pipeline before being truncated. It now runs immediately after `_sanitize_surrogates`, before any downstream processing.
+
+- **Cache eviction is throttled to at most once per 60 seconds (P2-7).** `store_output` previously called `evict_old_entries` on every write, triggering an O(n) `iterdir` + `lstat` scan of the cache directory (up to 4 096 entries × 2 for body + sidecar). A module-level `_last_eviction_ts` timestamp gate now skips eviction when called within `_EVICTION_THROTTLE_SECONDS` (60 s) of the last run.
+
+- **`normalize_path` handles WSL paths with embedded Windows backslashes (P3-8).** A WSL path like `/mnt/c/foo\bar` was returned as-is because the WSL branch only replaced the `/mnt/<drive>/` prefix and left `\` separators intact. The function now replaces `\` with `/` after the prefix substitution, so `/mnt/c/foo\bar` normalizes to `c:/foo/bar` and collides with the same file accessed via a Windows path.
+
+- **`pre_read` Bash branch uses `session.safe_load()` instead of `session.load()` (P3-9).** A corrupt or partially-written session file caused the Bash pre-hook to raise, blocking the tool call. The branch now calls `safe_load()`, which returns `None` on any error, and the hook proceeds with no-op recovery hints rather than crashing.
+
 ## [1.7.0] - 2026-06-10
 
 ### Fixed
