@@ -2276,6 +2276,53 @@ def _handle_bash_range_read_hint(payload: HookPayload) -> HookResponse | None:
     return pre_tool_use_with_context(hint)
 
 
+def _handle_bash_streak_hint(payload: HookPayload) -> HookResponse | None:
+    """Advisory hint when the same file is Bash-read 3+ times in a session."""
+    import shlex  # noqa: PLC0415
+
+    from . import bash_parser  # noqa: PLC0415
+    tool_input = get_tool_input(payload)
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str):
+        return None
+    intent = bash_parser.parse(cmd)
+    if intent.kind != "read" or not intent.target_path:
+        return None
+    sid, _ = get_session_context(payload)
+    if not sid:
+        return None
+    sess = _get_session()
+    cache = sess.safe_load(sid, caller="bash_streak_hint")
+    if cache is None:
+        return None
+    from . import paths as _paths  # noqa: PLC0415
+    key = _paths.normalize_key(intent.target_path)
+    entry = cache.files.get(key)
+    if entry is None or entry.read_count < 2:
+        return None
+    name = Path(intent.target_path).name
+    rel = intent.target_path
+    skeleton_text = _try_get_inline_skeleton(rel)
+    read_arg = shlex.quote(f"{rel}::<symbol>")
+    sym_arg = shlex.quote(rel)
+    if skeleton_text:
+        hint = (
+            f"`{name}` has been read {entry.read_count}× this session — use a symbol name instead of re-reading:\n"
+            f"  `token-goat read {read_arg}`\n\n"
+            f"Indexed symbols:\n{skeleton_text}"
+        )
+    else:
+        hint = (
+            f"`{name}` has been read {entry.read_count}× this session — use surgical reads to avoid re-sending the whole file:\n"
+            f"  `token-goat symbol {sym_arg}`   (list symbols)\n"
+            f"  `token-goat read {read_arg}`   (read one symbol)"
+        )
+    with contextlib.suppress(Exception):
+        from . import db as _db  # noqa: PLC0415
+        _db.record_stat(sid, "bash_streak_hint", detail=sanitize_log_str(rel))
+    return pre_tool_use_with_context(hint)
+
+
 #: Max file size to hash for cross-file content-dedup check in pre_read.
 _CONTENT_DEDUP_MAX_BYTES: int = 500_000
 #: Maximum result bytes to cache for Grep result dedup serving.
@@ -3114,6 +3161,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
         bash_range_hint = _handle_bash_range_read_hint(payload)
         if bash_range_hint is not None:
             return bash_range_hint
+
+        bash_streak_hint = _handle_bash_streak_hint(payload)
+        if bash_streak_hint is not None:
+            return bash_streak_hint
 
         read_payload = _handle_bash_read_equivalent(payload)
         if read_payload:
