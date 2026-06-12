@@ -4564,6 +4564,87 @@ class TestHintPriorityOrdering:
 
 
 # ---------------------------------------------------------------------------
+# slim_hint_text — pressure-driven hint compression
+# ---------------------------------------------------------------------------
+
+
+class TestSlimHintText:
+    def test_cool_tier_unchanged(self):
+        from token_goat.hints import slim_hint_text
+        text = "Line one.\n\nParagraph two detail."
+        assert slim_hint_text(text, "cool") == text
+
+    def test_warm_tier_unchanged(self):
+        from token_goat.hints import slim_hint_text
+        text = "Line one.\n\nParagraph two detail."
+        assert slim_hint_text(text, "warm") == text
+
+    def test_hot_keeps_first_paragraph(self):
+        from token_goat.hints import slim_hint_text
+        text = "Actionable line here.\n\nVerbose explanation that costs tokens."
+        assert slim_hint_text(text, "hot") == "Actionable line here."
+
+    def test_critical_keeps_first_paragraph(self):
+        from token_goat.hints import slim_hint_text
+        text = "`foo.py` read 4x — use `token-goat outline foo.py`.\n\nExtra detail."
+        result = slim_hint_text(text, "critical")
+        assert "Extra detail" not in result
+        assert "token-goat outline" in result
+
+    def test_single_paragraph_unchanged_at_hot(self):
+        from token_goat.hints import slim_hint_text
+        text = "Single-para hint with no blank lines."
+        assert slim_hint_text(text, "hot") == text
+
+    def test_long_multiline_first_paragraph_truncated_with_ellipsis(self):
+        # Only multi-line first paras hit the char cap; single-line are exempt.
+        from token_goat.hints import _SLIM_HINT_MAX_CHARS, slim_hint_text
+        long_line = "x" * (_SLIM_HINT_MAX_CHARS + 50)
+        multi_para_text = f"{long_line}\nmore text in same paragraph"
+        result = slim_hint_text(multi_para_text, "hot")
+        assert result.endswith("…")
+        assert len(result) <= _SLIM_HINT_MAX_CHARS + 1  # +1 for the ellipsis char
+
+    def test_single_line_first_paragraph_not_capped(self):
+        # Single-line first paragraphs are command lines — never char-capped.
+        from token_goat.hints import _SLIM_HINT_MAX_CHARS, slim_hint_text
+        long_cmd = "`" + "a" * (_SLIM_HINT_MAX_CHARS + 100) + "` for surgical access."
+        text = long_cmd + "\n\nParagraph two detail."
+        result = slim_hint_text(text, "hot")
+        assert not result.endswith("…"), "command should not be truncated"
+        assert result == long_cmd
+
+    def test_empty_text_returns_original(self):
+        from token_goat.hints import slim_hint_text
+        assert slim_hint_text("", "hot") == ""
+
+    def test_whitespace_only_text_returns_original(self):
+        from token_goat.hints import slim_hint_text
+        assert slim_hint_text("   \n\n   ", "hot") == "   \n\n   "
+
+    def test_unknown_tier_unchanged(self):
+        from token_goat.hints import slim_hint_text
+        text = "Para one.\n\nPara two."
+        assert slim_hint_text(text, "future_tier") == text
+
+    def test_apply_hint_priority_limit_slims_at_hot(self):
+        from token_goat.hints import HINT_PRIORITY_LOW, HintItem, apply_hint_priority_limit
+        multi_para = "First actionable line.\n\nVerbose detail that wastes tokens."
+        items = [HintItem(multi_para, HINT_PRIORITY_LOW)]
+        result = apply_hint_priority_limit(items, tier="hot")
+        assert len(result) == 1
+        assert "Verbose detail" not in result[0]
+        assert "First actionable" in result[0]
+
+    def test_apply_hint_priority_limit_preserves_at_cool(self):
+        from token_goat.hints import HINT_PRIORITY_LOW, HintItem, apply_hint_priority_limit
+        multi_para = "First line.\n\nSecond paragraph."
+        items = [HintItem(multi_para, HINT_PRIORITY_LOW)]
+        result = apply_hint_priority_limit(items, tier="cool")
+        assert "Second paragraph" in result[0]
+
+
+# ---------------------------------------------------------------------------
 # Test-file hint (pre-read hint for test files)
 # ---------------------------------------------------------------------------
 

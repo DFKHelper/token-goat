@@ -127,9 +127,41 @@ class HintItem:
         return f"HintItem(priority={self.hint_priority}, text={self.text!r:.40})"
 
 
+_SLIM_HINT_MAX_CHARS: int = 250
+
+
+def slim_hint_text(text: str, tier: str) -> str:
+    """Compress a hint to its first paragraph at hot/critical context pressure.
+
+    At cool/warm pressure the full text is returned unchanged.  At hot/critical,
+    only the first paragraph (up to the first blank line) is kept, then capped
+    at _SLIM_HINT_MAX_CHARS characters with a trailing ellipsis when truncated.
+    This keeps the actionable command visible while dropping explanatory detail
+    that costs tokens but adds little when context is scarce.
+
+    The char cap is skipped for single-line first paragraphs (no internal newline)
+    because those are invariably the actionable command itself — truncating them
+    mid-command would produce an unrunnable fragment.
+    """
+    if tier not in ("hot", "critical"):
+        return text
+    # Keep only the first paragraph.
+    first_para = text.split("\n\n")[0].strip()
+    if not first_para:
+        return text  # empty paragraph — return original rather than empty string
+    # Single-line first paragraphs are the command line itself; skip char cap.
+    if "\n" not in first_para:
+        return first_para
+    if len(first_para) <= _SLIM_HINT_MAX_CHARS:
+        return first_para
+    return first_para[:_SLIM_HINT_MAX_CHARS].rstrip() + "…"
+
+
 def apply_hint_priority_limit(
     hints: list[HintItem],
     max_hints: int = HINT_MAX_PER_TOOL_CALL,
+    *,
+    tier: str = "cool",
 ) -> list[str]:
     """Sort hints by priority and return at most *max_hints* hint texts.
 
@@ -138,6 +170,9 @@ def apply_hint_priority_limit(
     When ``len(hints) > max_hints``, the lowest-priority excess hints are
     dropped and a ``(+N more hints suppressed)`` footer is appended to the
     last emitted hint's text so the agent is aware that suppression occurred.
+
+    At hot/critical *tier*, each hint text is compressed to its first paragraph
+    via :func:`slim_hint_text` to reduce token cost at high context pressure.
 
     Returns a list of hint text strings ready to be joined with ``"\\n\\n"``
     and injected as ``additionalContext``.
@@ -150,18 +185,18 @@ def apply_hint_priority_limit(
         ...     HintItem("reread hint", HINT_PRIORITY_MEDIUM),
         ... ]
         >>> apply_hint_priority_limit(items, max_hints=3)
-        ['edited hint', 'diff hint', 'reread hint (+ 1 more hints suppressed)']
+        ['edited hint', 'diff hint', 'reread hint\n(+1 more hints suppressed)']
     """
     if not hints:
         return []
     # Stable sort by priority (lower value = higher priority = emitted first).
     sorted_hints = sorted(hints, key=lambda h: h.hint_priority)
     if len(sorted_hints) <= max_hints:
-        return [h.text for h in sorted_hints]
+        return [slim_hint_text(h.text, tier) for h in sorted_hints]
     # Cap at max_hints; append suppression footer to the last emitted hint.
     emitted = sorted_hints[:max_hints]
     suppressed_count = len(sorted_hints) - max_hints
-    result = [h.text for h in emitted]
+    result = [slim_hint_text(h.text, tier) for h in emitted]
     result[-1] = f"{result[-1]}\n(+{suppressed_count} more hints suppressed)"
     return result
 

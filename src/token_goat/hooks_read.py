@@ -3303,7 +3303,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
 
         # Apply priority ordering and cap: sort by priority, emit at most
         # HINT_MAX_PER_TOOL_CALL hints, append suppression footer when over cap.
-        ordered_texts = apply_hint_priority_limit(deduped_items)
+        ordered_texts = apply_hint_priority_limit(deduped_items, tier=_ctx_tier)
         return pre_tool_use_with_context("\n\n".join(ordered_texts))
     finally:
         _flush_pending_hint_save(cache)
