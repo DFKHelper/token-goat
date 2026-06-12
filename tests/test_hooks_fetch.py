@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from token_goat import hooks_cli
 
 
@@ -189,6 +191,208 @@ class TestWebFetchAllowDeny:
             resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/badpath"))
         text = str(resp)
         assert "deny" in text.lower() or "blocked" in text.lower()
+
+
+class TestWebFetchDedupDeny:
+    """Pressure-gated WebFetch re-fetch deny (Iter 3)."""
+
+    def _webfetch_payload(self, url: str, prompt: str = "") -> dict:
+        return {
+            "tool_name": "WebFetch",
+            "session_id": "dedup-deny-session",
+            "tool_input": {"url": url, "prompt": prompt},
+        }
+
+    def _make_entry(self, age_seconds: float = 60, body_bytes: int = 50_000) -> object:
+        import time
+
+        from token_goat.session import WebEntry
+        return WebEntry(
+            url_sha="abc123",
+            url_preview="https://example.com/docs",
+            output_id="out_abc123456",
+            ts=time.time() - age_seconds,
+            body_bytes=body_bytes,
+            status_code=200,
+        )
+
+    def _warm_pressure(self):
+        from token_goat.compact import ContextPressure
+        return ContextPressure(fill_fraction=0.6, tier="warm")
+
+    def _cool_pressure(self):
+        from token_goat.compact import ContextPressure
+        return ContextPressure(fill_fraction=0.3, tier="cool")
+
+    def test_deny_fires_at_warm_pressure_with_fresh_cached_entry(self, tmp_data_dir):
+        """At warm pressure, a repeat fetch of a large cached URL is denied."""
+        from unittest.mock import patch
+
+        entry = self._make_entry()
+        with (
+            patch("token_goat.session.lookup_web_entry", return_value=entry),
+            patch("token_goat.compact.get_context_pressure", return_value=self._warm_pressure()),
+        ):
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/docs"))
+
+        text = str(resp)
+        assert "cached body available" in text or "re-fetch blocked" in text
+        assert "web-output" in text
+
+    def test_no_deny_at_cool_pressure(self, tmp_data_dir):
+        """At cool pressure, no deny is issued even with a cached entry."""
+        from unittest.mock import patch
+
+        entry = self._make_entry()
+        with (
+            patch("token_goat.session.lookup_web_entry", return_value=entry),
+            patch("token_goat.compact.get_context_pressure", return_value=self._cool_pressure()),
+        ):
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/docs"))
+
+        # Should NOT be a deny for cached body — CONTINUE or a hint
+        hso = resp.get("hookSpecificOutput") or {}
+        assert hso.get("permissionDecision") != "deny" or "cached body" not in str(resp)
+
+    @pytest.mark.parametrize("prompt", [
+        "refresh the page content",
+        "get the latest version",
+        "reload and summarize",
+        "check the updated schema",
+        "retry the fetch",
+    ])
+    def test_no_deny_when_bypass_keyword_in_prompt(self, tmp_data_dir, prompt):
+        """Prompts containing any bypass keyword skip the deny regardless of pressure."""
+        from unittest.mock import patch
+
+        entry = self._make_entry()
+        with (
+            patch("token_goat.session.lookup_web_entry", return_value=entry),
+            patch("token_goat.compact.get_context_pressure", return_value=self._warm_pressure()),
+        ):
+            resp = hooks_cli.pre_fetch(
+                self._webfetch_payload("https://example.com/docs", prompt=prompt)
+            )
+
+        hso = resp.get("hookSpecificOutput") or {}
+        assert hso.get("permissionDecision") != "deny" or "cached body" not in str(resp)
+
+    def test_no_deny_when_entry_is_stale(self, tmp_data_dir):
+        """Entry older than STALE_READ_AGE_SECONDS is not used for deny."""
+        from unittest.mock import patch
+
+        from token_goat.hints import STALE_READ_AGE_SECONDS
+
+        stale_entry = self._make_entry(age_seconds=STALE_READ_AGE_SECONDS + 60)
+        with (
+            patch("token_goat.session.lookup_web_entry", return_value=stale_entry),
+            patch("token_goat.compact.get_context_pressure", return_value=self._warm_pressure()),
+        ):
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/docs"))
+
+        hso = resp.get("hookSpecificOutput") or {}
+        assert hso.get("permissionDecision") != "deny" or "cached body" not in str(resp)
+
+    def test_no_deny_when_no_cached_entry(self, tmp_data_dir):
+        """First fetch with no cached entry is never denied."""
+        from unittest.mock import patch
+
+        with (
+            patch("token_goat.session.lookup_web_entry", return_value=None),
+            patch("token_goat.compact.get_context_pressure", return_value=self._warm_pressure()),
+        ):
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/new"))
+
+        hso = resp.get("hookSpecificOutput") or {}
+        assert hso.get("permissionDecision") != "deny" or "cached body" not in str(resp)
+
+    def test_deny_fires_at_hot_pressure(self, tmp_data_dir):
+        """Hot pressure also triggers the deny path."""
+        from unittest.mock import patch
+
+        from token_goat.compact import ContextPressure
+
+        hot = ContextPressure(fill_fraction=0.78, tier="hot")
+        entry = self._make_entry()
+        with (
+            patch("token_goat.session.lookup_web_entry", return_value=entry),
+            patch("token_goat.compact.get_context_pressure", return_value=hot),
+        ):
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/docs"))
+
+        text = str(resp)
+        assert "re-fetch blocked" in text or "cached body available" in text
+
+    def test_no_deny_when_output_id_is_empty(self, tmp_data_dir):
+        """An entry with empty output_id must not produce a deny — no valid recovery path."""
+        import time
+        from unittest.mock import patch
+
+        from token_goat.session import WebEntry
+
+        bad_entry = WebEntry(
+            url_sha="abc123",
+            url_preview="https://example.com/docs",
+            output_id="",  # empty — deserialization edge case
+            ts=time.time() - 30,
+            body_bytes=50_000,
+            status_code=200,
+        )
+        with (
+            patch("token_goat.session.lookup_web_entry", return_value=bad_entry),
+            patch("token_goat.compact.get_context_pressure", return_value=self._warm_pressure()),
+        ):
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/docs"))
+
+        hso = resp.get("hookSpecificOutput") or {}
+        assert hso.get("permissionDecision") != "deny" or "cached body" not in str(resp)
+
+    def test_no_deny_when_session_cache_raises(self, tmp_data_dir):
+        """Exception in the deny check must not propagate — returns CONTINUE."""
+        from unittest.mock import patch
+
+        with (
+            patch("token_goat.session.lookup_web_entry", side_effect=RuntimeError("cache corrupt")),
+            patch("token_goat.compact.get_context_pressure", return_value=self._warm_pressure()),
+        ):
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/docs"))
+
+        hso = resp.get("hookSpecificOutput") or {}
+        assert hso.get("permissionDecision") != "deny" or "cached body" not in str(resp)
+
+    @pytest.mark.parametrize("bad_prompt", [{"text": "refresh"}, 0, [], None])
+    def test_non_string_prompt_does_not_raise(self, tmp_data_dir, bad_prompt):
+        """Non-string prompt values must not cause a TypeError — bypass defaults to False."""
+        from unittest.mock import patch
+
+        entry = self._make_entry()
+        payload = {
+            "tool_name": "WebFetch",
+            "session_id": "dedup-deny-session",
+            "tool_input": {"url": "https://example.com/docs", "prompt": bad_prompt},
+        }
+        with (
+            patch("token_goat.session.lookup_web_entry", return_value=entry),
+            patch("token_goat.compact.get_context_pressure", return_value=self._warm_pressure()),
+        ):
+            # Must not raise; result is deny (bypass=False) or CONTINUE — either is fine.
+            resp = hooks_cli.pre_fetch(payload)
+        assert isinstance(resp, dict)
+
+    def test_deny_context_contains_web_output_command(self, tmp_data_dir):
+        """Deny context must include a usable web-output command with short ID."""
+        from unittest.mock import patch
+
+        entry = self._make_entry()
+        with (
+            patch("token_goat.session.lookup_web_entry", return_value=entry),
+            patch("token_goat.compact.get_context_pressure", return_value=self._warm_pressure()),
+        ):
+            resp = hooks_cli.pre_fetch(self._webfetch_payload("https://example.com/docs"))
+
+        context = str(resp.get("hookSpecificOutput", {}).get("additionalContext", ""))
+        assert "web-output" in context
+        assert "--grep" in context or "--section" in context
 
 
 class TestWebSizeHint:

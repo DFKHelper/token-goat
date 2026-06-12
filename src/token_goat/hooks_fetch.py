@@ -28,6 +28,7 @@ from .hooks_common import (
     HookResponse,
     deny_redirect,
     get_hook_context,
+    get_session_context,
     get_tool_input,
     is_real_int,
     record_cached_stat,
@@ -183,6 +184,56 @@ def _handle_web_cache_hit(payload: HookPayload, url: str) -> HookResponse | None
     )
 
 
+def _handle_web_dedup_deny(session_id: str, url: str) -> HookResponse | None:
+    """At warm+ pressure, deny a repeat WebFetch when a valid cached body exists.
+
+    Applies the same staleness and min-size checks as the hint path so we never
+    deny when the hint would not have fired.  Falls through to ``None`` on any
+    error so a transient failure never blocks the tool.
+    """
+    try:
+        import time  # noqa: PLC0415
+
+        from . import cache_common as _cc  # noqa: PLC0415
+        from . import config as _config  # noqa: PLC0415
+        from . import session as _sess  # noqa: PLC0415
+        from . import web_cache as _wc  # noqa: PLC0415
+        from .hints import STALE_READ_AGE_SECONDS  # noqa: PLC0415
+
+        url_sha = _wc.url_hash(url)
+        entry = _sess.lookup_web_entry(session_id, url_sha)
+        if entry is None:
+            return None
+
+        age = time.time() - entry.ts
+        if age > STALE_READ_AGE_SECONDS:
+            return None
+
+        cfg = _config.load()
+        if entry.body_bytes < cfg.hints.web_dedup_min_bytes:
+            return None
+
+        if not entry.output_id:
+            return None  # no valid recovery path; deny must not fire without a usable web-output id
+        short_id = _cc.short_output_id(entry.output_id)
+        _LOG.info(
+            "pre-fetch: denying re-fetch at pressure (age=%ds bytes=%d id=%s url=%.80s)",
+            int(age), entry.body_bytes, short_id, url,
+        )
+        return deny_redirect(
+            reason="token-goat: re-fetch blocked at high context pressure — cached body available",
+            context=(
+                f"URL fetched {int(age)}s ago ({entry.body_bytes:,} B). "
+                f"Use `token-goat web-output {short_id}` to read the cached body. "
+                "Add --grep PATTERN or --section HEADING for surgical access. "
+                "Include 'refresh', 'latest', 'reload', 'updated', or 'retry' in the WebFetch prompt to bypass this block."
+            ),
+        )
+    except Exception:  # noqa: BLE001 — fail-soft; never block the tool
+        _LOG.debug("pre-fetch: web dedup deny check failed", exc_info=True)
+        return None
+
+
 def _check_url_allowdeny(url: str) -> HookResponse | None:
     """Check *url* against the configured deny/allow glob lists.
 
@@ -276,6 +327,31 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
 
         if webfetch.is_image_url(url):
             return _intercept_webfetch_image(url)
+
+        # Resolve context-pressure tier for pressure-gated deny logic.
+        _wf_tier = "cool"
+        _wf_session_id, _ = get_session_context(payload)
+        if _wf_session_id:
+            try:
+                from .compact import get_context_pressure as _gcp_wf  # noqa: PLC0415
+                _wf_tier = _gcp_wf(_wf_session_id).tier
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Escape hatch: if the WebFetch prompt contains "refresh" / "latest" /
+        # "reload" / "force" / "current" the user is explicitly requesting fresh
+        # content — let the request through regardless of pressure.
+        _wf_prompt = tool_input.get("prompt") or ""
+        _refresh_requested = isinstance(_wf_prompt, str) and any(
+            kw in _wf_prompt.lower()
+            for kw in ("refresh", "latest", "reload", "updated", "retry")
+        )
+
+        # At warm+ pressure with a valid cached body: deny instead of hint.
+        if _wf_tier in ("warm", "hot", "critical") and not _refresh_requested and _wf_session_id:
+            deny = _handle_web_dedup_deny(_wf_session_id, url)
+            if deny is not None:
+                return deny
 
         # Non-image WebFetch: try dedup first.  When the same URL was fetched
         # earlier in this session, emit a hint pointing at the cached body
