@@ -1971,8 +1971,28 @@ def _large_read_threshold() -> int:
         return 0
 
 
+# Multipliers applied to the configured threshold by context-pressure tier.
+# Tighten thresholds as context fills so surgical-read denies kick in earlier
+# when the window can least afford a large file.  cool=no change, critical≈18%.
+_PRESSURE_THRESHOLD_MULTIPLIERS: dict[str, float] = {
+    "cool": 1.0,
+    "warm": 0.67,
+    "hot": 0.33,
+    "critical": 0.18,
+}
+
+
+def _pressure_scaled_threshold(base: int, tier: str) -> int:
+    """Return *base* scaled down by the context-pressure multiplier for *tier*.
+
+    Falls back to the unscaled value for unknown tier strings so a future tier
+    name never accidentally disables the deny.
+    """
+    return max(1, int(base * _PRESSURE_THRESHOLD_MULTIPLIERS.get(tier, 1.0)))
+
+
 def _handle_large_read_redirect(
-    file_path: str, tool_input: dict[str, object], floor: int = 0
+    file_path: str, tool_input: dict[str, object], floor: int = 0, tier: str = "cool"
 ) -> HookResponse | None:
     """Deny a full Read of an oversized file and redirect to surgical reads.
 
@@ -2002,7 +2022,10 @@ def _handle_large_read_redirect(
     threshold = _large_read_threshold()
     if threshold <= 0:
         return None
-    effective = max(threshold, floor)  # floor lets the early call gate at the 10 MB ceiling without changing the configured threshold
+    # Apply pressure scaling only when no floor override is active (floor>0 means
+    # the catastrophic ≥10 MB early call — keep that tier-independent).
+    scaled = _pressure_scaled_threshold(threshold, tier) if floor == 0 else threshold
+    effective = max(scaled, floor)
     if _read_is_windowed(tool_input):
         return None
     if Path(file_path).suffix.lower() in _BINARY_EXTENSIONS:
@@ -2930,7 +2953,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
 
         if not hint_items:
             # Large-read fallback (45 KB-10 MB band): no recovery/skill/index/structured/unchanged/serve-diff/diff hint claimed this read, so it is a full read of a large file with no cheaper context already available. Hard-deny and redirect to surgical/windowed reads before build_read_hint softens it to an advisory — the user-chosen mechanism is a deny, not a nudge. Placed after the diff block so serve_diff_on_reread and real diff hints (which populate hint_items above) always win; windowed/binary/small/under-threshold reads return None and fall through to the normal hint logic below.
-            large_read = _handle_large_read_redirect(file_path, tool_input)
+            large_read = _handle_large_read_redirect(file_path, tool_input, tier=_ctx_tier)
             if large_read is not None:
                 return large_read
             # Per-file hint cooldown: if a tokens_saved>0 session hint was already

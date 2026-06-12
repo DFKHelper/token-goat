@@ -219,6 +219,64 @@ class TestLargeGrepRedirect:
 # ---------------------------------------------------------------------------
 
 
+class TestPressureScaledThreshold:
+    """_pressure_scaled_threshold and _handle_large_read_redirect pressure-tier integration."""
+
+    def test_scaled_threshold_cool_is_base(self):
+        from token_goat.hooks_read import _pressure_scaled_threshold
+        assert _pressure_scaled_threshold(45_000, "cool") == 45_000
+
+    def test_scaled_threshold_warm_is_lower(self):
+        from token_goat.hooks_read import _pressure_scaled_threshold
+        assert _pressure_scaled_threshold(45_000, "warm") < 45_000
+
+    def test_scaled_threshold_hot_lower_than_warm(self):
+        from token_goat.hooks_read import _pressure_scaled_threshold
+        assert _pressure_scaled_threshold(45_000, "hot") < _pressure_scaled_threshold(45_000, "warm")
+
+    def test_scaled_threshold_critical_lowest(self):
+        from token_goat.hooks_read import _pressure_scaled_threshold
+        assert _pressure_scaled_threshold(45_000, "critical") < _pressure_scaled_threshold(45_000, "hot")
+        assert _pressure_scaled_threshold(45_000, "critical") >= 1  # never zero
+
+    def test_unknown_tier_falls_back_to_base(self):
+        from token_goat.hooks_read import _pressure_scaled_threshold
+        assert _pressure_scaled_threshold(45_000, "future_tier") == 45_000
+
+    def test_warm_tier_denies_file_below_cool_threshold(self, tmp_path):
+        """A 32 KB file passes at cool but is denied at warm (warm threshold ≈30 KB)."""
+        from token_goat.hooks_read import _handle_large_read_redirect
+        f = _write(tmp_path / "medium.md", 32_000)
+        with patch.object(cfg_mod, "load", return_value=_cfg(45_000)):
+            assert _handle_large_read_redirect(str(f), {"file_path": str(f)}, tier="cool") is None
+            assert _handle_large_read_redirect(str(f), {"file_path": str(f)}, tier="warm") is not None
+
+    def test_hot_tier_denies_file_below_warm_threshold(self, tmp_path):
+        """A 17 KB file passes at warm but is denied at hot (hot threshold ≈15 KB)."""
+        from token_goat.hooks_read import _handle_large_read_redirect
+        f = _write(tmp_path / "smallish.md", 17_000)
+        with patch.object(cfg_mod, "load", return_value=_cfg(45_000)):
+            assert _handle_large_read_redirect(str(f), {"file_path": str(f)}, tier="warm") is None
+            assert _handle_large_read_redirect(str(f), {"file_path": str(f)}, tier="hot") is not None
+
+    def test_critical_tier_denies_file_below_hot_threshold(self, tmp_path):
+        """A 10 KB file passes at hot but is denied at critical (critical threshold ≈8 KB)."""
+        from token_goat.hooks_read import _handle_large_read_redirect
+        f = _write(tmp_path / "small.md", 10_000)
+        with patch.object(cfg_mod, "load", return_value=_cfg(45_000)):
+            assert _handle_large_read_redirect(str(f), {"file_path": str(f)}, tier="hot") is None
+            assert _handle_large_read_redirect(str(f), {"file_path": str(f)}, tier="critical") is not None
+
+    def test_pressure_scaling_disabled_when_floor_active(self, tmp_path):
+        """The catastrophic early call (floor=10MB) is never tier-scaled — tier must not change its gate."""
+        from token_goat.hooks_read import _LARGE_FILE_HINT_SKIP_BYTES, _handle_large_read_redirect
+        f = _write(tmp_path / "big.md", 32_000)
+        with patch.object(cfg_mod, "load", return_value=_cfg(45_000)):
+            # 32 KB is below the 10 MB floor — should NOT deny at any tier when floor is active.
+            for tier in ("cool", "warm", "hot", "critical"):
+                assert _handle_large_read_redirect(str(f), {"file_path": str(f)}, floor=_LARGE_FILE_HINT_SKIP_BYTES, tier=tier) is None
+
+
 class TestLargeReadConfig:
     def test_default_threshold_is_45000(self, monkeypatch):
         monkeypatch.delenv("TOKEN_GOAT_LARGE_READ_BYTES", raising=False)

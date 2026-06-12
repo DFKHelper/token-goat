@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **Pressure-scaled `pre_read` deny threshold.** The oversized-read deny gate (`hints.large_read_redirect_bytes`, default 45 KB) now tightens automatically as the context window fills. A new `_pressure_scaled_threshold(base, tier)` helper applies tier multipliers — cool 1.0×, warm 0.67×, hot 0.33×, critical 0.18× — giving effective thresholds of ~45 KB / 30 KB / 15 KB / 8 KB on the 45 KB default. The tier is derived from the `ContextPressure` already computed once per `pre_read` invocation and threaded to the fallback deny call at no extra I/O cost. The catastrophic ≥10 MB early call (which passes `floor=_LARGE_FILE_HINT_SKIP_BYTES`) is never tier-scaled — `_handle_large_read_redirect` guards scaling behind `floor == 0`. Windowed reads, binary files, and a disabled threshold are all still exempt. Works identically across Claude Code, Codex CLI, and Gemini-CLI via the shared session JSON.
+
 ## [1.7.1] - 2026-06-11
 
 ### Fixed
