@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-06-11
+
 ### Fixed
 
 - **Bash-compress disable hint is now shell-neutral.** The `TOKEN_GOAT_BASH_COMPRESS=0` form shown in the hint is POSIX-shell `VAR=value` prefix assignment — valid only when prefixing a command, and broken in PowerShell and cmd.exe. All 34 runtime hint strings in `bash_compress.py` and both in `hooks_read.py` now read `disable via TOKEN_GOAT_BASH_COMPRESS` (set it to `0`, `false`, `no`, or `off`). Env-var semantics are unchanged; only the hint text changed.
@@ -23,6 +25,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`normalize_path` handles WSL paths with embedded Windows backslashes (P3-8).** A WSL path like `/mnt/c/foo\bar` was returned as-is because the WSL branch only replaced the `/mnt/<drive>/` prefix and left `\` separators intact. The function now replaces `\` with `/` after the prefix substitution, so `/mnt/c/foo\bar` normalizes to `c:/foo/bar` and collides with the same file accessed via a Windows path.
 
 - **`pre_read` Bash branch uses `session.safe_load()` instead of `session.load()` (P3-9).** A corrupt or partially-written session file caused the Bash pre-hook to raise, blocking the tool call. The branch now calls `safe_load()`, which returns `None` on any error, and the hook proceeds with no-op recovery hints rather than crashing.
+
+- **`_index_spawn_active` guards against PID recycling.** The function checked only `psutil.pid_exists(pid)` to decide whether an indexing spawn was still running. Within the 10-minute `INDEX_SPAWN_TTL` the OS can reuse a finished indexer's PID for an unrelated process, blocking fresh indexing spawns for up to 10 minutes. The check now reads the running process's cmdline and returns `False` when it lacks `token_goat`, falling back to trusting the PID when the cmdline is unreadable (permission denied / sandboxed).
+
+- **`kill_duplicate_daemon` now unlinks the stale PID file after a successful kill.** The "already dead" early-exit path already removed the file; the success path did not, leaving `--check` and `is_worker_alive()` reporting stale state until the next `ensure_running` cleanup pass.
+
+- **`get_context_pressure` avoids a redundant `safe_load` when a cache is already in scope.** Both `build_manifest_adaptive` and `post_read` loaded `SessionCache` before calling `get_context_pressure`, which performed a second `safe_load` from disk. The function now accepts an optional `cache=` kwarg; callers that already hold a loaded cache pass it in and skip the extra I/O.
+
+- **`normalize_path` docstring corrected.** The step-by-step description had steps 2 (backslash replacement) and 3 (WSL detection) listed in the wrong order relative to the actual execution order. Inline comments had the same transposition.
 
 ## [1.7.0] - 2026-06-10
 
