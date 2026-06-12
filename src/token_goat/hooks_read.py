@@ -2551,6 +2551,21 @@ def _handle_reread_deny(
     if not _window_is_covered(entry.line_ranges, req_start, req_end):
         return None
 
+    # SHA verification: confirm the file is actually unchanged before denying.
+    # When a snapshot SHA exists, compute the on-disk SHA and compare; a mismatch
+    # means the file was modified outside the edit hooks (external tool, manual save).
+    # Falls through to deny when no snapshot exists (timestamp guard above is sufficient).
+    try:
+        from . import session as _sess_mod  # noqa: PLC0415
+        stored_sha = _sess_mod.get_snapshot_sha(session_id, file_path, cache=cache)
+        if stored_sha:
+            import hashlib  # noqa: PLC0415
+            current_sha = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
+            if current_sha != stored_sha:
+                return None  # changed externally — let the read through
+    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+        pass
+
     # Anti-loop guard: allow the read through on the second identical attempt.
     _end_tag = str(req_end) if req_end is not None else "eof"
     deny_fp = f"reread_deny:{key}:{req_start}:{_end_tag}"

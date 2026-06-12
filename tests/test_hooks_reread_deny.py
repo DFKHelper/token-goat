@@ -252,3 +252,59 @@ class TestRereaDenySubagent:
         with patch.object(cfg_mod, "load", return_value=_cfg()):
             result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
         assert_deny(result)
+
+
+# ---------------------------------------------------------------------------
+# SHA verification
+# ---------------------------------------------------------------------------
+
+
+class TestRereaDenyShaVerification:
+    """_handle_reread_deny gates on on-disk SHA when a snapshot exists."""
+
+    def _store_snapshot(self, sid: str, path: Path) -> None:
+        import hashlib
+        sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        session.set_snapshot_sha(sid, str(path), sha)
+
+    def test_deny_fires_when_sha_matches(self, tmp_data_dir, tmp_path):
+        f = _write(tmp_path / "sha_match.py")
+        sid = "rrd-sha-match"
+        _record_read(sid, f)
+        self._store_snapshot(sid, f)
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
+        assert_deny(result)
+
+    def test_pass_through_when_sha_differs(self, tmp_data_dir, tmp_path):
+        f = _write(tmp_path / "sha_diff.py")
+        sid = "rrd-sha-diff"
+        _record_read(sid, f)
+        self._store_snapshot(sid, f)
+        # Modify file externally — SHA now differs from snapshot
+        f.write_bytes(b"y" * 4096)
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
+        assert_continue(result)
+
+    def test_no_snapshot_still_denies(self, tmp_data_dir, tmp_path):
+        """Without a snapshot, timestamp guard drives the deny (no SHA stored)."""
+        f = _write(tmp_path / "no_snap.py")
+        sid = "rrd-no-snap"
+        _record_read(sid, f)
+        # Deliberately do NOT store snapshot → falls back to timestamp comparison
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
+        assert_deny(result)
+
+    def test_sha_mismatch_overrides_unedited_timestamp(self, tmp_data_dir, tmp_path):
+        """SHA mismatch → pass-through even when last_edit_ts is never set (external change)."""
+        f = _write(tmp_path / "ext_change.py")
+        sid = "rrd-ext"
+        _record_read(sid, f)
+        self._store_snapshot(sid, f)
+        # External change — no edit hook fires, last_edit_ts stays 0
+        f.write_bytes(b"z" * 4096)
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
+        assert_continue(result)
