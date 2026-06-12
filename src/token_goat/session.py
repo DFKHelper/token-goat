@@ -1269,6 +1269,10 @@ class SessionCache:
     turns_since_last_compact: int = 0
     loaded_skill_total_tokens: int = 0
     last_context_advisory_threshold: int | None = None
+    # Tokens estimated at the last PreCompact — subtracted in get_context_pressure
+    # so the fill fraction measures only incremental load since the last compaction
+    # rather than the lifetime total (which would permanently pin sessions to critical).
+    pressure_baseline_tokens: int = 0
     # Monotonically-incrementing version counter for optimistic CAS in save().
     # Starts at 0 for a new session; each successful save() increments by 1.
     # When two concurrent processes both load version N, the second to save
@@ -1369,6 +1373,7 @@ class SessionCache:
             turns_since_last_compact=self.turns_since_last_compact,
             loaded_skill_total_tokens=self.loaded_skill_total_tokens,
             last_context_advisory_threshold=self.last_context_advisory_threshold,
+            pressure_baseline_tokens=self.pressure_baseline_tokens,
         )
 
     def to_json(self) -> str:
@@ -1912,6 +1917,8 @@ class SessionCache:
         loaded_skill_total_tokens: int = max(0, int(_raw_lstt)) if isinstance(_raw_lstt, (int, float)) else 0
         _raw_lcat = d.get("last_context_advisory_threshold")
         last_context_advisory_threshold: int | None = _raw_lcat if _raw_lcat in (50, 70) else None
+        _raw_pbt = d.get("pressure_baseline_tokens", 0)
+        pressure_baseline_tokens: int = max(0, int(_raw_pbt)) if isinstance(_raw_pbt, (int, float)) else 0
 
         return cls(
             session_id=session_id,
@@ -1951,6 +1958,7 @@ class SessionCache:
             turns_since_last_compact=turns_since_last_compact,
             loaded_skill_total_tokens=loaded_skill_total_tokens,
             last_context_advisory_threshold=last_context_advisory_threshold,
+            pressure_baseline_tokens=pressure_baseline_tokens,
         )
 
 
@@ -2499,6 +2507,7 @@ class _SessionDict(TypedDict, total=False):
     turns_since_last_compact: int
     loaded_skill_total_tokens: int
     last_context_advisory_threshold: int | None
+    pressure_baseline_tokens: int
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:

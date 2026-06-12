@@ -1224,6 +1224,12 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     try:
         session_cache.turns_since_last_compact = 0
         session_cache.last_context_advisory_threshold = None
+        # Snapshot the current pressure total as the new baseline.  After this
+        # point get_context_pressure subtracts it, so the fill fraction measures
+        # only incremental load since this compaction — preventing the session
+        # from being permanently pinned to "critical" for its entire remaining life.
+        from .compact import _pressure_raw_total as _prt  # noqa: PLC0415
+        session_cache.pressure_baseline_tokens = _prt(session_cache)
         session_mod.save(session_cache)
     except Exception:  # noqa: BLE001
         _LOG.debug("pre-compact: context tracking reset failed", exc_info=True)

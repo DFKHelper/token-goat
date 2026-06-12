@@ -173,6 +173,28 @@ class ContextPressure:
     tier: Literal["cool", "warm", "hot", "critical"]
 
 
+def _pressure_raw_total(cache: object) -> int:  # type: ignore[name-defined]  # SessionCache
+    """Return the raw (pre-baseline-subtraction) context pressure total for *cache*.
+
+    Separated from get_context_pressure so pre_compact can snapshot the total
+    before resetting it as the new baseline.
+    """
+    skill_tokens: int = getattr(cache, "loaded_skill_total_tokens", 0)
+    bash_history = getattr(cache, "bash_history", None)
+    bash_count: int = len(bash_history) if bash_history else 0
+    web_history = getattr(cache, "web_history", None)
+    web_count: int = len(web_history) if web_history else 0
+    files = getattr(cache, "files", None)
+    read_count: int = len(files) if files else 0
+    return (
+        skill_tokens
+        + CATALOG_TOKENS
+        + bash_count * 500
+        + web_count * 1_000
+        + read_count * 200
+    )
+
+
 def get_context_pressure(  # type: ignore[name-defined]  # SessionCache imported under TYPE_CHECKING
     session_id: str | None = None,
     *,
@@ -219,18 +241,9 @@ def get_context_pressure(  # type: ignore[name-defined]  # SessionCache imported
         if cache is None:
             return ContextPressure(fill_fraction=0.0, tier="cool")
 
-        skill_tokens: int = getattr(cache, "loaded_skill_total_tokens", 0)
-        bash_count: int = len(cache.bash_history) if getattr(cache, "bash_history", None) else 0
-        web_count: int = len(cache.web_history) if getattr(cache, "web_history", None) else 0
-        read_count: int = len(cache.files) if getattr(cache, "files", None) else 0
-
-        total = (
-            skill_tokens
-            + CATALOG_TOKENS
-            + bash_count * 500
-            + web_count * 1_000
-            + read_count * 200
-        )
+        raw_total = _pressure_raw_total(cache)
+        baseline: int = getattr(cache, "pressure_baseline_tokens", 0)
+        total = max(0, raw_total - baseline)
         window = CONTEXT_AUTOCOMPACT_TOKENS
         fill = total / window
 
