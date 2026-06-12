@@ -43,7 +43,7 @@ class TestContextPressureThreshold:
 
         monkeypatch.setattr(
             "token_goat.compact.get_context_pressure",
-            lambda _sid: ContextPressure(fill_fraction=0.3, tier="cool"),
+            lambda _sid, **_kw: ContextPressure(fill_fraction=0.3, tier="cool"),
         )
         monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
 
@@ -70,7 +70,7 @@ class TestContextPressureThreshold:
 
         monkeypatch.setattr(
             "token_goat.compact.get_context_pressure",
-            lambda _sid: ContextPressure(fill_fraction=0.75, tier="hot"),
+            lambda _sid, **_kw: ContextPressure(fill_fraction=0.75, tier="hot"),
         )
         monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
 
@@ -97,7 +97,7 @@ class TestContextPressureThreshold:
 
         monkeypatch.setattr(
             "token_goat.compact.get_context_pressure",
-            lambda _sid: ContextPressure(fill_fraction=0.90, tier="critical"),
+            lambda _sid, **_kw: ContextPressure(fill_fraction=0.90, tier="critical"),
         )
         monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
 
@@ -124,7 +124,7 @@ class TestContextPressureThreshold:
 
         monkeypatch.setattr(
             "token_goat.compact.get_context_pressure",
-            lambda _sid: ContextPressure(fill_fraction=0.60, tier="warm"),
+            lambda _sid, **_kw: ContextPressure(fill_fraction=0.60, tier="warm"),
         )
         monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
 
@@ -151,7 +151,7 @@ class TestContextPressureThreshold:
 
         monkeypatch.setattr(
             "token_goat.compact.get_context_pressure",
-            lambda _sid: ContextPressure(fill_fraction=0.92, tier="critical"),
+            lambda _sid, **_kw: ContextPressure(fill_fraction=0.92, tier="critical"),
         )
         monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
         # No build_read_hint hint so the urgency note is the only possible output.
@@ -176,7 +176,7 @@ class TestContextPressureThreshold:
 
         monkeypatch.setattr(
             "token_goat.compact.get_context_pressure",
-            lambda _sid: ContextPressure(fill_fraction=0.77, tier="hot"),
+            lambda _sid, **_kw: ContextPressure(fill_fraction=0.77, tier="hot"),
         )
         monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
         monkeypatch.setattr(_hints_mod, "build_read_hint", lambda **_kw: None)
@@ -200,7 +200,7 @@ class TestContextPressureThreshold:
 
         monkeypatch.setattr(
             "token_goat.compact.get_context_pressure",
-            lambda _sid: ContextPressure(fill_fraction=0.60, tier="warm"),
+            lambda _sid, **_kw: ContextPressure(fill_fraction=0.60, tier="warm"),
         )
         monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
         monkeypatch.setattr(_hints_mod, "build_read_hint", lambda **_kw: None)
@@ -224,7 +224,7 @@ class TestContextPressureThreshold:
 
         monkeypatch.setattr(
             "token_goat.compact.get_context_pressure",
-            lambda _sid: ContextPressure(fill_fraction=0.2, tier="cool"),
+            lambda _sid, **_kw: ContextPressure(fill_fraction=0.2, tier="cool"),
         )
         monkeypatch.setattr("token_goat.project.find_project", lambda _cwd: None)
         monkeypatch.setattr(_hints_mod, "build_read_hint", lambda **_kw: None)

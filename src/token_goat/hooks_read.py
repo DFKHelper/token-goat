@@ -2721,7 +2721,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _eff_threshold = 500  # lines — default LARGE_FILE_LINE_THRESHOLD
         try:
             from .compact import get_context_pressure as _gcp  # noqa: PLC0415
-            _cp = _gcp(session_id)
+            _cp = _gcp(session_id, cache=cache)
             _ctx_tier = _cp.tier
             _ctx_fill = _cp.fill_fraction
             if _ctx_tier == "critical":
