@@ -36,6 +36,9 @@ __all__ = [
     "find_cached_for_command",
     "get_recent_error_outputs",
     "glob_hash",
+    "grep_hash",
+    "store_grep_result",
+    "load_grep_result",
     "load_output",
     "load_output_meta",
     "normalize_command_for_cache_key",
@@ -362,6 +365,83 @@ def load_glob_result(
     try:
         g_hash = glob_hash(pattern, path)
         out_id = build_keyed_output_id(_GLOB_RESULT_PREFIX, session_id, g_hash)
+        return load_output_text(out_id, _bash_outputs_dir, "bash_cache")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+_GREP_RESULT_PREFIX = "grep_"
+
+
+def grep_hash(
+    pattern: str,
+    path: str | None,
+    glob_filter: str | None,
+    type_filter: str | None,
+    output_mode: str | None,
+) -> str:
+    """Return a content hash for a Grep call's full key tuple.
+
+    All five parameters affect the result, so all five are included.
+    None values are normalized to empty strings so callers don't need
+    to handle the distinction.
+    """
+    canonical = "\x00".join([
+        pattern,
+        path or "",
+        glob_filter or "",
+        type_filter or "",
+        output_mode or "",
+    ])
+    return short_content_hash(canonical)
+
+
+def store_grep_result(
+    session_id: str,
+    pattern: str,
+    path: str | None,
+    glob_filter: str | None,
+    type_filter: str | None,
+    output_mode: str | None,
+    result_text: str,
+    *,
+    max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+    max_file_count: int = DEFAULT_MAX_FILE_COUNT,
+) -> str | None:
+    """Cache the text result of a Grep call and return the output_id, or None on error.
+
+    Same-key calls intentionally collide (replace) so repeat Grep calls
+    refresh the cache in place rather than accumulate entries.
+    """
+    try:
+        g_hash = grep_hash(pattern, path, glob_filter, type_filter, output_mode)
+        out_id = build_keyed_output_id(_GREP_RESULT_PREFIX, session_id, g_hash)
+        if store_blob(out_id, result_text, _bash_outputs_dir, "bash_cache") is None:
+            return None
+        evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
+        _LOG.debug("bash_cache: stored grep result id=%s pattern=%s", out_id, sanitize_log_str(pattern))
+        return out_id
+    except OSError as exc:
+        _LOG.debug("bash_cache: grep store failed: %s", exc)
+        return None
+
+
+def load_grep_result(
+    session_id: str,
+    pattern: str,
+    path: str | None,
+    glob_filter: str | None,
+    type_filter: str | None,
+    output_mode: str | None,
+) -> str | None:
+    """Return the cached Grep result text for the given key tuple, or None.
+
+    Returns None when no cached entry exists (first call, or evicted).
+    Staleness / age check is the caller's responsibility.
+    """
+    try:
+        g_hash = grep_hash(pattern, path, glob_filter, type_filter, output_mode)
+        out_id = build_keyed_output_id(_GREP_RESULT_PREFIX, session_id, g_hash)
         return load_output_text(out_id, _bash_outputs_dir, "bash_cache")
     except Exception:  # noqa: BLE001
         return None

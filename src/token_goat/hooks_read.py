@@ -1648,19 +1648,73 @@ def _extract_grep_args(payload: HookPayload) -> tuple[str, str | None] | None:
 
 
 def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
-    """Return a dedup hint when the same Grep pattern just ran in this session.
+    """Return cached Grep results or a dedup hint when the same pattern ran recently.
 
-    Mirrors :func:`_handle_bash_dedup` for the Grep tool surface.  Returns
-    ``None`` to let the hook fall through to ``CONTINUE`` when no dedup
-    hit is available — we never deny a Grep call, only suggest the agent
-    reuse the prior result.
+    When a cached result exists in bash_cache for this (session, pattern, path,
+    glob, type, output_mode) key and the entry is within STALE_READ_AGE_SECONDS,
+    the cached text is injected as additionalContext so the agent receives the
+    result without the Grep tool running again.  Falls back to the advisory
+    hint when no cached result is available.
     """
-    from .hints import build_grep_dedup_hint  # noqa: PLC0415
+    from .hints import (  # noqa: PLC0415
+        STALE_READ_AGE_SECONDS,
+        build_grep_dedup_hint,
+        compute_stale_threshold,
+    )
 
     args = _extract_grep_args(payload)
     if args is None:
         return None
     pattern, path = args
+
+    tool_input = get_tool_input(payload)
+    glob_filter = tool_input.get("glob") if isinstance(tool_input.get("glob"), str) else None
+    type_filter = tool_input.get("type") if isinstance(tool_input.get("type"), str) else None
+    output_mode = tool_input.get("output_mode") if isinstance(tool_input.get("output_mode"), str) else None
+
+    session_id, _cwd = get_hook_context(payload)
+    if session_id is None:
+        return None
+
+    try:
+        import time as _time  # noqa: PLC0415
+
+        from . import bash_cache as _bc  # noqa: PLC0415
+        from . import session as _sess_mod2  # noqa: PLC0415
+        _sess = _get_session()
+        cache = _sess.load(session_id)
+        grep_entry = _sess_mod2.lookup_grep_entry(session_id, pattern, path, cache=cache)
+        if grep_entry is not None:
+            _now = _time.time()
+            age = _now - grep_entry.ts
+            _sess_created = getattr(cache, "created_ts", None)
+            _sess_age = (_now - _sess_created) if _sess_created is not None else STALE_READ_AGE_SECONDS
+            _stale_thresh = compute_stale_threshold(_sess_age)
+            if age <= _stale_thresh:
+                cached_result = _bc.load_grep_result(session_id, pattern, path, glob_filter, type_filter, output_mode)
+                if cached_result is not None:
+                    path_label = f" in {path!r}" if path else ""
+                    # Apply rollup for large files_with_matches results; pass content mode verbatim.
+                    _cached_lines = [ln for ln in cached_result.splitlines() if ln.strip()]
+                    if (output_mode or "files_with_matches") == "files_with_matches" and len(_cached_lines) > _GLOB_ROLLUP_THRESHOLD:
+                        _cached_display = _rollup_glob_paths(cached_result)
+                    else:
+                        _cached_display = cached_result
+                    result_count = grep_entry.result_count
+                    hint_text = (
+                        f"Note: Grep `{sanitize_log_str(pattern, max_len=100)}`{path_label} "
+                        f"ran {int(age)}s ago — cached result ({result_count or '?'} matches):\n"
+                        f"{_cached_display}\n"
+                        "(Serving from cache. Run without hints to force a fresh search.)"
+                    )
+                    record_cached_stat("grep_result_cache_hit", sanitize_log_str(pattern, max_len=200))
+                    _LOG.info(
+                        "pre-read: grep result cache hit for pattern=%s (age=%ds)",
+                        sanitize_log_str(pattern, max_len=100), int(age),
+                    )
+                    return pre_tool_use_with_context(hint_text)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-read: grep result cache check failed", exc_info=True)
 
     return run_dedup_hint(
         payload,
@@ -2138,6 +2192,8 @@ def _handle_large_read_redirect(
 
 #: Max file size to hash for cross-file content-dedup check in pre_read.
 _CONTENT_DEDUP_MAX_BYTES: int = 500_000
+#: Maximum result bytes to cache for Grep result dedup serving.
+_GREP_RESULT_CACHE_MAX_BYTES: int = 50_000
 
 #: Compress glob results to a directory rollup above this path count.
 _GLOB_ROLLUP_THRESHOLD: int = 40
@@ -3654,14 +3710,14 @@ def post_read(payload: HookPayload) -> HookResponse:
                 "post-read: recorded Grep pattern=%s path=%s result_count=%s",
                 sanitize_opt(pattern), sanitize_opt(path), result_count,
             )
+            # Fetch the grep output once; used by both the hash recorder and the result cache.
+            _grep_raw = payload.get("tool_response")
+            _grep_text = _coerce_text(_grep_raw)
             # Grep result content dedup: hash the actual grep result content.
             # This detects when two different patterns return the same results.
             try:
-                raw_output = payload.get("tool_response")
-                output_text = _coerce_text(raw_output)
-                if output_text:
-                    # Normalize: strip whitespace and compute SHA256 of result content
-                    normalized = output_text.strip()
+                if _grep_text:
+                    normalized = _grep_text.strip()
                     if normalized:
                         from .hints import _sha256_hex  # noqa: PLC0415
                         result_hash = _sha256_hex(normalized, 8)
@@ -3673,6 +3729,22 @@ def post_read(payload: HookPayload) -> HookResponse:
                             )
             except Exception:  # noqa: BLE001 — fail-soft
                 _LOG.debug("post-read: grep result hash computation failed", exc_info=True)
+            # Cache the result text for dedup serving on the next identical Grep call.
+            try:
+                if _grep_text and len(_grep_text) <= _GREP_RESULT_CACHE_MAX_BYTES:
+                    from . import bash_cache as _bc2  # noqa: PLC0415
+                    from . import config as _cfg_mod2  # noqa: PLC0415
+                    _glob_filter = tool_input.get("glob") if isinstance(tool_input.get("glob"), str) else None
+                    _type_filter = tool_input.get("type") if isinstance(tool_input.get("type"), str) else None
+                    _output_mode = tool_input.get("output_mode") if isinstance(tool_input.get("output_mode"), str) else None
+                    _bc2_cfg = _cfg_mod2.load().bash_compress
+                    _bc2.store_grep_result(
+                        session_id, pattern, path, _glob_filter, _type_filter, _output_mode, _grep_text,
+                        max_total_bytes=_bc2_cfg.cache_max_bytes,
+                        max_file_count=_bc2_cfg.cache_max_file_count,
+                    )
+            except Exception:  # noqa: BLE001 — fail-soft
+                pass
     elif tool_name == "Glob":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")

@@ -57,6 +57,7 @@ __all__ = [
     "load",
     "lookup_bash_entry",
     "lookup_glob_entry",
+    "lookup_grep_entry",
     "lookup_skill_entry",
     "lookup_web_entry",
     "mark_bash_run",
@@ -3703,6 +3704,31 @@ def lookup_glob_entry(
     if cache.unavailable or not cache.glob_history:
         return None
     for entry in reversed(cache.glob_history):
+        if entry.pattern == pattern and entry.path == path:
+            return entry
+    return None
+
+
+def lookup_grep_entry(
+    session_id: str,
+    pattern: str,
+    path: str | None = None,
+    *,
+    cache: SessionCache | None = None,
+) -> GrepEntry | None:
+    """Return the most recent GrepEntry for *pattern* in this session, or None.
+
+    Scans ``greps`` in reverse-chronological order so the most recent matching
+    entry is found first.  Matches on both *pattern* and *path*.
+    Returns ``None`` when no prior run is recorded.
+    """
+    try:
+        cache = _resolve_cache(session_id, cache)
+    except ValueError:
+        return None
+    if cache.unavailable or not cache.greps:
+        return None
+    for entry in reversed(cache.greps):
         if entry.pattern == pattern and entry.path == path:
             return entry
     return None
