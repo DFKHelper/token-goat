@@ -26,6 +26,7 @@ Four responsibilities run from this module:
 from __future__ import annotations
 
 import contextlib
+import json
 
 __all__ = ["post_fetch", "pre_fetch"]
 
@@ -305,7 +306,7 @@ def _handle_mcp_dedup(
     ``token-goat mcp-output <output_id>``.
     """
     from . import session  # noqa: PLC0415
-    from .mcp_cache import load_mcp_result, mcp_hash  # noqa: PLC0415
+    from .mcp_cache import compact_mcp_result, load_mcp_result, mcp_hash  # noqa: PLC0415
 
     cache = session.safe_load(session_id, caller="mcp_dedup")
     if cache is None:
@@ -322,9 +323,21 @@ def _handle_mcp_dedup(
 
     result_bytes = len(result_text.encode("utf-8", errors="replace"))
     if result_bytes <= _MCP_INLINE_THRESHOLD:
+        inline = result_text
+        note = f"Cached result ({result_bytes} bytes)"
+    else:
+        compacted = compact_mcp_result(result_text, inline_threshold=_MCP_INLINE_THRESHOLD)
+        if compacted is not None:
+            inline = compacted
+            note = f"Compacted result ({len(compacted.encode())} bytes, was {result_bytes})"
+        else:
+            inline = None
+            note = None
+
+    if inline is not None:
         reason = (
             f"[MCP cache hit — this exact call already ran this session. "
-            f"Cached result ({result_bytes} bytes):\n{result_text}]"
+            f"{note}:\n{inline}]"
         )
     else:
         reason = (
@@ -346,7 +359,7 @@ def _handle_mcp_hint(
     call is still allowed to proceed.
     """
     from . import session  # noqa: PLC0415
-    from .mcp_cache import load_mcp_result, mcp_hash  # noqa: PLC0415
+    from .mcp_cache import compact_mcp_result, load_mcp_result, mcp_hash  # noqa: PLC0415
 
     cache = session.safe_load(session_id, caller="mcp_hint")
     if cache is None:
@@ -363,9 +376,21 @@ def _handle_mcp_hint(
 
     result_bytes = len(result_text.encode("utf-8", errors="replace"))
     if result_bytes <= _MCP_INLINE_THRESHOLD:
+        inline = result_text
+        note = f"Cached result ({result_bytes} bytes)"
+    else:
+        compacted = compact_mcp_result(result_text, inline_threshold=_MCP_INLINE_THRESHOLD)
+        if compacted is not None:
+            inline = compacted
+            note = f"Compacted result ({len(compacted.encode())} bytes, was {result_bytes})"
+        else:
+            inline = None
+            note = None
+
+    if inline is not None:
         context = (
             f"[MCP hint — this exact call ran earlier this session. "
-            f"Cached result ({result_bytes} bytes):\n{result_text}]"
+            f"{note}:\n{inline}]"
         )
     else:
         context = (
@@ -413,7 +438,8 @@ def _capture_mcp_result(payload: HookPayload, tool_name: str) -> None:
     if cache.lookup_mcp_output_id(h) is not None:
         return  # already cached — skip re-write
 
-    output_id = store_mcp_result(session_id, h, result_text)
+    input_preview = json.dumps(tool_input, sort_keys=True, ensure_ascii=False)[:200] if tool_input else ""
+    output_id = store_mcp_result(session_id, h, result_text, tool_name=tool_name, input_preview=input_preview)
     if output_id is None:
         return
 

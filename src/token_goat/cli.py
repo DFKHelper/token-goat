@@ -4052,6 +4052,94 @@ def cmd_web_history(
     )
 
 
+@app.command("mcp-output", rich_help_panel="Core")
+def cmd_mcp_output(
+    output_id: str = typer.Argument(..., help="ID returned by the post-fetch hook or `mcp-history`."),
+    head: int = _OPT_HEAD,
+    tail: int = _OPT_TAIL,
+    grep: str | None = _OPT_GREP,
+    grep_max: int = _OPT_GREP_MAX,
+    case_sensitive: bool = _OPT_CASE_SENSITIVE,
+    full: bool = _OPT_FULL,
+    head_tail: bool = _OPT_HEAD_TAIL,
+    section: str | None = _OPT_SECTION,
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Retrieve a sliced view of a cached MCP tool result.
+
+    The post-fetch hook stores each read-only MCP tool result to disk under
+    ``data_dir() / "mcp_outputs"``.  Use this command to retrieve specific
+    parts of that result without re-running the MCP call — typically much
+    cheaper in tokens.
+
+    By default (no flags), large results are trimmed to the first 30 lines and
+    last 80 lines with an elision marker.  Pass ``--full`` to get everything.
+    Combine ``--head``, ``--tail``, ``--grep``, and ``--section`` to narrow
+    further.  ``--grep`` accepts regex patterns (falls back to literal on
+    invalid syntax) and is case-insensitive by default; add ``--case-sensitive``
+    for exact matching.  ``--section HEADING`` extracts a specific markdown
+    section.  JSON mode includes the full path, stored byte size, and sidecar
+    metadata (tool name, input preview).
+    """
+    from . import mcp_cache  # noqa: PLC0415
+
+    _run_output_recall_command(
+        output_id=output_id,
+        head=head,
+        tail=tail,
+        grep=grep,
+        full=full,
+        json_output=json_output,
+        cache_module=mcp_cache,
+        stat_kind="mcp_output_recall",
+        not_found_msg=f"no cached MCP output for id: {output_id}",
+        head_tail=head_tail,
+        grep_max=grep_max,
+        case_sensitive=case_sensitive,
+        section=section,
+    )
+
+
+@app.command("mcp-history", rich_help_panel="Core")
+def cmd_mcp_history(
+    json_output: bool = _OPT_JSON,
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),  # noqa: B008
+) -> None:
+    """List cached MCP tool results, newest first.
+
+    Each row shows the cache ID, byte size, age, the originating tool name,
+    and an input preview.  Use the ID with ``token-goat mcp-output <id>`` to
+    retrieve the body.
+    """
+    from . import mcp_cache  # noqa: PLC0415
+
+    def _json_fields(s: object) -> dict[str, object]:
+        return {  # type: ignore[attr-defined]  # s typed as object; McpOutputMeta dataclass at runtime
+            "tool_name": s.tool_name,
+            "input_preview": s.input_preview,
+            "result_bytes": s.result_bytes,
+        }
+
+    def _fmt(oid: str, size: int, age: int, s: object) -> str:
+        if s is not None:
+            tool = s.tool_name or "(unknown)"  # type: ignore[attr-defined]
+            preview = s.input_preview or ""  # type: ignore[attr-defined]
+            preview_str = f"  {preview[:60]}" if preview else ""
+        else:
+            tool = "(no sidecar)"
+            preview_str = ""
+        return f"{oid}  {size:>10,}B  {age:>6}s ago  {tool}{preview_str}"
+
+    _run_history_listing_command(
+        mcp_cache,
+        json_output=json_output,
+        limit=limit,
+        empty_msg="(no cached MCP results)",
+        json_sidecar_fields=_json_fields,
+        format_entry=_fmt,
+    )
+
+
 def _parse_since_duration(since: str) -> float | None:
     """Parse a human duration string (e.g. ``'30m'``, ``'2h'``, ``'1d'``) into seconds.
 
@@ -7432,6 +7520,27 @@ def cmd_prune_cache(
     except Exception as exc:  # noqa: BLE001
         results["web_outputs"] = {"status": "error", "error": str(exc)}
 
+    # Prune mcp_outputs
+    try:
+        from . import mcp_cache as _mcp_cache  # noqa: PLC0415
+        cache_dir = _cache_common.get_cache_dir("mcp_outputs")
+        before = get_cache_stats(cache_dir)
+        if before["exists"]:
+            removed = 0 if dry_run else _mcp_cache.evict_old_entries()  # noqa: SIM108
+            after = get_cache_stats(cache_dir) if not dry_run else before
+            freed = before["size_bytes"] - after["size_bytes"]
+            results["mcp_outputs"] = {
+                "status": "ok",
+                "files_removed": removed,
+                "bytes_freed": freed,
+            }
+            total_freed_bytes += freed
+            total_files += removed
+        else:
+            results["mcp_outputs"] = {"status": "skipped", "reason": "cache dir does not exist"}
+    except Exception as exc:  # noqa: BLE001
+        results["mcp_outputs"] = {"status": "error", "error": str(exc)}
+
     # Prune skills
     try:
         cache_dir = _cache_common.get_cache_dir("skills")
@@ -7522,7 +7631,7 @@ def cmd_prune_cache(
 
     # Text output
     action_verb = "would free" if dry_run else "freed"
-    for cache_name in ["bash_outputs", "web_outputs", "skills", "images", "sessions"]:
+    for cache_name in ["bash_outputs", "web_outputs", "mcp_outputs", "skills", "images", "sessions"]:
         info = results.get(cache_name, {})
         if not isinstance(info, dict):
             continue

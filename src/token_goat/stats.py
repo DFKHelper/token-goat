@@ -58,6 +58,7 @@ SOURCE_READ = "read"
 SOURCE_COMPACT = "compact"
 SOURCE_BASH = "bash"
 SOURCE_WEB = "web"
+SOURCE_MCP = "mcp"
 SOURCE_SKILL = "skill"
 SOURCE_OTHER = "other"
 
@@ -238,6 +239,12 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # web_dedup_stale: fired by build_web_dedup_hint when a prior fetch
     # entry exists but is age-stale.  Parallel to bash_dedup_stale.
     "web_dedup_stale": SOURCE_WEB,
+    # mcp_output_recall: fired by cmd_mcp_output when the model calls
+    # `token-goat mcp-output` to retrieve a cached MCP result. Same
+    # semantics as bash_output_recall: zero for a full recall, >0 for a slice.
+    "mcp_output_recall": SOURCE_MCP,
+    # mcp_output_recall_miss: fired by cmd_mcp_output for a missing ID.
+    "mcp_output_recall_miss": SOURCE_MCP,
     # session_cache_lock_timeout: operational telemetry fired by the session cache writer (session.py) when it cannot acquire the per-session write lock within the timeout window. bytes_saved / tokens_saved are always 0; the row exists so operators can detect contention on the session cache file (e.g., two concurrent hook processes racing on the same session). Falls into SOURCE_OTHER because it is not a token-saving event but a reliability health signal.
     "session_cache_lock_timeout": SOURCE_OTHER,
 }
