@@ -88,9 +88,9 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | `npm install` floods deprecation warnings + spinner | Errors kept; warnings collapsed by package, ~90% smaller |
 | `docker build` emits sha256 digests + transfer progress | Step headers + errors kept; noise dropped, ~75% smaller |
 | `ruff` / `eslint` / `mypy` repeat the same rule 50 times | Grouped by rule with first 3 examples, ~80% smaller |
-| Same `pytest` / `cargo` / `git log` re-run mid-session | Pre-Bash dedup hint points at the cached output (`token-goat bash-output <id>`) |
+| Same `pytest` / `cargo` / `git log` re-run mid-session | Small prior outputs (≤8 KB) served inline on first repeat; larger outputs get a hint pointing at `token-goat bash-output <id>` |
 | Same `Grep` pattern re-run with hundreds of matches | Pre-Grep dedup hint quotes the prior match count |
-| Same docs URL fetched twice | Pre-WebFetch dedup hint points at the cached body (`token-goat web-output <id>`) |
+| Same docs URL fetched twice | Re-fetch denied at warm+ context pressure (redirects to `token-goat web-output <id>`); advisory hint at cool |
 | `token-goat section pyproject.toml::tool.ruff` | One TOML table extracted instead of the whole config; same for `.yaml`/`.yml`/`.json`/`.ini`/`.cfg`/`.env`/`Dockerfile` |
 | Typoed `token-goat symbol getUserr` | Auto-redirects to the unambiguous close match (use `--strict` to opt out) |
 | `grep`/`rg` returns 50+ match lines | File-level summary: top 20 files by match count; full result cached, ~80% smaller |
