@@ -35,8 +35,11 @@ __all__ = [
     "evict_old_entries",
     "find_cached_for_command",
     "get_recent_error_outputs",
+    "git_state_fingerprint",
     "glob_hash",
     "grep_hash",
+    "is_git_immutable_command",
+    "is_git_mutable_command",
     "store_grep_result",
     "load_grep_result",
     "load_output",
@@ -127,6 +130,11 @@ _SINGLE_CHAR_FLAG_RE: re.Pattern[str] = re.compile(r"^-[a-zA-Z0-9]$")
 # Tools where short-flag sorting improves cache-hit rates.
 _SORT_FLAG_TOOLS: frozenset[str] = frozenset({"pytest", "rg", "grep", "git"})
 
+# git diff / git status: output changes with working-tree state (HEAD + index).
+_GIT_MUTABLE_RE: re.Pattern[str] = re.compile(r"^\s*git\s+(diff|status)\b", re.IGNORECASE)
+# git show <full-40-char-sha>: output is immutable — can never change for a given SHA.
+_GIT_IMMUTABLE_RE: re.Pattern[str] = re.compile(r"^\s*git\s+show\s+[0-9a-f]{40}\b", re.IGNORECASE)
+
 
 @dataclass
 class BashOutputMeta:
@@ -150,6 +158,59 @@ class BashOutputMeta:
 def _bash_outputs_dir() -> Path:
     """Return ``data_dir() / "bash_outputs"`` and create it on first use."""
     return get_cache_dir("bash_outputs")
+
+
+def is_git_mutable_command(cmd: str) -> bool:
+    """True for git diff / git status commands whose output changes with working-tree state."""
+    return bool(_GIT_MUTABLE_RE.search(cmd))
+
+
+def is_git_immutable_command(cmd: str) -> bool:
+    """True for ``git show <full-40-char-sha>`` — output never changes for a given SHA."""
+    return bool(_GIT_IMMUTABLE_RE.search(cmd))
+
+
+def git_state_fingerprint(cwd: str) -> str | None:
+    """Return a short fingerprint of the git working-tree state rooted at *cwd*.
+
+    Incorporates HEAD ref content (current branch/SHA) and the git index mtime (which
+    advances whenever files are staged or the working tree is modified via git operations).
+    Returns None when *cwd* is not inside a git repo or any read fails.
+
+    Used by :func:`command_hash` to salt the cache key for ``git diff``/``git status`` so the
+    dedup system yields a cache miss after commits or file edits, preventing stale diff output.
+    """
+    try:
+        from pathlib import Path as _P
+        p = _P(cwd).resolve()
+        git_dir: _P | None = None
+        for ancestor in [p, *p.parents]:
+            candidate = ancestor / ".git"
+            if candidate.is_dir():
+                git_dir = candidate
+                break
+            if candidate.is_file():
+                text = candidate.read_text(encoding="utf-8", errors="replace").strip()
+                if text.startswith("gitdir:"):
+                    git_dir = _P(text[7:].strip()).resolve()
+                break
+        if git_dir is None:
+            return None
+        head_file = git_dir / "HEAD"
+        if not head_file.is_file():
+            return None
+        head_content = head_file.read_text(encoding="utf-8", errors="replace").strip()
+        if head_content.startswith("ref: "):
+            ref_path = git_dir / head_content[5:].strip()
+            if ref_path.is_file():
+                head_content = ref_path.read_text(encoding="utf-8", errors="replace").strip()
+        index_mtime = ""
+        index_file = git_dir / "index"
+        if index_file.is_file():
+            index_mtime = str(index_file.stat().st_mtime_ns)
+        return short_content_hash(f"{head_content}\x00{index_mtime}")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def normalize_command_for_cache_key(cmd: str) -> str:
@@ -292,6 +353,14 @@ def command_hash(command: str, cwd: str | None = None) -> str:
     """
     normalized = normalize_command_for_cache_key(command)
     key = normalized if cwd is None else f"{normalize_path(cwd)}\x00{normalized}"
+    # For git diff/status, salt the key with the working-tree fingerprint so cache misses
+    # correctly after commits or file edits — prevents serving stale diff output.
+    # Use the already-normalized cwd so WSL (/mnt/c/...) and Windows (C:\...) paths that
+    # refer to the same directory always produce the same fingerprint.
+    if cwd is not None and is_git_mutable_command(command):
+        fp = git_state_fingerprint(normalize_path(cwd))
+        if fp is not None:
+            key = f"{key}\x00git:{fp}"
     return short_content_hash(key)
 
 

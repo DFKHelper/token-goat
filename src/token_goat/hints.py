@@ -2845,7 +2845,8 @@ def build_bash_cache_hit_hint(
     now = _time.time()
     age = now - meta.ts
     stale_threshold = _session_stale_threshold(cache, now) if cache is not None else STALE_READ_AGE_SECONDS
-    if age > stale_threshold:
+    # Immutable git commands (git show <full-sha>) never go stale — bypass staleness check.
+    if age > stale_threshold and not bash_cache.is_git_immutable_command(command):
         _LOG.debug(
             "build_bash_cache_hit_hint: prior-session cache entry for %s is %.0fs old (threshold=%.0fs); skipping",
             sanitize_log_str(command, max_len=100), age, stale_threshold,

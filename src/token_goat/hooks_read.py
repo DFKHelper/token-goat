@@ -2554,12 +2554,21 @@ def _try_bash_dedup_serve(payload: HookPayload) -> HookResponse | None:
         if getattr(entry, "run_count", 1) > 1:
             return None
 
+        # For git diff/status: if any session file was edited after this bash entry was
+        # cached, the working tree has changed — the cached diff output is stale even though
+        # the git index (and therefore git_state_fingerprint) may not have updated yet.
+        if _bc.is_git_mutable_command(command) and any(
+            getattr(fe, "last_edit_ts", 0.0) > entry.ts for fe in cache.files.values()
+        ):
+            return None
+
         _now = _time.time()
         age = _now - entry.ts
         _sess_created = getattr(cache, "created_ts", None)
         _sess_age = (_now - _sess_created) if _sess_created is not None else STALE_READ_AGE_SECONDS
         _stale_thresh = compute_stale_threshold(_sess_age)
-        if age > _stale_thresh:
+        # Immutable git commands (git show <full-sha>) never go stale — bypass staleness check.
+        if age > _stale_thresh and not _bc.is_git_immutable_command(command):
             return None
 
         text = _bc.load_output(entry.output_id)
