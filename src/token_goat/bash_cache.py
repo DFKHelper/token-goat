@@ -40,6 +40,7 @@ __all__ = [
     "glob_hash",
     "grep_hash",
     "is_dir_listing_command",
+    "is_env_probe_command",
     "is_git_immutable_command",
     "is_git_mutable_command",
     "store_grep_result",
@@ -142,6 +143,28 @@ _LS_CMD_RE: re.Pattern[str] = re.compile(
 )
 # Tokens that look like flags — skipped when extracting the target path.
 _LS_FLAG_RE: re.Pattern[str] = re.compile(r"^-")
+# Session-immutable env probes: version strings and binary lookups that cannot
+# change while the tool is running.  Output is safe to serve from disk cache
+# across sessions without TTL.
+_ENV_PROBE_RE: re.Pattern[str] = re.compile(
+    r"^\s*(?:"
+    r"node\s+(?:-v|--version)"
+    r"|npm\s+(?:-v|--version)"
+    r"|python3?\s+(?:(?-i:-V)\b|--?version)"
+    r"|git\s+--version"
+    r"|uv\s+--version"
+    r"|go\s+version"
+    r"|rustc\s+--version"
+    r"|cargo\s+--version"
+    r"|java\s+--version"
+    r"|ruby\s+--version"
+    r"|gem\s+--version"
+    r"|php\s+--version"
+    r"|which\b"
+    r"|where\b"
+    r")",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -224,6 +247,11 @@ def git_state_fingerprint(cwd: str) -> str | None:
 def is_dir_listing_command(cmd: str) -> bool:
     """True for ls/eza/dir commands whose output changes with directory contents."""
     return bool(_LS_CMD_RE.search(cmd))
+
+
+def is_env_probe_command(cmd: str) -> bool:
+    """True for version-check and binary-lookup commands whose output is immutable within a session."""
+    return bool(_ENV_PROBE_RE.search(cmd))
 
 
 def _extract_ls_target(cmd: str, cwd: str | None) -> str | None:

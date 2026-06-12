@@ -2763,6 +2763,34 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     )
 
 
+def _handle_env_probe_serve(payload: HookPayload) -> HookResponse | None:
+    """Serve advisory context for env probe commands from the cross-session disk cache. Env probes (node -v, python --version, which node, ...) are advisory-only so the agent can re-run if the toolchain changed between sessions."""
+    from . import bash_cache as _bc  # noqa: PLC0415
+
+    command = _get_bash_command_from_payload(payload)
+    if command is None:
+        return None
+    if not _bc.is_env_probe_command(command):
+        return None
+
+    _, cwd = get_session_context(payload)
+    try:
+        meta = _bc.find_cached_for_command(command, cwd)
+        if meta is None:
+            return None
+        text = _bc.load_output(meta.output_id)
+        if not text:
+            return None
+        cmd_short = sanitize_log_str(command, max_len=80)
+        hint_text = f"[token-goat] `{cmd_short}` prior output (env probe — re-run to get a fresh result):\n{text.rstrip()}"
+        record_cached_stat("env_probe_cache_hit", sanitize_log_str(command, max_len=200))
+        _LOG.info("pre-read: env-probe serve command=%s bytes=%d", sanitize_log_str(command, max_len=80), len(text))
+        return pre_tool_use_with_context(hint_text)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-read: env-probe serve failed", exc_info=True)
+        return None
+
+
 def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
     """Return a cache-hit hint when this Bash command has a cached output from a prior session.
 
@@ -3183,6 +3211,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
         dedup = _handle_bash_dedup(payload)
         if dedup is not None:
             return dedup
+
+        env_probe = _handle_env_probe_serve(payload)
+        if env_probe is not None:
+            return env_probe
 
         # Cross-session cache hit: the command was not run in this session but
         # has a cached output on disk from a prior session.  Emit a hint so the
