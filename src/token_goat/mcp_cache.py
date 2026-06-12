@@ -64,7 +64,7 @@ MCP_MAX_CACHE_BYTES: int = 2 * 1024 * 1024
 # use lowercase_snake_case; camelCase tools are not present in practice.
 _MUTABLE_VERBS_RE = re.compile(
     r"(?:^|_)(?:create|update|delete|send|write|push|post|remove|label|unlabel|merge|"
-    r"modify|draft|fork|reply|move|rename|set|add|run|execute|close|"
+    r"modify|draft|fork|reply|move|rename|set|add|run|execute|close|copy|"
     r"request|upload|insert|revoke|reset|archive|restore|annotate|register|"
     r"unregister|star|unstar|like|unlike|vote|block|unblock|invite|kick|ban)(?=_|$)",
     re.IGNORECASE,

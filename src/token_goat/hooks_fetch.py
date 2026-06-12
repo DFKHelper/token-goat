@@ -400,6 +400,25 @@ def _handle_mcp_hint(
     return pre_tool_use_with_context(context)
 
 
+def _invalidate_mcp_cache(session_id: str, tool_name: str) -> None:
+    """Clear all cached MCP read hashes after a mutation tool call. Best-effort."""
+    import contextlib as _cl  # noqa: PLC0415
+
+    from . import session  # noqa: PLC0415
+
+    with _cl.suppress(Exception):
+        cache = session.safe_load(session_id, caller="mcp_cache_invalidate")
+        if cache is None:
+            return
+        cleared = cache.clear_mcp_result_hashes()
+        if cleared:
+            session.save(cache)
+            _LOG.debug("post-fetch: invalidated %d MCP cache entries after mutation %s", cleared, tool_name)
+            with _cl.suppress(Exception):
+                from . import db as _db  # noqa: PLC0415
+                _db.record_stat(session_id, "mcp_cache_invalidated", detail=tool_name)
+
+
 def _capture_mcp_result(payload: HookPayload, tool_name: str) -> None:
     """Persist a read-only MCP tool result to the MCP output cache.
 
@@ -685,9 +704,15 @@ def post_fetch(payload: HookPayload) -> HookResponse:
     """
     tool_name = payload.get("tool_name", "")
 
-    # Capture read-only MCP results for future dedup before the WebFetch guard.
+    # Capture read-only MCP results; invalidate the cache for mutation tools.
     if tool_name.startswith("mcp__"):
-        _capture_mcp_result(payload, tool_name)
+        from .mcp_cache import is_mcp_read_only  # noqa: PLC0415
+        if is_mcp_read_only(tool_name):
+            _capture_mcp_result(payload, tool_name)
+        else:
+            _mcp_inv_sid, _ = get_hook_context(payload)
+            if _mcp_inv_sid:
+                _invalidate_mcp_cache(_mcp_inv_sid, tool_name)
         return CONTINUE()
 
     if tool_name != "WebFetch":

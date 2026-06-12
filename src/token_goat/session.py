@@ -1679,6 +1679,15 @@ class SessionCache:
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
 
+    def clear_mcp_result_hashes(self) -> int:
+        """Wipe all MCP read result hashes; returns the number of entries cleared."""
+        count = len(self.mcp_result_hashes)
+        if count:
+            self.mcp_result_hashes.clear()
+            self.last_activity_ts = time.time()
+            self._invalidate_json_cache()
+        return count
+
     # ------------------------------------------------------------------
     # Cross-file content dedup helpers
     # ------------------------------------------------------------------

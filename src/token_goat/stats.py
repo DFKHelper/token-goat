@@ -197,6 +197,7 @@ _KIND_TO_SOURCE: dict[str, str] = {
     # it gets its own user-visible bucket rather than folding into HINT.
     "bash_dedup_hint": SOURCE_BASH,
     "bash_range_read_hint": SOURCE_BASH,
+    "mcp_cache_invalidated": SOURCE_MCP,
     "bash_output_cached": SOURCE_BASH,
     # bash_output_too_small: fired by post_bash when an output is skipped from
     # caching because it falls below min_cache_bytes or above max_cache_bytes
