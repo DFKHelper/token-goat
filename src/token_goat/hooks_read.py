@@ -3799,6 +3799,8 @@ _PYTEST_FAILURE_FULL_RE: _re.Pattern[str] = _re.compile(r"^(?:FAILED|ERROR)\s+(.
 #: Requires the type name to be word-chars only (no spaces) so it does not
 #: incorrectly strip mid-parameter content like "[a - B class]".
 _PYTEST_FAILURE_SUFFIX_RE: _re.Pattern[str] = _re.compile(r"\s+-\s+[A-Za-z][\w.]*(?::\s.*)?$")
+#: Matches the base command name of directory-exploration invocations (ls, eza, tree, fd).
+_RECON_CMD_RE: _re.Pattern[str] = _re.compile(r"^(?:ls|ll|la|eza|exa|tree|fd|fdfind)\b")
 
 # Hard cap on raw output size before any processing.  Outputs larger than this
 # are truncated to the *last* N bytes (tail bias keeps errors/summaries) before
@@ -4095,6 +4097,18 @@ def _is_binary_output(stdout: str, stderr: str) -> bool:
     return (null_count / len(sample_bytes)) > _BINARY_NULL_THRESHOLD
 
 
+def _is_recon_command(cmd: str) -> bool:
+    """True when *cmd* is a directory-listing/exploration command (ls, eza, tree, fd)."""
+    import shlex as _shlex  # noqa: PLC0415
+    try:
+        tokens = _shlex.split(cmd.strip(), posix=True)
+    except ValueError:
+        tokens = cmd.strip().split()
+    first = tokens[0] if tokens else ""
+    base = first.replace("\\", "/").rsplit("/", 1)[-1].strip('"\'')
+    return bool(_RECON_CMD_RE.match(base))
+
+
 def _is_pytest_command(cmd: str) -> bool:
     return bool(_PYTEST_CMD_RE.search(cmd))
 
@@ -4173,6 +4187,59 @@ def post_bash(payload: HookPayload) -> HookResponse:
         _check_ignored_bash_hint(_session_cache, display_cmd, cwd)
         with contextlib.suppress(Exception):
             _sess_mod.save(_session_cache)  # fallback save if no mark_* runs below
+
+    # Directory-recon consolidation: track ls/eza/tree/fd invocations via
+    # hints_seen[@recon_seen] and inject token-goat map --compact after the 3rd.
+    # Runs before the output-size check so tiny ls outputs are still counted.
+    # Only count successful recon commands (exit 0) to avoid injecting after a
+    # failed path-exploration sequence.  @recon_map_fail gates retry-on-error
+    # so a timed-out subprocess does not stall every subsequent recon call.
+    _RECON_SEEN_KEY = "@recon_seen"
+    _RECON_MAP_KEY = "@recon_map"
+    _RECON_FAIL_KEY = "@recon_map_fail"
+    if (
+        _is_recon_command(display_cmd)
+        and exit_code in (None, 0)
+        and _sess_mod is not None
+        and _session_cache is not None
+    ):
+        try:
+            _session_cache.mark_hint_seen(_RECON_SEEN_KEY)
+            _recon_n = _session_cache.hints_seen.get(_RECON_SEEN_KEY, 0)
+            _already_injected = _session_cache.has_hint_fingerprint(_RECON_MAP_KEY)
+            _prev_failed = _session_cache.has_hint_fingerprint(_RECON_FAIL_KEY)
+            if _recon_n >= 3 and not _already_injected and not _prev_failed:
+                import subprocess as _subp  # noqa: PLC0415
+                _run_kw: dict[str, object] = dict(capture_output=True, text=True, timeout=10, check=False)
+                if cwd:
+                    _run_kw["cwd"] = cwd
+                _map_r = _subp.run(["token-goat", "map", "--compact"], **_run_kw)
+                if _map_r.returncode == 0 and _map_r.stdout.strip():
+                    _session_cache.mark_hint_seen(_RECON_MAP_KEY)
+                    with contextlib.suppress(Exception):
+                        _sess_mod.save(_session_cache)
+                    return {
+                        "continue": True,
+                        "systemMessage": (
+                            "[token-goat] Project map (injected after repeated directory reads):\n\n"
+                            + _map_r.stdout.strip()
+                        ),
+                    }
+                else:
+                    _LOG.warning(
+                        "post-bash: map --compact exited %d: %s", _map_r.returncode, _map_r.stderr[:200]
+                    )
+                    _session_cache.mark_hint_seen(_RECON_FAIL_KEY)
+            elif _already_injected:
+                # Bump count so @recon_map stays competitive against LRU eviction.
+                _session_cache.mark_hint_seen(_RECON_MAP_KEY)
+            with contextlib.suppress(Exception):
+                _sess_mod.save(_session_cache)  # persist @recon_seen count and any gate updates
+        except Exception:  # noqa: BLE001 — fail-soft; timeout lands here too → @recon_map_fail set above
+            _session_cache.mark_hint_seen(_RECON_FAIL_KEY)  # prevent retry on timeout
+            with contextlib.suppress(Exception):
+                _sess_mod.save(_session_cache)
+            _LOG.debug("post-bash: recon map inject failed", exc_info=True)
 
     # Grep-pattern session recording: when the Bash command is a grep-family
     # invocation (rg, grep, ag, ack, …), record the pattern and path in
