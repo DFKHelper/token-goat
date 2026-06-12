@@ -1816,7 +1816,7 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
 
             from .compact import get_context_pressure  # noqa: PLC0415
 
-            _pressure = get_context_pressure(getattr(cache, "session_id", None))
+            _pressure = get_context_pressure(getattr(cache, "session_id", None), cache=cache)
             _ctx_pct = _pressure.fill_fraction
             _pct_int = int(_ctx_pct * 100)
             _last_thr = getattr(cache, "last_context_advisory_threshold", None)

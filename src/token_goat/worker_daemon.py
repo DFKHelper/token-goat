@@ -583,9 +583,7 @@ def run_daemon(stop_event=None) -> None:
                 last_version_check = now
 
             if now - last_gc_projects >= _worker.GC_PROJECTS_INTERVAL:
-                def _gc_void() -> None:
-                    _worker._gc_orphaned_projects()
-                _timed_cycle("gc orphaned projects", _gc_void)
+                _timed_cycle("gc orphaned projects", _worker._gc_orphaned_projects)  # type: ignore[arg-type]
                 last_gc_projects = now
 
             sleep_for = _worker.adaptive_poll_interval(consecutive_empty_drains)
@@ -669,6 +667,15 @@ def kill_duplicate_daemon() -> str:
             os.kill(pid, _signal.SIGTERM)
     except OSError as exc:
         return f"Failed to kill PID {pid}: {exc}."
+
+    # Remove the stale PID file so subsequent is_worker_alive() / --check calls
+    # reflect the kill immediately without waiting for ensure_running to clean up.
+    # On Windows, TerminateProcess is synchronous so unlink is safe right away.
+    # On POSIX, SIGTERM is a request; the process may linger briefly, but
+    # is_worker_alive already checks heartbeat freshness, so leaving a briefly-
+    # live PID around with a stale heartbeat does not cause a false positive.
+    with contextlib.suppress(OSError):
+        pid_path.unlink()
 
     return f"Killed duplicate daemon (PID {pid}, interpreter {worker_interp})."
 

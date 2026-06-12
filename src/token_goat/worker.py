@@ -1850,6 +1850,13 @@ def _index_spawn_active(marker: Path) -> bool:
     The marker holds ``pid\\ntimestamp``. It is "active" only if the timestamp
     is within INDEX_SPAWN_TTL *and* the PID is still alive — so a completed or
     crashed index naturally frees the slot for the next legitimate spawn.
+
+    Also verifies the running process looks like a token-goat indexer (by cmdline)
+    to guard against PID recycling: the OS can reuse a finished indexer's PID for
+    an unrelated process within the TTL window, which would block fresh indexing
+    spawns for up to INDEX_SPAWN_TTL (10 min).  Falls back to trusting the PID
+    when cmdline is unreadable (permission denied, sandboxed), same as
+    :func:`is_worker_alive`.
     """
     try:
         pid_str, ts_str = marker.read_text(encoding="utf-8").split("\n", 1)
@@ -1858,7 +1865,20 @@ def _index_spawn_active(marker: Path) -> bool:
         return False  # missing or malformed marker — not active
     if time.time() - ts > INDEX_SPAWN_TTL:
         return False  # stale — a hung index; allow a fresh spawn
-    return psutil.pid_exists(pid)
+    if not psutil.pid_exists(pid):
+        return False
+    try:
+        cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
+        if "token_goat" not in cmdline and pid != os.getpid():
+            # pid == os.getpid() means the marker was written by the current process
+            # (e.g. a test using os.getpid() as a live-PID stand-in).  The daemon
+            # always spawns an external subprocess, so this branch is unreachable in
+            # production — it only fires when test infrastructure reuses its own PID.
+            _LOG.debug("_index_spawn_active: PID %d alive but cmdline lacks token_goat; treating as recycled", pid)
+            return False
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        pass  # cannot read cmdline — trust the PID + TTL
+    return True
 
 
 def reap_stale_index_markers() -> int:

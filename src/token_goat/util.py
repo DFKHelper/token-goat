@@ -60,12 +60,14 @@ def normalize_path(path: str | Path) -> str:
 
     1. Convert a ``pathlib.Path`` (or any ``os.PathLike``) to ``str`` first so
        the function accepts both forms uniformly.
-    2. Detect WSL paths of the form ``/mnt/<drive>/rest`` and convert them to
+    2. Replace all backslashes with forward slashes.  Done before the WSL check
+       so mixed-separator paths like ``/mnt/c/foo\\bar`` are fully normalised
+       before the regex runs.
+    3. Detect WSL paths of the form ``/mnt/<drive>/rest`` and convert them to
        the Windows canonical form ``<drive>:/rest``.  For example,
        ``/mnt/c/Users/zelys/foo`` becomes ``c:/Users/zelys/foo``.  Only
        single-letter drive components are converted; other ``/mnt/...`` paths
        (e.g. ``/mnt/data``) are left unchanged.
-    3. Replace all backslashes with forward slashes.
     4. Lowercase the Windows drive letter prefix (``C:`` → ``c:``).
 
     The result is a consistent canonical string suitable for use as a dict key
@@ -91,12 +93,12 @@ def normalize_path(path: str | Path) -> str:
     """
     s = str(path)
 
-    # Step 3: replace backslashes before WSL check so mixed-separator paths like
+    # Step 2: replace backslashes before WSL check so mixed-separator paths like
     # /mnt/c/foo\bar are fully normalized before the regex runs.
     if "\\" in s:
         s = s.replace("\\", "/")
 
-    # Step 2: convert WSL /mnt/<single-letter-drive>/rest → <drive>:/rest
+    # Step 3: convert WSL /mnt/<single-letter-drive>/rest → <drive>:/rest
     m = _WSL_PATH_RE.match(s)
     if m:
         drive_letter = m.group(1).lower()  # lowercase so /mnt/C and /mnt/c agree

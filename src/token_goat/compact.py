@@ -173,7 +173,11 @@ class ContextPressure:
     tier: Literal["cool", "warm", "hot", "critical"]
 
 
-def get_context_pressure(session_id: str | None = None) -> ContextPressure:
+def get_context_pressure(  # type: ignore[name-defined]  # SessionCache imported under TYPE_CHECKING
+    session_id: str | None = None,
+    *,
+    cache: SessionCache | None = None,
+) -> ContextPressure:
     """Return the estimated context fill fraction and pressure tier.
 
     Sums all known context contributors from the session cache:
@@ -197,6 +201,12 @@ def get_context_pressure(session_id: str | None = None) -> ContextPressure:
     Returns a ``ContextPressure`` with ``fill_fraction=0.0`` and ``tier="cool"``
     when the session cache is unavailable or the session_id is None.
 
+    The optional *cache* keyword argument accepts an already-loaded
+    :class:`session.SessionCache`.  When provided, the function skips the
+    ``safe_load`` disk read — callers that have already loaded the cache (e.g.
+    :func:`build_manifest_adaptive`, ``user_prompt_submit``) should pass it to
+    avoid a redundant JSON parse.
+
     This function is the single canonical implementation.  All other context-fill
     estimates in the codebase (``_estimate_context_fill`` in ``hooks_skill``, the
     inline calculation in ``hooks_session``) delegate here.
@@ -204,7 +214,8 @@ def get_context_pressure(session_id: str | None = None) -> ContextPressure:
     try:
         from . import session as _ses  # noqa: PLC0415
 
-        cache = _ses.safe_load(session_id, caller="get-context-pressure") if session_id else None
+        if cache is None:
+            cache = _ses.safe_load(session_id, caller="get-context-pressure") if session_id else None
         if cache is None:
             return ContextPressure(fill_fraction=0.0, tier="cool")
 
@@ -4011,7 +4022,7 @@ def build_manifest_adaptive(session_id: str) -> str:
     # preserve skill context via other sections (bash history, edited files, etc).
     skill_history = getattr(cache, "skill_history", None) or {}
     stale_frac = _compute_stale_compact_fraction(session_id, skill_history)
-    pressure = get_context_pressure(session_id)
+    pressure = get_context_pressure(session_id, cache=cache)
     budget = compute_adaptive_budget(
         cache,
         age_seconds=age_seconds,
