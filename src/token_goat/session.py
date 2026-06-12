@@ -643,6 +643,12 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         for _ in range(evict):
             merged.file_content_seen.pop(next(iter(merged.file_content_seen)))
 
+    # pytest_failures: local wins per cmd_sha — local's entry is from the run
+    # that just completed, so it is always the most recent for that command.
+    merged_pf = dict(remote.pytest_failures)
+    merged_pf.update(local.pytest_failures)
+    merged.pytest_failures = merged_pf
+
     remote_glob_keys = {(glob.pattern, glob.path) for glob in remote.glob_history}
     for glob in local.glob_history:
         if (glob.pattern, glob.path) not in remote_glob_keys:

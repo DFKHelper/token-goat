@@ -3791,8 +3791,14 @@ _BASH_CACHE_MIN_BYTES: int = 400
 
 #: Regex to detect pytest / py.test / python -m pytest commands.
 _PYTEST_CMD_RE: _re.Pattern[str] = _re.compile(r"\bpy(?:test|\.test)\b|python\s+-m\s+pytest")
-#: Captures the test node ID after FAILED/ERROR on a pytest summary line.
-_PYTEST_FAILURE_ID_RE: _re.Pattern[str] = _re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", _re.MULTILINE)
+#: Captures the full rest-of-line after FAILED/ERROR on a pytest summary line.
+#: A second pass strips the " - ExceptionClass..." suffix so parametrized node
+#: IDs containing spaces (e.g. test_foo[hello world]) are captured correctly.
+_PYTEST_FAILURE_FULL_RE: _re.Pattern[str] = _re.compile(r"^(?:FAILED|ERROR)\s+(.+)$", _re.MULTILINE)
+#: Matches the " - ExceptionType: message" suffix after a pytest node ID.
+#: Requires the type name to be word-chars only (no spaces) so it does not
+#: incorrectly strip mid-parameter content like "[a - B class]".
+_PYTEST_FAILURE_SUFFIX_RE: _re.Pattern[str] = _re.compile(r"\s+-\s+[A-Za-z][\w.]*(?::\s.*)?$")
 
 # Hard cap on raw output size before any processing.  Outputs larger than this
 # are truncated to the *last* N bytes (tail bias keeps errors/summaries) before
@@ -4094,8 +4100,18 @@ def _is_pytest_command(cmd: str) -> bool:
 
 
 def _extract_pytest_failure_ids(output: str) -> list[str]:
-    """Return sorted FAILED/ERROR test node IDs from a pytest stdout/stderr blob."""
-    return sorted(set(_PYTEST_FAILURE_ID_RE.findall(output)))
+    """Return sorted FAILED/ERROR test node IDs from a pytest stdout/stderr blob.
+
+    Captures the full node ID including spaces (e.g. parametrized tests like
+    test_foo[hello world]) by stripping the " - ExceptionClass..." suffix that
+    pytest appends after the node ID on summary lines.
+    """
+    ids: set[str] = set()
+    for m in _PYTEST_FAILURE_FULL_RE.finditer(output):
+        node_id = _PYTEST_FAILURE_SUFFIX_RE.sub("", m.group(1)).rstrip()
+        if node_id:
+            ids.add(node_id)
+    return sorted(ids)
 
 
 def post_bash(payload: HookPayload) -> HookResponse:

@@ -84,6 +84,19 @@ class TestExtractPytestFailureIds:
         output = "1 passed in 0.12s\n"
         assert self.fn(output) == []
 
+    def test_parametrized_with_spaces_in_id(self):
+        # Node ID contains spaces (string parameter); suffix must be stripped cleanly
+        output = "FAILED tests/test_foo.py::test_bar[hello world] - AssertionError: x != y\n"
+        assert self.fn(output) == ["tests/test_foo.py::test_bar[hello world]"]
+
+    def test_strips_exception_suffix(self):
+        output = "FAILED tests/test_a.py::test_x - ValueError: bad input\n"
+        assert self.fn(output) == ["tests/test_a.py::test_x"]
+
+    def test_error_without_suffix(self):
+        output = "ERROR tests/test_a.py\n"
+        assert self.fn(output) == ["tests/test_a.py"]
+
 
 # ---------------------------------------------------------------------------
 # Unit: SessionCache.pytest_failures serialization
