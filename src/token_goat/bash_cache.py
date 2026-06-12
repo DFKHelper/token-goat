@@ -440,6 +440,21 @@ def load_glob_result(
 
 
 _GREP_RESULT_PREFIX = "grep_"
+_DOT_SLASH_RE: re.Pattern[str] = re.compile(r"^(\./)+")
+
+
+def _normalize_grep_path(path: str) -> str:
+    """Normalize a grep search path for cache key stability.
+
+    ``./src/``, ``src/``, and ``src`` all map to the same key so that
+    callers using different path conventions hit the same cache entry.
+    Backslashes are converted to forward slashes first.
+    Absolute roots like ``/`` are preserved — not collapsed to empty string.
+    """
+    p = path.replace("\\", "/")
+    p = _DOT_SLASH_RE.sub("", p)
+    stripped = p.rstrip("/")
+    return stripped or p
 
 
 def grep_hash(
@@ -457,7 +472,7 @@ def grep_hash(
     """
     canonical = "\x00".join([
         pattern,
-        path or "",
+        _normalize_grep_path(path) if path else "",
         glob_filter or "",
         type_filter or "",
         output_mode or "",
