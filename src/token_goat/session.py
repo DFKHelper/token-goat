@@ -1294,6 +1294,11 @@ class SessionCache:
     pressure_baseline_tokens: int = 0
     # Measured tokens from tool responses (Read/Bash/WebFetch) since last compact; 0 → use proxy estimates.
     observed_tool_tokens: int = 0
+    # pytest failure tracking: maps cmd_sha → sorted list of FAILED/ERROR test IDs
+    # from the most recent run of that command. post_bash uses this to compute a
+    # delta ("2 new failures, 1 fixed") and inject it as a systemMessage so the agent
+    # sees the signal without re-reading the full output. Missing in older sessions → empty dict.
+    pytest_failures: dict[str, list[str]] = field(default_factory=dict)
     # Monotonically-incrementing version counter for optimistic CAS in save().
     # Starts at 0 for a new session; each successful save() increments by 1.
     # When two concurrent processes both load version N, the second to save
@@ -1397,6 +1402,7 @@ class SessionCache:
             pressure_baseline_tokens=self.pressure_baseline_tokens,
             observed_tool_tokens=self.observed_tool_tokens,
             file_content_seen=dict(self.file_content_seen),
+            pytest_failures=dict(self.pytest_failures),
         )
 
     def to_json(self) -> str:
@@ -1978,6 +1984,14 @@ class SessionCache:
         _raw_ott = d.get("observed_tool_tokens", 0)
         observed_tool_tokens: int = max(0, int(_raw_ott)) if isinstance(_raw_ott, (int, float)) else 0
 
+        # pytest_failures: dict[str, list[str]] — maps cmd_sha → sorted failure IDs.
+        pytest_failures: dict[str, list[str]] = {}
+        raw_pf = d.get("pytest_failures", {})
+        if isinstance(raw_pf, dict):
+            for _pf_k, _pf_v in raw_pf.items():
+                if isinstance(_pf_k, str) and isinstance(_pf_v, list):
+                    pytest_failures[_pf_k] = [s for s in _pf_v if isinstance(s, str)]
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -2019,6 +2033,7 @@ class SessionCache:
             pressure_baseline_tokens=pressure_baseline_tokens,
             observed_tool_tokens=observed_tool_tokens,
             file_content_seen=file_content_seen,
+            pytest_failures=pytest_failures,
         )
 
 
@@ -2570,6 +2585,7 @@ class _SessionDict(TypedDict, total=False):
     pressure_baseline_tokens: int
     observed_tool_tokens: int
     file_content_seen: dict[str, str]
+    pytest_failures: dict[str, list[str]]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:

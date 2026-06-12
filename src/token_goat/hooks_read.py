@@ -3789,6 +3789,11 @@ def post_read(payload: HookPayload) -> HookResponse:
 # would later refuse to surface.
 _BASH_CACHE_MIN_BYTES: int = 400
 
+#: Regex to detect pytest / py.test / python -m pytest commands.
+_PYTEST_CMD_RE: _re.Pattern[str] = _re.compile(r"\bpy(?:test|\.test)\b|python\s+-m\s+pytest")
+#: Captures the test node ID after FAILED/ERROR on a pytest summary line.
+_PYTEST_FAILURE_ID_RE: _re.Pattern[str] = _re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", _re.MULTILINE)
+
 # Hard cap on raw output size before any processing.  Outputs larger than this
 # are truncated to the *last* N bytes (tail bias keeps errors/summaries) before
 # passing to the rest of the post_bash pipeline.  Prevents OOM on runaway
@@ -4084,6 +4089,15 @@ def _is_binary_output(stdout: str, stderr: str) -> bool:
     return (null_count / len(sample_bytes)) > _BINARY_NULL_THRESHOLD
 
 
+def _is_pytest_command(cmd: str) -> bool:
+    return bool(_PYTEST_CMD_RE.search(cmd))
+
+
+def _extract_pytest_failure_ids(output: str) -> list[str]:
+    """Return sorted FAILED/ERROR test node IDs from a pytest stdout/stderr blob."""
+    return sorted(set(_PYTEST_FAILURE_ID_RE.findall(output)))
+
+
 def post_bash(payload: HookPayload) -> HookResponse:
     """Post-Bash hook: persist large outputs to disk and record in session history.
 
@@ -4313,6 +4327,34 @@ def post_bash(payload: HookPayload) -> HookResponse:
         "post-bash: cached output id=%s bytes=%d exit=%s truncated=%s",
         meta.output_id, total_bytes, exit_code, meta.truncated,
     )
+
+    # pytest failure delta: compare current failures to prior run of the same command.
+    # Returns a systemMessage so the agent sees the signal without re-reading the output.
+    if _is_pytest_command(display_cmd) and _sess_mod is not None and _session_cache is not None:
+        try:
+            _curr = set(_extract_pytest_failure_ids(stdout + stderr))
+            _prev = set(_session_cache.pytest_failures.get(meta.cmd_sha, []))
+            _new_failures = sorted(_curr - _prev)
+            _fixed = sorted(_prev - _curr)
+            _session_cache.pytest_failures[meta.cmd_sha] = sorted(_curr)
+            _session_cache._invalidate_json_cache()
+            with contextlib.suppress(Exception):
+                _sess_mod.save(_session_cache)
+            if _prev and (_new_failures or _fixed):
+                _parts: list[str] = []
+                if _new_failures:
+                    _shown = ", ".join(_new_failures[:5])
+                    _more = f" (+{len(_new_failures) - 5} more)" if len(_new_failures) > 5 else ""
+                    _parts.append(f"{len(_new_failures)} new: {_shown}{_more}")
+                if _fixed:
+                    _shown_f = ", ".join(_fixed[:5])
+                    _more_f = f" (+{len(_fixed) - 5} more)" if len(_fixed) > 5 else ""
+                    _parts.append(f"{len(_fixed)} fixed: {_shown_f}{_more_f}")
+                _delta_msg = "pytest delta — " + "; ".join(_parts)
+                return {"continue": True, "systemMessage": _delta_msg}
+        except Exception:  # noqa: BLE001 — fail-soft
+            _LOG.debug("post-bash: pytest delta failed", exc_info=True)
+
     return CONTINUE()
 
 
