@@ -2025,6 +2025,43 @@ def _pressure_scaled_bash_cap(base: int, tier: str) -> int:
     return max(1, int(base * _PRESSURE_BASH_CAP_MULTIPLIERS.get(tier, 1.0)))
 
 
+def _handle_notebook_read(file_path: str, tool_input: dict[str, object]) -> HookResponse | None:
+    """Strip outputs from a Jupyter notebook and redirect the agent to the stripped copy.
+
+    Only fires for ``.ipynb`` files when stripping saves at least
+    ``NB_STRIP_MIN_SAVINGS`` bytes.  Windowed reads (offset/limit) pass through
+    so the agent can still inspect specific cells of the stripped sidecar.
+    """
+    if not file_path.lower().endswith(".ipynb"):
+        return None
+    if _read_is_windowed(tool_input):
+        return None
+    try:
+        from . import notebook_compact as _nb  # noqa: PLC0415
+        from . import paths as _paths  # noqa: PLC0415
+
+        path = Path(file_path)
+        if not path.exists():
+            return None
+        raw = path.read_bytes()
+        if not raw:
+            return None
+        sidecar_path, _ = _nb.get_or_create_sidecar(raw, _paths.data_dir())
+        saved = len(raw) - sidecar_path.stat().st_size
+        if saved < _nb.NB_STRIP_MIN_SAVINGS:
+            return None
+        saved_kb = saved // 1024
+        reason = f"Notebook outputs stripped to save ~{saved_kb} KB"
+        context = (
+            f"Cell outputs were stripped to reduce token cost (~{saved_kb} KB saved).\n\n"
+            f"Read the stripped notebook (code sources preserved) at:\n  {sidecar_path}\n\n"
+            f"To read the original with outputs: add `offset: 0` to bypass this redirect."
+        )
+        return deny_redirect(reason, context)
+    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+        return None
+
+
 def _handle_large_read_redirect(
     file_path: str, tool_input: dict[str, object], floor: int = 0, tier: str = "cool"
 ) -> HookResponse | None:
@@ -2825,6 +2862,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
     shrink_response = _try_shrink_image(file_path, tool_input)
     if shrink_response:
         return shrink_response
+
+    notebook_response = _handle_notebook_read(file_path, tool_input)
+    if notebook_response:
+        return notebook_response
 
     # Catastrophic-tier guard: hard-deny a full read of a >=10 MB file here, before the binary/large skip and session gate below drop it from the hint pipeline entirely. Such files reach no type-specific handler, so this early position is the only place to catch them; it also covers sessionless and cache-load-failure huge reads. The 45 KB-10 MB band is handled by the fallback call later (after the skill/index/structured/diff handlers get first claim) so those richer redirects are not preempted.
     large_read = _handle_large_read_redirect(
