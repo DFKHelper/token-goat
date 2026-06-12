@@ -607,7 +607,7 @@ class TestGrepWrittenNotReadHint:
 
 
 class TestGlobCacheCap:
-    """Glob result cache dedup must cap the replayed path list to 20 entries."""
+    """Glob result cache dedup rolls up large results into directory groups (>40 paths)."""
 
     def _post_glob(self, sid, pattern, result_text, path=None):
         from token_goat import bash_cache
@@ -629,14 +629,15 @@ class TestGlobCacheCap:
         }
         return hooks_cli.pre_read(payload)
 
-    def test_glob_cache_caps_at_20_paths(self, tmp_data_dir):
-        """Cached glob result with >20 files → only first 20 + overflow shown."""
-        from token_goat.hooks_read import _GLOB_RESULT_CACHE_MAX_PATHS
-        cap = _GLOB_RESULT_CACHE_MAX_PATHS
-        total = cap + 10
-        sid = "glob-cap-30"
+    def test_glob_cache_rolls_up_large_results(self, tmp_data_dir):
+        """Cached glob result with >40 files → directory rollup, not flat list."""
+        from token_goat.hooks_read import _GLOB_ROLLUP_THRESHOLD
+        total = _GLOB_ROLLUP_THRESHOLD + 15
+        sid = "glob-rollup-55"
         pattern = "**/*.py"
-        files = [f"src/file_{i:03d}.py" for i in range(total)]
+        # Spread across two directories so rollup has something to group
+        files = [f"src/core/file_{i:03d}.py" for i in range(total // 2)]
+        files += [f"src/util/file_{i:03d}.py" for i in range(total - total // 2)]
         result_text = "\n".join(files) + "\n"
         self._post_glob(sid, pattern, result_text)
 
@@ -644,18 +645,16 @@ class TestGlobCacheCap:
         _assert_continue(result)
         hso = result.get("hookSpecificOutput")
         if hso is None:
-            # Result count threshold not met by session history — skip
             return
         ctx = hso.get("additionalContext", "")
         if "cached result" not in ctx:
             return
-        # First `cap` files should be present
-        assert "src/file_000.py" in ctx
-        assert f"src/file_{cap - 1:03d}.py" in ctx
-        # File at index `cap` should NOT appear verbatim
-        assert f"src/file_{cap:03d}.py" not in ctx
-        # Overflow marker should appear showing 10 hidden files
-        assert "(+10 more)" in ctx
+        # Rollup header must show total path count, directory count, and breakdown section
+        assert str(total) in ctx
+        assert "director" in ctx
+        assert "Directory breakdown" in ctx
+        # Old-style flat overflow without "not shown" must NOT appear
+        assert "(+10 more)" not in ctx
 
     def test_glob_cache_under_cap_shows_all(self, tmp_data_dir):
         """Cached glob result with ≤20 files → all files shown, no overflow line."""

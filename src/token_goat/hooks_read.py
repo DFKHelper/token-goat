@@ -2139,6 +2139,13 @@ def _handle_large_read_redirect(
 #: Max file size to hash for cross-file content-dedup check in pre_read.
 _CONTENT_DEDUP_MAX_BYTES: int = 500_000
 
+#: Compress glob results to a directory rollup above this path count.
+_GLOB_ROLLUP_THRESHOLD: int = 40
+#: Flat file names to always emit before the directory rollup.
+_GLOB_SAMPLE_PATHS: int = 20
+#: Max directory lines in a rollup summary.
+_GLOB_ROLLUP_MAX_DIRS: int = 20
+
 _INLINE_SKELETON_MAX_CHARS: int = 800
 _INLINE_SKELETON_KINDS: frozenset[str] = frozenset({
     "function", "method", "class", "interface", "struct", "trait", "enum",
@@ -2227,6 +2234,43 @@ def _check_content_dedup(
         )
     except Exception:  # noqa: BLE001
         return None
+
+
+def _rollup_glob_paths(paths_text: str) -> str:
+    """Compress a large glob result into a flat sample plus a directory-grouped summary.
+
+    Emits up to _GLOB_SAMPLE_PATHS concrete file names (so the agent can act immediately
+    in the compaction-recovery case) followed by a directory count table for structural
+    orientation. Used when the cached result exceeds _GLOB_ROLLUP_THRESHOLD paths.
+    """
+    from collections import Counter  # noqa: PLC0415
+    lines = [ln for ln in paths_text.splitlines() if ln.strip()]
+    total = len(lines)
+    if total <= _GLOB_ROLLUP_THRESHOLD:
+        return paths_text
+    sample = lines[:_GLOB_SAMPLE_PATHS]
+    hidden_sample = total - len(sample)
+    dir_counts: Counter[str] = Counter()
+    for line in lines:
+        dir_counts[str(Path(line.strip()).parent)] += 1
+    sorted_dirs = sorted(dir_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    shown_dirs = sorted_dirs[:_GLOB_ROLLUP_MAX_DIRS]
+    hidden_dirs = len(sorted_dirs) - len(shown_dirs)
+    hidden_dir_files = sum(cnt for _, cnt in sorted_dirs[_GLOB_ROLLUP_MAX_DIRS:])
+    dir_rows = [f"  {cnt:>4}  {d}" for d, cnt in shown_dirs]
+    n_dirs = len(sorted_dirs)
+    dir_label = "directory" if n_dirs == 1 else "directories"
+    out = (
+        f"{total} paths — first {len(sample)} shown; {n_dirs} {dir_label}:\n"
+        + "\n".join(sample)
+        + (f"\n  (+{hidden_sample} more not shown)\n" if hidden_sample else "\n")
+        + "Directory breakdown:\n"
+        + "\n".join(dir_rows)
+    )
+    if hidden_dirs:
+        hidden_dir_label = "directory" if hidden_dirs == 1 else "directories"
+        out += f"\n  ... and {hidden_dirs} more {hidden_dir_label} ({hidden_dir_files} files)"
+    return out
 
 
 def _handle_large_grep_redirect(payload: HookPayload) -> HookResponse | None:
@@ -2328,12 +2372,10 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
                 cached_result = _bc.load_glob_result(session_id, pattern, path)
                 if cached_result is not None:
                     path_label = f" in {path!r}" if path else ""
-                    # Cap the replayed path list to avoid injecting 200-path blobs.
-                    _cached_lines = cached_result.splitlines()
-                    _overflow = len(_cached_lines) - _GLOB_RESULT_CACHE_MAX_PATHS
-                    if _overflow > 0:
-                        _cached_display = "\n".join(_cached_lines[:_GLOB_RESULT_CACHE_MAX_PATHS])
-                        _cached_display += f"\n(+{_overflow} more)"
+                    # Roll up large results into directory groups; pass through small ones verbatim.
+                    _cached_lines = [ln for ln in cached_result.splitlines() if ln.strip()]
+                    if len(_cached_lines) > _GLOB_ROLLUP_THRESHOLD:
+                        _cached_display = _rollup_glob_paths(cached_result)
                     else:
                         _cached_display = cached_result
                     hint_text = (
