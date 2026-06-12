@@ -204,3 +204,65 @@ class TestStatsRecording:
         with patch("token_goat.db.record_stat") as mock_record:
             br._record_savings(result, "pytest tests/", elapsed_ms=5.0)
         assert mock_record.called, "record_stat must be called at threshold"
+
+
+# ---------------------------------------------------------------------------
+# Pressure-scaled token cap
+# ---------------------------------------------------------------------------
+
+
+class TestMaxTokensCap:
+    def test_max_tokens_zero_no_cap(self):
+        """max_tokens=0 means no post-compress cap — large output passes through unchanged."""
+        out_buf, _ = _captured_writers()
+        # 200 unique lines × 100 chars ≈ 20 KB; short command avoids Windows cmd-line limit.
+        cmd = "python -c \"[print(f'line_{i}: ' + 'x' * 100) for i in range(200)]\""
+        bash_runner.run(cmd, filter_name="generic", timeout=15, write_stdout=out_buf.write, max_tokens=0)
+        assert "[token-goat: output capped at" not in out_buf.getvalue()
+
+    def test_max_tokens_applied_when_output_large(self):
+        """max_tokens=50 truncates clearly oversized compressed output; compression marker is preserved."""
+        out_buf, _ = _captured_writers()
+        # GenericFilter caps internally at 2000 tokens; our external 50-token cap then trims further.
+        cmd = "python -c \"[print(f'line_{i}: ' + 'x' * 100) for i in range(200)]\""
+        bash_runner.run(cmd, filter_name="generic", timeout=15, write_stdout=out_buf.write, max_tokens=50)
+        result = out_buf.getvalue()
+        assert "[token-goat: output capped at ~50 tokens]" in result
+        # Compression marker must survive even when the cap fires.
+        assert "TOKEN_GOAT_BASH_COMPRESS" in result
+
+    def test_max_tokens_not_applied_when_output_small(self):
+        """max_tokens cap does not fire when output already fits."""
+        out_buf, _ = _captured_writers()
+        bash_runner.run(
+            "python -c \"print('1 passed')\"",
+            filter_name="pytest",
+            timeout=10,
+            write_stdout=out_buf.write,
+            max_tokens=8000,
+        )
+        assert "[token-goat: output capped at" not in out_buf.getvalue()
+
+
+class TestPressureScaledBashCap:
+    def test_cool_returns_base(self):
+        from token_goat.hooks_read import _pressure_scaled_bash_cap
+        assert _pressure_scaled_bash_cap(8_000, "cool") == 8_000
+
+    def test_warm_lower_than_cool(self):
+        from token_goat.hooks_read import _pressure_scaled_bash_cap
+        assert _pressure_scaled_bash_cap(8_000, "warm") < 8_000
+
+    def test_hot_lower_than_warm(self):
+        from token_goat.hooks_read import _pressure_scaled_bash_cap
+        assert _pressure_scaled_bash_cap(8_000, "hot") < _pressure_scaled_bash_cap(8_000, "warm")
+
+    def test_critical_lowest_but_nonzero(self):
+        from token_goat.hooks_read import _pressure_scaled_bash_cap
+        val = _pressure_scaled_bash_cap(8_000, "critical")
+        assert val < _pressure_scaled_bash_cap(8_000, "hot")
+        assert val >= 1
+
+    def test_unknown_tier_returns_base(self):
+        from token_goat.hooks_read import _pressure_scaled_bash_cap
+        assert _pressure_scaled_bash_cap(8_000, "future_tier") == 8_000

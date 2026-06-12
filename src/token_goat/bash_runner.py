@@ -216,6 +216,7 @@ def run(
     write_stdout: Callable[[str], object] = sys.stdout.write,
     write_stderr: Callable[[str], object] = sys.stderr.write,
     compression_profile: str | None = None,
+    max_tokens: int = 0,
 ) -> int:
     """Run *command* through the system shell, compress its output, return exit code.
 
@@ -281,6 +282,7 @@ def run(
         write_stdout=write_stdout,
         write_stderr=write_stderr,
         compression_profile=effective_profile,
+        max_tokens=max_tokens,
     )
 
 
@@ -340,6 +342,7 @@ def _wrap_and_compress(
     write_stdout: Callable[[str], object],
     write_stderr: Callable[[str], object],
     compression_profile: str = "balanced",
+    max_tokens: int = 0,
 ) -> int:
     """Run *command* with output capture, apply *filter_*, print result.
 
@@ -402,7 +405,13 @@ def _wrap_and_compress(
         filter_, stdout_text, stderr_text, exit_code, argv,
         compression_profile=compression_profile,
     )
-    body = result.with_marker()
+    # Apply pressure-scaled cap to the text portion BEFORE appending the compression
+    # summary marker so the marker survives truncation and remains visible to the agent.
+    text = result.text
+    if max_tokens > 0:
+        text = bash_compress.cap_tokens(text, max_tokens)
+    marker = result.with_marker()[len(result.text):]  # "" when bytes_saved <= 0
+    body = text + marker
     write_stdout(body + ("\n" if not body.endswith("\n") else ""))
 
     elapsed_ms = (time.monotonic() - start) * 1000

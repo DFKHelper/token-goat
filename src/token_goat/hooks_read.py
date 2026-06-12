@@ -256,6 +256,17 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     harness = str(payload.get("_tg_harness", "claude"))
     effective_profile = _resolve_compression_profile(harness, cfg_obj.compression.profile)
 
+    # Resolve context-pressure tier to compute a pressure-scaled output token cap.
+    _bash_tier = "cool"
+    _bash_session_id, _ = get_session_context(payload)
+    if _bash_session_id:
+        try:
+            from .compact import get_context_pressure as _gcp_bash  # noqa: PLC0415
+            _bash_tier = _gcp_bash(_bash_session_id).tier
+        except Exception:  # noqa: BLE001 — fail-soft; never block compress wrapping
+            pass
+    _bash_max_tokens = _pressure_scaled_bash_cap(_BASH_COMPRESS_BASE_TOKENS, _bash_tier)
+
     def _mk_wrapper(filter_name: str, seg: str) -> str | None:
         if filter_name in cfg.disabled_filters:
             return None
@@ -264,6 +275,7 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
             "--filter", filter_name,
             "--timeout", str(cfg.timeout_seconds),
             "--profile", effective_profile,
+            "--max-tokens", str(_bash_max_tokens),
             "--cmd", seg,
         )
 
@@ -1989,6 +2001,28 @@ def _pressure_scaled_threshold(base: int, tier: str) -> int:
     name never accidentally disables the deny.
     """
     return max(1, int(base * _PRESSURE_THRESHOLD_MULTIPLIERS.get(tier, 1.0)))
+
+
+# Multipliers applied to the bash compress output token cap by context-pressure tier.
+# At cool the cap is generous (8 K tokens); as context fills, compress output is trimmed
+# harder so that helm/kubectl/git-log blobs don't crowd out code reads.
+_PRESSURE_BASH_CAP_MULTIPLIERS: dict[str, float] = {
+    "cool": 1.0,
+    "warm": 0.7,
+    "hot": 0.45,
+    "critical": 0.25,
+}
+
+# Base token cap for post-compress bash output at cool pressure.
+_BASH_COMPRESS_BASE_TOKENS: int = 8_000
+
+
+def _pressure_scaled_bash_cap(base: int, tier: str) -> int:
+    """Return *base* scaled by the bash-cap multiplier for *tier*.
+
+    Falls back to *base* for unknown tier strings.
+    """
+    return max(1, int(base * _PRESSURE_BASH_CAP_MULTIPLIERS.get(tier, 1.0)))
 
 
 def _handle_large_read_redirect(

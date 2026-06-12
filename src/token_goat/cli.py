@@ -6234,6 +6234,11 @@ def cmd_compress(
         help="Compression profile: aggressive (50 lines), balanced (200 lines), minimal (500 lines, skip progress). "
              "Overrides config and auto-detection.",
     ),
+    max_tokens: int = typer.Option(
+        0,
+        "--max-tokens",
+        help="Post-compress token cap (0 = no cap). Passed by the pre-Bash hook to tighten output at high context pressure.",
+    ),
 ) -> None:
     """Run a shell command and emit a compressed view of its output.
 
@@ -6266,6 +6271,7 @@ def cmd_compress(
         filter_name=filter_name,
         timeout=effective_timeout,
         compression_profile=profile,
+        max_tokens=max_tokens,
     )
     raise typer.Exit(exit_code)
 
