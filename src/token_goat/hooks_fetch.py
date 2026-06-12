@@ -461,15 +461,18 @@ def post_fetch(payload: HookPayload) -> HookResponse:
     _fetch_cache = session.safe_load(session_id, caller="post_fetch")
     if _fetch_cache is not None:
         _fetch_cache.observed_tool_tokens += body_size // 4
-        with contextlib.suppress(Exception):
-            session.save(_fetch_cache)
 
     if body_size < _WEB_CACHE_MIN_BYTES:
+        # Small fetch: no mark_web_fetch follows, so save the token increment now.
+        if _fetch_cache is not None:
+            with contextlib.suppress(Exception):
+                session.save(_fetch_cache)
         _LOG.debug(
             "post-fetch: body too small to cache (%d bytes < %d threshold)",
             body_size, _WEB_CACHE_MIN_BYTES,
         )
         return CONTINUE()
+    # Large fetch: mark_web_fetch below commits both observed_tool_tokens and the web entry in one write.
 
     cfg = config.load()
     meta = web_cache.store_output(
