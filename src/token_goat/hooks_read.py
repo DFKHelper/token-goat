@@ -2323,6 +2323,49 @@ def _handle_bash_streak_hint(payload: HookPayload) -> HookResponse | None:
     return pre_tool_use_with_context(hint)
 
 
+#: Commands that indicate status-checking / polling behaviour.
+_POLL_CMDS_RE = _re.compile(
+    r"\b(?:gh\s+(?:run|pr|workflow|check)|curl\b|wget\b|ping\b|"
+    r"docker\s+(?:ps|logs|stats|wait|inspect)|kubectl\s+(?:get|describe|logs|wait)|"
+    r"\bwatch\b)\b",
+    _re.IGNORECASE,
+)
+_POLL_STALE_SECS: float = 600.0  # suppress hint if last run was > 10 min ago (session moved on)
+_POLL_MIN_RUNS: int = 2  # run_count >= 2 means this would be the 3rd+ run
+
+
+def _handle_bash_poll_hint(payload: HookPayload) -> HookResponse | None:
+    """Advisory hint when a status-checking command is run rapidly 3+ times."""
+    import time as _time  # noqa: PLC0415
+
+    from . import bash_cache as _bc  # noqa: PLC0415
+    tool_input = get_tool_input(payload)
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or not _POLL_CMDS_RE.search(cmd):
+        return None
+    sid, cwd = get_session_context(payload)
+    if not sid:
+        return None
+    cmd_sha = _bc.command_hash(cmd, cwd)
+    sess = _get_session()
+    cache = sess.safe_load(sid, caller="bash_poll_hint")
+    entry = sess.lookup_bash_entry(sid, cmd_sha, cache=cache)
+    if entry is None or entry.run_count < _POLL_MIN_RUNS:
+        return None
+    if _time.time() - entry.ts > _POLL_STALE_SECS:
+        return None
+    hint = (
+        f"This command has run {entry.run_count}× recently — looks like manual polling.\n"
+        f"Replace repeated calls with a loop:\n"
+        f"  `until <success-condition>; do sleep 5; done`\n"
+        f"Or retrieve the cached output: `token-goat bash-output {entry.output_id}`"
+    )
+    with contextlib.suppress(Exception):
+        from . import db as _db  # noqa: PLC0415
+        _db.record_stat(sid, "bash_poll_hint", detail=sanitize_log_str(cmd[:80]))
+    return pre_tool_use_with_context(hint)
+
+
 #: Max file size to hash for cross-file content-dedup check in pre_read.
 _CONTENT_DEDUP_MAX_BYTES: int = 500_000
 #: Maximum result bytes to cache for Grep result dedup serving.
@@ -3165,6 +3208,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
         bash_streak_hint = _handle_bash_streak_hint(payload)
         if bash_streak_hint is not None:
             return bash_streak_hint
+
+        bash_poll_hint = _handle_bash_poll_hint(payload)
+        if bash_poll_hint is not None:
+            return bash_poll_hint
 
         read_payload = _handle_bash_read_equivalent(payload)
         if read_payload:

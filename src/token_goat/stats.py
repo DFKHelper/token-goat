@@ -198,6 +198,7 @@ _KIND_TO_SOURCE: dict[str, str] = {
     "bash_dedup_hint": SOURCE_BASH,
     "bash_range_read_hint": SOURCE_BASH,
     "bash_streak_hint": SOURCE_BASH,
+    "bash_poll_hint": SOURCE_BASH,
     "mcp_cache_invalidated": SOURCE_MCP,
     "bash_output_cached": SOURCE_BASH,
     # bash_output_too_small: fired by post_bash when an output is skipped from
