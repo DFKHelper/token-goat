@@ -19,14 +19,19 @@ The threshold is exercised by patching ``config.load`` with a Config whose
 """
 from __future__ import annotations
 
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from hook_helpers import assert_deny
 
 from token_goat import config as cfg_mod
 from token_goat import hooks_read
+from token_goat.hooks_read import _INLINE_SKELETON_MAX_CHARS, _try_get_inline_skeleton
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -289,3 +294,136 @@ class TestLargeReadConfig:
     def test_env_disable(self, monkeypatch):
         monkeypatch.setenv("TOKEN_GOAT_LARGE_READ_BYTES", "0")
         assert cfg_mod.load().hints.large_read_redirect_bytes == 0
+
+
+# ---------------------------------------------------------------------------
+# _try_get_inline_skeleton unit tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def indexed_py(tmp_path, tmp_data_dir, make_project, monkeypatch):
+    """Small indexed Python project (py_sample fixture)."""
+    proj_root = tmp_path / "py_proj"
+    shutil.copytree(FIXTURE_DIR / "py_sample", proj_root)
+    (proj_root / ".git").mkdir(exist_ok=True)
+    from token_goat.parser import index_project  # noqa: PLC0415
+    monkeypatch.chdir(proj_root)
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+    return proj_root, proj
+
+
+class TestInlineSkeleton:
+    def test_returns_symbols_for_indexed_file(self, indexed_py):
+        proj_root, _ = indexed_py
+        result = _try_get_inline_skeleton(str(proj_root / "app.py"))
+        assert result != ""
+        assert "greet" in result or "UserService" in result
+
+    def test_output_format_has_line_kind_name_columns(self, indexed_py):
+        proj_root, _ = indexed_py
+        result = _try_get_inline_skeleton(str(proj_root / "app.py"))
+        assert result != ""
+        for line in result.splitlines():
+            if line.startswith("  ("):  # truncation note
+                continue
+            parts = line.split()
+            assert parts[0].isdigit(), f"Expected line number first: {line!r}"
+
+    def test_returns_empty_for_nonexistent_file(self, tmp_path, tmp_data_dir):
+        result = _try_get_inline_skeleton(str(tmp_path / "no_such.py"))
+        assert result == ""
+
+    def test_returns_empty_for_unindexed_file(self, tmp_path, tmp_data_dir, make_project, monkeypatch):
+        proj_root = tmp_path / "bare"
+        proj_root.mkdir()
+        (proj_root / ".git").mkdir()
+        (proj_root / "some.py").write_text("def foo(): pass\n")
+        # Do NOT index — skeleton query should find no rows → ""
+        make_project(proj_root)
+        result = _try_get_inline_skeleton(str(proj_root / "some.py"))
+        assert result == ""
+
+    def test_truncates_when_symbols_exceed_cap(self, indexed_py, monkeypatch):
+        proj_root, _ = indexed_py
+        monkeypatch.setattr(hooks_read, "_INLINE_SKELETON_MAX_CHARS", 30)
+        result = _try_get_inline_skeleton(str(proj_root / "app.py"))
+        assert result != ""
+        assert "(+" in result and "more symbols)" in result
+
+    def test_fails_soft_on_db_exception(self, indexed_py):
+        proj_root, _ = indexed_py
+        with patch("token_goat.db.open_project_readonly", side_effect=RuntimeError("db boom")):
+            result = _try_get_inline_skeleton(str(proj_root / "app.py"))
+        assert result == ""
+
+    def test_respects_max_chars_constant(self, indexed_py):
+        """Output must never exceed _INLINE_SKELETON_MAX_CHARS (plus the truncation line)."""
+        proj_root, _ = indexed_py
+        result = _try_get_inline_skeleton(str(proj_root / "app.py"))
+        if "(+" in result:
+            # Truncated: everything before the final "+N more" note fits in cap
+            body = result.rsplit("\n", 1)[0]
+            assert len(body) <= _INLINE_SKELETON_MAX_CHARS
+        else:
+            assert len(result) <= _INLINE_SKELETON_MAX_CHARS
+
+
+# ---------------------------------------------------------------------------
+# Integration: skeleton appears in large-read deny context
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def indexed_large_py(tmp_path, tmp_data_dir, make_project, monkeypatch):
+    """Indexed project that also has a large Python file to trigger the deny."""
+    proj_root = tmp_path / "big_proj"
+    shutil.copytree(FIXTURE_DIR / "py_sample", proj_root)
+    (proj_root / ".git").mkdir(exist_ok=True)
+
+    # Write a Python file with real symbols, then index it
+    big_py = proj_root / "big.py"
+    funcs = "\n".join(f"def func_{i}():\n    pass\n" for i in range(60))
+    big_py.write_text(funcs)
+
+    from token_goat.parser import index_project  # noqa: PLC0415
+    monkeypatch.chdir(proj_root)
+    proj = make_project(proj_root)
+    index_project(proj, full=True)
+
+    # Pad the file to exceed the redirect threshold AFTER indexing (DB keeps old symbols)
+    big_py.write_bytes(big_py.read_bytes() + b"\n# padding\n" + b"A" * 60_000)
+    return proj_root, big_py
+
+
+class TestLargeReadWithSkeleton:
+    def test_deny_embeds_skeleton_for_indexed_file(self, indexed_large_py):
+        proj_root, big_py = indexed_large_py
+        with patch.object(cfg_mod, "load", return_value=_cfg(45_000)):
+            result = hooks_read.pre_read(_read_payload(big_py, proj_root))
+        assert_deny(result)
+        ctx = _ctx(result)
+        assert "Indexed symbols in this file:" in ctx
+        assert "func_0" in ctx or "func_1" in ctx
+
+    def test_deny_omits_skeleton_for_unindexed_file(self, tmp_data_dir, tmp_path):
+        """A file with no DB entry should still produce a deny — just no skeleton block."""
+        f = _write(tmp_path / "dump.md", 60_000)
+        with patch.object(cfg_mod, "load", return_value=_cfg(45_000)):
+            result = hooks_read.pre_read(_read_payload(f, tmp_path))
+        assert_deny(result)
+        assert "Indexed symbols in this file:" not in _ctx(result)
+
+    def test_deny_embeds_skeleton_sentinel(self, tmp_data_dir, tmp_path):
+        """Stub _try_get_inline_skeleton to a sentinel to verify the embed path exactly."""
+        f = _write(tmp_path / "large.py", 60_000)
+        sentinel = "SENTINEL_SKELETON_OUTPUT"
+        with (
+            patch.object(cfg_mod, "load", return_value=_cfg(45_000)),
+            patch.object(hooks_read, "_try_get_inline_skeleton", return_value=sentinel),
+        ):
+            result = hooks_read.pre_read(_read_payload(f, tmp_path))
+        assert_deny(result)
+        ctx = _ctx(result)
+        assert f"Indexed symbols in this file:\n{sentinel}" in ctx

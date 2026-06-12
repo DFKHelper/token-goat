@@ -2089,10 +2089,73 @@ def _handle_large_read_redirect(
         f"Or re-issue this Read with `offset`/`limit` to window it — windowed reads pass "
         f"through unchanged, and unindexed files (transcripts, logs) support that path too."
     )
+    skeleton_text = _try_get_inline_skeleton(file_path)
+    if skeleton_text:
+        context += f"\n\nIndexed symbols in this file:\n{skeleton_text}"
+
     with contextlib.suppress(Exception):
         from . import db  # noqa: PLC0415
         db.record_stat(None, "large_read_redirect", detail=f"{sanitize_log_str(file_path)} size={size}")
     return deny_redirect(reason, context)
+
+
+_INLINE_SKELETON_MAX_CHARS: int = 800
+_INLINE_SKELETON_KINDS: frozenset[str] = frozenset({
+    "function", "method", "class", "interface", "struct", "trait", "enum",
+    "type_alias", "constructor", "property", "decorator",
+})
+
+
+def _try_get_inline_skeleton(file_path: str) -> str:
+    """Return a compact skeleton listing for *file_path* from the index DB.
+
+    Queries the symbol DB to produce a ``line  kind  name`` table — the same
+    content as ``token-goat skeleton`` but without spawning a subprocess.  Returns
+    ``""`` on any error so it is safe to call unconditionally from deny handlers.
+    The output is capped at _INLINE_SKELETON_MAX_CHARS characters; a ``(+N more)``
+    note is appended when symbols were truncated.
+    """
+    try:
+        from . import db as _db  # noqa: PLC0415
+        from . import read_replacement as _rr  # noqa: PLC0415
+        from .project import find_project  # noqa: PLC0415
+
+        abs_path = Path(file_path) if Path(file_path).is_absolute() else Path.cwd() / file_path
+        cwd_path = abs_path.parent
+        proj = find_project(cwd_path)
+        if proj is None:
+            return ""
+        file_rel = _rr.resolve_file_rel(proj, str(abs_path))
+        if not file_rel:
+            return ""
+
+        with _db.open_project_readonly(proj.hash) as conn:
+            rows = conn.execute(
+                "SELECT name, kind, line FROM symbols "
+                "WHERE file_rel = ? AND kind IN ("
+                + ",".join("?" * len(_INLINE_SKELETON_KINDS))
+                + ") AND end_line IS NOT NULL ORDER BY line",
+                (file_rel, *_INLINE_SKELETON_KINDS),
+            ).fetchall()
+
+        if not rows:
+            return ""
+
+        lines: list[str] = []
+        for row in rows:
+            lines.append(f"  {row['line']:4d}  {row['kind']:<12}  {row['name']}")
+
+        text = "\n".join(lines)
+        if len(text) <= _INLINE_SKELETON_MAX_CHARS:
+            return text
+        truncated = text[:_INLINE_SKELETON_MAX_CHARS].rsplit("\n", 1)[0]
+        shown = truncated.count("\n") + 1
+        remaining = len(lines) - shown
+        if remaining > 0:
+            return truncated + f"\n  (+{remaining} more symbols)"
+        return truncated
+    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+        return ""
 
 
 def _handle_large_grep_redirect(payload: HookPayload) -> HookResponse | None:
