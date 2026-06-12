@@ -1870,10 +1870,7 @@ def _index_spawn_active(marker: Path) -> bool:
     try:
         cmdline = " ".join(psutil.Process(pid).cmdline()).lower()
         if "token_goat" not in cmdline and pid != os.getpid():
-            # pid == os.getpid() means the marker was written by the current process
-            # (e.g. a test using os.getpid() as a live-PID stand-in).  The daemon
-            # always spawns an external subprocess, so this branch is unreachable in
-            # production — it only fires when test infrastructure reuses its own PID.
+            # pid == os.getpid(): marker written by current process (test using os.getpid() as live-PID stand-in); daemon always spawns an external subprocess so this is unreachable in production.
             _LOG.debug("_index_spawn_active: PID %d alive but cmdline lacks token_goat; treating as recycled", pid)
             return False
     except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):

@@ -668,12 +668,7 @@ def kill_duplicate_daemon() -> str:
     except OSError as exc:
         return f"Failed to kill PID {pid}: {exc}."
 
-    # Remove the stale PID file so subsequent is_worker_alive() / --check calls
-    # reflect the kill immediately without waiting for ensure_running to clean up.
-    # On Windows, TerminateProcess is synchronous so unlink is safe right away.
-    # On POSIX, SIGTERM is a request; the process may linger briefly, but
-    # is_worker_alive already checks heartbeat freshness, so leaving a briefly-
-    # live PID around with a stale heartbeat does not cause a false positive.
+    # Remove the stale PID file so subsequent is_worker_alive() / --check calls reflect the kill immediately; on POSIX the process may linger but heartbeat freshness prevents a false positive.
     with contextlib.suppress(OSError):
         pid_path.unlink()
 

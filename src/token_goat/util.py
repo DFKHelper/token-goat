@@ -93,8 +93,7 @@ def normalize_path(path: str | Path) -> str:
     """
     s = str(path)
 
-    # Step 2: replace backslashes before WSL check so mixed-separator paths like
-    # /mnt/c/foo\bar are fully normalized before the regex runs.
+    # Step 2: replace backslashes before WSL check so mixed-separator paths like /mnt/c/foo\bar are fully normalized before the regex runs.
     if "\\" in s:
         s = s.replace("\\", "/")
 
