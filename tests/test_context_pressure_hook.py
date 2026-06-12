@@ -297,3 +297,248 @@ class TestTierForFractionBoundaries:
         assert tier_for_fraction(CONTEXT_TIER_HOT) == "hot"
         assert tier_for_fraction(CONTEXT_TIER_CRITICAL - 0.001) == "hot"
         assert tier_for_fraction(CONTEXT_TIER_CRITICAL) == "critical"
+
+
+class TestPressureBaselineCompactionReset:
+    """Test suite for pressure_baseline_tokens compaction reset feature.
+
+    Verifies that the baseline-subtraction mechanism correctly resets context
+    pressure after compaction, preventing false "critical" readings on sessions
+    that have already compacted.
+    """
+
+    def test_raw_total_formula(self):
+        """Test _pressure_raw_total computes the correct token sum.
+
+        Formula: skill_tokens + CATALOG_TOKENS + bash_count*500 + web_count*1000 + read_count*200
+        """
+        import time
+
+        from token_goat.compact import CATALOG_TOKENS, _pressure_raw_total
+        from token_goat.session import SessionCache
+
+        cache = SessionCache(
+            session_id="test-formula",
+            started_ts=time.time(),
+            last_activity_ts=time.time(),
+            created_ts=time.time(),
+        )
+        # Set up known counts
+        cache.loaded_skill_total_tokens = 100
+        cache.bash_history = {f"h{i}": {"cmd": "x", "ts": 1.0} for i in range(3)}
+        cache.web_history = {f"w{i}": {"url": "http://x", "ts": 1.0} for i in range(2)}
+        cache.files = {f"f{i}.py": {} for i in range(5)}
+
+        raw = _pressure_raw_total(cache)
+        expected = 100 + CATALOG_TOKENS + 3 * 500 + 2 * 1000 + 5 * 200
+        assert raw == expected, f"Expected {expected}, got {raw}"
+
+    def test_baseline_subtraction_drops_fill(self):
+        """Test that setting baseline_tokens to raw_total resets fill to 0.
+
+        High-activity cache initially registers high fill; after setting
+        pressure_baseline_tokens to the raw total, fill drops to 0 and tier
+        becomes "cool".
+        """
+        import time
+
+        from token_goat.compact import (
+            _pressure_raw_total,
+            get_context_pressure,
+        )
+        from token_goat.session import SessionCache
+
+        cache = SessionCache(
+            session_id="test-baseline-drop",
+            started_ts=time.time(),
+            last_activity_ts=time.time(),
+            created_ts=time.time(),
+        )
+        # Add enough bash entries to push fill above threshold
+        cache.bash_history = {f"h{i}": {"cmd": "x", "ts": 1.0} for i in range(20)}
+        cache.loaded_skill_total_tokens = 0
+
+        # Assert cache is at elevated pressure before baseline is set
+        pressure_before = get_context_pressure(cache=cache)
+        assert pressure_before.fill_fraction > 0.0, "Cache should have positive fill before baseline"
+
+        # Set baseline to current raw total
+        cache.pressure_baseline_tokens = _pressure_raw_total(cache)
+
+        # Assert fill drops to 0 (or effectively 0 due to max(0, ...))
+        pressure_after = get_context_pressure(cache=cache)
+        assert pressure_after.fill_fraction == 0.0, f"Fill should be 0, got {pressure_after.fill_fraction}"
+        assert pressure_after.tier == "cool", f"Tier should be 'cool', got {pressure_after.tier}"
+
+    def test_baseline_subtraction_incremental(self):
+        """Test that new activity is measured against the baseline.
+
+        Simulate post-compact state: set pressure_baseline_tokens, then add
+        incremental activity. Verify fill_fraction = new_tokens / CONTEXT_AUTOCOMPACT_TOKENS.
+        """
+        import time
+
+        import pytest
+
+        from token_goat.compact import (
+            CONTEXT_AUTOCOMPACT_TOKENS,
+            _pressure_raw_total,
+            get_context_pressure,
+        )
+        from token_goat.session import SessionCache
+
+        cache = SessionCache(
+            session_id="test-incremental",
+            started_ts=time.time(),
+            last_activity_ts=time.time(),
+            created_ts=time.time(),
+        )
+        # Build baseline from some initial state
+        cache.bash_history = {f"h{i}": {"cmd": "x", "ts": 1.0} for i in range(10)}
+        baseline_raw = _pressure_raw_total(cache)
+        cache.pressure_baseline_tokens = baseline_raw
+
+        # Add 1 new bash entry = 500 additional tokens
+        cache.bash_history["h_new"] = {"cmd": "echo hi", "ts": 1.0}
+
+        raw = _pressure_raw_total(cache)
+        effective = raw - cache.pressure_baseline_tokens
+        expected_fill = max(0, effective) / CONTEXT_AUTOCOMPACT_TOKENS
+
+        pressure = get_context_pressure(cache=cache)
+        assert pressure.fill_fraction == pytest.approx(expected_fill, rel=1e-6)
+        # Verify it's approximately 500 / 660_000
+        assert pressure.fill_fraction == pytest.approx(500 / CONTEXT_AUTOCOMPACT_TOKENS, rel=1e-6)
+
+    def test_baseline_zero_initially(self):
+        """Test that new SessionCache instances start with pressure_baseline_tokens=0."""
+        import time
+
+        from token_goat.session import SessionCache
+
+        cache = SessionCache(
+            session_id="test-zero",
+            started_ts=time.time(),
+            last_activity_ts=time.time(),
+            created_ts=time.time(),
+        )
+        assert cache.pressure_baseline_tokens == 0, "New cache should have baseline=0"
+
+    def test_serialization_roundtrip(self):
+        """Test that pressure_baseline_tokens survives to_dict/from_dict roundtrip."""
+        import time
+
+        from token_goat.session import SessionCache
+
+        cache = SessionCache(
+            session_id="test-serialize",
+            started_ts=time.time(),
+            last_activity_ts=time.time(),
+            created_ts=time.time(),
+        )
+        cache.pressure_baseline_tokens = 12345
+
+        # Convert to dict
+        d = cache.to_dict()
+        assert "pressure_baseline_tokens" in d, "Dict should contain pressure_baseline_tokens"
+        assert d["pressure_baseline_tokens"] == 12345
+
+        # Roundtrip back
+        cache2 = SessionCache.from_dict(d)
+        assert cache2.pressure_baseline_tokens == 12345
+
+    def test_negative_raw_total_floors_to_zero(self):
+        """Test that a stale baseline higher than raw_total floors at 0.
+
+        If pressure_baseline_tokens > _pressure_raw_total(cache), the fill
+        should floor at 0 (not go negative).
+        """
+        import time
+
+        from token_goat.compact import get_context_pressure
+        from token_goat.session import SessionCache
+
+        cache = SessionCache(
+            session_id="test-floor",
+            started_ts=time.time(),
+            last_activity_ts=time.time(),
+            created_ts=time.time(),
+        )
+        # Set a very high baseline
+        cache.pressure_baseline_tokens = 999_999_999
+
+        # Cache has minimal activity
+        cache.bash_history = {"h0": {"cmd": "x", "ts": 1.0}}
+
+        pressure = get_context_pressure(cache=cache)
+        assert pressure.fill_fraction == 0.0, f"Fill should floor at 0, got {pressure.fill_fraction}"
+        assert pressure.tier == "cool"
+
+    def test_baseline_with_multiple_sources(self):
+        """Test baseline subtraction with activity across all sources.
+
+        Verify formula with skill tokens, bash, web, and file reads all present.
+        """
+        import time
+
+        import pytest
+
+        from token_goat.compact import _pressure_raw_total, get_context_pressure
+        from token_goat.session import SessionCache
+
+        cache = SessionCache(
+            session_id="test-multi-source",
+            started_ts=time.time(),
+            last_activity_ts=time.time(),
+            created_ts=time.time(),
+        )
+        cache.loaded_skill_total_tokens = 200
+        cache.bash_history = {f"h{i}": {"cmd": "x", "ts": 1.0} for i in range(5)}
+        cache.web_history = {f"w{i}": {"url": "http://x", "ts": 1.0} for i in range(3)}
+        cache.files = {f"f{i}.py": {} for i in range(10)}
+
+        # Get the raw total before setting baseline
+        raw_before_baseline = _pressure_raw_total(cache)
+
+        # Set baseline to 30% of raw total
+        baseline_thirty_percent = int(raw_before_baseline * 0.3)
+        cache.pressure_baseline_tokens = baseline_thirty_percent
+
+        # Get pressure: should be 70% of pre-baseline fill
+        pressure = get_context_pressure(cache=cache)
+        expected_raw = raw_before_baseline
+        expected_effective = expected_raw - baseline_thirty_percent
+        expected_fill = expected_effective / 660_000  # CONTEXT_AUTOCOMPACT_TOKENS
+
+        assert pressure.fill_fraction == pytest.approx(expected_fill, rel=1e-6)
+
+    def test_baseline_persists_across_activity(self):
+        """Test that baseline does not change when new activity is added.
+
+        Once baseline is set, it remains fixed as new bash/web/read entries
+        are added. The fill should increase incrementally.
+        """
+        import time
+
+        from token_goat.compact import _pressure_raw_total, get_context_pressure
+        from token_goat.session import SessionCache
+
+        cache = SessionCache(
+            session_id="test-persist",
+            started_ts=time.time(),
+            last_activity_ts=time.time(),
+            created_ts=time.time(),
+        )
+        cache.bash_history = {f"h{i}": {"cmd": "x", "ts": 1.0} for i in range(2)}
+        baseline = _pressure_raw_total(cache)
+        cache.pressure_baseline_tokens = baseline
+
+        pressure1 = get_context_pressure(cache=cache)
+        assert pressure1.fill_fraction == 0.0
+
+        # Add new bash entry
+        cache.bash_history["h_new"] = {"cmd": "y", "ts": 1.0}
+        pressure2 = get_context_pressure(cache=cache)
+        # Fill should now reflect the new 500-token entry
+        assert pressure2.fill_fraction > 0.0, "Fill should increase with new activity"
+        assert pressure2.fill_fraction < 0.001, "Fill should be small (500/660000 ≈ 0.00075)"
