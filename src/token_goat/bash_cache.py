@@ -32,12 +32,14 @@ __all__ = [
     "OUTPUT_FILENAME_RE",
     "BashOutputMeta",
     "command_hash",
+    "dir_state_fingerprint",
     "evict_old_entries",
     "find_cached_for_command",
     "get_recent_error_outputs",
     "git_state_fingerprint",
     "glob_hash",
     "grep_hash",
+    "is_dir_listing_command",
     "is_git_immutable_command",
     "is_git_mutable_command",
     "store_grep_result",
@@ -134,6 +136,12 @@ _SORT_FLAG_TOOLS: frozenset[str] = frozenset({"pytest", "rg", "grep", "git"})
 _GIT_MUTABLE_RE: re.Pattern[str] = re.compile(r"^\s*git\s+(diff|status)\b", re.IGNORECASE)
 # git show <full-40-char-sha>: output is immutable — can never change for a given SHA.
 _GIT_IMMUTABLE_RE: re.Pattern[str] = re.compile(r"^\s*git\s+show\s+[0-9a-f]{40}\b", re.IGNORECASE)
+# ls/eza/dir/Get-ChildItem: output changes with directory contents.
+_LS_CMD_RE: re.Pattern[str] = re.compile(
+    r"^\s*(?:ls|eza|exa|dir|Get-ChildItem|gci)\b", re.IGNORECASE
+)
+# Tokens that look like flags — skipped when extracting the target path.
+_LS_FLAG_RE: re.Pattern[str] = re.compile(r"^-")
 
 
 @dataclass
@@ -209,6 +217,46 @@ def git_state_fingerprint(cwd: str) -> str | None:
         if index_file.is_file():
             index_mtime = str(index_file.stat().st_mtime_ns)
         return short_content_hash(f"{head_content}\x00{index_mtime}")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def is_dir_listing_command(cmd: str) -> bool:
+    """True for ls/eza/dir commands whose output changes with directory contents."""
+    return bool(_LS_CMD_RE.search(cmd))
+
+
+def _extract_ls_target(cmd: str, cwd: str | None) -> str | None:
+    """Return the directory path targeted by a listing command.
+
+    Strips the binary name and flag tokens (anything starting with ``-``),
+    returning the first positional argument. Falls back to *cwd* when no path
+    argument is found (a bare ``ls`` lists the current directory).
+    """
+    tokens = cmd.strip().split()
+    for token in tokens[1:]:
+        if not _LS_FLAG_RE.match(token):
+            return token
+    return cwd
+
+
+def dir_state_fingerprint(path: str) -> str | None:
+    """Return a short fingerprint sensitive to namespace changes in a directory.
+
+    Uses the directory mtime (nanoseconds), which advances on NTFS, ext4, and
+    APFS when files are created, deleted, or renamed inside the directory. This
+    covers namespace-change cache busting for ``ls``/``eza``/``dir`` output.
+    It does NOT track edits to existing files (mtime of existing children, size
+    changes) — for that, the existing dedup system already serves stale output
+    without this salt, so this is a net improvement over the baseline. Returns
+    ``None`` on any I/O error so callers fall back to fingerprint-free hashing.
+    """
+    try:
+        from pathlib import Path as _P
+        target = _P(path)
+        if not target.is_dir():
+            return None
+        return short_content_hash(str(target.stat().st_mtime_ns))
     except Exception:  # noqa: BLE001
         return None
 
@@ -361,6 +409,19 @@ def command_hash(command: str, cwd: str | None = None) -> str:
         fp = git_state_fingerprint(normalize_path(cwd))
         if fp is not None:
             key = f"{key}\x00git:{fp}"
+    # For directory-listing commands (ls, eza, dir), salt with the target
+    # directory's mtime so the cache busts on namespace changes (create/delete/rename).
+    # Relative targets are resolved against the command cwd, not the Python process cwd.
+    if cwd is not None and is_dir_listing_command(command):
+        norm_cwd = normalize_path(cwd)
+        raw_target = _extract_ls_target(command, norm_cwd)
+        if raw_target is not None:
+            from pathlib import Path as _tgt_P
+            _t = _tgt_P(raw_target)
+            resolved_target = str((_tgt_P(norm_cwd) / _t) if not _t.is_absolute() else _t)
+            fp = dir_state_fingerprint(resolved_target)
+            if fp is not None:
+                key = f"{key}\x00dir:{fp}"
     return short_content_hash(key)
 
 
