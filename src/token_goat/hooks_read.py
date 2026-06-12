@@ -2230,6 +2230,52 @@ def _handle_indexed_cat_deny(
     return deny_redirect(reason, context)
 
 
+def _handle_bash_range_read_hint(payload: HookPayload) -> HookResponse | None:
+    """Advisory hint for sed/awk windowed reads of indexed files.
+
+    When a Bash command is a line-range read (e.g. ``sed -n '10,30p' file.py``
+    or ``awk 'NR>=10&&NR<=30' file.py``) and the target file is indexed, inject
+    an advisory suggesting the equivalent ``token-goat read "file::symbol"``
+    command so the agent can use a symbol name instead of guessing line numbers.
+
+    Always advisory (never a deny) — the windowed read is already targeted and
+    small; we just surface the surgical form for future reference.
+    """
+    from . import bash_parser  # noqa: PLC0415
+
+    tool_input = get_tool_input(payload)
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str):
+        return None
+    intent = bash_parser.parse(cmd)
+    if intent.kind != "read":
+        return None
+    if intent.offset is None and intent.limit is None:
+        return None  # whole-file read — handled by _handle_indexed_cat_deny
+    if not intent.target_path:
+        return None
+    skeleton_text = _try_get_inline_skeleton(intent.target_path)
+    if not skeleton_text:
+        return None
+    name = Path(intent.target_path).name
+    range_desc = ""
+    if intent.offset is not None and intent.limit is not None:
+        range_desc = f" lines {intent.offset}–{intent.offset + intent.limit - 1}"
+    elif intent.offset is not None:
+        range_desc = f" from line {intent.offset}"
+    elif intent.limit is not None:
+        range_desc = f" first {intent.limit} lines"
+    hint = (
+        f"`{name}`{range_desc} is indexed — use a symbol name instead of a line range:\n"
+        f'  `token-goat read "{intent.target_path}::<symbol>"`\n\n'
+        f"Indexed symbols:\n{skeleton_text}"
+    )
+    with contextlib.suppress(Exception):
+        from . import db as _db  # noqa: PLC0415
+        _db.record_stat(None, "bash_range_read_hint", detail=sanitize_log_str(intent.target_path))
+    return pre_tool_use_with_context(hint)
+
+
 #: Max file size to hash for cross-file content-dedup check in pre_read.
 _CONTENT_DEDUP_MAX_BYTES: int = 500_000
 #: Maximum result bytes to cache for Grep result dedup serving.
@@ -3064,6 +3110,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
         bash_grep_dedup = _handle_bash_grep_dedup(payload)
         if bash_grep_dedup is not None:
             return bash_grep_dedup
+
+        bash_range_hint = _handle_bash_range_read_hint(payload)
+        if bash_range_hint is not None:
+            return bash_range_hint
 
         read_payload = _handle_bash_read_equivalent(payload)
         if read_payload:
