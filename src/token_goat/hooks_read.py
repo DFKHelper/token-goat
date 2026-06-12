@@ -364,6 +364,9 @@ def _handle_bash_read_equivalent(payload: HookPayload) -> HookPayload | None:
         "offset": normalised_offset,
         "limit": intent.limit,
     }
+    # Mark whole-file bash reads (cat/bat, no limit) so _handle_indexed_cat_deny can intercept at warm+.
+    if intent.limit is None and intent.offset is None:
+        read_payload["_tg_from_bash_cat"] = True
     return read_payload
 
 
@@ -2190,6 +2193,43 @@ def _handle_large_read_redirect(
     return deny_redirect(reason, context)
 
 
+def _handle_indexed_cat_deny(
+    file_path: str, tool_input: dict[str, object], tier: str
+) -> HookResponse | None:
+    """Deny a whole-file bash cat/bat read of an indexed source file at warm+ pressure.
+
+    Fires only when the payload was synthesised from a bash read-equivalent command
+    (flag ``_tg_from_bash_cat``), the read is not windowed (offset/limit absent),
+    the file is indexed (symbols in the DB), and context pressure is warm or above.
+    Returns a deny_redirect with the inline skeleton so the agent can target the
+    exact symbol it needs rather than loading the full file content.
+    """
+    if tier not in ("warm", "hot", "critical"):
+        return None
+    if _read_is_windowed(tool_input):
+        return None
+    skeleton_text = _try_get_inline_skeleton(file_path)
+    if not skeleton_text:
+        return None  # not indexed or no symbols — fall through
+    name = Path(file_path).name
+    reason = (
+        f"`{name}` is indexed — use surgical reads instead of cat at {tier} pressure."
+    )
+    context = (
+        f"**{name}** is indexed by token-goat. "
+        f"Read only what you need instead of the whole file:\n"
+        f'  - `token-goat read "{file_path}::<symbol>"` — one function/class\n'
+        f'  - `token-goat skeleton "{file_path}"` — symbol list\n'
+        f'  - `token-goat section "{file_path}::<Heading>"` — one section\n'
+        f"Or re-issue as Read with offset+limit to window it.\n\n"
+        f"Indexed symbols in this file:\n{skeleton_text}"
+    )
+    with contextlib.suppress(Exception):
+        from . import db  # noqa: PLC0415
+        db.record_stat(None, "indexed_cat_deny", detail=sanitize_log_str(file_path))
+    return deny_redirect(reason, context)
+
+
 #: Max file size to hash for cross-file content-dedup check in pre_read.
 _CONTENT_DEDUP_MAX_BYTES: int = 500_000
 #: Maximum result bytes to cache for Grep result dedup serving.
@@ -3113,6 +3153,12 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 _eff_threshold = 350
         except Exception:  # noqa: BLE001 — fail-soft; never block a Read
             pass
+
+        # Deny whole-file bash cat/bat on indexed files at warm+; flag set by _handle_bash_read_equivalent only for no-limit reads.
+        if payload.get("_tg_from_bash_cat") and _ctx_tier in ("warm", "hot", "critical"):
+            _cat_deny = _handle_indexed_cat_deny(file_path, tool_input, _ctx_tier)
+            if _cat_deny is not None:
+                return _cat_deny
 
         # Deferred recovery hint: inject on the first Read after compaction.
         # This fires before all other hints so the recovery context is the first
