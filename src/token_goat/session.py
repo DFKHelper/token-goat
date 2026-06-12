@@ -632,6 +632,17 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         for _ in range(items_to_remove):
             merged.grep_result_hashes.pop(next(iter(merged.grep_result_hashes)))
 
+    # mcp_result_hashes: first-seen wins (remote takes precedence, same as grep_result_hashes).
+    merged_mcp_hashes = dict(remote.mcp_result_hashes)
+    for hash_key, output_id in local.mcp_result_hashes.items():
+        if hash_key not in merged_mcp_hashes:
+            merged_mcp_hashes[hash_key] = output_id
+    merged.mcp_result_hashes = merged_mcp_hashes
+    if len(merged.mcp_result_hashes) > MCP_RESULT_HASHES_MAX:
+        items_to_remove = len(merged.mcp_result_hashes) - (MCP_RESULT_HASHES_MAX - _MCP_RESULT_HASHES_EVICT)
+        for _ in range(items_to_remove):
+            merged.mcp_result_hashes.pop(next(iter(merged.mcp_result_hashes)))
+
     # file_content_seen: first-seen wins — remote (older writer) takes precedence.
     merged_fcs = dict(remote.file_content_seen)
     for sha16, fpath in local.file_content_seen.items():
@@ -1027,6 +1038,9 @@ _GREPS_HISTORY_EVICT: Final[int] = 15
 # keeps the most recent hashes (most likely to be repeated).
 GREP_RESULT_HASHES_MAX: Final[int] = 50
 _GREP_RESULT_HASHES_EVICT: Final[int] = 5
+# mcp_result_hashes dict maps (tool_name+input) hash → output_id for MCP call dedup.
+MCP_RESULT_HASHES_MAX: Final[int] = 100
+_MCP_RESULT_HASHES_EVICT: Final[int] = 10
 # Maximum number of file-content SHA entries retained per session.
 FILE_CONTENT_SEEN_MAX: Final[int] = 500
 _FILE_CONTENT_SEEN_EVICT: Final[int] = 50
@@ -1147,6 +1161,10 @@ class SessionCache:
     # same results, enabling a "Same results as pattern X" dedup hint.  FIFO-evicted
     # at GREP_RESULT_HASHES_MAX to prevent unbounded growth in long sessions.
     grep_result_hashes: dict[str, str] = field(default_factory=dict)
+    # Per-session MCP result cache: maps (tool_name+input) hash → output_id.  Used
+    # by pre-fetch hook to detect repeated read-only MCP calls and serve cached content.
+    # Missing in older sessions → empty dict. FIFO-evicted at MCP_RESULT_HASHES_MAX.
+    mcp_result_hashes: dict[str, str] = field(default_factory=dict)
     # Cross-file content dedup: maps file_content_sha16 (first 16 SHA-1 hex chars) →
     # normalized path of the *first* file seen with that content.  Used by pre_read to
     # deny a read of a file whose content is identical to a file already read this session.
@@ -1409,6 +1427,7 @@ class SessionCache:
             observed_tool_tokens=self.observed_tool_tokens,
             file_content_seen=dict(self.file_content_seen),
             pytest_failures=dict(self.pytest_failures),
+            mcp_result_hashes=dict(self.mcp_result_hashes),
         )
 
     def to_json(self) -> str:
@@ -1643,6 +1662,23 @@ class SessionCache:
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
 
+    def lookup_mcp_output_id(self, tool_input_hash: str) -> str | None:
+        """Return the cached output_id for an MCP tool call hash, or None."""
+        return self.mcp_result_hashes.get(tool_input_hash)
+
+    def record_mcp_result(self, tool_input_hash: str, output_id: str) -> None:
+        """Record a (tool_name+input) hash → output_id mapping for MCP dedup.
+
+        FIFO-evicted at MCP_RESULT_HASHES_MAX when the cap is exceeded.
+        """
+        self.mcp_result_hashes[tool_input_hash] = output_id
+        if len(self.mcp_result_hashes) > MCP_RESULT_HASHES_MAX:
+            items_to_remove = len(self.mcp_result_hashes) - (MCP_RESULT_HASHES_MAX - _MCP_RESULT_HASHES_EVICT)
+            for _ in range(items_to_remove):
+                self.mcp_result_hashes.pop(next(iter(self.mcp_result_hashes)))
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+
     # ------------------------------------------------------------------
     # Cross-file content dedup helpers
     # ------------------------------------------------------------------
@@ -1765,6 +1801,15 @@ class SessionCache:
             for hash_key, pattern in raw_grep_hashes.items():
                 if isinstance(hash_key, str) and isinstance(pattern, str) and hash_key and pattern:
                     grep_result_hashes[hash_key] = pattern
+
+        # mcp_result_hashes: dict[str, str] — tool_input_hash → output_id.
+        # Missing in older sessions → empty dict (backward compat). Malformed entries are skipped.
+        mcp_result_hashes: dict[str, str] = {}
+        raw_mcp_hashes = d.get("mcp_result_hashes", {})
+        if isinstance(raw_mcp_hashes, dict):
+            for hash_key, output_id in raw_mcp_hashes.items():
+                if isinstance(hash_key, str) and isinstance(output_id, str) and hash_key and output_id:
+                    mcp_result_hashes[hash_key] = output_id
 
         # file_content_seen: dict[str, str] — sha16 → first path seen with that content.
         # Missing in older sessions → empty dict (backward compat).
@@ -2040,6 +2085,7 @@ class SessionCache:
             observed_tool_tokens=observed_tool_tokens,
             file_content_seen=file_content_seen,
             pytest_failures=pytest_failures,
+            mcp_result_hashes=mcp_result_hashes,
         )
 
 
@@ -2558,6 +2604,7 @@ class _SessionDict(TypedDict, total=False):
     files: dict[str, _FileEntryDict]
     greps: list[_GrepEntryDict]
     grep_result_hashes: dict[str, str]
+    mcp_result_hashes: dict[str, str]
     edited_files: dict[str, int]
     result_cache: dict[str, _ResultCacheEntryDict]
     bash_history: dict[str, _BashEntryDict]

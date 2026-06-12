@@ -1,6 +1,6 @@
 """Pre/post-fetch hook handlers: image redirect + WebFetch text dedup cache.
 
-Three responsibilities run from this module:
+Four responsibilities run from this module:
 
 1. **Drive image / WebFetch image redirect** (existing): downloads to image
    URLs are routed through ``token-goat fetch-image`` so the shrink+cache
@@ -15,6 +15,13 @@ Three responsibilities run from this module:
    response body to ``data_dir() / "web_outputs"`` and records the
    ``(url_sha → output_id)`` mapping in the session cache so step 2 has
    something to point at.
+
+4. **MCP read-only call dedup** (new): repeated read-only MCP tool calls
+   (GitHub, Drive, Gmail list/get operations) are denied at warm+ pressure
+   when a cached result from the same session exists.  Small results are
+   inlined into the deny hint; larger ones are pointed at
+   ``token-goat mcp-output <output_id>``.  Results are captured by the
+   post-fetch hook and stored under ``data_dir() / "mcp_outputs"``.
 """
 from __future__ import annotations
 
@@ -31,6 +38,7 @@ from .hooks_common import (
     get_session_context,
     get_tool_input,
     is_real_int,
+    pre_tool_use_with_context,
     record_cached_stat,
     sanitize_log_str,
 )
@@ -281,6 +289,140 @@ def _check_url_allowdeny(url: str) -> HookResponse | None:
     return None  # no restrictions
 
 
+# Inline threshold for MCP results embedded directly in deny hints.
+_MCP_INLINE_THRESHOLD: int = 2048
+
+
+def _handle_mcp_dedup(
+    session_id: str,
+    tool_name: str,
+    tool_input: dict,  # type: ignore[type-arg]
+) -> HookResponse | None:
+    """Return a deny response when a cached result exists for this MCP call, else None.
+
+    Small cached results (≤ _MCP_INLINE_THRESHOLD bytes) are inlined so the
+    model doesn't need a follow-up command.  Larger results point at
+    ``token-goat mcp-output <output_id>``.
+    """
+    from . import session  # noqa: PLC0415
+    from .mcp_cache import load_mcp_result, mcp_hash  # noqa: PLC0415
+
+    cache = session.safe_load(session_id, caller="mcp_dedup")
+    if cache is None:
+        return None
+
+    h = mcp_hash(tool_name, tool_input)
+    output_id = cache.lookup_mcp_output_id(h)
+    if output_id is None:
+        return None
+
+    result_text = load_mcp_result(output_id)
+    if result_text is None:
+        return None
+
+    result_bytes = len(result_text.encode("utf-8", errors="replace"))
+    if result_bytes <= _MCP_INLINE_THRESHOLD:
+        reason = (
+            f"[MCP cache hit — this exact call already ran this session. "
+            f"Cached result ({result_bytes} bytes):\n{result_text}]"
+        )
+    else:
+        reason = (
+            f"[MCP cache hit — this exact call already ran this session ({result_bytes} bytes cached).\n"
+            f"Retrieve with: token-goat mcp-output {output_id}]"
+        )
+    return deny_redirect(reason, "mcp_dedup")
+
+
+def _handle_mcp_hint(
+    session_id: str,
+    tool_name: str,
+    tool_input: dict,  # type: ignore[type-arg]
+) -> HookResponse | None:
+    """Return a soft (non-blocking) hint when a cached MCP result exists, else None.
+
+    Used at cool pressure where the deny would be too aggressive — the model
+    is told a cached copy exists and given the retrieval command, but the live
+    call is still allowed to proceed.
+    """
+    from . import session  # noqa: PLC0415
+    from .mcp_cache import load_mcp_result, mcp_hash  # noqa: PLC0415
+
+    cache = session.safe_load(session_id, caller="mcp_hint")
+    if cache is None:
+        return None
+
+    h = mcp_hash(tool_name, tool_input)
+    output_id = cache.lookup_mcp_output_id(h)
+    if output_id is None:
+        return None
+
+    result_text = load_mcp_result(output_id)
+    if result_text is None:
+        return None
+
+    result_bytes = len(result_text.encode("utf-8", errors="replace"))
+    if result_bytes <= _MCP_INLINE_THRESHOLD:
+        context = (
+            f"[MCP hint — this exact call ran earlier this session. "
+            f"Cached result ({result_bytes} bytes):\n{result_text}]"
+        )
+    else:
+        context = (
+            f"[MCP hint — this exact call ran earlier this session ({result_bytes} bytes cached). "
+            f"Consider: token-goat mcp-output {output_id}]"
+        )
+    return pre_tool_use_with_context(context)
+
+
+def _capture_mcp_result(payload: HookPayload, tool_name: str) -> None:
+    """Persist a read-only MCP tool result to the MCP output cache.
+
+    Called by post_fetch for every mcp__* PostToolUse event.  Silently skips
+    non-read-only tools, empty or oversized results, and any storage failure.
+    """
+    from . import session  # noqa: PLC0415
+    from .hooks_common import extract_tool_response_text  # noqa: PLC0415
+    from .mcp_cache import (  # noqa: PLC0415
+        MCP_MAX_CACHE_BYTES,
+        is_mcp_read_only,
+        mcp_hash,
+        store_mcp_result,
+    )
+
+    if not is_mcp_read_only(tool_name):
+        return
+
+    session_id, _ = get_hook_context(payload)
+    if session_id is None:
+        return
+
+    tool_input = get_tool_input(payload)
+    result_text = extract_tool_response_text(
+        payload, text_keys=("output", "text", "content", "result", "body")
+    )
+    if not result_text:
+        return
+    if len(result_text.encode("utf-8", errors="replace")) > MCP_MAX_CACHE_BYTES:
+        return
+
+    h = mcp_hash(tool_name, tool_input)
+    cache = session.safe_load(session_id, caller="mcp_capture")
+    if cache is None:
+        return
+    if cache.lookup_mcp_output_id(h) is not None:
+        return  # already cached — skip re-write
+
+    output_id = store_mcp_result(session_id, h, result_text)
+    if output_id is None:
+        return
+
+    cache.record_mcp_result(h, output_id)
+    with contextlib.suppress(Exception):
+        session.save(cache)
+    _LOG.debug("post-fetch: cached MCP result id=%s tool=%s", output_id, tool_name)
+
+
 def pre_fetch(payload: HookPayload) -> HookResponse:
     """Deny Drive/WebFetch image tools and dedup repeat text WebFetch calls."""
     tool_name = payload.get("tool_name", "")
@@ -368,6 +510,31 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
             return cache_hit
 
         return CONTINUE()
+
+    # Read-only MCP tools: deny at warm+ pressure; soft hint at cool pressure.
+    # Both paths fire only when a cached result from this session exists.
+    # The snake_case assumption is documented: all real MCP tool names in the
+    # Claude Code / Codex CLI registries use lowercase_snake_case method names.
+    if tool_name.startswith("mcp__"):
+        from .mcp_cache import is_mcp_read_only  # noqa: PLC0415
+        if is_mcp_read_only(tool_name):
+            _mcp_sid, _ = get_hook_context(payload)
+            if _mcp_sid:
+                _mcp_tier = "cool"
+                try:
+                    from .compact import get_context_pressure as _gcp_mcp  # noqa: PLC0415
+                    _mcp_tier = _gcp_mcp(_mcp_sid).tier
+                except Exception:  # noqa: BLE001
+                    pass
+                _mcp_input = get_tool_input(payload)
+                if _mcp_tier in ("warm", "hot", "critical"):
+                    mcp_deny = _handle_mcp_dedup(_mcp_sid, tool_name, _mcp_input)
+                    if mcp_deny is not None:
+                        return mcp_deny
+                else:
+                    mcp_hint = _handle_mcp_hint(_mcp_sid, tool_name, _mcp_input)
+                    if mcp_hint is not None:
+                        return mcp_hint
 
     return CONTINUE()
 
@@ -491,6 +658,12 @@ def post_fetch(payload: HookPayload) -> HookResponse:
     Failures at any step are logged and swallowed.
     """
     tool_name = payload.get("tool_name", "")
+
+    # Capture read-only MCP results for future dedup before the WebFetch guard.
+    if tool_name.startswith("mcp__"):
+        _capture_mcp_result(payload, tool_name)
+        return CONTINUE()
+
     if tool_name != "WebFetch":
         return CONTINUE()
 
