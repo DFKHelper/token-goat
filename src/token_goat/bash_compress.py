@@ -1376,20 +1376,17 @@ class Filter(BaseFilter):
                     " (TOKEN_GOAT_FILTER_MAX_BYTES)"
                 )
 
-        original_bytes = len(stdout.encode("utf-8", errors="replace")) + len(
-            stderr.encode("utf-8", errors="replace")
-        )
+        # Use pre-truncation byte arrays (already computed in step 2) so original_bytes reflects the true process output size, not the post-truncation size.
+        original_bytes = len(stdout_bytes) + len(stderr_bytes)
 
-        # Step 4: early-return on empty input.  Both streams empty means there
-        # is nothing to compress; returning immediately avoids calling
-        # compress("", "", ...) which is benign but causes filters that do
-        # ``"".split("\\n")`` to produce [""] instead of [] — a subtle
-        # off-by-one that some filters mishandle.
+        # Step 4: early-return on empty input — avoids compress("","") which causes ``"".split("\n")`` → [""] off-by-one in some filters.
         if not stdout.strip() and not stderr.strip():
+            # Embed notes in text — CompressedOutput.notes is never read back by callers so storing them only there silently drops them.
+            text = ("[" + "; ".join(notes) + "]\n") if notes else ""
             return CompressedOutput(
-                text="",
-                original_bytes=0,
-                compressed_bytes=0,
+                text=text,
+                original_bytes=original_bytes,
+                compressed_bytes=len(text.encode("utf-8", errors="replace")),
                 filter_name=self.name,
                 exit_code=exit_code,
                 notes=notes,

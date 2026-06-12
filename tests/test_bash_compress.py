@@ -4136,6 +4136,28 @@ class TestFilterApplyRobustness:
         # notes list should be non-empty when truncation occurred.
         assert result.notes or "truncated" in result.text.lower()
 
+    def test_original_bytes_reflects_pretrunation_size(self, monkeypatch) -> None:
+        # original_bytes must reflect the true process output size, not the
+        # post-truncation size — so savings metrics are honest.
+        monkeypatch.setenv("TOKEN_GOAT_FILTER_MAX_BYTES", "100")
+        f = bc.GenericFilter()
+        large_stdout = "x" * 500
+        result = f.apply(large_stdout, "", 0, ["custom"])
+        assert result.original_bytes == len(large_stdout.encode("utf-8"))
+
+    def test_early_return_notes_appear_in_text(self, monkeypatch) -> None:
+        # Truncation notes accumulated before the empty-input early-return
+        # must appear in the output text — CompressedOutput.notes is never
+        # read back by callers so storing them only there silently drops them.
+        monkeypatch.setenv("TOKEN_GOAT_FILTER_MAX_BYTES", "5")
+        # Build a stdout that will be pre-truncated to whitespace only:
+        # 20 spaces → truncated at 5 bytes → "     " → strip() is empty → early-return.
+        f = bc.GenericFilter()
+        result = f.apply(" " * 20, "", 0, ["custom"])
+        # If truncation fired, the note must be visible in text.
+        if result.notes:
+            assert "truncated" in result.text.lower()
+
 
 # ---------------------------------------------------------------------------
 # MAX_INPUT_BYTES constant and _get_max_input_bytes

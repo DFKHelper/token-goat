@@ -87,6 +87,14 @@ class TestProjectMemory:
             entries = project_memory.load_entries("abc123")
         assert entries["note"] == "line1\nline2"
 
+    def test_carriage_return_in_value_survives_roundtrip(self, tmp_path: Path) -> None:
+        from token_goat import paths, project_memory
+
+        with patch.object(paths, "data_dir", return_value=tmp_path):
+            project_memory.set_entry("abc123", "crlf", "line1\r\nline2")
+            entries = project_memory.load_entries("abc123")
+        assert entries["crlf"] == "line1\r\nline2"
+
     def test_total_size_budget_enforced(self, tmp_path: Path) -> None:
         """Oversized injection must be bounded and emit the omission marker."""
         from token_goat import paths, project_memory

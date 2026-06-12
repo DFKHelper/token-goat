@@ -76,7 +76,7 @@ def _save(path: Path, entries: dict[str, str]) -> None:
     """Serialize *entries* to TOML and write atomically."""
     lines: list[str] = []
     for k, v in sorted(entries.items()):
-        escaped = v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        escaped = v.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "\\r").replace("\n", "\\n")
         lines.append(f'{k} = "{escaped}"')
     paths.atomic_write_text(path, "\n".join(lines) + ("\n" if lines else ""))
 
