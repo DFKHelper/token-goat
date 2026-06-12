@@ -3339,6 +3339,11 @@ def post_read(payload: HookPayload) -> HookResponse:
     if cache is None:
         return CONTINUE()
 
+    # Accumulate measured response tokens before any branch saves the cache.
+    _resp_text = extract_tool_response_text(payload)
+    if _resp_text:
+        cache.observed_tool_tokens += len(_resp_text) // 4
+
     tool_name = payload.get("tool_name")
     tool_input = get_tool_input(payload)
 
@@ -3781,21 +3786,22 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # consistently high.  Must run before any early-return so even small-output
     # reruns are counted.  Uses display_cmd (unwrapped) to match the hash stored
     # by build_bash_dedup_hint, which also hashes the unwrapped command.
-    # Load the session cache once; all subsequent session operations share this object.
-    _sess_mod = _get_session() if session_id else None
-    _session_cache = _sess_mod.safe_load(session_id, caller="post_bash") if (_sess_mod and session_id) else None
-    if _sess_mod is not None and _session_cache is not None:
-        _check_ignored_bash_hint(_session_cache, display_cmd, cwd)
-        with contextlib.suppress(Exception):
-            _sess_mod.save(_session_cache)  # fallback save if no mark_* runs below
-
+    # Extract response early so observed_tool_tokens is accurate before the first save.
     stdout, stderr, exit_code = _extract_bash_response(payload)
-    # Sanitize at the boundary: Windows subprocess can produce surrogate-escape
-    # bytes (\udcXX) in stdout/stderr that crash utf-8 serialisation downstream.
+    # Sanitize at the boundary: Windows subprocess can produce surrogate-escape bytes (\udcXX) that crash utf-8 serialisation.
     stdout = _sanitize_surrogates(stdout)
     stderr = _sanitize_surrogates(stderr)
     # Hard size cap before any downstream work: tail-bias truncation keeps error summaries at the end.
     stdout, stderr, _was_truncated = _apply_output_size_cap(stdout, stderr)
+
+    # Load the session cache once; all subsequent session operations share this object.
+    _sess_mod = _get_session() if session_id else None
+    _session_cache = _sess_mod.safe_load(session_id, caller="post_bash") if (_sess_mod and session_id) else None
+    if _sess_mod is not None and _session_cache is not None:
+        _session_cache.observed_tool_tokens += (len(stdout) + len(stderr)) // 4
+        _check_ignored_bash_hint(_session_cache, display_cmd, cwd)
+        with contextlib.suppress(Exception):
+            _sess_mod.save(_session_cache)  # fallback save if no mark_* runs below
 
     # Grep-pattern session recording: when the Bash command is a grep-family
     # invocation (rg, grep, ag, ack, …), record the pattern and path in

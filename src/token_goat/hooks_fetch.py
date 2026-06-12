@@ -18,6 +18,8 @@ Three responsibilities run from this module:
 """
 from __future__ import annotations
 
+import contextlib
+
 __all__ = ["post_fetch", "pre_fetch"]
 
 from .hooks_common import (
@@ -452,14 +454,22 @@ def post_fetch(payload: HookPayload) -> HookResponse:
         pass
 
     body_size = len(body.encode("utf-8", errors="replace"))
+
+    from . import config, session, web_cache  # noqa: PLC0415
+
+    # Accumulate observed token count regardless of cache threshold: response was already returned to the model.
+    _fetch_cache = session.safe_load(session_id, caller="post_fetch")
+    if _fetch_cache is not None:
+        _fetch_cache.observed_tool_tokens += body_size // 4
+        with contextlib.suppress(Exception):
+            session.save(_fetch_cache)
+
     if body_size < _WEB_CACHE_MIN_BYTES:
         _LOG.debug(
             "post-fetch: body too small to cache (%d bytes < %d threshold)",
             body_size, _WEB_CACHE_MIN_BYTES,
         )
         return CONTINUE()
-
-    from . import config, session, web_cache  # noqa: PLC0415
 
     cfg = config.load()
     meta = web_cache.store_output(
@@ -484,6 +494,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
             status_code=meta.status_code,
             truncated=meta.truncated,
             content_type=meta.content_type,
+            cache=_fetch_cache,
         )
     except (ValueError, OSError) as exc:
         _LOG.debug("post-fetch: session record failed: %s", exc)

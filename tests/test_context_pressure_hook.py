@@ -542,3 +542,93 @@ class TestPressureBaselineCompactionReset:
         # Fill should now reflect the new 500-token entry
         assert pressure2.fill_fraction > 0.0, "Fill should increase with new activity"
         assert pressure2.fill_fraction < 0.001, "Fill should be small (500/660000 ≈ 0.00075)"
+
+
+class TestObservedToolTokensMeasuredPath:
+    """_pressure_raw_total uses observed_tool_tokens when >0; falls back to proxies otherwise."""
+
+    def _make_cache(self, **kw):
+        import time
+
+        from token_goat.session import SessionCache
+        return SessionCache(session_id="test-obs", started_ts=time.time(), last_activity_ts=time.time(), created_ts=time.time(), **kw)
+
+    def test_measured_path_overrides_proxies(self):
+        from token_goat.compact import _pressure_raw_total
+        cache = self._make_cache()
+        # Add bash/web/file entries that would give proxy > 0
+        cache.bash_history = {"h1": {}, "h2": {}}
+        cache.web_history = {"w1": {}}
+        cache.files = {"f1": {}}
+        cache.observed_tool_tokens = 99_000
+        result = _pressure_raw_total(cache)
+        from token_goat.compact import CATALOG_TOKENS
+        assert result == CATALOG_TOKENS + 99_000
+
+    def test_proxy_fallback_when_observed_zero(self):
+        from token_goat.compact import CATALOG_TOKENS, _pressure_raw_total
+        cache = self._make_cache()
+        cache.bash_history = {"h1": {}}
+        cache.observed_tool_tokens = 0
+        proxy_result = _pressure_raw_total(cache)
+        assert proxy_result == CATALOG_TOKENS + 500  # 1 bash entry × 500
+
+    def test_measured_path_excluded_when_observed_zero(self):
+        from token_goat.compact import _pressure_raw_total
+        cache = self._make_cache()
+        cache.observed_tool_tokens = 0
+        cache.web_history = {"w1": {}, "w2": {}}
+        result = _pressure_raw_total(cache)
+        from token_goat.compact import CATALOG_TOKENS
+        assert result == CATALOG_TOKENS + 2 * 1_000  # proxy: 2 web × 1000
+
+    def test_get_context_pressure_uses_measured_fill(self):
+        from token_goat.compact import (
+            CATALOG_TOKENS,
+            CONTEXT_AUTOCOMPACT_TOKENS,
+            get_context_pressure,
+        )
+        cache = self._make_cache()
+        # Set observed so CATALOG_TOKENS + observed == exactly half capacity.
+        cache.observed_tool_tokens = CONTEXT_AUTOCOMPACT_TOKENS // 2 - CATALOG_TOKENS
+        cp = get_context_pressure(cache=cache)
+        assert abs(cp.fill_fraction - 0.5) < 0.001
+        assert cp.tier == "warm"
+
+    def test_observed_tokens_serialise_round_trip(self):
+        cache = self._make_cache()
+        cache.observed_tool_tokens = 12_345
+        from token_goat.session import SessionCache
+        restored = SessionCache.from_dict(cache.to_dict())
+        assert restored.observed_tool_tokens == 12_345
+
+    def test_observed_tokens_defaults_to_zero_on_missing_key(self):
+        cache = self._make_cache()
+        d = cache.to_dict()
+        del d["observed_tool_tokens"]
+        from token_goat.session import SessionCache
+        restored = SessionCache.from_dict(d)
+        assert restored.observed_tool_tokens == 0
+
+    def test_observed_tokens_clamped_to_nonneg(self):
+        cache = self._make_cache()
+        d = cache.to_dict()
+        d["observed_tool_tokens"] = -500
+        from token_goat.session import SessionCache
+        restored = SessionCache.from_dict(d)
+        assert restored.observed_tool_tokens == 0
+
+    def test_measured_plus_baseline_gives_correct_delta(self):
+        """Post-compact: baseline absorbs old observed; new reads add incremental fill."""
+        from token_goat.compact import _pressure_raw_total, get_context_pressure
+        cache = self._make_cache()
+        cache.observed_tool_tokens = 50_000
+        # Simulate pre_compact snapshot
+        cache.pressure_baseline_tokens = _pressure_raw_total(cache)
+        assert get_context_pressure(cache=cache).fill_fraction == 0.0
+        # Simulate new reads after compact
+        cache.observed_tool_tokens += 33_000
+        cp = get_context_pressure(cache=cache)
+        from token_goat.compact import CONTEXT_AUTOCOMPACT_TOKENS
+        expected = 33_000 / CONTEXT_AUTOCOMPACT_TOKENS
+        assert abs(cp.fill_fraction - expected) < 0.001

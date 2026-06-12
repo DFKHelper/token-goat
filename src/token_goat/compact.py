@@ -180,6 +180,11 @@ def _pressure_raw_total(cache: object) -> int:  # type: ignore[name-defined]  # 
     before resetting it as the new baseline.
     """
     skill_tokens: int = getattr(cache, "loaded_skill_total_tokens", 0)
+    observed: int = getattr(cache, "observed_tool_tokens", 0)
+    if observed > 0:
+        # Measured path: actual response bytes accumulated by post-hooks (len(text)//4 per call).
+        return skill_tokens + CATALOG_TOKENS + observed
+    # Legacy fallback: per-count proxies for sessions without measured token data.
     bash_history = getattr(cache, "bash_history", None)
     bash_count: int = len(bash_history) if bash_history else 0
     web_history = getattr(cache, "web_history", None)

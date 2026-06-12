@@ -1273,6 +1273,8 @@ class SessionCache:
     # so the fill fraction measures only incremental load since the last compaction
     # rather than the lifetime total (which would permanently pin sessions to critical).
     pressure_baseline_tokens: int = 0
+    # Measured tokens from tool responses (Read/Bash/WebFetch) since last compact; 0 → use proxy estimates.
+    observed_tool_tokens: int = 0
     # Monotonically-incrementing version counter for optimistic CAS in save().
     # Starts at 0 for a new session; each successful save() increments by 1.
     # When two concurrent processes both load version N, the second to save
@@ -1374,6 +1376,7 @@ class SessionCache:
             loaded_skill_total_tokens=self.loaded_skill_total_tokens,
             last_context_advisory_threshold=self.last_context_advisory_threshold,
             pressure_baseline_tokens=self.pressure_baseline_tokens,
+            observed_tool_tokens=self.observed_tool_tokens,
         )
 
     def to_json(self) -> str:
@@ -1919,6 +1922,8 @@ class SessionCache:
         last_context_advisory_threshold: int | None = _raw_lcat if _raw_lcat in (50, 70) else None
         _raw_pbt = d.get("pressure_baseline_tokens", 0)
         pressure_baseline_tokens: int = max(0, int(_raw_pbt)) if isinstance(_raw_pbt, (int, float)) else 0
+        _raw_ott = d.get("observed_tool_tokens", 0)
+        observed_tool_tokens: int = max(0, int(_raw_ott)) if isinstance(_raw_ott, (int, float)) else 0
 
         return cls(
             session_id=session_id,
@@ -1959,6 +1964,7 @@ class SessionCache:
             loaded_skill_total_tokens=loaded_skill_total_tokens,
             last_context_advisory_threshold=last_context_advisory_threshold,
             pressure_baseline_tokens=pressure_baseline_tokens,
+            observed_tool_tokens=observed_tool_tokens,
         )
 
 
@@ -2508,6 +2514,7 @@ class _SessionDict(TypedDict, total=False):
     loaded_skill_total_tokens: int
     last_context_advisory_threshold: int | None
     pressure_baseline_tokens: int
+    observed_tool_tokens: int
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
