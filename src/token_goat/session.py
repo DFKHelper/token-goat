@@ -631,6 +631,17 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         for _ in range(items_to_remove):
             merged.grep_result_hashes.pop(next(iter(merged.grep_result_hashes)))
 
+    # file_content_seen: first-seen wins — remote (older writer) takes precedence.
+    merged_fcs = dict(remote.file_content_seen)
+    for sha16, fpath in local.file_content_seen.items():
+        if sha16 not in merged_fcs:
+            merged_fcs[sha16] = fpath
+    merged.file_content_seen = merged_fcs
+    if len(merged.file_content_seen) > FILE_CONTENT_SEEN_MAX:
+        evict = len(merged.file_content_seen) - (FILE_CONTENT_SEEN_MAX - _FILE_CONTENT_SEEN_EVICT)
+        for _ in range(evict):
+            merged.file_content_seen.pop(next(iter(merged.file_content_seen)))
+
     remote_glob_keys = {(glob.pattern, glob.path) for glob in remote.glob_history}
     for glob in local.glob_history:
         if (glob.pattern, glob.path) not in remote_glob_keys:
@@ -1009,6 +1020,9 @@ _GREPS_HISTORY_EVICT: Final[int] = 15
 # keeps the most recent hashes (most likely to be repeated).
 GREP_RESULT_HASHES_MAX: Final[int] = 50
 _GREP_RESULT_HASHES_EVICT: Final[int] = 5
+# Maximum number of file-content SHA entries retained per session.
+FILE_CONTENT_SEEN_MAX: Final[int] = 500
+_FILE_CONTENT_SEEN_EVICT: Final[int] = 50
 
 # Maximum number of decision-log entries retained per session.  Decisions are
 # opt-in (the agent calls ``token-goat decision "<text>"``), so the volume is
@@ -1126,6 +1140,10 @@ class SessionCache:
     # same results, enabling a "Same results as pattern X" dedup hint.  FIFO-evicted
     # at GREP_RESULT_HASHES_MAX to prevent unbounded growth in long sessions.
     grep_result_hashes: dict[str, str] = field(default_factory=dict)
+    # Cross-file content dedup: maps file_content_sha16 (first 16 SHA-1 hex chars) →
+    # normalized path of the *first* file seen with that content.  Used by pre_read to
+    # deny a read of a file whose content is identical to a file already read this session.
+    file_content_seen: dict[str, str] = field(default_factory=dict)
     # Tracks files edited this session: normalized_path → edit count
     edited_files: dict[str, int] = field(default_factory=dict)
     # In-session cache of read_symbol/read_section results.  Keyed by a string
@@ -1377,6 +1395,7 @@ class SessionCache:
             last_context_advisory_threshold=self.last_context_advisory_threshold,
             pressure_baseline_tokens=self.pressure_baseline_tokens,
             observed_tool_tokens=self.observed_tool_tokens,
+            file_content_seen=dict(self.file_content_seen),
         )
 
     def to_json(self) -> str:
@@ -1612,6 +1631,30 @@ class SessionCache:
         self._invalidate_json_cache()
 
     # ------------------------------------------------------------------
+    # Cross-file content dedup helpers
+    # ------------------------------------------------------------------
+
+    def get_file_content_path(self, sha16: str) -> str | None:
+        """Return the first normalized path seen with this content SHA, or None."""
+        return self.file_content_seen.get(sha16)
+
+    def register_file_content(self, sha16: str, norm_path: str) -> None:
+        """Record sha16 → norm_path if not already present.
+
+        First-seen wins: does not overwrite an existing entry.  Enforces
+        FILE_CONTENT_SEEN_MAX via FIFO eviction.
+        """
+        if sha16 in self.file_content_seen:
+            return
+        self.file_content_seen[sha16] = norm_path
+        if len(self.file_content_seen) > FILE_CONTENT_SEEN_MAX:
+            evict = len(self.file_content_seen) - (FILE_CONTENT_SEEN_MAX - _FILE_CONTENT_SEEN_EVICT)
+            for _ in range(evict):
+                self.file_content_seen.pop(next(iter(self.file_content_seen)))
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+
+    # ------------------------------------------------------------------
     # Pinned-symbol helpers
     # ------------------------------------------------------------------
 
@@ -1709,6 +1752,15 @@ class SessionCache:
             for hash_key, pattern in raw_grep_hashes.items():
                 if isinstance(hash_key, str) and isinstance(pattern, str) and hash_key and pattern:
                     grep_result_hashes[hash_key] = pattern
+
+        # file_content_seen: dict[str, str] — sha16 → first path seen with that content.
+        # Missing in older sessions → empty dict (backward compat).
+        file_content_seen: dict[str, str] = {}
+        raw_fcs = d.get("file_content_seen", {})
+        if isinstance(raw_fcs, dict):
+            for sha16, fpath in raw_fcs.items():
+                if isinstance(sha16, str) and isinstance(fpath, str) and sha16 and fpath:
+                    file_content_seen[sha16] = fpath
 
         edited_files: dict[str, int] = {}
         for k, v in d.get("edited_files", {}).items():
@@ -1965,6 +2017,7 @@ class SessionCache:
             last_context_advisory_threshold=last_context_advisory_threshold,
             pressure_baseline_tokens=pressure_baseline_tokens,
             observed_tool_tokens=observed_tool_tokens,
+            file_content_seen=file_content_seen,
         )
 
 
@@ -2515,6 +2568,7 @@ class _SessionDict(TypedDict, total=False):
     last_context_advisory_threshold: int | None
     pressure_baseline_tokens: int
     observed_tool_tokens: int
+    file_content_seen: dict[str, str]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:

@@ -34,6 +34,7 @@ from __future__ import annotations
 __all__ = ["post_bash", "post_read", "pre_read", "_safe_split_argv"]
 
 import contextlib
+import hashlib
 import re as _re
 import shlex as _shlex
 import time
@@ -869,7 +870,6 @@ def _handle_skill_file_read(
         cache_ts = -1.0
     if cached_sha and source_path and cache_ts >= 0.0:
         try:
-            import hashlib as _hashlib  # noqa: PLC0415
             from pathlib import Path as _Path  # noqa: PLC0415
 
             src_path_obj = _Path(source_path)
@@ -879,7 +879,7 @@ def _handle_skill_file_read(
             # changed since caching — short-circuit without reading the full file.
             if file_mtime > cache_ts:
                 disk_bytes = src_path_obj.read_bytes()
-                disk_sha = _hashlib.sha256(disk_bytes).hexdigest()
+                disk_sha = hashlib.sha256(disk_bytes).hexdigest()
                 if disk_sha != cached_sha:
                     _LOG.info(
                         "pre-read: skill '%s' cache stale (file mtime %.0f > cache ts %.0f, "
@@ -2136,6 +2136,9 @@ def _handle_large_read_redirect(
     return deny_redirect(reason, context)
 
 
+#: Max file size to hash for cross-file content-dedup check in pre_read.
+_CONTENT_DEDUP_MAX_BYTES: int = 500_000
+
 _INLINE_SKELETON_MAX_CHARS: int = 800
 _INLINE_SKELETON_KINDS: frozenset[str] = frozenset({
     "function", "method", "class", "interface", "struct", "trait", "enum",
@@ -2193,6 +2196,37 @@ def _try_get_inline_skeleton(file_path: str) -> str:
         return truncated
     except Exception:  # noqa: BLE001 — fail-soft; never block a Read
         return ""
+
+
+def _check_content_dedup(
+    file_path: str, cache: object
+) -> HookResponse | None:
+    """Return a deny response if file_path's content was already read under a different path.
+
+    Computes a 16-hex-char SHA-1 prefix over the file bytes and looks it up in the session
+    cache. Returns None when the file is new to the session, unreadable, too large, or the
+    same path was previously registered. Only fires on full (non-windowed) reads.
+    """
+    try:
+        p = Path(file_path)
+        if not p.is_file():
+            return None
+        size = p.stat().st_size
+        if size == 0 or size > _CONTENT_DEDUP_MAX_BYTES:
+            return None
+        raw = p.read_bytes()
+        sha16 = hashlib.sha1(raw, usedforsecurity=False).hexdigest()[:16]  # noqa: S324
+        norm = str(p.resolve()).replace("\\", "/")
+        existing = cache.get_file_content_path(sha16)  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this method at runtime
+        if existing is None or existing == norm:
+            return None
+        return deny_redirect(
+            "Duplicate file content",
+            f"This file has identical content to `{existing}`, which was already read this session.\n"
+            f"Use `{existing}` instead to avoid loading identical bytes twice.",
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _handle_large_grep_redirect(payload: HookPayload) -> HookResponse | None:
@@ -2716,7 +2750,6 @@ def _handle_reread_deny(
         from . import session as _sess_mod  # noqa: PLC0415
         stored_sha = _sess_mod.get_snapshot_sha(session_id, file_path, cache=cache)
         if stored_sha:
-            import hashlib  # noqa: PLC0415
             current_sha = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
             if current_sha != stored_sha:
                 return None  # changed externally — let the read through
@@ -2931,6 +2964,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
         index_only_response = _handle_index_only_file(session_id, file_path, tool_input, cache)
         if index_only_response is not None:
             return index_only_response
+
+        # Content-dedup: deny full reads of files whose bytes are identical to a file
+        # already read this session. Catches symlinks, copies, and vendored duplicates.
+        if not _read_is_windowed(tool_input) and cache is not None:
+            dedup_response = _check_content_dedup(file_path, cache)
+            if dedup_response is not None:
+                return dedup_response
 
         # Stable-doc compact serving: fires before session/diff hints so a user-created
         # compact sidecar is served on first read (not just re-reads).  For fresh
@@ -3536,6 +3576,17 @@ def post_read(payload: HookPayload) -> HookResponse:
             # Curator: check if this Read is for a path that was recently hinted.
             # If the agent reads the file anyway within the hint window, it ignored the hint.
             _check_ignored_hint(cache, file_path)
+            # Register file content SHA for cross-file dedup on future reads.
+            if not _read_is_windowed(tool_input):
+                try:
+                    _p = Path(file_path)
+                    if _p.is_file() and 0 < _p.stat().st_size <= _CONTENT_DEDUP_MAX_BYTES:
+                        _raw = _p.read_bytes()
+                        _sha16 = hashlib.sha1(_raw, usedforsecurity=False).hexdigest()[:16]  # noqa: S324
+                        _norm = str(_p.resolve()).replace("\\", "/")
+                        cache.register_file_content(_sha16, _norm)
+                except Exception:  # noqa: BLE001
+                    pass
             # Persist curator mutations (hints_ignored, recent_hints) unconditionally.
             # _try_snapshot only saves when it stores a snapshot, so for files that
             # exceed MAX_SNAPSHOT_BYTES or fail to open the increment would be lost.
