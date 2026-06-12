@@ -14,7 +14,7 @@ from hook_helpers import assert_continue as _assert_continue
 from token_goat import bash_cache, hooks_read, session
 
 
-def _seed_history(session_id: str, command: str, *, output_bytes: int = 8000) -> None:
+def _seed_history(session_id: str, command: str, *, output_bytes: int = 10_000) -> None:
     """Helper: emulate a prior post_bash invocation to populate history."""
     big_out = "X" * output_bytes
     payload = {

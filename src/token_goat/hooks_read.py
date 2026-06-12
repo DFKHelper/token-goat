@@ -2478,6 +2478,76 @@ def _get_bash_command_from_payload(payload: HookPayload) -> str | None:
     return command
 
 
+def _try_bash_dedup_serve(payload: HookPayload) -> HookResponse | None:
+    """Inject a small cached Bash output inline as additionalContext (direct-serve path).
+
+    When the command has already run in this session, the prior output is still
+    within the staleness window, and the total output is ≤ _BASH_DIRECT_SERVE_MAX_BYTES,
+    embed the cached text directly so the agent gets the result without re-running.
+    Returns None to fall through to the advisory hint path otherwise.
+    """
+    from .hints import STALE_READ_AGE_SECONDS, compute_stale_threshold  # noqa: PLC0415
+
+    command = _get_bash_command_from_payload(payload)
+    if command is None:
+        return None
+
+    session_id, cwd = get_hook_context(payload)
+    if session_id is None:
+        return None
+
+    try:
+        import time as _time  # noqa: PLC0415
+
+        from . import bash_cache as _bc  # noqa: PLC0415
+        from . import session as _sess_mod  # noqa: PLC0415
+
+        cmd_sha = _bc.command_hash(command, cwd)
+        _sess = _get_session()
+        cache = _sess.load(session_id)
+        entry = _sess_mod.lookup_bash_entry(session_id, cmd_sha, cache=cache)
+        if entry is None:
+            return None
+
+        # Only direct-serve on the first repeat (run_count==1).  On subsequent repeats the
+        # advisory path's loop-detection warning is more useful than silently serving cache.
+        if getattr(entry, "run_count", 1) > 1:
+            return None
+
+        _now = _time.time()
+        age = _now - entry.ts
+        _sess_created = getattr(cache, "created_ts", None)
+        _sess_age = (_now - _sess_created) if _sess_created is not None else STALE_READ_AGE_SECONDS
+        _stale_thresh = compute_stale_threshold(_sess_age)
+        if age > _stale_thresh:
+            return None
+
+        text = _bc.load_output(entry.output_id)
+        if not text:
+            return None
+
+        # Check the actual stored text size; original may differ from on-disk due to truncation.
+        actual_bytes = len(text.encode("utf-8", errors="replace"))
+        if actual_bytes > _BASH_DIRECT_SERVE_MAX_BYTES:
+            return None
+
+        cmd_short = sanitize_log_str(command, max_len=80)
+        hint_text = (
+            f"Note: Bash `{cmd_short}` ran {int(age)}s ago — cached output "
+            f"({actual_bytes} bytes):\n{text}\n"
+            "(Serving from cache. Re-run to force a fresh result.)"
+        )
+        record_cached_stat("bash_direct_serve", sanitize_log_str(command, max_len=200))
+        _LOG.info(
+            "pre-read: bash direct serve command=%s age=%ds bytes=%d",
+            sanitize_log_str(command, max_len=80), int(age), actual_bytes,
+        )
+        return pre_tool_use_with_context(hint_text)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-read: bash direct serve failed", exc_info=True)
+        return None
+
+
 def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     """Return a dedup hint when this exact Bash command ran earlier in the session.
 
@@ -2491,6 +2561,10 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     command = _get_bash_command_from_payload(payload)
     if command is None:
         return None
+
+    direct = _try_bash_dedup_serve(payload)
+    if direct is not None:
+        return direct
 
     _, cwd = get_session_context(payload)
     return run_dedup_hint(
@@ -3788,6 +3862,9 @@ def post_read(payload: HookPayload) -> HookResponse:
 # savings.  Aligned with the dedup minimum so we never cache something we
 # would later refuse to surface.
 _BASH_CACHE_MIN_BYTES: int = 400
+#: Bash outputs at or below this byte count are injected inline as additionalContext rather than
+#: emitting an advisory hint.  Keeps the serve payload comfortably under one LLM context chunk.
+_BASH_DIRECT_SERVE_MAX_BYTES: int = 8_192
 
 #: Regex to detect pytest / py.test / python -m pytest commands.
 _PYTEST_CMD_RE: _re.Pattern[str] = _re.compile(r"\bpy(?:test|\.test)\b|python\s+-m\s+pytest")
