@@ -4538,6 +4538,9 @@ _SLEEP_SUPPRESS_NONEMPTY: bool = True  # sentinel — feature is always on; kept
 # XML blobs at or above this size are suppressed with a one-liner recall hint.
 _JSON_SUMMARY_MIN_BYTES: int = 4000
 _JSON_SUMMARY_MAX_BYTES: int = 2_000_000  # skip json.loads on files > 2 MB to avoid memory pressure
+# Large plain-text stdout fallback compressor (Iter 19)
+# Fires after all specialized handlers when a successful command emits many lines of plain text.
+_LARGE_STDOUT_LINE_THRESHOLD: int = 200
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -5550,6 +5553,48 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 }
         except Exception:  # noqa: BLE001 — fail-soft
             _LOG.debug("post-bash: XML detection failed", exc_info=True)
+
+    # Large plain-text stdout fallback compressor (Iter 19):
+    # Fires AFTER all specialized handlers (JSON/XML, pytest, sleep/poll, etc.).
+    # When a successful command emits >= _LARGE_STDOUT_LINE_THRESHOLD lines of plain text,
+    # stores the full output in bash_cache and returns a compact head+tail preview
+    # so the model gets orientation without burning context on thousands of lines.
+    if (
+        exit_code in (None, 0)
+        and stdout
+        and len(stdout.splitlines()) >= _LARGE_STDOUT_LINE_THRESHOLD
+    ):
+        try:
+            _lc_lines = stdout.splitlines()
+            _lc_total = len(_lc_lines)
+            _lc_out_id: str | None = None
+            if session_id:
+                from . import bash_cache as _bc_lc  # noqa: PLC0415
+                with contextlib.suppress(Exception):
+                    _lc_meta = _bc_lc.store_output(
+                        session_id, display_cmd, stdout, stderr, exit_code,
+                        cwd=cwd, min_cache_bytes=0,
+                    )
+                    if _lc_meta is not None:
+                        _bc_lc.write_sidecar(_lc_meta)
+                        _lc_out_id = _lc_meta.output_id
+            _lc_recall = f" (bash-output {_lc_out_id} to recall)" if _lc_out_id else ""
+            _lc_head = "\n".join(_lc_lines[:10])
+            _lc_tail = "\n".join(_lc_lines[-5:])
+            _lc_omitted = _lc_total - 15
+            _LOG.info("post-bash: large stdout compressed lines=%d cmd=%.60s", _lc_total, display_cmd)
+            return {
+                "continue": True,
+                "systemMessage": (
+                    f"[token-goat] large output: {_lc_total} lines"
+                    f" {'stored' if _lc_out_id else 'preview'}{_lc_recall}\n\n"
+                    f"```\n{_lc_head}\n```\n\n"
+                    f"... ({_lc_omitted} lines omitted) ...\n\n"
+                    f"```\n{_lc_tail}\n```"
+                ),
+            }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: large stdout compression failed", exc_info=True)
 
     # Dir-listing fingerprint cache: suppress repeated find/fd/ls-R/eza-tree listings
     # when the directory content has not changed since the last run.
