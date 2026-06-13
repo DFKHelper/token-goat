@@ -146,6 +146,22 @@ _LS_CMD_RE: re.Pattern[str] = re.compile(
 )
 # Tokens that look like flags — skipped when extracting the target path.
 _LS_FLAG_RE: re.Pattern[str] = re.compile(r"^-")
+# Dependency-listing commands whose output is fully determined by their lockfile.
+# Pattern: tool name at start, optional flags, then list/ls/freeze/tree/show sub-command.
+# Rejects install/add/remove variants by requiring the specific sub-command words.
+_DEP_LIST_RE: re.Pattern[str] = re.compile(
+    r"^\s*(?:"
+    r"npm\s+(?:-\S+\s+)*(?:ls|list)\b"
+    r"|pip\s+(?:-\S+\s+)*(?:list|freeze)\b"
+    r"|uv\s+pip\s+(?:-\S+\s+)*(?:list|freeze)\b"
+    r"|pnpm\s+(?:-\S+\s+)*(?:list|ls)\b"
+    r"|yarn\s+(?:-\S+\s+)*(?:list)\b"
+    r"|cargo\s+(?:-\S+\s+)*tree\b"
+    r"|bundle\s+(?:-\S+\s+)*(?:list|show)\b"
+    r"|composer\s+(?:-\S+\s+)*show\b"
+    r")",
+    re.IGNORECASE,
+)
 # Session-immutable env probes: version strings and binary lookups that cannot
 # change while the tool is running.  Output is safe to serve from disk cache
 # across sessions without TTL.
@@ -266,6 +282,64 @@ def is_unscoped_git_diff(cmd: str) -> bool:
     if not _GIT_DIFF_UNSCOPED_RE.search(cmd):
         return False
     return not _GIT_DIFF_SCOPED_RE.search(cmd)
+
+
+def is_dep_list_command(cmd: str) -> bool:
+    """True for dependency-listing commands whose output is fully determined by their lockfile.
+
+    Matches npm ls/list, pip list/freeze, uv pip list/freeze, pnpm list/ls,
+    yarn list, cargo tree, bundle list/show, and composer show.  Intentionally
+    rejects install/add/remove variants by anchoring on the sub-command word.
+    """
+    return bool(_DEP_LIST_RE.search(cmd))
+
+
+# Lockfile names keyed by the leading tool token extracted from the command.
+_DEP_LOCKFILES: dict[str, list[str]] = {
+    "npm": ["package-lock.json", "yarn.lock"],
+    "pip": ["requirements.txt"],
+    "uv": ["uv.lock", "requirements.txt"],
+    "pnpm": ["pnpm-lock.yaml"],
+    "yarn": ["yarn.lock"],
+    "cargo": ["Cargo.lock"],
+    "bundle": ["Gemfile.lock"],
+    "composer": ["composer.lock"],
+}
+
+
+def dep_lockfile_fingerprint(cmd: str, cwd: str | None) -> str | None:
+    """Return a 16-char hex SHA-256 of the relevant lockfile for *cmd* run in *cwd*.
+
+    Maps the recognized dependency-listing command to its canonical lockfile,
+    resolves it relative to *cwd*, and hashes the raw bytes.  Returns None when
+    *cwd* is None, when the command is not recognised, or when no lockfile exists
+    in *cwd*.  The fingerprint changes whenever the lockfile changes, so salting
+    :func:`command_hash` with this value causes automatic cache invalidation on
+    any dependency update.
+    """
+    if cwd is None:
+        return None
+    # Extract the leading tool token (first non-whitespace word).
+    stripped = cmd.strip()
+    first_token = stripped.split()[0].lower() if stripped else ""
+    # uv pip … needs two-token prefix match.
+    if first_token == "uv":
+        candidates = _DEP_LOCKFILES.get("uv", [])
+    else:
+        candidates = _DEP_LOCKFILES.get(first_token, [])
+    if not candidates:
+        return None
+    import hashlib as _hashlib
+    from pathlib import Path as _P
+    base = _P(cwd)
+    for lockfile_name in candidates:
+        lockfile = base / lockfile_name
+        try:
+            raw = lockfile.read_bytes()
+            return _hashlib.sha256(raw).hexdigest()[:16]
+        except OSError:
+            continue
+    return None
 
 
 def _extract_ls_target(cmd: str, cwd: str | None) -> str | None:
@@ -464,6 +538,15 @@ def command_hash(command: str, cwd: str | None = None) -> str:
             fp = dir_state_fingerprint(resolved_target)
             if fp is not None:
                 key = f"{key}\x00dir:{fp}"
+    # For dependency-listing commands (npm ls, pip list, cargo tree, …), salt with
+    # the lockfile hash so the cache invalidates automatically whenever dependencies
+    # change — without any TTL.  When no lockfile is found, the key is left unsalted
+    # (plain command+cwd hash) so the entry is still stored and served; it just won't
+    # auto-invalidate on lockfile changes in that edge case.
+    if is_dep_list_command(command):
+        fp = dep_lockfile_fingerprint(command, cwd)
+        if fp is not None:
+            key = f"{key}\x00lockfile:{fp}"
     return short_content_hash(key)
 
 

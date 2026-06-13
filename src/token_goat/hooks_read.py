@@ -2791,6 +2791,40 @@ def _handle_env_probe_serve(payload: HookPayload) -> HookResponse | None:
         return None
 
 
+def _handle_dep_list_serve(payload: HookPayload) -> HookResponse | None:
+    """Serve advisory context for dependency-listing commands from the cross-session disk cache.
+
+    Dep-list commands (npm ls, pip list, cargo tree, …) are advisory-only: the
+    lockfile hash is baked into the cache key by :func:`command_hash`, so a hit
+    guarantees the output matches the current dependency state.  The agent can
+    still re-run the command if it prefers a live result.
+    """
+    from . import bash_cache as _bc  # noqa: PLC0415
+
+    command = _get_bash_command_from_payload(payload)
+    if command is None:
+        return None
+    if not _bc.is_dep_list_command(command):
+        return None
+
+    _, cwd = get_session_context(payload)
+    try:
+        meta = _bc.find_cached_for_command(command, cwd)
+        if meta is None:
+            return None
+        text = _bc.load_output(meta.output_id)
+        if not text:
+            return None
+        cmd_short = sanitize_log_str(command, max_len=80)
+        hint_text = f"[token-goat] `{cmd_short}` prior output (lockfile unchanged — re-run to refresh):\n{text.rstrip()}"
+        record_cached_stat("dep_list_cache_hit", sanitize_log_str(command, max_len=200))
+        _LOG.info("pre-read: dep-list serve command=%s bytes=%d", sanitize_log_str(command, max_len=80), len(text))
+        return pre_tool_use_with_context(hint_text)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-read: dep-list serve failed", exc_info=True)
+        return None
+
+
 def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
     """Return a cache-hit hint when this Bash command has a cached output from a prior session.
 
@@ -3215,6 +3249,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
         env_probe = _handle_env_probe_serve(payload)
         if env_probe is not None:
             return env_probe
+
+        dep_list = _handle_dep_list_serve(payload)
+        if dep_list is not None:
+            return dep_list
 
         # Cross-session cache hit: the command was not run in this session but
         # has a cached output on disk from a prior session.  Emit a hint so the
