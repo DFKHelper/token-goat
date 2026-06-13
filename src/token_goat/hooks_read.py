@@ -2791,6 +2791,50 @@ def _handle_env_probe_serve(payload: HookPayload) -> HookResponse | None:
         return None
 
 
+def _handle_bash_already_read(payload: HookPayload) -> HookResponse | None:
+    from . import bash_parser  # noqa: PLC0415
+
+    tool_name = payload.get("tool_name")
+    if tool_name != "Bash":
+        return None
+    tool_input = get_tool_input(payload)
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str):
+        return None
+    intent = bash_parser.parse(cmd)
+    if intent.kind != "read" or not intent.target_path:
+        return None
+    sid, cwd = get_session_context(payload)
+    if not sid:
+        return None
+    try:
+        sess = _get_session()
+        cache = sess.safe_load(sid, caller="bash_already_read")
+        if cache is None:
+            return None
+        from . import paths as _paths  # noqa: PLC0415
+        path_key = _paths.normalize_key(intent.target_path)
+        entry = cache.files.get(path_key)
+        if entry is None and cwd:
+            try:
+                from pathlib import Path as _P  # noqa: PLC0415
+                raw_p = _P(intent.target_path)
+                joined = _P(cwd) / raw_p if not raw_p.is_absolute() else raw_p
+                entry = cache.files.get(_paths.normalize_key(str(joined.resolve())))
+            except Exception:  # noqa: BLE001
+                pass
+        if entry is None or entry.read_count != 1:  # streak_hint handles read_count >= 2
+            return None
+        display = sanitize_log_str(intent.target_path, max_len=80)
+        hint_text = f"[token-goat] `{display}` already read {entry.read_count}× this session — use `token-goat read \"{display}::SymbolName\"` for a surgical pull"
+        record_cached_stat("bash_read_equiv_already_read", sanitize_log_str(intent.target_path, max_len=200))
+        _LOG.info("pre-read: bash-already-read path=%s read_count=%d", sanitize_log_str(intent.target_path, max_len=80), entry.read_count)
+        return pre_tool_use_with_context(hint_text)
+    except Exception:  # noqa: BLE001
+        _LOG.debug("pre-read: bash-already-read failed", exc_info=True)
+        return None
+
+
 def _handle_dep_list_serve(payload: HookPayload) -> HookResponse | None:
     """Serve advisory context for dependency-listing commands from the cross-session disk cache.
 
@@ -3253,6 +3297,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
         dep_list = _handle_dep_list_serve(payload)
         if dep_list is not None:
             return dep_list
+
+        bash_already_read = _handle_bash_already_read(payload)
+        if bash_already_read is not None:
+            return bash_already_read
 
         # Cross-session cache hit: the command was not run in this session but
         # has a cached output on disk from a prior session.  Emit a hint so the
