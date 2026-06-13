@@ -2,6 +2,12 @@ title: "AI Token Optimizer — Cuts Costs 40–80%"
 description: "Cuts AI tool costs 40–80% on Windows. Blocks file re-reads, extracts one function instead of a whole file, and shrinks screenshots 97%. Fully automatic."
 url: "https://dfkhelper.github.io"
 baseurl: "/token-goat"
+lang: en
+logo: /token-goat/assets/icon.png
+
+author:
+  name: DFKHelper
+  url: https://github.com/DFKHelper
 
 plugins:
   - jekyll-seo-tag
