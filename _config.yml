@@ -1,0 +1,17 @@
+title: "Claude Code Token Optimizer — Cuts Costs 40–80%"
+description: "Blocks file re-reads, extracts one function instead of a whole file, and shrinks screenshots 97%. Fully automatic. Cuts Claude Code costs 40–80% on Windows."
+url: "https://dfkhelper.github.io"
+baseurl: "/token-goat"
+
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+twitter:
+  card: summary_large_image
+
+social:
+  name: token-goat
+  links:
+    - https://github.com/DFKHelper/token-goat
+    - https://pypi.org/project/token-goat/

@@ -1,3 +1,9 @@
+---
+title: "Claude Code Token Optimizer — Cuts Costs 40–80%"
+description: "Blocks file re-reads, extracts one function instead of a whole file, and shrinks screenshots 97%. Fully automatic. Cuts Claude Code costs 40–80% on Windows."
+image: /token-goat/assets/logo.png
+---
+
 <p align="center">
   <img src="assets/logo.png" alt="Token-Goat" width="700">
 </p>

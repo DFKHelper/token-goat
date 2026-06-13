@@ -4114,10 +4114,10 @@ def cmd_mcp_history(
     from . import mcp_cache  # noqa: PLC0415
 
     def _json_fields(s: object) -> dict[str, object]:
-        return {  # type: ignore[attr-defined]  # s typed as object; McpOutputMeta dataclass at runtime
-            "tool_name": s.tool_name,
-            "input_preview": s.input_preview,
-            "result_bytes": s.result_bytes,
+        return {  # s typed as object; McpOutputMeta dataclass at runtime
+            "tool_name": s.tool_name,  # type: ignore[attr-defined]
+            "input_preview": s.input_preview,  # type: ignore[attr-defined]
+            "result_bytes": s.result_bytes,  # type: ignore[attr-defined]
         }
 
     def _fmt(oid: str, size: int, age: int, s: object) -> str:
