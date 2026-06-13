@@ -59,6 +59,7 @@ strong, b { color: var(--text); }
   z-index: 1000;
   transition: width 0.1s linear;
   pointer-events: none;
+  animation: progressGlow 2s ease-in-out infinite;
 }
 
 /* --- Layout --- */
@@ -122,9 +123,16 @@ footer a:hover { text-decoration: underline; }
 
 .brand-name {
   background: linear-gradient(90deg, var(--accent), var(--blue));
+  background-size: 200% 100%;
+  background-position: 0% 0%;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  transition: background-position 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.sidebar-brand:hover .brand-name {
+  background-position: 100% 0%;
 }
 
 .sidebar-links {
@@ -146,6 +154,23 @@ footer a:hover { text-decoration: underline; }
   text-decoration: none;
   font-size: 0.875rem;
   transition: color var(--transition), background var(--transition);
+  position: relative;
+  border-left: 2px solid transparent;
+}
+
+.sidebar-links a::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  opacity: 0;
+  transform: scaleY(0);
+  transform-origin: center;
+  transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
 .sidebar-links a:hover {
@@ -153,10 +178,28 @@ footer a:hover { text-decoration: underline; }
   background: var(--surface-2);
 }
 
+.sidebar-links a:hover::before {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
 .sidebar-toc {
   flex: 1;
   padding: 0.75rem;
   overflow-y: auto;
+  position: relative;
+}
+
+.sidebar-toc::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0.75rem;
+  right: 0.75rem;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--blue), var(--accent));
+  border-radius: 2px;
+  animation: shimmerPulse 3s ease-in-out infinite;
 }
 
 .toc-label {
@@ -166,6 +209,7 @@ footer a:hover { text-decoration: underline; }
   text-transform: uppercase;
   color: var(--text-faint);
   padding: 0.25rem 0.5rem 0.6rem;
+  margin-top: 0.5rem;
 }
 
 #toc-list {
@@ -184,7 +228,7 @@ footer a:hover { text-decoration: underline; }
   font-size: 0.82rem;
   line-height: 1.4;
   border-left: 2px solid transparent;
-  transition: color var(--transition), background var(--transition), border-color var(--transition);
+  transition: color var(--transition), background var(--transition), border-width 0.25s ease, border-color var(--transition);
 }
 
 #toc-list li a:hover {
@@ -195,6 +239,7 @@ footer a:hover { text-decoration: underline; }
 #toc-list li.active > a {
   color: var(--accent);
   border-left-color: var(--accent);
+  border-left-width: 3px;
   background: var(--accent-dim);
 }
 
@@ -289,7 +334,13 @@ footer a:hover { text-decoration: underline; }
   -webkit-text-fill-color: transparent;
   background-clip: text;
   margin-bottom: 1rem;
-  animation: fadeInDown 0.7s ease both;
+}
+
+.hero h1 span {
+  display: inline-block;
+  opacity: 0;
+  transform: translateY(10px);
+  animation: wordFadeIn 0.6s ease forwards;
 }
 
 .hero > p, .hero > blockquote {
@@ -342,22 +393,37 @@ footer a:hover { text-decoration: underline; }
   border-radius: 2px;
   background: linear-gradient(180deg, var(--accent), var(--blue));
   box-shadow: 0 0 12px rgba(0, 212, 170, 0.4);
+  height: 0;
+  opacity: 0;
+  transition: height 0.5s ease, opacity 0.5s ease;
+}
+
+#content h2.will-fade.fade-in::before {
+  height: 100%;
+  opacity: 1;
+}
+
+#content h2:not(.will-fade)::before {
+  height: 100%;
+  opacity: 1;
 }
 
 .anchor-link {
-  opacity: 0;
-  margin-left: 0.4rem;
-  font-size: 0.85em;
-  color: var(--text-faint);
+  display: inline-block;
+  margin-left: 0.5rem;
+  color: var(--text-muted);
   text-decoration: none;
+  opacity: 0;
   transition: opacity var(--transition), color var(--transition);
-  vertical-align: middle;
+  font-size: 1.1em;
+  cursor: pointer;
 }
 
 #content h2:hover .anchor-link,
-#content h3:hover .anchor-link { opacity: 1; }
-
-.anchor-link:hover { color: var(--accent); }
+#content h3:hover .anchor-link {
+  opacity: 1;
+  color: var(--accent);
+}
 
 #content h3 {
   font-size: 1.05rem;
@@ -397,6 +463,28 @@ footer a:hover { text-decoration: underline; }
 
 #content li > ul, #content li > ol { margin-top: 0.2rem; margin-bottom: 0; }
 
+#content ol {
+  list-style: none;
+  counter-reset: custom-counter;
+}
+
+#content ol li {
+  counter-increment: custom-counter;
+  padding-left: 1.75rem;
+  position: relative;
+}
+
+#content ol li::before {
+  content: counter(custom-counter);
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 1.05em;
+  min-width: 1.5rem;
+  text-align: right;
+}
+
 #content a {
   color: var(--accent);
   text-decoration: underline;
@@ -404,6 +492,19 @@ footer a:hover { text-decoration: underline; }
   text-underline-offset: 2px;
   border-bottom: none;
   transition: text-decoration-color var(--transition), color var(--transition);
+  position: relative;
+}
+
+#content a::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  width: 0;
+  height: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: width 0.3s ease, opacity 0.3s ease;
 }
 
 #content a:hover {
@@ -412,7 +513,8 @@ footer a:hover { text-decoration: underline; }
 
 hr {
   border: none;
-  border-top: 1px solid var(--border);
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent), transparent 50%, var(--accent));
   margin: 2rem 0;
 }
 
@@ -444,6 +546,25 @@ pre {
   scrollbar-color: var(--border) transparent;
 }
 
+pre::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  opacity: 0;
+  transform: translateX(-100%);
+  transition: all 0.4s ease;
+}
+
+pre:hover::after {
+  opacity: 1;
+  transform: translateX(100%);
+  animation: shimmerSweep 0.6s ease forwards;
+}
+
 pre code {
   background: none;
   color: var(--text);
@@ -454,14 +575,18 @@ pre code {
 
 pre[data-language]::before {
   content: attr(data-language);
-  display: block;
-  font-family: var(--font-sans);
+  position: absolute;
+  top: 0.5rem;
+  left: 0.75rem;
+  background: linear-gradient(135deg, rgba(0, 212, 170, 0.2), rgba(0, 212, 170, 0.1));
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem;
   font-size: 0.7rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-faint);
-  margin-bottom: 0.75rem;
+  color: var(--accent);
+  letter-spacing: 0.05em;
 }
 
 .copy-btn {
@@ -478,11 +603,31 @@ pre[data-language]::before {
   padding: 0.2rem 0.55rem;
   opacity: 0;
   transition: opacity var(--transition), background var(--transition), color var(--transition), border-color var(--transition), box-shadow var(--transition);
+  z-index: 10;
+  overflow: hidden;
+  position: relative;
 }
 
 pre:hover .copy-btn { opacity: 1; }
 .copy-btn:hover { background: var(--accent-dim); color: var(--accent); box-shadow: 0 0 8px rgba(0, 212, 170, 0.3); }
 .copy-btn.copied { color: var(--green); border-color: var(--green); }
+
+.copy-btn::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(63, 185, 80, 0.3);
+  transform: translate(-50%, -50%);
+  opacity: 0;
+}
+
+.copy-btn.copied::after {
+  animation: rippleExpand 0.6s ease-out;
+}
 
 .install-highlight {
   border-color: var(--accent);
@@ -522,18 +667,52 @@ td {
 
 tr:last-child td { border-bottom: none; }
 tbody tr:nth-child(even) td { background: rgba(255, 255, 255, 0.02); }
+
+tbody tr {
+  position: relative;
+}
+
+tbody tr::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: var(--accent);
+  opacity: 0;
+  transition: width 0.3s ease, opacity 0.3s ease;
+}
+
+tbody tr:hover::before {
+  width: 3px;
+  opacity: 1;
+}
+
 tbody tr:hover td { background: var(--accent-dim); }
 
 /* --- Blockquotes --- */
 
 blockquote {
+  position: relative;
   border-left: 3px solid var(--blue);
   background: rgba(88, 166, 255, 0.06);
-  padding: 0.75rem 1.25rem;
+  padding: 0.75rem 1.25rem 0.75rem 2.5rem;
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   margin: 0 0 1rem;
   color: var(--text-muted);
   font-style: italic;
+}
+
+blockquote::before {
+  content: '"';
+  position: absolute;
+  left: 0.5rem;
+  top: -0.25rem;
+  font-size: 3.5em;
+  color: var(--text);
+  opacity: 0.08;
+  line-height: 1;
 }
 
 blockquote p { margin: 0; }
@@ -616,7 +795,11 @@ blockquote p { margin: 0; }
   line-height: 1;
 }
 
-#back-to-top.show { opacity: 1; pointer-events: auto; }
+#back-to-top.show {
+  opacity: 1;
+  pointer-events: auto;
+  animation: bounceIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
 
 #back-to-top:hover {
   background: var(--accent-dim);
@@ -672,11 +855,13 @@ blockquote p { margin: 0; }
 kbd {
   font-family: var(--font-mono);
   font-size: 0.75em;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 0.15em 0.4em;
-  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  color: var(--accent);
+  box-shadow: 0 0 6px rgba(0, 212, 170, 0.2);
+  display: inline-block;
 }
 
 /* --- Keyframes --- */
@@ -691,6 +876,15 @@ kbd {
   50%       { opacity: 0.55; }
 }
 
+@keyframes progressGlow {
+  0%, 100% {
+    box-shadow: 0 0 8px var(--accent), 0 0 12px rgba(0, 212, 170, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 16px var(--accent), 0 0 24px rgba(0, 212, 170, 0.5);
+  }
+}
+
 @keyframes fadeInDown {
   from { opacity: 0; transform: translateY(-20px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -699,6 +893,60 @@ kbd {
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(20px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes wordFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmerSweep {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 1;
+  }
+}
+
+@keyframes bounceIn {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.8);
+  }
+  50% {
+    transform: translateY(-3px) scale(1);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes rippleExpand {
+  from {
+    width: 0;
+    height: 0;
+    opacity: 0.6;
+  }
+  to {
+    width: 100px;
+    height: 100px;
+    opacity: 0;
+  }
+}
+
+@keyframes shimmerPulse {
+  0%, 100% { opacity: 0.8; }
+  50%      { opacity: 0.4; }
 }
 
 @keyframes highlightFlash {

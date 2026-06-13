@@ -49,12 +49,27 @@
 
   if (overlay) overlay.addEventListener('click', closeSidebar);
 
-  // --- Hero wrapping ---
+  // --- Hero wrapping with word stagger ---
   function wrapHero() {
     if (!content) return;
     var children = Array.prototype.slice.call(content.childNodes);
     var idx = -1;
     for (var i = 0; i < children.length; i++) {
+      if (children[i].nodeName === 'H1') {
+        var h1 = children[i];
+        var text = h1.textContent;
+        var words = text.split(/\s+/);
+        h1.innerHTML = '';
+        words.forEach(function (word, wordIdx) {
+          var span = document.createElement('span');
+          span.textContent = word;
+          span.style.animationDelay = (wordIdx * 0.1) + 's';
+          h1.appendChild(span);
+          if (wordIdx < words.length - 1) {
+            h1.appendChild(document.createTextNode(' '));
+          }
+        });
+      }
       if (children[i].nodeName === 'H2') { idx = i; break; }
     }
     if (idx <= 0) return;
