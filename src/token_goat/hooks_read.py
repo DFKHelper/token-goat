@@ -4523,6 +4523,11 @@ _GIT_DIFF_DELTA_PREVIEW_LINES: int = 30  # max lines shown in large-delta summar
 _STDERR_DELTA_MIN_BYTES: int = 300  # minimum stderr size to engage stderr delta
 _STDERR_DELTA_SMALL: int = 8  # total delta lines < this → pass through full stderr
 _STDERR_DELTA_MAX_PREVIEW: int = 40  # max new error lines shown in delta summary
+# Sleep / watch / poll-loop output suppression (Iter 16)
+# Non-empty stdout from a sleep command: suppress with a one-liner instead of passing through.
+# Empty stdout from sleep is suppressed silently (no systemMessage).
+# watch and poll-loop commands (while/until + sleep) always suppress with a one-liner.
+_SLEEP_SUPPRESS_NONEMPTY: bool = True  # sentinel — feature is always on; kept for grep-ability
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -5213,6 +5218,93 @@ def post_bash(payload: HookPayload) -> HookResponse:
                                 _sess_mod.save(_session_cache)
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: log-file cache check failed", exc_info=True)
+
+    # Sleep / watch / poll-loop suppression (Iter 16):
+    # - Pure sleep with empty stdout  → silent CONTINUE (no noise in context)
+    # - Pure sleep with non-empty stdout → one-liner + bash-output recall id
+    # - watch COMMAND                  → one-liner + bash-output recall id
+    # - Poll loop (while/until + sleep)→ one-liner with condensed iteration count
+    # Only fires when exit_code is 0 or None (failures pass through unchanged).
+    if exit_code in (None, 0):
+        try:
+            import shlex as _shlex_sp  # noqa: PLC0415
+
+            from . import bash_compress as _bc_sp  # noqa: PLC0415
+            try:
+                _sp_argv = _shlex_sp.split(display_cmd.split("|")[0].strip(), posix=False)
+            except ValueError:
+                _sp_argv = display_cmd.strip().split()
+            _sp_argv_clean = [t.strip("\"'") for t in _sp_argv]
+
+            # --- pure sleep -------------------------------------------------------
+            if _bc_sp._sleep_cmd_type(_sp_argv_clean) is not None:
+                if not stdout.strip():
+                    _LOG.debug("post-bash: sleep cmd empty stdout suppressed cmd=%.60s", display_cmd)
+                    return CONTINUE()
+                # Non-empty stdout: store output so bash-output recall works, emit one-liner.
+                _sp_out_id: str | None = None
+                if session_id:
+                    from . import bash_cache as _bc_sp_cache  # noqa: PLC0415
+                    with contextlib.suppress(Exception):
+                        _sp_meta = _bc_sp_cache.store_output(
+                            session_id, display_cmd, stdout, stderr, exit_code, cwd=cwd, min_cache_bytes=0,
+                        )
+                        if _sp_meta is not None:
+                            _bc_sp_cache.write_sidecar(_sp_meta)
+                            _sp_out_id = _sp_meta.output_id
+                _sp_recall = f" (use bash-output {_sp_out_id} to see)" if _sp_out_id else ""
+                _LOG.info("post-bash: sleep cmd nonempty stdout suppressed cmd=%.60s", display_cmd)
+                return {
+                    "continue": True,
+                    "systemMessage": f"[token-goat] {display_cmd} — output suppressed{_sp_recall}",
+                }
+
+            # --- watch ------------------------------------------------------------
+            _sp_watch_cmd = _bc_sp._watch_cmd_info(_sp_argv_clean)
+            if _sp_watch_cmd is not None:
+                _sp_out_id = None
+                if session_id:
+                    from . import bash_cache as _bc_sp_cache  # noqa: PLC0415
+                    with contextlib.suppress(Exception):
+                        _sp_meta = _bc_sp_cache.store_output(
+                            session_id, display_cmd, stdout, stderr, exit_code, cwd=cwd, min_cache_bytes=0,
+                        )
+                        if _sp_meta is not None:
+                            _bc_sp_cache.write_sidecar(_sp_meta)
+                            _sp_out_id = _sp_meta.output_id
+                _sp_recall = f" (use bash-output {_sp_out_id} to see)" if _sp_out_id else ""
+                _LOG.info("post-bash: watch cmd suppressed watched=%s", _sp_watch_cmd[:80])
+                return {
+                    "continue": True,
+                    "systemMessage": (
+                        f"[token-goat] watch: {_sp_watch_cmd} — output suppressed{_sp_recall}"
+                    ),
+                }
+
+            # --- poll loop --------------------------------------------------------
+            if _bc_sp._is_poll_loop_cmd(display_cmd):
+                _sp_out_id = None
+                if session_id:
+                    from . import bash_cache as _bc_sp_cache  # noqa: PLC0415
+                    with contextlib.suppress(Exception):
+                        _sp_meta = _bc_sp_cache.store_output(
+                            session_id, display_cmd, stdout, stderr, exit_code, cwd=cwd, min_cache_bytes=0,
+                        )
+                        if _sp_meta is not None:
+                            _bc_sp_cache.write_sidecar(_sp_meta)
+                            _sp_out_id = _sp_meta.output_id
+                _sp_n_lines = len([ln for ln in stdout.splitlines() if ln.strip()])
+                _sp_exit_info = f"exit code: {exit_code if exit_code is not None else 0}"
+                _LOG.info("post-bash: poll loop suppressed lines=%d cmd=%.60s", _sp_n_lines, display_cmd)
+                return {
+                    "continue": True,
+                    "systemMessage": (
+                        f"[token-goat] poll loop detected — {_sp_n_lines} output lines condensed"
+                        f" ({_sp_exit_info})"
+                    ),
+                }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: sleep/watch/poll suppress failed", exc_info=True)
 
     # Dir-listing fingerprint cache: suppress repeated find/fd/ls-R/eza-tree listings
     # when the directory content has not changed since the last run.

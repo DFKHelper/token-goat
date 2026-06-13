@@ -1066,6 +1066,106 @@ def _dir_listing_cmd_type(argv: list[str]) -> str | None:
     return None
 
 
+def _sleep_cmd_type(argv: list[str]) -> str | None:
+    """Return ``'sleep'`` when *argv* is a standalone ``sleep`` invocation, else ``None``.
+
+    Matches ``sleep N``, ``sleep Ns``, ``sleep Nm``, ``sleep Nh`` where N is a
+    non-negative number (integer or decimal).  Does NOT match ``sleep`` embedded
+    inside another command (e.g., ``watch -n 5 sleep 2``) — the caller is
+    responsible for passing only the first compound segment.
+
+    *argv* must be the result of ``shlex.split(cmd, posix=False)``.
+    """
+    if not argv:
+        return None
+    base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].strip("\"'").lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base != "sleep":
+        return None
+    rest = [a.strip("\"'") for a in argv[1:] if a.strip()]
+    if len(rest) != 1:
+        return None
+    dur = rest[0].lower()
+    if dur == "infinity" or re.fullmatch(r"\d+(?:\.\d+)?[smh]?", dur):
+        return "sleep"
+    return None
+
+
+def _watch_cmd_info(argv: list[str]) -> str | None:
+    """Return the watched command string when *argv* is a ``watch`` invocation.
+
+    Strips ``watch`` flags (``-n N``, ``--interval N``, ``-d``, ``-t``, etc.)
+    and returns the remainder of the argument list joined as a single string.
+    Returns ``None`` when the first token is not ``watch`` or when no command
+    follows the flags.
+
+    *argv* must be the result of ``shlex.split(cmd, posix=False)``.
+    """
+    if not argv:
+        return None
+    base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].strip("\"'").lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base != "watch":
+        return None
+    # Flags that consume the following token as a value.
+    _CONSUME_NEXT = {"-n", "--interval"}
+    i = 1
+    n = len(argv)
+    while i < n:
+        tok = argv[i].strip("\"'")
+        if tok in _CONSUME_NEXT:
+            i += 2
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        cmd_parts = [a.strip("\"'") for a in argv[i:]]
+        return " ".join(cmd_parts) if cmd_parts else None
+    return None
+
+
+def _is_poll_loop_cmd(cmd: str) -> bool:
+    """Return ``True`` when *cmd* looks like a shell poll loop.
+
+    Heuristic: the raw command string contains a ``while`` or ``until`` keyword
+    AND at least one segment produced by :func:`~token_goat.bash_parser.split_compound`
+    has ``sleep`` as its first non-keyword command token.  Shell control words
+    (``do``, ``then``, ``else``, ``elif``, ``fi``, ``done``) are skipped so
+    that segments like ``do sleep 1`` are correctly identified.
+
+    This catches the common patterns::
+
+        while true; do sleep 1; done
+        while true; do ./check.sh && break; sleep 2; done
+        until ./check.sh; do sleep 5; done
+    """
+    if not re.search(r"\b(?:while|until)\b", cmd):
+        return False
+    try:
+        from .bash_parser import split_compound  # noqa: PLC0415
+        segments = split_compound(cmd)
+    except Exception:  # noqa: BLE001
+        segments = [cmd]
+    # Shell control words that may prefix a real command within a compound segment.
+    _SHELL_KEYWORDS = {"do", "then", "else", "elif", "fi", "done", "while", "until", "if"}
+    for seg in segments:
+        try:
+            parts = shlex.split(seg, posix=False)
+        except ValueError:
+            parts = seg.strip().split()
+        # Skip leading shell keywords to reach the first real command token.
+        for part in parts:
+            token = part.strip("\"'").lower()
+            if token in _SHELL_KEYWORDS:
+                continue
+            if token == "sleep":
+                return True
+            break  # first non-keyword token is not sleep; move to next segment
+    return False
+
+
 @dataclass
 class CompressedOutput:
     """Result of running a :class:`Filter` over a captured command output.
