@@ -4528,6 +4528,11 @@ _STDERR_DELTA_MAX_PREVIEW: int = 40  # max new error lines shown in delta summar
 # Empty stdout from sleep is suppressed silently (no systemMessage).
 # watch and poll-loop commands (while/until + sleep) always suppress with a one-liner.
 _SLEEP_SUPPRESS_NONEMPTY: bool = True  # sentinel — feature is always on; kept for grep-ability
+# Large JSON/XML output summarization (Iter 17)
+# JSON dicts/lists at or above this size are summarized structurally instead of passed raw.
+# XML blobs at or above this size are suppressed with a one-liner recall hint.
+_JSON_SUMMARY_MIN_BYTES: int = 4000
+_JSON_SUMMARY_MAX_BYTES: int = 2_000_000  # skip json.loads on files > 2 MB to avoid memory pressure
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -4912,6 +4917,66 @@ def _extract_pytest_failure_ids(output: str) -> list[str]:
         if node_id:
             ids.add(node_id)
     return sorted(ids)
+
+
+def _json_structural_summary(data: object, max_depth: int = 2, max_keys: int = 12) -> str:
+    """Return a compact structural description of a parsed JSON value.
+
+    Only handles dict and list at the top level (callers must pre-check).
+    Depth 0 = top-level summary line; depth 1 = one level of sub-key expansion.
+    Output is kept under ~20 lines so it fits cleanly in a systemMessage.
+    """
+    lines: list[str] = []
+
+    def _repr_value(v: object) -> str:
+        if isinstance(v, dict):
+            sub = list(v.keys())
+            shown = ", ".join(sub[:8])
+            suffix = f", +{len(sub) - 8} more" if len(sub) > 8 else ""
+            return "{" + shown + suffix + "}"
+        if isinstance(v, list):
+            return f"[list, {len(v)} items]"
+        return type(v).__name__
+
+    if isinstance(data, dict):
+        keys = list(data.keys())
+        shown_keys = keys[:max_keys]
+        truncated = len(keys) - max_keys
+        key_line = ", ".join(str(k) for k in shown_keys)
+        if truncated > 0:
+            key_line += f", ... (+{truncated} more)"
+        lines.append("Type: object (dict)")
+        lines.append(f"Keys ({len(keys)}): {key_line}")
+        # One level of sub-key expansion for values that are dicts or lists
+        expanded = 0
+        for k in shown_keys:
+            v = data[k]
+            if isinstance(v, (dict, list)) and expanded < (max_depth * 6):
+                lines.append(f"└── {k}: {_repr_value(v)}")
+                expanded += 1
+    elif isinstance(data, list):
+        lines.append("Type: array (list)")
+        lines.append(f"Length: {len(data)} items")
+        if data:
+            first = data[0]
+            if isinstance(first, dict):
+                sub_keys = list(first.keys())
+                shown = sub_keys[:max_keys]
+                trunc = len(sub_keys) - max_keys
+                key_line = ", ".join(str(k) for k in shown)
+                if trunc > 0:
+                    key_line += f", ... (+{trunc} more)"
+                lines.append(f"First item type: object — Keys ({len(sub_keys)}): {key_line}")
+                for k in shown[:6]:
+                    v = first[k]
+                    if isinstance(v, (dict, list)):
+                        lines.append(f"  └── {k}: {_repr_value(v)}")
+            elif isinstance(first, list):
+                lines.append(f"First item type: array — {len(first)} items")
+            else:
+                lines.append(f"First item type: {type(first).__name__}")
+
+    return "\n".join(lines)
 
 
 def post_bash(payload: HookPayload) -> HookResponse:
@@ -5305,6 +5370,73 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 }
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: sleep/watch/poll suppress failed", exc_info=True)
+
+    # Large JSON/XML output summarization (Iter 17):
+    # - Valid JSON dict/list >= _JSON_SUMMARY_MIN_BYTES → structural summary + store
+    # - XML >= _JSON_SUMMARY_MIN_BYTES → one-liner suppression + store
+    # Only fires on successful commands (exit_code in (None, 0)) with non-empty stdout.
+    if exit_code in (None, 0) and stdout and _JSON_SUMMARY_MIN_BYTES <= len(stdout) <= _JSON_SUMMARY_MAX_BYTES:
+        try:
+            import json as _json  # noqa: PLC0415
+
+            _jx_data: object = _json.loads(stdout)
+            if isinstance(_jx_data, (dict, list)):
+                _jx_out_id: str | None = None
+                if session_id:
+                    from . import bash_cache as _bc_jx  # noqa: PLC0415
+                    with contextlib.suppress(Exception):
+                        _jx_meta = _bc_jx.store_output(
+                            session_id, display_cmd, stdout, stderr, exit_code,
+                            cwd=cwd, min_cache_bytes=0,
+                        )
+                        if _jx_meta is not None:
+                            _bc_jx.write_sidecar(_jx_meta)
+                            _jx_out_id = _jx_meta.output_id
+                _jx_recall = f" (use bash-output {_jx_out_id} for full)" if _jx_out_id else ""
+                _jx_summary = _json_structural_summary(_jx_data)
+                _jx_size = len(stdout)
+                _LOG.info("post-bash: large JSON summarized bytes=%d cmd=%.60s", _jx_size, display_cmd)
+                return {
+                    "continue": True,
+                    "systemMessage": (
+                        f"[token-goat] large JSON output ({_jx_size:,} bytes)"
+                        f" — structural summary{_jx_recall}:\n\n"
+                        + _jx_summary
+                    ),
+                }
+        except ValueError:  # json.JSONDecodeError subclasses ValueError; catches parse failures only
+            pass  # fall through to XML check and normal handling
+
+        # XML detection: check for XML declaration or root element tag opener.
+        try:
+            _jx_stripped = stdout.lstrip()
+            _jx_is_xml = _jx_stripped[:5] == "<?xml" or (
+                _jx_stripped[:1] == "<" and len(_jx_stripped) > 1 and _jx_stripped[1:2].isalpha()
+            )
+            if _jx_is_xml:
+                _jx_out_id = None
+                if session_id:
+                    from . import bash_cache as _bc_jx  # noqa: PLC0415
+                    with contextlib.suppress(Exception):
+                        _jx_meta = _bc_jx.store_output(
+                            session_id, display_cmd, stdout, stderr, exit_code,
+                            cwd=cwd, min_cache_bytes=0,
+                        )
+                        if _jx_meta is not None:
+                            _bc_jx.write_sidecar(_jx_meta)
+                            _jx_out_id = _jx_meta.output_id
+                _jx_recall = f" (use bash-output {_jx_out_id} to recall)" if _jx_out_id else ""
+                _jx_size = len(stdout)
+                _LOG.info("post-bash: large XML suppressed bytes=%d cmd=%.60s", _jx_size, display_cmd)
+                return {
+                    "continue": True,
+                    "systemMessage": (
+                        f"[token-goat] large XML output ({_jx_size:,} bytes)"
+                        f" — stored{_jx_recall}"
+                    ),
+                }
+        except Exception:  # noqa: BLE001 — fail-soft
+            _LOG.debug("post-bash: XML detection failed", exc_info=True)
 
     # Dir-listing fingerprint cache: suppress repeated find/fd/ls-R/eza-tree listings
     # when the directory content has not changed since the last run.
