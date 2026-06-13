@@ -302,7 +302,7 @@ _PS_WHERE_MATCH_RE = re.compile(
 
 # Pattern-search tools.  All of these put the search pattern as the first
 # non-flag positional argument, making extraction straightforward.
-GREP_BINS = frozenset(["rg", "grep", "ag", "ack", "ripgrep"])
+GREP_BINS = frozenset(["rg", "grep", "ag", "ack", "ripgrep", "findstr", "select-string", "sls"])
 
 # Directory enumeration and file-discovery tools.  Treated as ``glob`` because
 # their output is a list of paths, analogous to the Glob tool.
@@ -577,6 +577,10 @@ def parse(command: str) -> BashIntent:
         if intent.kind == "read" and binary in _PS_READ_BINS and pipeline_tail:
             _apply_powershell_pipeline_filters(intent, pipeline_tail)
         return intent
+    if binary == "findstr":
+        return _parse_findstr(binary, args)
+    if binary in ("select-string", "sls"):
+        return _parse_ps_grep(binary, args)
     if binary in GREP_BINS:
         return _parse_grep(binary, args)
     if binary in GLOB_BINS:
@@ -903,6 +907,60 @@ def _parse_powershell_read(binary: str, args: list[str]) -> BashIntent:
         if len(valid_paths) > 1:
             intent.target_paths = valid_paths
     return intent
+
+
+_FINDSTR_FLAG_RE: re.Pattern[str] = re.compile(r"^/[a-zA-Z!?]")
+_FINDSTR_C_FLAG_RE: re.Pattern[str] = re.compile(r"^/[cC]:(.+)$")
+
+
+def _parse_findstr(binary: str, args: list[str]) -> BashIntent:
+    """Parse Windows findstr — flags use / prefix (e.g. /i /r /c:"str"). /c:<str> embeds the pattern in the flag."""
+    pattern: str | None = None
+    target_path: str | None = None
+    for token in args:
+        c_match = _FINDSTR_C_FLAG_RE.match(token)
+        if c_match:
+            if pattern is None:
+                pattern = c_match.group(1)
+            continue
+        if _FINDSTR_FLAG_RE.match(token):
+            continue
+        if pattern is None:
+            pattern = token
+        elif target_path is None:
+            target_path = token
+    if pattern is None:
+        return BashIntent(kind="unknown")
+    return BashIntent(kind="grep", pattern=pattern, target_path=target_path)
+
+
+def _parse_ps_grep(binary: str, args: list[str]) -> BashIntent:
+    """Parse PowerShell Select-String / sls — handles -Pattern and -Path named params then falls back to positional order."""
+    pattern: str | None = None
+    target_path: str | None = None
+    i = 0
+    while i < len(args):
+        token = args[i]
+        lower = token.lower()
+        if lower == "-pattern" and i + 1 < len(args):
+            pattern = args[i + 1]
+            i += 2
+            continue
+        if lower in ("-path", "-literalpath") and i + 1 < len(args):
+            target_path = args[i + 1]
+            i += 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        if pattern is None:
+            pattern = token
+        elif target_path is None:
+            target_path = token
+        i += 1
+    if pattern is None:
+        return BashIntent(kind="unknown")
+    return BashIntent(kind="grep", pattern=pattern, target_path=target_path)
 
 
 def _parse_grep(binary: str, args: list[str]) -> BashIntent:
