@@ -4291,6 +4291,7 @@ def post_read(payload: HookPayload) -> HookResponse:
             # If the agent reads the file anyway within the hint window, it ignored the hint.
             _check_ignored_hint(cache, file_path)
             # Register file content SHA for cross-file dedup on future reads.
+            # Also record a SHA256 for cross-tool dedup (cat vs Read in post_bash).
             if not _read_is_windowed(tool_input):
                 try:
                     _p = Path(file_path)
@@ -4299,6 +4300,11 @@ def post_read(payload: HookPayload) -> HookResponse:
                         _sha16 = hashlib.sha1(_raw, usedforsecurity=False).hexdigest()[:16]  # noqa: S324
                         _norm = str(_p.resolve()).replace("\\", "/")
                         cache.register_file_content(_sha16, _norm)
+                        # SHA256 for cross-tool dedup with `cat FILE`.
+                        # Normalize CRLF → LF before hashing so the comparison
+                        # is stable across Windows text-mode / Unix LF variations.
+                        _sha256 = hashlib.sha256(_raw.replace(b"\r\n", b"\n")).hexdigest()
+                        cache.record_read_hash(_norm, _sha256)
                 except Exception:  # noqa: BLE001
                     pass
             # Persist curator mutations (hints_ignored, recent_hints) unconditionally.
@@ -4924,6 +4930,61 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 )
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: read-equivalent session record failed", exc_info=True)
+
+    # Cross-tool content dedup: when the Bash command is a whole-file `cat FILE`
+    # with no transforming flags, and the stdout matches a prior Read of the same
+    # file this session, suppress the duplicate and inject a dedup note.
+    # Only matches plain `cat FILE` — head/tail/sed are skipped (offset/limit set).
+    if _sess_mod is not None and _session_cache is not None and exit_code in (None, 0) and stdout:
+        try:
+            import shlex as _shlex  # noqa: PLC0415
+
+            from . import bash_parser as _bp  # noqa: PLC0415
+            _ct_intent = _bp.parse(display_cmd)
+            if (
+                _ct_intent.kind == "read"
+                and _ct_intent.target_path is not None
+                and _ct_intent.target_paths is None  # single file only
+                and _ct_intent.offset is None
+                and _ct_intent.limit is None
+                and not _ct_intent.filtered
+            ):
+                # bash_parser uses posix=True shlex which strips Windows backslashes
+                # (C:\foo → C:foo).  Re-split with posix=False to preserve them, then
+                # skip the command name and any flags to find the first path token.
+                try:
+                    _argv_raw = _shlex.split(display_cmd.split("|")[0].strip(), posix=False)
+                except ValueError:
+                    _argv_raw = []
+                while _argv_raw and _argv_raw[0].strip("\"'").lower() in {"sudo", "time", "nice", "exec"}:
+                    _argv_raw.pop(0)
+                _argv_raw = _argv_raw[1:]  # drop command name
+                _raw_path_str = next((t.strip("\"'") for t in _argv_raw if not t.startswith("-")), None)
+                if not _raw_path_str:
+                    raise ValueError("no path token found in argv")
+                _ct_path = Path(_raw_path_str)
+                if not _ct_path.is_absolute() and cwd:
+                    _ct_path = Path(cwd) / _raw_path_str
+                _ct_norm = str(_ct_path.resolve()).replace("\\", "/")
+                # Normalize CRLF → LF before hashing (mirrors post_read normalization).
+                _ct_hash = hashlib.sha256(stdout.replace("\r\n", "\n").encode()).hexdigest()
+                _prior_hash = _session_cache.get_read_hash(_ct_norm)
+                if _prior_hash is not None and _prior_hash == _ct_hash:
+                    _LOG.info(
+                        "post-bash: cross-tool dedup suppressed cat output path=%s",
+                        sanitize_log_str(_ct_norm),
+                    )
+                    with contextlib.suppress(Exception):
+                        _sess_mod.save(_session_cache)
+                    return {
+                        "continue": True,
+                        "systemMessage": (
+                            f"[token-goat] Output identical to recent Read of '{_raw_path_str}'"
+                            " — suppressed duplicate (use Read tool directly)"
+                        ),
+                    }
+        except Exception:  # noqa: BLE001 — fail-soft
+            _LOG.debug("post-bash: cross-tool content dedup check failed", exc_info=True)
 
     # Binary output detection: if the output contains a high proportion of null
     # bytes it is almost certainly binary data (compiled artifact, compressed

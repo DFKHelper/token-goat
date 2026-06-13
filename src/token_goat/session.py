@@ -779,6 +779,15 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
             merged_pinned.append(spec)
     merged.pinned_symbols = merged_pinned[:PINNED_SYMBOLS_MAX]
 
+    # read_content_hashes: local wins (most recent Read takes precedence).
+    merged_rch: dict[str, str] = dict(remote.read_content_hashes)
+    merged_rch.update(local.read_content_hashes)
+    merged.read_content_hashes = merged_rch
+    if len(merged.read_content_hashes) > READ_CONTENT_HASHES_MAX:
+        _rch_evict = len(merged.read_content_hashes) - (READ_CONTENT_HASHES_MAX - _READ_CONTENT_HASHES_EVICT)
+        for _ in range(_rch_evict):
+            merged.read_content_hashes.pop(next(iter(merged.read_content_hashes)))
+
     merged._invalidate_json_cache()
     return merged
 
@@ -1050,6 +1059,12 @@ _MCP_RESULT_HASHES_EVICT: Final[int] = 10
 # Maximum number of file-content SHA entries retained per session.
 FILE_CONTENT_SEEN_MAX: Final[int] = 500
 _FILE_CONTENT_SEEN_EVICT: Final[int] = 50
+# Maximum number of read-content-hash entries retained per session.  The
+# read_content_hashes dict maps normalized path → SHA256 hex of the last
+# whole-file Read content for that path, enabling cross-tool dedup with
+# Bash cat commands that produce identical output.
+READ_CONTENT_HASHES_MAX: Final[int] = 100
+_READ_CONTENT_HASHES_EVICT: Final[int] = 10
 
 # Maximum number of decision-log entries retained per session.  Decisions are
 # opt-in (the agent calls ``token-goat decision "<text>"``), so the volume is
@@ -1171,6 +1186,11 @@ class SessionCache:
     # by pre-fetch hook to detect repeated read-only MCP calls and serve cached content.
     # Missing in older sessions → empty dict. FIFO-evicted at MCP_RESULT_HASHES_MAX.
     mcp_result_hashes: dict[str, str] = field(default_factory=dict)
+    # Cross-tool content dedup: maps normalized-path → SHA256 hex of the last
+    # whole-file Read content for that path.  Used in post_bash to detect when
+    # a `cat FILE` output is identical to a prior Read and suppress the duplicate.
+    # Missing in older sessions → empty dict. FIFO-evicted at READ_CONTENT_HASHES_MAX.
+    read_content_hashes: dict[str, str] = field(default_factory=dict)
     # Cross-file content dedup: maps file_content_sha16 (first 16 SHA-1 hex chars) →
     # normalized path of the *first* file seen with that content.  Used by pre_read to
     # deny a read of a file whose content is identical to a file already read this session.
@@ -1443,6 +1463,7 @@ class SessionCache:
             pytest_failures=dict(self.pytest_failures),
             mcp_result_hashes=dict(self.mcp_result_hashes),
             grep_target_counts=dict(self.grep_target_counts),
+            read_content_hashes=dict(self.read_content_hashes),
         )
 
     def to_json(self) -> str:
@@ -1695,6 +1716,30 @@ class SessionCache:
                 self.grep_result_hashes.pop(next(iter(self.grep_result_hashes)))
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
+
+    def record_read_hash(self, path: str, content_hash: str) -> None:
+        """Record the SHA256 content hash of a whole-file Read for cross-tool dedup.
+
+        Called in post_read after a successful non-windowed Read.  A subsequent
+        `cat FILE` bash command whose stdout produces the same hash will be
+        suppressed with a dedup note in post_bash.
+
+        Enforces READ_CONTENT_HASHES_MAX via FIFO eviction.
+        """
+        self.read_content_hashes[path] = content_hash
+        if len(self.read_content_hashes) > READ_CONTENT_HASHES_MAX:
+            items_to_remove = len(self.read_content_hashes) - (READ_CONTENT_HASHES_MAX - _READ_CONTENT_HASHES_EVICT)
+            for _ in range(items_to_remove):
+                self.read_content_hashes.pop(next(iter(self.read_content_hashes)))
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+
+    def get_read_hash(self, path: str) -> str | None:
+        """Return the stored SHA256 hash for *path*, or None if not recorded.
+
+        *path* must already be normalized (resolve + forward-slashes).
+        """
+        return self.read_content_hashes.get(path)
 
     def lookup_mcp_output_id(self, tool_input_hash: str) -> str | None:
         """Return the cached output_id for an MCP tool call hash, or None."""
@@ -2096,6 +2141,14 @@ class SessionCache:
                 if isinstance(_pf_k, str) and isinstance(_pf_v, list):
                     pytest_failures[_pf_k] = [s for s in _pf_v if isinstance(s, str)]
 
+        # read_content_hashes: dict[str, str] — missing in older sessions → empty dict.
+        read_content_hashes: dict[str, str] = {}
+        raw_rch = d.get("read_content_hashes", {})
+        if isinstance(raw_rch, dict):
+            for _rch_k, _rch_v in raw_rch.items():
+                if isinstance(_rch_k, str) and isinstance(_rch_v, str):
+                    read_content_hashes[_rch_k] = _rch_v
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -2140,6 +2193,7 @@ class SessionCache:
             file_content_seen=file_content_seen,
             pytest_failures=pytest_failures,
             mcp_result_hashes=mcp_result_hashes,
+            read_content_hashes=read_content_hashes,
         )
 
 
@@ -2694,6 +2748,7 @@ class _SessionDict(TypedDict, total=False):
     observed_tool_tokens: int
     file_content_seen: dict[str, str]
     pytest_failures: dict[str, list[str]]
+    read_content_hashes: dict[str, str]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
