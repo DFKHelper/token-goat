@@ -2798,6 +2798,58 @@ def _is_tsc_cmd(argv: list[str]) -> bool:
     return False
 
 
+#: Matches Python interpreter base names after _base() strips path and extension.
+#: Covers python, python3, python3.12, py.  uv run python is handled separately
+#: in _is_python_script_cmd by scanning argv.
+_PYTHON_BIN_RE: Final[re.Pattern[str]] = re.compile(r"^python3?(?:\.\d+)?$|^py$")
+
+
+def _is_python_script_cmd(argv: list[str]) -> bool:
+    """Return True when the command is a direct Python script invocation.
+
+    Handles: ``python``, ``python3``, ``python3.12``, ``py`` (and their
+    ``.exe``/``.cmd`` variants), direct ``.py`` file invocations, and
+    ``uv run python[3[.X]]``.  Returns False for any pytest invocation
+    (that is handled by the pytest compression path).
+    """
+    if not argv:
+        return False
+
+    def _base(s: str) -> str:
+        b = s.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        for ext in (".exe", ".cmd"):
+            if b.endswith(ext):
+                b = b[: -len(ext)]
+                break
+        return b
+
+    b0 = _base(argv[0])
+
+    # Direct Python interpreter: python, python3, python3.12, py (and .exe/.cmd)
+    if _PYTHON_BIN_RE.match(b0):
+        return True
+
+    # Direct .py script: ./myscript.py, C:\path\script.PY (lowercased by _base)
+    if b0.endswith(".py"):
+        return True
+
+    # uv run python[3[.X]] ...
+    if b0 == "uv" and len(argv) >= 3:
+        # Skip any leading uv flags to find the "run" subcommand
+        i = 1
+        while i < len(argv) and argv[i].startswith("-"):
+            i += 1
+        if i < len(argv) and _base(argv[i]) == "run":
+            i += 1
+            # Skip uv run flags/options
+            while i < len(argv) and argv[i].startswith("-"):
+                i += 1
+            if i < len(argv) and _PYTHON_BIN_RE.match(_base(argv[i])):
+                return True
+
+    return False
+
+
 class CargoFilter(Filter):
     """Compress cargo build / check / test / clippy / run / bench output.
 

@@ -4567,6 +4567,8 @@ _ENV_LIST_MIN_LINES: int = 10
 # Container log compressor
 # docker/kubectl/podman logs can emit thousands of lines; compress when >= this many.
 _CONTAINER_LOG_MIN_LINES: int = 50
+#: Minimum stderr line count before Python script traceback compression fires (Iter 31).
+_PYTHON_TB_MIN_STDERR_LINES: int = 25
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -6103,11 +6105,12 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     else:
                         # Has diagnostics — keep all, strip noise lines
                         _tsc_error_count = sum(
-                            1 for _l in _tsc_diag_lines if _re_tsc.search(r": error TS\d+:", _l)
+                            1 for _l in _tsc_diag_lines
+                            if _re_tsc.search(r"(?:^|: )error TS\d+:", _l)
                         )
                         _tsc_warn_count = sum(
                             1 for _l in _tsc_diag_lines
-                            if _re_tsc.search(r": warning TS\d+:", _l)
+                            if _re_tsc.search(r"(?:^|: )warning TS\d+:", _l)
                         )
                         _tsc_body_lines = list(_tsc_diag_lines)
                         if _tsc_summary and (
@@ -6243,6 +6246,65 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 }
         except Exception:  # noqa: BLE001 — fail-soft
             _LOG.debug("post-bash: XML detection failed", exc_info=True)
+
+    # Python script traceback compression (Iter 31):
+    # When a Python script crashes with an uncaught exception, compress the multi-line
+    # traceback down to the last 15 stderr lines plus a header with the exception type.
+    # Guards: non-zero exit, "Traceback" in stderr, python invocation, not pytest,
+    # stderr line count >= _PYTHON_TB_MIN_STDERR_LINES.
+    if (
+        exit_code not in (None, 0)
+        and stderr
+        and "Traceback (most recent call last):" in stderr
+        and len(stderr.splitlines()) >= _PYTHON_TB_MIN_STDERR_LINES
+        and not _is_pytest_command(display_cmd)
+    ):
+        try:
+            import shlex as _shlex_py  # noqa: PLC0415
+            import sys as _sys_py  # noqa: PLC0415
+
+            from .bash_compress import _is_python_script_cmd as _py_check  # noqa: PLC0415
+
+            _py_argv = _shlex_py.split(display_cmd, posix=(_sys_py.platform != "win32"))
+            if _py_argv and _py_check(_py_argv):
+                _py_stderr_lines = stderr.splitlines()
+                _py_total = len(_py_stderr_lines)
+                _py_tail = _py_stderr_lines[-15:]
+                # Extract exception type+message from last non-empty stderr line
+                _py_exc = next(
+                    (ln.strip() for ln in reversed(_py_stderr_lines) if ln.strip()),
+                    "unknown error",
+                )
+                _py_out_id: str | None = None
+                if session_id:
+                    from . import bash_cache as _bc_py  # noqa: PLC0415
+                    with contextlib.suppress(Exception):
+                        _py_meta = _bc_py.store_output(
+                            session_id, display_cmd, stdout, stderr, exit_code,
+                            cwd=cwd, min_cache_bytes=0,
+                        )
+                        if _py_meta is not None:
+                            _bc_py.write_sidecar(_py_meta)
+                            _py_out_id = _py_meta.output_id
+                _py_recall = (
+                    "\nbash-output " + _py_out_id + " for full output"
+                ) if _py_out_id else ""
+                _py_msg = (
+                    "[token-goat] python crash: " + _py_exc
+                    + " (stderr: " + str(_py_total) + " lines → 15 kept)\n"
+                    + "\n".join(_py_tail)
+                    + _py_recall
+                )
+                _LOG.info(
+                    "post-bash: python traceback compressed stderr_lines=%d cmd=%.60s",
+                    _py_total, display_cmd,
+                )
+                if _sess_mod is not None and _session_cache is not None:
+                    with contextlib.suppress(Exception):
+                        _sess_mod.save(_session_cache)
+                return {"continue": True, "systemMessage": _py_msg}
+        except Exception:  # noqa: BLE001 -- fail-soft; never block the hook
+            _LOG.debug("post-bash: python traceback compression failed", exc_info=True)
 
     # Large plain-text stdout fallback compressor (Iter 19):
     # Fires AFTER all specialized handlers (JSON/XML, pytest, sleep/poll, etc.).
