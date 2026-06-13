@@ -5733,25 +5733,107 @@ _GIT_PUSH_REF_RE: Final[re.Pattern[str]] = re.compile(
 _GIT_PUSH_TRACK_RE: Final[re.Pattern[str]] = re.compile(
     r"^Branch\s+'[^']+'\s+set\s+up\s+to\s+track"
 )
+# Remote-side object-transfer progress: "remote: Resolving deltas:  42% (100/234)"
+_GIT_REMOTE_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^remote:\s+(?:Resolving deltas|Enumerating objects|Counting objects|"
+    r"Compressing objects|Writing objects):\s+\d+%",
+)
+# Local client-side progress: "Counting objects: 42% (5/12)", "Writing objects: 100% ..."
+_GIT_LOCAL_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Enumerating objects|Counting objects|Compressing objects|Writing objects):\s+\d+%",
+)
+# Blank remote line with no content after the colon: "remote: " or "remote:"
+_GIT_REMOTE_BLANK_RE: Final[re.Pattern[str]] = re.compile(r"^remote:\s*$")
+
+
+def _compress_git_push_remote_progress(lines: list[str]) -> list[str]:
+    """Collapse repeated remote/local git-push percentage-progress lines.
+
+    Each object-transfer stage (Counting, Compressing, Writing objects,
+    Resolving deltas) may emit one line per percentage point — sometimes
+    100+ lines per stage.  Only the final line for each consecutive run of
+    the same stage is kept; intermediate lines are silently dropped.
+    Blank ``remote:`` lines are also dropped (they surround GitHub's PR
+    creation block but add no information).  All other lines pass through
+    unchanged, including the PR-creation URL, ref-update lines, and errors.
+    """
+    result: list[str] = []
+    current_stage: str = ""
+    stage_last_line: str = ""
+
+    def _flush() -> None:
+        nonlocal current_stage, stage_last_line
+        if stage_last_line:
+            result.append(stage_last_line)
+        current_stage = ""
+        stage_last_line = ""
+
+    for ln in lines:
+        stripped = ln.rstrip()
+        if _GIT_REMOTE_PROGRESS_RE.match(stripped) or _GIT_LOCAL_PROGRESS_RE.match(stripped):
+            m = re.match(r"^(?:remote:\s+)?(\w[\w ]+?):\s+\d+%", stripped)
+            stage = m.group(1).strip() if m else "?"
+            if stage != current_stage:
+                _flush()
+                current_stage = stage
+            stage_last_line = stripped
+        elif _GIT_REMOTE_BLANK_RE.match(stripped):
+            _flush()
+            # Drop blank "remote:" lines — they are visual padding.
+        else:
+            _flush()
+            result.append(stripped)
+
+    _flush()
+    return result
 
 
 def _compress_git_push(stdout: str, stderr: str) -> str:
     """Compress ``git push`` output.
 
-    Strips pytest dot-progress lines; preserves pytest summary and git
-    push ref-update lines.  On pytest failure, keeps the first error block
-    but still strips dots.
+    Handles two distinct sources of verbosity:
+
+    1. **Verbose remote/local progress** — each object-transfer stage
+       (Counting, Compressing, Writing objects, Resolving deltas) can emit
+       one line per percentage point.  Only the final "100%" line per stage
+       is kept; blank ``remote:`` lines are dropped.  GitHub PR-creation
+       URLs and ref-update lines are always preserved.
+
+    2. **Pre-push hook runs pytest** — strips dot-progress lines and
+       collapses the pytest summary and push result to 1–2 lines.  On
+       failure the first error block is preserved verbatim.
+
+    Both cases may occur together.  When neither pattern is present the
+    output passes through unchanged.
     """
     merged = (stdout.rstrip() + "\n" + stderr.rstrip()).strip() if stderr.strip() else stdout
     # Use splitlines() instead of split('\n') to handle both CRLF and LF
     lines = merged.splitlines()
 
-    # Quick check: is there any dot-progress to compress?
-    dot_lines = [ln for ln in lines if _PYTEST_DOT_LINE_RE.match(ln)]
-    if not dot_lines:
+    # Detect which compression paths are needed.
+    has_dot_lines = any(_PYTEST_DOT_LINE_RE.match(ln) for ln in lines)
+    has_remote_progress = any(
+        _GIT_REMOTE_PROGRESS_RE.match(ln.rstrip()) or _GIT_LOCAL_PROGRESS_RE.match(ln.rstrip())
+        for ln in lines
+    )
+
+    if not has_dot_lines and not has_remote_progress:
         # Nothing to compress; standard passthrough.
         return merged
 
+    # Always apply remote/local progress compression first — it is a no-op
+    # when no progress lines exist, and it reduces line count before the
+    # pytest path runs.
+    if has_remote_progress:
+        lines = _compress_git_push_remote_progress(lines)
+
+    # Re-check for pytest dots after remote compression.
+    dot_lines = [ln for ln in lines if _PYTEST_DOT_LINE_RE.match(ln)]
+    if not dot_lines:
+        # Only remote/local progress was present — already compressed.
+        return "\n".join(lines)
+
+    # --- Pytest pre-push hook path ---
     # Extract pytest summary line (last matching line wins — it's the total).
     pytest_summary = ""
     for ln in lines:
@@ -5795,25 +5877,35 @@ def _compress_git_push(stdout: str, stderr: str) -> str:
         parts.append(f"pre-push ✔ {pytest_summary}")
     if push_lines:
         parts.append("pushed " + " | ".join(push_lines))
-    return "\n".join(parts) if parts else merged
+    return "\n".join(parts) if parts else "\n".join(lines)
 
 
 class GitPushFilter(Filter):
-    """Compress ``git push`` output when a pre-push hook runs pytest.
+    """Compress ``git push`` output.
 
-    The pre-push hook can emit 120+ lines of dots.  This filter strips dot-
-    progress lines and collapses the pytest summary and push result to 1–2 lines:
+    Handles two sources of verbosity:
 
-    .. code-block:: text
+    1. **Verbose object-transfer progress** — each stage (Counting,
+       Compressing, Writing objects, Resolving deltas) can emit one line per
+       percentage point.  Only the final "100%" line per stage is kept;
+       blank ``remote:`` lines are dropped.  GitHub PR-creation URLs and
+       ref-update lines are always preserved.  A 14 KB push collapses to
+       ~10 lines.
 
-        # tests pass:
-        pre-push ✔ 8333 passed in 9:21 | pushed main -> origin/main
+    2. **Pre-push hook runs pytest** — strips dot-progress lines (120+
+       lines of dots) and collapses the pytest summary and push result to
+       1–2 lines:
 
-        # tests fail:
-        pre-push FAILED: 3 failed, 8330 passed
-        [first error block preserved]
+       .. code-block:: text
 
-    When no dot-progress is detected, the output is passed through unchanged.
+           # tests pass:
+           pre-push ✔ 8333 passed in 9:21 | pushed main -> origin/main
+
+           # tests fail:
+           pre-push FAILED: 3 failed, 8330 passed
+           [first error block preserved]
+
+    When neither pattern is detected the output is passed through unchanged.
 
     Registered before :class:`GitFilter` so it claims ``git push`` exclusively.
     """

@@ -115,6 +115,64 @@ summary: (done in 1.23 seconds)
 
 
 # ---------------------------------------------------------------------------
+# Fixtures shared across GitPushFilter remote-progress tests
+# ---------------------------------------------------------------------------
+
+# Realistic small push: 5 lines of intermediate progress per stage (each stage
+# would be 100 lines in a real large-repo push — here we use 5 to keep the
+# fixture readable while still exercising the compression path).
+_REMOTE_PROGRESS_SMALL = """\
+Enumerating objects: 5, done.
+Counting objects:   0% (1/5)
+Counting objects:  20% (1/5)
+Counting objects:  40% (2/5)
+Counting objects:  60% (3/5)
+Counting objects:  80% (4/5)
+Counting objects: 100% (5/5), done.
+Delta compression using up to 8 threads
+Compressing objects:  33% (1/3)
+Compressing objects:  67% (2/3)
+Compressing objects: 100% (3/3), done.
+Writing objects:  33% (1/3)
+Writing objects:  67% (2/3)
+Writing objects: 100% (3/3), 1.02 KiB | 1.02 MiB/s, done.
+Total 3 (delta 1), reused 0 (delta 0), pack-reused 0
+remote: Resolving deltas:   0% (0/1)
+remote: Resolving deltas: 100% (1/1), completed with 1 local object.
+remote:\x20
+remote: Create a pull request for 'feat/new' on GitHub by visiting:
+remote:   https://github.com/owner/repo/pull/new/feat/new
+remote:\x20
+To github.com:owner/repo.git
+   7f3a1b2..9c4d5e6  feat/new -> feat/new"""
+
+# Simulate large push: 100 intermediate lines per stage → ~400 lines total
+_lines: list[str] = ["Enumerating objects: 1234, done."]
+for _pct in range(0, 101):
+    _lines.append(f"Counting objects: {_pct}% ({_pct * 10}/1000)")
+_lines.append("Counting objects: 100% (1000/1000), done.")
+_lines.append("Delta compression using up to 16 threads")
+for _pct in range(0, 101):
+    _lines.append(f"Compressing objects: {_pct}% ({_pct * 8}/800)")
+_lines.append("Compressing objects: 100% (800/800), done.")
+for _pct in range(0, 101):
+    _lines.append(f"Writing objects: {_pct}% ({_pct * 10}/1000)")
+_lines.append("Writing objects: 100% (1000/1000), 12.34 MiB | 5.00 MiB/s, done.")
+_lines.append("Total 1000 (delta 500), reused 0 (delta 0), pack-reused 0")
+for _pct in range(0, 101):
+    _lines.append(f"remote: Resolving deltas: {_pct}% ({_pct * 5}/500)")
+_lines.append("remote: Resolving deltas: 100% (500/500), completed with 200 local objects.")
+_lines.append("remote: ")
+_lines.append("remote: Create a pull request for 'main' on GitHub by visiting:")
+_lines.append("remote:   https://github.com/owner/repo/pull/new/main")
+_lines.append("remote: ")
+_lines.append("To github.com:owner/repo.git")
+_lines.append("   abc1234..def5678  main -> main")
+_REMOTE_PROGRESS_LARGE = "\n".join(_lines)
+del _lines, _pct
+
+
+# ---------------------------------------------------------------------------
 # GitPushFilter — dispatch
 # ---------------------------------------------------------------------------
 
@@ -416,3 +474,165 @@ summary: (done in 2.50 seconds)
         assert ("TypeError: unsupported operand" in result or
                 "error:" in result or
                 "Traceback" in result)
+
+
+# ---------------------------------------------------------------------------
+# GitPushFilter — remote/local percentage-progress compression
+# ---------------------------------------------------------------------------
+
+
+class TestGitPushFilterRemoteProgress:
+    """Tests for the new remote/local progress compression path."""
+
+    def test_remote_progress_activates_filter(self) -> None:
+        """Output with remote progress lines is compressed (not passed through)."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_SMALL, ["git", "push"])
+        assert len(result) < len(_REMOTE_PROGRESS_SMALL)
+
+    def test_intermediate_progress_lines_dropped(self) -> None:
+        """Lines like 'Counting objects:  20% (1/5)' are stripped; only final kept."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_SMALL, ["git", "push"])
+        assert "Counting objects:  20%" not in result
+        assert "Counting objects:  40%" not in result
+        assert "Compressing objects:  33%" not in result
+        assert "Writing objects:  33%" not in result
+        assert "remote: Resolving deltas:   0%" not in result
+
+    def test_final_stage_line_kept(self) -> None:
+        """The 100% / 'done' line for each stage is preserved in output."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_SMALL, ["git", "push"])
+        assert "Counting objects: 100%" in result
+        assert "Compressing objects: 100%" in result
+        assert "Writing objects: 100%" in result
+        assert "remote: Resolving deltas: 100%" in result
+
+    def test_blank_remote_lines_dropped(self) -> None:
+        """Blank 'remote: ' padding lines are not present in compressed output."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_SMALL, ["git", "push"])
+        # No line should be exactly "remote:" or "remote: " (just whitespace after colon)
+        for ln in result.splitlines():
+            assert ln.strip() != "remote:", f"Blank remote line leaked into output: {ln!r}"
+
+    def test_pr_url_kept(self) -> None:
+        """GitHub PR-creation URL lines are preserved — they are actionable info."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_SMALL, ["git", "push"])
+        assert "https://github.com/owner/repo/pull/new/feat/new" in result
+
+    def test_ref_update_line_kept(self) -> None:
+        """The branch ref-update line (SHA range + branch names) is preserved."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_SMALL, ["git", "push"])
+        assert "7f3a1b2..9c4d5e6" in result
+        assert "feat/new" in result
+
+    def test_to_remote_line_kept(self) -> None:
+        """The 'To github.com:...' destination line is preserved."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_SMALL, ["git", "push"])
+        assert "To github.com:owner/repo.git" in result
+
+    def test_non_progress_lines_pass_through(self) -> None:
+        """Lines unrelated to progress (Total, Delta compression, Enumerating) pass through."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_SMALL, ["git", "push"])
+        assert "Enumerating objects: 5, done." in result
+        assert "Delta compression using up to 8 threads" in result
+        assert "Total 3 (delta 1)" in result
+
+    def test_large_push_compresses_dramatically(self) -> None:
+        """A 400-line push output (simulating 14 KB) compresses to ≤20 lines."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_LARGE, ["git", "push"])
+        lines = [ln for ln in result.splitlines() if ln.strip()]
+        assert len(lines) <= 20, f"Expected ≤20 lines, got {len(lines)}"
+        # Still preserves the key outputs
+        assert "abc1234..def5678" in result
+        assert "https://github.com/owner/repo/pull/new/main" in result
+
+    def test_large_push_final_stage_lines_present(self) -> None:
+        """After large push compression, the final-100% line for each stage is present."""
+        f = bc.GitPushFilter()
+        result = _apply(f, _REMOTE_PROGRESS_LARGE, ["git", "push"])
+        assert "Counting objects: 100% (1000/1000), done." in result
+        assert "Compressing objects: 100% (800/800), done." in result
+        assert "Writing objects: 100% (1000/1000)" in result
+        assert "remote: Resolving deltas: 100% (500/500)" in result
+
+    def test_error_line_during_push_kept(self) -> None:
+        """error: lines in a push output (e.g. rejected refs) pass through verbatim."""
+        output = (
+            "Counting objects:   0% (1/10)\n"
+            "Counting objects: 100% (10/10), done.\n"
+            "error: failed to push some refs to 'github.com:owner/repo.git'\n"
+            "hint: Updates were rejected because the remote contains work that you do not have locally.\n"
+            "To github.com:owner/repo.git\n"
+            " ! [rejected]  main -> main (non-fast-forward)"
+        )
+        f = bc.GitPushFilter()
+        result = _apply(f, output, ["git", "push"], exit_code=1)
+        assert "error: failed to push some refs" in result
+        assert "hint: Updates were rejected" in result
+        assert "[rejected]" in result
+
+    def test_multiremote_both_ref_updates_kept(self) -> None:
+        """When multiple ref lines appear they are all preserved."""
+        output = (
+            "Counting objects: 100% (5/5), done.\n"
+            "Writing objects: 100% (5/5), 1.00 KiB | 1.00 MiB/s, done.\n"
+            "Total 5 (delta 2), reused 0 (delta 0), pack-reused 0\n"
+            "To github.com:owner/repo.git\n"
+            "   aaa1111..bbb2222  main -> main\n"
+            "   ccc3333..ddd4444  v1.0 -> v1.0"
+        )
+        f = bc.GitPushFilter()
+        result = _apply(f, output, ["git", "push"])
+        assert "aaa1111..bbb2222" in result
+        assert "ccc3333..ddd4444" in result
+
+    def test_no_progress_lines_passthrough_unchanged(self) -> None:
+        """Output with no progress lines is returned unchanged (passthrough guard)."""
+        simple = "To github.com:owner/repo.git\n   7f3a1b2..9c4d5e6  main -> main"
+        f = bc.GitPushFilter()
+        result = _apply(f, simple, ["git", "push"])
+        assert result == simple
+
+
+# ---------------------------------------------------------------------------
+# GitPushFilter — pytest pre-push + remote progress combined
+# ---------------------------------------------------------------------------
+
+
+class TestGitPushFilterCombinedPytestAndRemote:
+    """When a pre-push hook runs pytest AND the push has remote progress lines."""
+
+    def test_combined_output_compresses_dots_and_remote(self) -> None:
+        """Both pytest dots and remote progress lines are collapsed."""
+        combined = (
+            # Remote progress from the actual push
+            "Counting objects:   0% (1/100)\n"
+            "Counting objects: 100% (100/100), done.\n"
+            "Writing objects: 100% (100/100), 2.00 KiB | 2.00 MiB/s, done.\n"
+            "Total 100 (delta 50), reused 0 (delta 0), pack-reused 0\n"
+            "remote: Resolving deltas:   0% (0/50)\n"
+            "remote: Resolving deltas: 100% (50/50), done.\n"
+            "remote: \n"
+            # Pytest dot output from the pre-push hook
+            + "." * 50 + " [ 50%]\n"
+            + "." * 50 + " [100%]\n"
+            + "500 passed in 45s\n"
+            + "   abc1234..def5678  main -> main"
+        )
+        f = bc.GitPushFilter()
+        result = _apply(f, combined, ["git", "push"])
+        # pytest summary preserved
+        assert "500 passed" in result
+        # ref update preserved
+        assert "abc1234..def5678" in result or "main" in result
+        # no raw dot lines
+        dot_lines = [ln for ln in result.splitlines() if bc._PYTEST_DOT_LINE_RE.match(ln)]
+        assert len(dot_lines) == 0
