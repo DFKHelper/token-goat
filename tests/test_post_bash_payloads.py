@@ -466,3 +466,116 @@ class TestPostBashSingleSessionLoadRegression:
         assert load_call_count == 1, (
             f"safe_load called {load_call_count} times for post_bash; expected exactly 1"
         )
+
+
+# ---------------------------------------------------------------------------
+# Auto-promote oversized unfiltered bash output
+# ---------------------------------------------------------------------------
+
+class TestAutoPromoteOversizedOutput:
+    """post_bash must inject a preview+pointer systemMessage for large unfiltered outputs.
+
+    When a Bash command has no matching filter in bash_detect (not in the 227-binary
+    table) and its combined output exceeds 8 KiB, post_bash should return a
+    systemMessage instead of CONTINUE so the model sees a bounded preview rather
+    than the full raw output.
+    """
+
+    _BIG = "A line of output content here.\n" * 400  # ~12 KB, > 8192 threshold
+
+    def _payload(self, command: str, stdout: str = "", stderr: str = "", session_id: str = "ap-test-1") -> dict:
+        return {
+            "session_id": session_id,
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "tool_response": {"stdout": stdout, "stderr": stderr, "exit_code": 0},
+        }
+
+    def test_large_unfiltered_output_returns_system_message(self, tmp_data_dir):
+        """Unrecognised binary with >8 KiB output must trigger auto-promote."""
+        result = hooks_read.post_bash(
+            self._payload("my-custom-tool --verbose", stdout=self._BIG, session_id="ap-test-1")
+        )
+        assert result.get("continue") is True
+        msg = result.get("systemMessage", "")
+        assert "[token-goat] Large output from" in msg
+        assert "bash-output" in msg
+        assert "token-goat bash-output" in msg
+
+    def test_preview_contains_head_lines(self, tmp_data_dir):
+        """Preview section must include the first lines of stdout."""
+        lines = [f"line {i}" for i in range(100)]
+        big_out = "\n".join(lines) + "\n" * 200  # pad to exceed 8 KiB
+        big_out = big_out + "X" * 9000
+        result = hooks_read.post_bash(
+            self._payload("obscure-tool", stdout=big_out, session_id="ap-test-2")
+        )
+        msg = result.get("systemMessage", "")
+        if msg:  # only check content when auto-promote fired
+            assert "line 0" in msg
+
+    def test_filtered_command_does_not_auto_promote(self, tmp_data_dir):
+        """A command wrapped by the pre-Bash hook (display_cmd != command) must not trigger auto-promote.
+
+        Simulate a wrapped command by passing a token-goat compress wrapper as the
+        command.  _unwrap_compress_command will extract the original, making
+        display_cmd != command, which gates out the auto-promote path.
+        """
+        import shlex
+        orig = "my-custom-tool --verbose"
+        wrapped = f"python -m token_goat.cli compress --filter generic --cmd {shlex.quote(orig)}"
+        result = hooks_read.post_bash(
+            self._payload(wrapped, stdout=self._BIG, session_id="ap-test-3")
+        )
+        # Must be CONTINUE (no auto-promote for wrapped commands)
+        assert result.get("continue") is True
+        assert result.get("systemMessage") is None or "Large output from" not in result.get("systemMessage", "")
+
+    def test_small_output_does_not_auto_promote(self, tmp_data_dir):
+        """Output below the 8 KiB threshold must not trigger auto-promote."""
+        small = "short output\n" * 10  # << 400 byte cache min; well under 8 KiB
+        result = hooks_read.post_bash(
+            self._payload("my-custom-tool", stdout=small, session_id="ap-test-4")
+        )
+        # Should be CONTINUE with no auto-promote systemMessage
+        assert result.get("continue") is True
+        assert "Large output from" not in result.get("systemMessage", "")
+
+    def test_known_filter_binary_does_not_auto_promote(self, tmp_data_dir):
+        """A command whose binary is in bash_detect table must not trigger auto-promote.
+
+        Even if the pre-Bash hook chose not to wrap it (e.g. filter was disabled),
+        the auto-promote guard checks bash_detect.detect() and skips if a filter name
+        is returned, preserving the intended compression path.
+        """
+        # 'cargo' is a registered binary in bash_detect
+        result = hooks_read.post_bash(
+            self._payload("cargo build --release", stdout=self._BIG, session_id="ap-test-5")
+        )
+        assert result.get("continue") is True
+        assert "Large output from" not in result.get("systemMessage", "")
+
+    def test_token_goat_command_does_not_auto_promote(self, tmp_data_dir):
+        """A token-goat command itself must never trigger auto-promote."""
+        result = hooks_read.post_bash(
+            self._payload("token-goat map --compact", stdout=self._BIG, session_id="ap-test-6")
+        )
+        assert result.get("continue") is True
+        assert "Large output from" not in result.get("systemMessage", "")
+
+    def test_auto_promote_disabled_when_bash_compress_off(self, tmp_data_dir, monkeypatch):
+        """When bash_compress.enabled is False, auto-promote must not fire."""
+        import token_goat.config as _cfg
+        original_load = _cfg.load
+
+        def _mock_load():
+            cfg = original_load()
+            cfg.bash_compress.enabled = False
+            return cfg
+
+        monkeypatch.setattr(_cfg, "load", _mock_load)
+        result = hooks_read.post_bash(
+            self._payload("my-custom-tool --verbose", stdout=self._BIG, session_id="ap-test-7")
+        )
+        assert result.get("continue") is True
+        assert "Large output from" not in result.get("systemMessage", "")

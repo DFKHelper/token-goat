@@ -4993,7 +4993,70 @@ def post_bash(payload: HookPayload) -> HookResponse:
         except Exception:  # noqa: BLE001 — fail-soft
             _LOG.debug("post-bash: pytest delta failed", exc_info=True)
 
+    # Auto-promote oversized unfiltered bash output: when the command has no
+    # matching filter in bash_detect (it was not wrapped by the pre-Bash hook),
+    # the model would otherwise see the full raw output verbatim.  For outputs
+    # that were successfully cached and exceed the threshold, inject a truncated
+    # preview + pointer so the model can skip re-reading what is already stored.
+    #
+    # Guard conditions (any failing → skip and fall through to CONTINUE):
+    #   - bash_compress must be enabled (reuses existing on/off gate)
+    #   - command must NOT have been wrapped (display_cmd == command means no wrap)
+    #   - total output > _AUTO_PROMOTE_BYTES (8 KiB)
+    #   - no filter match in bash_detect (unrecognised binary, not in the 227-entry table)
+    #   - not a token-goat command itself (avoid self-referential loops)
+    _AUTO_PROMOTE_BYTES = 8192
+    _was_filtered = display_cmd != command
+    if _bc_cfg.enabled and not _was_filtered and total_bytes > _AUTO_PROMOTE_BYTES:
+        try:
+            import shlex as _shlex  # noqa: PLC0415
+
+            from . import bash_detect as _bd  # noqa: PLC0415
+            try:
+                _argv = _shlex.split(display_cmd, posix=True)
+            except ValueError:
+                _argv = []
+            _filter_match = _bd.detect(_argv) if _argv else None
+            _stem = Path(_argv[0].replace("\\", "/")).stem.lower() if _argv else ""
+            _is_tg_cmd = _stem in ("token-goat", "token_goat", "tg")
+            if _filter_match is None and not _is_tg_cmd:
+                _combined = stdout.rstrip("\n") + ("\n" + stderr.rstrip("\n") if stderr.strip() else "")
+                _lines = _combined.splitlines()
+                _HEAD = 30
+                _TAIL = 10
+                if len(_lines) <= _HEAD + _TAIL:
+                    _preview = "\n".join(_lines)
+                else:
+                    _omitted = len(_lines) - _HEAD - _TAIL
+                    _preview = (
+                        "\n".join(_lines[:_HEAD])
+                        + f"\n... [{_omitted} lines omitted] ...\n"
+                        + "\n".join(_lines[-_TAIL:])
+                    )
+                _short_cmd = display_cmd[:80] + ("..." if len(display_cmd) > 80 else "")
+                _promote_msg = (
+                    f"[token-goat] Large output from `{_short_cmd}` ({total_bytes:,} bytes)"
+                    f" stored as bash-output {meta.output_id}.\n"
+                    f"Preview (first {_HEAD} lines):\n"
+                    f"{_preview}\n"
+                    f"[{total_bytes:,} bytes total — retrieve full output:"
+                    f" `token-goat bash-output {meta.output_id}`]"
+                )
+                record_cached_stat(
+                    "bash_output_auto_promote",
+                    sanitize_log_str(display_cmd, max_len=200),
+                    bytes_saved=total_bytes,
+                )
+                _LOG.info(
+                    "post-bash: auto-promote id=%s bytes=%d cmd=%.80s",
+                    meta.output_id, total_bytes, display_cmd,
+                )
+                return {"continue": True, "systemMessage": _promote_msg}
+        except Exception:  # noqa: BLE001 — fail-soft
+            _LOG.debug("post-bash: auto-promote failed", exc_info=True)
+
     return CONTINUE()
+
 
 
 def pre_screenshot(payload: HookPayload) -> HookResponse:
