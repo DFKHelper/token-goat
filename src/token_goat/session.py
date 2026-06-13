@@ -797,6 +797,15 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         for _ in range(_lfc_evict):
             merged.log_file_cache.pop(next(iter(merged.log_file_cache)))
 
+    # dir_listing_cache: local wins (most recent listing takes precedence).
+    merged_dlc: dict[str, str] = dict(remote.dir_listing_cache)
+    merged_dlc.update(local.dir_listing_cache)
+    merged.dir_listing_cache = merged_dlc
+    if len(merged.dir_listing_cache) > DIR_LISTING_CACHE_MAX:
+        _dlc_evict = len(merged.dir_listing_cache) - (DIR_LISTING_CACHE_MAX - _DIR_LISTING_CACHE_EVICT)
+        for _ in range(_dlc_evict):
+            merged.dir_listing_cache.pop(next(iter(merged.dir_listing_cache)))
+
     merged._invalidate_json_cache()
     return merged
 
@@ -1081,6 +1090,12 @@ _READ_CONTENT_HASHES_EVICT: Final[int] = 10
 LOG_FILE_CACHE_MAX: Final[int] = 50
 _LOG_FILE_CACHE_EVICT: Final[int] = 5
 
+# Size cap for the dir-listing fingerprint cache.  Maps compound key
+# "{norm_dir_path}:{cmd_fingerprint}" → 16-hex-char SHA256 of listing output.
+# Capped at 30 entries (smaller than log_file_cache; recursive listings are rarer).
+DIR_LISTING_CACHE_MAX: Final[int] = 30
+_DIR_LISTING_CACHE_EVICT: Final[int] = 3
+
 # Maximum number of decision-log entries retained per session.  Decisions are
 # opt-in (the agent calls ``token-goat decision "<text>"``), so the volume is
 # self-limited — but a misbehaving loop could pin one entry per iteration; the
@@ -1212,6 +1227,13 @@ class SessionCache:
     # re-hashing the full output (same size+mtime ⇒ same content).
     # Missing in older sessions → empty dict. FIFO-evicted at LOG_FILE_CACHE_MAX.
     log_file_cache: dict[str, str] = field(default_factory=dict)
+    # Dir-listing fingerprint cache: maps compound key "{norm_dir_path}:{cmd_fingerprint}" →
+    # first-16-hex-chars of SHA256 of the listing output seen for that command+directory.
+    # Enables post_bash to suppress repeated recursive directory listings (find/fd/ls-R/eza-tree)
+    # when the directory content has not changed.  cmd_fingerprint is a short hash of the
+    # full argv string so commands with different flags produce different keys.
+    # Missing in older sessions → empty dict. FIFO-evicted at DIR_LISTING_CACHE_MAX.
+    dir_listing_cache: dict[str, str] = field(default_factory=dict)
     # Cross-file content dedup: maps file_content_sha16 (first 16 SHA-1 hex chars) →
     # normalized path of the *first* file seen with that content.  Used by pre_read to
     # deny a read of a file whose content is identical to a file already read this session.
@@ -1486,6 +1508,7 @@ class SessionCache:
             grep_target_counts=dict(self.grep_target_counts),
             read_content_hashes=dict(self.read_content_hashes),
             log_file_cache=dict(self.log_file_cache),
+            dir_listing_cache=dict(self.dir_listing_cache),
         )
 
     def to_json(self) -> str:
@@ -1800,6 +1823,30 @@ class SessionCache:
         """
         key = self._log_cache_key(path, size, mtime)
         return self.log_file_cache.get(key)
+
+    def get_dir_listing_hit(self, key: str) -> str | None:
+        """Return the stored output hash for *key* if cached, else None.
+
+        *key* must be ``"{norm_dir_path}:{cmd_fingerprint}"`` as built by the
+        post_bash dir-listing cache block.
+        """
+        return self.dir_listing_cache.get(key)
+
+    def record_dir_listing(self, key: str, output_hash: str) -> None:
+        """Record a dir-listing output hash for *key*.
+
+        *key* should be ``"{norm_dir_path}:{cmd_fingerprint}"`` where
+        *cmd_fingerprint* is a 16-hex-char hash of the full command string so
+        commands with different flags produce different keys.
+        Enforces DIR_LISTING_CACHE_MAX via FIFO eviction.
+        """
+        self.dir_listing_cache[key] = output_hash
+        if len(self.dir_listing_cache) > DIR_LISTING_CACHE_MAX:
+            items_to_remove = len(self.dir_listing_cache) - (DIR_LISTING_CACHE_MAX - _DIR_LISTING_CACHE_EVICT)
+            for _ in range(items_to_remove):
+                self.dir_listing_cache.pop(next(iter(self.dir_listing_cache)))
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
 
     def lookup_mcp_output_id(self, tool_input_hash: str) -> str | None:
         """Return the cached output_id for an MCP tool call hash, or None."""
@@ -2219,6 +2266,16 @@ class SessionCache:
                 if isinstance(_lfc_k, str) and isinstance(_lfc_v, str) and _lfc_k and _lfc_v:
                     log_file_cache[_lfc_k] = _lfc_v
 
+        # dir_listing_cache: dict[str, str] — missing in older sessions → empty dict.
+        # Keys are compound strings "{norm_dir_path}:{cmd_fingerprint}"; values are
+        # 16-hex-char output hashes.  Malformed or non-string entries are silently dropped.
+        dir_listing_cache: dict[str, str] = {}
+        raw_dlc = d.get("dir_listing_cache", {})
+        if isinstance(raw_dlc, dict):
+            for _dlc_k, _dlc_v in raw_dlc.items():
+                if isinstance(_dlc_k, str) and isinstance(_dlc_v, str) and _dlc_k and _dlc_v:
+                    dir_listing_cache[_dlc_k] = _dlc_v
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -2265,6 +2322,7 @@ class SessionCache:
             mcp_result_hashes=mcp_result_hashes,
             read_content_hashes=read_content_hashes,
             log_file_cache=log_file_cache,
+            dir_listing_cache=dir_listing_cache,
         )
 
 
@@ -2821,6 +2879,7 @@ class _SessionDict(TypedDict, total=False):
     pytest_failures: dict[str, list[str]]
     read_content_hashes: dict[str, str]
     log_file_cache: dict[str, str]
+    dir_listing_cache: dict[str, str]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:

@@ -5147,6 +5147,84 @@ def post_bash(payload: HookPayload) -> HookResponse:
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: log-file cache check failed", exc_info=True)
 
+    # Dir-listing fingerprint cache: suppress repeated find/fd/ls-R/eza-tree listings
+    # when the directory content has not changed since the last run.
+    # Key: "{norm_dir_path}:{cmd_fingerprint}" where cmd_fingerprint is a 16-hex-char
+    # SHA256 of the full display_cmd string (different flags → different fingerprint).
+    # Value: 16-hex-char SHA256 of the stdout output.
+    # Only fires on successful listings (exit 0) with non-empty stdout.
+    if _sess_mod is not None and _session_cache is not None and exit_code in (None, 0) and stdout:
+        try:
+            import shlex as _shlex_dl  # noqa: PLC0415
+
+            from . import bash_compress as _bc_dl  # noqa: PLC0415
+            try:
+                _dl_argv = _shlex_dl.split(display_cmd.split("|")[0].strip(), posix=False)
+            except ValueError:
+                _dl_argv = display_cmd.strip().split()
+            _dl_type = _bc_dl._dir_listing_cmd_type(_dl_argv)
+            if _dl_type is not None:
+                # Extract target directory: first non-flag, non-option argument after
+                # the command name, skipping flags that consume the next token.
+                _dl_args = _dl_argv[1:]
+                _dl_dir_raw: str | None = None
+                _dl_skip_next = False
+                # fd's positional signature is: fd [FLAGS] [PATTERN] [PATH]...
+                # The first non-flag arg is the pattern, not the directory.
+                _dl_skip_positional = _dl_type == "fd"
+                _DL_CONSUME_NEXT = {
+                    "--max-depth", "--maxdepth", "-maxdepth", "--min-depth", "--mindepth",
+                    "--type", "-type", "--extension", "-e", "--exclude", "--name", "-name",
+                    "--ignore", "-d", "--depth", "-l", "--level",
+                }
+                for _dl_tok in _dl_args:
+                    if _dl_skip_next:
+                        _dl_skip_next = False
+                        continue
+                    _dl_clean = _dl_tok.strip("\"'")
+                    if _dl_clean.startswith("-"):
+                        if _dl_clean in _DL_CONSUME_NEXT:
+                            _dl_skip_next = True
+                        continue
+                    if _dl_skip_positional:
+                        _dl_skip_positional = False
+                        continue
+                    _dl_dir_raw = _dl_clean
+                    break
+                if _dl_dir_raw:
+                    _dl_p = Path(_dl_dir_raw)
+                    if not _dl_p.is_absolute() and cwd:
+                        _dl_p = Path(cwd) / _dl_dir_raw
+                    try:
+                        _dl_norm = str(_dl_p.resolve()).replace("\\", "/")
+                    except (OSError, ValueError):
+                        _dl_norm = ""
+                    if _dl_norm:
+                        _dl_cmd_fp = hashlib.sha256(display_cmd.encode()).hexdigest()[:16]
+                        _dl_key = f"{_dl_norm}:{_dl_cmd_fp}"
+                        _dl_out_hash = hashlib.sha256(stdout.replace("\r\n", "\n").encode()).hexdigest()[:16]
+                        _dl_cached = _session_cache.get_dir_listing_hit(_dl_key)
+                        if _dl_cached is not None and _dl_cached == _dl_out_hash:
+                            _LOG.info(
+                                "post-bash: dir-listing cache hit suppressed output dir=%s type=%s",
+                                sanitize_log_str(_dl_norm), _dl_type,
+                            )
+                            with contextlib.suppress(Exception):
+                                _sess_mod.save(_session_cache)
+                            return {
+                                "continue": True,
+                                "systemMessage": (
+                                    f"[token-goat] Directory listing for '{_dl_dir_raw}' unchanged"
+                                    " — suppressed duplicate output (re-run to see full listing)"
+                                ),
+                            }
+                        # Cache miss or changed output: record for future suppression.
+                        _session_cache.record_dir_listing(_dl_key, _dl_out_hash)
+                        with contextlib.suppress(Exception):
+                            _sess_mod.save(_session_cache)
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: dir-listing cache check failed", exc_info=True)
+
     # Binary output detection: if the output contains a high proportion of null
     # bytes it is almost certainly binary data (compiled artifact, compressed
     # stream, raw device read).  Skip caching entirely — binary blobs are not

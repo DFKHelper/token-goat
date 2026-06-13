@@ -1027,6 +1027,45 @@ def _keep_errors_verbatim(
 # Fields already present: compressed_text (text), original_bytes,
 # compressed_bytes, filter_name, notes.
 
+def _dir_listing_cmd_type(argv: list[str]) -> str | None:
+    """Return the listing type when *argv* is a recursive directory-listing command.
+
+    Returns one of ``"find"``, ``"fd"``, ``"ls-r"``, or ``"eza-tree"`` when *argv*
+    matches those patterns, else ``None``.
+
+    *argv* must be the result of ``shlex.split(cmd, posix=False)`` — do NOT pass
+    raw shell strings.  The first element is the command name (possibly with a
+    full path or ``.exe`` suffix on Windows).
+    """
+    if not argv:
+        return None
+    base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].strip("\"'").lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base == "find":
+        return "find"
+    if base in ("fd", "fdfind"):
+        return "fd"
+    if base in ("ls", "ll", "la"):
+        # Only flag as recursive when -R / --recursive is explicitly present.
+        rest = argv[1:]
+        if "--recursive" in rest or "-R" in rest:
+            return "ls-r"
+        # Check combined short flags (e.g. -lR, -laR)
+        if any(a.startswith("-") and not a.startswith("--") and "R" in a for a in rest):
+            return "ls-r"
+        return None
+    if base in ("eza", "exa"):
+        # Tree variant only when --tree or -T (possibly combined) is present.
+        rest = argv[1:]
+        if "--tree" in rest or "-T" in rest:
+            return "eza-tree"
+        if any(a.startswith("-") and not a.startswith("--") and "T" in a for a in rest):
+            return "eza-tree"
+        return None
+    return None
+
+
 @dataclass
 class CompressedOutput:
     """Result of running a :class:`Filter` over a captured command output.
