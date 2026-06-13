@@ -44,6 +44,8 @@ body {
   color: var(--accent);
 }
 
+strong, b { color: var(--text); }
+
 /* --- Progress bar --- */
 
 #progress-bar {
@@ -289,7 +291,7 @@ footer a:hover { text-decoration: underline; }
 }
 
 .hero > p, .hero > blockquote {
-  color: var(--text-muted);
+  color: #c9d1d9;
   font-size: 1.05rem;
   max-width: 640px;
   animation: fadeInUp 0.7s 0.15s ease both;
