@@ -4517,6 +4517,9 @@ _BINARY_NULL_THRESHOLD: float = 0.01  # 1 % null bytes → binary
 # Capping prevents injecting large path lists (e.g. 200+ matches) into context.
 # Excess entries are summarised as "(+N more)".
 _GLOB_RESULT_CACHE_MAX_PATHS: int = 20
+_GIT_DIFF_MIN_BYTES: int = 400  # minimum stdout size to engage delta caching
+_GIT_DIFF_SMALL_DELTA: int = 20  # delta lines < this → pass through full diff
+_GIT_DIFF_DELTA_PREVIEW_LINES: int = 30  # max lines shown in large-delta summary
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -4825,6 +4828,67 @@ def _is_log_file_path(norm_path: str) -> bool:
     if lower.endswith((".log", ".out")):
         return True
     return "/log/" in lower or "/logs/" in lower or lower.endswith("/log") or lower.endswith("/logs")
+
+
+_GIT_NOISE_FLAGS: frozenset[str] = frozenset({
+    "--color", "--no-color", "--color=never", "--color=always", "--color=auto",
+})
+
+_GIT_STAT_FLAGS: frozenset[str] = frozenset({"--stat", "--shortstat", "--numstat"})
+
+
+def _is_git_diff_target(argv: list[str]) -> bool:
+    """Return True when argv is a `git diff` command eligible for delta caching.
+
+    Excludes ``--stat`` / ``--shortstat`` / ``--numstat`` variants because those
+    are handled by :class:`~bash_compress.GitDiffFilter` in a separate path.
+    Accepts bare ``git``, full-path variants (``/usr/bin/git``), and
+    ``git.exe`` on Windows.
+    """
+    if not argv or len(argv) < 2:
+        return False
+    # Extract basename, normalise slashes, strip .exe suffix.
+    cmd_base = argv[0].lower().replace("\\", "/").rsplit("/", 1)[-1]
+    if cmd_base.endswith(".exe"):
+        cmd_base = cmd_base[:-4]
+    if cmd_base != "git":
+        return False
+    if argv[1] != "diff":
+        return False
+    return not any(a in _GIT_STAT_FLAGS for a in argv[2:])
+
+
+def _normalize_git_diff_args(argv: list[str]) -> str:
+    """Return a canonical string of git diff args with noise flags stripped.
+
+    Drops colour-control flags (``--color``, ``--no-color``, etc.) so that
+    ``git diff HEAD`` and ``git diff --no-color HEAD`` resolve to the same
+    cache key.  Pass the full argv (``git`` at [0], ``diff`` at [1]); the
+    function slices at [2:] internally.
+    """
+    return " ".join(a for a in argv[2:] if a not in _GIT_NOISE_FLAGS)
+
+
+def _get_head_sha(cwd: str | None) -> str | None:
+    """Return the current HEAD commit SHA string, or ``None`` on failure.
+
+    Runs ``git rev-parse HEAD`` in *cwd*.  Returns ``None`` when the directory
+    is not a git repository, the repo has no commits yet, or the subprocess
+    call fails for any reason.  Never raises.
+    """
+    import subprocess as _subp  # noqa: PLC0415
+    try:
+        kwargs: dict[str, object] = dict(capture_output=True, text=True, timeout=5, check=False)
+        if cwd:
+            kwargs["cwd"] = cwd
+        result = _subp.run(["git", "rev-parse", "HEAD"], **kwargs)
+        if result.returncode == 0:
+            sha = result.stdout.strip()
+            if sha:
+                return sha
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def _extract_pytest_failure_ids(output: str) -> list[str]:
@@ -5224,6 +5288,98 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             _sess_mod.save(_session_cache)
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: dir-listing cache check failed", exc_info=True)
+
+    # Git diff delta cache: when the same git diff command (same normalised args +
+    # HEAD commit SHA) is re-run within a session, compare the new output against
+    # the previously cached diff and emit only the delta rather than the full blob.
+    # - Identical diff → suppress entirely with an advisory note.
+    # - Small delta (< _GIT_DIFF_SMALL_DELTA lines) → pass through the full new
+    #   diff; the model needs the context to understand what changed.
+    # - Large delta → emit a summary header + first _GIT_DIFF_DELTA_PREVIEW_LINES
+    #   delta lines so the model sees what changed without re-reading everything.
+    # Only fires when: exit_code == 0, len(stdout) >= _GIT_DIFF_MIN_BYTES, and the
+    # command is git diff (excluding --stat/--shortstat/--numstat variants).
+    if exit_code in (None, 0) and len(stdout) >= _GIT_DIFF_MIN_BYTES and session_id:
+        try:
+            import shlex as _shlex_gd  # noqa: PLC0415
+            try:
+                _gd_argv = _shlex_gd.split(display_cmd.split("|")[0].strip(), posix=False)
+            except ValueError:
+                _gd_argv = display_cmd.strip().split()
+            # Strip shell quoting from every token before classification.
+            _gd_argv_clean = [t.strip("\"'") for t in _gd_argv]
+            if _is_git_diff_target(_gd_argv_clean):
+                _gd_norm_args = _normalize_git_diff_args(_gd_argv_clean)
+                _gd_head_sha = _get_head_sha(cwd)
+                if _gd_head_sha is not None:
+                    _gd_key = f"{session_id}:{_gd_norm_args}:{_gd_head_sha}"
+                    _gd_marker_cmd = f"__git_diff_cache__:{_gd_key}"
+                    from . import bash_cache as _bc_gd  # noqa: PLC0415
+                    _gd_prior_meta = _bc_gd.find_cached_for_command(_gd_marker_cmd, cwd=cwd)
+                    _gd_prior_text: str | None = None
+                    if _gd_prior_meta is not None:
+                        _gd_prior_text = _bc_gd.load_output(_gd_prior_meta.output_id)
+                    # Persist current diff under the marker key for future comparisons.
+                    # min_cache_bytes=0 bypasses the size floor (we already checked above).
+                    # write_sidecar is required so find_cached_for_command can locate
+                    # the entry by cmd_sha when the second diff arrives.
+                    with contextlib.suppress(Exception):
+                        _gd_stored = _bc_gd.store_output(
+                            session_id, _gd_marker_cmd, stdout, "", 0,
+                            cwd=cwd, min_cache_bytes=0,
+                        )
+                        if _gd_stored is not None:
+                            _bc_gd.write_sidecar(_gd_stored)
+                    if _gd_prior_text is not None:
+                        from collections import Counter as _Counter  # noqa: PLC0415
+                        _gd_new_lines = stdout.splitlines()
+                        _gd_old_lines = _gd_prior_text.splitlines()
+                        _gd_old_cnt = _Counter(_gd_old_lines)
+                        _gd_new_cnt = _Counter(_gd_new_lines)
+                        # Use multiset difference so repeated lines (context lines,
+                        # blank lines, hunk markers) are counted correctly.
+                        _gd_added: list[str] = []
+                        for _ln, _cnt in _gd_new_cnt.items():
+                            _extra = _cnt - _gd_old_cnt.get(_ln, 0)
+                            if _extra > 0:
+                                _gd_added.extend([_ln] * _extra)
+                        _gd_removed: list[str] = []
+                        for _ln, _cnt in _gd_old_cnt.items():
+                            _extra = _cnt - _gd_new_cnt.get(_ln, 0)
+                            if _extra > 0:
+                                _gd_removed.extend([_ln] * _extra)
+                        _gd_delta_n = len(_gd_added) + len(_gd_removed)
+                        if _gd_delta_n == 0:
+                            _LOG.info(
+                                "post-bash: git diff unchanged; suppressing output key=%.60s", _gd_key
+                            )
+                            return {
+                                "continue": True,
+                                "systemMessage": (
+                                    "[token-goat] git diff unchanged since last run — output suppressed"
+                                ),
+                            }
+                        elif _gd_delta_n < _GIT_DIFF_SMALL_DELTA:
+                            pass  # small delta: full new diff passes through unchanged
+                        else:
+                            _gd_delta_lines = (
+                                [f"+ {ln}" for ln in _gd_added]
+                                + [f"- {ln}" for ln in _gd_removed]
+                            )
+                            _gd_preview = "\n".join(_gd_delta_lines[:_GIT_DIFF_DELTA_PREVIEW_LINES])
+                            _LOG.info(
+                                "post-bash: git diff changed; delta summary key=%.60s added=%d removed=%d",
+                                _gd_key, len(_gd_added), len(_gd_removed),
+                            )
+                            return {
+                                "continue": True,
+                                "systemMessage": (
+                                    f"[token-goat] git diff changed: {len(_gd_added)} lines added,"
+                                    f" {len(_gd_removed)} lines removed vs prior run\n{_gd_preview}"
+                                ),
+                            }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: git diff delta cache check failed", exc_info=True)
 
     # Binary output detection: if the output contains a high proportion of null
     # bytes it is almost certainly binary data (compiled artifact, compressed
