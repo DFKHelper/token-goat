@@ -5221,6 +5221,77 @@ def _json_structural_summary(data: object, max_depth: int = 2, max_keys: int = 1
     return "\n".join(lines)
 
 
+def _safe_int(v: object, default: int = 0) -> int:
+    """Return ``int(v)`` or *default* when *v* is empty, None, or non-numeric."""
+    try:
+        return int(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _summarize_junit_xml(stdout: str) -> str | None:
+    """Parse JUnit XML *stdout* and return a token-goat summary string, or ``None`` on parse error.
+
+    Handles both ``<testsuite>`` as root element and ``<testsuites>`` wrapper containing
+    multiple ``<testsuite>`` children.  Aggregates counts across all suites and lists up
+    to 10 failure/error test cases with their messages (truncated at 160 chars).
+    """
+    import xml.etree.ElementTree as ET  # noqa: PLC0415
+    try:
+        root = ET.fromstring(stdout.strip())
+    except ET.ParseError:
+        return None
+
+    # Normalise to a flat list of <testsuite> elements — direct children only.
+    # Using root.iter("testsuite") would recurse into nested <testsuite> children and
+    # double-count totals (outer suite tests="5" + inner suites tests="2"+"3" = 10).
+    if root.tag == "testsuites":
+        suites = [el for el in root if el.tag == "testsuite"]
+    elif root.tag == "testsuite":
+        suites = [root]
+    else:
+        return None
+
+    total = errors = failures = skipped = 0
+    failed_cases: list[tuple[str, str]] = []  # (name, message)
+
+    for suite in suites:
+        total += _safe_int(suite.get("tests", 0))
+        errors += _safe_int(suite.get("errors", 0))
+        failures += _safe_int(suite.get("failures", 0))
+        skipped += _safe_int(suite.get("skipped", 0))
+
+        for tc in suite.iter("testcase"):
+            fail = tc.find("failure")
+            err = tc.find("error")
+            node = fail if fail is not None else err
+            if node is not None:
+                classname = tc.get("classname", "")
+                testname = tc.get("name", "")
+                name = f"{classname}.{testname}".strip(".")
+                msg = (node.get("message") or node.text or "")[:200]
+                failed_cases.append((name, msg))
+
+    passed = total - errors - failures - skipped
+    status = "PASS" if (errors + failures) == 0 else "FAIL"
+
+    lines = [
+        f"[token-goat] JUnit XML [{status}]: {passed} passed, {failures} failed,"
+        f" {errors} errors, {skipped} skipped ({total} total)"
+    ]
+
+    if failed_cases:
+        lines.append("Failures:")
+        for name, msg in failed_cases[:10]:
+            lines.append(f"  {name}")
+            if msg.strip():
+                lines.append(f"    {msg.strip()[:160]}")
+        if len(failed_cases) > 10:
+            lines.append(f"  ... {len(failed_cases) - 10} more failures (use bash-output to see all)")
+
+    return "\n".join(lines)
+
+
 def post_bash(payload: HookPayload) -> HookResponse:
     """Post-Bash hook: persist large outputs to disk and record in session history.
 
@@ -6531,12 +6602,14 @@ def post_bash(payload: HookPayload) -> HookResponse:
             pass  # fall through to XML check and normal handling
 
         # XML detection: check for XML declaration or root element tag opener.
+        # JUnit XML is excluded here — it is handled by the dedicated JUnit handler below.
         try:
             _jx_stripped = stdout.lstrip()
             _jx_is_xml = _jx_stripped[:5] == "<?xml" or (
                 _jx_stripped[:1] == "<" and len(_jx_stripped) > 1 and _jx_stripped[1:2].isalpha()
             )
-            if _jx_is_xml:
+            from . import bash_compress as _bc_jx_junit  # noqa: PLC0415
+            if _jx_is_xml and not _bc_jx_junit._is_junit_xml_output(stdout):
                 _jx_out_id = None
                 if session_id:
                     from . import bash_cache as _bc_jx  # noqa: PLC0415
@@ -6688,6 +6761,38 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     }
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: minified grep elision failed", exc_info=True)
+
+    # JUnit XML summary (Iter 35):
+    # When stdout looks like JUnit XML (<?xml ... <testsuite) and has >= 10 lines OR >= 4096
+    # bytes (catches compact single-line XML from pytest-junit compact mode / machine-gen XML),
+    # parse it and emit a structured pass/fail summary instead of raw XML.
+    # Fires before the large-stdout fallback so verbose stacktrace XML is caught here.
+    if stdout:
+        try:
+            from . import bash_compress as _bc_junit  # noqa: PLC0415
+            if (_bc_junit._is_junit_xml_output(stdout)
+                    and (len(stdout.splitlines()) >= 10 or len(stdout) >= 4096)):
+                _junit_summary = _summarize_junit_xml(stdout)
+                if _junit_summary is not None:
+                    _junit_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_junit_cache  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _junit_meta = _bc_junit_cache.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _junit_meta is not None:
+                                _bc_junit_cache.write_sidecar(_junit_meta)
+                                _junit_out_id = _junit_meta.output_id
+                    _junit_recall = f"\n[Full XML: bash-output {_junit_out_id}]" if _junit_out_id else ""
+                    _LOG.info("post-bash: JUnit XML summarised cmd=%.60s", display_cmd)
+                    return {
+                        "continue": True,
+                        "systemMessage": _junit_summary + _junit_recall,
+                    }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: JUnit XML summary failed", exc_info=True)
 
     # Large plain-text stdout fallback compressor (Iter 19):
     # Fires AFTER all specialized handlers (JSON/XML, pytest, sleep/poll, etc.).

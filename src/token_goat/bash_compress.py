@@ -1490,6 +1490,19 @@ def _is_poll_loop_cmd(cmd: str) -> bool:
     return False
 
 
+def _is_junit_xml_output(stdout: str) -> bool:
+    """Return ``True`` when *stdout* looks like JUnit XML test results.
+
+    Quick scan of the first 2000 chars only — avoids a full parse on every
+    post_bash invocation.  Both ``<testsuite>`` (single-suite) and
+    ``<testsuites>`` (multi-suite wrapper) roots are accepted.
+    """
+    if not stdout:
+        return False
+    head = stdout[:2000]
+    return "<?xml" in head and ("<testsuite" in head or "<testsuites" in head)
+
+
 @dataclass
 class CompressedOutput:
     """Result of running a :class:`Filter` over a captured command output.
