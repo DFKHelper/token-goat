@@ -4483,6 +4483,12 @@ def post_read(payload: HookPayload) -> HookResponse:
 # savings.  Aligned with the dedup minimum so we never cache something we
 # would later refuse to surface.
 _BASH_CACHE_MIN_BYTES: int = 400
+# Minimum stdout size (bytes) before repeated-command output dedup fires.
+# Small outputs (echo, pwd, …) are cheap and pass through unchanged.
+_CMD_DEDUP_MIN_BYTES: int = 100  # catches git status, docker ps, npm test (all < 500 bytes)
+# Maximum number of display_cmd → stdout_hash entries kept per session.
+# FIFO-evicted when exceeded to bound session JSON size.
+_CMD_DEDUP_MAX_CMDS: int = 50
 #: Bash outputs at or below this byte count are injected inline as additionalContext rather than
 #: emitting an advisory hint.  Keeps the serve payload comfortably under one LLM context chunk.
 _BASH_DIRECT_SERVE_MAX_BYTES: int = 8_192
@@ -5862,6 +5868,71 @@ def post_bash(payload: HookPayload) -> HookResponse:
             display_cmd,
         )
         return CONTINUE()
+
+    # Repeated-command output dedup: when the same command produces byte-identical
+    # stdout as its previous run in this session, suppress the duplicate and replace
+    # it with a one-liner.  Saves context when agents re-run git status, npm test,
+    # docker ps, etc. repeatedly without anything having changed.
+    # Placed AFTER all specialised handlers so json/xml-compress, git-diff, etc.
+    # always get first dibs.  On MATCH, calls mark_bash_run so run_count stays
+    # accurate before returning early.  On NO MATCH, updates cmd_output_hashes
+    # in-memory; the bash cache block below persists the session.
+    if (
+        _sess_mod is not None
+        and _session_cache is not None
+        and session_id
+        and exit_code in (None, 0)
+        and stdout
+        and len(stdout) >= _CMD_DEDUP_MIN_BYTES
+        # git diff commands use HEAD-SHA-keyed caching; identical raw content
+        # with a different SHA is a legitimate cache miss, so let the
+        # git-diff-delta handler own those commands exclusively.
+        and not display_cmd.lstrip().startswith("git diff")
+    ):
+        try:
+            _coh = _session_cache.cmd_output_hashes
+            _new_hash = hashlib.sha256(stdout.encode()).hexdigest()
+            _prev_hash = _coh.get(display_cmd)
+            if _prev_hash is not None and _prev_hash == _new_hash:
+                _n_lines = stdout.count("\n") + (1 if stdout and not stdout.endswith("\n") else 0)
+                _LOG.info("post-bash: cmd-output dedup suppressed cmd=%.60s", display_cmd)
+                _dedup_recall = ""
+                try:
+                    from . import bash_cache as _bc_dedup  # noqa: PLC0415
+                    _dedup_cmd_sha = _bc_dedup.command_hash(display_cmd, cwd)
+                    _dedup_hist = _session_cache.bash_history.get(_dedup_cmd_sha)
+                    if _dedup_hist and _dedup_hist.output_id:
+                        _dedup_recall = f" (bash-output {_dedup_hist.output_id} to recall)"
+                    if _dedup_hist:
+                        _sess_mod.mark_bash_run(
+                            session_id=session_id,
+                            cmd_sha=_dedup_cmd_sha,
+                            cmd_preview=display_cmd,
+                            output_id=_dedup_hist.output_id,
+                            stdout_bytes=len(_utf8_bytes(stdout)),
+                            stderr_bytes=len(_utf8_bytes(stderr)),
+                            exit_code=exit_code,
+                            truncated=_dedup_hist.truncated,
+                            output_sha=_dedup_hist.output_sha or "",
+                            cache=_session_cache,
+                        )
+                except Exception:  # noqa: BLE001 — fail-soft inner
+                    _LOG.debug("post-bash: dedup mark_bash_run failed", exc_info=True)
+                with contextlib.suppress(Exception):
+                    _sess_mod.save(_session_cache)
+                return {
+                    "continue": True,
+                    "systemMessage": (
+                        f"[token-goat] output unchanged from previous run ({_n_lines} lines{_dedup_recall})"
+                    ),
+                }
+            if len(_coh) >= _CMD_DEDUP_MAX_CMDS:
+                del _coh[next(iter(_coh))]
+            _coh[display_cmd] = _new_hash
+            with contextlib.suppress(Exception):
+                _sess_mod.save(_session_cache)
+        except Exception:  # noqa: BLE001 — fail-soft
+            _LOG.debug("post-bash: cmd-output dedup check failed", exc_info=True)
 
     total_bytes = len(_utf8_bytes(stdout)) + len(_utf8_bytes(stderr))
     if total_bytes < _BASH_CACHE_MIN_BYTES:

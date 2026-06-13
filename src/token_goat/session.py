@@ -806,6 +806,15 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         for _ in range(_dlc_evict):
             merged.dir_listing_cache.pop(next(iter(merged.dir_listing_cache)))
 
+    # cmd_output_hashes: local wins (most recent run takes precedence).
+    merged_coh: dict[str, str] = dict(remote.cmd_output_hashes)
+    merged_coh.update(local.cmd_output_hashes)
+    merged.cmd_output_hashes = merged_coh
+    if len(merged.cmd_output_hashes) > CMD_OUTPUT_HASHES_MAX:
+        _coh_evict = len(merged.cmd_output_hashes) - (CMD_OUTPUT_HASHES_MAX - _CMD_OUTPUT_HASHES_EVICT)
+        for _ in range(_coh_evict):
+            merged.cmd_output_hashes.pop(next(iter(merged.cmd_output_hashes)))
+
     merged._invalidate_json_cache()
     return merged
 
@@ -1096,6 +1105,11 @@ _LOG_FILE_CACHE_EVICT: Final[int] = 5
 DIR_LISTING_CACHE_MAX: Final[int] = 30
 _DIR_LISTING_CACHE_EVICT: Final[int] = 3
 
+# Size cap for the command-output dedup hash map.  Maps display_cmd → sha256_hex of the
+# last stdout seen for that command.  Capped at 50 entries; FIFO eviction on overflow.
+CMD_OUTPUT_HASHES_MAX: Final[int] = 50
+_CMD_OUTPUT_HASHES_EVICT: Final[int] = 5
+
 # Maximum number of decision-log entries retained per session.  Decisions are
 # opt-in (the agent calls ``token-goat decision "<text>"``), so the volume is
 # self-limited — but a misbehaving loop could pin one entry per iteration; the
@@ -1234,6 +1248,11 @@ class SessionCache:
     # full argv string so commands with different flags produce different keys.
     # Missing in older sessions → empty dict. FIFO-evicted at DIR_LISTING_CACHE_MAX.
     dir_listing_cache: dict[str, str] = field(default_factory=dict)
+    # Command output dedup: maps display_cmd → sha256_hex of the last stdout for that command.
+    # Used by post_bash to suppress identical repeated outputs (e.g. git status, npm test).
+    # Only applied when stdout >= _CMD_DEDUP_MIN_BYTES and exit_code is 0/None.
+    # Missing in older sessions → empty dict. FIFO-evicted at CMD_OUTPUT_HASHES_MAX.
+    cmd_output_hashes: dict[str, str] = field(default_factory=dict)
     # Cross-file content dedup: maps file_content_sha16 (first 16 SHA-1 hex chars) →
     # normalized path of the *first* file seen with that content.  Used by pre_read to
     # deny a read of a file whose content is identical to a file already read this session.
@@ -1509,6 +1528,7 @@ class SessionCache:
             read_content_hashes=dict(self.read_content_hashes),
             log_file_cache=dict(self.log_file_cache),
             dir_listing_cache=dict(self.dir_listing_cache),
+            cmd_output_hashes=dict(self.cmd_output_hashes),
         )
 
     def to_json(self) -> str:
@@ -2276,6 +2296,16 @@ class SessionCache:
                 if isinstance(_dlc_k, str) and isinstance(_dlc_v, str) and _dlc_k and _dlc_v:
                     dir_listing_cache[_dlc_k] = _dlc_v
 
+        # cmd_output_hashes: dict[str, str] — missing in older sessions → empty dict.
+        # Keys are display_cmd strings; values are sha256_hex of the last stdout seen.
+        # Malformed or non-string entries are silently dropped.
+        cmd_output_hashes: dict[str, str] = {}
+        raw_coh = d.get("cmd_output_hashes", {})
+        if isinstance(raw_coh, dict):
+            for _coh_k, _coh_v in raw_coh.items():
+                if isinstance(_coh_k, str) and isinstance(_coh_v, str) and _coh_k and _coh_v:
+                    cmd_output_hashes[_coh_k] = _coh_v
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -2323,6 +2353,7 @@ class SessionCache:
             read_content_hashes=read_content_hashes,
             log_file_cache=log_file_cache,
             dir_listing_cache=dir_listing_cache,
+            cmd_output_hashes=cmd_output_hashes,
         )
 
 
@@ -2880,6 +2911,7 @@ class _SessionDict(TypedDict, total=False):
     read_content_hashes: dict[str, str]
     log_file_cache: dict[str, str]
     dir_listing_cache: dict[str, str]
+    cmd_output_hashes: dict[str, str]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:

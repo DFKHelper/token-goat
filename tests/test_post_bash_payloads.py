@@ -492,15 +492,16 @@ class TestAutoPromoteOversizedOutput:
         }
 
     def test_large_unfiltered_output_returns_system_message(self, tmp_data_dir):
-        """Unrecognised binary with >8 KiB output must trigger auto-promote."""
+        """Large (>=200-line) output triggers the large-stdout compressor (iter 19)
+        which fires before the legacy auto-promote handler."""
         result = hooks_read.post_bash(
             self._payload("my-custom-tool --verbose", stdout=self._BIG, session_id="ap-test-1")
         )
         assert result.get("continue") is True
         msg = result.get("systemMessage", "")
-        assert "[token-goat] Large output from" in msg
+        # iter 19 handler fires for >= 200 lines; old handler fires for > 8 KiB < 200 lines
+        assert "[token-goat] large output:" in msg or "[token-goat] Large output from" in msg
         assert "bash-output" in msg
-        assert "token-goat bash-output" in msg
 
     def test_preview_contains_head_lines(self, tmp_data_dir):
         """Preview section must include the first lines of stdout."""
