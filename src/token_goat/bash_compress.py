@@ -2722,6 +2722,38 @@ _CARGO_BENCH_RUNNING_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+def _is_cargo_compile_cmd(argv: list[str]) -> bool:
+    """Return True if the command is a cargo compilation invocation.
+
+    Subcommands that trigger compilation output: build, check, clippy, fix, rustc.
+    NOT included: test, run, install, publish, update, add, remove, search, login.
+
+    Global flags that appear before the subcommand (e.g. ``-v``, ``--color always``,
+    ``-Z unstable-options``) are skipped so the subcommand is always found correctly.
+    """
+    if not argv:
+        return False
+    base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base != "cargo":
+        return False
+    _CARGO_COMPILE_SUBS: frozenset[str] = frozenset({"build", "check", "clippy", "fix", "rustc"})
+    # Flags that consume the next token as their value
+    _CARGO_GLOBAL_ARG_FLAGS: frozenset[str] = frozenset({"--color", "--config", "-Z", "--manifest-path"})
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok.startswith("-"):
+            if tok in _CARGO_GLOBAL_ARG_FLAGS:
+                i += 2
+            else:
+                i += 1
+        else:
+            return tok in _CARGO_COMPILE_SUBS
+    return False
+
+
 class CargoFilter(Filter):
     """Compress cargo build / check / test / clippy / run / bench output.
 
@@ -21490,6 +21522,7 @@ class CodexExecFilter(Filter):
 
         # Extract model from the config block (between the two separators).
         # first_sep_idx is guaranteed set when second_sep_idx is set.
+        assert first_sep_idx is not None
         model: str = "unknown"
         for ln in lines[first_sep_idx + 1:second_sep_idx]:
             m = _CODEX_MODEL_RE.match(ln.strip())

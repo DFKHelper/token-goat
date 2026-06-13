@@ -4510,6 +4510,8 @@ _PYTEST_COMPRESS_MIN_BYTES: int = 2000
 _PYTEST_TB_SEP_RE: _re.Pattern[str] = _re.compile(r"^_{4,}\s+\S.*\s+_{4,}\s*$")
 #: Minimum line count before verbose pytest PASSED-line suppression fires.
 _VERBOSE_TEST_MIN_LINES: int = 80
+#: Minimum line count before cargo compilation output compression fires.
+_CARGO_COMPILE_MIN_LINES: int = 40
 #: Matches the base command name of directory-exploration invocations (ls, eza, tree, fd).
 _RECON_CMD_RE: _re.Pattern[str] = _re.compile(r"^(?:ls|ll|la|eza|exa|tree|fd|fdfind)\b")
 
@@ -4989,7 +4991,7 @@ def _get_head_sha(cwd: str | None) -> str | None:
         kwargs: dict[str, object] = dict(capture_output=True, text=True, timeout=5, check=False)
         if cwd:
             kwargs["cwd"] = cwd
-        result = _subp.run(["git", "rev-parse", "HEAD"], **kwargs)
+        result = _subp.run(["git", "rev-parse", "HEAD"], **kwargs)  # type: ignore[call-overload]
         if result.returncode == 0:
             sha = result.stdout.strip()
             if sha:
@@ -5159,7 +5161,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 _run_kw: dict[str, object] = dict(capture_output=True, text=True, timeout=10, check=False)
                 if cwd:
                     _run_kw["cwd"] = cwd
-                _map_r = _subp.run(["token-goat", "map", "--compact"], **_run_kw)
+                _map_r = _subp.run(["token-goat", "map", "--compact"], **_run_kw)  # type: ignore[call-overload]
                 if _map_r.returncode == 0 and _map_r.stdout.strip():
                     _session_cache.mark_hint_seen(_RECON_MAP_KEY)
                     with contextlib.suppress(Exception):
@@ -5899,6 +5901,143 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     return {"continue": True, "systemMessage": _vt_msg}
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: verbose pytest suppress failed", exc_info=True)
+
+    # Cargo compilation output compression:
+    # Fires when the command is a cargo build/check/clippy/fix/rustc invocation
+    # and stdout has >= _CARGO_COMPILE_MIN_LINES lines.  Strips Compiling/Checking/
+    # Downloading noise lines, keeping only error/warning diagnostic blocks plus
+    # the terminal summary line (Finished / error count).  Full output is cached so
+    # ``bash-output <id>`` recall works.  exit_code=101 (cargo panic) passes through
+    # because the outer guard limits to (None, 0, 1).
+    if exit_code in (None, 0, 1) and stdout and len(stdout.splitlines()) >= _CARGO_COMPILE_MIN_LINES:
+        try:
+            import re as _re_cg  # noqa: PLC0415
+            import shlex as _shlex_cg  # noqa: PLC0415
+            import sys as _sys_cg  # noqa: PLC0415
+
+            from .bash_compress import _is_cargo_compile_cmd as _cg_check  # noqa: PLC0415
+
+            _cg_argv = _shlex_cg.split(display_cmd, posix=(_sys_cg.platform != "win32"))
+            if _cg_argv and _cg_check(_cg_argv):
+                _DIAG_START_RE = _re_cg.compile(r"^(error|warning)(\[[\w:]+\])?:")
+                _CARGO_NOISE_RE = _re_cg.compile(
+                    r"^(   Compiling |   Checking |   Downloaded |    Blocking "
+                    r"|   Generating |     Running |   Downloading |   Updating )"
+                )
+                _CARGO_TERMINAL_RE = _re_cg.compile(
+                    r"^(Finished |error: (?:aborting|could not compile))"
+                )
+                # Matches any continuation line inside a diagnostic block:
+                # arrow (-->), gutter (optional-digits + |), note/help (= note:/= help:),
+                # and underline carets (^ ~).  Variable-width left margin handles files with
+                # 1-, 2-, or 3+-digit line numbers correctly.
+                _CARGO_CONT_RE = _re_cg.compile(
+                    r"^\s*(-->|\d*\s*\||=\s*(note|help)|[~\^]+)"
+                )
+                _cg_lines = stdout.splitlines()
+                _cg_total = len(_cg_lines)
+
+                # Pass 1: collect diagnostic blocks (header line + context lines).
+                # Terminal lines (Finished / could not compile / aborting) are checked
+                # first so they are NOT added to diag_lines and not counted.
+                _cg_diag_lines: list[str] = []
+                _cg_in_diag = False
+                for _cg_line in _cg_lines:
+                    if _CARGO_TERMINAL_RE.match(_cg_line):
+                        _cg_in_diag = False  # terminal line ends current diagnostic block
+                    elif _DIAG_START_RE.match(_cg_line):
+                        _cg_in_diag = True
+                        _cg_diag_lines.append(_cg_line)
+                    elif _cg_in_diag and _CARGO_CONT_RE.match(_cg_line):
+                        _cg_diag_lines.append(_cg_line.rstrip())
+                    else:
+                        _cg_in_diag = False
+
+                # Count error/warning header lines
+                _cg_error_count = sum(
+                    1 for _l in _cg_diag_lines if _re_cg.match(r"^error", _l)
+                )
+                _cg_warn_count = sum(
+                    1 for _l in _cg_diag_lines if _re_cg.match(r"^warning", _l)
+                )
+
+                # Pass 2: find terminal summary line (search from end)
+                _cg_terminal: str | None = None
+                for _cg_line in reversed(_cg_lines):
+                    if _CARGO_TERMINAL_RE.match(_cg_line):
+                        _cg_terminal = _cg_line
+                        break
+
+                # Count noise lines to decide if clean-build compression is worthwhile
+                _cg_noise_count = sum(
+                    1 for _l in _cg_lines if _CARGO_NOISE_RE.match(_l)
+                )
+
+                if exit_code not in (None, 0) and _cg_error_count == 0 and _cg_warn_count == 0:
+                    # Cargo exited with an error but stdout has no diagnostic headers.
+                    # The real errors are likely on stderr.  Suppress compression so
+                    # the model sees the full output rather than a misleading
+                    # "0 errors, 0 warnings" banner.
+                    _cg_should_compress = False
+                elif _cg_error_count == 0 and _cg_warn_count == 0:
+                    _cg_should_compress = _cg_noise_count >= 5
+                else:
+                    _cg_should_compress = True
+
+                if _cg_should_compress:
+                    _cg_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_cg  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _cg_meta = _bc_cg.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _cg_meta is not None:
+                                _bc_cg.write_sidecar(_cg_meta)
+                                _cg_out_id = _cg_meta.output_id
+                    _cg_recall = f"\n[Full output: bash-output {_cg_out_id}]" if _cg_out_id else ""
+
+                    if _cg_error_count == 0 and _cg_warn_count == 0:
+                        # Clean but noisy build — only the terminal line matters
+                        _cg_body = (_cg_terminal + "\n") if _cg_terminal else ""
+                        if not stdout.endswith(("\n", "\r\n")) and _cg_body.endswith("\n"):
+                            _cg_body = _cg_body.rstrip("\n")
+                        _cg_suppressed = _cg_total - (1 if _cg_terminal else 0)
+                        _cg_msg = (
+                            f"[token-goat] cargo: 0 errors, 0 warnings"
+                            f" ({_cg_suppressed}/{_cg_total} lines suppressed)\n"
+                            + _cg_body
+                            + _cg_recall
+                        )
+                    else:
+                        # Has diagnostics — show them all plus terminal line
+                        _cg_body_lines = list(_cg_diag_lines)
+                        if _cg_terminal and (
+                            not _cg_body_lines or _cg_body_lines[-1] != _cg_terminal
+                        ):
+                            _cg_body_lines.append(_cg_terminal)
+                        _cg_body = "\n".join(_cg_body_lines)
+                        if stdout.endswith(("\n", "\r\n")):
+                            _cg_body += "\n"
+                        _cg_suppressed = _cg_total - len(_cg_body_lines)
+                        _cg_msg = (
+                            f"[token-goat] cargo: {_cg_error_count} errors,"
+                            f" {_cg_warn_count} warnings"
+                            f" ({_cg_suppressed}/{_cg_total} lines suppressed)\n"
+                            + _cg_body
+                            + _cg_recall
+                        )
+                    _LOG.info(
+                        "post-bash: cargo compile compressed lines=%d errors=%d warnings=%d cmd=%.60s",
+                        _cg_total, _cg_error_count, _cg_warn_count, display_cmd,
+                    )
+                    if _sess_mod is not None and _session_cache is not None:
+                        with contextlib.suppress(Exception):
+                            _sess_mod.save(_session_cache)
+                    return {"continue": True, "systemMessage": _cg_msg}
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: cargo compile compression failed", exc_info=True)
 
     # Pytest failure traceback suppression (Iter 18):
     # Fires when pytest output is large (>= _PYTEST_COMPRESS_MIN_BYTES) and contains
