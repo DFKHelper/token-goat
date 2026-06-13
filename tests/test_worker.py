@@ -2039,9 +2039,14 @@ class TestImageCacheEviction:
         cache_file.write_bytes(_buf.getvalue())
 
         # Backdate mtime so we can detect a bump.
-        old_ts = time.time() - 3600  # 1 hour ago
+        # Use 7200s (2 hours) rather than exactly 3600s: the bump guard in
+        # image_shrink uses `> 3600`, and on Windows time.time() has ~15ms
+        # resolution, so the test setup and shrink()'s internal now= call can
+        # land in the same timer tick, making the difference exactly 3600 and
+        # failing the strict > check.  2 hours clears the boundary with margin.
+        old_ts = time.time() - 7200  # 2 hours ago
         os.utime(cache_file, (old_ts, old_ts))
-        assert cache_file.stat().st_mtime == old_ts
+        assert cache_file.stat().st_mtime == pytest.approx(old_ts, abs=1.0)
 
         # Cache hit should bump mtime.
         result = image_shrink.shrink(src)
