@@ -2754,6 +2754,50 @@ def _is_cargo_compile_cmd(argv: list[str]) -> bool:
     return False
 
 
+def _is_tsc_cmd(argv: list[str]) -> bool:
+    """Return True if the command is a TypeScript compiler (tsc) invocation.
+
+    Handles: bare ``tsc``, ``npx tsc``, ``npx --yes tsc``, ``yarn tsc``,
+    ``pnpm tsc``, ``pnpm exec tsc``, and path-resolved binaries like
+    ``./node_modules/.bin/tsc`` or ``tsc.cmd``.  All tsc flags (--build,
+    --noEmit, --watch, etc.) are ignored for detection purposes.
+    """
+    if not argv:
+        return False
+
+    def _base(s: str) -> str:
+        b = s.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        for ext in (".exe", ".cmd"):
+            if b.endswith(ext):
+                b = b[: -len(ext)]
+                break
+        return b
+
+    b0 = _base(argv[0])
+    # Direct invocation: tsc, ./node_modules/.bin/tsc, tsc.cmd, etc.
+    if b0 == "tsc":
+        return True
+    # Package manager wrappers: npx tsc, yarn tsc, pnpm tsc, pnpm exec tsc
+    if b0 in ("npx", "yarn", "pnpm"):
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok.startswith("-"):
+                # --package / -p consume next token as value
+                if tok in ("--package", "-p"):
+                    i += 2
+                else:
+                    i += 1
+            else:
+                # For pnpm, "exec" is a sub-command prefix; skip it and continue
+                if b0 == "pnpm" and tok == "exec":
+                    i += 1
+                    continue
+                return _base(tok) == "tsc"
+        return False
+    return False
+
+
 class CargoFilter(Filter):
     """Compress cargo build / check / test / clippy / run / bench output.
 

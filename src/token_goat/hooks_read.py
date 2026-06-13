@@ -4512,6 +4512,10 @@ _PYTEST_TB_SEP_RE: _re.Pattern[str] = _re.compile(r"^_{4,}\s+\S.*\s+_{4,}\s*$")
 _VERBOSE_TEST_MIN_LINES: int = 80
 #: Minimum line count before cargo compilation output compression fires.
 _CARGO_COMPILE_MIN_LINES: int = 40
+#: Minimum line count before tsc output compression fires.
+_TSC_MIN_LINES: int = 50
+#: Matches position-less tsc --build errors/warnings (no ``(row,col)`` token).
+_TSC_BARE_DIAG_RE: _re.Pattern[str] = _re.compile(r"^(error|warning) TS\d+:")
 #: Matches the base command name of directory-exploration invocations (ls, eza, tree, fd).
 _RECON_CMD_RE: _re.Pattern[str] = _re.compile(r"^(?:ls|ll|la|eza|exa|tree|fd|fdfind)\b")
 
@@ -6038,6 +6042,99 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     return {"continue": True, "systemMessage": _cg_msg}
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: cargo compile compression failed", exc_info=True)
+
+    # tsc compression: strip timestamp/watch noise, keep diagnostics + summary; fires at >= _TSC_MIN_LINES lines.
+    if stdout and len(stdout.splitlines()) >= _TSC_MIN_LINES:
+        try:
+            import re as _re_tsc  # noqa: PLC0415
+            import shlex as _shlex_tsc  # noqa: PLC0415
+            import sys as _sys_tsc  # noqa: PLC0415
+
+            from .bash_compress import _is_tsc_cmd as _tsc_check  # noqa: PLC0415
+
+            _tsc_argv = _shlex_tsc.split(display_cmd, posix=(_sys_tsc.platform != "win32"))
+            if _tsc_argv and _tsc_check(_tsc_argv):
+                _TSC_DIAG_RE = _re_tsc.compile(r"^[^\s].+\(\d+,\d+\): (error|warning) TS\d+:")
+                _TSC_SUMMARY_RE = _re_tsc.compile(r"^Found \d+ errors?\.")
+                _tsc_lines = stdout.splitlines()
+                _tsc_total = len(_tsc_lines)
+                _tsc_diag_lines: list[str] = []
+                _tsc_noise_lines: list[str] = []
+                _tsc_summary: str | None = None
+                for _tsc_line in _tsc_lines:
+                    if _TSC_SUMMARY_RE.match(_tsc_line):
+                        _tsc_summary = _tsc_line
+                    elif _TSC_DIAG_RE.match(_tsc_line) or _TSC_BARE_DIAG_RE.match(_tsc_line):
+                        _tsc_diag_lines.append(_tsc_line)
+                    else:
+                        _tsc_noise_lines.append(_tsc_line)
+
+                if len(_tsc_noise_lines) == 0:
+                    pass  # nothing to suppress — fall through
+                else:
+                    _tsc_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_tsc  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _tsc_meta = _bc_tsc.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _tsc_meta is not None:
+                                _bc_tsc.write_sidecar(_tsc_meta)
+                                _tsc_out_id = _tsc_meta.output_id
+                    _tsc_recall = (f"\n[Full output: bash-output {_tsc_out_id}]" if _tsc_out_id else "")
+
+                    if not _tsc_diag_lines and exit_code in (None, 0):
+                        # Clean build with verbose/timestamp noise only
+                        _tsc_summary_line = _tsc_summary or next(
+                            (_l for _l in reversed(_tsc_lines) if _l.strip()), None
+                        )
+                        _tsc_body = (_tsc_summary_line + "\n") if _tsc_summary_line else ""
+                        if not stdout.endswith(("\n", "\r\n")) and _tsc_body.endswith("\n"):
+                            _tsc_body = _tsc_body.rstrip("\n")
+                        _tsc_suppressed = _tsc_total - (1 if _tsc_summary_line else 0)
+                        _tsc_msg = (
+                            f"[token-goat] tsc: 0 errors, 0 warnings"
+                            f" ({_tsc_suppressed}/{_tsc_total} lines suppressed)\n"
+                            + _tsc_body
+                            + _tsc_recall
+                        )
+                    else:
+                        # Has diagnostics — keep all, strip noise lines
+                        _tsc_error_count = sum(
+                            1 for _l in _tsc_diag_lines if _re_tsc.search(r": error TS\d+:", _l)
+                        )
+                        _tsc_warn_count = sum(
+                            1 for _l in _tsc_diag_lines
+                            if _re_tsc.search(r": warning TS\d+:", _l)
+                        )
+                        _tsc_body_lines = list(_tsc_diag_lines)
+                        if _tsc_summary and (
+                            not _tsc_body_lines or _tsc_body_lines[-1] != _tsc_summary
+                        ):
+                            _tsc_body_lines.append(_tsc_summary)
+                        _tsc_body = "\n".join(_tsc_body_lines)
+                        if stdout.endswith(("\n", "\r\n")):
+                            _tsc_body += "\n"
+                        _tsc_suppressed = _tsc_total - len(_tsc_body_lines)
+                        _tsc_msg = (
+                            f"[token-goat] tsc: {_tsc_error_count} errors,"
+                            f" {_tsc_warn_count} warnings"
+                            f" ({_tsc_suppressed}/{_tsc_total} lines suppressed)\n"
+                            + _tsc_body
+                            + _tsc_recall
+                        )
+                    _LOG.info(
+                        "post-bash: tsc compressed lines=%d diag=%d cmd=%.60s",
+                        _tsc_total, len(_tsc_diag_lines), display_cmd,
+                    )
+                    if _sess_mod is not None and _session_cache is not None:
+                        with contextlib.suppress(Exception):
+                            _sess_mod.save(_session_cache)
+                    return {"continue": True, "systemMessage": _tsc_msg}
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: tsc compression failed", exc_info=True)
 
     # Pytest failure traceback suppression (Iter 18):
     # Fires when pytest output is large (>= _PYTEST_COMPRESS_MIN_BYTES) and contains
