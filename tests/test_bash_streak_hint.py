@@ -15,10 +15,14 @@ def _bash_payload(command: str, session_id: str = "sess-streak", cwd: str = "C:/
 
 
 def _make_cache(read_count: int) -> Any:
+    import time as _time
+
     from token_goat.session import FileEntry, SessionCache
     cache = MagicMock(spec=SessionCache)
+    cache.last_compact_ts = 0.0  # no compact occurred — hints fire normally
     entry = MagicMock(spec=FileEntry)
     entry.read_count = read_count
+    entry.last_read_ts = _time.time()  # post-compact guard: content is in window
     cache.files = {"c:/proj/foo.py": entry}
     return cache
 

@@ -2444,6 +2444,11 @@ def _handle_bash_streak_hint(payload: HookPayload) -> HookResponse | None:
     entry = cache.files.get(key)
     if entry is None or entry.read_count < 2:
         return None
+    # Skip if file was last read before the most recent compact — that content is
+    # gone from the context window and a re-read is not redundant.
+    _compact_ts = getattr(cache, "last_compact_ts", 0.0)
+    if _compact_ts and entry.last_read_ts < _compact_ts:
+        return None
     name = Path(intent.target_path).name
     rel = intent.target_path
     skeleton_text = _try_get_inline_skeleton(rel)
@@ -2960,6 +2965,11 @@ def _handle_bash_already_read(payload: HookPayload) -> HookResponse | None:
         path_key = _paths.normalize_path_key(intent.target_path, cwd)
         entry = cache.files.get(path_key)
         if entry is None or entry.read_count != 1:  # streak_hint handles read_count >= 2
+            return None
+        # Skip if file was last read before the most recent compact — that content is
+        # gone from the context window and a re-read is not redundant.
+        _compact_ts = getattr(cache, "last_compact_ts", 0.0)
+        if _compact_ts and entry.last_read_ts < _compact_ts:
             return None
         display = sanitize_log_str(intent.target_path, max_len=80)
         hint_text = f"[token-goat] `{display}` already read {entry.read_count}× this session — use `token-goat read \"{display}::SymbolName\"` for a surgical pull"
@@ -3979,15 +3989,33 @@ def pre_read(payload: HookPayload) -> HookResponse:
                             sanitize_log_str(file_path, max_len=512),
                         )
                 if not _backoff_active:
-                    hint = build_read_hint(
-                        session_id=session_id,
-                        file_path=file_path,
-                        offset=tool_input.get("offset"),
-                        limit=tool_input.get("limit"),
-                        cwd=cwd,
-                        cache=cache,
-                        large_file_line_threshold=_eff_threshold,
-                    )
+                    # Skip if file was last read before the most recent compact —
+                    # that content is gone from the context window.
+                    _compact_ts = getattr(cache, "last_compact_ts", 0.0)
+                    if (
+                        entry is not None
+                        and _compact_ts
+                        and entry.last_read_ts < _compact_ts
+                    ):
+                        _LOG.debug(
+                            "pre-read: session hint suppressed (post-compact) for %s",
+                            sanitize_log_str(file_path),
+                        )
+                        cache.record_hint_suppressed("hint_post_compact_suppressed")
+                        record_cached_stat(
+                            "hint_post_compact_suppressed",
+                            sanitize_log_str(file_path, max_len=512),
+                        )
+                    else:
+                        hint = build_read_hint(
+                            session_id=session_id,
+                            file_path=file_path,
+                            offset=tool_input.get("offset"),
+                            limit=tool_input.get("limit"),
+                            cwd=cwd,
+                            cache=cache,
+                            large_file_line_threshold=_eff_threshold,
+                        )
             if hint:
                 from .hints import _hint_fingerprint  # noqa: PLC0415
 

@@ -1231,6 +1231,9 @@ def pre_compact(payload: HookPayload) -> HookResponse:
         from .compact import _pressure_raw_total as _prt  # noqa: PLC0415
         session_cache.pressure_baseline_tokens = _prt(session_cache)
         session_mod.save(session_cache)
+        # Stamp last_compact_ts via the canonical helper so pre_read can suppress
+        # "already in context" hints for files whose content is gone post-compact.
+        session_mod.record_compact(session_id)
     except Exception:  # noqa: BLE001
         _LOG.debug("pre-compact: context tracking reset failed", exc_info=True)
 

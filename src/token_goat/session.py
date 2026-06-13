@@ -1414,6 +1414,11 @@ class SessionCache:
     pressure_baseline_tokens: int = 0
     # Measured tokens from tool responses (Read/Bash/WebFetch) since last compact; 0 → use proxy estimates.
     observed_tool_tokens: int = 0
+    # Timestamp of the most recent PreCompact event for this session.  Set by
+    # record_compact(); used by pre_read to suppress "already in context" hints
+    # for files whose last read pre-dates the compact (their content is gone).
+    # 0.0 = no compact has occurred this session.
+    last_compact_ts: float = 0.0
     # pytest failure tracking: maps cmd_sha → sorted list of FAILED/ERROR test IDs
     # from the most recent run of that command. post_bash uses this to compute a
     # delta ("2 new failures, 1 fixed") and inject it as a systemMessage so the agent
@@ -1521,6 +1526,7 @@ class SessionCache:
             last_context_advisory_threshold=self.last_context_advisory_threshold,
             pressure_baseline_tokens=self.pressure_baseline_tokens,
             observed_tool_tokens=self.observed_tool_tokens,
+            last_compact_ts=self.last_compact_ts,
             file_content_seen=dict(self.file_content_seen),
             pytest_failures=dict(self.pytest_failures),
             mcp_result_hashes=dict(self.mcp_result_hashes),
@@ -2259,6 +2265,8 @@ class SessionCache:
         pressure_baseline_tokens: int = max(0, int(_raw_pbt)) if isinstance(_raw_pbt, (int, float)) else 0
         _raw_ott = d.get("observed_tool_tokens", 0)
         observed_tool_tokens: int = max(0, int(_raw_ott)) if isinstance(_raw_ott, (int, float)) else 0
+        _raw_lcts = d.get("last_compact_ts", 0.0)
+        last_compact_ts: float = float(_raw_lcts) if isinstance(_raw_lcts, (int, float)) else 0.0
 
         # pytest_failures: dict[str, list[str]] — maps cmd_sha → sorted failure IDs.
         pytest_failures: dict[str, list[str]] = {}
@@ -2347,6 +2355,7 @@ class SessionCache:
             last_context_advisory_threshold=last_context_advisory_threshold,
             pressure_baseline_tokens=pressure_baseline_tokens,
             observed_tool_tokens=observed_tool_tokens,
+            last_compact_ts=last_compact_ts,
             file_content_seen=file_content_seen,
             pytest_failures=pytest_failures,
             mcp_result_hashes=mcp_result_hashes,
@@ -2906,6 +2915,7 @@ class _SessionDict(TypedDict, total=False):
     last_context_advisory_threshold: int | None
     pressure_baseline_tokens: int
     observed_tool_tokens: int
+    last_compact_ts: float
     file_content_seen: dict[str, str]
     pytest_failures: dict[str, list[str]]
     read_content_hashes: dict[str, str]
@@ -3748,6 +3758,22 @@ def _commit_mutation(cache: SessionCache, now: float) -> SessionCache:
     cache._invalidate_json_cache()
     save(cache)
     return cache
+
+
+def record_compact(session_id: str) -> None:
+    """Record that a compaction just occurred for *session_id*.
+
+    Sets ``last_compact_ts`` to the current time and persists the cache.
+    Pre-read hooks use this timestamp to suppress re-read hints for files
+    whose content no longer exists in the context window post-compact.
+    """
+    import time as _time  # noqa: PLC0415
+
+    cache = safe_load(session_id, caller="record_compact")
+    if cache is None:
+        return
+    cache.last_compact_ts = _time.time()
+    save(cache)
 
 
 def mark_file_read(
