@@ -4512,6 +4512,8 @@ _PYTEST_TB_SEP_RE: _re.Pattern[str] = _re.compile(r"^_{4,}\s+\S.*\s+_{4,}\s*$")
 _VERBOSE_TEST_MIN_LINES: int = 80
 #: Minimum line count before cargo compilation output compression fires.
 _CARGO_COMPILE_MIN_LINES: int = 40
+#: Minimum line count before make/cmake/ninja output compression fires.
+_MAKE_MIN_LINES: int = 40
 #: Minimum line count before tsc output compression fires.
 _TSC_MIN_LINES: int = 50
 #: Matches position-less tsc --build errors/warnings (no ``(row,col)`` token).
@@ -6044,6 +6046,64 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     return {"continue": True, "systemMessage": _cg_msg}
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: cargo compile compression failed", exc_info=True)
+
+    # make/cmake/ninja compression: suppress progress lines, keep errors/warnings; fires at >= _MAKE_MIN_LINES lines.
+    if stdout and len(stdout.splitlines()) >= _MAKE_MIN_LINES and exit_code in (None, 0, 1, 2):
+        try:
+            import re as _re_mk  # noqa: PLC0415
+            import shlex as _shlex_mk  # noqa: PLC0415
+            import sys as _sys_mk  # noqa: PLC0415
+
+            from .bash_compress import _is_make_cmd as _mk_check  # noqa: PLC0415
+
+            _mk_argv = _shlex_mk.split(display_cmd, posix=(_sys_mk.platform != "win32"))
+            if _mk_argv and _mk_check(_mk_argv):
+                _MK_PROGRESS_RE = _re_mk.compile(
+                    r"^\[[ \d]+%\]|^make\[\d+\]: (?:Entering|Leaving) directory|^Entering directory|^Leaving directory|^--"
+                )
+                _mk_lines = stdout.splitlines()
+                _mk_total = len(_mk_lines)
+                _mk_kept: list[str] = []
+                _mk_suppressed = 0
+                for _mk_line in _mk_lines:
+                    if not _mk_line.strip() or _MK_PROGRESS_RE.match(_mk_line):
+                        _mk_suppressed += 1
+                    else:
+                        _mk_kept.append(_mk_line)
+
+                if _mk_suppressed > 0:
+                    _mk_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_mk  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _mk_meta = _bc_mk.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _mk_meta is not None:
+                                _bc_mk.write_sidecar(_mk_meta)
+                                _mk_out_id = _mk_meta.output_id
+                    _mk_recall = (f"\n[Full output: bash-output {_mk_out_id}]" if _mk_out_id else "")
+
+                    _mk_body = "\n".join(_mk_kept)
+                    if stdout.endswith(("\n", "\r\n")):
+                        _mk_body += "\n"
+                    _mk_msg = (
+                        f"[token-goat] make: {_mk_total} lines → {len(_mk_kept)} kept"
+                        f" ({_mk_suppressed} progress lines hidden)\n"
+                        + _mk_body
+                        + _mk_recall
+                    )
+                    _LOG.info(
+                        "post-bash: make compressed lines=%d kept=%d suppressed=%d cmd=%.60s",
+                        _mk_total, len(_mk_kept), _mk_suppressed, display_cmd,
+                    )
+                    if _sess_mod is not None and _session_cache is not None:
+                        with contextlib.suppress(Exception):
+                            _sess_mod.save(_session_cache)
+                    return {"continue": True, "systemMessage": _mk_msg}
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: make compression failed", exc_info=True)
 
     # tsc compression: strip timestamp/watch noise, keep diagnostics + summary; fires at >= _TSC_MIN_LINES lines.
     if stdout and len(stdout.splitlines()) >= _TSC_MIN_LINES:
