@@ -85,6 +85,7 @@ __all__ = [
     "_PROXIMITY_SLOP_LINES",
     "_MAX_CACHED_RANGES_DISPLAY",
     "_line_ranges_global_bounds",
+    "maybe_grep_advisory",
 ]
 
 # ---------------------------------------------------------------------------
@@ -4581,4 +4582,42 @@ def build_scoped_diff_hint(output_bytes: int, edited_files: list[str]) -> str:
         f"You've edited {n} file(s) this session — scope it next time:\n"
         f"{cmd_line}{overflow_note}"
     )
+
+
+def maybe_grep_advisory(path: str, session_cache: session.SessionCache) -> str | None:
+    """Return a one-shot advisory hint when a file has been grepped ≥3 times this session.
+
+    Increments the grep-target counter for *path* in *session_cache* and returns a
+    hint string exactly when the count crosses the threshold (2 → 3).  Returns ``None``
+    on every other call so the hint fires only once per file per session.
+
+    The path is only counted when it refers to an existing file (not a directory,
+    glob pattern, or stdin placeholder such as ``-``).  Non-existent and special
+    paths are silently skipped.
+
+    Args:
+        path: The file path that was targeted by a Grep or rg invocation.
+        session_cache: The current session cache object (may have ``unavailable=True``
+            in which case ``record_grep_target`` is a safe no-op returning ``False``).
+
+    Returns:
+        A formatted advisory string on threshold crossing, or ``None`` otherwise.
+    """
+    try:
+        if not path or path == "-":
+            return None
+        p = Path(path)
+        if not p.is_file():
+            return None
+        crossed = session_cache.record_grep_target(path)
+        if not crossed:
+            return None
+        safe_path = _sanitize_hint_path(str(p))
+        return (
+            f"[token-goat] You've grepped '{safe_path}' 3× this session. "
+            f"Consider reading it once with `token-goat read \"{safe_path}\"` or using "
+            f"`token-goat bash-output <id> --grep <pat>` to filter cached output."
+        )
+    except Exception:  # noqa: BLE001 — fail-soft; hint errors must never block the agent
+        return None
 

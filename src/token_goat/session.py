@@ -764,6 +764,12 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         merged_sac[sym_key] = max(merged_sac.get(sym_key, 0), count)
     merged.symbol_access_counts = merged_sac
 
+    # grep_target_counts: max per key (same rationale as file_access_counts — display-only nudge counter).
+    merged_gtc: dict[str, int] = dict(remote.grep_target_counts)
+    for gtc_path, count in local.grep_target_counts.items():
+        merged_gtc[gtc_path] = max(merged_gtc.get(gtc_path, 0), count)
+    merged.grep_target_counts = merged_gtc
+
     # pinned_symbols: union-with-cap, preserving insertion order from remote base.
     # A pin set by the user in any concurrent process is authoritative; take the
     # union of both lists, capped at PINNED_SYMBOLS_MAX, remote-order first.
@@ -1298,6 +1304,14 @@ class SessionCache:
     # Incremented by mark_file_read() when called with a symbol argument.
     # Missing in older sessions → empty dict. Persisted via to_dict/from_dict.
     symbol_access_counts: dict[str, int] = field(default_factory=dict)
+    # Per-session grep-target frequency tracking: maps normalized file path → total
+    # number of Grep/rg invocations that targeted that specific existing file this
+    # session.  Only concrete existing files are counted; glob patterns, directories,
+    # and non-existent paths are excluded.  Incremented by record_grep_target();
+    # used by maybe_grep_advisory() in hints.py to nudge toward `token-goat read`
+    # or `bash-output --grep` after ≥3 grep patterns hit the same file.
+    # Missing in older sessions → empty dict. Persisted via to_dict/from_dict.
+    grep_target_counts: dict[str, int] = field(default_factory=dict)
     # User-pinned symbols: list of "<file>::<symbol>" spec strings.  Pinned symbols
     # always appear at the top of session hints and at the top of the compaction
     # manifest.  Capped at PINNED_SYMBOLS_MAX (20).  Stored as an ordered list
@@ -1428,6 +1442,7 @@ class SessionCache:
             file_content_seen=dict(self.file_content_seen),
             pytest_failures=dict(self.pytest_failures),
             mcp_result_hashes=dict(self.mcp_result_hashes),
+            grep_target_counts=dict(self.grep_target_counts),
         )
 
     def to_json(self) -> str:
@@ -1625,6 +1640,25 @@ class SessionCache:
         """
         key = paths.normalize_key(file_path)
         return self.file_access_counts.get(key, 0)
+
+    def record_grep_target(self, file_path: str) -> bool:
+        """Increment the grep-target count for *file_path* and return True on the 3rd hit.
+
+        Normalizes *file_path* to an absolute path key before counting so that
+        relative and absolute forms of the same file are deduplicated correctly.
+        Returns ``True`` exactly when the count transitions from 2 → 3 (the
+        one-shot advisory threshold); returns ``False`` on all other calls so
+        the caller can emit the hint only once per file per session.
+
+        No-ops (returns ``False``) when the session is unavailable.
+        """
+        if self.unavailable:
+            return False
+        key = paths.normalize_key(file_path)
+        new_count = self.grep_target_counts.get(key, 0) + 1
+        self.grep_target_counts[key] = new_count
+        self._invalidate_json_cache()
+        return new_count == 3
 
     def has_grep_result_hash(self, result_hash: str) -> bool:
         """Check if a grep result content hash was already seen this session.
@@ -2021,6 +2055,16 @@ class SessionCache:
                     with contextlib.suppress(TypeError, ValueError):
                         symbol_access_counts[sym_key] = max(0, int(count))
 
+        # grep_target_counts: dict[str, int] — per-file grep-target frequency this session.
+        # Maps normalized file path → grep invocation count. Missing in older sessions → empty dict.
+        grep_target_counts: dict[str, int] = {}
+        raw_gtc = d.get("grep_target_counts", {})
+        if isinstance(raw_gtc, dict):
+            for gtc_path, count in raw_gtc.items():
+                if isinstance(gtc_path, str) and gtc_path:
+                    with contextlib.suppress(TypeError, ValueError):
+                        grep_target_counts[gtc_path] = max(0, int(count))
+
         # pinned_symbols: list[str] — user-pinned "<file>::<symbol>" specs.
         # Missing in older sessions → [] (backward compat). Malformed entries dropped.
         pinned_symbols: list[str] = []
@@ -2085,6 +2129,7 @@ class SessionCache:
             image_shrink_count=image_shrink_count,
             file_access_counts=file_access_counts,
             symbol_access_counts=symbol_access_counts,
+            grep_target_counts=grep_target_counts,
             pinned_symbols=pinned_symbols,
             cwd=str(d["cwd"]) if isinstance(d.get("cwd"), str) else None,
             turns_since_last_compact=turns_since_last_compact,
@@ -2639,6 +2684,7 @@ class _SessionDict(TypedDict, total=False):
     image_shrink_count: dict[str, int]
     file_access_counts: dict[str, int]
     symbol_access_counts: dict[str, int]
+    grep_target_counts: dict[str, int]
     pinned_symbols: list[str]
     cwd: str | None
     turns_since_last_compact: int

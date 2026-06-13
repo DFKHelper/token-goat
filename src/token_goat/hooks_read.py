@@ -1962,6 +1962,78 @@ def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
         return None
 
 
+def _try_grep_advisory_for_path(path: str | None, session_id: str) -> str | None:
+    """Increment grep-target count for *path* and return advisory text if threshold crossed.
+
+    Calls ``hints.maybe_grep_advisory`` which normalises the path, checks that it
+    is an existing file, increments ``session_cache.grep_target_counts``, and returns
+    a formatted hint on the 2 → 3 threshold crossing (one-shot per file per session).
+
+    Returns ``None`` when the path is empty, the file does not exist, the session
+    is unavailable, or the threshold has not yet been crossed.  Fail-soft — any
+    exception produces ``None`` so the pre-read hook always continues normally.
+    """
+    if not path or not session_id:
+        return None
+    try:
+        from .hints import maybe_grep_advisory  # noqa: PLC0415
+        sess = _get_session()
+        cache = sess.safe_load(session_id, caller="grep_advisory")
+        if cache is None:
+            return None
+        hint = maybe_grep_advisory(path, cache)
+        # Save unconditionally — record_grep_target always increments the count when
+        # the file exists, invalidating _json_cache even when no hint fires.
+        with contextlib.suppress(Exception):
+            sess.save(cache)
+        return hint
+    except Exception:  # noqa: BLE001
+        _LOG.debug("_try_grep_advisory_for_path: error for path=%s", sanitize_log_str(path), exc_info=True)
+        return None
+
+
+def _handle_grep_advisory(payload: HookPayload) -> str | None:
+    """Check re-grep advisory for the native Grep tool.
+
+    Extracts the ``path`` argument from the Grep payload and delegates to
+    :func:`_try_grep_advisory_for_path`.  Returns the advisory hint text when the
+    threshold (3 greps of the same file this session) is first crossed, else ``None``.
+    """
+    args = _extract_grep_args(payload)
+    if args is None:
+        return None
+    _pattern, path = args
+    if not path:
+        return None
+    session_id, _ = get_session_context(payload)
+    if not session_id:
+        return None
+    return _try_grep_advisory_for_path(path, session_id)
+
+
+def _handle_bash_grep_advisory(payload: HookPayload) -> str | None:
+    """Check re-grep advisory for rg/grep Bash invocations.
+
+    Parses the bash command via ``bash_parser`` to extract the file/directory
+    target, then delegates to :func:`_try_grep_advisory_for_path`.  Returns
+    the advisory hint text when the threshold is crossed, else ``None``.
+    """
+    command = _get_bash_command_from_payload(payload)
+    if command is None:
+        return None
+    from . import bash_parser  # noqa: PLC0415
+    intent = bash_parser.parse(command)
+    if intent.kind != "grep" or not intent.pattern:
+        return None
+    path = intent.target_path
+    if not path:
+        return None
+    session_id, _ = get_session_context(payload)
+    if not session_id:
+        return None
+    return _try_grep_advisory_for_path(path, session_id)
+
+
 def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
     """Inject a ``token-goat symbol`` suggestion when the Grep pattern is an indexed symbol.
 
@@ -3451,6 +3523,11 @@ def pre_read(payload: HookPayload) -> HookResponse:
         if bash_grep_dedup is not None:
             return bash_grep_dedup
 
+        # Re-grep advisory for bash rg/grep targeting a specific file.
+        _bash_grep_advisory = _handle_bash_grep_advisory(payload)
+        if _bash_grep_advisory:
+            return pre_tool_use_with_context(_bash_grep_advisory)
+
         bash_range_hint = _handle_bash_range_read_hint(payload)
         if bash_range_hint is not None:
             return bash_range_hint
@@ -3479,6 +3556,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     if tool_name == "Grep":
+        # Record grep-target count first (before dedup may short-circuit the branch).
+        # The advisory is emitted only if no blocking handler fires below.
+        advisory_text = _handle_grep_advisory(payload)
         dedup = _handle_grep_dedup(payload)
         if dedup is not None:
             return dedup
@@ -3491,6 +3571,8 @@ def pre_read(payload: HookPayload) -> HookResponse:
         large_grep = _handle_large_grep_redirect(payload)
         if large_grep is not None:
             return large_grep
+        if advisory_text:
+            return pre_tool_use_with_context(advisory_text)
         return CONTINUE()
 
     if tool_name == "Glob":
