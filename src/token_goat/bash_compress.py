@@ -164,6 +164,7 @@ __all__ = [
     "JestFilter",
     "VitestFilter",
     "NodePackageFilter",
+    "NodeFilter",
     "DockerFilter",
     "KubectlFilter",
     "AwsFilter",
@@ -2657,6 +2658,130 @@ def _compress_npm_audit_human(text: str) -> str:
         notes.append(f"collapsed {cnt} duplicate {sev} advisories")
     Filter._emit_notes(kept, notes)
     return _squeeze_blank_lines("\n".join(kept))
+
+
+# --- node (eval / print probes) --------------------------------------------
+
+#: Node.js stack frame prefix: "    at "
+_NODE_FRAME_RE: Final[re.Pattern[str]] = re.compile(r"^\s{4}at\s")
+#: Node.js internal module frame — two forms:
+#:   "    at node:internal/..." (anonymous / direct reference)
+#:   "    at SomeFunction (node:internal/...)" (named frame, node: in parens)
+_NODE_INTERNAL_FRAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{4}at\s+(?:node:|.+\s+\(node:)"
+)
+#: Frame from a node_modules package: "    at ... (/…/node_modules/…)"  or
+#: "    at /…/node_modules/…" (anonymous frame).  Covers POSIX and Windows paths.
+_NODE_MODULES_FRAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{4}at\s+.*[/\\]node_modules[/\\]"
+)
+
+
+class NodeFilter(Filter):
+    """Compress ``node -e`` / ``node -p`` inline eval probe output.
+
+    When a ``node -e 'code'`` probe fails, Node.js emits a stack trace that
+    often contains dozens of ``node_modules`` and ``node:internal`` frames that
+    provide no signal to the agent — only the error message and any user-code
+    frames matter.
+
+    Compression model:
+
+    * **Success (exit_code == 0)**: pass through unchanged; eval output is
+      typically tiny (the result of the evaluated expression).
+    * **Failure (exit_code != 0)**: apply stack trace compaction:
+
+      - Collapse consecutive ``node_modules`` frames to a single
+        ``[token-goat: N node_modules frame(s) omitted]`` placeholder.
+      - Collapse consecutive ``node:internal`` frames to
+        ``[token-goat: N Node.js internal frame(s) omitted]``.
+      - Preserve user-code frames verbatim (frames not in node_modules or
+        node:internal).
+      - Preserve all non-frame lines verbatim (the ``Error: message`` header,
+        ``Require stack:`` annotations, ``    ^`` caret pointers, etc.).
+
+    * **Token cap**: cap total output to ~1 000 tokens so a pathological error
+      with a very deep trace cannot flood the agent context.
+
+    Only fires for eval probes (``-e`` / ``--eval`` / ``-p`` / ``--print``).
+    Regular ``node script.js`` runs pass through to the GenericFilter.
+    """
+
+    name = "node"
+    binaries = frozenset(["node", "nodejs"])
+
+    _EVAL_FLAGS: frozenset[str] = frozenset(["-e", "--eval", "-p", "--print"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        stem = Path(argv[0]).stem.lower()
+        if stem not in self.binaries:
+            return False
+        # Only intercept eval / print probes; leave script runs alone.
+        # Stop scanning at the first non-flag argument (the script filename)
+        # so that 'node script.js -e arg' does not false-positive.
+        for arg in argv[1:]:
+            if not arg.startswith("-"):
+                return False  # hit script filename; remaining args are script args
+            if arg in self._EVAL_FLAGS:
+                return True
+        return False
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # Success: eval result is tiny; pass through with a light token cap.
+        if exit_code == 0:
+            combined = self._combine_output(stdout, stderr)
+            return cap_tokens(combined, max_tokens=500)
+
+        # Failure: Node.js writes the stack trace to stderr.
+        text = stderr if stderr.strip() else stdout
+        if stderr.strip() and stdout.strip():
+            text = stderr.rstrip() + "\n" + stdout.rstrip()
+        if not text.strip():
+            return text
+
+        lines = text.split("\n")
+        result = self._compact_trace(lines)
+        return cap_tokens("\n".join(result), max_tokens=1000)
+
+    def _compact_trace(self, lines: list[str]) -> list[str]:
+        """Collapse node_modules and node:internal frames, keep user frames."""
+        out: list[str] = []
+        nm_run: int = 0    # consecutive node_modules frame count
+        int_run: int = 0   # consecutive node:internal frame count
+
+        def _flush_nm() -> None:
+            nonlocal nm_run
+            if nm_run:
+                out.append(f"    [token-goat: {nm_run} node_modules frame(s) omitted]")
+                nm_run = 0
+
+        def _flush_int() -> None:
+            nonlocal int_run
+            if int_run:
+                out.append(
+                    f"    [token-goat: {int_run} Node.js internal frame(s) omitted]"
+                )
+                int_run = 0
+
+        for line in lines:
+            if _NODE_MODULES_FRAME_RE.match(line):
+                _flush_int()
+                nm_run += 1
+            elif _NODE_INTERNAL_FRAME_RE.match(line):
+                _flush_nm()
+                int_run += 1
+            else:
+                _flush_nm()
+                _flush_int()
+                out.append(line)
+
+        _flush_nm()
+        _flush_int()
+        return out
 
 
 # --- Docker ----------------------------------------------------------------
@@ -20868,6 +20993,9 @@ FILTERS: list[Filter] = [
     YarnFilter(),
     BunFilter(),
     NodePackageFilter(),
+    # NodeFilter handles `node -e` / `node -p` eval probes; fires only when
+    # an eval flag is present so it does not conflict with NodePackageFilter.
+    NodeFilter(),
     # NxFilter handles `nx` (Nx monorepo) and `npx nx` / `pnpx nx`.  Must
     # follow NodePackageFilter so that plain `npx <not-nx>` still routes to
     # NodePackageFilter; NxFilter.matches() explicitly checks argv[1] == "nx"

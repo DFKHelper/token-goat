@@ -49,6 +49,9 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["pnpm", "install"], "pnpm"),
     (["yarn", "install"], "yarn"),
     (["bun", "install"], "bun"),
+    # ---- NodeFilter (eval probes only) ----
+    (["node", "-e", "console.log(1)"], "node"),
+    (["node", "-p", "1+1"], "node"),
     # ---- DockerFilter ----
     (["docker", "build", "-t", "my-image", "."], "docker"),
     (["docker", "run", "--rm", "alpine"], "docker"),
@@ -1916,3 +1919,107 @@ class TestGhFilterCompressGhList:
         out = f.compress(output, "", 0, ["gh", "issue", "list"])
 
         assert "showing first 30 of 40 issues" in out
+
+
+# --- NodeFilter (node -e / node -p eval probes) -----------------------------
+
+_NODE_TRACE_WITH_MODULES = """\
+/path/to/script.js:1
+require('missing-pkg')
+^
+
+Error: Cannot find module 'missing-pkg'
+Require stack:
+- /path/to/script.js
+    at Function.Module._resolveFilename (node:internal/modules/cjs/loader:1039:15)
+    at Function.Module._load (node:internal/modules/cjs/loader:885:27)
+    at Module.require (node:internal/modules/cjs/loader:1006:19)
+    at require (node:internal/helpers:182:18)
+    at Object.<anonymous> (/path/to/node_modules/some-pkg/index.js:5:1)
+    at Module._compile (node:internal/modules/cjs/loader:1376:14)
+    at Object.Module._extensions..js (node:internal/modules/cjs/loader:1400:10)
+    at Module.load (node:internal/modules/cjs/loader:1200:32)
+    at Function.Module._load (node:internal/modules/cjs/loader:1016:12)
+    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/cjs/loader:1076:10)
+    at node:internal/main/run_main_module:30:49
+"""
+
+
+class TestNodeFilter:
+    """Tests for NodeFilter: node -e / node -p eval probe compression."""
+
+    def _f(self) -> bc.NodeFilter:
+        return bc.NodeFilter()
+
+    # --- dispatch / matches --------------------------------------------------
+
+    def test_matches_eval_flag(self) -> None:
+        """node -e 'code' is claimed by NodeFilter."""
+        f = self._f()
+        assert f.matches(["node", "-e", "console.log(1)"])
+
+    def test_matches_print_flag(self) -> None:
+        """node -p 'expr' is claimed by NodeFilter."""
+        f = self._f()
+        assert f.matches(["node", "-p", "1+1"])
+
+    def test_does_not_match_script_run(self) -> None:
+        """node script.js (no eval flag) should NOT be claimed."""
+        f = self._f()
+        assert not f.matches(["node", "script.js"])
+
+    def test_does_not_match_npm(self) -> None:
+        """npm commands should not be claimed by NodeFilter."""
+        f = self._f()
+        assert not f.matches(["npm", "install"])
+
+    # --- node_modules frame collapse -----------------------------------------
+
+    def test_node_modules_frames_collapsed(self) -> None:
+        """node_modules frames are replaced with a single omission placeholder."""
+        f = self._f()
+        out = f.compress(_NODE_TRACE_WITH_MODULES, "", 1, ["node", "-e", "require('missing-pkg')"])
+        assert "node_modules frame(s) omitted" in out
+        # The node_modules frame itself must be gone.
+        assert "node_modules/some-pkg/index.js" not in out
+
+    def test_error_header_preserved(self) -> None:
+        """The Error: line must survive unchanged."""
+        f = self._f()
+        out = f.compress(_NODE_TRACE_WITH_MODULES, "", 1, ["node", "-e", "x"])
+        assert "Error: Cannot find module 'missing-pkg'" in out
+
+    def test_internal_frames_collapsed(self) -> None:
+        """node:internal frames are collapsed to a placeholder."""
+        f = self._f()
+        out = f.compress(_NODE_TRACE_WITH_MODULES, "", 1, ["node", "-e", "x"])
+        assert "Node.js internal frame(s) omitted" in out
+        # Raw node:internal lines must not appear verbatim.
+        assert "node:internal/modules/cjs/loader" not in out
+
+    def test_savings_ratio(self) -> None:
+        """Compression must save >= 20% on a representative node_modules trace."""
+        f = self._f()
+        result = f.apply(
+            _NODE_TRACE_WITH_MODULES, "", 1, ["node", "-e", "require('missing-pkg')"],
+        )
+        ratio = result.percent_saved / 100.0
+        assert ratio >= 0.20, f"NodeFilter savings {ratio:.0%} < 20%"
+
+    # --- success passthrough -------------------------------------------------
+
+    def test_success_passthrough(self) -> None:
+        """Successful eval output is returned unchanged (just token-capped)."""
+        f = self._f()
+        out = f.compress("42\n", "", 0, ["node", "-p", "6*7"])
+        assert "42" in out
+        # No compression markers on success.
+        assert "omitted" not in out
+
+    # --- empty output --------------------------------------------------------
+
+    def test_empty_output_no_crash(self) -> None:
+        """Empty stderr/stdout on failure does not raise."""
+        f = self._f()
+        out = f.compress("", "", 1, ["node", "-e", "process.exit(1)"])
+        assert isinstance(out, str)
