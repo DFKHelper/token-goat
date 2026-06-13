@@ -101,6 +101,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "fd": "fd",
     "fdfind": "fd",
     "fgrep": "grep",
+    "find": "fd",  # plain-path output matches fd; -ls/-printf formats truncated at line boundaries
     "flutter": "flutter",
     "fly": "fly",
     "flyctl": "fly",
@@ -241,6 +242,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "vcpkg": "vcpkg",
     "vitest": "vitest",
     "wasm-pack": "wasm-pack",
+    "wc": "wc",
     "wdiff": "diff",
     "wget": "curl",
     "windsurf": "windsurf",

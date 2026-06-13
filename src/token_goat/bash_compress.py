@@ -92,6 +92,7 @@ __all__ = [
     "DotnetFilter",
     "EzaFilter",
     "FdFilter",
+    "WcFilter",
     "FlutterFilter",
     "GoFilter",
     "GradleFilter",
@@ -9082,7 +9083,7 @@ class FdFilter(Filter):
     """
 
     name = "fd"
-    binaries = frozenset(["fd", "fdfind"])
+    binaries = frozenset(["fd", "fdfind", "find"])
 
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         if not argv:
@@ -9103,6 +9104,32 @@ class FdFilter(Filter):
             return text.rstrip()
 
         return _head_tail_compress(non_empty, head=35, tail=5, label="paths")
+
+
+class WcFilter(Filter):
+    """Normalise ``wc`` word/line/byte count output.
+
+    ``wc`` output is already tiny (usually 1–3 lines with a handful of numbers),
+    so this filter does not truncate — it only strips the leading whitespace that
+    POSIX ``wc`` pads for alignment, producing a cleaner representation.
+
+    Examples::
+
+        "      42 file.txt"  →  "42 file.txt"
+        "   5   20  120"     →  "5   20  120"
+    """
+
+    name = "wc"
+    binaries = frozenset(["wc"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        text = normalise(merged)
+        lines = text.splitlines()
+        stripped = [ln.lstrip() for ln in lines]
+        return "\n".join(stripped).rstrip()
 
 
 class TreeFilter(Filter):
@@ -21036,6 +21063,7 @@ FILTERS: list[Filter] = [
     DiffFilter(),
     EzaFilter(),
     FdFilter(),
+    WcFilter(),
     TreeFilter(),
     BatFilter(),
     DeltaFilter(),

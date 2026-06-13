@@ -42,6 +42,14 @@ class TestDetectKnownBinaries:
     def test_kubectl(self) -> None:
         assert bash_detect.detect(["kubectl"]) == "kubectl-logs"
 
+    def test_find_mapped_to_fd(self) -> None:
+        """GNU find shares FdFilter — path-per-line output handled identically."""
+        assert bash_detect.detect(["find"]) == "fd"
+
+    def test_wc_mapped_to_wc(self) -> None:
+        """wc is registered with its own WcFilter for whitespace normalisation."""
+        assert bash_detect.detect(["wc"]) == "wc"
+
 
 class TestDetectEdgeCases:
     """detect() handles stems, extensions, paths, and case normalization."""

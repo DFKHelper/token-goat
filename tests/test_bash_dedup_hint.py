@@ -3,7 +3,7 @@
 These tests use commands that are **not** in the ``bash_compress`` filter list
 (``pytest``, ``cargo``, ``npm``, ``docker``, ``make``, ``git``, …) so the
 auto-wrap path doesn't fire and consume the fall-through that the dedup-miss
-assertions rely on.  ``find`` / ``echo`` / ``head`` are reliable sentinels —
+assertions rely on.  ``du`` / ``echo`` / ``head`` are reliable sentinels —
 none of them are compressible, so the only reason for ``pre_read`` to emit a
 ``hookSpecificOutput`` is a dedup hit.
 """
@@ -28,12 +28,12 @@ def _seed_history(session_id: str, command: str, *, output_bytes: int = 10_000) 
 
 class TestBashDedupHintFiresOnRepeat:
     def test_repeat_command_triggers_hint(self, tmp_data_dir):
-        _seed_history("dedup-1", "find /srv -name '*.log'")
+        _seed_history("dedup-1", "du -sh /srv")
         # Pre-read fires for the same command in the same session.
         payload = {
             "session_id": "dedup-1",
             "tool_name": "Bash",
-            "tool_input": {"command": "find /srv -name '*.log'"},
+            "tool_input": {"command": "du -sh /srv"},
         }
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
@@ -41,14 +41,14 @@ class TestBashDedupHintFiresOnRepeat:
         assert hso is not None
         ctx = hso.get("additionalContext", "")
         assert "token-goat bash-output" in ctx
-        assert "find /srv" in ctx
+        assert "du -sh /srv" in ctx
 
     def test_distinct_command_no_hint(self, tmp_data_dir):
-        _seed_history("dedup-2", "find /srv -name '*.log'")
+        _seed_history("dedup-2", "du -sh /srv")
         payload = {
             "session_id": "dedup-2",
             "tool_name": "Bash",
-            "tool_input": {"command": "find /opt -name '*.log'"},  # different command
+            "tool_input": {"command": "du -sh /opt"},  # different command
         }
         result = hooks_read.pre_read(payload)
         _assert_continue(result)
@@ -72,7 +72,7 @@ class TestBashDedupHintFiresOnRepeat:
         """run_count advances each time the same command is recorded."""
         from token_goat import bash_cache
 
-        cmd = "find /data -name '*.csv'"
+        cmd = "du -sh /data"
         _seed_history("rc-1", cmd)
         sha = bash_cache.command_hash(cmd)
         entry = session.lookup_bash_entry("rc-1", sha)
@@ -93,7 +93,7 @@ class TestBashDedupHintFiresOnRepeat:
 
     def test_hint_text_run_count_2(self, tmp_data_dir):
         """At run_count==2 the hint says '2x' indicating repeated run."""
-        cmd = "find /logs -name '*.log'"
+        cmd = "du -sh /logs"
         _seed_history("rc-2a", cmd)
         _seed_history("rc-2a", cmd)  # second run → run_count=2
         payload = {
@@ -110,7 +110,7 @@ class TestBashDedupHintFiresOnRepeat:
 
     def test_hint_text_run_count_3(self, tmp_data_dir):
         """At run_count>=3 the hint flags a loop with a leading alert glyph."""
-        cmd = "find /tmp -name '*.tmp'"
+        cmd = "du -sh /tmp"
         _seed_history("rc-3a", cmd)
         _seed_history("rc-3a", cmd)
         _seed_history("rc-3a", cmd)  # third run → run_count=3
@@ -131,7 +131,7 @@ class TestBashDedupHintFiresOnRepeat:
 
     def test_hint_text_run_count_5(self, tmp_data_dir):
         """run_count>3 still uses the loop-detection path with the correct count."""
-        cmd = "find /etc -name '*.conf'"
+        cmd = "du -sh /etc"
         for _ in range(5):
             _seed_history("rc-5a", cmd)
         payload = {
@@ -149,7 +149,7 @@ class TestBashDedupHintFiresOnRepeat:
     def test_single_run_hint_unchanged(self, tmp_data_dir):
         """First-time dedup hint (run_count==1) carries an age suffix and a 'cached' marker."""
         import re as _re
-        cmd = "find /var -name '*.pid'"
+        cmd = "du -sh /var"
         _seed_history("rc-single", cmd)
         payload = {
             "session_id": "rc-single",
@@ -175,8 +175,9 @@ class TestBashDedupHintFiresOnRepeat:
 
         # First simulate a normal recording with a non-compressible command so
         # the fall-through path is not consumed by ``_handle_bash_compress``.
-        _seed_history("dedup-4", "find /srv -type f")
-        sha = bash_cache.command_hash("find /srv -type f")
+        # Use ``df -h`` — intentionally unregistered in bash_detect._BINARY_TO_FILTER.
+        _seed_history("dedup-4", "df -h")
+        sha = bash_cache.command_hash("df -h")
         entry = session.lookup_bash_entry("dedup-4", sha)
         assert entry is not None
 
@@ -188,7 +189,7 @@ class TestBashDedupHintFiresOnRepeat:
         payload = {
             "session_id": "dedup-4",
             "tool_name": "Bash",
-            "tool_input": {"command": "find /srv -type f"},
+            "tool_input": {"command": "df -h"},
         }
         result = hooks_read.pre_read(payload)
         _assert_continue(result)

@@ -2874,9 +2874,10 @@ class TestFdFilter:
         ["fd", "pattern"],
         ["fdfind", "pattern"],   # Ubuntu package name
         ["fd.exe", "pattern"],   # Windows .exe form
+        ["find", "-name", "*.py"],  # GNU find — same path-per-line output
     ])
     def test_matches_fd_binaries(self, argv) -> None:
-        """FdFilter matches fd/fdfind binaries."""
+        """FdFilter matches fd/fdfind/find binaries."""
         assert bc.FdFilter().matches(argv)
 
     def test_small_output_passes_through(self) -> None:
@@ -2959,6 +2960,50 @@ class TestFdFilter:
         fd_filter = bc.select_filter(["fd", "pattern"])
         assert fd_filter is not None
         assert fd_filter.name == "fd"
+
+
+class TestWcFilter:
+    """Test WcFilter normalization for wc word/line/byte count output."""
+
+    def test_strips_leading_whitespace_single_line(self) -> None:
+        """POSIX wc pads counts with leading spaces — WcFilter removes them."""
+        f = bc.WcFilter()
+        result = f.compress("      42 file.txt", "", 0, ["wc", "-l", "file.txt"])
+        assert result == "42 file.txt"
+
+    def test_strips_leading_whitespace_no_filename(self) -> None:
+        """wc -l < stdin produces a bare number with leading spaces."""
+        f = bc.WcFilter()
+        result = f.compress("      99", "", 0, ["wc", "-l"])
+        assert result == "99"
+
+    def test_multiple_metrics(self) -> None:
+        """wc without flags prints lines/words/bytes — only leading spaces stripped."""
+        f = bc.WcFilter()
+        result = f.compress("   5   20  120 file.txt", "", 0, ["wc", "file.txt"])
+        assert result == "5   20  120 file.txt"
+
+    def test_multifile_with_total(self) -> None:
+        """Multiple files produce per-file lines plus a total line."""
+        f = bc.WcFilter()
+        stdout = "   5   20  120 file1.txt\n  10   40  240 file2.txt\n  15   60  360 total"
+        result = f.compress(stdout, "", 0, ["wc", "file1.txt", "file2.txt"])
+        lines = result.splitlines()
+        assert lines[0] == "5   20  120 file1.txt"
+        assert lines[1] == "10   40  240 file2.txt"
+        assert lines[2] == "15   60  360 total"
+
+    def test_empty_output(self) -> None:
+        """Empty output returns empty string without error."""
+        f = bc.WcFilter()
+        result = f.compress("", "", 0, ["wc", "-l", "missing.txt"])
+        assert result == ""
+
+    def test_filter_in_registry(self) -> None:
+        """WcFilter is registered in the global FILTERS list."""
+        wc_filter = bc.select_filter(["wc", "-l", "file.txt"])
+        assert wc_filter is not None
+        assert wc_filter.name == "wc"
 
 
 class TestTreeFilter:
