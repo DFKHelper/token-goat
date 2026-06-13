@@ -1126,6 +1126,37 @@ def _watch_cmd_info(argv: list[str]) -> str | None:
     return None
 
 
+def _is_git_log_cmd(argv: list[str]) -> bool:
+    """Return ``True`` when *argv* is a ``git log`` command.
+
+    Matches any ``git log`` invocation regardless of flags (``--oneline``,
+    ``-p``, ``--stat``, no flags, etc.).
+
+    *argv* must be the result of ``shlex.split(cmd, posix=False)`` with
+    quote-stripping already applied (i.e. ``[t.strip("\\\"'") for t in raw]``).
+    """
+    if len(argv) < 2:
+        return False
+    base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+    if base != "git":
+        return False
+    # Scan argv[1:] for the subcommand, skipping global git flags (--no-pager,
+    # -C <path>, -c <key=val>, --git-dir=<path>, etc.) that appear before it.
+    _VALUE_FLAGS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix"}
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok in _VALUE_FLAGS:
+            i += 2  # flag + its value argument
+        elif tok.startswith("-"):
+            i += 1  # standalone flag like --no-pager, --verbose
+        else:
+            return tok.lower() == "log"
+    return False
+
+
 def _is_poll_loop_cmd(cmd: str) -> bool:
     """Return ``True`` when *cmd* looks like a shell poll loop.
 

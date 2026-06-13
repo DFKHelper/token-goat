@@ -4547,6 +4547,9 @@ _JSON_SUMMARY_MAX_BYTES: int = 2_000_000  # skip json.loads on files > 2 MB to a
 # Large plain-text stdout fallback compressor (Iter 19)
 # Fires after all specialized handlers when a successful command emits many lines of plain text.
 _LARGE_STDOUT_LINE_THRESHOLD: int = 200
+# Git log output compressor (Iter 21)
+# git log with many commits can emit thousands of lines; compress when >= this many.
+_GIT_LOG_COMPRESS_MIN_LINES: int = 50
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -5451,6 +5454,71 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 }
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: sleep/watch/poll suppress failed", exc_info=True)
+
+    # Git log output compression (Iter 21):
+    # When git log emits >= _GIT_LOG_COMPRESS_MIN_LINES lines, store the full output
+    # in bash-cache and return a compact summary with the first 5 lines so the model
+    # gets orientation without burning context on hundreds of log lines.
+    # Only fires on successful commands (exit_code in (None, 0)).
+    if exit_code in (None, 0) and stdout and display_cmd.lstrip().startswith("git"):
+        try:
+            import re as _re_gl  # noqa: PLC0415
+            import shlex as _shlex_gl  # noqa: PLC0415
+
+            from . import bash_compress as _bc_gl  # noqa: PLC0415
+
+            try:
+                _gl_argv = _shlex_gl.split(display_cmd.split("|")[0].strip(), posix=False)
+            except ValueError:
+                _gl_argv = display_cmd.strip().split()
+            _gl_argv_clean = [t.strip("\"'") for t in _gl_argv]
+
+            if _bc_gl._is_git_log_cmd(_gl_argv_clean):
+                _gl_lines = stdout.splitlines()
+                _gl_n_lines = len(_gl_lines)
+                if _gl_n_lines >= _GIT_LOG_COMPRESS_MIN_LINES:
+                    # Count commits: full format uses "commit <40-hex>" headers;
+                    # --oneline format uses "<7+ hex> <message>" lines.
+                    _gl_n_commits = len(_re_gl.findall(r"^commit [0-9a-f]{40}", stdout, _re_gl.MULTILINE))
+                    if _gl_n_commits == 0:
+                        _gl_n_commits = len(_re_gl.findall(r"^[0-9a-f]{7,}\s", stdout, _re_gl.MULTILINE))
+
+                    if _gl_n_commits == 0:
+                        _LOG.debug("git log: unrecognized format (no commit markers found), skipping compression")
+                    else:
+                        _gl_out_id: str | None = None
+                        if session_id:
+                            from . import bash_cache as _bc_gl_cache  # noqa: PLC0415
+                            with contextlib.suppress(Exception):
+                                _gl_meta = _bc_gl_cache.store_output(
+                                    session_id, display_cmd, stdout, stderr, exit_code,
+                                    cwd=cwd, min_cache_bytes=0,
+                                )
+                                if _gl_meta is not None:
+                                    _bc_gl_cache.write_sidecar(_gl_meta)
+                                    _gl_out_id = _gl_meta.output_id
+
+                        _gl_recall = f" (bash-output {_gl_out_id})" if _gl_out_id else ""
+                        _gl_first5 = "\n".join(_gl_lines[:5])
+                        _gl_omitted = _gl_n_lines - 5
+                        _gl_msg_parts = [
+                            f"[token-goat] git log: {_gl_n_commits} commits shown ({_gl_n_lines} lines)"
+                            f" — full output stored{_gl_recall}",
+                            "First 5 commits:",
+                            _gl_first5,
+                        ]
+                        if _gl_omitted > 0:
+                            _gl_msg_parts.append(f"... ({_gl_omitted} lines omitted) ...")
+                        _LOG.info(
+                            "post-bash: git log compressed lines=%d commits=%d cmd=%.60s",
+                            _gl_n_lines, _gl_n_commits, display_cmd,
+                        )
+                        return {
+                            "continue": True,
+                            "systemMessage": "\n".join(_gl_msg_parts),
+                        }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: git log compression failed", exc_info=True)
 
     # Pytest failure traceback suppression (Iter 18):
     # Fires when pytest output is large (>= _PYTEST_COMPRESS_MIN_BYTES) and contains
