@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 from unittest.mock import MagicMock, patch
 
@@ -30,8 +31,9 @@ def _make_png_bytes(width: int = 64, height: int = 64) -> bytes:
     return buf.getvalue()
 
 
+@functools.lru_cache(maxsize=1)
 def _make_large_png_bytes() -> bytes:
-    """Return >100 KB of PNG bytes (1200×900 random)."""
+    """Return >100 KB of PNG bytes (1200×900 random). Cached per process."""
     import random
 
     from PIL import Image
