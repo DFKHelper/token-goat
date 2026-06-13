@@ -2798,6 +2798,94 @@ def _is_tsc_cmd(argv: list[str]) -> bool:
     return False
 
 
+#: Matches ``-v=false`` / ``--v=false`` flags that explicitly disable verbose in ``go test``.
+_GO_V_DISABLED_RE: Final[re.Pattern[str]] = re.compile(r"^--?v=false$")
+
+
+def _is_go_test_verbose_cmd(argv: list[str]) -> bool:
+    """Return True if the command is a verbose ``go test`` invocation.
+
+    Handles ``go test -v ./...``, ``go test -run=TestFoo -v``, and similar.
+    Does NOT match ``go test -v=false`` (explicitly disabled) or ``go test``
+    without a ``-v`` flag.  Stops processing argv at ``--`` (flags after the
+    separator are forwarded to the test binary, not to the ``go`` tool itself).
+    """
+    if not argv:
+        return False
+
+    def _base(s: str) -> str:
+        b = s.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        for ext in (".exe", ".cmd"):
+            if b.endswith(ext):
+                b = b[: -len(ext)]
+                break
+        return b
+
+    if _base(argv[0]) != "go":
+        return False
+    has_test = False
+    has_verbose = False
+    for tok in argv[1:]:
+        if tok == "--":
+            break  # flags after -- are forwarded to the test binary; stop
+        if tok == "test":
+            has_test = True
+        elif tok == "-v":
+            has_verbose = True
+        elif _GO_V_DISABLED_RE.match(tok):
+            return False  # -v=false / --v=false explicitly disables verbose
+    return has_test and has_verbose
+
+
+#: Matches make/gmake/ninja binary base names for _is_make_cmd detection.
+_MAKE_BIN_RE: Final[re.Pattern[str]] = re.compile(r"^(?:g?make|ninja)$")
+
+
+def _is_make_cmd(argv: list[str]) -> bool:
+    """Return True if the command is a make/gmake/ninja/cmake --build invocation.
+
+    Handles:
+    * ``make`` / ``gmake`` with any arguments.
+    * ``ninja`` with any arguments.
+    * ``cmake --build <dir>`` — ``--build`` must be the first non-flag argument;
+      value-consuming flags (``-G``, ``-D``, ``-B``, ``-S``, etc.) are skipped.
+    """
+    if not argv:
+        return False
+
+    def _base(s: str) -> str:
+        b = s.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        for ext in (".exe", ".cmd"):
+            if b.endswith(ext):
+                b = b[: -len(ext)]
+                break
+        return b
+
+    b0 = _base(argv[0])
+    if _MAKE_BIN_RE.match(b0):
+        return True
+    if b0 == "cmake":
+        # Flags that consume the following token as their value.
+        _CMAKE_VALUE_FLAGS: frozenset[str] = frozenset({
+            "-G", "-D", "-T", "-A", "-U", "--preset", "--install-prefix", "-B", "-S", "-E",
+        })
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok == "--build":
+                return True
+            if tok.startswith("-"):
+                if tok in _CMAKE_VALUE_FLAGS:
+                    i += 2
+                else:
+                    i += 1
+            else:
+                # Positional non-flag that is not --build → not a build invocation
+                return False
+        return False
+    return False
+
+
 #: Matches Python interpreter base names after _base() strips path and extension.
 #: Covers python, python3, python3.12, py.  uv run python is handled separately
 #: in _is_python_script_cmd by scanning argv.

@@ -4514,6 +4514,8 @@ _VERBOSE_TEST_MIN_LINES: int = 80
 _CARGO_COMPILE_MIN_LINES: int = 40
 #: Minimum line count before make/cmake/ninja output compression fires.
 _MAKE_MIN_LINES: int = 40
+#: Minimum line count before go test -v output compression fires.
+_GO_TEST_V_MIN_LINES: int = 60
 #: Minimum line count before tsc output compression fires.
 _TSC_MIN_LINES: int = 50
 #: Matches position-less tsc --build errors/warnings (no ``(row,col)`` token).
@@ -6104,6 +6106,123 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     return {"continue": True, "systemMessage": _mk_msg}
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: make compression failed", exc_info=True)
+
+    # go test -v compression: suppress clean-pass RUN/PASS pairs, keep tests with logs or failures.
+    if stdout and len(stdout.splitlines()) >= _GO_TEST_V_MIN_LINES and exit_code in (None, 0, 1):
+        try:
+            import shlex as _shlex_go  # noqa: PLC0415
+            import sys as _sys_go  # noqa: PLC0415
+
+            from .bash_compress import _is_go_test_verbose_cmd as _go_check  # noqa: PLC0415
+
+            _go_argv = _shlex_go.split(display_cmd, posix=(_sys_go.platform != "win32"))
+            if _go_argv and _go_check(_go_argv):
+                _go_lines = stdout.splitlines()
+                _go_total = len(_go_lines)
+                _go_kept: list[str] = []
+                _go_hidden = 0
+                _go_pending_run: str | None = None  # single-slot; interleaved t.Parallel() CONT may land in wrong slot
+                _go_pending_logs: list[str] = []  # subtest RUN/PASS + real log lines buffered here
+                _go_pending_has_user_logs = False  # True only when pending_logs has real (non-subtest-noise) content
+
+                for _go_line in _go_lines:
+                    _go_stripped = _go_line.strip()
+                    if _go_stripped.startswith("=== PAUSE"):
+                        # pure scheduling noise — suppress
+                        _go_hidden += 1
+                    elif _go_stripped.startswith("=== RUN"):
+                        _go_test_name = _go_stripped.split()[-1] if _go_stripped.split() else ""
+                        if "/" in _go_test_name and _go_pending_run is not None:
+                            # subtest RUN — buffer as noise; don't evict the parent slot
+                            _go_pending_logs.append(_go_line)
+                        else:
+                            # top-level test — flush buffered test then open a new slot
+                            if _go_pending_run is not None:
+                                if _go_pending_has_user_logs:
+                                    _go_kept.append(_go_pending_run)
+                                    _go_kept.extend(_go_pending_logs)
+                                else:
+                                    _go_hidden += 1 + len(_go_pending_logs)
+                            _go_pending_run = _go_line
+                            _go_pending_logs = []
+                            _go_pending_has_user_logs = False
+                    elif _go_stripped.startswith("--- PASS:"):
+                        _go_pass_name = _go_stripped.split()[2] if len(_go_stripped.split()) >= 3 else ""
+                        if "/" in _go_pass_name and _go_pending_run is not None:
+                            # subtest PASS — buffer as noise alongside the parent slot
+                            _go_pending_logs.append(_go_line)
+                        elif _go_pending_run is not None and not _go_pending_has_user_logs:
+                            # clean parent pass (no real user logs, only subtest noise) — suppress all
+                            _go_hidden += 2 + len(_go_pending_logs)
+                            _go_pending_run = None
+                            _go_pending_logs = []
+                            _go_pending_has_user_logs = False
+                        else:
+                            # parent pass with real logs — flush pending run + logs + this PASS line
+                            if _go_pending_run is not None:
+                                _go_kept.append(_go_pending_run)
+                                _go_kept.extend(_go_pending_logs)
+                            _go_kept.append(_go_line)
+                            _go_pending_run = None
+                            _go_pending_logs = []
+                            _go_pending_has_user_logs = False
+                    elif _go_stripped.startswith("--- FAIL:"):
+                        # always keep failed tests
+                        if _go_pending_run is not None:
+                            _go_kept.append(_go_pending_run)
+                            _go_kept.extend(_go_pending_logs)
+                        _go_kept.append(_go_line)
+                        _go_pending_run = None
+                        _go_pending_logs = []
+                        _go_pending_has_user_logs = False
+                    elif _go_pending_run is not None:
+                        # real log lines and === CONT — buffer and mark as user content
+                        _go_pending_logs.append(_go_line)
+                        _go_pending_has_user_logs = True
+                    else:
+                        # package-level lines (ok/FAIL pkg, coverage, etc.)
+                        _go_kept.append(_go_line)
+
+                # flush any remaining buffered test
+                if _go_pending_run is not None:
+                    if _go_pending_has_user_logs:
+                        _go_kept.append(_go_pending_run)
+                        _go_kept.extend(_go_pending_logs)
+                    else:
+                        _go_hidden += 1 + len(_go_pending_logs)
+
+                if _go_hidden > 0:
+                    _go_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_go  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _go_meta = _bc_go.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _go_meta is not None:
+                                _bc_go.write_sidecar(_go_meta)
+                                _go_out_id = _go_meta.output_id
+                    _go_recall = (f"\n[Full output: bash-output {_go_out_id}]" if _go_out_id else "")
+                    _go_body = "\n".join(_go_kept)
+                    if stdout.endswith(("\n", "\r\n")):
+                        _go_body += "\n"
+                    _go_msg = (
+                        f"[token-goat] go test -v: {_go_total} lines → {len(_go_kept)} kept"
+                        f" ({_go_hidden} lines suppressed)\n"
+                        + _go_body
+                        + _go_recall
+                    )
+                    _LOG.info(
+                        "post-bash: go test -v compressed lines=%d kept=%d hidden=%d cmd=%.60s",
+                        _go_total, len(_go_kept), _go_hidden, display_cmd,
+                    )
+                    if _sess_mod is not None and _session_cache is not None:
+                        with contextlib.suppress(Exception):
+                            _sess_mod.save(_session_cache)
+                    return {"continue": True, "systemMessage": _go_msg}
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: go test -v compression failed", exc_info=True)
 
     # tsc compression: strip timestamp/watch noise, keep diagnostics + summary; fires at >= _TSC_MIN_LINES lines.
     if stdout and len(stdout.splitlines()) >= _TSC_MIN_LINES:
