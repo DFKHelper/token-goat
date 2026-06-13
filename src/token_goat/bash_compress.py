@@ -2809,8 +2809,9 @@ def _is_python_script_cmd(argv: list[str]) -> bool:
 
     Handles: ``python``, ``python3``, ``python3.12``, ``py`` (and their
     ``.exe``/``.cmd`` variants), direct ``.py`` file invocations, and
-    ``uv run python[3[.X]]``.  Returns False for any pytest invocation
-    (that is handled by the pytest compression path).
+    ``uv run python[3[.X]]``.
+
+    Note: pytest invocations are excluded by the calling block's guard, not by this function.
     """
     if not argv:
         return False
@@ -2823,7 +2824,7 @@ def _is_python_script_cmd(argv: list[str]) -> bool:
                 break
         return b
 
-    b0 = _base(argv[0])
+    b0 = _base(argv[0].strip("\"'"))
 
     # Direct Python interpreter: python, python3, python3.12, py (and .exe/.cmd)
     if _PYTHON_BIN_RE.match(b0):

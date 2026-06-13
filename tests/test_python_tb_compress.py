@@ -82,6 +82,11 @@ def test_detect_direct_py_file_windows_path():
     assert _is_python_script_cmd(["C:\\Users\\user\\project\\run.py", "--arg"])
 
 
+def test_detect_quoted_path_windows():
+    # shlex.split(posix=False) retains surrounding quotes on Windows; strip them before matching
+    assert _is_python_script_cmd(['"C:\\Program Files\\Python312\\python.exe"'])
+
+
 def test_detect_uv_run_python():
     assert _is_python_script_cmd(["uv", "run", "python", "script.py"])
 
