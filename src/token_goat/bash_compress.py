@@ -1268,6 +1268,60 @@ def _is_pkg_install_cmd(argv: list[str]) -> bool:
     return False
 
 
+def _is_env_list_cmd(argv: list[str]) -> bool:
+    """Return True when argv is an environment variable listing command.
+
+    Matches:
+    - env (no args, or with --null/-0 but not 'env VAR=val cmd')
+    - printenv (with zero or more VAR names to print)
+    - export -p  (bash built-in export with -p flag)
+    - declare -x (bash built-in)
+
+    Does NOT match 'env VAR=val some_cmd' (env used as a command prefix).
+    """
+    if not argv:
+        return False
+    base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+
+    # env --------------------------------------------------------------------
+    if base == "env":
+        # Skip recognised env flags; if the next non-flag token contains '='
+        # the command is 'env VAR=val cmd' (used as a command prefix) → False.
+        _ENV_NO_ARG_FLAGS = {"--null", "-0", "-i", "--ignore-environment"}
+        _ENV_ARG_FLAGS = {"-u", "--unset"}
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _ENV_NO_ARG_FLAGS:
+                i += 1
+            elif tok in _ENV_ARG_FLAGS:
+                i += 2  # flag + its NAME argument
+            elif tok.startswith("-"):
+                i += 1  # unknown flag, skip
+            else:
+                # Any positional argument (VAR=val or a command name) means env is
+                # either setting variables for a subprocess or running a command.
+                # Neither is a listing. Only bare 'env [flags]' lists the environment.
+                return False
+        return True
+
+    # printenv ----------------------------------------------------------------
+    if base == "printenv":
+        return True
+
+    # export -p ---------------------------------------------------------------
+    if base == "export":
+        return len(argv) == 1 or argv[1] == "-p"
+
+    # declare -x --------------------------------------------------------------
+    if base == "declare":
+        return "-x" in argv
+
+    return False
+
+
 def _is_poll_loop_cmd(cmd: str) -> bool:
     """Return ``True`` when *cmd* looks like a shell poll loop.
 

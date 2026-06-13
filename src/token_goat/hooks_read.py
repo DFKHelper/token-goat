@@ -4553,6 +4553,9 @@ _GIT_LOG_COMPRESS_MIN_LINES: int = 50
 # Package manager install output compressor
 # pip/cargo/npm/yarn/uv install with many progress lines; compress when >= this many.
 _PKG_INSTALL_MIN_LINES: int = 30
+# Environment variable listing compressor
+# env/printenv/export -p/declare -x dumps; compress when >= this many lines.
+_ENV_LIST_MIN_LINES: int = 10
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -5555,6 +5558,118 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 }
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: pkg install compression failed", exc_info=True)
+
+    # Environment variable listing compression:
+    # env / printenv / export -p / declare -x dump all environment variables —
+    # typically 30-80 KEY=VALUE lines per run.  Values can be enormous and may
+    # contain secrets/tokens, so the systemMessage shows variable NAMES only.
+    # Fires when output reaches _ENV_LIST_MIN_LINES (10) lines on a successful run.
+    if exit_code in (None, 0) and stdout and len(stdout.splitlines()) >= _ENV_LIST_MIN_LINES:
+        try:
+            import re as _re_env  # noqa: PLC0415
+            import shlex as _shlex_env  # noqa: PLC0415
+
+            from . import bash_compress as _bc_env  # noqa: PLC0415
+
+            try:
+                _env_argv = _shlex_env.split(display_cmd.split("|")[0].strip(), posix=False)
+            except ValueError:
+                _env_argv = display_cmd.strip().split()
+            _env_argv_clean = [t.strip("\"'") for t in _env_argv]
+
+            if _bc_env._is_env_list_cmd(_env_argv_clean):
+                _env_lines = stdout.splitlines()
+                _env_n_lines = len(_env_lines)
+
+                # Extract variable names only — never values (may contain secrets).
+                # Handles three output formats:
+                #   KEY=value               (env / printenv)
+                #   declare -x KEY=value    (declare -x)
+                #   export KEY=value        (export -p)
+                _env_var_names: list[str] = []
+                _env_var_pattern = _re_env.compile(
+                    r"^(?:declare\s+-x\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)(?:=|$)"
+                )
+                for _el in _env_lines:
+                    _em = _env_var_pattern.match(_el.strip())
+                    if _em:
+                        _env_var_names.append(_em.group(1))
+
+                _env_total_vars = len(_env_var_names)
+
+                if _env_total_vars > 0:
+                    # Group into well-known prefix categories.
+                    _env_cats: dict[str, list[str]] = {
+                        "PATH-related": [],
+                        "Python": [],
+                        "Node/npm": [],
+                        "AWS": [],
+                        "Git": [],
+                        "CI": [],
+                        "Other": [],
+                    }
+                    for _vn in _env_var_names:
+                        _vnu = _vn.upper()
+                        if "PATH" in _vnu:
+                            _env_cats["PATH-related"].append(_vn)
+                        elif _vnu.startswith("PYTHON"):
+                            _env_cats["Python"].append(_vn)
+                        elif _vnu.startswith("NODE") or _vnu.startswith("NPM"):
+                            _env_cats["Node/npm"].append(_vn)
+                        elif _vnu.startswith("AWS_"):
+                            _env_cats["AWS"].append(_vn)
+                        elif _vnu.startswith("GIT_"):
+                            _env_cats["Git"].append(_vn)
+                        elif (
+                            _vnu.startswith("CI")
+                            or _vnu.startswith("GITHUB_")
+                            or _vnu.startswith("TRAVIS_")
+                            or _vnu.startswith("CIRCLE_")
+                        ):
+                            _env_cats["CI"].append(_vn)
+                        else:
+                            _env_cats["Other"].append(_vn)
+
+                    _env_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_env_cache  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _env_meta = _bc_env_cache.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _env_meta is not None:
+                                _bc_env_cache.write_sidecar(_env_meta)
+                                _env_out_id = _env_meta.output_id
+
+                    _env_recall = (
+                        f"\n[Full output: bash-output {_env_out_id}]" if _env_out_id else ""
+                    )
+                    _env_msg_parts = [
+                        f"[token-goat] env: {_env_total_vars} variables ({_env_n_lines} lines)",
+                    ]
+                    for _cat_name, _cat_vars in _env_cats.items():
+                        if not _cat_vars:
+                            continue
+                        _cat_count = len(_cat_vars)
+                        if _cat_count <= 10:
+                            _cat_display = ", ".join(_cat_vars)
+                        else:
+                            _cat_display = ", ".join(_cat_vars[:10]) + f" +{_cat_count - 10} more"
+                        _env_msg_parts.append(f"{_cat_name} ({_cat_count}): {_cat_display}")
+                    if _env_recall:
+                        _env_msg_parts.append(_env_recall)
+
+                    _LOG.info(
+                        "post-bash: env list compressed lines=%d vars=%d cmd=%.60s",
+                        _env_n_lines, _env_total_vars, display_cmd,
+                    )
+                    return {
+                        "continue": True,
+                        "systemMessage": "\n".join(_env_msg_parts),
+                    }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: env list compression failed", exc_info=True)
 
     # Git log output compression (Iter 21):
     # When git log emits >= _GIT_LOG_COMPRESS_MIN_LINES lines, store the full output
