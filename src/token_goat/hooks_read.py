@@ -3182,6 +3182,95 @@ def _format_read_ranges(line_ranges: list[tuple[int, int]]) -> str:
     return ", ".join(parts)
 
 
+def _uncovered_subranges(
+    cached_ranges: list[tuple[int, int]],
+    req_start: int,
+    req_end: int,
+) -> list[tuple[int, int]]:
+    """Return sub-ranges of [req_start, req_end] not covered by cached_ranges (1-indexed inclusive)."""
+    if (0, 0) in cached_ranges:
+        return []
+    pending = [(req_start, req_end)]
+    for cs, ce in sorted(cached_ranges):
+        nxt: list[tuple[int, int]] = []
+        for us, ue in pending:
+            if ce < us or cs > ue:
+                nxt.append((us, ue))
+            else:
+                if cs > us:
+                    nxt.append((us, cs - 1))
+                if ce < ue:
+                    nxt.append((ce + 1, ue))
+        pending = nxt
+    return pending
+
+
+def _handle_partial_overlap_hint(
+    file_path: str,
+    tool_input: dict[str, object],
+    entry: object,
+) -> HookResponse | None:
+    """Advisory hint when a Read range partially overlaps cached line ranges.
+
+    Fires only when: prior session entry exists, file not edited since last read,
+    window is NOT fully covered (deny handles that), and at least one line in the
+    requested range is already cached.
+    """
+    from .hooks_common import record_cached_stat  # noqa: PLC0415
+
+    line_ranges: list[tuple[int, int]] = getattr(entry, "line_ranges", [])
+    if not line_ranges:
+        return None
+
+    raw_offset = tool_input.get("offset")
+    raw_limit = tool_input.get("limit")
+    if not is_real_int(raw_offset) or not is_real_int(raw_limit) or int(raw_limit) <= 0:
+        return None  # unbounded or offset-only reads — skip; can't compute uncovered sub-range
+
+    req_start = max(0, int(raw_offset)) + 1  # convert 0-indexed offset → 1-indexed start
+    req_end = req_start + int(raw_limit) - 1
+
+    # Must have at least one cached line that overlaps the requested range.
+    has_overlap = any(
+        cs <= req_end and ce >= req_start
+        for cs, ce in line_ranges
+        if (cs, ce) != (0, 0)
+    ) or (0, 0) in line_ranges
+    if not has_overlap:
+        return None
+
+    uncovered = _uncovered_subranges(line_ranges, req_start, req_end)
+    if not uncovered:
+        return None  # fully covered — should have been caught by _handle_reread_deny
+
+    # Build suggestion for the first (and usually only) uncovered sub-range.
+    first_start, first_end = uncovered[0]
+    suggested_offset = first_start - 1  # back to 0-indexed
+    suggested_limit = first_end - first_start + 1
+
+    covered_count = (req_end - req_start + 1) - sum(e - s + 1 for s, e in uncovered)
+    filename = Path(file_path).name
+    ranges_fmt = _format_read_ranges(line_ranges)
+
+    if len(uncovered) == 1:
+        hint = (
+            f"Note: {covered_count} line(s) of `{filename}` in the requested range are already in context "
+            f"(cached: {ranges_fmt}).\n"
+            f"Consider reading only the uncovered portion: offset={suggested_offset} limit={suggested_limit}"
+        )
+    else:
+        parts = [f"offset={s - 1} limit={e - s + 1}" for s, e in uncovered]
+        hint = (
+            f"Note: {covered_count} line(s) of `{filename}` in the requested range are already in context "
+            f"(cached: {ranges_fmt}).\n"
+            f"Uncovered sub-ranges: {', '.join(parts)}"
+        )
+
+    record_cached_stat("read_partial_overlap_hint", sanitize_log_str(file_path, max_len=200))
+    _LOG.debug("pre-read: partial overlap hint file=%s covered=%d", sanitize_log_str(file_path, max_len=100), covered_count)
+    return pre_tool_use_with_context(hint)
+
+
 def _handle_reread_deny(
     session_id: str,
     file_path: str,
@@ -3561,6 +3650,14 @@ def pre_read(payload: HookPayload) -> HookResponse:
         if _reread_deny is not None:
             return _reread_deny
 
+        entry = cache.files.get(session._normalize_path(file_path))  # type: ignore[attr-defined]  # private function on lazy-loaded session module (types.ModuleType has no typed attrs)
+
+        # Partial-overlap advisory: some lines already in context; suggest narrowed read.
+        if entry is not None and entry.last_edit_ts <= entry.last_read_ts:
+            _partial_overlap = _handle_partial_overlap_hint(file_path, tool_input, entry)
+            if _partial_overlap is not None:
+                return _partial_overlap
+
         # Diff-aware path: file was read AND edited in this session AND we have
         # a snapshot to compare against.  When applicable, the diff hint replaces
         # the standard cache hint — both communicate the same idea (you've seen
@@ -3575,7 +3672,6 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # build_diff_hint returns None (its size + min-saving thresholds remain
         # the only emission gate).  Without this branch, every predictive
         # snapshot is pure overhead with no payoff path.
-        entry = cache.files.get(session._normalize_path(file_path))  # type: ignore[attr-defined]  # private function on lazy-loaded session module (types.ModuleType has no typed attrs)
         _predictive_unlock = False
         if entry is None or entry.last_edit_ts <= entry.last_read_ts:
             try:

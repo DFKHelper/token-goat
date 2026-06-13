@@ -541,7 +541,7 @@ _KIND_GROUPS: list[tuple[str, frozenset[str]]] = [
     ("Hints", frozenset({
         "session_hint", "session_hint_overhead",
         "read_dedup_hint", "grep_dedup_hint", "diff_hint",
-        "predictive_prefetch_hit",
+        "predictive_prefetch_hit", "read_partial_overlap_hint",
     })),
     ("Bash", frozenset({
         "bash_dedup_hint", "bash_output_cached", "bash_output_recall",
