@@ -4723,6 +4723,24 @@ def post_bash(payload: HookPayload) -> HookResponse:
         meta.output_id, total_bytes, exit_code, meta.truncated,
     )
 
+    # Scoped-diff hint: when an unscoped git diff produces a large output and the session
+    # has a small number of edited files, suggest the scoped form to cut token cost.
+    if _session_cache is not None:
+        try:
+            from .bash_cache import is_unscoped_git_diff as _is_unscoped_git_diff  # noqa: PLC0415
+            from .hints import build_scoped_diff_hint as _build_scoped_diff_hint  # noqa: PLC0415
+            if _is_unscoped_git_diff(display_cmd):
+                _diff_output_len = len(_utf8_bytes(stdout)) + len(_utf8_bytes(stderr))
+                if _diff_output_len >= 4096:
+                    _diff_edited = list(_session_cache.edited_files.keys())
+                    if 1 <= len(_diff_edited) <= 10:
+                        _diff_hint = _build_scoped_diff_hint(_diff_output_len, _diff_edited)
+                        record_cached_stat("git_diff_scope_hint", sanitize_log_str(display_cmd, max_len=200))
+                        _LOG.info("post-bash: git diff scope hint injected, output=%d bytes, edited=%d files", _diff_output_len, len(_diff_edited))
+                        return {"continue": True, "systemMessage": _diff_hint}
+        except Exception:  # noqa: BLE001 — fail-soft
+            _LOG.debug("post-bash: git diff scope hint failed", exc_info=True)
+
     # pytest failure delta: compare current failures to prior run of the same command.
     # Returns a systemMessage so the agent sees the signal without re-reading the output.
     if _is_pytest_command(display_cmd) and _sess_mod is not None and _session_cache is not None:

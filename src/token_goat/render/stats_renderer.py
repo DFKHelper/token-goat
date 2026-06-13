@@ -547,7 +547,7 @@ _KIND_GROUPS: list[tuple[str, frozenset[str]]] = [
         "bash_dedup_hint", "bash_output_cached", "bash_output_recall",
         "bash_output_recall_miss", "bash_dedup_stale",
         "bash_range_read_hint", "bash_streak_hint", "bash_poll_hint",
-        "env_probe_cache_hit",
+        "env_probe_cache_hit", "git_diff_scope_hint",
     })),
     ("Web", frozenset({
         "web_dedup_hint", "web_output_cached", "web_output_recall",

@@ -4563,3 +4563,22 @@ def _format_section_map(headings: list[str], max_items: int = 8) -> str:
         result += f" [+{overflow} more]"
     return result
 
+
+def build_scoped_diff_hint(output_bytes: int, edited_files: list[str]) -> str:
+    """Build a hint suggesting the scoped form of git diff when the unscoped diff is large.
+
+    Shows up to 5 files. Overflow count goes on a separate line so the command stays copy-pasteable.
+    """
+    kb = output_bytes / 1024
+    shown = edited_files[:5]
+    overflow = len(edited_files) - len(shown)
+    file_args = " ".join(shown)
+    n = len(edited_files)
+    cmd_line = f"  git diff -- {file_args}"
+    overflow_note = f"\n  (and {overflow} more session-edited file(s) not listed)" if overflow > 0 else ""
+    return (
+        f"[token-goat] Large diff ({kb:.1f} KB). "
+        f"You've edited {n} file(s) this session — scope it next time:\n"
+        f"{cmd_line}{overflow_note}"
+    )
+

@@ -137,6 +137,9 @@ _SORT_FLAG_TOOLS: frozenset[str] = frozenset({"pytest", "rg", "grep", "git"})
 _GIT_MUTABLE_RE: re.Pattern[str] = re.compile(r"^\s*git\s+(diff|status)\b", re.IGNORECASE)
 # git show <full-40-char-sha>: output is immutable — can never change for a given SHA.
 _GIT_IMMUTABLE_RE: re.Pattern[str] = re.compile(r"^\s*git\s+show\s+[0-9a-f]{40}\b", re.IGNORECASE)
+# Matches git diff with no path scope: allows flags and ref names but rejects " -- <path>" scoping.
+_GIT_DIFF_UNSCOPED_RE: re.Pattern[str] = re.compile(r"^\s*git\s+diff\b", re.IGNORECASE)
+_GIT_DIFF_SCOPED_RE: re.Pattern[str] = re.compile(r"\s--\s+\S")
 # ls/eza/dir/Get-ChildItem: output changes with directory contents.
 _LS_CMD_RE: re.Pattern[str] = re.compile(
     r"^\s*(?:ls|eza|exa|dir|Get-ChildItem|gci)\b", re.IGNORECASE
@@ -252,6 +255,17 @@ def is_dir_listing_command(cmd: str) -> bool:
 def is_env_probe_command(cmd: str) -> bool:
     """True for version-check and binary-lookup commands whose output is immutable within a session."""
     return bool(_ENV_PROBE_RE.search(cmd))
+
+
+def is_unscoped_git_diff(cmd: str) -> bool:
+    """True when cmd is a git diff with no path scope (no ' -- <path>' suffix).
+
+    Returns False for already-scoped diffs (git diff -- src/foo.py) so the hint
+    only fires when there is a realistic opportunity to narrow the output.
+    """
+    if not _GIT_DIFF_UNSCOPED_RE.search(cmd):
+        return False
+    return not _GIT_DIFF_SCOPED_RE.search(cmd)
 
 
 def _extract_ls_target(cmd: str, cwd: str | None) -> str | None:
