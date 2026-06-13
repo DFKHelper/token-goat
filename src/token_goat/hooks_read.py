@@ -4497,6 +4497,11 @@ _PYTEST_FAILURE_FULL_RE: _re.Pattern[str] = _re.compile(r"^(?:FAILED|ERROR)\s+(.
 #: Requires the type name to be word-chars only (no spaces) so it does not
 #: incorrectly strip mid-parameter content like "[a - B class]".
 _PYTEST_FAILURE_SUFFIX_RE: _re.Pattern[str] = _re.compile(r"\s+-\s+[A-Za-z][\w.]*(?::\s.*)?$")
+#: Minimum stdout size (bytes) before pytest traceback suppression fires (Iter 18).
+_PYTEST_COMPRESS_MIN_BYTES: int = 2000
+#: Matches individual-test separator lines inside the pytest FAILURES section.
+#: e.g. "______________ test_my_function[param] ______________"
+_PYTEST_TB_SEP_RE: _re.Pattern[str] = _re.compile(r"^_{4,}\s+\S.*\s+_{4,}\s*$")
 #: Matches the base command name of directory-exploration invocations (ls, eza, tree, fd).
 _RECON_CMD_RE: _re.Pattern[str] = _re.compile(r"^(?:ls|ll|la|eza|exa|tree|fd|fdfind)\b")
 
@@ -4825,6 +4830,73 @@ def _is_recon_command(cmd: str) -> bool:
 
 def _is_pytest_command(cmd: str) -> bool:
     return bool(_PYTEST_CMD_RE.search(cmd))
+
+
+def _compress_pytest_failures(stdout: str, output_id: str | None) -> str:
+    """Suppress traceback bodies in the pytest FAILURES section.
+
+    Finds each ``___ test_name ___`` separator block in the FAILURES section
+    and replaces it (separator + body lines) with a one-liner stub.  The
+    short test summary section and final ``=== N passed, M failed ===`` line
+    are preserved unchanged because they live outside the FAILURES section.
+
+    Returns *stdout* unchanged (the same object, ``is`` identity) when:
+    - ``"FAILED"`` is not present in the text, or
+    - no traceback-separator lines were found within the FAILURES section.
+    """
+    if "FAILED" not in stdout:
+        return stdout
+
+    # Section-header pattern: lines that start with one or more ``=`` signs.
+    # Covers both "=== FAILURES ===" and the final "= N failed in Xs =" line.
+    _sect_re = _re.compile(r"^=+\s")
+
+    lines = stdout.splitlines(keepends=True)
+    out: list[str] = []
+    in_failures_section = False
+    in_tb_block = False
+    current_tb_name = ""
+    failure_count = 0
+
+    for line in lines:
+        stripped = line.rstrip("\r\n")
+
+        # Section header — re-evaluate which section we're in.
+        if _sect_re.match(stripped):
+            in_failures_section = "FAILURES" in stripped
+            in_tb_block = False
+            out.append(line)
+            continue
+
+        if in_failures_section:
+            # Individual-test separator: "_____ test_name _____"
+            if _PYTEST_TB_SEP_RE.match(stripped):
+                failure_count += 1
+                in_tb_block = True
+                current_tb_name = stripped.strip("_").strip()
+                recall = f" (bash-output {output_id} for full output)" if output_id else ""
+                out.append(
+                    f"[token-goat] traceback omitted — re-run with:"
+                    f" pytest {current_tb_name} -x for details{recall}\n"
+                )
+                continue
+
+            if in_tb_block:
+                # Body lines of the current traceback block — suppress.
+                continue
+
+        out.append(line)
+
+    if failure_count == 0:
+        return stdout
+
+    recall_hdr = f" (bash-output {output_id} for full output)" if output_id else ""
+    header = (
+        f"[token-goat] pytest: {failure_count}"
+        f" failure{'s' if failure_count != 1 else ''}"
+        f" detected — tracebacks suppressed{recall_hdr}:\n"
+    )
+    return header + "".join(out)
 
 
 def _is_log_file_path(norm_path: str) -> bool:
@@ -5370,6 +5442,47 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 }
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: sleep/watch/poll suppress failed", exc_info=True)
+
+    # Pytest failure traceback suppression (Iter 18):
+    # Fires when pytest output is large (>= _PYTEST_COMPRESS_MIN_BYTES) and contains
+    # FAILED markers.  Stores full output in bash-cache first so ``bash-output <id>``
+    # recall works, then replaces each ``___ test_name ___`` block with a one-liner stub.
+    # Exit code 1 is pytest's normal failure exit — guard on (None, 0, 1) not (None, 0).
+    if (
+        _is_pytest_command(display_cmd)
+        and exit_code in (None, 0, 1)
+        and stdout
+        and len(stdout) >= _PYTEST_COMPRESS_MIN_BYTES
+        and "FAILED" in stdout
+    ):
+        try:
+            _pt_out_id: str | None = None
+            if session_id:
+                from . import bash_cache as _bc_pt  # noqa: PLC0415
+                with contextlib.suppress(Exception):
+                    _pt_meta = _bc_pt.store_output(
+                        session_id, display_cmd, stdout, stderr, exit_code,
+                        cwd=cwd, min_cache_bytes=0,
+                    )
+                    if _pt_meta is not None:
+                        _bc_pt.write_sidecar(_pt_meta)
+                        _pt_out_id = _pt_meta.output_id
+
+            _pt_compressed = _compress_pytest_failures(stdout, _pt_out_id)
+            if _pt_compressed is not stdout:
+                _LOG.info(
+                    "post-bash: pytest failures compressed bytes=%d->%d cmd=%.60s",
+                    len(stdout), len(_pt_compressed), display_cmd,
+                )
+                if _sess_mod is not None and _session_cache is not None:
+                    with contextlib.suppress(Exception):
+                        _sess_mod.save(_session_cache)
+                return {
+                    "continue": True,
+                    "systemMessage": _pt_compressed,
+                }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: pytest compression failed", exc_info=True)
 
     # Large JSON/XML output summarization (Iter 17):
     # - Valid JSON dict/list >= _JSON_SUMMARY_MIN_BYTES → structural summary + store
