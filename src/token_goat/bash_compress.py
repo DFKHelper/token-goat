@@ -258,6 +258,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
+from .hooks_common import record_cached_stat
 from .render.ansi import strip_ansi
 from .util import env_int, get_logger, sanitize_control_chars
 
@@ -5134,6 +5135,22 @@ def _is_repetitive_json_hunk(hunk_lines: list[str]) -> bool:
     return valid / len(added) >= 0.75 and len(key_sets) <= 5
 
 
+def _trim_hunk_trailing_context(hunk_lines: list[str], max_trail: int = 2) -> tuple[list[str], int]:
+    # Find the last changed line (+ or -), then drop context lines beyond max_trail after it.
+    last_changed = -1
+    for i, ln in enumerate(hunk_lines):
+        if ln.startswith("+") or ln.startswith("-"):
+            last_changed = i
+    if last_changed == -1:
+        return hunk_lines, 0
+    trailing_context = [ln for ln in hunk_lines[last_changed + 1:] if ln.startswith(" ")]
+    n_trim = max(0, len(trailing_context) - max_trail)
+    if n_trim == 0:
+        return hunk_lines, 0
+    keep_up_to = last_changed + 1 + max_trail
+    return hunk_lines[:keep_up_to], n_trim
+
+
 def _compress_git_diff_body(stdout: str, stderr: str) -> str:
     """Compress full diff body: binary summaries + large-hunk truncation."""
     _MAX_HUNK_LINES = 50
@@ -5145,6 +5162,7 @@ def _compress_git_diff_body(stdout: str, stderr: str) -> str:
         return stdout
 
     out_blocks: list[str] = []
+    any_context_trimmed = 0
     for block in file_blocks:
         if not _GIT_DIFF_FILE_RE.match(block):
             out_blocks.append(block)
@@ -5205,9 +5223,19 @@ def _compress_git_diff_body(stdout: str, stderr: str) -> str:
                         + "\n".join(tail)
                     )
             else:
-                compressed_hunks.append(hunk)
+                trimmed_lines, n_trimmed = _trim_hunk_trailing_context(hunk_lines)
+                if n_trimmed > 0:
+                    any_context_trimmed += n_trimmed
+                    compressed_hunks.append(
+                        "\n".join(trimmed_lines)
+                        + f"\n[token-goat: {n_trimmed} trailing context line(s) trimmed]"
+                    )
+                else:
+                    compressed_hunks.append(hunk)
         out_blocks.append("\n".join(compressed_hunks))
 
+    if any_context_trimmed:
+        record_cached_stat("git_diff_context_trimmed", str(any_context_trimmed))
     text = "\n".join(out_blocks)
     if stderr.strip():
         text += "\n---\n" + stderr.rstrip()
