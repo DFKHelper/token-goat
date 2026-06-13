@@ -1668,6 +1668,13 @@ _PYTEST_WARN_DOCS_RE: Final[re.Pattern[str]] = re.compile(
 _PYTEST_WARN_MSG_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s+\S.*:\d+:\s+\S.*Warning\b"
 )
+# Verbose-mode per-test progress lines: ``tests/foo.py::test_bar PASSED [ 1%]``.
+# Status word follows whitespace after the test node ID (path + name).  The
+# ``::`` anchor distinguishes these from arbitrary output lines; the lookahead
+# ``(?:[ \t]|\Z)`` lets SKIPPED reason text follow (``SKIPPED (reason) [ 3%]``).
+_PYTEST_VERBOSE_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\S.+::\S+[ \t]+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:[ \t]|\Z)"
+)
 
 
 class PytestFilter(Filter):
@@ -1680,7 +1687,7 @@ class PytestFilter(Filter):
       info`` section, warnings summary, and the final ``= N failed, M passed
       in Xs =`` line.
     * **Drop**: pass-progress dots line (``....F..s....    [ 50%]``),
-      ``PASSED`` lines in verbose mode (kept as a count), individual collected
+      ``PASSED`` lines in both default and verbose mode (kept as a count), individual collected
       file names beyond the first few, and the constant banner lines
       (``platform``, ``cachedir:``, ``rootdir:``, ``plugins:``,
       ``configfile:``) that are the same for every invocation.
@@ -1855,6 +1862,17 @@ class PytestFilter(Filter):
                     continue
                 kept.append(line)
                 continue
+            # Verbose-mode progress lines: ``tests/foo.py::test_bar PASSED [ 1%]``.
+            # Status comes AFTER the node ID, so _PYTEST_FAIL_LINE_RE (status-first)
+            # does not fire.  Collapse PASSED; keep FAILED/ERROR/SKIPPED/XFAIL/XPASS.
+            if not in_failures and not in_errors:
+                m = _PYTEST_VERBOSE_LINE_RE.match(line)
+                if m:
+                    if m.group(1) == "PASSED":
+                        passed_count += 1
+                        continue
+                    kept.append(line)
+                    continue
             kept.append(line)
         # Flush any trailing slow-section counter.
         if slow_dropped:
