@@ -1662,11 +1662,16 @@ class SessionCache:
         key = paths.normalize_key(file_path)
         return self.file_access_counts.get(key, 0)
 
-    def record_grep_target(self, file_path: str) -> bool:
+    def record_grep_target(self, file_path: str, cwd: str | None = None) -> bool:
         """Increment the grep-target count for *file_path* and return True on the 3rd hit.
 
-        Normalizes *file_path* to an absolute path key before counting so that
-        relative and absolute forms of the same file are deduplicated correctly.
+        Normalizes *file_path* to a canonical absolute path key via
+        :func:`~token_goat.paths.normalize_path_key` so that relative and
+        absolute forms of the same file (e.g. ``./scripts/ads.js`` and
+        ``C:/Projects/.../scripts/ads.js``) are deduplicated into the same
+        counter bucket.  Pass *cwd* when available so relative paths can be
+        resolved to absolute before keying.
+
         Returns ``True`` exactly when the count transitions from 2 → 3 (the
         one-shot advisory threshold); returns ``False`` on all other calls so
         the caller can emit the hint only once per file per session.
@@ -1675,7 +1680,7 @@ class SessionCache:
         """
         if self.unavailable:
             return False
-        key = paths.normalize_key(file_path)
+        key = paths.normalize_path_key(file_path, cwd)
         new_count = self.grep_target_counts.get(key, 0) + 1
         self.grep_target_counts[key] = new_count
         self._invalidate_json_cache()

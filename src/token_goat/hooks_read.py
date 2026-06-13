@@ -1962,12 +1962,15 @@ def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
         return None
 
 
-def _try_grep_advisory_for_path(path: str | None, session_id: str) -> str | None:
+def _try_grep_advisory_for_path(path: str | None, session_id: str, cwd: str | None = None) -> str | None:
     """Increment grep-target count for *path* and return advisory text if threshold crossed.
 
     Calls ``hints.maybe_grep_advisory`` which normalises the path, checks that it
     is an existing file, increments ``session_cache.grep_target_counts``, and returns
     a formatted hint on the 2 → 3 threshold crossing (one-shot per file per session).
+
+    *cwd* is forwarded to ``maybe_grep_advisory`` so that relative paths such as
+    ``./scripts/ads.js`` resolve to the same dedup key as their absolute equivalent.
 
     Returns ``None`` when the path is empty, the file does not exist, the session
     is unavailable, or the threshold has not yet been crossed.  Fail-soft — any
@@ -1981,7 +1984,7 @@ def _try_grep_advisory_for_path(path: str | None, session_id: str) -> str | None
         cache = sess.safe_load(session_id, caller="grep_advisory")
         if cache is None:
             return None
-        hint = maybe_grep_advisory(path, cache)
+        hint = maybe_grep_advisory(path, cache, cwd=cwd)
         # Save unconditionally — record_grep_target always increments the count when
         # the file exists, invalidating _json_cache even when no hint fires.
         with contextlib.suppress(Exception):
@@ -2005,10 +2008,10 @@ def _handle_grep_advisory(payload: HookPayload) -> str | None:
     _pattern, path = args
     if not path:
         return None
-    session_id, _ = get_session_context(payload)
+    session_id, cwd = get_session_context(payload)
     if not session_id:
         return None
-    return _try_grep_advisory_for_path(path, session_id)
+    return _try_grep_advisory_for_path(path, session_id, cwd=cwd)
 
 
 def _handle_bash_grep_advisory(payload: HookPayload) -> str | None:
@@ -2028,10 +2031,10 @@ def _handle_bash_grep_advisory(payload: HookPayload) -> str | None:
     path = intent.target_path
     if not path:
         return None
-    session_id, _ = get_session_context(payload)
+    session_id, cwd = get_session_context(payload)
     if not session_id:
         return None
-    return _try_grep_advisory_for_path(path, session_id)
+    return _try_grep_advisory_for_path(path, session_id, cwd=cwd)
 
 
 def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
@@ -2885,16 +2888,8 @@ def _handle_bash_already_read(payload: HookPayload) -> HookResponse | None:
         if cache is None:
             return None
         from . import paths as _paths  # noqa: PLC0415
-        path_key = _paths.normalize_key(intent.target_path)
+        path_key = _paths.normalize_path_key(intent.target_path, cwd)
         entry = cache.files.get(path_key)
-        if entry is None and cwd:
-            try:
-                from pathlib import Path as _P  # noqa: PLC0415
-                raw_p = _P(intent.target_path)
-                joined = _P(cwd) / raw_p if not raw_p.is_absolute() else raw_p
-                entry = cache.files.get(_paths.normalize_key(str(joined.resolve())))
-            except Exception:  # noqa: BLE001
-                pass
         if entry is None or entry.read_count != 1:  # streak_hint handles read_count >= 2
             return None
         display = sanitize_log_str(intent.target_path, max_len=80)

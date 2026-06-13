@@ -4584,7 +4584,7 @@ def build_scoped_diff_hint(output_bytes: int, edited_files: list[str]) -> str:
     )
 
 
-def maybe_grep_advisory(path: str, session_cache: session.SessionCache) -> str | None:
+def maybe_grep_advisory(path: str, session_cache: session.SessionCache, cwd: str | None = None) -> str | None:
     """Return a one-shot advisory hint when a file has been grepped ≥3 times this session.
 
     Increments the grep-target counter for *path* in *session_cache* and returns a
@@ -4599,6 +4599,9 @@ def maybe_grep_advisory(path: str, session_cache: session.SessionCache) -> str |
         path: The file path that was targeted by a Grep or rg invocation.
         session_cache: The current session cache object (may have ``unavailable=True``
             in which case ``record_grep_target`` is a safe no-op returning ``False``).
+        cwd: Optional working directory for resolving relative *path* values.
+            When provided, ``./scripts/ads.js`` and the equivalent absolute path
+            resolve to the same dedup key.  Pass ``None`` when unavailable.
 
     Returns:
         A formatted advisory string on threshold crossing, or ``None`` otherwise.
@@ -4609,7 +4612,7 @@ def maybe_grep_advisory(path: str, session_cache: session.SessionCache) -> str |
         p = Path(path)
         if not p.is_file():
             return None
-        crossed = session_cache.record_grep_target(path)
+        crossed = session_cache.record_grep_target(path, cwd=cwd)
         if not crossed:
             return None
         safe_path = _sanitize_hint_path(str(p))

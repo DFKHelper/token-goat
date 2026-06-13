@@ -30,6 +30,7 @@ __all__ = [
     "logs_dir",
     "models_dir",
     "normalize_key",
+    "normalize_path_key",
     "project_db_path",
     "python_runner_argv",
     "python_runner_command",
@@ -409,6 +410,68 @@ def normalize_key(p: str) -> str:
     from .util import normalize_path  # noqa: PLC0415
 
     return normalize_path(p)
+
+
+def normalize_path_key(path: str, cwd: str | None = None) -> str:
+    """Normalize a path to a canonical absolute key for cross-form dedup lookups.
+
+    Extends :func:`normalize_key` with relative-path resolution so that
+    ``./scripts/ads.js`` and ``C:/Projects/.../scripts/ads.js`` produce the
+    same key when the working directory is known:
+
+    * If *path* is absolute (as judged by both string analysis and
+      :meth:`pathlib.Path.is_absolute`): resolve symlinks, then apply the
+      standard :func:`normalize_key` transformations (backslash → slash,
+      drive-letter lowercase, WSL ``/mnt/<drive>/`` → ``<drive>:/``).
+    * If *path* appears rooted (starts with ``/``) but ``pathlib`` does not
+      consider it absolute (POSIX-rooted path on Windows such as
+      ``/proj/src/foo.py``): apply :func:`normalize_key` string-only, because
+      calling ``.resolve()`` would anchor the path to the current Windows
+      drive and produce a key inconsistent with what :func:`session.mark_file_read`
+      stores (which also uses :func:`normalize_key` string-only).
+    * If *path* is relative and *cwd* is provided: join ``Path(cwd) / path``,
+      resolve, then normalize.
+    * If *path* is relative and *cwd* is ``None``: fall back to
+      :func:`normalize_key` (best-effort; cross-form dedup may miss).
+
+    Always fail-soft: any :exc:`OSError` or other exception falls back to
+    :func:`normalize_key` so callers are never interrupted.
+
+    Args:
+        path: The raw path string to normalize (absolute or relative).
+        cwd: Optional working directory for resolving relative paths.  Pass
+            the ``cwd`` value from ``get_session_context(payload)`` when
+            available.
+
+    Returns:
+        A canonical forward-slash string with a lowercased drive letter prefix
+        on Windows, suitable for use as a dict key or SQLite lookup value.
+    """
+    try:
+        from pathlib import Path as _P  # noqa: PLC0415
+        # Detect whether the path is "rooted" using string analysis first so that
+        # POSIX-rooted paths on Windows (e.g. /proj/src/foo.py, which
+        # Path.is_absolute() rejects because there is no drive letter) are handled
+        # correctly without calling .resolve() and inadvertently anchoring them to
+        # the current Windows drive.
+        normalized_str = path.replace("\\", "/")
+        is_posix_rooted = normalized_str.startswith("/")
+        has_drive = len(normalized_str) >= 2 and normalized_str[1] == ":" and normalized_str[0].isalpha()
+        is_string_absolute = is_posix_rooted or has_drive
+        if is_string_absolute:
+            p = _P(path)
+            if p.is_absolute():
+                # Truly absolute on the current OS — safe to resolve symlinks.
+                return normalize_key(str(p.resolve()))
+            # POSIX-rooted on Windows: use string-only normalization to stay
+            # consistent with session.mark_file_read (which also uses normalize_key).
+            return normalize_key(path)
+        # Relative path: resolve against cwd when available.
+        if cwd:
+            return normalize_key(str((_P(cwd) / _P(path)).resolve()))
+    except Exception:  # noqa: BLE001 — fail-soft; must never interrupt callers
+        pass
+    return normalize_key(path)
 
 
 def is_safe_rel_path(rel_path: str) -> bool:
