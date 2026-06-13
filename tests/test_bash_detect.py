@@ -22,10 +22,12 @@ class TestDetectKnownBinaries:
         assert bash_detect.detect(["git"]) == "git-log"
 
     def test_npm(self) -> None:
-        assert bash_detect.detect(["npm"]) == "npm"
+        # DepListFilter precedes NodePackageFilter in FILTERS and claims npm binaries.
+        assert bash_detect.detect(["npm"]) == "dep-list"
 
     def test_cargo(self) -> None:
-        assert bash_detect.detect(["cargo"]) == "cargo"
+        # DepListFilter precedes CargoFilter in FILTERS and claims cargo binaries.
+        assert bash_detect.detect(["cargo"]) == "dep-list"
 
     def test_docker(self) -> None:
         assert bash_detect.detect(["docker"]) == "docker-compose"

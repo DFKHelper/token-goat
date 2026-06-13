@@ -20,7 +20,7 @@ from pathlib import Path
 # Maps binary stem (lowercased) to the name of the first-matching filter in
 # bash_compress.FILTERS.  First-match semantics mirror select_filter() so the
 # detection result is consistent with what full compression would use.
-# Generated from bash_compress.FILTERS (132 filters, 227 binaries).
+# Generated from bash_compress.FILTERS (133 filters, 228 binaries).
 _BINARY_TO_FILTER: dict[str, str] = {
     "./gradlew": "gradle",
     "./mvnw": "maven",
@@ -61,7 +61,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "bundler": "bundler",
     "bunx": "bun",
     "cabal": "haskell",
-    "cargo": "cargo",
+    "cargo": "dep-list",
     "ccmake": "cmake",
     "cdk": "cdk",
     "clang-tidy": "clang-tidy",
@@ -159,7 +159,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "node": "node",
     "node-sass": "sass",
     "nodejs": "node",
-    "npm": "npm",
+    "npm": "dep-list",
     "npx": "nx",
     "nuget": "nuget",
     "nuget.exe": "nuget",
@@ -171,10 +171,11 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "packer": "packer",
     "phpstan": "phpstan",
     "phpstan.phar": "phpstan",
-    "pip": "pip",
-    "pip3": "pip",
+    "pip": "dep-list",
+    "pip3": "dep-list",
     "pipx": "pip",
-    "pnpm": "pnpm",
+    "poetry": "dep-list",
+    "pnpm": "dep-list",
     "pnpx": "nx",
     "podman": "docker",
     "powershell": "powershell",
@@ -239,7 +240,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "trivy": "trivy",
     "tsc": "linter",
     "turbo": "turbo",
-    "uv": "uv",
+    "uv": "dep-list",
     "vault": "vault",
     "vcpkg": "vcpkg",
     "vitest": "vitest",
@@ -251,7 +252,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "wrangler": "wrangler",
     "wrangler2": "wrangler",
     "xcodebuild": "xcode",
-    "yarn": "yarn",
+    "yarn": "dep-list",
     "yq": "yq",
     "zig": "zig",
 }

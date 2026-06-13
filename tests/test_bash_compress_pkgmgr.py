@@ -597,15 +597,19 @@ class TestDispatch:
         assert f is not None
         assert f.name == "conda"
 
-    def test_uv_pip_freeze_dispatches_to_uv_filter(self) -> None:
+    def test_uv_pip_freeze_dispatches_to_dep_list_filter(self) -> None:
+        # DepListFilter precedes UvFilter in FILTERS and claims ``uv pip freeze``
+        # because "freeze" is in DepListFilter.subcommands.
         f = bc.select_filter(["uv", "pip", "freeze"])
         assert f is not None
-        assert f.name == "uv"
+        assert f.name == "dep-list"
 
-    def test_uv_pip_list_dispatches_to_uv_filter(self) -> None:
+    def test_uv_pip_list_dispatches_to_dep_list_filter(self) -> None:
+        # DepListFilter precedes UvFilter in FILTERS and claims ``uv pip list``
+        # because "list" is in DepListFilter.subcommands.
         f = bc.select_filter(["uv", "pip", "list"])
         assert f is not None
-        assert f.name == "uv"
+        assert f.name == "dep-list"
 
     def test_npm_still_dispatches_to_npm_filter(self) -> None:
         f = bc.select_filter(["npm", "install"])

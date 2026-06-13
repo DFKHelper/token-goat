@@ -88,6 +88,7 @@ __all__ = [
     "CurlFilter",
     "DartFilter",
     "DeltaFilter",
+    "DepListFilter",
     "DiffFilter",
     "DotnetFilter",
     "EzaFilter",
@@ -8216,6 +8217,83 @@ class GrepFilter(Filter):
             f"to {len(out_lines)} — disable via TOKEN_GOAT_BASH_COMPRESS]"
         )
         return "\n".join(out_lines)
+
+
+# --- dep-list (pip list / npm list / cargo tree / poetry show / ...) --------
+
+#: Line threshold: output longer than this is truncated with a count trailer.
+_DEP_LIST_THRESHOLD: Final[int] = 30
+
+
+class DepListFilter(Filter):
+    """Compress verbose dependency-listing output from package managers.
+
+    When ``pip list``, ``pip freeze``, ``npm list``, ``poetry show``,
+    ``cargo tree``, and similar listing commands produce more than 30 lines
+    of output, truncate to the first 30 lines and append a ``...[N more
+    packages]`` count trailer.  Short output (≤ 30 lines) and error output
+    (non-zero exit code) pass through unchanged.
+
+    Matched commands — binary stem must be in :attr:`binaries` AND the first
+    positional argument (or any of the first three) must be in
+    :attr:`subcommands`:
+
+    * ``pip list`` / ``pip freeze`` / ``pip3 list`` / ``pip3 freeze``
+    * ``uv pip list`` / ``uv pip freeze``
+    * ``npm list`` / ``npm ls``
+    * ``pnpm list`` / ``pnpm ls``
+    * ``yarn list``
+    * ``poetry show``
+    * ``cargo tree``
+
+    Compression model:
+
+    * **Pass through** when output ≤ 30 lines.
+    * **Pass through** on non-zero exit code (error context preserved).
+    * **Truncate** at 30 lines with a ``...[N more packages — use '<cmd>'
+      to see full output]`` trailer when output exceeds the threshold.
+    """
+
+    name = "dep-list"
+    binaries = frozenset(["pip", "pip3", "uv", "npm", "poetry", "cargo", "pnpm", "yarn"])
+    subcommands = frozenset(["list", "freeze", "show", "ls", "tree"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # Preserve error output unchanged so the full diagnostic survives.
+        early = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if early is not None:
+            return early
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        # Strip only trailing blank lines; keep internal package-list formatting.
+        while lines and not lines[-1].rstrip():
+            lines.pop()
+        if len(lines) <= _DEP_LIST_THRESHOLD:
+            return "\n".join(lines)
+        n_more = len(lines) - _DEP_LIST_THRESHOLD
+        shown = lines[:_DEP_LIST_THRESHOLD]
+        hint = self._dep_cmd_hint(argv)
+        trailer = f"...[{n_more} more packages — use '{hint}' to see full output]"
+        return "\n".join(shown) + "\n" + trailer
+
+    @staticmethod
+    def _dep_cmd_hint(argv: list[str]) -> str:
+        """Return a short ``'cmd subcmd'`` hint from *argv* for the trailer.
+
+        For three-token forms such as ``uv pip list``, include all three
+        tokens so the hint is immediately actionable.
+        """
+        if not argv:
+            return "the original command"
+        stem = Path(argv[0]).stem.lower()
+        positionals = _positional_args(argv[1:])
+        # ``uv pip list`` / ``uv pip freeze`` — include all three tokens.
+        if stem == "uv" and len(positionals) >= 2:
+            return f"uv {positionals[0]} {positionals[1]}"
+        subcmd = positionals[0] if positionals else ""
+        return f"{stem} {subcmd}".strip()
 
 
 # --- pip / uv / poetry ------------------------------------------------------
@@ -20983,6 +21061,13 @@ FILTERS: list[Filter] = [
     # jest/mocha/ava/tap so ordering is cosmetic, but explicit placement keeps
     # test-runner filters together and documents the split clearly.
     VitestFilter(),
+    # DepListFilter must precede CargoFilter, NodePackageFilter, PnpmFilter,
+    # YarnFilter, PipFilter, and UvFilter: it is strictly more specific
+    # (only fires when the subcommand is a listing variant such as ``list``,
+    # ``freeze``, ``show``, ``ls``, ``tree``, or ``metadata``), so it must
+    # win the first-match race for ``pip list``, ``cargo tree``,
+    # ``npm list``, ``uv pip list``, ``poetry show``, etc.
+    DepListFilter(),
     CargoFilter(),
     # PnpmFilter and YarnFilter are more specific than NodePackageFilter and must
     # precede it so that pnpm/yarn commands get dedicated compression rather than
