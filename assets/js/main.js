@@ -57,15 +57,25 @@
     for (var i = 0; i < children.length; i++) {
       if (children[i].nodeName === 'H1') {
         var h1 = children[i];
-        var text = h1.textContent;
-        var words = text.split(/\s+/);
+        var rawWords = [];
+        h1.childNodes.forEach(function (node) {
+          if (node.nodeType === 3) {
+            node.textContent.split(/\s+/).forEach(function (w) { if (w) rawWords.push(w); });
+          } else {
+            rawWords.push(node.cloneNode(true));
+          }
+        });
         h1.innerHTML = '';
-        words.forEach(function (word, wordIdx) {
+        rawWords.forEach(function (word, wordIdx) {
           var span = document.createElement('span');
-          span.textContent = word;
+          if (typeof word === 'string') {
+            span.textContent = word;
+          } else {
+            span.appendChild(word);
+          }
           span.style.animationDelay = (wordIdx * 0.1) + 's';
           h1.appendChild(span);
-          if (wordIdx < words.length - 1) {
+          if (wordIdx < rawWords.length - 1) {
             h1.appendChild(document.createTextNode(' '));
           }
         });
@@ -249,7 +259,10 @@
     var text  = content.innerText || '';
     var words = text.trim().split(/\s+/).length;
     var mins  = Math.max(1, Math.round(words / 200));
-    var firstH2 = content.querySelector('h2:not(.hero h2)');
+    var firstH2 = Array.prototype.filter.call(
+      content.querySelectorAll('h2'),
+      function (h) { return !h.closest('.hero'); }
+    )[0];
     if (!firstH2) return;
     var timeEl = document.createElement('div');
     timeEl.className   = 'reading-time';

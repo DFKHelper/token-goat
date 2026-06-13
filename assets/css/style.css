@@ -511,6 +511,11 @@ footer a:hover { text-decoration: underline; }
   text-decoration-color: var(--accent);
 }
 
+#content a:hover::after {
+  width: 100%;
+  opacity: 1;
+}
+
 hr {
   border: none;
   height: 2px;
@@ -573,22 +578,6 @@ pre code {
   font-size: 1em;
 }
 
-pre[data-language]::before {
-  content: attr(data-language);
-  position: absolute;
-  top: 0.5rem;
-  left: 0.75rem;
-  background: linear-gradient(135deg, rgba(0, 212, 170, 0.2), rgba(0, 212, 170, 0.1));
-  border: 1px solid var(--accent);
-  border-radius: 999px;
-  padding: 0.2rem 0.6rem;
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--accent);
-  letter-spacing: 0.05em;
-}
-
 .copy-btn {
   position: absolute;
   top: 0.5rem;
@@ -605,7 +594,6 @@ pre[data-language]::before {
   transition: opacity var(--transition), background var(--transition), color var(--transition), border-color var(--transition), box-shadow var(--transition);
   z-index: 10;
   overflow: hidden;
-  position: relative;
 }
 
 pre:hover .copy-btn { opacity: 1; }
@@ -705,7 +693,7 @@ blockquote {
 }
 
 blockquote::before {
-  content: '"';
+  content: '“';
   position: absolute;
   left: 0.5rem;
   top: -0.25rem;
@@ -988,4 +976,12 @@ kbd {
 @media (max-width: 480px) {
   #content h2 { font-size: 1.2rem; }
   #content h3 { font-size: 1rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
