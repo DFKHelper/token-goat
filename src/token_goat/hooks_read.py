@@ -4520,6 +4520,9 @@ _GLOB_RESULT_CACHE_MAX_PATHS: int = 20
 _GIT_DIFF_MIN_BYTES: int = 400  # minimum stdout size to engage delta caching
 _GIT_DIFF_SMALL_DELTA: int = 20  # delta lines < this → pass through full diff
 _GIT_DIFF_DELTA_PREVIEW_LINES: int = 30  # max lines shown in large-delta summary
+_STDERR_DELTA_MIN_BYTES: int = 300  # minimum stderr size to engage stderr delta
+_STDERR_DELTA_SMALL: int = 8  # total delta lines < this → pass through full stderr
+_STDERR_DELTA_MAX_PREVIEW: int = 40  # max new error lines shown in delta summary
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -5380,6 +5383,92 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             }
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: git diff delta cache check failed", exc_info=True)
+
+    # Stderr delta: when the same failing command is re-run and produces near-identical
+    # stderr, show only lines that changed rather than re-emitting the full error blob.
+    # - Identical stderr → single "N lines suppressed" advisory (avoids repeating noise).
+    # - Small delta (< _STDERR_DELTA_SMALL total changed lines) → full stderr passes through.
+    # - Large delta → summary header + first _STDERR_DELTA_MAX_PREVIEW new lines + resolved.
+    # Only fires when: exit_code != 0, len(stderr) >= _STDERR_DELTA_MIN_BYTES, and the
+    # same command was previously run with a non-zero exit code (prior stderr available).
+    if exit_code not in (None, 0) and len(stderr) >= _STDERR_DELTA_MIN_BYTES and session_id:
+        try:
+            from . import bash_cache as _bc_sd  # noqa: PLC0415
+            _sd_prior_meta = _bc_sd.find_cached_for_command(display_cmd, cwd=cwd)
+            if (
+                _sd_prior_meta is not None
+                and _sd_prior_meta.exit_code not in (None, 0)
+                and _sd_prior_meta.stderr_bytes > 0
+            ):
+                _sd_prior_body = _bc_sd.load_output(_sd_prior_meta.output_id)
+                if _sd_prior_body is not None:
+                    # Extract stderr from the combined body.
+                    # Format: "{stdout}\n--- stderr ---\n{stderr}" when both present,
+                    # or bare stderr text when no stdout was captured.
+                    _SD_SEP = "\n--- stderr ---\n"
+                    if _SD_SEP in _sd_prior_body:
+                        _sd_prior_stderr = _sd_prior_body.split(_SD_SEP, 1)[1]
+                    else:
+                        _sd_prior_stderr = _sd_prior_body
+                    from collections import Counter as _Counter_sd  # noqa: PLC0415
+                    _sd_old_lines = _sd_prior_stderr.splitlines()
+                    _sd_new_lines = stderr.splitlines()
+                    _sd_old_cnt = _Counter_sd(_sd_old_lines)
+                    _sd_new_cnt = _Counter_sd(_sd_new_lines)
+                    # Multiset difference so repeated lines (repeated warnings from
+                    # multiple files) are counted correctly — not collapsed by set ops.
+                    _sd_added: list[str] = []
+                    for _ln, _cnt in _sd_new_cnt.items():
+                        _extra = _cnt - _sd_old_cnt.get(_ln, 0)
+                        if _extra > 0:
+                            _sd_added.extend([_ln] * _extra)
+                    _sd_removed: list[str] = []
+                    for _ln, _cnt in _sd_old_cnt.items():
+                        _extra = _cnt - _sd_new_cnt.get(_ln, 0)
+                        if _extra > 0:
+                            _sd_removed.extend([_ln] * _extra)
+                    _sd_delta_n = len(_sd_added) + len(_sd_removed)
+                    # Persist current run before any early return so the NEXT
+                    # comparison always sees the most recent stderr, not stale data.
+                    with contextlib.suppress(Exception):
+                        _sd_cur_meta = _bc_sd.store_output(
+                            session_id, display_cmd, stdout, stderr, exit_code, cwd=cwd,
+                        )
+                        if _sd_cur_meta is not None:
+                            _bc_sd.write_sidecar(_sd_cur_meta)
+                    if _sd_delta_n == 0:
+                        _LOG.info(
+                            "post-bash: stderr identical; suppressing %d lines cmd=%.60s",
+                            len(_sd_new_lines), display_cmd,
+                        )
+                        return {
+                            "continue": True,
+                            "systemMessage": (
+                                f"[token-goat] stderr identical to prior run"
+                                f" — {len(_sd_new_lines)} error lines suppressed"
+                            ),
+                        }
+                    elif _sd_delta_n < _STDERR_DELTA_SMALL:
+                        pass  # small delta: full stderr passes through unchanged
+                    else:
+                        _sd_new_section = "\n".join(_sd_added[:_STDERR_DELTA_MAX_PREVIEW])
+                        _sd_msg = (
+                            f"[token-goat] stderr changed vs prior run:"
+                            f" {len(_sd_added)} new lines, {len(_sd_removed)} resolved\n"
+                            f"--- New error lines ---\n{_sd_new_section}"
+                        )
+                        if _sd_removed:
+                            _sd_msg += f"\n({len(_sd_removed)} prior error line(s) resolved)"
+                        _LOG.info(
+                            "post-bash: stderr changed; delta cmd=%.60s added=%d resolved=%d",
+                            display_cmd, len(_sd_added), len(_sd_removed),
+                        )
+                        return {
+                            "continue": True,
+                            "systemMessage": _sd_msg,
+                        }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: stderr delta check failed", exc_info=True)
 
     # Binary output detection: if the output contains a high proportion of null
     # bytes it is almost certainly binary data (compiled artifact, compressed
