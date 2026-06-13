@@ -320,6 +320,24 @@ _COMPRESSION_MARKER_FMT: Final[str] = (
 # surprising behaviour in regex matchers and line-splitters.
 _NULL_BYTE_RE: Final[re.Pattern[bytes]] = re.compile(rb"\x00")
 
+# Matches Claude task-output temp paths on Windows and Unix:
+#   Windows: ...\\AppData\\Local\\Temp\\claude\\<proj>\\<sess>\\tasks\\<id>.output
+#   Unix:    /tmp/claude/<proj>/<sess>/tasks/<id>.output
+_TASK_OUTPUT_RE: Final[re.Pattern[str]] = re.compile(
+    r"[/\\]claude[/\\][^/\\]+[/\\][^/\\]+[/\\]tasks[/\\]([a-z0-9]+)\.output$",
+    re.IGNORECASE,
+)
+
+
+def _task_output_id(path: str) -> str | None:
+    """Return the task-output blob ID from a Claude task temp-file path, or None.
+
+    Accepts both Windows backslash and Unix forward-slash separators.  The returned
+    ID is the hex token that appears as ``<id>`` in the filename ``<id>.output``.
+    """
+    m = _TASK_OUTPUT_RE.search(path.replace("\\", "/"))
+    return m.group(1) if m else None
+
 # ANSI escape sequences that span line boundaries: rare but possible when a
 # terminal captures a CSI sequence whose parameter list contains a literal LF
 # (non-standard but seen in some multiplexers).  The sequence starts with ESC [

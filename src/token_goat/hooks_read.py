@@ -3525,6 +3525,107 @@ def _handle_reread_deny(
     return deny_redirect(reason, context)
 
 
+def _handle_task_output_read(
+    file_path: str,
+    session_id: str | None,
+) -> HookResponse | None:
+    """Detect Claude task-output temp files and redirect subsequent reads to bash-output.
+
+    Claude Code writes agent task results to temp paths like:
+    - Windows: ...\\AppData\\Local\\Temp\\claude\\<proj>\\<sess>\\tasks\\<id>.output
+    - Unix:    /tmp/claude/<proj>/<sess>/tasks/<id>.output
+
+    First read: store the file content as a bash-output blob, inject a hint showing the
+    available recall commands, and let the read proceed (returns pre_tool_use_with_context).
+
+    Subsequent reads: deny the read entirely and redirect to ``token-goat bash-output <id>``.
+
+    Returns None to pass through when the path does not match, session_id is missing,
+    or any I/O error occurs (fail-soft: never blocks a read due to an internal error).
+    """
+    from .bash_compress import _task_output_id  # noqa: PLC0415
+
+    task_id = _task_output_id(str(file_path))
+    if task_id is None:
+        return None
+    if not session_id:
+        return None
+
+    _sess_mod = _get_session()
+    cache = _sess_mod.safe_load(session_id, caller="_handle_task_output_read")
+    if cache is None:
+        return None
+
+    stored: dict[str, str] = getattr(cache, "stored_task_outputs", {})
+    if task_id in stored:
+        output_id = stored[task_id]
+        reason = f"Task output {task_id} already stored as bash-output blob {output_id}."
+        context = (
+            f"[token-goat] Task output `{task_id}` was already read and stored. "
+            f"Recall it without re-reading the file:\n"
+            f"  token-goat bash-output {output_id}\n"
+            f"  token-goat bash-output {output_id} --grep <pattern>\n"
+            f"  token-goat bash-output {output_id} --head 50\n"
+            f"  token-goat bash-output {output_id} --tail 50\n"
+            f"  token-goat bash-output {output_id} --section \"Heading\"\n"
+        )
+        return deny_redirect(reason, context)
+
+    # First read — read file from disk, store as bash-output blob.
+    # Cap at 512 KB to avoid blocking the hook on very large task outputs.
+    _MAX_TASK_BYTES = 512 * 1024
+    try:
+        p = Path(file_path)
+        file_size = p.stat().st_size
+        if file_size > _MAX_TASK_BYTES:
+            raw = p.read_bytes()[:_MAX_TASK_BYTES]
+            content = raw.decode("utf-8", errors="replace") + "\n[token-goat: truncated at 512 KB]"
+        else:
+            content = p.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        _LOG.debug(
+            "task-output: could not read %s: %s",
+            sanitize_log_str(str(file_path)),
+            exc,
+        )
+        return None
+
+    try:
+        from . import bash_cache as _bc  # noqa: PLC0415
+
+        meta = _bc.store_output(
+            session_id,
+            command=f"# task-output {task_id}",
+            stdout=content,
+            stderr="",
+            exit_code=0,
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.debug("task-output: store_output failed for task_id=%s", task_id, exc_info=True)
+        return None
+
+    if meta is None:
+        return None
+
+    # Mark as stored so subsequent reads are denied, recording the blob ID for recall.
+    cache.stored_task_outputs[task_id] = meta.output_id
+    with contextlib.suppress(Exception):
+        _sess_mod.save(cache)
+
+    n_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+    hint = (
+        f"[token-goat] Task output `{task_id}` stored ({n_lines:,} lines / "
+        f"{len(content):,} bytes) as bash-output `{meta.output_id}`. "
+        f"Use surgical reads instead of re-reading this file:\n"
+        f"  token-goat bash-output {meta.output_id}                     — full output\n"
+        f"  token-goat bash-output {meta.output_id} --head 50           — first 50 lines\n"
+        f"  token-goat bash-output {meta.output_id} --tail 50           — last 50 lines\n"
+        f"  token-goat bash-output {meta.output_id} --grep <pattern>    — grep for pattern\n"
+        f'  token-goat bash-output {meta.output_id} --section "Heading" — jump to section\n'
+    )
+    return pre_tool_use_with_context(hint)
+
+
 def pre_read(payload: HookPayload) -> HookResponse:
     """Pre-read hook: image shrinking, dedup hints, and diff-aware re-read hints.
 
@@ -3675,6 +3776,12 @@ def pre_read(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     session_id, cwd = get_session_context(payload)
+
+    # Task-output intercept: detect Claude agent task temp files and redirect
+    # subsequent reads to `token-goat bash-output <id>` instead of re-reading.
+    task_output_response = _handle_task_output_read(file_path, session_id)
+    if task_output_response is not None:
+        return task_output_response
 
     shrink_response = _try_shrink_image(file_path, tool_input)
     if shrink_response:

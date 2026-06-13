@@ -1318,6 +1318,13 @@ class SessionCache:
     # Serialized as a sorted list[str] in JSON for stability; parsed back to set[str].
     # Used by compact.py to skip manifest entries that the agent already saw via hint.
     bash_dedup_emitted_ids: set[str] = field(default_factory=set)
+    # Task-output temp files stored as bash-output blobs this session.  Maps
+    # ``task_id`` (hex stem from ``<id>.output``) to ``output_id`` (the blob ID
+    # returned by bash_cache.store_output).  On the first read the hook stores the
+    # content and records the mapping here; subsequent reads are denied with a redirect
+    # to ``token-goat bash-output <output_id>``.
+    # Serialised as a dict[str, str] in JSON; missing key in older sessions → {}.
+    stored_task_outputs: dict[str, str] = field(default_factory=dict)
     # Curator: tracks how often dedup hints are emitted vs. ignored by the agent.
     # ``hints_emitted`` is incremented each time a dedup hint fires.
     # ``hints_ignored`` is incremented when a Read fires for a path that was
@@ -1505,6 +1512,7 @@ class SessionCache:
                 for k, (v, c) in self.hints_content_dedup.items()
             },
             bash_dedup_emitted_ids=self._get_bash_dedup_sorted(),
+            stored_task_outputs=dict(self.stored_task_outputs),
             hints_emitted=self.hints_emitted,
             hints_ignored=self.hints_ignored,
             structured_hints_emitted=self.structured_hints_emitted,
@@ -2154,6 +2162,15 @@ class SessionCache:
                 if isinstance(oid, str) and oid:
                     bash_dedup_emitted_ids.add(oid)
 
+        # stored_task_outputs: dict[str, str] (persisted) → dict[str, str] (in-memory).
+        # Missing in older sessions (or stored as legacy list) → empty dict.
+        stored_task_outputs: dict[str, str] = {}
+        raw_task_outputs = d.get("stored_task_outputs", {})
+        if isinstance(raw_task_outputs, dict):
+            for tid, oid in raw_task_outputs.items():
+                if isinstance(tid, str) and tid and isinstance(oid, str) and oid:
+                    stored_task_outputs[tid] = oid
+
         # hints_emitted / hints_ignored: int counters, default 0 for older sessions.
         hints_emitted = _coerce_nonneg_int(d.get("hints_emitted", 0))
         hints_ignored = _coerce_nonneg_int(d.get("hints_ignored", 0))
@@ -2333,6 +2350,7 @@ class SessionCache:
             hints_seen=hints_seen,
             hints_content_dedup=hints_content_dedup,
             bash_dedup_emitted_ids=bash_dedup_emitted_ids,
+            stored_task_outputs=stored_task_outputs,
             hints_emitted=hints_emitted,
             hints_ignored=hints_ignored,
             structured_hints_emitted=structured_hints_emitted,
@@ -2893,6 +2911,7 @@ class _SessionDict(TypedDict, total=False):
     hints_seen: dict[str, int] | list[str]
     hints_content_dedup: dict[str, list[str | int]]
     bash_dedup_emitted_ids: list[str]
+    stored_task_outputs: dict[str, str]
     hints_emitted: int
     hints_ignored: int
     structured_hints_emitted: int
@@ -3184,6 +3203,8 @@ def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
         data["cwd"] = None
     if "bash_dedup_emitted_ids" not in data:
         data["bash_dedup_emitted_ids"] = []
+    if "stored_task_outputs" not in data:
+        data["stored_task_outputs"] = {}
     if "hints_emitted" not in data:
         data["hints_emitted"] = 0
     if "hints_ignored" not in data:
