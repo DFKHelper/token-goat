@@ -8807,6 +8807,53 @@ _GREP_COMPRESS_THRESHOLD = 30
 #: Maximum number of per-file lines emitted in the summary.
 _GREP_MAX_FILE_LINES = 20
 
+# ---------------------------------------------------------------------------
+# Minified-file grep elision helpers (Iter 32)
+# ---------------------------------------------------------------------------
+
+_MINIFIED_EXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\.min\.(?:js|css)$|(?:^|[\\/])(?:vendor|bundle|dist|chunk|polyfills?)(?:\.[a-z0-9]+)*\.(?:js|css)$",
+    re.IGNORECASE,
+)
+
+
+def _is_minified_file(path: str) -> bool:
+    """Return True when *path* looks like a minified/bundled JS or CSS file."""
+    return bool(_MINIFIED_EXT_RE.search(path))
+
+
+def _has_minified_grep_hit(stdout: str) -> bool:
+    """Return True when any grep output line has a minified-file path and a very long match line (>=500 chars)."""
+    for line in stdout.splitlines():
+        search_from = 2 if (len(line) >= 3 and line[1] == ":" and line[2] in "/\\") else 0
+        colon_idx = line.find(":", search_from)
+        if colon_idx < 1:
+            continue
+        path_part = line[:colon_idx]
+        rest = line[colon_idx + 1:]
+        if _is_minified_file(path_part) and len(rest) > 500:
+            return True
+    return False
+
+
+_GREP_BIN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:rg|grep|egrep|fgrep|ag|ack|ack-grep|git)$"
+)
+
+
+def _is_grep_cmd(argv: list[str]) -> bool:
+    """Return True when *argv* is a grep-family command (rg, grep, egrep, fgrep, ag, ack, ack-grep, git grep)."""
+    if not argv:
+        return False
+    stem = argv[0].lower().split("/")[-1].split("\\")[-1]
+    if stem.endswith(".exe"):
+        stem = stem[:-4]
+    if _GREP_BIN_RE.match(stem):
+        if stem == "git":
+            return len(argv) >= 2 and argv[1] == "grep"
+        return True
+    return False
+
 
 class GrepFilter(Filter):
     """Compress ``grep``, ``rg``, ``ag``, ``ack``, and ``git grep`` output.

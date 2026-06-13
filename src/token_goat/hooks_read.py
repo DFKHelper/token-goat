@@ -6485,6 +6485,75 @@ def post_bash(payload: HookPayload) -> HookResponse:
         except Exception:  # noqa: BLE001 -- fail-soft; never block the hook
             _LOG.debug("post-bash: python traceback compression failed", exc_info=True)
 
+    # Minified-file grep elision (Iter 32): when rg/grep/git-grep hits a minified
+    # JS/CSS file the matched "line" can be 100k+ chars.  Truncate to first 120 chars
+    # and store the full output as a bash-output blob for recall.
+    if stdout:
+        try:
+            import shlex as _shlex_min  # noqa: PLC0415
+            import sys as _sys_min  # noqa: PLC0415
+
+            from .bash_compress import (  # noqa: PLC0415
+                _has_minified_grep_hit as _min_grep_hit,
+            )
+            from .bash_compress import (
+                _is_grep_cmd as _min_is_grep,
+            )
+            from .bash_compress import (
+                _is_minified_file as _min_file,
+            )
+            _min_argv = _shlex_min.split(display_cmd, posix=(_sys_min.platform != "win32"))
+            if _min_argv and _min_is_grep(_min_argv) and _min_grep_hit(stdout):
+                _min_out_id: str | None = None
+                if session_id:
+                    from . import bash_cache as _bc_min  # noqa: PLC0415
+                    with contextlib.suppress(Exception):
+                        _min_meta = _bc_min.store_output(
+                            session_id, display_cmd, stdout, stderr, exit_code,
+                            cwd=cwd, min_cache_bytes=0,
+                        )
+                        if _min_meta is not None:
+                            _bc_min.write_sidecar(_min_meta)
+                            _min_out_id = _min_meta.output_id
+                _min_recall = (f"\n[Full output: bash-output {_min_out_id}]" if _min_out_id else "")
+                _min_elided = 0
+                _min_kept: list[str] = []
+                for _min_line in stdout.splitlines():
+                    _mc_search_from = 2 if (len(_min_line) >= 3 and _min_line[1] == ":" and _min_line[2] in "/\\") else 0
+                    _mc_idx = _min_line.find(":", _mc_search_from)
+                    if _mc_idx >= 1:
+                        _mc_path = _min_line[:_mc_idx]
+                        _mc_rest = _min_line[_mc_idx + 1:]
+                        _mc_content = _re.sub(r"^\d+:", "", _mc_rest, count=1)
+                        if _min_file(_mc_path) and len(_mc_content) > 500:
+                            _min_kept.append(
+                                f"{_mc_path}:...<{len(_mc_content)} chars elided, "
+                                f"match at offset 0>...{_mc_content[:120]}"
+                            )
+                            _min_elided += 1
+                            continue
+                    _min_kept.append(_min_line)
+                if _min_elided:
+                    _recall_clause = (
+                        f" (full content in bash-output {_min_out_id})"
+                        if _min_out_id
+                        else " (full output not stored — no active session)"
+                    )
+                    _min_header = (
+                        f"[token-goat] grep: minified file match — long lines truncated to first 120 chars"
+                        f"{_recall_clause}\n"
+                    )
+                    _LOG.info(
+                        "post-bash: minified grep elision elided=%d cmd=%.60s",
+                        _min_elided, display_cmd,
+                    )
+                    return {
+                        "continue": True,
+                        "systemMessage": _min_header + "\n".join(_min_kept) + _min_recall,
+                    }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: minified grep elision failed", exc_info=True)
+
     # Large plain-text stdout fallback compressor (Iter 19):
     # Fires AFTER all specialized handlers (JSON/XML, pytest, sleep/poll, etc.).
     # When a successful command emits >= _LARGE_STDOUT_LINE_THRESHOLD lines of plain text,
