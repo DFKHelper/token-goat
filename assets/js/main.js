@@ -64,6 +64,28 @@
     content.insertBefore(hero, content.firstChild);
   }
 
+  // --- Smooth scroll with highlight flash ---
+  function smoothScrollToHeading(id) {
+    var target = document.getElementById(id);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    target.classList.add('highlight-pulse');
+    setTimeout(function () { target.classList.remove('highlight-pulse'); }, 600);
+  }
+
+  // --- TOC scroll sync ---
+  function scrollTocIntoView(tocItem) {
+    if (!tocItem || !sidebar) return;
+    var sidebarToc = sidebar.querySelector('.sidebar-toc');
+    if (!sidebarToc) return;
+    var itemTop    = tocItem.offsetTop;
+    var itemBottom = itemTop + tocItem.offsetHeight;
+    var viewTop    = sidebarToc.scrollTop;
+    var viewBottom = viewTop + sidebarToc.clientHeight;
+    if (itemTop < viewTop + 40)             sidebarToc.scrollTop = itemTop - 40;
+    else if (itemBottom > viewBottom - 40)  sidebarToc.scrollTop = itemBottom - sidebarToc.clientHeight + 40;
+  }
+
   // --- TOC generation ---
   var headings = [];
   var tocItems = [];
@@ -84,7 +106,9 @@
       var a  = document.createElement('a');
       a.href = '#' + h.id;
       a.textContent = h.textContent;
-      a.addEventListener('click', function () {
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        smoothScrollToHeading(a.getAttribute('href').substring(1));
         if (window.innerWidth <= 768) closeSidebar();
       });
       li.appendChild(a);
@@ -103,7 +127,10 @@
       if (headings[i].getBoundingClientRect().top + window.scrollY <= mid) active = i;
     }
     tocItems.forEach(function (li) { li.classList.remove('active'); });
-    if (active !== null && tocItems[active]) tocItems[active].classList.add('active');
+    if (active !== null && tocItems[active]) {
+      tocItems[active].classList.add('active');
+      scrollTocIntoView(tocItems[active]);
+    }
   }
 
   // --- Fade-in observer ---
@@ -161,12 +188,112 @@
     });
   }
 
+  // --- Anchor links ---
+  function addAnchorLinks() {
+    if (!content) return;
+    content.querySelectorAll('h2, h3').forEach(function (h) {
+      if (h.closest('.hero')) return;
+      var link = document.createElement('a');
+      link.className   = 'anchor-link';
+      link.href        = '#' + h.id;
+      link.textContent = '#';
+      link.setAttribute('aria-label', 'Link to this section');
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        navigator.clipboard.writeText(window.location.href.split('#')[0] + '#' + h.id).catch(function () {});
+        smoothScrollToHeading(h.id);
+      });
+      h.appendChild(link);
+    });
+  }
+
+  // --- External links ---
+  function handleExternalLinks() {
+    if (!content) return;
+    var origin = window.location.origin;
+    content.querySelectorAll('a[href]').forEach(function (a) {
+      var href = a.getAttribute('href');
+      if (!href || href.startsWith('#') || href.startsWith('/') || href.startsWith(origin)) return;
+      if (href.startsWith('http')) {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+        if (!a.querySelector('.external-icon')) {
+          var icon = document.createElement('span');
+          icon.className   = 'external-icon';
+          icon.textContent = '↗';
+          icon.setAttribute('aria-hidden', 'true');
+          a.appendChild(icon);
+        }
+      }
+    });
+  }
+
+  // --- Reading time ---
+  function addReadingTime() {
+    if (!content) return;
+    var text  = content.innerText || '';
+    var words = text.trim().split(/\s+/).length;
+    var mins  = Math.max(1, Math.round(words / 200));
+    var firstH2 = content.querySelector('h2:not(.hero h2)');
+    if (!firstH2) return;
+    var timeEl = document.createElement('div');
+    timeEl.className   = 'reading-time';
+    timeEl.textContent = '⏱ ' + mins + ' min read';
+    firstH2.parentNode.insertBefore(timeEl, firstH2);
+  }
+
+  // --- Keyboard shortcuts modal ---
+  function setupKeyboardShortcuts() {
+    var modal = document.createElement('div');
+    modal.className = 'shortcuts-modal';
+    modal.innerHTML = '<div class="shortcuts-modal-box">' +
+      '<h3>Keyboard Shortcuts</h3>' +
+      '<div class="shortcut-row"><span>Show shortcuts</span><kbd>?</kbd></div>' +
+      '<div class="shortcut-row"><span>Back to top</span><kbd>g</kbd></div>' +
+      '<div class="shortcut-row"><span>Close</span><kbd>Esc</kbd></div>' +
+      '</div>';
+    document.body.appendChild(modal);
+
+    modal.addEventListener('click', function (e) {
+      if (e.target === modal) modal.classList.remove('show');
+    });
+
+    document.addEventListener('keydown', function (e) {
+      var tag = document.activeElement ? document.activeElement.tagName : '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === '?' || e.key === '/') {
+        e.preventDefault();
+        modal.classList.toggle('show');
+      }
+      if (e.key === 'Escape') modal.classList.remove('show');
+      if (e.key === 'g' && !e.ctrlKey && !e.metaKey) {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
+    });
+  }
+
+  // --- Highlight install command ---
+  function highlightInstallCommand() {
+    if (!content) return;
+    content.querySelectorAll('pre').forEach(function (pre) {
+      var code = pre.querySelector('code');
+      if (code && code.textContent.includes('uv tool install token-goat')) {
+        pre.classList.add('install-highlight');
+      }
+    });
+  }
+
   // --- Init ---
   wrapHero();
   generateTOC();
   wrapTables();
   addCopyButtons();
   setupFadeIn();
+  addAnchorLinks();
+  handleExternalLinks();
+  addReadingTime();
+  setupKeyboardShortcuts();
+  highlightInstallCommand();
 
   window.addEventListener('scroll', updateProgressBar, { passive: true });
   window.addEventListener('scroll', toggleBackToTop,   { passive: true });

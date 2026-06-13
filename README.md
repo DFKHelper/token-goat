@@ -1,6 +1,6 @@
 ---
-title: "Claude Code Token Optimizer — Cuts Costs 40–80%"
-description: "Blocks file re-reads, extracts one function instead of a whole file, and shrinks screenshots 97%. Fully automatic. Cuts Claude Code costs 40–80% on Windows."
+title: "AI Token Optimizer — Cuts Costs 40–80%"
+description: "Blocks file re-reads, extracts one function instead of a whole file, and shrinks screenshots 97%. Fully automatic. Cuts AI tool costs 40–80% on Windows."
 image: /token-goat/assets/logo.png
 permalink: /
 ---
@@ -76,7 +76,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 ## What changes
 
 | Without Token-Goat | With Token-Goat |
-|--------------------|-----------------|
+|--------------------|------------------|
 | 3.3 MB screenshot lands in model context | 84 KB compressed copy, 97.4% smaller |
 | Agent re-reads files from earlier in the session | "Already read this" reminder with narrow slice suggestion |
 | Agent re-reads a file edited mid-session | Unified diff injected as a hint — full Read avoided when the diff covers the change |
