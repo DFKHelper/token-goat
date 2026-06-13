@@ -2351,6 +2351,75 @@ def _handle_bash_range_read_hint(payload: HookPayload) -> HookResponse | None:
     return pre_tool_use_with_context(hint)
 
 
+def _handle_compound_cmd_hint(payload: HookPayload) -> HookResponse | None:
+    """Advisory hint when a compound command has ≥1 read-type segment already cached.
+
+    When a command like ``wc -l X && tail -30 X`` arrives and one or more of
+    its ``&&``/``;``-separated segments have cached output from this session or
+    a prior session, emit an advisory telling the agent which segments can be
+    recalled via ``token-goat bash-output`` instead of re-running the full
+    chain.
+
+    Always advisory — always returns ``{"continue": True, ...}`` or ``None``.
+    Never blocks or rewrites the command.
+    """
+    from . import bash_cache as _bc  # noqa: PLC0415
+    from . import bash_parser  # noqa: PLC0415
+
+    tool_input = get_tool_input(payload)
+    cmd = tool_input.get("command", "")
+    if not isinstance(cmd, str) or not cmd:
+        return None
+
+    # Only attempt splitting when the command looks compound — fast-path exit
+    # for the common single-command case to keep hook latency low.
+    if "&&" not in cmd and ";" not in cmd:
+        return None
+
+    segments = bash_parser.split_compound(cmd)
+    if len(segments) < 2:
+        return None
+
+    # Identify segments that are read-type (cat, tail, wc, head, bat, …) or
+    # grep-type — these are the ones whose outputs are worth caching.
+    read_type_segments = [
+        s for s in segments
+        if bash_parser.parse(s).kind in ("read", "grep")
+    ]
+    if len(read_type_segments) < 2:
+        return None
+
+    _, cwd = get_session_context(payload)
+
+    # Check each read-type segment against the bash output cache.
+    cached_hits: list[tuple[str, str]] = []  # (segment, output_id)
+    try:
+        for seg in read_type_segments:
+            meta = _bc.find_cached_for_command(seg, cwd)
+            if meta is not None:
+                from . import cache_common as _cc  # noqa: PLC0415
+                short_id = _cc.short_output_id(meta.output_id)
+                cached_hits.append((seg, short_id))
+    except Exception:  # noqa: BLE001 — fail-soft
+        _LOG.debug("compound_cmd_hint: cache lookup failed", exc_info=True)
+        return None
+
+    if not cached_hits:
+        return None
+
+    parts = [f"  '{seg}' → token-goat bash-output {oid}" for seg, oid in cached_hits]
+    hint = (
+        "[token-goat] Parts of this compound command are cached:\n"
+        + "\n".join(parts)
+        + "\nRun them separately to use the cache."
+    )
+    with contextlib.suppress(Exception):
+        from . import db as _db  # noqa: PLC0415
+        _db.record_stat(None, "compound_cmd_hint", detail=sanitize_log_str(cmd, max_len=200))
+    _LOG.debug("compound_cmd_hint: %d/%d segments cached", len(cached_hits), len(read_type_segments))
+    return pre_tool_use_with_context(hint)
+
+
 def _handle_bash_streak_hint(payload: HookPayload) -> HookResponse | None:
     """Advisory hint when the same file is Bash-read 3+ times in a session."""
     import shlex  # noqa: PLC0415
@@ -3507,6 +3576,15 @@ def pre_read(payload: HookPayload) -> HookResponse:
         cache_hit = _handle_bash_cache_hit(payload)
         if cache_hit is not None:
             return cache_hit
+
+        # Compound-command hint: when a && / ; chain has ≥1 read-type segment
+        # already cached, suggest recalling the cached segment individually.
+        # Must run after the exact-match dedup checks (whole command not in
+        # cache) but before read-equivalent dispatch (which only sees the first
+        # segment).  Always advisory — never blocks.
+        compound_hint = _handle_compound_cmd_hint(payload)
+        if compound_hint is not None:
+            return compound_hint
 
         # Pattern-level grep dedup: fires for rg/grep/ag/ack commands when the
         # same search pattern has already been run in this session.  Distinct from
@@ -4733,6 +4811,22 @@ def _is_pytest_command(cmd: str) -> bool:
     return bool(_PYTEST_CMD_RE.search(cmd))
 
 
+def _is_log_file_path(norm_path: str) -> bool:
+    """Return True when *norm_path* looks like a log file.
+
+    Matches:
+    - Files whose basename ends in .log or .out
+    - Files whose path contains /log/ or /logs/ as a directory segment
+
+    *norm_path* must already be forward-slash normalized (as produced by
+    ``str(path.resolve()).replace("\\\\", "/")``) so segment checks are reliable.
+    """
+    lower = norm_path.lower()
+    if lower.endswith((".log", ".out")):
+        return True
+    return "/log/" in lower or "/logs/" in lower or lower.endswith("/log") or lower.endswith("/logs")
+
+
 def _extract_pytest_failure_ids(output: str) -> list[str]:
     """Return sorted FAILED/ERROR test node IDs from a pytest stdout/stderr blob.
 
@@ -4980,6 +5074,78 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     }
         except Exception:  # noqa: BLE001 — fail-soft
             _LOG.debug("post-bash: cross-tool content dedup check failed", exc_info=True)
+
+    # Log-file content cache: suppress repeated reads of unchanged log files.
+    # Key: (normalized_path, size_bytes, mtime_float) stored in session.log_file_cache.
+    # When the same log file is read with identical (size, mtime), the file has not
+    # changed → the output is identical → suppress with an advisory note.
+    # Only fires on single-file read-equivalent commands targeting log-like paths.
+    #
+    # Path extraction uses posix=False shlex (same technique as cross-tool dedup above)
+    # to preserve Windows backslashes that posix=True shlex would strip (C:\foo → C:foo).
+    if _sess_mod is not None and _session_cache is not None and exit_code in (None, 0) and stdout:
+        try:
+            import shlex as _shlex_lf  # noqa: PLC0415
+
+            from . import bash_parser as _bp  # noqa: PLC0415
+
+            _lf_intent = _bp.parse(display_cmd)
+            if (
+                _lf_intent.kind == "read"
+                and _lf_intent.target_path is not None
+                and _lf_intent.target_paths is None  # single-file only
+            ):
+                # Re-split with posix=False to get the unmangled path token.
+                try:
+                    _lf_argv_raw = _shlex_lf.split(display_cmd.split("|")[0].strip(), posix=False)
+                except ValueError:
+                    _lf_argv_raw = []
+                while _lf_argv_raw and _lf_argv_raw[0].strip("\"'").lower() in {"sudo", "time", "nice", "exec"}:
+                    _lf_argv_raw.pop(0)
+                _lf_argv_raw = _lf_argv_raw[1:]  # drop command name
+                _lf_raw = next((t.strip("\"'") for t in _lf_argv_raw if not t.startswith("-")), None)
+                if _lf_raw:
+                    _lf_p = Path(_lf_raw)
+                    if not _lf_p.is_absolute() and cwd:
+                        _lf_p = Path(cwd) / _lf_raw
+                    try:
+                        _lf_resolved = _lf_p.resolve()
+                        _lf_norm = str(_lf_resolved).replace("\\", "/")
+                    except (OSError, ValueError):
+                        _lf_norm = ""
+                    if _lf_norm and _is_log_file_path(_lf_norm):
+                        try:
+                            _lf_st = _lf_resolved.stat()
+                            _lf_size = _lf_st.st_size
+                            _lf_mtime = _lf_st.st_mtime
+                        except OSError:
+                            pass  # cannot stat → skip cache; no exception propagates
+                        else:
+                            # Use a 16-hex-char hash (64-bit collision resistance is more
+                            # than sufficient for in-session dedup; keeps session JSON compact).
+                            _lf_hash = hashlib.sha256(stdout.replace("\r\n", "\n").encode()).hexdigest()[:16]
+                            _lf_cached = _session_cache.get_log_cache_hit(_lf_norm, _lf_size, _lf_mtime)
+                            if _lf_cached is not None and _lf_cached == _lf_hash:
+                                _LOG.info(
+                                    "post-bash: log-file cache hit suppressed output path=%s",
+                                    sanitize_log_str(_lf_norm),
+                                )
+                                with contextlib.suppress(Exception):
+                                    _sess_mod.save(_session_cache)
+                                return {
+                                    "continue": True,
+                                    "systemMessage": (
+                                        f"[token-goat] Log file '{_lf_raw}' unchanged since last read"
+                                        " — suppressed duplicate output"
+                                        " (use `token-goat bash-output` to recall full content)"
+                                    ),
+                                }
+                            # Cache miss or content changed: record for future suppression.
+                            _session_cache.record_log_read(_lf_norm, _lf_size, _lf_mtime, _lf_hash)
+                            with contextlib.suppress(Exception):
+                                _sess_mod.save(_session_cache)
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: log-file cache check failed", exc_info=True)
 
     # Binary output detection: if the output contains a high proportion of null
     # bytes it is almost certainly binary data (compiled artifact, compressed

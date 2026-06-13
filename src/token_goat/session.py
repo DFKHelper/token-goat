@@ -788,6 +788,15 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
         for _ in range(_rch_evict):
             merged.read_content_hashes.pop(next(iter(merged.read_content_hashes)))
 
+    # log_file_cache: local wins (most recent stat+read takes precedence).
+    merged_lfc: dict[str, str] = dict(remote.log_file_cache)
+    merged_lfc.update(local.log_file_cache)
+    merged.log_file_cache = merged_lfc
+    if len(merged.log_file_cache) > LOG_FILE_CACHE_MAX:
+        _lfc_evict = len(merged.log_file_cache) - (LOG_FILE_CACHE_MAX - _LOG_FILE_CACHE_EVICT)
+        for _ in range(_lfc_evict):
+            merged.log_file_cache.pop(next(iter(merged.log_file_cache)))
+
     merged._invalidate_json_cache()
     return merged
 
@@ -1065,6 +1074,12 @@ _FILE_CONTENT_SEEN_EVICT: Final[int] = 50
 # Bash cat commands that produce identical output.
 READ_CONTENT_HASHES_MAX: Final[int] = 100
 _READ_CONTENT_HASHES_EVICT: Final[int] = 10
+# Log-file content cache: maps compound key "{norm_path}:{size}:{mtime:.9f}" →
+# first-16-hex-chars of SHA256 of the file content.  Used in post_bash to detect
+# repeated reads of an unchanged log file (same path, same size, same mtime) and
+# suppress duplicate output with an advisory.  Capped at 50 entries.
+LOG_FILE_CACHE_MAX: Final[int] = 50
+_LOG_FILE_CACHE_EVICT: Final[int] = 5
 
 # Maximum number of decision-log entries retained per session.  Decisions are
 # opt-in (the agent calls ``token-goat decision "<text>"``), so the volume is
@@ -1191,6 +1206,12 @@ class SessionCache:
     # a `cat FILE` output is identical to a prior Read and suppress the duplicate.
     # Missing in older sessions → empty dict. FIFO-evicted at READ_CONTENT_HASHES_MAX.
     read_content_hashes: dict[str, str] = field(default_factory=dict)
+    # Log-file content cache: maps compound key "{norm_path}:{size}:{mtime:.9f}" →
+    # first-16-hex-chars of SHA256 of the log content seen at that (path, size, mtime).
+    # Enables post_bash to suppress repeated reads of unchanged log files without
+    # re-hashing the full output (same size+mtime ⇒ same content).
+    # Missing in older sessions → empty dict. FIFO-evicted at LOG_FILE_CACHE_MAX.
+    log_file_cache: dict[str, str] = field(default_factory=dict)
     # Cross-file content dedup: maps file_content_sha16 (first 16 SHA-1 hex chars) →
     # normalized path of the *first* file seen with that content.  Used by pre_read to
     # deny a read of a file whose content is identical to a file already read this session.
@@ -1464,6 +1485,7 @@ class SessionCache:
             mcp_result_hashes=dict(self.mcp_result_hashes),
             grep_target_counts=dict(self.grep_target_counts),
             read_content_hashes=dict(self.read_content_hashes),
+            log_file_cache=dict(self.log_file_cache),
         )
 
     def to_json(self) -> str:
@@ -1745,6 +1767,39 @@ class SessionCache:
         *path* must already be normalized (resolve + forward-slashes).
         """
         return self.read_content_hashes.get(path)
+
+    @staticmethod
+    def _log_cache_key(path: str, size: int, mtime: float) -> str:
+        """Build the compound cache key for a log-file entry."""
+        return f"{path}:{size}:{mtime:.9f}"
+
+    def record_log_read(self, path: str, size: int, mtime: float, content_hash: str) -> None:
+        """Record a log-file read keyed on (path, size, mtime) → content_hash.
+
+        Called after a successful read of a log-like file.  A subsequent read
+        that produces the same (path, size, mtime) triple will match this entry;
+        post_bash can then suppress the duplicate output.
+
+        Enforces LOG_FILE_CACHE_MAX via FIFO eviction.
+        """
+        key = self._log_cache_key(path, size, mtime)
+        self.log_file_cache[key] = content_hash
+        if len(self.log_file_cache) > LOG_FILE_CACHE_MAX:
+            items_to_remove = len(self.log_file_cache) - (LOG_FILE_CACHE_MAX - _LOG_FILE_CACHE_EVICT)
+            for _ in range(items_to_remove):
+                self.log_file_cache.pop(next(iter(self.log_file_cache)))
+        self.last_activity_ts = time.time()
+        self._invalidate_json_cache()
+
+    def get_log_cache_hit(self, path: str, size: int, mtime: float) -> str | None:
+        """Return the stored content hash if (path, size, mtime) is cached, else None.
+
+        A non-None return means the file has the same size and modification time
+        as when it was last read — content is almost certainly unchanged.
+        *path* must already be normalized (resolve + forward-slashes).
+        """
+        key = self._log_cache_key(path, size, mtime)
+        return self.log_file_cache.get(key)
 
     def lookup_mcp_output_id(self, tool_input_hash: str) -> str | None:
         """Return the cached output_id for an MCP tool call hash, or None."""
@@ -2154,6 +2209,16 @@ class SessionCache:
                 if isinstance(_rch_k, str) and isinstance(_rch_v, str):
                     read_content_hashes[_rch_k] = _rch_v
 
+        # log_file_cache: dict[str, str] — missing in older sessions → empty dict.
+        # Keys are compound strings "{norm_path}:{size}:{mtime:.9f}"; values are
+        # content hashes.  Malformed or non-string entries are silently dropped.
+        log_file_cache: dict[str, str] = {}
+        raw_lfc = d.get("log_file_cache", {})
+        if isinstance(raw_lfc, dict):
+            for _lfc_k, _lfc_v in raw_lfc.items():
+                if isinstance(_lfc_k, str) and isinstance(_lfc_v, str) and _lfc_k and _lfc_v:
+                    log_file_cache[_lfc_k] = _lfc_v
+
         return cls(
             session_id=session_id,
             started_ts=float(d.get("started_ts", now)),
@@ -2199,6 +2264,7 @@ class SessionCache:
             pytest_failures=pytest_failures,
             mcp_result_hashes=mcp_result_hashes,
             read_content_hashes=read_content_hashes,
+            log_file_cache=log_file_cache,
         )
 
 
@@ -2754,6 +2820,7 @@ class _SessionDict(TypedDict, total=False):
     file_content_seen: dict[str, str]
     pytest_failures: dict[str, list[str]]
     read_content_hashes: dict[str, str]
+    log_file_cache: dict[str, str]
 
 
 def _fresh_cache(session_id: str, *, unavailable: bool = False) -> SessionCache:
