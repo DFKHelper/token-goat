@@ -247,6 +247,8 @@ __all__ = [
     "ContinueFilter",
     # Cline (formerly Claude Dev) AI coding assistant VS Code extension / CLI
     "ClineFilter",
+    # Codex (OpenAI Codex CLI) AI coding assistant
+    "CodexExecFilter",
 ]
 
 import json as _json
@@ -20537,6 +20539,149 @@ class ClineFilter(Filter):
         return self._finalize(out)
 
 
+# codex-exec ─────────────────────────────────────────────────────────────────
+#: Codex CLI version banner: "OpenAI Codex v0.137.0"
+_CODEX_BANNER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^OpenAI Codex v\d+",
+    re.IGNORECASE,
+)
+#: Codex separator line: "--------" (8+ dashes)
+_CODEX_SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^-{4,}$",
+)
+#: Codex header config key=value: "model: gpt-5.4-mini"
+_CODEX_MODEL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^model\s*:\s*(?P<model>\S+)",
+    re.IGNORECASE,
+)
+#: Codex token count footer: "tokens used" label (next line holds the count)
+_CODEX_TOKENS_USED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^tokens used$",
+    re.IGNORECASE,
+)
+#: Codex role label lines: exactly "user" or "codex" on their own line
+_CODEX_ROLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:user|codex)$",
+    re.IGNORECASE,
+)
+
+
+class CodexExecFilter(Filter):
+    """Compress codex (OpenAI Codex CLI) command output.
+
+    The Codex CLI emits a verbose header block on every invocation: a version
+    banner, a separator line, a block of session config (workdir, model,
+    provider, approval, sandbox, reasoning settings, session id), a second
+    separator, and then a multi-turn conversation transcript (user / prompt
+    / codex / answer) followed by a tokens used footer.
+
+    Only the substantive AI answer is useful in model context; everything else
+    is noise.
+
+    Compression model:
+
+    * **Header block** (version banner, config lines, separators): dropped,
+      replaced by a one-line summary [codex: model=<model>, tokens=<N>].
+    * **Prompt / user turn**: dropped (the caller already has the prompt).
+    * **AI answer** (content after the final codex role label and before
+      tokens used): kept verbatim.
+    * **Token footer** (tokens used / <count>): folded into the summary.
+    * **Unrecognised format** (no banner, no separator, or no role labels):
+      returned unchanged so no content is lost.
+    * **Errors** (exit_code != 0): preserve all stderr unchanged.
+    """
+
+    name = "codex-exec"
+    binaries = frozenset(["codex"])
+    subcommands: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        p = Path(argv[0])
+        return p.stem.lower() == "codex"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        if not combined.strip():
+            return combined
+
+        lines = combined.split("\n")
+
+        first_sep_idx: int | None = None
+        second_sep_idx: int | None = None
+        for i, ln in enumerate(lines[:20]):
+            if _CODEX_SEPARATOR_RE.match(ln.strip()):
+                if first_sep_idx is None:
+                    first_sep_idx = i
+                else:
+                    second_sep_idx = i
+                    break
+        # Require both separators — without the full --------/config/--------
+        # structure we cannot safely bound the transcript region.
+        if second_sep_idx is None:
+            return combined  # unrecognised format — passthrough
+
+        # Extract model from the config block (between the two separators).
+        # first_sep_idx is guaranteed set when second_sep_idx is set.
+        model: str = "unknown"
+        for ln in lines[first_sep_idx + 1:second_sep_idx]:
+            m = _CODEX_MODEL_RE.match(ln.strip())
+            if m:
+                model = m.group("model")
+                break
+
+        # Find the last "codex" role label restricted to the transcript region
+        # (after the second separator).  Constraining the scan prevents answer
+        # content that happens to be the bare word "codex" from being mistaken
+        # for a role marker and truncating the extracted answer.
+        last_codex_idx: int | None = None
+        for i in range(second_sep_idx + 1, len(lines)):
+            if lines[i].strip().casefold() == "codex":
+                last_codex_idx = i
+
+        if last_codex_idx is None:
+            # No "codex" role label found — unrecognised format, passthrough.
+            return combined
+
+        # Find "tokens used" by scanning backward from the end of output.
+        # Codex always emits this footer in the last handful of lines;
+        # scanning backward avoids truncating answers that contain the phrase.
+        tokens_line_idx: int | None = None
+        tokens_count: str = "?"
+        search_floor = max(last_codex_idx + 1, len(lines) - 6)
+        for i in range(len(lines) - 1, search_floor - 1, -1):
+            if _CODEX_TOKENS_USED_RE.match(lines[i].strip()):
+                tokens_line_idx = i
+                # The count is on the very next non-blank line.
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    candidate = lines[j].strip()
+                    if candidate:
+                        tokens_count = candidate
+                        break
+                break
+
+        # Extract the answer body.
+        answer_end = tokens_line_idx if tokens_line_idx is not None else len(lines)
+        answer_lines = lines[last_codex_idx + 1:answer_end]
+
+        # Strip leading/trailing blank lines from the answer.
+        while answer_lines and not answer_lines[0].strip():
+            answer_lines = answer_lines[1:]
+        while answer_lines and not answer_lines[-1].strip():
+            answer_lines = answer_lines[:-1]
+
+        summary = f"[codex: model={model}, tokens={tokens_count}]"
+        out: list[str] = [summary, *answer_lines]
+        return self._finalize(out)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -20855,6 +21000,10 @@ FILTERS: list[Filter] = [
     # disjoint binaries from every other filter so position is cosmetic —
     # placed alongside other AI coding assistant CLI filters.
     ClineFilter(),
+    # CodexExecFilter handles `codex` (OpenAI Codex CLI); disjoint binary
+    # from every other filter so position is cosmetic — placed alongside other
+    # AI coding assistant CLI filters.
+    CodexExecFilter(),
 ]
 
 

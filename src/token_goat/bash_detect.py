@@ -74,6 +74,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "composer.phar": "composer",
     "conan": "conan",
     "conan2": "conan",
+    "codex": "codex-exec",
     "conda": "conda",
     "continue": "continue",
     "copilot": "copilot",
