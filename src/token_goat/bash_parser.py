@@ -86,7 +86,7 @@ from typing import Literal
 
 from .util import get_logger
 
-__all__ = ["BashIntent", "parse"]
+__all__ = ["BashIntent", "parse", "split_compound"]
 
 _LOG = get_logger("bash_parser")
 
@@ -480,6 +480,143 @@ def _extract_stdin_redirect(tokens: list[str]) -> tuple[list[str], str | None]:
         cleaned.append(tok)
         i += 1
     return cleaned, redirect_file
+
+
+def split_compound(cmd: str) -> list[str]:
+    """Split a compound Bash command on ``&&``, ``;``, and ``||`` operators.
+
+    Separators inside single quotes, double quotes, and ``$(...)``/``(...)``
+    subshells are ignored so ``cmd "foo && bar"`` is returned as one segment.
+    ``||`` branches are *dropped* — they represent failure-fallback commands
+    that should not be treated as independently cacheable read operations.
+
+    Returns a list of stripped command strings.  A command that contains no
+    compound operators is returned as a one-element list with the original
+    command (stripped).
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    i = 0
+    n = len(cmd)
+    in_single = False
+    in_double = False
+    in_backtick = False
+    paren_depth = 0
+    skip_segment = False  # True when the current segment follows a || operator
+
+    while i < n:
+        ch = cmd[i]
+
+        # ── Inside single quotes: no escaping, no subshells ──────────────────
+        if in_single:
+            current.append(ch)
+            if ch == "'":
+                in_single = False
+            i += 1
+            continue
+
+        # ── Inside backtick subshell: ` ... ` ────────────────────────────────
+        if in_backtick:
+            current.append(ch)
+            if ch == "`":
+                in_backtick = False
+            i += 1
+            continue
+
+        # ── Inside double quotes: only \\ and \" escapes plus $( subshell ────
+        if in_double:
+            current.append(ch)
+            if ch == "\\":
+                i += 1
+                if i < n:
+                    current.append(cmd[i])
+                i += 1
+                continue
+            if ch == '"':
+                in_double = False
+            elif ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+                paren_depth += 1
+                current.append("(")
+                i += 2
+                continue
+            i += 1
+            continue
+
+        # ── Inside $(...) or (...) subshell ───────────────────────────────────
+        if paren_depth > 0:
+            current.append(ch)
+            if ch == "(":
+                paren_depth += 1
+            elif ch == ")":
+                paren_depth -= 1
+                if paren_depth < 0:
+                    paren_depth = 0
+            elif ch == "'":
+                in_single = True
+            elif ch == '"':
+                in_double = True
+            i += 1
+            continue
+
+        # ── Top-level characters ──────────────────────────────────────────────
+        if ch == "`":
+            in_backtick = True
+            current.append(ch)
+            i += 1
+        elif ch == "'":
+            in_single = True
+            current.append(ch)
+            i += 1
+        elif ch == '"':
+            in_double = True
+            current.append(ch)
+            i += 1
+        elif ch == "$" and i + 1 < n and cmd[i + 1] == "(":
+            paren_depth += 1
+            current.append(ch)
+            current.append("(")
+            i += 2
+        elif ch == "(":
+            paren_depth += 1
+            current.append(ch)
+            i += 1
+        elif ch == "\\":
+            current.append(ch)
+            i += 1
+            if i < n:
+                current.append(cmd[i])
+                i += 1
+        elif cmd[i : i + 2] == "&&":
+            seg = "".join(current).strip()
+            if seg and not skip_segment:
+                segments.append(seg)
+            current = []
+            skip_segment = False
+            i += 2
+        elif cmd[i : i + 2] == "||":
+            seg = "".join(current).strip()
+            if seg and not skip_segment:
+                segments.append(seg)
+            current = []
+            skip_segment = True  # next segment is a fallback branch — drop it
+            i += 2
+        elif ch == ";":
+            seg = "".join(current).strip()
+            if seg and not skip_segment:
+                segments.append(seg)
+            current = []
+            skip_segment = False
+            i += 1
+        else:
+            current.append(ch)
+            i += 1
+
+    # Flush the final segment
+    seg = "".join(current).strip()
+    if seg and not skip_segment:
+        segments.append(seg)
+
+    return segments if segments else [cmd.strip()]
 
 
 def parse(command: str) -> BashIntent:
