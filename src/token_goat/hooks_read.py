@@ -4556,6 +4556,9 @@ _PKG_INSTALL_MIN_LINES: int = 30
 # Environment variable listing compressor
 # env/printenv/export -p/declare -x dumps; compress when >= this many lines.
 _ENV_LIST_MIN_LINES: int = 10
+# Container log compressor
+# docker/kubectl/podman logs can emit thousands of lines; compress when >= this many.
+_CONTAINER_LOG_MIN_LINES: int = 50
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -5670,6 +5673,106 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     }
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: env list compression failed", exc_info=True)
+
+    # Container log compression:
+    # docker logs / kubectl logs / podman logs / docker compose logs can emit thousands of
+    # application log lines.  The model rarely needs every line — it needs recent output and
+    # any ERROR/WARN lines.  Fires when output reaches _CONTAINER_LOG_MIN_LINES on a
+    # successful run (exit_code in (None, 0)).
+    if exit_code in (None, 0) and stdout and len(stdout.splitlines()) >= _CONTAINER_LOG_MIN_LINES:
+        try:
+            import shlex as _shlex_cl  # noqa: PLC0415
+
+            from . import bash_compress as _bc_cl  # noqa: PLC0415
+
+            try:
+                _cl_argv = _shlex_cl.split(display_cmd.split("|")[0].strip(), posix=False)
+            except ValueError:
+                _cl_argv = display_cmd.strip().split()
+            _cl_argv_clean = [t.strip("\"'") for t in _cl_argv]
+
+            if _bc_cl._is_container_log_cmd(_cl_argv_clean):
+                if "--tail" in display_cmd or "--tail=" in display_cmd:
+                    _LOG.debug("post-bash: container logs has --tail, skipping compression")
+                else:
+                    _cl_lines = stdout.splitlines()
+                    _cl_n_lines = len(_cl_lines)
+
+                    # Tail: last 20 lines (most recent output).
+                    _cl_tail = _cl_lines[-20:]
+
+                    # Error/warn lines: sequential scan that also captures stack frames
+                    # immediately following a matched error line.
+                    _CL_ERROR_PATTERNS = (
+                        "error", "ERROR", "FATAL", "fatal", "CRITICAL", "panic",
+                        "exception", "Exception",
+                    )
+                    _cl_error_lines: list[str] = []
+                    _cl_ei = 0
+                    while _cl_ei < len(_cl_lines):
+                        _cl_ln = _cl_lines[_cl_ei]
+                        if any(_cp in _cl_ln for _cp in _CL_ERROR_PATTERNS):
+                            _cl_error_lines.append(_cl_ln.rstrip())
+                            _cl_ei += 1
+                            # Capture stack frames immediately following the error line
+                            while _cl_ei < len(_cl_lines):
+                                _cl_nxt = _cl_lines[_cl_ei]
+                                _cl_nxt_s = _cl_nxt.strip()
+                                if (
+                                    _cl_nxt_s.startswith("at ")
+                                    or _cl_nxt_s.lower().startswith("caused by:")
+                                    or (_cl_nxt and _cl_nxt[0] in (" ", "\t") and _cl_nxt_s)
+                                ):
+                                    _cl_error_lines.append(_cl_nxt.rstrip())
+                                    _cl_ei += 1
+                                else:
+                                    break
+                        else:
+                            _cl_ei += 1
+                    _cl_error_count = len(_cl_error_lines)
+
+                    _cl_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_cl_cache  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _cl_meta = _bc_cl_cache.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _cl_meta is not None:
+                                _bc_cl_cache.write_sidecar(_cl_meta)
+                                _cl_out_id = _cl_meta.output_id
+
+                    _cl_recall = (
+                        f"\n[Full output: bash-output {_cl_out_id}]" if _cl_out_id else ""
+                    )
+                    _cl_short_cmd = display_cmd[:80]
+                    _cl_msg_parts = [
+                        f"[token-goat] container logs: {_cl_n_lines} lines"
+                        f" | {_cl_error_count} errors/warnings | {_cl_short_cmd}",
+                        "--- recent (last 20 lines) ---",
+                        "\n".join(_cl_tail),
+                    ]
+                    if _cl_error_count > 0:
+                        _cl_msg_parts.append(f"--- errors/warnings ({_cl_error_count} lines) ---")
+                        if _cl_error_count > 30:
+                            _cl_msg_parts.append("\n".join(_cl_error_lines[:30]))
+                            _cl_msg_parts.append(f"+{_cl_error_count - 30} more")
+                        else:
+                            _cl_msg_parts.append("\n".join(_cl_error_lines))
+                    if _cl_recall:
+                        _cl_msg_parts.append(_cl_recall)
+
+                    _LOG.info(
+                        "post-bash: container logs compressed lines=%d errors=%d cmd=%.60s",
+                        _cl_n_lines, _cl_error_count, display_cmd,
+                    )
+                    return {
+                        "continue": True,
+                        "systemMessage": "\n".join(_cl_msg_parts),
+                    }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: container log compression failed", exc_info=True)
 
     # Git log output compression (Iter 21):
     # When git log emits >= _GIT_LOG_COMPRESS_MIN_LINES lines, store the full output

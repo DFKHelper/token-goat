@@ -1322,6 +1322,116 @@ def _is_env_list_cmd(argv: list[str]) -> bool:
     return False
 
 
+def _is_container_log_cmd(argv: list[str]) -> bool:
+    """Return ``True`` when *argv* is a container log retrieval command.
+
+    Matches:
+
+    - ``docker logs [flags] CONTAINER``
+    - ``docker compose logs [flags] [SERVICE...]``
+    - ``docker-compose logs [flags] [SERVICE...]``
+    - ``kubectl logs [flags] POD``
+    - ``podman logs [flags] CONTAINER``
+
+    *argv* must be the result of ``shlex.split(cmd, posix=False)`` with
+    quote-stripping already applied (i.e. ``[t.strip("\\\"'") for t in raw]``).
+    """
+    if len(argv) < 2:
+        return False
+    base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+
+    # docker-compose ---------------------------------------------------------
+    if base == "docker-compose":
+        _VALUE_FLAGS = {
+            "--file", "-f", "--project-name", "-p", "--project-directory",
+            "--env-file", "--profile", "--ansi", "--parallel",
+        }
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-"):
+                i += 1
+            else:
+                return tok.lower() == "logs"
+        return False
+
+    # kubectl ----------------------------------------------------------------
+    if base == "kubectl":
+        _VALUE_FLAGS = {
+            "-n", "--namespace", "--context", "--kubeconfig", "--server", "-s",
+            "--token", "--user", "--cluster", "--log-level", "--log-flush-frequency",
+            "--request-timeout", "--as", "--as-group", "--as-uid",
+            "--tls-server-name", "--certificate-authority", "--client-certificate",
+            "--client-key", "--cache-dir",
+        }
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-"):
+                i += 1
+            else:
+                return tok.lower() == "logs"
+        return False
+
+    # podman -----------------------------------------------------------------
+    if base == "podman":
+        _VALUE_FLAGS = {
+            "--connection", "-c", "--identity", "--log-level", "--url",
+        }
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-"):
+                i += 1
+            else:
+                return tok.lower() == "logs"
+        return False
+
+    # docker -----------------------------------------------------------------
+    if base == "docker":
+        # Docker has global flags before the subcommand.
+        _DOCKER_VALUE_FLAGS = {
+            "--host", "-H", "--config", "--context", "--log-level", "-l",
+        }
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _DOCKER_VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-"):
+                i += 1
+            else:
+                # First non-flag positional: either "compose" (sub-group) or the subcommand.
+                if tok.lower() == "compose":
+                    # docker compose [flags] logs ...
+                    _COMPOSE_VALUE_FLAGS = {
+                        "--file", "-f", "--project-name", "-p", "--project-directory",
+                        "--env-file", "--profile", "--ansi", "--parallel",
+                    }
+                    i += 1
+                    while i < len(argv):
+                        tok2 = argv[i]
+                        if tok2 in _COMPOSE_VALUE_FLAGS:
+                            i += 2  # flag + its value argument
+                        elif tok2.startswith("-"):
+                            i += 1
+                        else:
+                            return tok2.lower() == "logs"
+                    return False
+                return tok.lower() == "logs"
+        return False
+
+    return False
+
+
 def _is_poll_loop_cmd(cmd: str) -> bool:
     """Return ``True`` when *cmd* looks like a shell poll loop.
 
