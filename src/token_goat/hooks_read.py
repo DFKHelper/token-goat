@@ -2897,17 +2897,15 @@ def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
 
 
 def _handle_bash_grep_dedup(payload: HookPayload) -> HookResponse | None:
-    """Return a pattern-level dedup hint when a Bash grep command repeats a prior search.
+    """Return cached Grep results or a dedup hint when a Bash grep repeats a prior search.
+
+    When the native Grep tool ran the same (pattern, path) recently and its result
+    is cached in bash_cache, the cached text is injected as additionalContext so
+    the Bash command can be skipped.  Falls back to the advisory dedup hint when
+    no cached result is available.
 
     Handles ``rg``, ``grep``, ``ag``, and other pattern-search tools invoked via
-    the Bash tool.  Unlike :func:`_handle_bash_dedup` (which requires an identical
-    command string), this fires on the same *pattern* even when the command differs
-    slightly (e.g. ``rg "TODO" src/`` vs ``rg "TODO" tests/`` if both paths were
-    searched in the same session).
-
-    Works by parsing the Bash command via :mod:`bash_parser` to extract
-    ``(pattern, path)`` and then delegating to :func:`~hints.build_grep_dedup_hint`
-    — the same builder used by the native Grep tool path.
+    the Bash tool.
 
     Returns ``None`` when:
 
@@ -2929,8 +2927,53 @@ def _handle_bash_grep_dedup(payload: HookPayload) -> HookResponse | None:
         return None
 
     pattern = intent.pattern
-    # target_path from _parse_grep is the search root/file argument.
-    path = intent.target_path
+    path = intent.target_path  # search root/file argument from _parse_grep
+
+    sid, _ = get_session_context(payload)
+    if sid:
+        try:
+            import time as _time  # noqa: PLC0415
+
+            from .bash_cache import _normalize_grep_path as _ngp  # noqa: PLC0415, PLC2701
+            from .bash_cache import load_grep_result as _lgr
+            from .hints import STALE_READ_AGE_SECONDS, compute_stale_threshold  # noqa: PLC0415
+            _sess = _get_session()
+            cache = _sess.load(sid)
+            # Normalize the bash-side path for comparison; grep_hash() uses the same normalization,
+            # so this aligns the in-memory lookup key with the disk cache key.
+            norm_path = _ngp(path) if path is not None else ""
+            grep_entry = None
+            if cache is not None and getattr(cache, "greps", None):
+                for _e in reversed(cache.greps):
+                    if _e.pattern == pattern and (_ngp(_e.path) if _e.path is not None else "") == norm_path:
+                        grep_entry = _e
+                        break
+            if grep_entry is not None:
+                _now = _time.time()
+                age = _now - grep_entry.ts
+                _sess_created = getattr(cache, "created_ts", None)
+                _sess_age = (_now - _sess_created) if _sess_created is not None else STALE_READ_AGE_SECONDS
+                _stale_thresh = compute_stale_threshold(_sess_age)
+                if age <= _stale_thresh:
+                    # Use the stored entry path for the disk lookup — grep_hash normalizes it internally.
+                    stored_path = grep_entry.path
+                    # Bash grep always returns content-style output; try "content" first, then files_with_matches.
+                    cached_result = _lgr(sid, pattern, stored_path, None, None, "content")
+                    if cached_result is None:
+                        cached_result = _lgr(sid, pattern, stored_path, None, None, None)
+                    if cached_result is not None:
+                        path_label = f" in {path!r}" if path else ""
+                        hint_text = (
+                            f"Note: Grep `{sanitize_log_str(pattern, max_len=100)}`{path_label} "
+                            f"ran {int(age)}s ago via Grep tool — cached result ({grep_entry.result_count or '?'} matches):\n"
+                            f"{cached_result}\n"
+                            "(Serving from cache. Run without hints to force a fresh search.)"
+                        )
+                        record_cached_stat("bash_grep_result_cache_hit", sanitize_log_str(pattern, max_len=200))
+                        _LOG.info("pre-read: bash-grep cache hit pattern=%s (age=%ds)", sanitize_log_str(pattern, max_len=100), int(age))
+                        return pre_tool_use_with_context(hint_text)
+        except Exception:  # noqa: BLE001
+            _LOG.debug("pre-read: bash-grep cache check failed", exc_info=True)
 
     return run_dedup_hint(
         payload,
