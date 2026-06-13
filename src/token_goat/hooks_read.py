@@ -4550,6 +4550,9 @@ _LARGE_STDOUT_LINE_THRESHOLD: int = 200
 # Git log output compressor (Iter 21)
 # git log with many commits can emit thousands of lines; compress when >= this many.
 _GIT_LOG_COMPRESS_MIN_LINES: int = 50
+# Package manager install output compressor
+# pip/cargo/npm/yarn/uv install with many progress lines; compress when >= this many.
+_PKG_INSTALL_MIN_LINES: int = 30
 
 # Lazy-load cache for the session module.  All function bodies that previously
 # did ``from . import session`` (or ``as _session``/``as _sess``) now call
@@ -5454,6 +5457,104 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 }
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: sleep/watch/poll suppress failed", exc_info=True)
+
+    # Package manager install output compression:
+    # pip/cargo/npm/yarn/uv install invocations emit hundreds of "Collecting ...",
+    # "Compiling ...", "Downloading ..." progress lines per package on every run.
+    # When output reaches _PKG_INSTALL_MIN_LINES, store the full output and return
+    # a compact summary: total line count, error/warning lines, and the final
+    # status line ("Successfully installed ...", "Finished ...", etc.).
+    # Fires for exit_code in (None, 0, 1) — 1 covers partial-install failures.
+    if exit_code in (None, 0, 1) and stdout and len(stdout.splitlines()) >= _PKG_INSTALL_MIN_LINES:
+        try:
+            import shlex as _shlex_pkg  # noqa: PLC0415
+
+            from . import bash_compress as _bc_pkg  # noqa: PLC0415
+
+            try:
+                _pkg_argv = _shlex_pkg.split(display_cmd.split("|")[0].strip(), posix=False)
+            except ValueError:
+                _pkg_argv = display_cmd.strip().split()
+            _pkg_argv_clean = [t.strip("\"'") for t in _pkg_argv]
+
+            if _bc_pkg._is_pkg_install_cmd(_pkg_argv_clean):
+                _pkg_lines = stdout.splitlines()
+                _pkg_n_lines = len(_pkg_lines)
+
+                _PROGRESS_PREFIXES = (
+                    "Collecting", "Compiling", "Downloading", "Installing",
+                    "Fetching", "Updating", "Resolving",
+                )
+                _PROGRESS_BAR_CHARS = set("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏█▉▊▋▌▍▎▏|#")
+
+                _pkg_error_lines: list[str] = []
+                _pkg_progress_count = 0
+
+                for _pl in _pkg_lines:
+                    _pl_stripped = _pl.strip()
+                    if not _pl_stripped:
+                        continue
+                    _pl_lower = _pl_stripped.lower()
+                    if (
+                        "error" in _pl_lower
+                        or "failed" in _pl_lower
+                        or "warning:" in _pl_lower
+                        or " err!" in _pl_lower
+                        or _pl_lower.startswith("npm warn")
+                        or _pl_lower.startswith("npm err")
+                    ):
+                        _pkg_error_lines.append(_pl_stripped)
+                    if _pl_stripped.startswith(_PROGRESS_PREFIXES) or (
+                        bool(_pl_stripped) and _pl_stripped[0] in _PROGRESS_BAR_CHARS
+                    ):
+                        _pkg_progress_count += 1
+
+                # Last non-empty line is usually the summary ("Successfully installed ...", etc.)
+                _pkg_summary_line = ""
+                for _pl in reversed(_pkg_lines):
+                    if _pl.strip():
+                        _pkg_summary_line = _pl.strip()
+                        break
+
+                _pkg_out_id: str | None = None
+                if session_id:
+                    from . import bash_cache as _bc_pkg_cache  # noqa: PLC0415
+                    with contextlib.suppress(Exception):
+                        _pkg_meta = _bc_pkg_cache.store_output(
+                            session_id, display_cmd, stdout, stderr, exit_code,
+                            cwd=cwd, min_cache_bytes=0,
+                        )
+                        if _pkg_meta is not None:
+                            _bc_pkg_cache.write_sidecar(_pkg_meta)
+                            _pkg_out_id = _pkg_meta.output_id
+
+                _pkg_unique_kept: set[str] = set(_pkg_error_lines)
+                if _pkg_summary_line:
+                    _pkg_unique_kept.add(_pkg_summary_line)
+                _pkg_kept = len(_pkg_unique_kept)
+                _pkg_cmd_short = display_cmd[:60]
+                _pkg_recall = f"\n[Full output: bash-output {_pkg_out_id}]" if _pkg_out_id else ""
+
+                _pkg_parts = [
+                    f"[token-goat] pkg install: {_pkg_n_lines} lines → {_pkg_kept} kept | {_pkg_cmd_short}",
+                ]
+                if _pkg_summary_line and _pkg_summary_line not in _pkg_error_lines:
+                    _pkg_parts.append(_pkg_summary_line)
+                if _pkg_error_lines:
+                    _pkg_parts.extend(_pkg_error_lines)
+                if _pkg_recall:
+                    _pkg_parts.append(_pkg_recall)
+
+                _LOG.info(
+                    "post-bash: pkg install compressed lines=%d progress=%d errors=%d cmd=%.60s",
+                    _pkg_n_lines, _pkg_progress_count, len(_pkg_error_lines), display_cmd,
+                )
+                return {
+                    "continue": True,
+                    "systemMessage": "\n".join(_pkg_parts),
+                }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: pkg install compression failed", exc_info=True)
 
     # Git log output compression (Iter 21):
     # When git log emits >= _GIT_LOG_COMPRESS_MIN_LINES lines, store the full output

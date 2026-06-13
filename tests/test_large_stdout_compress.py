@@ -179,7 +179,7 @@ class TestIntegration:
     def test_250_line_stdout_compressed(self):
         """post_bash with 250-line plain stdout must return a compression systemMessage."""
         stdout = _make_stdout(250)
-        payload = _make_payload("", "cargo build --release", stdout)
+        payload = _make_payload("", "make build", stdout)
         result = hooks_read.post_bash(payload)
         msg = _sys_msg(result)
         assert "[token-goat] large output:" in msg
@@ -212,7 +212,7 @@ class TestIntegration:
         long_line = "x" * 200  # 200 chars per line → ~40 KB total
         stdout = "\n".join(long_line for _ in range(200))
         assert len(stdout) > 8_192, "fixture too small — test is invalid"
-        payload = _make_payload("", "cargo build --release", stdout)
+        payload = _make_payload("", "make build", stdout)
         result = hooks_read.post_bash(payload)
         assert "[token-goat] large output:" in _sys_msg(result)
 

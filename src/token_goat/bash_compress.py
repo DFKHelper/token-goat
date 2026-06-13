@@ -1157,6 +1157,117 @@ def _is_git_log_cmd(argv: list[str]) -> bool:
     return False
 
 
+def _is_pkg_install_cmd(argv: list[str]) -> bool:
+    """Return ``True`` when *argv* is a package-manager install invocation.
+
+    Matches:
+
+    - ``pip`` / ``pip3``: ``install``, ``download``
+    - ``cargo``: ``install``
+    - ``npm``: ``install``, ``i``, ``ci``, ``update``
+    - ``yarn``: ``install``, ``add``, ``upgrade``
+    - ``uv``: ``sync``, ``install``, ``add``; or ``uv pip install``
+
+    Global flags before the subcommand are skipped (same technique as
+    :func:`_is_git_log_cmd`).  *argv* must be shlex-split with
+    quote-stripping already applied (i.e. ``[t.strip("\\\"'") for t in raw]``).
+    """
+    if len(argv) < 2:
+        return False
+    base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if base.endswith(".exe"):
+        base = base[:-4]
+
+    # pip / pip3 ---------------------------------------------------------
+    if base in {"pip", "pip3"}:
+        _PIP_VALUE_FLAGS = {
+            "--index-url", "-i", "--extra-index-url", "--trusted-host",
+            "--cert", "--client-cert", "--proxy", "--timeout", "--retries",
+            "--log", "--cache-dir", "--build-dir", "--target",
+        }
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _PIP_VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-"):
+                i += 1
+            else:
+                return tok.lower() in {"install", "download"}
+        return False
+
+    # cargo ---------------------------------------------------------------
+    if base == "cargo":
+        _CARGO_VALUE_FLAGS = {"-C", "--manifest-path", "--config", "--target-dir", "-Z"}
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _CARGO_VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-"):
+                i += 1
+            else:
+                return tok.lower() in {"install"}
+        return False
+
+    # npm -----------------------------------------------------------------
+    if base == "npm":
+        _NPM_VALUE_FLAGS = {"-C", "--prefix", "--userconfig", "--globalconfig"}
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _NPM_VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-"):
+                i += 1
+            else:
+                return tok.lower() in {"install", "i", "ci", "update"}
+        return False
+
+    # yarn ----------------------------------------------------------------
+    if base == "yarn":
+        _YARN_VALUE_FLAGS = {"--cwd"}
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _YARN_VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-"):
+                i += 1
+            else:
+                return tok.lower() in {"install", "add", "upgrade"}
+        return False
+
+    # uv ------------------------------------------------------------------
+    if base == "uv":
+        _UV_VALUE_FLAGS = {"--project", "--directory", "--python", "-p", "--cache-dir", "--config-file"}
+        i = 1
+        while i < len(argv):
+            tok = argv[i]
+            if tok in _UV_VALUE_FLAGS:
+                i += 2
+            elif tok.startswith("-"):
+                i += 1
+            else:
+                sub = tok.lower()
+                if sub in {"sync", "install", "add"}:
+                    return True
+                if sub == "pip":
+                    # uv pip install / uv pip sync
+                    j = i + 1
+                    while j < len(argv):
+                        t2 = argv[j]
+                        if t2.startswith("-"):
+                            j += 1
+                        else:
+                            return t2.lower() in {"install", "sync"}
+                    return False
+                return False
+        return False
+
+    return False
+
+
 def _is_poll_loop_cmd(cmd: str) -> bool:
     """Return ``True`` when *cmd* looks like a shell poll loop.
 
