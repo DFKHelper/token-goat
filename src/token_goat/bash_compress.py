@@ -2126,6 +2126,49 @@ _PYTEST_VERBOSE_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"^\S.+::\S+[ \t]+(PASSED|FAILED|ERROR|SKIPPED|XFAIL|XPASS)(?:[ \t]|\Z)"
 )
 
+#: Verbose flags that activate per-test PASSED-line suppression.
+_VT_VERBOSE_FLAGS: frozenset[str] = frozenset({"-v", "--verbose", "-vv", "-vvv", "-vvvv"})
+
+#: Matches a single per-test PASSED line in verbose pytest output.
+_VT_PASSED_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\S.+::\S+[ \t]+PASSED(?:[ \t]|\Z)"
+)
+
+
+def _is_verbose_test_cmd(argv: list[str]) -> bool:
+    """Return True when *argv* is a pytest verbose run (-v/--verbose).
+
+    Recognises direct invocations (``pytest -v``) and common wrappers:
+    - ``uv run pytest -v``
+    - ``python -m pytest -v``
+    - ``python3 -m pytest -v``
+
+    Does NOT match plain ``pytest`` without a verbose flag.
+    """
+    if not argv:
+        return False
+    # Strip path separators to get the bare executable name.
+    base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    if base in {"pytest", "py.test"}:
+        pass  # direct invocation — fall through to verbose flag check
+    elif (
+        base == "uv"
+        and len(argv) >= 3
+        and argv[1] == "run"
+        and argv[2].lower().removesuffix(".exe") in {"pytest", "py.test"}
+    ):
+        pass  # uv run pytest … — fall through
+    elif (
+        base in {"python", "python3"}
+        and len(argv) >= 3
+        and argv[1] == "-m"
+        and argv[2].lower() == "pytest"
+    ):
+        pass  # python -m pytest … — fall through
+    else:
+        return False
+    return any(a in _VT_VERBOSE_FLAGS for a in argv[1:])
+
 
 class PytestFilter(Filter):
     """Compress pytest output: keep failures + summary, drop pass progress.

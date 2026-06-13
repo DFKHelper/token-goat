@@ -4508,6 +4508,8 @@ _PYTEST_COMPRESS_MIN_BYTES: int = 2000
 #: Matches individual-test separator lines inside the pytest FAILURES section.
 #: e.g. "______________ test_my_function[param] ______________"
 _PYTEST_TB_SEP_RE: _re.Pattern[str] = _re.compile(r"^_{4,}\s+\S.*\s+_{4,}\s*$")
+#: Minimum line count before verbose pytest PASSED-line suppression fires.
+_VERBOSE_TEST_MIN_LINES: int = 80
 #: Matches the base command name of directory-exploration invocations (ls, eza, tree, fd).
 _RECON_CMD_RE: _re.Pattern[str] = _re.compile(r"^(?:ls|ll|la|eza|exa|tree|fd|fdfind)\b")
 
@@ -5838,6 +5840,65 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         }
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: git log compression failed", exc_info=True)
+
+    # Verbose pytest PASSED-line suppression:
+    # Fires when the command is a pytest verbose run (-v/--verbose) and stdout is
+    # long (>= _VERBOSE_TEST_MIN_LINES lines).  Strips per-test PASSED progress
+    # lines which are pure noise on re-runs while keeping FAILED/ERROR lines,
+    # failure sections, and the final summary.  Full output is cached so
+    # ``bash-output <id>`` recall works.
+    # Must sit BEFORE the iter-18 pytest block so verbose-but-passing runs get
+    # compressed here (the iter-18 block only fires when "FAILED" is present).
+    if exit_code in (None, 0, 1) and stdout and len(stdout.splitlines()) >= _VERBOSE_TEST_MIN_LINES:
+        try:
+            import shlex as _shlex_vt  # noqa: PLC0415
+
+            from .bash_compress import _VT_PASSED_LINE_RE as _vt_passed_re  # noqa: PLC0415
+            from .bash_compress import _is_verbose_test_cmd as _vt_check  # noqa: PLC0415
+
+            _vt_argv = _shlex_vt.split(display_cmd, posix=True)
+            if _vt_argv and _vt_check(_vt_argv):
+                _vt_lines = stdout.splitlines()
+                _vt_kept: list[str] = []
+                _vt_suppressed = 0
+                for _vt_line in _vt_lines:
+                    if _vt_passed_re.match(_vt_line):
+                        _vt_suppressed += 1
+                    else:
+                        _vt_kept.append(_vt_line)
+                if _vt_suppressed > 0:
+                    _vt_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_vt  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _vt_meta = _bc_vt.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _vt_meta is not None:
+                                _bc_vt.write_sidecar(_vt_meta)
+                                _vt_out_id = _vt_meta.output_id
+                    _vt_recall = f"\n[Full output: bash-output {_vt_out_id}]" if _vt_out_id else ""
+                    _vt_body = "\n".join(_vt_kept)
+                    if stdout.endswith(("\n", "\r\n")):
+                        _vt_body += "\n"
+                    _vt_msg = (
+                        f"[token-goat] pytest -v: {len(_vt_lines)} lines"
+                        f" → {len(_vt_kept)} kept"
+                        f" ({_vt_suppressed} PASSED lines suppressed)\n"
+                        + _vt_body
+                        + _vt_recall
+                    )
+                    _LOG.info(
+                        "post-bash: verbose pytest PASSED suppressed count=%d cmd=%.60s",
+                        _vt_suppressed, display_cmd,
+                    )
+                    if _sess_mod is not None and _session_cache is not None:
+                        with contextlib.suppress(Exception):
+                            _sess_mod.save(_session_cache)
+                    return {"continue": True, "systemMessage": _vt_msg}
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: verbose pytest suppress failed", exc_info=True)
 
     # Pytest failure traceback suppression (Iter 18):
     # Fires when pytest output is large (>= _PYTEST_COMPRESS_MIN_BYTES) and contains
