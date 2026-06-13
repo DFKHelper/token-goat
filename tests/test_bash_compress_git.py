@@ -297,15 +297,57 @@ class TestGitDiffFilterStat:
         result = _apply(f, text, ["git", "diff", "--stat"])
         assert "file0.py" in result
 
-    def test_large_stat_collapsed(self) -> None:
+    def test_large_stat_dir_rollup(self) -> None:
+        # 25 files all under src/ → single rollup line, no individual filenames.
         text = self._make_stat_diff(25)
         f = bc.GitDiffFilter()
         result = _apply(f, text, ["git", "diff", "--stat"])
-        assert "more files changed" in result
-        # First 10 files should be present.
-        assert "file0.py" in result
-        # Files beyond head should be omitted.
+        assert "src/ (25 files," in result
+        assert "file0.py" not in result
         assert "file24.py" not in result
+
+    def test_large_stat_summary_always_present(self) -> None:
+        text = self._make_stat_diff(25)
+        f = bc.GitDiffFilter()
+        result = _apply(f, text, ["git", "diff", "--stat"])
+        assert "files changed" in result
+
+    def test_large_stat_pathspec_truncates_not_rollup(self) -> None:
+        # With an explicit pathspec (--) individual file listing is kept (truncated).
+        text = self._make_stat_diff(25)
+        f = bc.GitDiffFilter()
+        result = _apply(f, text, ["git", "diff", "--stat", "--", "src/"])
+        assert "more files changed" in result
+        assert "file0.py" in result
+        assert "src/ (" not in result
+
+    def test_large_stat_multi_dir_rollup(self) -> None:
+        # Files spread across several top-level dirs produce one rollup line each.
+        lines = [
+            " alpha/a.py | 3 +++",
+            " alpha/b.py | 2 ++",
+            " beta/c.py | 5 +++++",
+            " beta/d.py | 1 +",
+            " gamma/e.py | 4 ++++",
+        ] * 5  # 25 lines, 3 directories
+        summary = " 25 files changed, 75 insertions(+)"
+        text = "\n".join(lines) + "\n" + summary
+        f = bc.GitDiffFilter()
+        result = _apply(f, text, ["git", "diff", "--stat"])
+        assert "alpha/ (" in result
+        assert "beta/ (" in result
+        assert "gamma/ (" in result
+        assert "a.py" not in result
+
+    def test_large_stat_root_files_grouped(self) -> None:
+        # Files with no slash in their path go under "(root)".
+        root_files = [f" file{i}.txt | 1 +" for i in range(25)]
+        summary = " 25 files changed, 25 insertions(+)"
+        text = "\n".join(root_files) + "\n" + summary
+        f = bc.GitDiffFilter()
+        result = _apply(f, text, ["git", "diff", "--stat"])
+        assert "(root) (25 files," in result
+        assert "file0.txt" not in result
 
 
 # ---------------------------------------------------------------------------

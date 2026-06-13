@@ -5075,6 +5075,8 @@ _GIT_DIFF_STAT_FILE_RE: Final[re.Pattern[str]] = re.compile(
 _GIT_DIFF_STAT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*\d+ files? changed"
 )
+#: Files above this count trigger per-directory rollup grouping in ``--stat`` output.
+_DIFF_STAT_DIR_ROLLUP_THRESHOLD: Final[int] = 20
 _GIT_DIFF_HEADER_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:diff --git|index |--- |[+]{3} )"
 )
@@ -5090,15 +5092,22 @@ def _compress_git_diff_enhanced(stdout: str, stderr: str, argv: list[str]) -> st
     is_stat = "--stat" in flags or "--shortstat" in flags or "--name-only" in flags
 
     if is_stat:
-        return _compress_git_diff_stat(stdout, stderr)
+        return _compress_git_diff_stat(stdout, stderr, argv)
 
     return _compress_git_diff_body(stdout, stderr)
 
 
-def _compress_git_diff_stat(stdout: str, stderr: str) -> str:
-    """Collapse ``git diff --stat`` when it lists more than 20 files."""
-    _MAX_STAT_FILES = 20
-    _HEAD_FILES = 10
+def _compress_git_diff_stat(stdout: str, stderr: str, argv: list[str] | None = None) -> str:
+    """Collapse ``git diff --stat`` output using directory rollups when over threshold.
+
+    When the stat lists more than ``_DIFF_STAT_DIR_ROLLUP_THRESHOLD`` files and no
+    explicit pathspec (``-- path``) is present, files are grouped into one rollup
+    line per top-level directory so a 50-file stat becomes 3–5 lines instead of 50.
+    When a pathspec is present the caller already scoped to a path, so per-file
+    listing is kept (truncated to the first 10 when still over-threshold).
+    The total summary line (``N files changed, X insertions(+), Y deletions(-)``) is
+    always preserved.  Works for both ``git diff --stat`` and ``git show --stat``.
+    """
     lines = stdout.split("\n")
     stat_lines = [ln for ln in lines if _GIT_DIFF_STAT_FILE_RE.match(ln)]
     summary_lines = [ln for ln in lines if _GIT_DIFF_STAT_SUMMARY_RE.match(ln)]
@@ -5107,24 +5116,65 @@ def _compress_git_diff_stat(stdout: str, stderr: str) -> str:
         if not _GIT_DIFF_STAT_FILE_RE.match(ln) and not _GIT_DIFF_STAT_SUMMARY_RE.match(ln)
     ]
 
-    if len(stat_lines) <= _MAX_STAT_FILES:
+    if len(stat_lines) <= _DIFF_STAT_DIR_ROLLUP_THRESHOLD:
         out = stdout
     else:
-        elided = len(stat_lines) - _HEAD_FILES
-        # Parse +/- totals from the dropped lines for the summary
-        adds = dels = 0
-        for ln in stat_lines[_HEAD_FILES:]:
-            adds += ln.count("+")
-            dels += ln.count("-")
-        kept_stat = stat_lines[:_HEAD_FILES] + [
-            f" [token-goat: +{elided} more files changed, +{adds} -{dels} lines]"
-        ]
-        out_lines = other_lines + kept_stat + summary_lines
+        # When a pathspec (-- path) is supplied the user explicitly scoped the diff;
+        # keep individual file lines, just truncate to _HEAD_FILES if still large.
+        has_pathspec = argv is not None and "--" in argv
+        if has_pathspec:
+            _HEAD_FILES = 10
+            elided = len(stat_lines) - _HEAD_FILES
+            adds = dels = 0
+            for ln in stat_lines[_HEAD_FILES:]:
+                adds += ln.count("+")
+                dels += ln.count("-")
+            kept_stat = stat_lines[:_HEAD_FILES] + [
+                f" [token-goat: +{elided} more files changed, +{adds} -{dels} lines]"
+            ]
+            out_lines = other_lines + kept_stat + summary_lines
+        else:
+            out_lines = other_lines + _diff_stat_dir_rollup(stat_lines) + summary_lines
         out = "\n".join(out_lines)
 
     if stderr.strip():
         out = out.rstrip() + "\n---\n" + stderr.rstrip()
     return out
+
+
+def _diff_stat_dir_rollup(stat_lines: list[str]) -> list[str]:
+    """Group ``git diff --stat`` file lines by top-level directory.
+
+    Returns one rollup string per directory, e.g.
+    ``  scripts/ (12 files, +234/-89)``.  Files at the repo root (no slash
+    in path) are grouped under ``(root)``.  Rename notation
+    (``old => new`` or ``{old => new}/rest``) is resolved to the destination.
+    """
+    dir_adds: dict[str, int] = {}
+    dir_dels: dict[str, int] = {}
+    dir_count: dict[str, int] = {}
+
+    for ln in stat_lines:
+        stripped = ln.lstrip()
+        if " | " not in stripped:
+            continue
+        path_part = stripped.split(" | ")[0].strip()
+        # Resolve rename notation: "old/path => new/path" or "{old => new}/rest"
+        if " => " in path_part:
+            path_part = path_part.split(" => ")[-1].strip().lstrip("{").rstrip("}")
+        top_dir = path_part.split("/")[0] + "/" if "/" in path_part else "(root)"
+        stat_part = stripped.split(" | ", 1)[1] if " | " in stripped else ""
+        dir_adds[top_dir] = dir_adds.get(top_dir, 0) + stat_part.count("+")
+        dir_dels[top_dir] = dir_dels.get(top_dir, 0) + stat_part.count("-")
+        dir_count[top_dir] = dir_count.get(top_dir, 0) + 1
+
+    rollup: list[str] = []
+    for dir_name in sorted(dir_adds):
+        n = dir_count[dir_name]
+        a = dir_adds[dir_name]
+        d = dir_dels[dir_name]
+        rollup.append(f"  {dir_name} ({n} file{'s' if n != 1 else ''}, +{a}/-{d})")
+    return rollup
 
 
 def _is_repetitive_json_hunk(hunk_lines: list[str]) -> bool:
