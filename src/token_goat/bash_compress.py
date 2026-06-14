@@ -22519,18 +22519,19 @@ def compress_jest_output(stdout: str) -> tuple[str, int, int]:
 
 
 # ── curl verbose output ──────────────────────────────────────────────────────
-_CURL_VERBOSE_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"^[*<>] ")
 _CURL_REQUEST_LINE_RE: Final[re.Pattern[str]] = re.compile(
     r"^> (?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE) "
 )
-_CURL_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+_CURL_V_STATUS_RE: Final[re.Pattern[str]] = re.compile(
     r"^< HTTP/[12](?:\.\d)? \d{3}"
 )
 _CURL_CONTENT_TYPE_RE: Final[re.Pattern[str]] = re.compile(
     r"^< [Cc]ontent-[Tt]ype:", re.IGNORECASE
 )
 _CURL_VERBOSE_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*%\s+Total\s+%\s+Received"  # curl progress meter header
+    r"^\s*(?:%\s+Total\s+%\s+Received"   # header line
+    r"|Dload\s+Upload\s+Total"               # subheader line
+    r"|\d[\d ]+(?:--:--:--|\d:\d+:\d+))"  # numeric data lines
 )
 
 
@@ -22582,8 +22583,17 @@ def compress_curl_verbose(stdout: str) -> tuple[str, int]:
     found_content_type = False
 
     for line in lines:
-        # Once we're in the body, keep everything
+        # Once we're in the body, keep everything.
+        # A `* ` line while in body mode means curl is following a redirect —
+        # reset so the next request/response cycle gets compressed normally.
         if in_body:
+            if line.startswith("* "):
+                in_body = False
+                found_request_line = False
+                found_status = False
+                found_content_type = False
+                lines_removed += 1
+                continue
             out.append(line)
             continue
 
@@ -22619,7 +22629,7 @@ def compress_curl_verbose(stdout: str) -> tuple[str, int]:
 
         # `< ` lines (response headers) — keep status + content-type only
         if line.startswith("< "):
-            if not found_status and _CURL_STATUS_RE.match(line):
+            if not found_status and _CURL_V_STATUS_RE.match(line):
                 found_status = True
                 out.append(line)
             elif not found_content_type and _CURL_CONTENT_TYPE_RE.match(line):
