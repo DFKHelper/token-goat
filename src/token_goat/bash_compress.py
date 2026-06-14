@@ -208,6 +208,8 @@ __all__ = [
     "JuliaFilter",
     # Python tox multi-environment test runner
     "ToxFilter",
+    # Python nox task automation / test runner
+    "NoxFilter",
     # Crystal language spec runner / shards dependency manager
     "CrystalFilter",
     # HashiCorp Vault CLI
@@ -18762,6 +18764,118 @@ class ToxFilter(Filter):
 
 
 # ---------------------------------------------------------------------------
+# Python nox task automation / test runner
+# ---------------------------------------------------------------------------
+
+#: nox "Creating virtual environment..." line — env setup noise.
+#: Example: "nox > Creating virtual environment (virtualenv) using python3.12 in .nox/tests-3-12"
+_NOX_CREATE_VENV_RE: Final[re.Pattern[str]] = re.compile(
+    r"^nox\s+>\s+Creating\s+virtual\s+environment\b",
+    re.IGNORECASE,
+)
+#: nox "Re-using existing virtual environment..." — reuse notice (setup noise).
+#: Example: "nox > Re-using existing virtual environment at .nox/tests-3-12."
+_NOX_REUSE_VENV_RE: Final[re.Pattern[str]] = re.compile(
+    r"^nox\s+>\s+Re-?using\s+existing\s+virtual\s+environment\b",
+    re.IGNORECASE,
+)
+#: pip "Requirement already satisfied: <pkg>..." lines inside nox sessions.
+#: These accumulate rapidly when nox re-uses an env and all deps are present.
+_NOX_REQ_SATISFIED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Requirement already satisfied:",
+)
+#: pip progress inside nox sessions: Collecting / Downloading / Using cached /
+#:   Building wheel / Prepared metadata / Installing collected / Obtaining file://.
+#: "Successfully installed ..." is intentionally NOT matched so the install summary is kept.
+_NOX_PIP_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Collecting\s|Downloading\s|Using\s+cached\s|"
+    r"Installing\s+collected\s+packages|"
+    r"Building\s+wheel\s+for|Created\s+wheel\s+for|"
+    r"Preparing\s+metadata|Obtaining\s+file://|"
+    r"Getting\s+requirements\s+to\s+build)",
+    re.IGNORECASE,
+)
+#: pip >= 22 Unicode download progress bar. Requires leading ━ then digits to
+#: distinguish from rich section separators (e.g. "━━━ short test summary info ━━━").
+_NOX_PIP_BAR_RE: Final[re.Pattern[str]] = re.compile(r"^\s*━+\s+[\d.]")
+
+
+class NoxFilter(Filter):
+    """Compress Python ``nox`` task-automation output.
+
+    ``nox`` orchestrates isolated virtualenv creation, dependency installation,
+    and arbitrary session commands (tests, linting, type-checking) across
+    multiple Python versions.  A typical ``nox -s tests lint`` run emits
+    virtualenv-creation lines, pip download/install progress, and the
+    session command output — only the last category carries signal.
+
+    Compression model:
+
+    * **Env create/reuse lines** (``nox > Creating virtual environment...``,
+      ``nox > Re-using existing virtual environment...``): collapsed to a count.
+    * **pip progress within sessions** (``Collecting``, ``Downloading``,
+      ``Using cached``, Unicode progress bars ``━━━``, ``Installing collected
+      packages``, ``Building wheel``, ``Preparing metadata``): collapsed.
+    * **``Requirement already satisfied: ...``** lines: collapsed to a count.
+    * **All other lines** including ``nox > Running session``, ``nox > Session
+      X was successful/failed``, ``nox > Ran multiple sessions:``,
+      ``nox > * session: Passed/Failed/Skipped``, ``Successfully installed``,
+      test output, and error lines: always kept.
+    """
+
+    name = "nox"
+    binaries = frozenset(["nox"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        env_noise = 0
+        pip_noise = 0
+        req_satisfied = 0
+
+        for line in lines:
+            # Error signals — always keep regardless of source.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # nox env create / reuse setup noise.
+            if _NOX_CREATE_VENV_RE.match(line) or _NOX_REUSE_VENV_RE.match(line):
+                env_noise += 1
+                continue
+            # pip progress lines within nox sessions (Collecting, Downloading, …).
+            if _NOX_PIP_PROGRESS_RE.match(line):
+                pip_noise += 1
+                continue
+            # pip >= 22 Unicode download progress bar (e.g. "   ━━━━ 343.3/343.3 kB …").
+            # Uses anchored regex to avoid catching rich/pytest section separators.
+            if _NOX_PIP_BAR_RE.match(line):
+                pip_noise += 1
+                continue
+            # "Requirement already satisfied: <pkg>" — very numerous on env reuse.
+            if _NOX_REQ_SATISFIED_RE.match(line):
+                req_satisfied += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if env_noise:
+            notes.append(f"collapsed {env_noise} nox env-create/reuse lines")
+        if pip_noise:
+            notes.append(f"collapsed {pip_noise} pip install progress lines")
+        if req_satisfied:
+            notes.append(f"collapsed {req_satisfied} 'Requirement already satisfied' lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# ---------------------------------------------------------------------------
 # Crystal language spec runner / shards dependency manager
 # ---------------------------------------------------------------------------
 
@@ -23731,6 +23845,10 @@ FILTERS: list[Filter] = [
     # ToxFilter handles `tox` multi-environment Python test-runner output;
     # disjoint binary from every other filter so position is cosmetic.
     ToxFilter(),
+    # NoxFilter handles `nox` task-automation output; disjoint binary from
+    # every other filter so position is cosmetic — placed next to ToxFilter
+    # since both are Python multi-environment test orchestrators.
+    NoxFilter(),
     # CrystalFilter handles `crystal spec` test runs and `shards` dependency
     # manager output; disjoint binaries from every other filter.
     CrystalFilter(),
