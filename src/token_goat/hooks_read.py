@@ -6851,6 +6851,68 @@ def post_bash(payload: HookPayload) -> HookResponse:
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: jest compress failed", exc_info=True)
 
+    # curl -v verbose output compressor (Iter 37):
+    # Strips TLS handshake noise, connection info, and redundant response headers
+    # from `curl -v` output.  Keeps the request line, HTTP status, content-type,
+    # and response body.  Fires on successful or zero-exit curl verbose commands.
+    # Failures (exit_code != 0 and != None) are left untouched so the model sees
+    # the full error context.
+    if stdout and exit_code in (None, 0) and len(stdout.splitlines()) >= 10:
+        try:
+            import shlex as _shlex_curl  # noqa: PLC0415
+
+            from . import bash_compress as _bc_curl  # noqa: PLC0415
+            try:
+                _curl_argv = _shlex_curl.split(display_cmd, posix=False)
+            except ValueError:
+                _curl_argv = display_cmd.strip().split()
+            _curl_argv_clean = [t.strip("\"'") for t in _curl_argv]
+            if (
+                _bc_curl._is_curl_verbose_cmd(_curl_argv_clean)
+                and _bc_curl._has_curl_verbose_output(stdout)
+            ):
+                _curl_compressed, _curl_lines_removed = _bc_curl.compress_curl_verbose(stdout)
+                if _curl_lines_removed > 0 and _curl_compressed.strip():
+                    _curl_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_curl_cache  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _curl_meta = _bc_curl_cache.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _curl_meta is not None:
+                                _bc_curl_cache.write_sidecar(_curl_meta)
+                                _curl_out_id = _curl_meta.output_id
+                    # Extract HTTP status code for the message (e.g. "200")
+                    _curl_status_code = ""
+                    for _cln in stdout.splitlines():
+                        import re as _re_curl  # noqa: PLC0415
+                        _sm = _re_curl.match(r"^< HTTP/[12](?:\.\d)? (\d{3})", _cln)
+                        if _sm:
+                            _curl_status_code = _sm.group(1)
+                            break
+                    _curl_recall = (
+                        f"\nFull output: bash-output {_curl_out_id}"
+                        if _curl_out_id else ""
+                    )
+                    _curl_status_str = f", HTTP {_curl_status_code}" if _curl_status_code else ""
+                    _curl_header = (
+                        f"[token-goat] curl -v: {_curl_lines_removed} verbose lines stripped "
+                        f"(TLS/connection/headers). Kept: request line{_curl_status_str}, "
+                        f"content-type.{_curl_recall}"
+                    )
+                    _LOG.info(
+                        "post-bash: curl verbose compressed lines_removed=%d cmd=%.60s",
+                        _curl_lines_removed, display_cmd,
+                    )
+                    return {
+                        "continue": True,
+                        "systemMessage": _curl_header + "\n\n" + _curl_compressed,
+                    }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: curl verbose compress failed", exc_info=True)
+
     # Large plain-text stdout fallback compressor (Iter 19):
     # Fires AFTER all specialized handlers (JSON/XML, pytest, sleep/poll, etc.).
     # When a successful command emits >= _LARGE_STDOUT_LINE_THRESHOLD lines of plain text,

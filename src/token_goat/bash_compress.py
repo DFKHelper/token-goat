@@ -22516,3 +22516,125 @@ def compress_jest_output(stdout: str) -> tuple[str, int, int]:
             out.append(line)
 
     return "".join(out), pass_count, fail_count
+
+
+# ── curl verbose output ──────────────────────────────────────────────────────
+_CURL_VERBOSE_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"^[*<>] ")
+_CURL_REQUEST_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^> (?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE) "
+)
+_CURL_STATUS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^< HTTP/[12](?:\.\d)? \d{3}"
+)
+_CURL_CONTENT_TYPE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^< [Cc]ontent-[Tt]ype:", re.IGNORECASE
+)
+_CURL_VERBOSE_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*%\s+Total\s+%\s+Received"  # curl progress meter header
+)
+
+
+def _is_curl_verbose_cmd(argv: list[str]) -> bool:
+    """Return True when argv is a curl command with verbose flag."""
+    if not argv:
+        return False
+
+    def _base(s: str) -> str:
+        b = s.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        for ext in (".exe", ".cmd"):
+            if b.endswith(ext):
+                b = b[: -len(ext)]
+                break
+        return b
+
+    base = _base(argv[0])
+    if base != "curl":
+        return False
+    args_str = " ".join(argv[1:])
+    # -v, --verbose, or combined short flags containing v (e.g. -vL, -vsL)
+    return bool(
+        re.search(r"(?:^|\s)--verbose(?:\s|$)", args_str)
+        or re.search(r"(?:^|\s)-[a-zA-Z]*v[a-zA-Z]*(?:\s|$)", args_str)
+    )
+
+
+def _has_curl_verbose_output(stdout: str) -> bool:
+    """Return True when stdout contains curl verbose markers."""
+    lines = stdout.splitlines()
+    has_star = any(ln.startswith("* ") for ln in lines)
+    has_req = any(ln.startswith("> ") for ln in lines)
+    has_resp = any(ln.startswith("< ") for ln in lines)
+    return has_star or (has_req and has_resp)
+
+
+def compress_curl_verbose(stdout: str) -> tuple[str, int]:
+    """Strip curl verbose noise, keeping request line, status, content-type, body.
+
+    Returns (compressed_text, lines_removed).
+    The response body (after the blank separator) is kept verbatim.
+    """
+    lines = stdout.splitlines(keepends=True)
+    out: list[str] = []
+    lines_removed = 0
+    in_body = False
+    found_request_line = False
+    found_status = False
+    found_content_type = False
+
+    for line in lines:
+        # Once we're in the body, keep everything
+        if in_body:
+            out.append(line)
+            continue
+
+        # Bare `<` line = end of response headers, body follows.
+        # Bare `>` line = end of request headers (response headers come next, not body).
+        # Empty line = body content (no prefix markers).
+        stripped = line.rstrip("\r\n")
+        if stripped == "<":
+            out.append(line)
+            in_body = True
+            continue
+        if stripped == ">":
+            # End-of-request-headers separator; emit and continue to response headers.
+            out.append(line)
+            continue
+        if stripped == "":
+            out.append(line)
+            continue
+
+        # `* ` lines (connection/TLS info) — always suppress
+        if line.startswith("* "):
+            lines_removed += 1
+            continue
+
+        # `> ` lines (request headers) — keep only the request line
+        if line.startswith("> "):
+            if not found_request_line and _CURL_REQUEST_LINE_RE.match(line):
+                found_request_line = True
+                out.append(line)
+            else:
+                lines_removed += 1
+            continue
+
+        # `< ` lines (response headers) — keep status + content-type only
+        if line.startswith("< "):
+            if not found_status and _CURL_STATUS_RE.match(line):
+                found_status = True
+                out.append(line)
+            elif not found_content_type and _CURL_CONTENT_TYPE_RE.match(line):
+                found_content_type = True
+                out.append(line)
+            else:
+                lines_removed += 1
+            continue
+
+        # curl progress meter lines — suppress
+        if _CURL_VERBOSE_PROGRESS_RE.match(line):
+            lines_removed += 1
+            continue
+
+        # Everything else (body content or plain text) — keep
+        out.append(line)
+
+    return "".join(out), lines_removed
