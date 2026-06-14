@@ -18672,9 +18672,9 @@ _TOX_ENV_RESULT_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:\S+\s+)+(?:OK|FAIL(?:ED)?|PASSED|skipped)\s*(?:\(\d+[\d.]*s\))?\s*$",
     re.IGNORECASE,
 )
-#: tox package install progress inside an env: "  .pkg: install …"
+#: tox package install progress inside an env: "  .pkg: install …" / "  .pkg: wheel-editable"
 _TOX_PKG_INSTALL_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*\.pkg:\s+(?:inst|install|build-wheel|_check_passed)\b",
+    r"^\s*\.pkg:\s+(?:inst|install|build-wheel|wheel-editable|_check_passed)\b",
     re.IGNORECASE,
 )
 #: tox "run-test-pre" / "run-test:" label line — transitional noise
@@ -18686,6 +18686,39 @@ _TOX_RUN_LABEL_RE: Final[re.Pattern[str]] = re.compile(
 #:   "py311 run-test-pre: PYTHONHASHSEED='...'", "py311 run-test: pytest ..."
 _TOX_ENV_HEADER_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*\S+\s+(?:run-test(?:-pre)?|recreate|install(?:pkg|deps)?):\s+"
+)
+#: pip progress inside tox environments (no env prefix — raw pip output).
+#: Lines emitted by pip while tox installs deps: Collecting / Downloading /
+#: Using cached / Building wheel / Preparing metadata / Installing collected.
+#: "Successfully installed ..." is intentionally NOT matched so the summary is kept.
+_TOX_PIP_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:Collecting\s|Downloading\s|Using\s+cached\s|"
+    r"Installing\s+collected\s+packages|"
+    r"Building\s+wheel\s+for|Created\s+wheel\s+for|"
+    r"Preparing\s+metadata|Obtaining\s+file://|"
+    r"Getting\s+requirements\s+to\s+build)"
+)
+#: pip >= 22 Unicode download progress bar inside tox environments.
+#: Leading ━ then digits distinguishes from rich/pytest section separators.
+#: Example: "   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 60.2/60.2 kB 2.0 MB/s"
+#: Requires the X/Y fraction so pytest-rich "N passed in Xs" summaries are not caught.
+_TOX_PIP_BAR_RE: Final[re.Pattern[str]] = re.compile(r"^\s*━+\s+[\d.]+/[\d.]")
+#: "Requirement already satisfied: <pkg>…" lines inside tox environments.
+#: Hundreds of these can appear when tox reuses an env with all deps present.
+_TOX_REQ_SATISFIED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*Requirement\s+already\s+satisfied:",
+)
+#: tox 4 visual separator lines between env sections.
+#: Example: "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ py3.11 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+#: These are pure visual noise with no information content.
+#: tox 4 env separators have a single-token env name between ━ runs; multi-word
+#: pytest-rich section labels like "short test summary info" are intentionally not matched.
+_TOX_SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(r"^\s*━{5,}\s+\S+\s+━{5,}\s*$")
+#: tox 4 parallel-runner polling lines emitted during ``tox run-parallel``.
+#: Example: "py311: still running (0.55s)..."
+_TOX_STILL_RUNNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*\S+:\s+still\s+running\b",
+    re.IGNORECASE,
 )
 
 
@@ -18700,12 +18733,22 @@ class ToxFilter(Filter):
     Compression model:
 
     * **Environment creation / installation progress lines** (``py311: create``,
-      ``py311: install_deps``, ``.pkg: install``): collapsed to a count per run.
+      ``py311: install_deps``, ``.pkg: install``, ``.pkg: wheel-editable``):
+      collapsed to a count per run.
+    * **pip progress inside envs** (``Collecting``, ``Downloading``,
+      ``Using cached``, ``Building wheel``, ``Installing collected packages``,
+      Unicode progress bars ``━━━``): collapsed to a count.
+    * **``Requirement already satisfied: …``** lines: collapsed to a count.
+    * **tox 4 visual separator lines** (``━━━━━━ py3.11 ━━━━━━``):
+      dropped (pure visual noise).
+    * **tox 4 parallel-runner polling** (``py311: still running (0.55s)...``):
+      dropped.
     * **tox session header** (``ROOT:``, ``tox run …``): always kept.
     * **``commands succeeded`` / ``commands failed``**: always kept.
     * **Error lines** (``ERROR:``): always kept.
     * **Final summary** (``congratulations``, ``N passed in Xs``): always kept.
     * **Per-env result lines** (``py311: OK (5.2s)``): always kept.
+    * **``Successfully installed …``**: always kept (install summary).
     * **pytest output inside each env**: passed through as-is (PytestFilter
       handles it in the same call chain when tox delegates to pytest).
     * **Errors** (exit_code != 0): stderr preserved unchanged.
@@ -18725,6 +18768,10 @@ class ToxFilter(Filter):
         lines = combined.split("\n")
         kept: list[str] = []
         dropped_create = 0
+        dropped_pip = 0
+        dropped_req_satisfied = 0
+        dropped_separators = 0
+        dropped_polling = 0
 
         for line in lines:
             # Error signals — always keep.
@@ -18752,6 +18799,23 @@ class ToxFilter(Filter):
             ):
                 dropped_create += 1
                 continue
+            # pip progress (Collecting / Downloading / Using cached / …) and
+            # Unicode download progress bars — accumulate separately.
+            if _TOX_PIP_PROGRESS_RE.match(line) or _TOX_PIP_BAR_RE.match(line):
+                dropped_pip += 1
+                continue
+            # "Requirement already satisfied:" — very numerous on env reuse.
+            if _TOX_REQ_SATISFIED_RE.match(line):
+                dropped_req_satisfied += 1
+                continue
+            # tox 4 visual separator lines (━━━━━━ py3.11 ━━━━━━) — pure noise.
+            if _TOX_SEPARATOR_RE.match(line):
+                dropped_separators += 1
+                continue
+            # tox 4 parallel-runner polling lines (py311: still running ...).
+            if _TOX_STILL_RUNNING_RE.match(line):
+                dropped_polling += 1
+                continue
             kept.append(line)
 
         notes: list[str] = []
@@ -18759,6 +18823,14 @@ class ToxFilter(Filter):
             notes.append(
                 f"collapsed {dropped_create} tox env-create/install progress lines"
             )
+        if dropped_pip:
+            notes.append(f"collapsed {dropped_pip} pip install progress lines")
+        if dropped_req_satisfied:
+            notes.append(f"collapsed {dropped_req_satisfied} 'Requirement already satisfied' lines")
+        if dropped_separators:
+            notes.append(f"dropped {dropped_separators} tox separator lines")
+        if dropped_polling:
+            notes.append(f"dropped {dropped_polling} tox parallel-runner polling lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 

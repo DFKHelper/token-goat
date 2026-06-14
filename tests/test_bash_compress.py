@@ -7305,6 +7305,273 @@ class TestToxFilter:
         assert "token-goat" in result.text
         assert f.name != "linter"
 
+    # --- tox 4.x pip progress inside environments ---
+
+    def test_tox4_pip_progress_collapsed(self) -> None:
+        """pip Collecting / Downloading / Using cached lines are collapsed."""
+        f = self._f()
+        text = (
+            "py311: install_package\n"
+            "Collecting attrs>=21.3.0\n"
+            "  Downloading attrs-23.2.0-py3-none-any.whl (60 kB)\n"
+            "  Using cached attrs-23.2.0-py3-none-any.whl (60 kB)\n"
+            "Installing collected packages: attrs\n"
+            "Successfully installed attrs-23.2.0\n"
+            "py311: commands succeeded\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "Collecting attrs" not in result.text
+        assert "Downloading attrs" not in result.text
+        assert "Using cached" not in result.text
+        assert "Installing collected" not in result.text
+        # Summary line is kept.
+        assert "Successfully installed" in result.text
+        assert "congratulations" in result.text
+
+    def test_tox4_pip_bar_collapsed(self) -> None:
+        """Unicode pip download progress bars are collapsed."""
+        f = self._f()
+        text = (
+            "Collecting requests\n"
+            "  Downloading requests-2.31.0-py3-none-any.whl (62 kB)\n"
+            "     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 62.6/62.6 kB 1.8 MB/s eta 0:00:00\n"
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "━━━━━━━━━━ 62.6" not in result.text
+        assert "Collecting" not in result.text
+        assert "commands succeeded" in result.text
+
+    def test_tox4_requirement_already_satisfied_collapsed(self) -> None:
+        """'Requirement already satisfied' lines are collapsed."""
+        f = self._f()
+        text = (
+            "py311: install_package\n"
+            "Requirement already satisfied: pip>=19 in .tox/py311/lib/python3.11/site-packages\n"
+            "Requirement already satisfied: setuptools in .tox/py311/lib/python3.11/site-packages\n"
+            "Requirement already satisfied: wheel in .tox/py311/lib/python3.11/site-packages\n"
+            "py311: commands succeeded\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        # The actual data lines are gone; only the compression note may mention the phrase.
+        assert "pip>=19 in .tox" not in result.text
+        assert "setuptools in .tox" not in result.text
+        assert "wheel in .tox" not in result.text
+        assert "congratulations" in result.text
+
+    def test_tox4_requirement_satisfied_note(self) -> None:
+        """Compression note includes 'Requirement already satisfied' count."""
+        f = self._f()
+        text = (
+            "Requirement already satisfied: pip in .tox/py311/lib/python3.11/site-packages\n"
+            "Requirement already satisfied: wheel in .tox/py311/lib/python3.11/site-packages\n"
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "Requirement already satisfied" in result.text or "token-goat" in result.text
+        assert "Requirement already satisfied: pip" not in result.text
+
+    def test_tox4_separator_lines_collapsed(self) -> None:
+        """tox 4 visual separator lines (━━━━━ py3.11 ━━━━━) are dropped."""
+        f = self._f()
+        sep = "━" * 30
+        text = (
+            f"  {sep} py3.11 {sep}\n"
+            "py311 run-test: pytest tests/\n"
+            "1 passed in 0.5s\n"
+            f"  {sep} py3.12 {sep}\n"
+            "py312 run-test: pytest tests/\n"
+            "1 passed in 0.5s\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        # The ━ separator lines are dropped.
+        assert sep not in result.text
+        # Signal lines are kept.
+        assert "pytest tests/" in result.text
+        assert "congratulations" in result.text
+
+    def test_tox4_separator_note(self) -> None:
+        """Compression note mentions dropped separator lines."""
+        f = self._f()
+        sep = "━" * 20
+        text = (
+            f"{sep} py3.11 {sep}\n"
+            f"{sep} py3.12 {sep}\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "separator" in result.text.lower() or "token-goat" in result.text
+
+    def test_tox4_parallel_runner_polling_collapsed(self) -> None:
+        """'py311: still running (Xs)...' parallel-runner polling lines are dropped."""
+        f = self._f()
+        text = (
+            "py311: still running (0.55s)...\n"
+            "py312: still running (0.55s)...\n"
+            "py311: still running (1.10s)...\n"
+            "py312: still running (1.10s)...\n"
+            "  py311: OK (2.5 seconds)\n"
+            "  py312: OK (2.7 seconds)\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "still running" not in result.text
+        assert "py311: OK" in result.text
+        assert "py312: OK" in result.text
+        assert "congratulations" in result.text
+
+    def test_tox4_parallel_polling_note(self) -> None:
+        """Compression note mentions dropped parallel-runner polling lines."""
+        f = self._f()
+        text = (
+            "py311: still running (0.55s)...\n"
+            "py312: still running (0.55s)...\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "polling" in result.text.lower() or "token-goat" in result.text
+
+    def test_tox4_wheel_editable_collapsed(self) -> None:
+        """.pkg: wheel-editable is treated as install noise and collapsed."""
+        f = self._f()
+        text = (
+            ".pkg: wheel-editable\n"
+            ".pkg: build-wheel\n"
+            "py311: commands succeeded\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "wheel-editable" not in result.text
+        assert "build-wheel" not in result.text
+        assert "congratulations" in result.text
+
+    def test_tox4_successfully_installed_kept(self) -> None:
+        """'Successfully installed X-1.0' summary line is always kept."""
+        f = self._f()
+        text = (
+            "Collecting attrs\n"
+            "  Downloading attrs-23.2.0.whl\n"
+            "Installing collected packages: attrs\n"
+            "Successfully installed attrs-23.2.0\n"
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "Successfully installed attrs-23.2.0" in result.text
+
+    def test_tox4_pip_note_on_compression(self) -> None:
+        """Compression note includes pip install progress count."""
+        f = self._f()
+        text = (
+            "Collecting attrs\n"
+            "  Downloading attrs-23.2.0.whl (60 kB)\n"
+            "  Building wheel for mypackage\n"
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "pip" in result.text.lower() or "token-goat" in result.text
+        assert "Collecting attrs" not in result.text
+
+    def test_tox4_full_multi_env_scenario(self) -> None:
+        """Full realistic tox 4 run: all noise collapsed, signal kept."""
+        f = self._f()
+        sep = "━" * 25
+        text = (
+            f"  {sep} py3.11 {sep}\n"
+            "py311: install_package\n"
+            "Collecting attrs>=21.3.0\n"
+            "  Downloading attrs-23.2.0-py3-none-any.whl (60 kB)\n"
+            "     ━━━━━━━━ 60.2/60.2 kB 2.0 MB/s eta 0:00:00\n"
+            "Requirement already satisfied: pip in .tox/py311\n"
+            "Requirement already satisfied: setuptools in .tox/py311\n"
+            "Installing collected packages: attrs\n"
+            "Successfully installed attrs-23.2.0\n"
+            "py311 run-test: pytest tests/\n"
+            "1 passed in 0.42s\n"
+            f"  {sep} py3.12 {sep}\n"
+            "py312: install_package\n"
+            "py312: still running (0.1s)...\n"
+            "Requirement already satisfied: attrs in .tox/py312\n"
+            "py312 run-test: pytest tests/\n"
+            "1 passed in 0.38s\n"
+            "  py311: OK (3.1 seconds)\n"
+            "  py312: OK (2.9 seconds)\n"
+            "congratulations :)\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        # Noise is gone (check specific data payloads, not phrases that appear in notes).
+        assert "Collecting attrs" not in result.text
+        assert "Downloading attrs" not in result.text
+        assert sep not in result.text
+        assert "pip in .tox" not in result.text
+        assert "setuptools in .tox" not in result.text
+        assert "still running" not in result.text
+        # Signal is present.
+        assert "Successfully installed attrs-23.2.0" in result.text
+        assert "pytest tests/" in result.text
+        assert "py311: OK" in result.text
+        assert "py312: OK" in result.text
+        assert "congratulations" in result.text
+        # Compression note is present.
+        assert "token-goat" in result.text
+
+    def test_tox4_building_wheel_collapsed(self) -> None:
+        """'Building wheel for ...' lines inside tox are collapsed."""
+        f = self._f()
+        text = (
+            "Building wheel for mypackage (pyproject.toml)\n"
+            "  Created wheel for mypackage\n"
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "Building wheel" not in result.text
+        assert "Created wheel" not in result.text
+        assert "commands succeeded" in result.text
+
+    def test_pytest_collecting_line_kept(self) -> None:
+        # Regression: _TOX_PIP_PROGRESS_RE with re.IGNORECASE matched lowercase
+        # "collecting ..." emitted by pytest, dropping it as pip noise.
+        f = self._f()
+        text = (
+            "py311 run-test: pytest tests/\n"
+            "collecting ...\n"
+            "1 passed in 0.42s\n"
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "collecting ..." in result.text
+
+    def test_pytest_rich_separator_kept(self) -> None:
+        # Regression: _TOX_SEPARATOR_RE was r"^\s*━{5,}" which matched any line
+        # starting with ━, including pytest-rich section separators with multi-word labels.
+        f = self._f()
+        bar = "━" * 30
+        text = (
+            "py311 run-test: pytest tests/\n"
+            f"{bar} short test summary info {bar}\n"
+            "FAILED test_foo.py::test_bar\n"
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "short test summary info" in result.text
+
+    def test_pytest_rich_passed_summary_kept(self) -> None:
+        # Regression: _TOX_PIP_BAR_RE was r"^\s*━+\s+[\d.]" which matched
+        # pytest-rich "N passed in Xs" summary lines (━━━ 3 passed in 0.42s ━━━).
+        f = self._f()
+        bar = "━" * 30
+        text = (
+            "py311 run-test: pytest tests/\n"
+            "  ━━━━━━━━━━ 60.2/60.2 kB 1.2 MB/s eta 0:00:00\n"  # pip bar — drop
+            f"{bar} 3 passed in 0.42s {bar}\n"  # pytest-rich summary — keep
+            "py311: commands succeeded\n"
+        )
+        result = f.apply(text, "", 0, ["tox"])
+        assert "3 passed in 0.42s" in result.text
+        assert "60.2/60.2" not in result.text
+
 
 # ---------------------------------------------------------------------------
 # compress pipeline: ANSI-free output guarantee
