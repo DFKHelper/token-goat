@@ -131,6 +131,13 @@ class TestIsContainerLogCmd:
     def test_unrelated_command(self):
         assert _is_container_log_cmd(["git", "log"]) is False
 
+    def test_docker_global_flag_then_compose_logs(self) -> None:
+        # docker -H <host> compose logs <svc>: global flag pushes sub_idx to 3,
+        # exercising the two-level dispatch path where sub_idx > 1
+        assert _is_container_log_cmd(
+            ["docker", "-H", "tcp://host:2375", "compose", "logs", "web"]
+        ) is True
+
 
 # ---------------------------------------------------------------------------
 # post_bash integration tests

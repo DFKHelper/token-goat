@@ -1158,6 +1158,35 @@ def _watch_cmd_info(argv: list[str]) -> str | None:
     return None
 
 
+def _first_positional(
+    argv: list[str],
+    value_flags: frozenset[str],
+    *,
+    start: int = 1,
+) -> tuple[str, int]:
+    """Return ``(subcommand, index)`` — the first non-flag positional in *argv*.
+
+    Starting at *start*, advances past standalone flags (``-x``, ``--verbose``)
+    by 1 and value-taking flags (anything in *value_flags*) by 2.  Returns the
+    first non-flag token lowercased together with its index.  Returns
+    ``("", len(argv))`` when no positional is found.
+
+    This is the shared building block used by :func:`_is_git_log_cmd`,
+    :func:`_is_pkg_install_cmd`, and :func:`_is_container_log_cmd` to locate
+    a subcommand while skipping over tool-specific global flags.
+    """
+    i = start
+    while i < len(argv):
+        tok = argv[i]
+        if tok in value_flags:
+            i += 2
+        elif tok.startswith("-"):
+            i += 1
+        else:
+            return tok.lower(), i
+    return "", len(argv)
+
+
 def _is_git_log_cmd(argv: list[str]) -> bool:
     """Return ``True`` when *argv* is a ``git log`` command.
 
@@ -1176,17 +1205,11 @@ def _is_git_log_cmd(argv: list[str]) -> bool:
         return False
     # Scan argv[1:] for the subcommand, skipping global git flags (--no-pager,
     # -C <path>, -c <key=val>, --git-dir=<path>, etc.) that appear before it.
-    _VALUE_FLAGS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix"}
-    i = 1
-    while i < len(argv):
-        tok = argv[i]
-        if tok in _VALUE_FLAGS:
-            i += 2  # flag + its value argument
-        elif tok.startswith("-"):
-            i += 1  # standalone flag like --no-pager, --verbose
-        else:
-            return tok.lower() == "log"
-    return False
+    _GIT_GLOBAL_VALUE_FLAGS = frozenset({
+        "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+    })
+    sub, _ = _first_positional(argv, _GIT_GLOBAL_VALUE_FLAGS)
+    return sub == "log"
 
 
 def _is_pkg_install_cmd(argv: list[str]) -> bool:
@@ -1212,89 +1235,44 @@ def _is_pkg_install_cmd(argv: list[str]) -> bool:
 
     # pip / pip3 ---------------------------------------------------------
     if base in {"pip", "pip3"}:
-        _PIP_VALUE_FLAGS = {
+        _PIP_VALUE_FLAGS = frozenset({
             "--index-url", "-i", "--extra-index-url", "--trusted-host",
             "--cert", "--client-cert", "--proxy", "--timeout", "--retries",
             "--log", "--cache-dir", "--build-dir", "--target",
-        }
-        i = 1
-        while i < len(argv):
-            tok = argv[i]
-            if tok in _PIP_VALUE_FLAGS:
-                i += 2
-            elif tok.startswith("-"):
-                i += 1
-            else:
-                return tok.lower() in {"install", "download"}
-        return False
+        })
+        sub, _ = _first_positional(argv, _PIP_VALUE_FLAGS)
+        return sub in {"install", "download"}
 
     # cargo ---------------------------------------------------------------
     if base == "cargo":
-        _CARGO_VALUE_FLAGS = {"-C", "--manifest-path", "--config", "--target-dir", "-Z"}
-        i = 1
-        while i < len(argv):
-            tok = argv[i]
-            if tok in _CARGO_VALUE_FLAGS:
-                i += 2
-            elif tok.startswith("-"):
-                i += 1
-            else:
-                return tok.lower() in {"install"}
-        return False
+        _CARGO_VALUE_FLAGS = frozenset({"-C", "--manifest-path", "--config", "--target-dir", "-Z"})
+        sub, _ = _first_positional(argv, _CARGO_VALUE_FLAGS)
+        return sub == "install"
 
     # npm -----------------------------------------------------------------
     if base == "npm":
-        _NPM_VALUE_FLAGS = {"-C", "--prefix", "--userconfig", "--globalconfig"}
-        i = 1
-        while i < len(argv):
-            tok = argv[i]
-            if tok in _NPM_VALUE_FLAGS:
-                i += 2
-            elif tok.startswith("-"):
-                i += 1
-            else:
-                return tok.lower() in {"install", "i", "ci", "update"}
-        return False
+        _NPM_VALUE_FLAGS = frozenset({"-C", "--prefix", "--userconfig", "--globalconfig"})
+        sub, _ = _first_positional(argv, _NPM_VALUE_FLAGS)
+        return sub in {"install", "i", "ci", "update"}
 
     # yarn ----------------------------------------------------------------
     if base == "yarn":
-        _YARN_VALUE_FLAGS = {"--cwd"}
-        i = 1
-        while i < len(argv):
-            tok = argv[i]
-            if tok in _YARN_VALUE_FLAGS:
-                i += 2
-            elif tok.startswith("-"):
-                i += 1
-            else:
-                return tok.lower() in {"install", "add", "upgrade"}
-        return False
+        _YARN_VALUE_FLAGS = frozenset({"--cwd"})
+        sub, _ = _first_positional(argv, _YARN_VALUE_FLAGS)
+        return sub in {"install", "add", "upgrade"}
 
     # uv ------------------------------------------------------------------
     if base == "uv":
-        _UV_VALUE_FLAGS = {"--project", "--directory", "--python", "-p", "--cache-dir", "--config-file"}
-        i = 1
-        while i < len(argv):
-            tok = argv[i]
-            if tok in _UV_VALUE_FLAGS:
-                i += 2
-            elif tok.startswith("-"):
-                i += 1
-            else:
-                sub = tok.lower()
-                if sub in {"sync", "install", "add"}:
-                    return True
-                if sub == "pip":
-                    # uv pip install / uv pip sync
-                    j = i + 1
-                    while j < len(argv):
-                        t2 = argv[j]
-                        if t2.startswith("-"):
-                            j += 1
-                        else:
-                            return t2.lower() in {"install", "sync"}
-                    return False
-                return False
+        _UV_VALUE_FLAGS = frozenset({
+            "--project", "--directory", "--python", "-p", "--cache-dir", "--config-file",
+        })
+        sub, sub_idx = _first_positional(argv, _UV_VALUE_FLAGS)
+        if sub in {"sync", "install", "add"}:
+            return True
+        if sub == "pip":
+            # uv pip install / uv pip sync
+            pip_sub, _ = _first_positional(argv, frozenset(), start=sub_idx + 1)
+            return pip_sub in {"install", "sync"}
         return False
 
     return False
@@ -1376,90 +1354,50 @@ def _is_container_log_cmd(argv: list[str]) -> bool:
 
     # docker-compose ---------------------------------------------------------
     if base == "docker-compose":
-        _VALUE_FLAGS = {
+        _DC_VALUE_FLAGS = frozenset({
             "--file", "-f", "--project-name", "-p", "--project-directory",
             "--env-file", "--profile", "--ansi", "--parallel",
-        }
-        i = 1
-        while i < len(argv):
-            tok = argv[i]
-            if tok in _VALUE_FLAGS:
-                i += 2
-            elif tok.startswith("-"):
-                i += 1
-            else:
-                return tok.lower() == "logs"
-        return False
+        })
+        sub, _ = _first_positional(argv, _DC_VALUE_FLAGS)
+        return sub == "logs"
 
     # kubectl ----------------------------------------------------------------
     if base == "kubectl":
-        _VALUE_FLAGS = {
+        _KUBECTL_VALUE_FLAGS = frozenset({
             "-n", "--namespace", "--context", "--kubeconfig", "--server", "-s",
             "--token", "--user", "--cluster", "--log-level", "--log-flush-frequency",
             "--request-timeout", "--as", "--as-group", "--as-uid",
             "--tls-server-name", "--certificate-authority", "--client-certificate",
             "--client-key", "--cache-dir",
-        }
-        i = 1
-        while i < len(argv):
-            tok = argv[i]
-            if tok in _VALUE_FLAGS:
-                i += 2
-            elif tok.startswith("-"):
-                i += 1
-            else:
-                return tok.lower() == "logs"
-        return False
+        })
+        sub, _ = _first_positional(argv, _KUBECTL_VALUE_FLAGS)
+        return sub == "logs"
 
     # podman -----------------------------------------------------------------
     if base == "podman":
-        _VALUE_FLAGS = {
+        _PODMAN_VALUE_FLAGS = frozenset({
             "--connection", "-c", "--identity", "--log-level", "--url",
-        }
-        i = 1
-        while i < len(argv):
-            tok = argv[i]
-            if tok in _VALUE_FLAGS:
-                i += 2
-            elif tok.startswith("-"):
-                i += 1
-            else:
-                return tok.lower() == "logs"
-        return False
+        })
+        sub, _ = _first_positional(argv, _PODMAN_VALUE_FLAGS)
+        return sub == "logs"
 
     # docker -----------------------------------------------------------------
     if base == "docker":
         # Docker has global flags before the subcommand.
-        _DOCKER_VALUE_FLAGS = {
+        _DOCKER_GLOBAL_VALUE_FLAGS = frozenset({
             "--host", "-H", "--config", "--context", "--log-level", "-l",
-        }
-        i = 1
-        while i < len(argv):
-            tok = argv[i]
-            if tok in _DOCKER_VALUE_FLAGS:
-                i += 2
-            elif tok.startswith("-"):
-                i += 1
-            else:
-                # First non-flag positional: either "compose" (sub-group) or the subcommand.
-                if tok.lower() == "compose":
-                    # docker compose [flags] logs ...
-                    _COMPOSE_VALUE_FLAGS = {
-                        "--file", "-f", "--project-name", "-p", "--project-directory",
-                        "--env-file", "--profile", "--ansi", "--parallel",
-                    }
-                    i += 1
-                    while i < len(argv):
-                        tok2 = argv[i]
-                        if tok2 in _COMPOSE_VALUE_FLAGS:
-                            i += 2  # flag + its value argument
-                        elif tok2.startswith("-"):
-                            i += 1
-                        else:
-                            return tok2.lower() == "logs"
-                    return False
-                return tok.lower() == "logs"
-        return False
+        })
+        # Shared compose flags: used by both "docker compose" and "docker-compose".
+        _DOCKER_COMPOSE_SUBCMD_FLAGS = frozenset({
+            "--file", "-f", "--project-name", "-p", "--project-directory",
+            "--env-file", "--profile", "--ansi", "--parallel",
+        })
+        sub, sub_idx = _first_positional(argv, _DOCKER_GLOBAL_VALUE_FLAGS)
+        if sub == "compose":
+            # docker compose [flags] logs ...
+            compose_sub, _ = _first_positional(argv, _DOCKER_COMPOSE_SUBCMD_FLAGS, start=sub_idx + 1)
+            return compose_sub == "logs"
+        return sub == "logs"
 
     return False
 

@@ -91,9 +91,10 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # ---- TurboFilter ----
     (["turbo", "run", "build"], "turbo"),
     (["npx", "turbo", "run", "build"], "turbo"),
+    # ---- TscFilter (dedicated; previously fell through to LinterFilter) ----
+    (["tsc", "--noEmit"], "tsc"),
     # ---- LinterFilter ----
     (["pyright", "src/"], "linter"),
-    (["tsc", "--noEmit"], "linter"),
     # ---- GrepFilter ----
     (["grep", "-r", "pattern", "src/"], "grep"),
     (["rg", "pattern", "src/"], "grep"),

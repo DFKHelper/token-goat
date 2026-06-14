@@ -117,6 +117,14 @@ class TestIsGitLogCmd:
         # Defensive: even if shell normalises to lowercase, LOG should match
         assert _is_git_log_cmd(["git", "LOG"]) is True
 
+    def test_git_log_with_global_flag_C(self) -> None:
+        # git -C /some/path log: -C is a value flag (consumes next token)
+        assert _is_git_log_cmd(["git", "-C", "/some/path", "log", "--oneline"]) is True
+
+    def test_git_log_with_global_flag_c(self) -> None:
+        # git -c key=val log: -c is a value flag (consumes next token)
+        assert _is_git_log_cmd(["git", "-c", "user.email=x", "log"]) is True
+
 
 # ---------------------------------------------------------------------------
 # Integration tests via post_bash

@@ -217,6 +217,13 @@ class TestIsPkgInstallCmd:
     def test_echo_install(self):
         assert _is_pkg_install_cmd(["echo", "install"]) is False
 
+    def test_uv_global_flag_then_pip_install(self) -> None:
+        # uv --directory <path> pip install: global flag pushes sub_idx to 3,
+        # exercising the two-level dispatch path where sub_idx > 1
+        assert _is_pkg_install_cmd(
+            ["uv", "--directory", "/srv/myproject", "pip", "install", "requests"]
+        ) is True
+
 
 # ---------------------------------------------------------------------------
 # Integration tests via post_bash
