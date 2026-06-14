@@ -100,6 +100,7 @@ __all__ = [
     "JavacFilter",
     "JqFilter",
     "MavenFilter",
+    "MesonFilter",
     "MixFilter",
     "MSBuildFilter",
     "NuGetFilter",
@@ -22391,6 +22392,138 @@ class CodexExecFilter(Filter):
         return self._finalize(out)
 
 
+# --- Meson build system ---------------------------------------------------
+
+#: meson setup: important header and project metadata lines — always keep
+_MESON_KEEP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:The Meson build system$"
+    r"|Version:\s"
+    r"|Source dir:\s"
+    r"|Build dir:\s"
+    r"|Build type:\s"
+    r"|Project name:\s"
+    r"|Project version:\s"
+    r"|Build targets in project:\s"
+    r"|(?:C|C\+\+|Fortran|Rust|D|Go) compiler for the host machine:\s)"
+)
+#: meson setup: indented compiler/toolchain detail lines — suppress
+_MESON_COMPILER_DETAIL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^  (?:Compiler|ld|linker|libtool|ar|ranlib|objcopy|objdump|strip|dlltool)\b"
+    r"|^    [a-z]"
+)
+#: meson setup: "Found ninja-X.Y.Z at /path" — suppress (not actionable)
+_MESON_FOUND_TOOL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Found (?:ninja|cmake|pkg-config)\b"
+)
+#: meson setup: dependency/header/program probe lines — suppress, count
+_MESON_PROBE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Has (?:header|function|type|symbol|member)\s+'"
+    r"|Dependency \S"
+    r"|Program \S[^:]+found:"
+    r"|Library \S)"
+)
+#: meson compile: "[N/M] Compiling ..." progress lines — suppress, count
+_MESON_COMPILE_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\s*\d+/\d+\] Compiling "
+)
+#: meson compile: "[N/M] Linking ..." — keep (significant link step)
+_MESON_LINK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\s*\d+/\d+\] Linking "
+)
+
+
+class MesonFilter(Filter):
+    """Compress ``meson setup`` configuration and ``meson compile`` build output.
+
+    Meson produces two kinds of verbose output:
+
+    * **Setup phase** (``meson setup builddir``): emits compiler detection
+      details, indented toolchain info, dependency probe lines, and a
+      "Found ninja" line before reaching the project summary.  A typical
+      project outputs 40-80 lines; only the project metadata matters.
+
+    * **Compile phase** (``meson compile -C builddir``): emits one
+      ``[N/M] Compiling ...`` line per translation unit.  A project with
+      200 .cpp files produces 200 near-identical progress lines.
+
+    Compression model:
+
+    * **Setup phase**: keep project metadata (name, version, build dir, build
+      type, compiler summary line); suppress indented compiler detail lines,
+      dependency/header probe lines, and "Found ninja" lines; count and
+      report suppressed probes.
+    * **Compile phase**: suppress ``[N/M] Compiling`` progress lines (count);
+      keep ``[N/M] Linking`` lines verbatim; keep the final summary.
+    * **Errors and warnings**: always kept verbatim.
+    * **Error exit** (exit_code != 0): preserve all output unchanged.
+    """
+
+    name = "meson"
+    binaries = frozenset(["meson"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        def _base(s: str) -> str:
+            return Path(s).stem.lower()
+
+        if not argv:
+            return False
+        return _base(argv[0]) == "meson"
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+        kept: list[str] = []
+        compile_count = 0
+        probe_count = 0
+        detail_count = 0
+
+        for line in lines:
+            # Always keep error/warning diagnostics.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Keep important setup metadata / summary lines.
+            if _MESON_KEEP_RE.match(line):
+                kept.append(line)
+                continue
+            # Compile phase: [N/M] Linking — keep verbatim.
+            if _MESON_LINK_RE.match(line):
+                kept.append(line)
+                continue
+            # Compile phase: [N/M] Compiling — count and suppress.
+            if _MESON_COMPILE_PROGRESS_RE.match(line):
+                compile_count += 1
+                continue
+            # Setup phase: indented compiler/toolchain detail lines — suppress.
+            if _MESON_COMPILER_DETAIL_RE.match(line):
+                detail_count += 1
+                continue
+            # Setup phase: dependency/probe lines — count and suppress.
+            if _MESON_PROBE_RE.match(line):
+                probe_count += 1
+                continue
+            # Setup phase: "Found ninja/cmake/pkg-config" — suppress.
+            if _MESON_FOUND_TOOL_RE.match(line):
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if compile_count:
+            notes.append(f"collapsed {compile_count} [N/M] Compiling progress lines")
+        if probe_count:
+            notes.append(f"collapsed {probe_count} dependency/probe check lines")
+        if detail_count:
+            notes.append(f"suppressed {detail_count} compiler toolchain detail lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 # --- Playwright E2E test runner -------------------------------------------
 
 _PW_PASS_RE: Final[re.Pattern[str]] = re.compile(r"^\s+[✓✔]\s")
@@ -22700,6 +22833,10 @@ FILTERS: list[Filter] = [
     # the specialised percentage-line collapsing; cmake can also drive make
     # but cmake --build wraps the actual build system transparently.
     CmakeFilter(),
+    # MesonFilter handles meson setup and meson compile output.  Disjoint
+    # binary ("meson") from cmake/make so ordering is cosmetic; placed
+    # alongside other native build-system filters.
+    MesonFilter(),
     # DiffFilter handles plain POSIX diff output.  GitFilter already covers
     # git-diff; DiffFilter is for diff, diff3, sdiff, and colordiff.
     DiffFilter(),

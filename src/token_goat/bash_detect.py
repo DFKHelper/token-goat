@@ -20,7 +20,7 @@ from pathlib import Path
 # Maps binary stem (lowercased) to the name of the first-matching filter in
 # bash_compress.FILTERS.  First-match semantics mirror select_filter() so the
 # detection result is consistent with what full compression would use.
-# Generated from bash_compress.FILTERS (133 filters, 228 binaries).
+# Generated from bash_compress.FILTERS (134 filters, 229 binaries).
 _BINARY_TO_FILTER: dict[str, str] = {
     "./gradlew": "gradle",
     "./mvnw": "maven",
@@ -139,6 +139,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "make": "make",
     "mamba": "conda",
     "maven": "make",
+    "meson": "meson",
     "micromamba": "conda",
     "minitest": "ruby",
     "mix": "mix",

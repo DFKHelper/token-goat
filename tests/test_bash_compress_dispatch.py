@@ -149,6 +149,9 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["pre-commit", "run", "--all-files"], "pre-commit"),
     (["pre-commit", "install"], "pre-commit"),
     (["pre-commit", "autoupdate"], "pre-commit"),
+    # ---- MesonFilter ----
+    (["meson", "setup", "build"], "meson"),
+    (["meson", "compile", "-C", "build"], "meson"),
 ]
 
 
