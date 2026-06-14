@@ -104,12 +104,18 @@ def _looks_like_path(arg: str) -> bool:
     return stripped.endswith(_PATH_EXTS)
 
 
+# hints.py is static for the duration of a test run and the Typer command tree is
+# expensive to build, so read the source and resolve the registered subcommand
+# names exactly once at import time rather than re-doing the work in each test.
+_HINTS_TEXT = HINTS_PATH.read_text(encoding="utf-8")
+_KNOWN_COMMAND_NAMES = _registered_command_names()
+
+
 def test_hint_commands_use_registered_subcommands() -> None:
     """Every embedded ``token-goat <subcmd>`` must name a real registered command."""
-    text = HINTS_PATH.read_text(encoding="utf-8")
-    commands = _extract_commands(text)
+    commands = _extract_commands(_HINTS_TEXT)
     assert commands, "expected token-goat command examples in hints.py"
-    known = _registered_command_names()
+    known = _KNOWN_COMMAND_NAMES
     unknown: list[tuple[str, str]] = []
     for cmd in commands:
         tokens = _tokenize(cmd)
@@ -131,9 +137,8 @@ def test_symbol_hint_commands_take_single_non_path_positional() -> None:
     Catches both the path-as-name form (``symbol {safe_path}``) and the
     two-positional usage error (``symbol <name> "{safe_path}"``).
     """
-    text = HINTS_PATH.read_text(encoding="utf-8")
     offenders: list[tuple[str, str]] = []
-    for cmd in _extract_commands(text):
+    for cmd in _extract_commands(_HINTS_TEXT):
         tokens = _tokenize(cmd)
         if len(tokens) < 2 or tokens[1] != "symbol":
             continue

@@ -106,15 +106,14 @@ class TestRereaDenyCore:
         """After many reads, line_ranges collapses to sentinel (0, 0). Any re-read denied."""
         f = _write(tmp_path / "sentinel.py")
         sid = "rrd-sentinel"
-        # Collapse to sentinel by exceeding _READ_COUNT_FULL_FILE_THRESHOLD reads.
-        for i in range(25):
+        # Collapse to sentinel by crossing _READ_COUNT_FULL_FILE_THRESHOLD reads.
+        # One read past the threshold guarantees the collapse; looping to 25/50 (as
+        # this test previously did) only added redundant session-DB round-trips.
+        for i in range(session._READ_COUNT_FULL_FILE_THRESHOLD + 1):
             _record_read(sid, f, offset=i * 10, limit=10)
         entry = session.get_file_entry(sid, str(f))
         assert entry is not None
-        # Force sentinel to confirm the setup — if not yet sentinel, add more reads.
-        if (0, 0) not in entry.line_ranges:
-            for i in range(25, 50):
-                _record_read(sid, f, offset=i * 10, limit=10)
+        assert (0, 0) in entry.line_ranges, "expected collapse to full-file sentinel"
         with patch.object(cfg_mod, "load", return_value=_cfg()):
             result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
         assert_deny(result)
