@@ -4259,6 +4259,55 @@ class TestStructuredHintSymbolInterpolation:
 class TestCoreadSuggestions:
     """Tests for co-read import suggestions."""
 
+    def test_coread_hint_uses_real_top_symbol(self, tmp_path, monkeypatch):
+        """The co-read suggestion must name a real indexed symbol, never the legacy
+        ``::ClassName`` placeholder.  Fully mocked: ``_get_unread_coread_files`` feeds
+        the import tuple and ``_get_indexed_symbols_and_line_count`` supplies the top
+        symbol, so no real DB or indexing runs (fast)."""
+        from token_goat import hints
+
+        monkeypatch.setattr(
+            hints, "_get_unread_coread_files",
+            lambda fp, ph, cache=None: [("pkg/widget.py", "widget")],
+        )
+        monkeypatch.setattr(
+            hints, "_get_indexed_symbols_and_line_count",
+            lambda rel, h: (
+                [{"kind": "class", "name": "Widget", "line": 1, "end_line": 40}],
+                40,
+                True,
+            ),
+        )
+        hint = hints._build_coread_suggestion_hint(
+            str(tmp_path / "main.py"), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", None
+        )
+        assert hint is not None
+        text = str(hint)
+        assert 'token-goat read "pkg/widget.py::Widget"' in text, text
+        assert "::ClassName" not in text, text
+
+    def test_coread_hint_falls_back_to_outline_without_indexed_symbol(self, tmp_path, monkeypatch):
+        """When the imported file has no indexed symbol, the hint degrades to a runnable
+        ``token-goat outline`` instead of emitting an un-runnable ``::ClassName``
+        placeholder."""
+        from token_goat import hints
+
+        monkeypatch.setattr(
+            hints, "_get_unread_coread_files",
+            lambda fp, ph, cache=None: [("pkg/widget.py", "widget")],
+        )
+        monkeypatch.setattr(
+            hints, "_get_indexed_symbols_and_line_count",
+            lambda rel, h: ([], None, False),
+        )
+        hint = hints._build_coread_suggestion_hint(
+            str(tmp_path / "main.py"), "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", None
+        )
+        assert hint is not None
+        text = str(hint)
+        assert 'token-goat outline "pkg/widget.py"' in text, text
+        assert "::ClassName" not in text, text
+
     def test_coread_hint_fires_on_first_read_of_py_file(self, tmp_data_dir, tmp_path):
         """Coread hint fires when a .py file is read for first time with indexed imports."""
         from token_goat.project import find_project
@@ -4293,6 +4342,13 @@ class TestCoreadSuggestions:
                 "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
                 ("auth.py", "import", "session", 1),
             )
+            # Index a top-level symbol for session.py so the co-read hint names a
+            # real symbol (token-goat read "session.py::SessionCache") rather than
+            # the legacy ::ClassName placeholder.
+            conn.execute(
+                "INSERT INTO symbols (name, kind, file_rel, line, end_line) VALUES (?, ?, ?, ?, ?)",
+                ("SessionCache", "class", "session.py", 2, 2),
+            )
 
         # First read of auth.py — session.py not yet read
         hint = build_read_hint(
@@ -4306,7 +4362,9 @@ class TestCoreadSuggestions:
         # Should get a coread suggestion hint
         assert hint is not None, "coread hint should fire on first read of .py file with imports"
         assert "session" in str(hint).lower(), f"hint should mention imported module: {hint}"
-        assert "token-goat read" in str(hint), "hint should suggest using token-goat read"
+        assert 'token-goat read "session.py::SessionCache"' in str(hint), \
+            f"hint should suggest a concrete indexed-symbol read, not a placeholder: {hint}"
+        assert "::ClassName" not in str(hint), f"legacy placeholder must not leak: {hint}"
 
     def test_coread_hint_not_fired_on_cached_file(self, tmp_data_dir, tmp_path):
         """Coread hint suppressed when file was already read in session."""
@@ -4524,6 +4582,10 @@ class TestCoreadSuggestions:
                 "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
                 ("src/components/Button.tsx", "import", "./styles", 1),
             )
+            conn.execute(
+                "INSERT INTO symbols (name, kind, file_rel, line, end_line) VALUES (?, ?, ?, ?, ?)",
+                ("cls", "constant", "src/components/styles.ts", 1, 1),
+            )
 
         hint = build_read_hint(
             session_id="s_coread_ts_rel",
@@ -4535,7 +4597,9 @@ class TestCoreadSuggestions:
 
         assert hint is not None, "coread hint should fire for .tsx file with relative import"
         assert "styles.ts" in str(hint), f"hint should mention styles.ts: {hint}"
-        assert "token-goat read" in str(hint)
+        assert 'token-goat read "src/components/styles.ts::cls"' in str(hint), \
+            f"hint should suggest a concrete indexed-symbol read, not a placeholder: {hint}"
+        assert "::ClassName" not in str(hint), f"legacy placeholder must not leak: {hint}"
 
     def test_coread_hint_ts_external_import_excluded(self, tmp_data_dir, tmp_path):
         """External (non-relative) TS imports must NOT trigger co-read hints."""
@@ -4650,6 +4714,10 @@ class TestCoreadSuggestions:
                 "INSERT INTO imports_exports (file_rel, kind, target, line) VALUES (?, ?, ?, ?)",
                 ("main.go", "import", "github.com/myorg/myapp/internal/cache", 2),
             )
+            conn.execute(
+                "INSERT INTO symbols (name, kind, file_rel, line, end_line) VALUES (?, ?, ?, ?, ?)",
+                ("New", "function", "internal/cache/cache.go", 1, 1),
+            )
 
         hint = build_read_hint(
             session_id="s_coread_go_mod",
@@ -4661,7 +4729,9 @@ class TestCoreadSuggestions:
 
         assert hint is not None, "coread hint should fire for intra-module Go import"
         assert "cache" in str(hint).lower(), f"hint should mention cache package: {hint}"
-        assert "token-goat read" in str(hint)
+        assert 'token-goat read "internal/cache/cache.go::New"' in str(hint), \
+            f"hint should suggest a concrete indexed-symbol read, not a placeholder: {hint}"
+        assert "::ClassName" not in str(hint), f"legacy placeholder must not leak: {hint}"
 
     def test_coread_hint_go_stdlib_excluded(self, tmp_data_dir, tmp_path):
         """Go stdlib imports must NOT trigger co-read hints."""

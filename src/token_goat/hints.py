@@ -1760,12 +1760,20 @@ def _build_coread_suggestion_hint(
     else:
         suggestion = ", ".join(f"`{n}`" for n in display_names) + " (unread)"
 
-    first_rel = coread_files[0][0].replace("\\", "/")
+    db_rel = coread_files[0][0]
+    first_rel = _sanitize_hint_path(db_rel.replace("\\", "/"))
+
+    # Replace the legacy ``::ClassName`` placeholder with a real top-of-file symbol from the index so the suggested read runs as-is; fall back to ``outline`` (which lists the symbols) when the file has none indexed.
+    symbols, _lines, _exact = _get_indexed_symbols_and_line_count(db_rel, project_hash)
+    if symbols:
+        sym = _sanitize_hint_symbol(symbols[0]["name"])
+        read_cmd = f"`token-goat read \"{first_rel}::{sym}\"`"
+    else:
+        read_cmd = f"`token-goat outline \"{first_rel}\"`"
 
     return ReadHint(
         _apply_terse(
-            f"Note: `{fname}` imports {suggestion}. "
-            f"Use `token-goat read \"{first_rel}::ClassName\"` to read selectively."
+            f"Note: `{fname}` imports {suggestion}. Use {read_cmd} to read selectively."
         ),
         0,
     )
