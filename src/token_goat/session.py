@@ -169,6 +169,21 @@ def _coerce_nonneg_int(raw: object, default: int = 0) -> int:
         return default
 
 
+def _coerce_nonneg_int_or_none(raw: object) -> int | None:
+    """Return ``int(raw)`` clamped to ≥ 0, or ``None`` when *raw* is missing/None/invalid.
+
+    Distinct from :func:`_coerce_nonneg_int` (which defaults to 0): the on-disk fingerprint
+    fields must distinguish "not recorded" (None) from a legitimate epoch mtime of 0, so a
+    missing/invalid value round-trips as None rather than collapsing into a real 0 reading.
+    """
+    if raw is None:
+        return None
+    try:
+        return max(0, int(raw))  # type: ignore[call-overload]  # deliberate: coerces arbitrary input via int(); TypeError caught below
+    except (TypeError, ValueError):
+        return None
+
+
 def _safe_parse(
     factory: Callable[[dict[str, Any]], _T],
     data: dict[str, Any],
@@ -845,6 +860,17 @@ class FileEntry:
     symbols_read: list[str]  # via token-goat read file::symbol
     last_edit_ts: float = 0.0  # unix ts of last edit; 0.0 = never edited this session
     symbols_ts: dict[str, float] = field(default_factory=dict)  # symbol → unix timestamp
+    # On-disk fingerprint captured at the file's last read: st_mtime_ns and st_size.
+    # None means "not recorded" (legacy entries / failed stat). 0 is a *legitimate* value —
+    # an epoch-timestamped file stats st_mtime_ns == 0 — so None, not 0, is the unrecorded
+    # sentinel; conflating the two silently disabled the freshness gate for epoch files.
+    # Unlike last_edit_ts these are session-independent: post_edit keys edits on session_id,
+    # so a sub-agent editing under a different session_id never bumps this session's
+    # last_edit_ts. The on-disk stat is the only cross-session signal that a cached read
+    # window has gone stale, so reread_deny compares it against the live stat before denying.
+    # See _handle_reread_deny.
+    read_mtime_ns: int | None = None  # os.stat(path).st_mtime_ns at last read; None = not recorded
+    read_size: int | None = None  # os.stat(path).st_size at last read; None = not recorded
 
 
 @dataclass
@@ -2411,6 +2437,12 @@ def _serialize_file_entry(entry: FileEntry) -> _FileEntryDict:
         d["symbols_ts"] = {k: _round_ts(v) for k, v in symbols_ts.items()}
     if entry.last_edit_ts:
         d["last_edit_ts"] = _round_ts(entry.last_edit_ts)
+    # On-disk fingerprint (nanosecond mtime + byte size) — omitted only when unrecorded
+    # (None). A recorded 0 (epoch-mtime file) is a real value and IS serialized.
+    if entry.read_mtime_ns is not None:
+        d["read_mtime_ns"] = entry.read_mtime_ns
+    if entry.read_size is not None:
+        d["read_size"] = entry.read_size
     return d
 
 
@@ -2682,6 +2714,8 @@ def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | No
             symbols_read=symbols_read,
             last_edit_ts=last_edit_ts,
             symbols_ts=symbols_ts,
+            read_mtime_ns=_coerce_nonneg_int_or_none(v.get("read_mtime_ns")),
+            read_size=_coerce_nonneg_int_or_none(v.get("read_size")),
         )
     except (TypeError, ValueError, KeyError) as exc:
         _LOG.debug(
@@ -2860,6 +2894,8 @@ class _FileEntryDict(TypedDict, total=False):
     symbols_read: list[str]
     symbols_ts: dict[str, float]
     last_edit_ts: float
+    read_mtime_ns: int
+    read_size: int
 
 
 class _GrepEntryDict(TypedDict, total=False):
@@ -3836,6 +3872,18 @@ def mark_file_read(
         cache.files[key] = entry
     entry.read_count += 1
     entry.last_read_ts = now
+    # Capture the file's on-disk fingerprint (mtime_ns, size) as of this read. A later
+    # reread_deny compares it against the live stat to detect out-of-session edits: post_edit
+    # records edits against the editing session's id, so when a sub-agent under a different
+    # session_id modifies the file, this session's last_edit_ts never moves and a deny would
+    # otherwise pin the model to stale content. Best-effort — an unstattable path leaves the
+    # fingerprint at None (= unrecorded), which simply falls back to the prior deny behavior.
+    try:
+        _read_stat = os.stat(path)
+        entry.read_mtime_ns = _read_stat.st_mtime_ns
+        entry.read_size = _read_stat.st_size
+    except OSError:
+        pass
     # Increment per-file access frequency counter.  Capped at FILES_MAX to
     # match the cap on the files dict itself so one cannot grow without bound
     # while the other is evicted.  The count is incremented regardless of

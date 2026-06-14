@@ -308,3 +308,170 @@ class TestRereaDenyShaVerification:
         with patch.object(cfg_mod, "load", return_value=_cfg()):
             result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
         assert_continue(result)
+
+
+# ---------------------------------------------------------------------------
+# On-disk fingerprint (mtime_ns + size): cross-session freshness gate
+# ---------------------------------------------------------------------------
+
+
+class TestRereaDenyOnDiskFingerprint:
+    """A file modified on disk since its last read is never denied — even when no edit
+    hook recorded the change against *this* session.
+
+    post_edit keys ``last_edit_ts`` on the editing session's id, so a sub-agent running
+    under a different session_id never bumps the parent's timestamp guard. The on-disk
+    ``(st_mtime_ns, st_size)`` fingerprint recorded at read time is the cross-session
+    source of truth that lets the parent's re-read of changed content through.
+    """
+
+    def test_fingerprint_recorded_at_read(self, tmp_data_dir, tmp_path):
+        """mark_file_read records (mtime_ns, size) and it survives the JSON round-trip."""
+        f = _write(tmp_path / "fp_record.py")
+        sid = "rrd-fp-record"
+        _record_read(sid, f)
+        entry = session.get_file_entry(sid, str(f))  # loads from disk → exercises (de)serialization
+        assert entry is not None
+        st = f.stat()
+        assert entry.read_mtime_ns == st.st_mtime_ns
+        assert entry.read_size == st.st_size
+
+    def test_unchanged_file_still_denied(self, tmp_data_dir, tmp_path):
+        """Existing behavior preserved: fingerprint matches on disk → deny still fires."""
+        f = _write(tmp_path / "fp_same.py")
+        sid = "rrd-fp-same"
+        _record_read(sid, f)
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
+        assert_deny(result)
+
+    def test_size_changed_passes_through(self, tmp_data_dir, tmp_path):
+        """File grew on disk since last read (no edit hook, no snapshot) → pass-through."""
+        f = _write(tmp_path / "fp_grow.py", n_bytes=4096)
+        sid = "rrd-fp-grow"
+        _record_read(sid, f)
+        f.write_bytes(b"x" * 8192)  # size 4096 → 8192
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
+        assert_continue(result)
+
+    def test_mtime_changed_same_size_passes_through(self, tmp_data_dir, tmp_path):
+        """Same size but a newer mtime (in-place content swap) → pass-through.
+
+        os.utime moves the mtime well past the recorded fingerprint while keeping size
+        identical, so the size comparison can't catch it — proving the mtime_ns leg fires.
+        """
+        import os
+
+        f = _write(tmp_path / "fp_mtime.py", n_bytes=4096)
+        sid = "rrd-fp-mtime"
+        _record_read(sid, f)
+        entry = session.get_file_entry(sid, str(f))
+        assert entry is not None
+        future_ns = entry.read_mtime_ns + 5_000_000_000  # +5s, beyond any fs mtime resolution
+        os.utime(f, ns=(future_ns, future_ns))
+        assert f.stat().st_size == entry.read_size  # size unchanged — mtime is the only signal
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
+        assert_continue(result)
+
+    def test_subagent_edit_under_different_session_passes_through(self, tmp_data_dir, tmp_path):
+        """The reported bug: a sub-agent edits the file under a *different* session_id.
+
+        The parent's last_edit_ts never moves (timestamp guard is blind) and no snapshot SHA
+        exists, so before this fix the parent would deny a re-read of stale content. The
+        on-disk fingerprint diverges, so the freshness gate lets the parent's re-read through.
+        """
+        f = _write(tmp_path / "subagent_edit.py", n_bytes=4096)
+        parent = "rrd-parent-sess"
+        subagent = "rrd-subagent-sess"
+        _record_read(parent, f)  # parent reads — fingerprint captured
+
+        # Sub-agent edit: content lands on disk AND post_edit records under the *sub* session.
+        f.write_bytes(b"y" * 9000)
+        session.mark_file_edited(subagent, str(f))
+
+        # Parent's own entry never saw the edit — timestamp guard would still deny.
+        parent_entry = session.get_file_entry(parent, str(f))
+        assert parent_entry is not None
+        assert parent_entry.last_edit_ts == 0.0
+
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, parent, tmp_path))
+        assert_continue(result)
+
+    def test_zero_fingerprint_round_trips_distinct_from_none(self):
+        """Serialize/parse must distinguish a recorded 0 (epoch mtime) from unrecorded (None).
+
+        Regression for the sentinel collision. The pre-fix serialize used a falsy-0 check
+        (``if entry.read_mtime_ns:``) that DROPPED a recorded 0 — so an epoch-mtime
+        fingerprint could never be persisted — and the pre-fix parse defaulted a missing key
+        to 0, making "unrecorded" indistinguishable from a legitimate 0. This exercises the
+        (de)serialization directly, bypassing the in-process cache that ``load`` returns.
+        """
+        # A recorded 0 must be serialized, not dropped.
+        e0 = session.FileEntry(
+            rel_or_abs="f.py", last_read_ts=1.0, read_count=1,
+            line_ranges=[], symbols_read=[], read_mtime_ns=0, read_size=0,
+        )
+        d0 = session._serialize_file_entry(e0)
+        assert d0.get("read_mtime_ns") == 0
+        assert d0.get("read_size") == 0
+        # Parsing that wire dict back preserves 0 (a real value, not None).
+        back = session._parse_file_entry("f.py", dict(d0), now=1.0)
+        assert back is not None
+        assert back.read_mtime_ns == 0
+        assert back.read_size == 0
+        # An unrecorded fingerprint (keys absent — legacy session JSON) parses to None, not 0.
+        legacy = session._parse_file_entry(
+            "f.py", {"rel_or_abs": "f.py", "last_read_ts": 1.0, "read_count": 1}, now=1.0
+        )
+        assert legacy is not None
+        assert legacy.read_mtime_ns is None
+        assert legacy.read_size is None
+
+    def test_zero_fingerprint_freshness_gate_detects_change(self, tmp_data_dir, tmp_path):
+        """An epoch-timestamped file records st_mtime_ns == 0, a *legitimate* fingerprint.
+
+        Regression for the reported bug: read_mtime_ns=0 must mean "recorded as 0", not
+        "unrecorded". When the live file diverges from the recorded (0, 0) fingerprint the
+        freshness gate must detect the change and NOT deny the re-read as "unchanged". The
+        pre-fix falsy-0 guard skipped the comparison entirely and denied stale content.
+
+        Asserts on the permission decision, not ``continue`` — a deny redirect also carries
+        ``continue: True`` (fail-soft), so ``assert_continue`` cannot tell deny from passthrough.
+        """
+        f = _write(tmp_path / "epoch_fp.py", n_bytes=4096)
+        sid = "rrd-epoch-fp"
+        _record_read(sid, f)
+        # Force the recorded fingerprint to the epoch sentinel value (mtime_ns=0, size=0) —
+        # exactly what mark_file_read stores for a file whose on-disk mtime is the epoch.
+        cache = session.load(sid)
+        for entry in cache.files.values():
+            entry.read_mtime_ns = 0
+            entry.read_size = 0
+        session.save(cache)
+        # Live (mtime_ns, size) differs from the recorded (0, 0): must NOT be denied.
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
+        assert _decision(result) != "deny"
+
+    def test_legacy_entry_without_fingerprint_still_denied(self, tmp_data_dir, tmp_path):
+        """A FileEntry with read_mtime_ns=None (legacy/unstattable) on an *unchanged* file:
+        the freshness gate has nothing to compare and falls through to the timestamp deny
+        path, exactly as a pre-fingerprint session cache would. The None sentinel must not
+        accidentally trip the gate (`is not None` guard) and suppress the deny.
+        """
+        f = _write(tmp_path / "legacy_fp.py", n_bytes=4096)
+        sid = "rrd-legacy-fp"
+        _record_read(sid, f)
+        # Simulate a legacy/unstattable entry: clear the on-disk fingerprint to None.
+        cache = session.load(sid)
+        for entry in cache.files.values():
+            entry.read_mtime_ns = None
+            entry.read_size = None
+        session.save(cache)
+        # File is unchanged on disk → deny must still fire.
+        with patch.object(cfg_mod, "load", return_value=_cfg()):
+            result = hooks_read.pre_read(_read_payload(f, sid, tmp_path))
+        assert_deny(result)

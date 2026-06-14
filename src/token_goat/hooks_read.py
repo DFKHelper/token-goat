@@ -3462,13 +3462,32 @@ def _handle_reread_deny(
     if entry.last_edit_ts > entry.last_read_ts:
         return None
 
+    # Single on-disk stat drives both the size gate and the cross-session freshness
+    # check below. If the file cannot be stat'd we cannot prove it is unchanged, so
+    # we never deny.
+    try:
+        disk_stat = Path(file_path).stat()
+    except OSError:
+        return None
+
     # Size gate: skip tiny files where the hint cost (~25 tok) exceeds the saving.
-    if min_bytes > 0:
-        try:
-            if Path(file_path).stat().st_size < min_bytes:
-                return None
-        except OSError:
-            return None
+    if min_bytes > 0 and disk_stat.st_size < min_bytes:
+        return None
+
+    # Cross-session freshness gate: if the file's on-disk (mtime_ns, size) no longer
+    # matches what was recorded at the last read, it has been modified since — possibly by
+    # a sub-agent running under a different session_id, whose edit post_edit recorded against
+    # that session's last_edit_ts, never this one. The in-session last_edit_ts guard above is
+    # blind to such cross-session edits; denying here would pin the model to stale content and
+    # push it to bypass token-goat entirely. Let the re-read through. (Only applies when a
+    # fingerprint was recorded; legacy None entries fall through to the SHA/deny path below.
+    # The guard is `is not None`, not a truthiness test: an epoch-mtime file records 0, a
+    # real value that must still be compared — treating 0 as unrecorded would silently
+    # disable the freshness gate for such files and deny stale content.)
+    if entry.read_mtime_ns is not None and (
+        disk_stat.st_mtime_ns != entry.read_mtime_ns or disk_stat.st_size != entry.read_size
+    ):
+        return None
 
     # Parse the requested window (1-indexed inclusive).
     raw_offset = tool_input.get("offset")
