@@ -1,6 +1,6 @@
 ---
 title: "AI Token Optimizer — Cuts Costs 40–80%"
-description: "Cuts AI tool costs 40–80% on Windows. Blocks file re-reads, extracts one function instead of a whole file, and shrinks screenshots 97%. Fully automatic."
+description: "Cuts AI tool costs 40–80%. Blocks file re-reads, extracts one function instead of a whole file, and shrinks screenshots 97%. Fully automatic."
 image: /token-goat/assets/goat-social.png
 permalink: /
 ---
