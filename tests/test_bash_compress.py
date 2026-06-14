@@ -7728,3 +7728,18 @@ class TestMaybeNote:
         notes_two: list[str] = []
         _maybe_note(notes_two, 2, "two")
         assert notes_two == ["two"]
+
+    def test_none_is_noop(self):
+        notes: list[str] = []
+        _maybe_note(notes, None, "msg")
+        assert notes == []
+
+    def test_nonempty_string_appends(self):
+        notes: list[str] = []
+        _maybe_note(notes, "1,234 tokens", "context: 1,234 tokens")
+        assert notes == ["context: 1,234 tokens"]
+
+    def test_empty_string_is_noop(self):
+        notes: list[str] = []
+        _maybe_note(notes, "", "msg")
+        assert notes == []

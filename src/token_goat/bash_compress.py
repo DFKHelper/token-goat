@@ -874,13 +874,14 @@ def _pass_if_short(text: str, threshold: int = 30) -> str | None:
     return None
 
 
-def _maybe_note(notes: list[str], count: int, msg: str) -> None:
-    """Append *msg* to *notes* when *count* is non-zero.
+def _maybe_note(notes: list[str], value: int | str | None, msg: str) -> None:
+    """Append *msg* to *notes* when *value* is truthy (non-zero, non-empty, non-None).
 
     Reduces the ubiquitous ``if n: notes.append(msg)`` two-liner to a single
     call, improving scan-ability in compress methods that emit many notes.
+    Accepts int counts as well as str|None regex capture groups.
     """
-    if count:
+    if value:
         notes.append(msg)
 
 
