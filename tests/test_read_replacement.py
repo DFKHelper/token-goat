@@ -433,14 +433,25 @@ def test_cli_read_greet_emits_body(indexed_ts_cli):
     assert "return" in result.output
 
 
-def test_cli_read_nonexistent_symbol_exit_zero(indexed_ts_cli):
+def test_cli_read_nonexistent_symbol_exit_nonzero(indexed_ts_cli):
+    """A missing symbol is an error, not a successful empty read.
+
+    The command must exit non-zero (1) and emit a diagnostic to stderr so the
+    agent/shell can tell a genuine miss apart from a read that legitimately
+    returned nothing.  No close match exists for this token, so the output
+    falls back to the ``outline`` hint rather than a "Did you mean" list.
+    """
     from typer.testing import CliRunner
 
     from token_goat.cli import app
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "index.ts::__totally_nonexistent__"])
-    assert result.exit_code == 0
+    assert result.exit_code == 1
+    combined = result.output + (result.stderr or "")
+    assert "Symbol not found" in combined
+    # With no close match, the fallback hint points at `outline`.
+    assert "outline" in combined
 
 
 def test_cli_read_missing_separator_exit_2(indexed_ts_cli):
@@ -650,7 +661,9 @@ def test_cli_read_reports_structured_json_error_for_missing_symbol(
 
     runner = CliRunner()
     result = runner.invoke(app, ["read", "index.ts::does_not_exist", "--json"])
-    assert result.exit_code == 0
+    # Exit 1 (not 0) so a caller checking the status code can tell a genuine
+    # miss apart from a successful read that returned empty text.
+    assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["ok"] is False
     assert payload["error"]["code"] == "symbol_not_found"
@@ -892,7 +905,9 @@ def test_cli_section_reports_structured_json_error_for_missing_heading(indexed_m
 
     runner = CliRunner()
     result = runner.invoke(app, ["section", "article.md::NoSuchHeading", "--json"])
-    assert result.exit_code == 0
+    # Exit 1 (not 0) so a caller checking the status code can distinguish a
+    # genuine miss from a successful read that returned empty text.
+    assert result.exit_code == 1
     payload = json.loads(result.output)
     assert payload["ok"] is False
     assert payload["error"]["code"] == "section_not_found"
@@ -1128,11 +1143,15 @@ class TestResolveFileCrossProject:
         monkeypatch.chdir(cwd)
 
         runner = CliRunner()
-        # app.py is in py_sample; MyClass is a known symbol there
-        result = runner.invoke(app, ["read", "app.py::MyClass"])
-        # Should resolve via cross-project lookup — either finds the symbol
-        # or exits cleanly (no exception / non-zero exit).
-        assert result.exit_code == 0
+        # app.py is in py_sample; UserService is a real symbol there (greet /
+        # UserService are the only two — see the fixture).  Using a symbol that
+        # actually exists makes this a genuine cross-project resolution test:
+        # a miss now exits 1, so a stale symbol name would silently pass under
+        # the old lenient assertion while testing nothing.
+        result = runner.invoke(app, ["read", "app.py::UserService"])
+        # Resolves via cross-project lookup: exit 0 with the symbol body.
+        assert result.exit_code == 0, result.output
+        assert "UserService" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1366,7 +1385,8 @@ class TestSectionEdgeCases:
 
         runner = CliRunner()
         result = runner.invoke(app, ["section", "article.md::NoSuchHeadingXYZ"])
-        assert result.exit_code == 0
+        # A missing heading is an error, not a successful empty read: exit 1.
+        assert result.exit_code == 1
         combined = result.output + (result.stderr or "")
         assert "NoSuchHeadingXYZ" in combined or "Section not found" in combined or "not found" in combined.lower()
 

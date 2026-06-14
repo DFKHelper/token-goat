@@ -758,6 +758,16 @@ def _run_read_like_command(
         base_message = f"{missing_label} not found: {item_part} (in {file_target.rel_path})"
         if suggestions and not json_output:
             base_message = base_message + "\nDid you mean:"
+        elif not json_output and _label_lower == "symbol":
+            # No close matches to suggest — point the agent at ``outline``, which
+            # lists every symbol in the file, so it has a concrete next step
+            # instead of guessing or falling back to a full-file Read.  (Only
+            # symbols have a dedicated lister; sections rely on close matches.)
+            base_message = (
+                base_message
+                + f'\nHint: run `token-goat outline "{file_target.rel_path}"`'
+                + " to list available symbols"
+            )
         # On this path the file resolved cleanly — only the symbol/heading missed.
         # ``rel_path`` is the canonical, normalized form (e.g. "src/index.ts");
         # the raw ``file_part`` ("index.ts") that triggered the lookup is already
@@ -772,7 +782,10 @@ def _run_read_like_command(
             item=item_part,
             item_kind=_label_lower,
         )
-        raise typer.Exit(0)
+        # Exit non-zero so the caller (agent or shell) can distinguish a genuine
+        # miss from a successful read that happened to return empty text.  This
+        # matches the skill-section not-found paths, which already exit 1.
+        raise typer.Exit(1)
 
     if session_id:
         session.mark_file_read(session_id, file_target.rel_path, symbol=item_part)
