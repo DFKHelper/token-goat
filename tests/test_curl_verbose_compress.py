@@ -181,7 +181,10 @@ class TestCompressCurlVerbose:
             '{"result": "ok"}\n'
         )
         compressed, removed = self._run(output)
-        assert removed >= 1
+        assert removed == 3, f"expected 3 progress lines removed, got {removed}"
+        assert "% Total" not in compressed
+        assert "Dload  Upload" not in compressed
+        assert "56789" not in compressed
         assert '{"result": "ok"}' in compressed
 
     def test_http1_status_kept(self):
@@ -333,3 +336,57 @@ class TestPostBashCurlIntegration:
         result = self._call_post_bash("curl -v https://example.com", FULL_CURL_VERBOSE)
         msg = result.get("systemMessage", "")
         assert '{"data": "the actual response body here"}' in msg
+
+
+class TestRedirectChain:
+    """Regression tests for curl -vL redirect chains (Bug: in_body never reset)."""
+
+    REDIRECT_OUTPUT = (
+        "* Connected to example.com port 443 (#0)\n"
+        "> GET /old HTTP/2\n"
+        "> Host: example.com\n"
+        ">\n"
+        "< HTTP/2 301\n"
+        "< location: https://example.com/new\n"
+        "< content-length: 0\n"
+        "<\n"
+        "* Issue another request to this URL: https://example.com/new\n"
+        "* Connected to example.com port 443 (#1)\n"
+        "> GET /new HTTP/2\n"
+        "> Host: example.com\n"
+        ">\n"
+        "< HTTP/2 200\n"
+        "< content-type: application/json\n"
+        "< content-length: 18\n"
+        "<\n"
+        '{"status": "ok"}\n'
+    )
+
+    def _run(self, stdout: str) -> tuple[str, int]:
+        from token_goat.bash_compress import compress_curl_verbose
+        return compress_curl_verbose(stdout)
+
+    def test_tls_noise_in_second_connection_suppressed(self):
+        """* lines from the second connection must not appear in compressed output."""
+        compressed, _ = self._run(self.REDIRECT_OUTPUT)
+        assert "* Connected to example.com port 443 (#1)" not in compressed
+
+    def test_issue_another_request_suppressed(self):
+        """The redirect `* Issue another request` line must be suppressed."""
+        compressed, _ = self._run(self.REDIRECT_OUTPUT)
+        assert "* Issue another request" not in compressed
+
+    def test_final_status_200_kept(self):
+        """The final HTTP 200 status must appear in compressed output."""
+        compressed, _ = self._run(self.REDIRECT_OUTPUT)
+        assert "< HTTP/2 200" in compressed
+
+    def test_final_body_kept(self):
+        """The response body after the final redirect must be present."""
+        compressed, _ = self._run(self.REDIRECT_OUTPUT)
+        assert '{"status": "ok"}' in compressed
+
+    def test_lines_removed_positive(self):
+        """At least some lines must have been removed from the redirect output."""
+        _, removed = self._run(self.REDIRECT_OUTPUT)
+        assert removed > 0
