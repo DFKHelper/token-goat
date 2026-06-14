@@ -9316,6 +9316,10 @@ class PipFilter(Filter):
       directory …`` build-wheel noise lines.
     * **Drop** ``Installing build dependencies`` / ``Preparing metadata``
       build-env setup chatter.
+    * **Drop** ``Installing collected packages …`` (redundant with the final
+      ``Successfully installed`` summary).
+    * **Drop** Unicode progress-bar lines (``━━━ 862.6/862.6 kB …``) emitted
+      by pip ≥ 22 on stderr when capturing output.
     * **Drop** ``Obtaining file://…`` editable-install path lines.
     * **Cap** ``Collecting …`` at 5 lines (keep first 5, summarise the rest).
     * **Keep** every ``error:`` / ``warning:`` / ``ERROR`` line verbatim.
@@ -9371,8 +9375,14 @@ class PipFilter(Filter):
                 or line.startswith("  Preparing metadata") or line.startswith("Preparing metadata")
                 or line.startswith("  Getting requirements") or line.startswith("Getting requirements")
                 or line.startswith("  Obtaining file://") or line.startswith("Obtaining file://")
+                or line.startswith("Installing collected packages") or line.startswith("  Installing collected packages")
             ):
                 build_noise += 1
+                continue
+            # Unicode box-drawing progress bar lines emitted by pip >= 22 when
+            # capturing stderr: "   ━━━━━━━━ 862.6/862.6 kB 5.2 MB/s eta 0:00:00"
+            if "━" in line and not _ERROR_SIGNAL_RE.search(line):
+                downloads += 1
                 continue
             if line.startswith("Collecting ") or line.startswith("  Collecting "):
                 collects += 1
