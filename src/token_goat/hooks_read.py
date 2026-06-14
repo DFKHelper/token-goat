@@ -5224,7 +5224,7 @@ def _json_structural_summary(data: object, max_depth: int = 2, max_keys: int = 1
 def _safe_int(v: object, default: int = 0) -> int:
     """Return ``int(v)`` or *default* when *v* is empty, None, or non-numeric."""
     try:
-        return int(v)  # type: ignore[arg-type]
+        return int(v)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return default
 
