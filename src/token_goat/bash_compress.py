@@ -22596,6 +22596,191 @@ class PlaywrightFilter(Filter):
         return self._finalize(kept)
 
 
+
+# --- Cypress E2E test runner -----------------------------------------------
+
+# Pure separator lines: 30+ horizontal-rule (U+2500) or equals characters.
+_CY_SEPARATOR_RE: Final[re.Pattern[str]] = re.compile(r"^\s*[─=]{30,}\s*$")
+
+# Section headers emitted by Cypress run
+_CY_RUN_START_RE: Final[re.Pattern[str]] = re.compile(r"^\s*\(Run Starting\)\s*$")
+_CY_RESULTS_RE: Final[re.Pattern[str]] = re.compile(r"^\s*\(Results\)\s*$")
+_CY_VIDEO_RE: Final[re.Pattern[str]] = re.compile(r"^\s*\(Video\)\s*$")
+_CY_RUN_FINISH_RE: Final[re.Pattern[str]] = re.compile(r"^\s*\(Run Finished\)\s*$")
+
+# Box-drawing characters (Unicode U+2500 block): top/bottom borders, side bars
+_CY_BOX_TOP_RE: Final[re.Pattern[str]] = re.compile(r"^\s*┌[─]+┐\s*$")
+_CY_BOX_SIDE_RE: Final[re.Pattern[str]] = re.compile(r"^\s*│")
+_CY_BOX_BOTTOM_RE: Final[re.Pattern[str]] = re.compile(r"^\s*└[─]+┘\s*$")
+
+# Passing test line: indent + ✓/✔ unicode check mark + non-space content
+_CY_PASS_TEST_RE: Final[re.Pattern[str]] = re.compile(r"^\s+[✓✔]\s+\S")
+
+
+class CypressFilter(Filter):
+    """Compress ``cypress run`` E2E test output.
+
+    Cypress emits significant structural noise in CI: a banner box listing
+    runtime metadata, per-spec separator lines, a per-spec Results box
+    (redundant with the final summary), and a Video section with per-percent
+    compression progress lines.  None of these carry diagnostic value when
+    tests pass; when tests fail the error messages and stack traces are
+    preserved verbatim.
+
+    Compression model:
+
+    * **Run Starting box** (after the ``(Run Starting)`` header): the
+      bordered metadata table listing Cypress version, browser, Node version,
+      and spec paths is suppressed entirely.
+    * **Separator lines**: pure horizontal-rule lines composed of 30 or more
+      ``─`` (U+2500) or ``=`` characters are cosmetic dividers, dropped
+      unconditionally.
+    * **Per-spec Results box** (after each ``(Results)`` header): a bordered
+      table repeating per-spec pass/fail counts already in the final Run
+      Finished summary.  Suppressed to avoid redundancy.
+    * **Video section** (between ``(Video)`` and ``(Run Finished)``):
+      progress lines are pure noise; the entire section is suppressed.
+    * **Passing test lines** (``✓``/``✔`` prefix) when exit code is 0:
+      suppressed to surface only the pass-count summaries.  Lines whose
+      lowercased text contains ``error`` are kept regardless.
+
+    **Always kept**: failing-test lines, error messages and stack traces,
+    ``N passing (Xs)`` / ``N failing`` per-spec summaries,
+    ``Running: specname (N of M)`` per-spec headers, describe-block names,
+    and the entire Run Finished summary table.
+    """
+
+    name = "cypress"
+    binaries = frozenset(["cypress"])
+
+    _SUBCMDS: frozenset[str] = frozenset(["run", "open"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        def _base(s: str) -> str:
+            return Path(s).stem.lower()
+
+        if not argv:
+            return False
+        base = _base(argv[0])
+        if base == "cypress":
+            return not argv[1:] or argv[1].lower() in self._SUBCMDS
+        if base in {"npx", "pnpx", "bunx"}:
+            rest = [a for a in argv[1:] if not a.startswith("-")]
+            if rest and _base(rest[0]) == "cypress":
+                return not rest[1:] or rest[1].lower() in self._SUBCMDS
+        return False
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        lines = (stdout + stderr).splitlines(keepends=True)
+        kept: list[str] = []
+
+        # State machine: NORMAL | PRE_BOX | IN_BOX | IN_VIDEO | IN_SUMMARY
+        state = "NORMAL"
+
+        n_header = 0  # lines from Run Starting / Results boxes
+        n_sep = 0     # separator lines
+        n_video = 0   # video-section lines
+        n_pass = 0    # passing test lines
+
+        for line in lines:
+            s = line.rstrip()
+
+            if state == "IN_SUMMARY":
+                kept.append(line)
+                continue
+
+            if state == "IN_VIDEO":
+                if _CY_RUN_FINISH_RE.match(s):
+                    state = "IN_SUMMARY"
+                    kept.append(line)
+                elif "error" in s.lower():
+                    kept.append(line)
+                else:
+                    n_video += 1
+                continue
+
+            if state == "IN_BOX":
+                if "error" not in s.lower():
+                    n_header += 1
+                    if _CY_BOX_BOTTOM_RE.match(s):
+                        state = "NORMAL"
+                else:
+                    kept.append(line)
+                    if _CY_BOX_BOTTOM_RE.match(s):
+                        state = "NORMAL"
+                continue
+
+            if state == "PRE_BOX":
+                if _CY_BOX_TOP_RE.match(s):
+                    if "error" not in s.lower():
+                        n_header += 1
+                    else:
+                        kept.append(line)
+                    state = "IN_BOX"
+                elif not s:
+                    n_header += 1
+                else:
+                    kept.append(line)
+                    state = "NORMAL"
+                continue
+
+            # NORMAL state
+            if _CY_RUN_START_RE.match(s) or _CY_RESULTS_RE.match(s):
+                if "error" not in s.lower():
+                    n_header += 1
+                    state = "PRE_BOX"
+                else:
+                    kept.append(line)
+                continue
+
+            if _CY_VIDEO_RE.match(s):
+                if "error" not in s.lower():
+                    n_video += 1
+                    state = "IN_VIDEO"
+                else:
+                    kept.append(line)
+                continue
+
+            if _CY_RUN_FINISH_RE.match(s):
+                state = "IN_SUMMARY"
+                kept.append(line)
+                continue
+
+            if _CY_SEPARATOR_RE.match(s):
+                if "error" not in s.lower():
+                    n_sep += 1
+                else:
+                    kept.append(line)
+                continue
+
+            if exit_code == 0 and _CY_PASS_TEST_RE.match(s) and "error" not in s.lower():
+                n_pass += 1
+                continue
+
+            kept.append(line)
+
+        # EOF guard: if state machine is still in a non-NORMAL state, the
+        # input was truncated (box/video section never closed). Emit a note
+        # so the caller knows output may be incomplete.
+        if state in ("IN_BOX", "PRE_BOX"):
+            kept.append("[token-goat] warning: cypress output truncated inside header box")
+        elif state == "IN_VIDEO":
+            kept.append("[token-goat] warning: cypress output truncated inside video section")
+        notes: list[str] = []
+        if n_header:
+            notes.append(f"suppressed {n_header} cypress header/results box lines")
+        if n_sep:
+            notes.append(f"suppressed {n_sep} separator lines")
+        if n_video:
+            notes.append(f"suppressed {n_video} video processing lines")
+        if n_pass:
+            notes.append(f"suppressed {n_pass} passing test lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -22632,6 +22817,10 @@ FILTERS: list[Filter] = [
     # PlaywrightFilter must precede BunFilter so that `bunx playwright test`
     # routes to PlaywrightFilter rather than the generic bun handler.
     PlaywrightFilter(),
+    # CypressFilter handles `cypress run` / `cypress open` and `npx cypress run`.
+    # Must follow PlaywrightFilter (both are E2E test runners; disjoint binaries
+    # so ordering is cosmetic, but explicit placement keeps E2E filters together).
+    CypressFilter(),
     # the generic npm/pnpm/yarn/bun handler.  BunFilter also precedes
     # NodePackageFilter so that `bun install/test/build` get dedicated
     # compression rather than the generic npm/pnpm/yarn/bun fallback.

@@ -52,6 +52,11 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["playwright", "install"], "playwright"),
     (["npx", "playwright", "test"], "playwright"),
     (["bunx", "playwright", "test"], "playwright"),
+    # ---- CypressFilter ----
+    (["cypress", "run"], "cypress"),
+    (["cypress", "open"], "cypress"),
+    (["npx", "cypress", "run"], "cypress"),
+    (["bunx", "cypress", "run"], "cypress"),
     (["bun", "install"], "bun"),
     # ---- NodeFilter (eval probes only) ----
     (["node", "-e", "console.log(1)"], "node"),

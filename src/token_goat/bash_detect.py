@@ -69,6 +69,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "claude-dev": "cline",
     "cline": "cline",
     "cmake": "cmake",
+    "cypress": "cypress",
     "colordiff": "diff",
     "composer": "composer",
     "composer.phar": "composer",
