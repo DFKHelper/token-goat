@@ -260,6 +260,8 @@ __all__ = [
     "PlaywrightFilter",
     # ffmpeg / ffprobe / ffplay media-processing CLI
     "FfmpegFilter",
+    # Angular CLI (ng build / test / serve)
+    "NgFilter",
 ]
 
 import json as _json
@@ -23000,6 +23002,249 @@ class FfmpegFilter(Filter):
         return self._finalize(kept)
 
 
+# --- Angular CLI (ng build / serve / test) -----------------------------------
+
+#: Old webpack-based ng build: "chunk {0} polyfills.js (polyfills) 141 kB [initial] [rendered]"
+_NG_WEBPACK_CHUNK_RE: Final[re.Pattern[str]] = re.compile(
+    r"^chunk \{\d+\} "
+)
+
+#: New application-builder chunk data row: "main.abc123.js | main | 172 kB | 45 kB"
+#: A non-whitespace filename with a JS/CSS extension followed by whitespace+pipe.
+_NG_CHUNK_ROW_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\S+\.(?:js|css|mjs)\s+\|"
+)
+
+#: Table section header emitted by the new application builder (both capitalizations seen in the wild)
+_NG_TABLE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Initial [Cc]hunk [Ff]iles|Lazy [Cc]hunk [Ff]iles)\s+\|",
+    re.IGNORECASE,
+)
+
+#: Build summary lines: "Build at: ..." (new builder) / "Date: ..." (old webpack)
+_NG_BUILD_AT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Build at:|Date:)\s"
+)
+
+#: "Application bundle generation complete." / "✔ Browser application bundle generation complete."
+_NG_BUNDLE_COMPLETE_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:Browser application bundle|Application bundle) generation complete",
+    re.IGNORECASE,
+)
+
+#: Build progress / spinner prefix lines to drop (they duplicate the summary)
+_NG_BUILD_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^- (?:Generating|Building)\s"
+    r"|^Building\.\.\.\s*$"
+    r"|^Generating browser application bundles"
+)
+
+#: Budget warning lines emitted by ng build — always keep (these are actionable)
+_NG_BUDGET_WARN_RE: Final[re.Pattern[str]] = re.compile(
+    r"budget\s+exceeded|exceeded\s+(?:maximum\s+)?budget|Warning:\s+budget",
+    re.IGNORECASE,
+)
+
+#: Karma / ng test: timestamped INFO/DEBUG/WARN log lines produced by Karma's logger
+#: Example: "09 01 2024 10:30:00.123:INFO [karma]: Karma v6.4.2 server started …"
+#: Also matches simpler "INFO [karma]: …" / "WARN [launcher]: …" formats.
+_NG_KARMA_LOG_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d{2} \d{2} \d{4} \d{2}:\d{2}:\d{2}[.:]\d{3}:(?:INFO|DEBUG|WARN)\s"
+    r"|^(?:INFO|WARN)\s+\[(?:karma|launcher|karma-server|Chrome|Firefox|Safari)",
+    re.IGNORECASE,
+)
+
+#: Karma per-browser result line: "Chrome Headless 120.0 … Executed 134 of 134 SUCCESS …"
+_NG_KARMA_RESULT_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:Chrome|Firefox|Safari|HeadlessChrome|ChromeHeadless)\s.*Executed\s+\d+\s+of\s+\d+",
+    re.IGNORECASE,
+)
+
+#: Karma aggregate summary: "TOTAL: 134 SUCCESS" / "TOTAL: 2 FAILED"
+_NG_KARMA_TOTAL_RE: Final[re.Pattern[str]] = re.compile(
+    r"^TOTAL:\s+\d+\s+(?:SUCCESS|FAILED)",
+    re.IGNORECASE,
+)
+
+#: Rows to keep at each end of a chunk table section before collapsing the middle.
+_NG_TABLE_KEEP_EACH: Final[int] = 3
+
+
+class NgFilter(Filter):
+    """Compress Angular CLI (``ng``) build, serve, and test output.
+
+    Angular's ``ng build`` emits a chunk-file table listing every generated
+    JavaScript and CSS asset.  Large applications with many feature modules can
+    produce 50+ lazy-chunk rows, all following the same
+    ``filename | module-name | size | transfer-size`` pattern — pure noise
+    when the build succeeds.  The legacy webpack-based builder emits
+    ``chunk {N} …`` lines in the same fashion.
+
+    ``ng test`` runs Karma and emits browser-connection log lines
+    (timestamped ``INFO [karma]: …`` entries) that carry no signal.
+
+    Compression model:
+
+    * **Chunk file tables** (new application-builder format): keep the table
+      header, keep the first :data:`_NG_TABLE_KEEP_EACH` and last
+      :data:`_NG_TABLE_KEEP_EACH` data rows per section, collapse the middle
+      to a count note.  Total/footer rows are always kept.
+    * **Webpack chunk lines** (old builder ``chunk {N} …`` format): same
+      head + tail keep, collapse middle.
+    * **Budget warnings** (``Warning: budget exceeded …``): always kept.
+    * **Build summary** (``Build at:`` / ``Date:`` / ``Application bundle
+      generation complete.``): always kept.
+    * **ng test / Karma log noise**: drop ``INFO [karma]`` / ``INFO
+      [launcher]`` / browser-connection lines; keep test-result and
+      ``TOTAL:`` lines.
+    * **Error exit** (exit_code != 0): preserve all output unchanged.
+    * **Short subcommands** (``generate``, ``add``, ``update``, ``lint``):
+      light byte cap only; these are inherently brief.
+    """
+
+    name = "ng"
+    binaries = frozenset(["ng"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
+
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0].lower() if positionals else ""
+
+        combined = self._combine_output(stdout, stderr)
+        lines = combined.split("\n")
+
+        if subcommand == "test":
+            return self._compress_test(lines)
+        if subcommand in ("build", "serve", ""):
+            return self._compress_build(lines)
+        # Short subcommands (generate, add, update, lint, version, …)
+        return cap_bytes(combined, 8_192)
+
+    # ------------------------------------------------------------------
+    # Subcommand helpers
+    # ------------------------------------------------------------------
+
+    def _compress_build(self, lines: list[str]) -> str:
+        """Collapse chunk tables; preserve budget warnings and build summary."""
+        kept: list[str] = []
+        table_rows: list[str] = []   # buffered new-builder chunk rows for current section
+        in_table = False
+        webpack_run: list[str] = []  # buffered consecutive old-webpack chunk lines
+        collapsed_rows = 0
+        dropped_progress = 0
+
+        def _flush_rows(rows: list[str], label: str) -> None:
+            nonlocal collapsed_rows
+            n = _NG_TABLE_KEEP_EACH
+            if len(rows) <= n * 2:
+                kept.extend(rows)
+            else:
+                kept.extend(rows[:n])
+                mid_count = len(rows) - n * 2
+                kept.append(f"[token-goat: collapsed {mid_count} {label}]")
+                collapsed_rows += mid_count
+                kept.extend(rows[-n:])
+
+        for line in lines:
+            # End an open webpack-chunk run when a non-chunk line appears.
+            if webpack_run and not _NG_WEBPACK_CHUNK_RE.match(line):
+                _flush_rows(webpack_run, "webpack chunk lines")
+                webpack_run = []
+
+            # End an open new-builder table section when a non-chunk-row appears.
+            if in_table and not _NG_CHUNK_ROW_RE.match(line):
+                _flush_rows(table_rows, "chunk table rows")
+                table_rows = []
+                in_table = False
+
+            # Budget warnings — always keep.
+            if _NG_BUDGET_WARN_RE.search(line):
+                kept.append(line)
+                continue
+
+            # Error/warning diagnostics — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+
+            # Build summary lines — always keep.
+            if _NG_BUILD_AT_RE.match(line) or _NG_BUNDLE_COMPLETE_RE.search(line):
+                kept.append(line)
+                continue
+
+            # Table section header (new application builder).
+            if _NG_TABLE_HEADER_RE.match(line):
+                kept.append(line)
+                in_table = True
+                table_rows = []
+                continue
+
+            # New-builder chunk data row (only accepted inside a table section).
+            if in_table and _NG_CHUNK_ROW_RE.match(line):
+                table_rows.append(line)
+                continue
+
+            # Old webpack chunk line — accumulate into a run.
+            if _NG_WEBPACK_CHUNK_RE.match(line):
+                webpack_run.append(line)
+                continue
+
+            # Build progress / spinner lines.
+            if _NG_BUILD_PROGRESS_RE.match(line):
+                dropped_progress += 1
+                continue
+
+            kept.append(line)
+
+        # Flush any open runs at EOF.
+        if webpack_run:
+            _flush_rows(webpack_run, "webpack chunk lines")
+        if in_table and table_rows:
+            _flush_rows(table_rows, "chunk table rows")
+
+        notes: list[str] = []
+        if dropped_progress:
+            notes.append(f"dropped {dropped_progress} build progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_test(self, lines: list[str]) -> str:
+        """Drop Karma info/debug log noise; keep test results and error lines."""
+        kept: list[str] = []
+        dropped_karma = 0
+
+        for line in lines:
+            # Karma per-browser result and TOTAL summary — always keep (checked
+            # before noise drop because result lines can carry an INFO prefix).
+            if _NG_KARMA_RESULT_RE.search(line) or _NG_KARMA_TOTAL_RE.match(line):
+                kept.append(line)
+                continue
+            # Error/warning diagnostics — always keep.
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            # Bundle-complete line (appears before Karma starts) — keep.
+            if _NG_BUNDLE_COMPLETE_RE.search(line):
+                kept.append(line)
+                continue
+            # Karma log noise — drop (after result/error guards above).
+            if _NG_KARMA_LOG_RE.search(line):
+                dropped_karma += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if dropped_karma:
+            notes.append(f"dropped {dropped_karma} Karma log lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -23365,6 +23610,9 @@ FILTERS: list[Filter] = [
     # from every other filter so position is cosmetic — placed alongside other
     # AI coding assistant CLI filters.
     CodexExecFilter(),
+    # NgFilter handles Angular CLI (`ng build`, `ng test`, `ng serve`); disjoint
+    # binary from every other filter so position is cosmetic.
+    NgFilter(),
 ]
 
 

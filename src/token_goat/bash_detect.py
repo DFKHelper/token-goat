@@ -165,6 +165,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "nixos-rebuild": "nix",
     "node": "node",
     "node-sass": "sass",
+    "ng": "ng",
     "nodejs": "node",
     "npm": "npm_install",
     "npx": "nx",
