@@ -353,3 +353,393 @@ class TestTscCompression:
         assert "[token-goat] tsc:" in msg
         # Must not claim zero errors when exit_code=1 and bare errors exist
         assert "0 errors" not in msg
+
+
+# ---------------------------------------------------------------------------
+# TscFilter unit tests (select_filter dispatch + compress() directly)
+# ---------------------------------------------------------------------------
+
+from token_goat.bash_compress import TscFilter, select_filter  # noqa: E402
+
+# Realistic output samples for TscFilter
+
+_TC_OLD_FEW = """\
+src/index.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+src/utils.ts(20,3): error TS2339: Property 'foo' does not exist on type 'Bar'.
+
+Found 2 errors.
+"""
+
+_TC_NEW_FEW = """\
+src/index.ts:10:5 - error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+
+10   const x = foo("hello");
+              ~~~~~~~~~~~
+
+src/utils.ts:20:3 - error TS2339: Property 'foo' does not exist on type 'Bar'.
+
+20   return bar.foo;
+               ~~~
+
+Found 2 errors.
+"""
+
+_TC_MANY_SAME_CODE = """\
+src/a.ts:1:1 - error TS2345: Type mismatch in a.
+
+1   fn(x);
+    ~
+
+src/b.ts:5:3 - error TS2345: Type mismatch in b.
+
+5   fn(y);
+    ~
+
+src/c.ts:9:2 - error TS2345: Type mismatch in c.
+
+9   fn(z);
+    ~
+
+src/d.ts:14:6 - error TS2345: Type mismatch in d.
+
+14   fn(w);
+     ~
+
+src/e.ts:20:4 - error TS2345: Type mismatch in e.
+
+20   fn(v);
+     ~
+
+Found 5 errors.
+"""
+
+_TC_MIXED_CODES = """\
+src/a.ts:1:1 - error TS2345: Type mismatch A.
+
+1   fn(x);
+    ~
+
+src/b.ts:2:2 - error TS2339: Property missing B.
+
+2   obj.foo;
+        ~~~
+
+src/c.ts:3:3 - error TS2345: Type mismatch C.
+
+3   fn(y);
+    ~
+
+src/d.ts:4:4 - error TS2339: Property missing D.
+
+4   obj.bar;
+        ~~~
+
+src/e.ts:5:5 - error TS2345: Type mismatch E.
+
+5   fn(z);
+    ~
+
+src/f.ts:6:6 - error TS2345: Type mismatch F.
+
+6   fn(w);
+    ~
+
+src/g.ts:7:7 - error TS2339: Property missing G.
+
+7   obj.baz;
+        ~~~
+
+Found 7 errors.
+"""
+
+_WATCH_ONE_CYCLE = """\
+[10:30:00 PM] Starting compilation in watch mode...
+
+[10:30:01 PM] Found 0 errors. Watching for file changes.
+"""
+
+_WATCH_TWO_CYCLES = """\
+[10:30:00 PM] Starting compilation in watch mode...
+
+[10:30:01 PM] Found 0 errors. Watching for file changes.
+
+
+[10:30:15 PM] File change detected. Starting incremental compilation...
+
+[10:30:16 PM] Found 1 error. Watching for file changes.
+"""
+
+_WATCH_THREE_CYCLES = """\
+[10:30:00 PM] Starting compilation in watch mode...
+
+[10:30:01 PM] Found 0 errors. Watching for file changes.
+
+
+[10:30:15 PM] File change detected. Starting incremental compilation...
+
+[10:30:20 PM] Found 0 errors. Watching for file changes.
+
+
+[10:30:45 PM] File change detected. Starting incremental compilation...
+
+src/utils.ts:5:3 - error TS2339: Property 'foo' does not exist on type 'Bar'.
+
+5   bar.foo;
+        ~~~
+
+[10:30:46 PM] Found 1 error. Watching for file changes.
+"""
+
+_WATCH_FIVE_CYCLES = """\
+[9:00:00 AM] Starting compilation in watch mode...
+
+[9:00:01 AM] Found 0 errors. Watching for file changes.
+
+
+[9:01:00 AM] File change detected. Starting incremental compilation...
+
+[9:01:01 AM] Found 0 errors. Watching for file changes.
+
+
+[9:02:00 AM] File change detected. Starting incremental compilation...
+
+[9:02:01 AM] Found 0 errors. Watching for file changes.
+
+
+[9:03:00 AM] File change detected. Starting incremental compilation...
+
+[9:03:01 AM] Found 0 errors. Watching for file changes.
+
+
+[9:04:00 AM] File change detected. Starting incremental compilation...
+
+src/index.ts:42:8 - error TS2345: Type error in index.
+
+42   process(value);
+             ~~~~~
+
+[9:04:01 AM] Found 1 error. Watching for file changes.
+"""
+
+_BUILD_ALL_UPTODATE = """\
+[11:00:00 AM] Projects in this build:
+    * packages/core/tsconfig.json
+    * packages/utils/tsconfig.json
+    * tsconfig.json
+
+[11:00:00 AM] Project 'packages/core/tsconfig.json' is up to date because oldest output 'packages/core/dist/index.js' is newer than newest input 'packages/core/src/index.ts'
+
+[11:00:00 AM] Project 'packages/utils/tsconfig.json' is up to date because oldest output 'packages/utils/dist/index.js' is newer than newest input 'packages/utils/src/utils.ts'
+
+[11:00:00 AM] Project 'tsconfig.json' is up to date because oldest output 'dist/index.js' is newer than newest input 'src/index.ts'
+
+Found 0 errors.
+"""
+
+_BUILD_ONE_BUILDING = """\
+[11:00:00 AM] Projects in this build:
+    * packages/core/tsconfig.json
+    * tsconfig.json
+
+[11:00:00 AM] Project 'packages/core/tsconfig.json' is up to date because oldest output 'packages/core/dist/index.js' is newer than newest input 'packages/core/src/index.ts'
+
+[11:00:01 AM] Building project 'tsconfig.json'...
+
+src/index.ts:5:3 - error TS2345: Type error.
+
+5   fn(x);
+    ~
+
+Found 1 error.
+"""
+
+_TF = TscFilter()
+
+
+def _tsc(
+    stdout: str = "",
+    stderr: str = "",
+    exit_code: int = 0,
+    argv: list[str] | None = None,
+) -> str:
+    if argv is None:
+        argv = ["tsc", "--noEmit"]
+    return _TF.compress(stdout, stderr, exit_code, argv)
+
+
+class TestTscFilterDispatch:
+    def test_tsc_matched_by_select_filter(self) -> None:
+        f = select_filter(["tsc"])
+        assert f is not None and f.name == "tsc"
+
+    def test_tsc_noEmit_matched(self) -> None:
+        f = select_filter(["tsc", "--noEmit"])
+        assert f is not None and f.name == "tsc"
+
+    def test_tsc_watch_matched(self) -> None:
+        f = select_filter(["tsc", "--watch"])
+        assert f is not None and f.name == "tsc"
+
+    def test_tsc_build_matched(self) -> None:
+        f = select_filter(["tsc", "--build"])
+        assert f is not None and f.name == "tsc"
+
+    def test_npx_tsc_matched(self) -> None:
+        f = select_filter(["npx", "tsc"])
+        assert f is not None and f.name == "tsc"
+
+    def test_yarn_tsc_matched(self) -> None:
+        f = select_filter(["yarn", "tsc"])
+        assert f is not None and f.name == "tsc"
+
+    def test_pnpm_tsc_matched(self) -> None:
+        f = select_filter(["pnpm", "tsc"])
+        assert f is not None and f.name == "tsc"
+
+    def test_tsx_not_tsc_filter(self) -> None:
+        f = select_filter(["tsx", "src/index.ts"])
+        assert f is None or f.name != "tsc"
+
+    def test_linter_filter_no_longer_owns_tsc(self) -> None:
+        # tsc must route to TscFilter, not the generic LinterFilter
+        f = select_filter(["tsc", "--noEmit"])
+        assert f is not None and f.name != "linter"
+
+
+class TestTscFilterTypecheck:
+    def test_zero_errors_pass_through(self) -> None:
+        out = _tsc(stdout="Found 0 errors.\n")
+        assert "Found 0 errors" in out
+
+    def test_few_old_format_errors_kept(self) -> None:
+        out = _tsc(stdout=_TC_OLD_FEW)
+        assert "TS2345" in out
+        assert "TS2339" in out
+        assert "Found 2 errors" in out
+
+    def test_few_new_format_errors_kept(self) -> None:
+        out = _tsc(stdout=_TC_NEW_FEW)
+        assert "TS2345" in out
+        assert "TS2339" in out
+        assert "Found 2 errors" in out
+
+    def test_new_format_context_lines_preserved(self) -> None:
+        out = _tsc(stdout=_TC_NEW_FEW)
+        assert "10   const x = foo" in out
+        assert "~~~" in out
+
+    def test_summary_always_kept(self) -> None:
+        out = _tsc(stdout=_TC_MANY_SAME_CODE)
+        assert "Found 5 errors" in out
+
+    def test_many_same_code_first_three_stanzas_kept(self) -> None:
+        out = _tsc(stdout=_TC_MANY_SAME_CODE)
+        # src/a, src/b, src/c all within 3 kept stanzas
+        assert "src/a.ts" in out
+        assert "src/b.ts" in out
+        assert "src/c.ts" in out
+
+    def test_many_same_code_excess_dropped_note(self) -> None:
+        out = _tsc(stdout=_TC_MANY_SAME_CODE)
+        assert "dropped 2 more TS2345" in out
+
+    def test_dedup_note_mentions_token_goat(self) -> None:
+        out = _tsc(stdout=_TC_MANY_SAME_CODE)
+        assert "token-goat" in out
+
+    def test_mixed_codes_dedup_independently(self) -> None:
+        out = _tsc(stdout=_TC_MIXED_CODES)
+        # TS2345 appears 4 times: keep 3, drop 1
+        assert "dropped 1 more TS2345" in out
+        # TS2339 appears 3 times: keep all 3, no drop note
+        assert "TS2339" in out
+
+    def test_nonzero_exit_does_not_suppress(self) -> None:
+        out = _tsc(stdout=_TC_NEW_FEW, exit_code=2)
+        assert "TS2345" in out
+        assert "Found 2 errors" in out
+
+
+class TestTscFilterWatchMode:
+    def _w(self, stdout: str, short_flag: bool = False) -> str:
+        flag = "-w" if short_flag else "--watch"
+        return _tsc(stdout=stdout, argv=["tsc", flag])
+
+    def test_single_cycle_pass_through(self) -> None:
+        out = self._w(_WATCH_ONE_CYCLE)
+        assert "Starting compilation in watch mode" in out
+        assert "Found 0 errors. Watching" in out
+
+    def test_two_cycles_no_drop_note(self) -> None:
+        out = self._w(_WATCH_TWO_CYCLES)
+        assert "intermediate" not in out
+
+    def test_two_cycles_both_present(self) -> None:
+        out = self._w(_WATCH_TWO_CYCLES)
+        assert "Starting compilation in watch mode" in out
+        assert "Found 1 error. Watching" in out
+
+    def test_three_cycles_drops_one(self) -> None:
+        out = self._w(_WATCH_THREE_CYCLES)
+        assert "dropped 1 intermediate watch cycle" in out
+
+    def test_three_cycles_first_banner_kept(self) -> None:
+        out = self._w(_WATCH_THREE_CYCLES)
+        assert "Starting compilation in watch mode" in out
+
+    def test_three_cycles_last_error_kept(self) -> None:
+        out = self._w(_WATCH_THREE_CYCLES)
+        assert "TS2339" in out
+
+    def test_five_cycles_drops_three(self) -> None:
+        out = self._w(_WATCH_FIVE_CYCLES)
+        assert "dropped 3 intermediate watch cycles" in out
+
+    def test_five_cycles_last_error_preserved(self) -> None:
+        out = self._w(_WATCH_FIVE_CYCLES)
+        assert "TS2345" in out
+        assert "index.ts" in out
+
+    def test_w_short_flag_triggers_watch_mode(self) -> None:
+        out = self._w(_WATCH_THREE_CYCLES, short_flag=True)
+        assert "dropped 1 intermediate watch cycle" in out
+
+
+class TestTscFilterBuildMode:
+    def _b(self, stdout: str, short_flag: bool = False) -> str:
+        flag = "-b" if short_flag else "--build"
+        return _tsc(stdout=stdout, argv=["tsc", flag])
+
+    def test_uptodate_lines_dropped(self) -> None:
+        out = self._b(_BUILD_ALL_UPTODATE)
+        assert "is up to date" not in out
+
+    def test_projects_header_dropped(self) -> None:
+        out = self._b(_BUILD_ALL_UPTODATE)
+        assert "Projects in this build" not in out
+
+    def test_project_item_lines_dropped(self) -> None:
+        out = self._b(_BUILD_ALL_UPTODATE)
+        assert "packages/core/tsconfig.json" not in out
+
+    def test_uptodate_count_note(self) -> None:
+        out = self._b(_BUILD_ALL_UPTODATE)
+        assert "dropped 3 up-to-date project lines" in out
+
+    def test_summary_kept(self) -> None:
+        out = self._b(_BUILD_ALL_UPTODATE)
+        assert "Found 0 errors" in out
+
+    def test_building_line_kept(self) -> None:
+        out = self._b(_BUILD_ONE_BUILDING)
+        assert "Building project" in out
+
+    def test_build_error_kept(self) -> None:
+        out = self._b(_BUILD_ONE_BUILDING)
+        assert "TS2345" in out
+        assert "Found 1 error" in out
+
+    def test_b_short_flag_triggers_build_mode(self) -> None:
+        out = self._b(_BUILD_ALL_UPTODATE, short_flag=True)
+        assert "dropped" in out
+        assert "up-to-date" in out

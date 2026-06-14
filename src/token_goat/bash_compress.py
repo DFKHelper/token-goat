@@ -264,6 +264,8 @@ __all__ = [
     "FfmpegFilter",
     # Angular CLI (ng build / test / serve)
     "NgFilter",
+    # TypeScript compiler (tsc --watch, --build, --noEmit)
+    "TscFilter",
 ]
 
 import json as _json
@@ -5334,6 +5336,216 @@ class RuffFilter(Filter):
         return result
 
 
+# --- TypeScript Compiler (tsc) ---
+
+#: Timestamp prefix emitted in ``--watch`` / ``--build`` modes: ``[10:30:00 PM] ``
+_TSC_TS_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\d{1,2}:\d{2}:\d{2} [AP]M\] "
+)
+#: Watch mode: initial "Starting compilation in watch mode..."
+_TSC_WATCH_INIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\d{1,2}:\d{2}:\d{2} [AP]M\] Starting compilation in watch mode\.\.\.$"
+)
+#: Watch mode: incremental restart "File change detected. Starting incremental compilation..."
+_TSC_WATCH_CYCLE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\d{1,2}:\d{2}:\d{2} [AP]M\] (?:File change detected\. )?Starting incremental compilation\.\.\.$"
+)
+#: Watch / build: "Found N error(s). Watching for file changes."
+#: Build mode: "Projects in this build:" listing header
+_TSC_BUILD_PROJECTS_HDR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\d{1,2}:\d{2}:\d{2} [AP]M\] Projects in this build:$"
+)
+#: Build mode: project listing item "    * packages/foo/tsconfig.json"
+_TSC_BUILD_PROJECT_ITEM_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\*\s+\S"
+)
+#: Build mode: "Project 'X' is up to date because oldest output..."
+_TSC_BUILD_UPTODATE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\[\d{1,2}:\d{2}:\d{2} [AP]M\] Project '.+' is up to date"
+)
+#: Old-format error: ``src/foo.ts(10,5): error TS2345: …``
+_TSC_ERROR_OLD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\S+\.tsx?\(\d+,\d+\): (?:error|warning|message) TS\d+:"
+)
+#: New-format error: ``src/foo.ts:10:5 - error TS2345: …``
+_TSC_ERROR_NEW_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\S+\.tsx?:\d+:\d+ - (?:error|warning|message) TS\d+:"
+)
+#: Extract TS error code from an error line
+_TSC_ERROR_CODE_RE: Final[re.Pattern[str]] = re.compile(r"\bTS(\d+)\b")
+#: Final summary: "Found N errors." (no "Watching" suffix)
+_TSC_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(r"^Found \d+ errors?\.$")
+
+
+def _is_tsc_context_line(line: str) -> bool:
+    """Return True for blank, numbered-source, or underline lines following a tsc error.
+
+    tsc new-format errors emit 2–3 context lines after the error header:
+    a blank line, a numbered source-code line (``10   const x = foo();``),
+    and an underline (``         ~~~``).
+    """
+    if not line.strip():
+        return True
+    if re.match(r"^\d+\s", line):
+        return True
+    stripped = line.strip()
+    if bool(stripped) and all(c in "~^ " for c in stripped):
+        return True
+    # Prose continuation: indented message text that follows the error header
+    # (e.g. "  Object literal may only specify known properties…").
+    return line.startswith("  ") and not _TSC_ERROR_OLD_RE.match(line.lstrip()) and not _TSC_ERROR_NEW_RE.match(line.lstrip())
+
+
+class TscFilter(Filter):
+    """Compress TypeScript compiler (``tsc``) output.
+
+    ``tsc`` produces three distinct output formats depending on mode:
+
+    1. **Type-check / emit** (``tsc``, ``tsc --noEmit``, ``tsc -p tsconfig.json``):
+       error lines in old format ``file.ts(row,col): error TSnnnn: msg`` or new
+       format ``file.ts:row:col - error TSnnnn: msg`` followed by 2–3 context
+       lines, then a ``Found N errors.`` summary.
+    2. **Watch mode** (``--watch`` / ``-w``): same error format, but wrapped in
+       timestamped ``[HH:MM:SS AM/PM]`` banner lines for each incremental cycle.
+       Long ``tsc --watch`` sessions accumulate dozens of cycles.
+    3. **Build mode** (``--build`` / ``-b``): timestamped project-level status
+       lines (``Project 'X' is up to date because …``) and a final summary.
+
+    Compression model:
+
+    * **type-check**: deduplicate errors for the same diagnostic code; keep
+      the first :attr:`_MAX_PER_CODE` stanzas (header + context lines) per code
+      and append a ``[token-goat: dropped N more TSxxxx …]`` note for the rest.
+    * **watch mode**: retain only the first cycle (initial compilation banner)
+      and the *last* incremental cycle; collapse all intermediate cycles to a
+      single count note.  The final cycle has the most recent compiler state.
+    * **build mode**: collapse ``Project 'X' is up to date because …`` lines to
+      a count note; drop the ``Projects in this build:`` listing header and its
+      ``* tsconfig.json`` items; keep ``Building project …`` lines, errors, and
+      the final summary.
+    """
+
+    name = "tsc"
+    binaries = frozenset(["tsc"])
+    #: Maximum error stanzas per TS diagnostic code to keep verbatim.
+    _MAX_PER_CODE: int = 3
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        return _is_tsc_cmd(argv)
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        argv_flags = {a.lower() for a in argv[1:]}
+        is_watch = "-w" in argv_flags or "--watch" in argv_flags
+        is_build = "-b" in argv_flags or "--build" in argv_flags
+
+        combined = self._combine_output(stdout, stderr)
+
+        if is_watch:
+            return self._compress_watch(combined)
+        if is_build:
+            return self._compress_build(combined)
+        return self._compress_typecheck(combined)
+
+    def _compress_typecheck(self, combined: str) -> str:
+        """Deduplicate errors by TS diagnostic code; preserve context lines."""
+        lines = combined.split("\n")
+        kept: list[str] = []
+        code_kept: dict[str, int] = {}
+        code_dropped: dict[str, int] = {}
+
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if _TSC_ERROR_OLD_RE.match(line) or _TSC_ERROR_NEW_RE.match(line):
+                m = _TSC_ERROR_CODE_RE.search(line)
+                code = m.group(1) if m else ""
+                # Gather stanza: error header + any immediately following context lines.
+                stanza = [line]
+                j = i + 1
+                while j < len(lines) and _is_tsc_context_line(lines[j]):
+                    stanza.append(lines[j])
+                    j += 1
+                n = code_kept.get(code, 0)
+                if n < self._MAX_PER_CODE:
+                    kept.extend(stanza)
+                    if code:
+                        code_kept[code] = n + 1
+                else:
+                    code_dropped[code] = code_dropped.get(code, 0) + 1
+                i = j
+            else:
+                kept.append(line)
+                i += 1
+
+        # Append one dedup note per suppressed code.
+        for code in sorted(code_dropped, key=lambda c: int(c) if c.isdigit() else 0):
+            n = code_dropped[code]
+            pl = "s" if n > 1 else ""
+            kept.append(
+                f"[token-goat: dropped {n} more TS{code} error{pl}"
+                f" (kept first {self._MAX_PER_CODE})]"
+            )
+        return _squeeze_blank_lines("\n".join(kept))
+
+    def _compress_watch(self, combined: str) -> str:
+        """Retain first + last watch cycles; collapse all intermediate ones."""
+        lines = combined.split("\n")
+        cycles: list[list[str]] = []
+        current: list[str] = []
+
+        for line in lines:
+            if _TSC_WATCH_INIT_RE.match(line) or _TSC_WATCH_CYCLE_RE.match(line):
+                if current:
+                    cycles.append(current)
+                current = [line]
+            else:
+                current.append(line)
+        if current:
+            cycles.append(current)
+
+        # Nothing to drop when there are at most 2 cycles.
+        if len(cycles) <= 2:
+            return _squeeze_blank_lines(combined)
+
+        dropped = len(cycles) - 2
+        pl = "s" if dropped > 1 else ""
+        kept_lines: list[str] = [*cycles[0]]
+        kept_lines.append(
+            f"[token-goat: dropped {dropped} intermediate watch cycle{pl}]"
+        )
+        kept_lines.extend(cycles[-1])
+        return _squeeze_blank_lines("\n".join(kept_lines))
+
+    def _compress_build(self, combined: str) -> str:
+        """Drop up-to-date project lines; keep build / error / summary lines."""
+        lines = combined.split("\n")
+        kept: list[str] = []
+        uptodate_count = 0
+        in_projects_hdr = False
+
+        for line in lines:
+            if _TSC_BUILD_PROJECTS_HDR_RE.match(line):
+                in_projects_hdr = True
+                continue
+            if in_projects_hdr:
+                if _TSC_BUILD_PROJECT_ITEM_RE.match(line) or not line.strip():
+                    continue
+                in_projects_hdr = False
+            if _TSC_BUILD_UPTODATE_RE.match(line):
+                uptodate_count += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if uptodate_count:
+            pl = "s" if uptodate_count > 1 else ""
+            notes.append(f"dropped {uptodate_count} up-to-date project line{pl}")
+        self._emit_notes(kept, notes)
+        return _squeeze_blank_lines("\n".join(kept))
+
+
 class LinterFilter(Filter):
     """Compress linter output: group by file, dedupe by rule.
 
@@ -5346,17 +5558,19 @@ class LinterFilter(Filter):
 
     * **pyright**: ``src/foo.py:3: error: incompatible type``
     * **pylint**: similar: falls through to dedupe_by_key.
-    * **tsc / stylelint / rome**: stanza-style (like ESLint).
+    * **stylelint / rome**: stanza-style (like ESLint).
 
     Note: ``eslint`` is handled by the more specific :class:`ESLintFilter`
     which is registered before this filter in ``FILTERS``.
     Note: ``biome`` is handled by the more specific :class:`BiomeFilter`
     which is registered before this filter in ``FILTERS``.
+    Note: ``tsc`` is handled by the more specific :class:`TscFilter`
+    which is registered before this filter in ``FILTERS``.
     """
 
     name = "linter"
     binaries = frozenset([
-        "pyright", "pylint", "tsc",
+        "pyright", "pylint",
         "stylelint", "rome",
     ])
     # Matches diagnostic codes and severity keywords in pyright/pylint output.
@@ -5377,7 +5591,7 @@ class LinterFilter(Filter):
                 fmt="[token-goat: +{count} more matching {key_value}]",
             )
             return _squeeze_blank_lines("\n".join(compressed))
-        # tsc / stylelint / biome / rome: stanza-style like ESLint.
+        # stylelint / biome / rome: stanza-style like ESLint.
         return _compress_eslint_stanza(merged)
 
 
@@ -23656,6 +23870,11 @@ FILTERS: list[Filter] = [
     # Must follow PlaywrightFilter (both are E2E test runners; disjoint binaries
     # so ordering is cosmetic, but explicit placement keeps E2E filters together).
     CypressFilter(),
+    # TscFilter precedes PnpmFilter, YarnFilter, and NodePackageFilter so that
+    # `yarn tsc`, `pnpm tsc`, and `npx [--yes] tsc` route to TscFilter rather
+    # than the generic wrappers.  TscFilter.matches() delegates to _is_tsc_cmd()
+    # which is specific enough to never claim non-tsc yarn/pnpm/npx invocations.
+    TscFilter(),
     # the generic npm/pnpm/yarn/bun handler.  BunFilter also precedes
     # NodePackageFilter so that `bun install/test/build` get dedicated
     # compression rather than the generic npm/pnpm/yarn/bun fallback.
@@ -23731,15 +23950,17 @@ FILTERS: list[Filter] = [
     # precede LinterFilter which also claims `pylint` as a fallback binary.
     # OxlintFilter handles `oxlint` / `oxc_linter`; disjoint from ESLintFilter.
     # ESLintFilter precedes LinterFilter so `eslint` routes to the dedicated
-    # filter; LinterFilter handles tsc / stylelint / biome / rome / pyright /
-    # pylint (fallback) which share no binaries with ESLintFilter.
-    PylintFilter(),
-    OxlintFilter(),
-    ESLintFilter(),
+    # filter; LinterFilter handles stylelint / rome / pyright / pylint (fallback).
+    # TscFilter precedes LinterFilter: LinterFilter previously claimed `tsc` as a
+    # fallback; TscFilter provides richer watch-cycle collapsing, build-mode
+    # up-to-date line dropping, and per-code error deduplication.
     # BiomeFilter precedes LinterFilter: LinterFilter claims `biome` as a
     # fallback binary; BiomeFilter provides richer stanza-level compression
     # grouped by rule across all files.  BiomeFilter.matches() also handles
     # `npx biome` / `bunx biome`.
+    PylintFilter(),
+    OxlintFilter(),
+    ESLintFilter(),
     BiomeFilter(),
     LinterFilter(),
     GrepFilter(),
