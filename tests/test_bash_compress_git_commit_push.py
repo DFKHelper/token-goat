@@ -636,3 +636,274 @@ class TestGitPushFilterCombinedPytestAndRemote:
         # no raw dot lines
         dot_lines = [ln for ln in result.splitlines() if bc._PYTEST_DOT_LINE_RE.match(ln)]
         assert len(dot_lines) == 0
+
+
+# ---------------------------------------------------------------------------
+# CRLF line-ending normalisation warnings (git add / commit / checkout)
+#
+# Git on Windows emits a two-line warning per touched file:
+#   warning: LF will be replaced by CRLF in <path>.
+#   The file will have its original line endings in your working directory
+# These carry no actionable signal and can appear dozens of times per session.
+# ---------------------------------------------------------------------------
+
+
+_CRLF_PAIR = (
+    "warning: LF will be replaced by CRLF in {path}.\n"
+    "The file will have its original line endings in your working directory"
+)
+
+
+# Modern git (2.37+) emits a single self-contained line per touched file; this
+# is the exact wording produced by git 2.53.0.windows.1.  No continuation line.
+_CRLF_MODERN = (
+    "warning: in the working copy of '{path}', LF will be replaced by CRLF "
+    "the next time Git touches it"
+)
+_CRLF_MODERN_REVERSE = (
+    "warning: in the working copy of '{path}', CRLF will be replaced by LF "
+    "the next time Git touches it"
+)
+
+
+class TestStripGitCrlfWarningsHelper:
+    def test_strips_pair_and_counts(self) -> None:
+        text = (
+            _CRLF_PAIR.format(path="a.py") + "\n"
+            + _CRLF_PAIR.format(path="b.py") + "\n"
+            + _CRLF_PAIR.format(path="c.py")
+        )
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 3
+        assert cleaned.strip() == ""
+        assert "will be replaced" not in cleaned
+        assert "original line endings" not in cleaned
+
+    def test_reverse_wording_crlf_to_lf(self) -> None:
+        text = (
+            "warning: CRLF will be replaced by LF in script.sh.\n"
+            "The file will have its original line endings in your working directory"
+        )
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 1
+        assert cleaned.strip() == ""
+
+    def test_continuation_with_trailing_period(self) -> None:
+        text = (
+            "warning: LF will be replaced by CRLF in x.txt.\n"
+            "The file will have its original line endings in your working directory."
+        )
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 1
+        assert cleaned.strip() == ""
+
+    def test_real_output_passes_through(self) -> None:
+        text = "On branch main\nnothing to commit, working tree clean"
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 0
+        assert cleaned == text
+
+    def test_interspersed_real_lines_preserved(self) -> None:
+        text = (
+            _CRLF_PAIR.format(path="src/a.py") + "\n"
+            "Updating files: 100% (42/42), done.\n"
+            + _CRLF_PAIR.format(path="src/b.py") + "\n"
+            "Switched to branch 'feature'\n"
+            + _CRLF_PAIR.format(path="src/c.py")
+        )
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 3
+        assert "Updating files: 100% (42/42), done." in cleaned
+        assert "Switched to branch 'feature'" in cleaned
+        assert "will be replaced" not in cleaned
+        assert "original line endings" not in cleaned
+
+    def test_orphan_continuation_dropped(self) -> None:
+        # A continuation line whose header was already stripped (e.g. split
+        # across a truncation boundary) must not survive as noise.
+        text = "real output line\nThe file will have its original line endings in your working directory"
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert "real output line" in cleaned
+        assert "original line endings" not in cleaned
+
+    def test_no_match_is_zero_cost_identity(self) -> None:
+        text = "some unrelated build output\nwith two lines"
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 0
+        assert cleaned == text
+
+    # --- Modern git 2.37+ single-line format ------------------------------
+    # These exercise the format actually emitted by git 2.53; they fail on
+    # the pre-fix regex (which only matched the obsolete two-line pair).
+
+    def test_modern_single_line_stripped_and_counted(self) -> None:
+        text = (
+            _CRLF_MODERN.format(path="a.py") + "\n"
+            + _CRLF_MODERN.format(path="b.py") + "\n"
+            + _CRLF_MODERN.format(path="c.py")
+        )
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 3
+        assert cleaned.strip() == ""
+        assert "will be replaced" not in cleaned
+        assert "next time Git touches it" not in cleaned
+
+    def test_modern_reverse_wording_crlf_to_lf(self) -> None:
+        text = _CRLF_MODERN_REVERSE.format(path="script.sh")
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 1
+        assert cleaned.strip() == ""
+
+    def test_modern_trailing_period(self) -> None:
+        text = _CRLF_MODERN.format(path="x.txt") + "."
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 1
+        assert cleaned.strip() == ""
+
+    def test_modern_interspersed_real_lines_preserved(self) -> None:
+        text = (
+            _CRLF_MODERN.format(path="src/a.py") + "\n"
+            "Updating files: 100% (42/42), done.\n"
+            + _CRLF_MODERN.format(path="src/b.py") + "\n"
+            "Switched to branch 'feature'\n"
+            + _CRLF_MODERN.format(path="src/c.py")
+        )
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 3
+        assert "Updating files: 100% (42/42), done." in cleaned
+        assert "Switched to branch 'feature'" in cleaned
+        assert "next time Git touches it" not in cleaned
+
+    def test_modern_crlf_terminated_input(self) -> None:
+        # Windows-native git writes \r\n line endings; the helper must still
+        # strip the warning when the regex would otherwise see a bare \r before
+        # the line anchor.
+        text = (
+            _CRLF_MODERN.format(path="a.py") + "\r\n"
+            + _CRLF_MODERN.format(path="b.py") + "\r\n"
+        )
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 2
+        assert "next time Git touches it" not in cleaned
+
+    def test_legacy_pair_crlf_terminated_input(self) -> None:
+        # The legacy two-line pair, \r\n-terminated, must also strip cleanly.
+        text = (
+            "warning: LF will be replaced by CRLF in a.py.\r\n"
+            "The file will have its original line endings in your working directory\r\n"
+        )
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 1
+        assert "will be replaced" not in cleaned
+        assert "original line endings" not in cleaned
+
+    def test_mixed_modern_and_legacy_formats(self) -> None:
+        text = (
+            _CRLF_MODERN.format(path="modern.py") + "\n"
+            + _CRLF_PAIR.format(path="legacy.py")
+        )
+        cleaned, count = bc._strip_git_crlf_warnings(text)
+        assert count == 2
+        assert cleaned.strip() == ""
+
+
+class TestGitFilterCrlfSuppression:
+    def test_git_add_stderr_warnings_stripped(self) -> None:
+        # `git add` falls through to GitFilter (name "git"); warnings land on stderr.
+        stderr = (
+            _CRLF_PAIR.format(path="foo/bar.py") + "\n"
+            + _CRLF_PAIR.format(path="foo/baz.py") + "\n"
+            + _CRLF_PAIR.format(path="README.md")
+        )
+        f = bc.select_filter(["git", "add", "-A"])
+        assert f is not None and f.name == "git"
+        result = f.apply("", stderr, 0, ["git", "add", "-A"]).text
+        assert "will be replaced" not in result
+        assert "original line endings" not in result
+
+    def test_real_output_survives_with_warnings(self) -> None:
+        stdout = "Updating files: 100% (12/12), done."
+        stderr = (
+            _CRLF_PAIR.format(path="a.py") + "\n"
+            + _CRLF_PAIR.format(path="b.py")
+        )
+        f = bc.GitFilter()
+        result = f.apply(stdout, stderr, 0, ["git", "checkout", "main"]).text
+        assert "Updating files: 100% (12/12), done." in result
+        assert "will be replaced" not in result
+
+    def test_commit_filter_strips_crlf_warnings_on_stderr(self) -> None:
+        stdout = "[main d112339] feat: x\n 2 files changed, 4 insertions(+)"
+        stderr = (
+            _CRLF_PAIR.format(path="src/a.py") + "\n"
+            + _CRLF_PAIR.format(path="src/b.py") + "\n"
+            + _CRLF_PAIR.format(path="src/c.py")
+        )
+        result = _apply(bc.GitCommitFilter(), stdout, ["git", "commit", "-m", "x"], stderr=stderr)
+        assert "d112339" in result
+        assert "will be replaced" not in result
+        assert "original line endings" not in result
+
+    def test_git_add_modern_stderr_warnings_stripped(self) -> None:
+        # Modern git 2.37+ format through the GitFilter (`git add` → name "git").
+        # Fails on the pre-fix regex that only knew the obsolete two-line pair.
+        stderr = (
+            _CRLF_MODERN.format(path="foo/bar.py") + "\n"
+            + _CRLF_MODERN.format(path="foo/baz.py") + "\n"
+            + _CRLF_MODERN.format(path="README.md")
+        )
+        f = bc.select_filter(["git", "add", "-A"])
+        assert f is not None and f.name == "git"
+        result = f.apply("", stderr, 0, ["git", "add", "-A"]).text
+        assert "will be replaced" not in result
+        assert "next time Git touches it" not in result
+
+    def test_commit_filter_strips_modern_crlf_warnings(self) -> None:
+        stdout = "[main d112339] feat: x\n 2 files changed, 4 insertions(+)"
+        stderr = (
+            _CRLF_MODERN.format(path="src/a.py") + "\n"
+            + _CRLF_MODERN.format(path="src/b.py")
+        )
+        result = _apply(bc.GitCommitFilter(), stdout, ["git", "commit", "-m", "x"], stderr=stderr)
+        assert "d112339" in result
+        assert "next time Git touches it" not in result
+
+    def test_modern_crlf_terminated_stderr_through_apply(self) -> None:
+        # \r\n-terminated stderr (Windows-native) routed through Filter.apply;
+        # normalise() collapses \r\n→\n before the strip runs, so the warning
+        # is suppressed.  Fails pre-fix (stripping ran before normalise on \r\n).
+        stderr = (
+            _CRLF_MODERN.format(path="a.py") + "\r\n"
+            + _CRLF_MODERN.format(path="b.py") + "\r\n"
+        )
+        f = bc.GitFilter()
+        result = f.apply("Updating files: 100% (3/3), done.", stderr, 0, ["git", "checkout", "main"]).text
+        assert "Updating files: 100% (3/3), done." in result
+        assert "next time Git touches it" not in result
+
+    def test_legacy_crlf_terminated_stderr_through_apply(self) -> None:
+        # Same path for the legacy two-line pair with \r\n endings.
+        stderr = (
+            "warning: LF will be replaced by CRLF in a.py.\r\n"
+            "The file will have its original line endings in your working directory\r\n"
+        )
+        f = bc.GitFilter()
+        result = f.apply("Updating files: 100% (1/1), done.", stderr, 0, ["git", "checkout", "main"]).text
+        assert "Updating files: 100% (1/1), done." in result
+        assert "will be replaced" not in result
+        assert "original line endings" not in result
+
+    def test_non_git_filter_leaves_phrase_untouched(self) -> None:
+        # A non-git command that happens to echo the phrase must not be altered.
+        echoed = (
+            "warning: LF will be replaced by CRLF in fake.txt.\n"
+            "The file will have its original line endings in your working directory"
+        )
+        # GenericFilter (name "generic") is the universal fallback for any
+        # command without a dedicated filter; its name must not start with
+        # "git" so the CRLF-suppression gate stays off.
+        f = bc.GenericFilter()
+        assert not f.name.startswith("git")
+        result = f.apply(echoed, "", 0, ["echo", echoed]).text
+        assert "will be replaced" in result
+        assert "original line endings" in result

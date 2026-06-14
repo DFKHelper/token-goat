@@ -1883,6 +1883,17 @@ class Filter(BaseFilter):
         try:
             norm_out = normalise(stdout, skip_progress=skip_progress)
             norm_err = normalise(stderr, skip_progress=skip_progress)
+            # git filters only — drop LF/CRLF line-ending normalisation
+            # warnings.  Run *after* normalise() so any \r\n line endings are
+            # already collapsed to \n (the regex anchors with $, which does not
+            # match before a bare \r).  Git writes these to stderr (and
+            # occasionally stdout) for every touched file during add/commit/
+            # checkout/stash; they carry no actionable signal and can appear
+            # dozens of times per session.  Gated on the filter name so non-git
+            # output that merely echoes the phrase is untouched.
+            if self.name.startswith("git"):
+                norm_out, _ = _strip_git_crlf_warnings(norm_out)
+                norm_err, _ = _strip_git_crlf_warnings(norm_err)
             norm_bytes = (
                 len(norm_out.encode("utf-8", errors="replace"))
                 + len(norm_err.encode("utf-8", errors="replace"))
@@ -1925,11 +1936,12 @@ class Filter(BaseFilter):
         except Exception as exc:  # noqa: BLE001, fail-soft is the contract
             _LOG.exception("filter %s raised; falling back to truncation", self.name)
             notes.append(f"{self.name} filter raised {type(exc).__name__}; truncated raw")
-            body = _fallback_truncate(
-                normalise(stdout, skip_progress=skip_progress),
-                normalise(stderr, skip_progress=skip_progress),
-                max_lines,
-            )
+            fb_out = normalise(stdout, skip_progress=skip_progress)
+            fb_err = normalise(stderr, skip_progress=skip_progress)
+            if self.name.startswith("git"):
+                fb_out, _ = _strip_git_crlf_warnings(fb_out)
+                fb_err, _ = _strip_git_crlf_warnings(fb_err)
+            body = _fallback_truncate(fb_out, fb_err, max_lines)
 
         # Line cap — use smart truncation to preserve error-signal lines from
         # the middle of long output (e.g. stack traces after 200 lines of
@@ -5900,6 +5912,87 @@ class MypyFilter(Filter):
 
 
 # --- Git -------------------------------------------------------------------
+
+# Git on Windows (and any repo with autocrlf/eol normalisation) emits a noisy
+# warning for every file it touches during add/commit/checkout/stash.  Git
+# 2.37+ (the modern format) writes a single self-contained line:
+#
+#     warning: in the working copy of 'foo/bar.py', LF will be replaced by CRLF the next time Git touches it
+#
+# Older git (pre-2.37) wrote a two-line pair instead:
+#
+#     warning: LF will be replaced by CRLF in foo/bar.baz.
+#     The file will have its original line endings in your working directory
+#
+# (both with the reverse "CRLF will be replaced by LF" wording).  These carry
+# no actionable information — they describe routine line-ending normalisation,
+# not errors — yet can appear dozens of times in a single session.  We drop the
+# modern single line outright, and drop the legacy pair together so no orphan
+# continuation line is left behind.
+_GIT_CRLF_MODERN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^warning: in the working copy of '.*', "
+    r"(?:LF will be replaced by CRLF|CRLF will be replaced by LF) "
+    r"the next time Git touches it\.?\r?$",
+    re.MULTILINE,
+)
+_GIT_CRLF_WARNING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^warning: (?:LF will be replaced by CRLF|CRLF will be replaced by LF) in .*\.?\r?$"
+)
+_GIT_CRLF_CONTINUATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^The file will have its original line endings in your working directory\.?\r?$"
+)
+
+
+def _strip_git_crlf_warnings(text: str) -> tuple[str, int]:
+    """Drop git's LF/CRLF line-ending normalisation warnings from *text*.
+
+    Handles both formats git can emit.  The modern (git 2.37+) format is a
+    single self-contained line, ``warning: in the working copy of '<path>', LF
+    will be replaced by CRLF the next time Git touches it`` (and the reverse
+    CRLF→LF wording), which is removed outright.  The legacy (pre-2.37) format
+    is the two-line ``warning: LF will be replaced by CRLF in <path>.`` /
+    ``The file will have its original line endings ...`` pair, removed as a unit
+    so no orphan continuation line survives.  A bare continuation line with no
+    preceding ``warning:`` header is also dropped defensively.  Returns
+    ``(cleaned_text, suppressed_count)`` where the count is the number of
+    warnings removed (modern lines + legacy pairs); when nothing matches the
+    original string is returned unchanged so non-git callers pay no cost.
+    """
+    if (
+        "will be replaced by" not in text
+        and "original line endings" not in text
+        and "next time Git touches it" not in text
+    ):
+        return text, 0
+    lines = text.split("\n")
+    out: list[str] = []
+    suppressed = 0
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if _GIT_CRLF_MODERN_RE.match(line):
+            # Modern git 2.37+: self-contained single line, no continuation.
+            i += 1
+            suppressed += 1
+            continue
+        if _GIT_CRLF_WARNING_RE.match(line):
+            # Legacy git <2.37: header plus its continuation line (if present).
+            if i + 1 < n and _GIT_CRLF_CONTINUATION_RE.match(lines[i + 1]):
+                i += 2
+            else:
+                i += 1
+            suppressed += 1
+            continue
+        if _GIT_CRLF_CONTINUATION_RE.match(line):
+            # Orphan continuation (header already stripped or split mid-pair):
+            # drop it without counting a separate pair.
+            i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "\n".join(out), suppressed
+
 
 _GIT_STATUS_HEADER_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:On branch|Your branch|Untracked files|Changes (?:not staged|to be committed):|"
