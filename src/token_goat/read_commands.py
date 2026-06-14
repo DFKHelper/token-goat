@@ -1765,6 +1765,114 @@ def scope(
         typer.echo(f'Suggestion: token-goat read "{file_rel}::{innermost_fn}"')
 
 
+# Cap on how many indexed paths a directory listing prints, so pointing
+# ``skeleton`` at a large directory cannot dump thousands of lines and defeat
+# the token-saving purpose of token-goat.
+_DIR_LISTING_MAX = 200
+
+
+def _all_indexed_projects() -> list[Project]:
+    """Return every project recorded in the global index DB (fail-soft).
+
+    Used to resolve a directory argument that lives outside the cwd project
+    (e.g. ``~/.claude/skills/...``).  Any DB error yields an empty list so the
+    caller falls back to the standard "not found" path instead of crashing.
+    """
+    try:
+        with db.open_global_readonly() as gconn:
+            rows = gconn.execute("SELECT hash, root, marker FROM projects").fetchall()
+    except (FileNotFoundError, OSError, sqlite3.Error):
+        return []
+    except Exception:  # noqa: BLE001 — never let a cross-project lookup crash the command
+        return []
+    projects: list[Project] = []
+    for row in rows:
+        try:
+            projects.append(Project(root=Path(row["root"]), hash=row["hash"], marker=row["marker"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return projects
+
+
+def _indexed_paths_under(project: Project, prefix: str) -> list[str]:
+    """Return indexed rel_paths in *project* that live under directory *prefix*.
+
+    *prefix* must already be normalised to forward slashes and end with ``/``.
+    Matching is a case-sensitive prefix on the stored project-relative path,
+    using a LIKE with escaped wildcards so ``_`` in paths is matched literally.
+    """
+    like = read_replacement._escape_like_pattern(prefix) + "%"
+    try:
+        with db.open_project_readonly(project.hash) as conn:
+            rows = conn.execute(
+                "SELECT rel_path FROM files WHERE rel_path LIKE ? ESCAPE '\\' ORDER BY rel_path",
+                (like,),
+            ).fetchall()
+    except (sqlite3.Error, OSError):
+        return []
+    return [str(row["rel_path"]) for row in rows]
+
+
+def _indexed_dir_listing(file_part: str, target: _FileTarget) -> list[str] | None:
+    """Treat *file_part* as a directory and list indexed files beneath it.
+
+    Returns:
+        * ``None`` when *file_part* is not a directory — it is neither a real
+          filesystem directory nor a path prefix shared by any indexed file.
+          Callers fall back to the standard "File not found" error (exit 1).
+        * An empty list when *file_part* names a real directory that holds no
+          indexed files.
+        * A sorted list of project-relative paths indexed beneath the directory.
+    """
+    norm = file_part.replace("\\", "/").strip().rstrip("/")
+    if not norm:
+        return None
+    prefix = norm + "/"
+
+    # Search the cwd project first, then every other indexed project so that a
+    # directory outside the current repo still resolves.
+    seen_hashes: set[str] = set()
+    projects: list[Project] = []
+    if target.current_project is not None:
+        projects.append(target.current_project)
+        seen_hashes.add(target.current_project.hash)
+    for proj in _all_indexed_projects():
+        if proj.hash not in seen_hashes:
+            projects.append(proj)
+            seen_hashes.add(proj.hash)
+
+    matches: list[str] = []
+    for proj in projects:
+        found = _indexed_paths_under(proj, prefix)
+        if found:
+            matches = found
+            break
+
+    if matches:
+        return sorted(set(matches))
+
+    # No indexed files beneath the prefix — is it a real filesystem directory?
+    try:
+        if Path(file_part).is_dir():
+            return []
+    except OSError:
+        pass
+    return None
+
+
+def _echo_dir_listing(file_part: str, files: list[str]) -> None:
+    """Print the indexed-directory result for *file_part* to stdout (exit 0)."""
+    if not files:
+        typer.echo(f"token-goat: '{file_part}' is a directory with no indexed files.")
+        return
+    shown = files[:_DIR_LISTING_MAX]
+    typer.echo(f"token-goat: '{file_part}' is a directory. Indexed files under it:")
+    for rel in shown:
+        typer.echo(f"  {rel}")
+    if len(files) > len(shown):
+        typer.echo(f"  ... and {len(files) - len(shown)} more (showing first {len(shown)} of {len(files)}).")
+
+
 def stub_view(
     file: str,
     json_output: bool = False,
@@ -1775,9 +1883,17 @@ def stub_view(
     Queries the indexed symbol DB for the file and prints each symbol's kind,
     line number, and signature.  Use ``--private`` to include underscore-prefixed
     names.
+
+    When *file* names a directory rather than a file, lists the indexed files
+    beneath it (exit 0) instead of failing, so an agent that points ``skeleton``
+    at a directory gets a useful next step rather than a dead end.
     """
     target = _resolve_file_target(file)
     if target.project is None or target.rel_path is None:
+        listing = _indexed_dir_listing(file, target)
+        if listing is not None:
+            _echo_dir_listing(file, listing)
+            return
         typer.echo(f"File not found in any indexed project: {file}", err=True)
         raise typer.Exit(1)
 
