@@ -1796,7 +1796,7 @@ def build_high_frequency_hint(
         text = _apply_terse(
             f"`{fname}` read {count}x this session — consider "
             f"`token-goat outline {safe_path}` or "
-            f"`token-goat symbol {safe_path}` for a narrower read."
+            f"`token-goat read \"{safe_path}::<symbol>\"` for a narrower read."
         )
         return HintItem(text, HINT_PRIORITY_MEDIUM)
     except Exception:  # noqa: BLE001 — fail-soft; hint errors must never block the agent
@@ -4158,7 +4158,7 @@ def _build_structured_file_hint_inner(
         return ReadHint(
             _apply_terse(
                 f"🎨 large {css_kind} ({size_kb}KB) — "
-                f"use `token-goat symbol .class-name \"{safe_path}\"` for a rule "
+                f"use `token-goat read \"{safe_path}::.class-name\"` for a rule "
                 f"or `token-goat section \"{safe_path}::media-queries\"` for a section"
             ),
             0,
@@ -4168,7 +4168,7 @@ def _build_structured_file_hint_inner(
         return ReadHint(
             _apply_terse(
                 f"🗄️ large sql ({size_kb}KB) — "
-                f"use `token-goat symbol table_name \"{safe_path}\"` to read one table/procedure "
+                f"use `token-goat read \"{safe_path}::table_name\"` to read one table/procedure "
                 f"or `token-goat section \"{safe_path}::CreateTable\"` for a block"
             ),
             0,
@@ -4178,7 +4178,7 @@ def _build_structured_file_hint_inner(
         return ReadHint(
             _apply_terse(
                 f"📐 large graphql ({size_kb}KB) — "
-                f"use `token-goat symbol TypeName \"{safe_path}\"` to read one type "
+                f"use `token-goat read \"{safe_path}::TypeName\"` to read one type "
                 f"or `token-goat section \"{safe_path}::TypeName\"` for a block"
             ),
             0,
@@ -4188,7 +4188,7 @@ def _build_structured_file_hint_inner(
         return ReadHint(
             _apply_terse(
                 f"📦 large proto ({size_kb}KB) — "
-                f"use `token-goat symbol MessageName \"{safe_path}\"` to read one message/service "
+                f"use `token-goat read \"{safe_path}::MessageName\"` to read one message/service "
                 f"or `token-goat section \"{safe_path}::MessageName\"` for a block"
             ),
             0,
@@ -4198,7 +4198,7 @@ def _build_structured_file_hint_inner(
         return ReadHint(
             _apply_terse(
                 f"🔑 env file ({size_kb if size_kb > 0 else '<1'}KB) — "
-                f"use `token-goat symbol VAR_NAME \"{safe_path}\"` to find a specific variable "
+                f"use `token-goat read \"{safe_path}::VAR_NAME\"` to find a specific variable "
                 f"or grep/rg for the key you need"
             ),
             0,
@@ -4210,7 +4210,7 @@ def _build_structured_file_hint_inner(
         return ReadHint(
             _apply_terse(
                 f"⚙️ Makefile ({size_kb if size_kb > 0 else '<1'}KB, {row_str}) — "
-                f"use `token-goat symbol target-name \"{safe_path}\"` to read one target "
+                f"use `token-goat read \"{safe_path}::target-name\"` to read one target "
                 f"or `token-goat section \"{safe_path}::target-name\"` for a block"
             ),
             0,

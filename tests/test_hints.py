@@ -3708,7 +3708,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for large .css file"
         text = str(result)
         assert "css" in text.lower(), f"hint should mention css: {text}"
-        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
 
     def test_scss_hint_fires_for_large_scss_file(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3760,7 +3760,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for large .sql file"
         text = str(result)
         assert "sql" in text.lower(), f"hint should mention sql: {text}"
-        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
 
     def test_sql_hint_suppressed_for_small_file(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3786,7 +3786,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for large .graphql file"
         text = str(result)
         assert "graphql" in text.lower(), f"hint should mention graphql: {text}"
-        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
 
     def test_gql_hint_fires_for_large_gql_file(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3821,7 +3821,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for large .proto file"
         text = str(result)
         assert "proto" in text.lower(), f"hint should mention proto: {text}"
-        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
 
     def test_proto_hint_suppressed_for_small_file(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3847,7 +3847,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for .env file above threshold"
         text = str(result)
         assert "env" in text.lower(), f"hint should mention env: {text}"
-        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
 
     def test_env_example_hint_fires(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3900,7 +3900,7 @@ class TestStructuredFileHintsNewTypes:
         assert "makefile" in text.lower() or "target" in text.lower(), (
             f"hint should mention makefile or target: {text}"
         )
-        assert "token-goat symbol" in text, f"hint should suggest token-goat symbol: {text}"
+        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
 
     def test_gnumakefile_hint_fires(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
