@@ -6,6 +6,7 @@ import re
 import pytest
 
 from token_goat import bash_compress as bc
+from token_goat.bash_compress import _maybe_note
 
 # ---------------------------------------------------------------------------
 # strip_ansi
@@ -7701,3 +7702,29 @@ class TestIsDiffRemove:
 
     def test_empty_string(self):
         assert bc._is_diff_remove("") is False
+
+
+# ---------------------------------------------------------------------------
+# _maybe_note
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeNote:
+    def test_zero_count_is_noop(self):
+        notes: list[str] = []
+        _maybe_note(notes, 0, "should not appear")
+        assert notes == []
+
+    def test_positive_count_appends_msg(self):
+        notes: list[str] = []
+        _maybe_note(notes, 5, "5 lines trimmed")
+        assert notes == ["5 lines trimmed"]
+
+    def test_count_one_and_count_two_both_append(self):
+        notes_one: list[str] = []
+        _maybe_note(notes_one, 1, "one")
+        assert notes_one == ["one"]
+
+        notes_two: list[str] = []
+        _maybe_note(notes_two, 2, "two")
+        assert notes_two == ["two"]

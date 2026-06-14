@@ -874,6 +874,16 @@ def _pass_if_short(text: str, threshold: int = 30) -> str | None:
     return None
 
 
+def _maybe_note(notes: list[str], count: int, msg: str) -> None:
+    """Append *msg* to *notes* when *count* is non-zero.
+
+    Reduces the ubiquitous ``if n: notes.append(msg)`` two-liner to a single
+    call, improving scan-ability in compress methods that emit many notes.
+    """
+    if count:
+        notes.append(msg)
+
+
 def _preserve_stderr_on_error(
     stdout: str, stderr: str, exit_code: int,
 ) -> str | None:
@@ -2571,10 +2581,8 @@ class JestFilter(Filter):
 
         _flush_console()
         notes: list[str] = []
-        if pass_count:
-            notes.append(f"collapsed {pass_count} PASS file{'s' if pass_count != 1 else ''}")
-        if tick_count:
-            notes.append(f"collapsed {tick_count} passing tick{'s' if tick_count != 1 else ''}")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} PASS file{'s' if pass_count != 1 else ''}")
+        _maybe_note(notes, tick_count, f"collapsed {tick_count} passing tick{'s' if tick_count != 1 else ''}")
         if failures_section_dropped:
             notes.append(
                 f"collapsed {failures_section_dropped} line"
@@ -3264,8 +3272,7 @@ class CargoFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if pass_count:
-            notes.append(f"collapsed {pass_count} passing test lines")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} passing test lines")
         self._emit_notes(kept, notes)
         test_out = self._finalize(kept)
         if build_part.strip() and test_out.strip():
@@ -3302,10 +3309,8 @@ class CargoFilter(Filter):
                     *kept,
                 ]
         notes: list[str] = []
-        if dropped_checking:
-            notes.append(f"dropped {dropped_checking} 'Checking …' lines")
-        if dropped_progress:
-            notes.append(f"dropped {dropped_progress} cargo progress lines")
+        _maybe_note(notes, dropped_checking, f"dropped {dropped_checking} 'Checking …' lines")
+        _maybe_note(notes, dropped_progress, f"dropped {dropped_progress} cargo progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -4608,10 +4613,8 @@ def _compress_gh_run_view(text: str) -> str:
             in_pass_block = False
         kept.append(line)
     notes: list[str] = []
-    if pass_steps:
-        notes.append(f"collapsed {pass_steps} passing step headers")
-    if dropped_preamble:
-        notes.append(f"dropped {dropped_preamble} action-preamble lines")
+    _maybe_note(notes, pass_steps, f"collapsed {pass_steps} passing step headers")
+    _maybe_note(notes, dropped_preamble, f"dropped {dropped_preamble} action-preamble lines")
     Filter._emit_notes(kept, notes)
     return _squeeze_blank_lines("\n".join(kept))
 
@@ -4839,14 +4842,10 @@ class GhRunLogFilter(Filter):
             kept.append(f"[token-goat: Setup: {len(setup_actions)} action(s) collapsed]")
 
         notes: list[str] = []
-        if dropped_boilerplate:
-            notes.append(f"dropped {dropped_boilerplate} boilerplate lines")
-        if dropped_commands:
-            notes.append(f"dropped {dropped_commands} ##[command] echo lines")
-        if dropped_cleanup:
-            notes.append(f"dropped {dropped_cleanup} cleanup lines")
-        if collapsed_groups:
-            notes.append(f"collapsed {collapsed_groups} log group(s)")
+        _maybe_note(notes, dropped_boilerplate, f"dropped {dropped_boilerplate} boilerplate lines")
+        _maybe_note(notes, dropped_commands, f"dropped {dropped_commands} ##[command] echo lines")
+        _maybe_note(notes, dropped_cleanup, f"dropped {dropped_cleanup} cleanup lines")
+        _maybe_note(notes, collapsed_groups, f"collapsed {collapsed_groups} log group(s)")
         Filter._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -4930,10 +4929,8 @@ class ActFilter(Filter):
             kept.append(body)
 
         notes: list[str] = []
-        if docker_pull_dropped:
-            notes.append(f"collapsed {docker_pull_dropped} docker-pull progress lines")
-        if matrix_lines:
-            notes.append(f"collapsed {len(matrix_lines)} matrix expansion lines")
+        _maybe_note(notes, docker_pull_dropped, f"collapsed {docker_pull_dropped} docker-pull progress lines")
+        _maybe_note(notes, len(matrix_lines), f"collapsed {len(matrix_lines)} matrix expansion lines")
         Filter._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -5026,10 +5023,8 @@ class GenericCIFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if debug_count:
-            notes.append(f"collapsed {debug_count} DEBUG/TRACE lines")
-        if heartbeat_count:
-            notes.append(f"collapsed {heartbeat_count} heartbeat/health-check lines")
+        _maybe_note(notes, debug_count, f"collapsed {debug_count} DEBUG/TRACE lines")
+        _maybe_note(notes, heartbeat_count, f"collapsed {heartbeat_count} heartbeat/health-check lines")
         Filter._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -5286,10 +5281,8 @@ class RuffFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_reformatted:
-            notes.append(f"collapsed {dropped_reformatted} 'Reformatted …' per-file lines")
-        if dropped_would_reformat:
-            notes.append(f"collapsed {dropped_would_reformat} 'Would reformat:' per-file lines")
+        _maybe_note(notes, dropped_reformatted, f"collapsed {dropped_reformatted} 'Reformatted …' per-file lines")
+        _maybe_note(notes, dropped_would_reformat, f"collapsed {dropped_would_reformat} 'Would reformat:' per-file lines")
         self._emit_notes(kept, notes)
         result = _squeeze_blank_lines("\n".join(kept)).strip()
 
@@ -7483,16 +7476,11 @@ class GoTestFilter(Filter):
             _flush_race_block()
 
         notes: list[str] = []
-        if race_count:
-            notes.append(f"kept {race_count} DATA RACE block(s) verbatim (goroutine stacks collapsed)")
-        if pass_count:
-            notes.append(f"collapsed {pass_count} PASS testcases")
-        if skip_count:
-            notes.append(f"collapsed {skip_count} SKIP testcases")
-        if dropped_run:
-            notes.append(f"dropped {dropped_run} === RUN/PAUSE/CONT lines")
-        if dropped_download:
-            notes.append(f"dropped {dropped_download} 'go: downloading' lines")
+        _maybe_note(notes, race_count, f"kept {race_count} DATA RACE block(s) verbatim (goroutine stacks collapsed)")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} PASS testcases")
+        _maybe_note(notes, skip_count, f"collapsed {skip_count} SKIP testcases")
+        _maybe_note(notes, dropped_run, f"dropped {dropped_run} === RUN/PAUSE/CONT lines")
+        _maybe_note(notes, dropped_download, f"dropped {dropped_download} 'go: downloading' lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -7626,10 +7614,8 @@ class GoFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_headers:
-            notes.append(f"suppressed {dropped_headers} package header lines")
-        if dropped_downloads:
-            notes.append(f"collapsed {dropped_downloads} 'go: downloading' lines")
+        _maybe_note(notes, dropped_headers, f"suppressed {dropped_headers} package header lines")
+        _maybe_note(notes, dropped_downloads, f"collapsed {dropped_downloads} 'go: downloading' lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -7821,8 +7807,7 @@ class GolangciLintFilter(Filter):
                 final.append(line)
 
         notes: list[str] = []
-        if noise_dropped:
-            notes.append(f"dropped {noise_dropped} structured-log noise lines")
+        _maybe_note(notes, noise_dropped, f"dropped {noise_dropped} structured-log noise lines")
         if issues_collapsed:
             total_issues = sum(issue_counts.values())
             kept_issues = sum(
@@ -7960,14 +7945,10 @@ class MakeFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if dropped_recurse:
-            notes.append(f"{dropped_recurse} 'Entering/Leaving directory' lines")
-        if dropped_echo:
-            notes.append(f"{dropped_echo} compiler-invocation echoes")
-        if dropped_go_download:
-            notes.append(f"{dropped_go_download} 'go: downloading' lines")
-        if dropped_percent:
-            notes.append(f"{dropped_percent} '[N%] Building …' progress lines")
+        _maybe_note(notes, dropped_recurse, f"{dropped_recurse} 'Entering/Leaving directory' lines")
+        _maybe_note(notes, dropped_echo, f"{dropped_echo} compiler-invocation echoes")
+        _maybe_note(notes, dropped_go_download, f"{dropped_go_download} 'go: downloading' lines")
+        _maybe_note(notes, dropped_percent, f"{dropped_percent} '[N%] Building …' progress lines")
         # MakeFilter uses ", " join + "dropped" prefix (verbatim grammar match)
         # rather than the standard ";" join, since all entries share the
         # "dropped X" verb.
@@ -8015,10 +7996,8 @@ class MakeFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_checking:
-            notes.append(f"dropped {dropped_checking} 'checking …' probe lines")
-        if dropped_info:
-            notes.append(f"dropped {dropped_info} 'configure: creating/loading' lines")
+        _maybe_note(notes, dropped_checking, f"dropped {dropped_checking} 'checking …' probe lines")
+        _maybe_note(notes, dropped_info, f"dropped {dropped_info} 'configure: creating/loading' lines")
         if notes:
             kept.append(f"[token-goat: {'; '.join(notes)}]")
         return self._finalize(kept)
@@ -8350,12 +8329,9 @@ class TerraformFilter(Filter):
             kept = final_kept
 
         notes: list[str] = []
-        if dropped_refresh:
-            notes.append(f"dropped {dropped_refresh} terraform refresh/read lines")
-        if dropped_no_change_blocks:
-            notes.append(f"collapsed {dropped_no_change_blocks} unchanged-resource block(s)")
-        if dropped_kaa:
-            notes.append(f"collapsed {dropped_kaa} (known after apply) attribute lines")
+        _maybe_note(notes, dropped_refresh, f"dropped {dropped_refresh} terraform refresh/read lines")
+        _maybe_note(notes, dropped_no_change_blocks, f"collapsed {dropped_no_change_blocks} unchanged-resource block(s)")
+        _maybe_note(notes, dropped_kaa, f"collapsed {dropped_kaa} (known after apply) attribute lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -8409,10 +8385,8 @@ class TerraformFilter(Filter):
             kept.append(last_still)
 
         notes: list[str] = []
-        if dropped_refresh:
-            notes.append(f"dropped {dropped_refresh} terraform refresh/read lines")
-        if still_dropped:
-            notes.append(f"collapsed {still_dropped} Still creating/modifying line(s)")
+        _maybe_note(notes, dropped_refresh, f"dropped {dropped_refresh} terraform refresh/read lines")
+        _maybe_note(notes, still_dropped, f"collapsed {still_dropped} Still creating/modifying line(s)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -8649,12 +8623,9 @@ class AwsCliFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if upload_count:
-            notes.append(f"uploaded {upload_count} file(s)")
-        if download_count:
-            notes.append(f"downloaded {download_count} file(s)")
-        if progress_dropped:
-            notes.append(f"dropped {progress_dropped} progress line(s)")
+        _maybe_note(notes, upload_count, f"uploaded {upload_count} file(s)")
+        _maybe_note(notes, download_count, f"downloaded {download_count} file(s)")
+        _maybe_note(notes, progress_dropped, f"dropped {progress_dropped} progress line(s)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -8731,10 +8702,8 @@ class GcloudFilter(Filter):
         kept = self._maybe_collapse_structured(kept)
 
         notes: list[str] = []
-        if spinners_dropped:
-            notes.append(f"dropped {spinners_dropped} spinner line(s)")
-        if api_enable_dropped:
-            notes.append(f"collapsed {api_enable_dropped} API enablement line(s)")
+        _maybe_note(notes, spinners_dropped, f"dropped {spinners_dropped} spinner line(s)")
+        _maybe_note(notes, api_enable_dropped, f"collapsed {api_enable_dropped} API enablement line(s)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -8844,8 +8813,7 @@ class AzureCliFilter(Filter):
             kept.append(last_progress_status)
 
         notes: list[str] = []
-        if preview_dropped:
-            notes.append(f"collapsed {preview_dropped} preview warning(s)")
+        _maybe_note(notes, preview_dropped, f"collapsed {preview_dropped} preview warning(s)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -9595,12 +9563,9 @@ class PipFilter(Filter):
         notes: list[str] = []
         if collects > 5:
             notes.append(f"+{collects - 5} more 'Collecting' lines elided")
-        if downloads:
-            notes.append(f"dropped {downloads} download/cache-hit lines")
-        if build_noise:
-            notes.append(f"dropped {build_noise} build-wheel/metadata lines")
-        if verbose_dropped:
-            notes.append(f"dropped {verbose_dropped} verbose debug/trace lines")
+        _maybe_note(notes, downloads, f"dropped {downloads} download/cache-hit lines")
+        _maybe_note(notes, build_noise, f"dropped {build_noise} build-wheel/metadata lines")
+        _maybe_note(notes, verbose_dropped, f"dropped {verbose_dropped} verbose debug/trace lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -9717,10 +9682,8 @@ class GemFilter(Filter):
             kept[insert_at:insert_at] = collapsed
 
         notes: list[str] = []
-        if fetching:
-            notes.append(f"dropped {fetching} Fetching line{'s' if fetching != 1 else ''}")
-        if doc_noise:
-            notes.append(f"dropped {doc_noise} documentation line{'s' if doc_noise != 1 else ''}")
+        _maybe_note(notes, fetching, f"dropped {fetching} Fetching line{'s' if fetching != 1 else ''}")
+        _maybe_note(notes, doc_noise, f"dropped {doc_noise} documentation line{'s' if doc_noise != 1 else ''}")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -10018,10 +9981,8 @@ class UvFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if downloads:
-            notes.append(f"dropped {downloads} Downloading/Fetching progress lines")
-        if diff_lines:
-            notes.append(f"dropped {diff_lines} per-package +/- diff lines")
+        _maybe_note(notes, downloads, f"dropped {downloads} Downloading/Fetching progress lines")
+        _maybe_note(notes, diff_lines, f"dropped {diff_lines} per-package +/- diff lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -10182,10 +10143,8 @@ class CondaFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if downloads_dropped:
-            notes.append(f"collapsed {downloads_dropped} download/progress lines")
-        if pkg_installs:
-            notes.append(f"collapsed {pkg_installs} package install lines")
+        _maybe_note(notes, downloads_dropped, f"collapsed {downloads_dropped} download/progress lines")
+        _maybe_note(notes, pkg_installs, f"collapsed {pkg_installs} package install lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -10424,8 +10383,7 @@ class NpmInstallFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if noise_suppressed:
-            notes.append(f"suppressed {noise_suppressed} yarn install progress/noise lines")
+        _maybe_note(notes, noise_suppressed, f"suppressed {noise_suppressed} yarn install progress/noise lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -10450,8 +10408,7 @@ class NpmInstallFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if progress_suppressed:
-            notes.append(f"suppressed {progress_suppressed} pnpm progress lines")
+        _maybe_note(notes, progress_suppressed, f"suppressed {progress_suppressed} pnpm progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -10543,8 +10500,7 @@ class PnpmFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if progress_dropped:
-            notes.append(f"collapsed {progress_dropped} resolver/download progress lines")
+        _maybe_note(notes, progress_dropped, f"collapsed {progress_dropped} resolver/download progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -10670,10 +10626,8 @@ class YarnFilter(Filter):
             dup_warnings = 0
 
         notes: list[str] = []
-        if fetch_dropped:
-            notes.append(f"collapsed {fetch_dropped} individual fetch lines")
-        if dup_warnings:
-            notes.append(f"deduplicated {dup_warnings} repeated warning lines")
+        _maybe_note(notes, fetch_dropped, f"collapsed {fetch_dropped} individual fetch lines")
+        _maybe_note(notes, dup_warnings, f"deduplicated {dup_warnings} repeated warning lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -10698,8 +10652,7 @@ class YarnFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if fetch_dropped:
-            notes.append(f"collapsed {fetch_dropped} per-package fetch/progress lines")
+        _maybe_note(notes, fetch_dropped, f"collapsed {fetch_dropped} per-package fetch/progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -11302,14 +11255,10 @@ class CurlFilter(Filter):
                 kept.append(line)
 
         notes: list[str] = []
-        if dropped_meta:
-            notes.append(f"dropped {dropped_meta} connection-metadata lines")
-        if dropped_req_headers:
-            notes.append(f"dropped {dropped_req_headers} request-header lines")
-        if dropped_resp_headers:
-            notes.append(f"dropped {dropped_resp_headers} response-header lines")
-        if dropped_progress:
-            notes.append(f"dropped {dropped_progress} progress lines")
+        _maybe_note(notes, dropped_meta, f"dropped {dropped_meta} connection-metadata lines")
+        _maybe_note(notes, dropped_req_headers, f"dropped {dropped_req_headers} request-header lines")
+        _maybe_note(notes, dropped_resp_headers, f"dropped {dropped_resp_headers} response-header lines")
+        _maybe_note(notes, dropped_progress, f"dropped {dropped_progress} progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -11380,8 +11329,7 @@ class RsyncFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_files:
-            notes.append(f"collapsed {dropped_files} per-file transfer lines")
+        _maybe_note(notes, dropped_files, f"collapsed {dropped_files} per-file transfer lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -11586,12 +11534,9 @@ class DotnetFilter(Filter):
             dropped_succeeded = len(drop_set)
 
         notes: list[str] = []
-        if dropped_arrows:
-            notes.append(f"collapsed {dropped_arrows} additional project-output arrows")
-        if dropped_msbuild:
-            notes.append(f"dropped {dropped_msbuild} MSBuild evaluation lines")
-        if dropped_succeeded:
-            notes.append(f"collapsed {dropped_succeeded} repeated 'Build succeeded' lines")
+        _maybe_note(notes, dropped_arrows, f"collapsed {dropped_arrows} additional project-output arrows")
+        _maybe_note(notes, dropped_msbuild, f"dropped {dropped_msbuild} MSBuild evaluation lines")
+        _maybe_note(notes, dropped_succeeded, f"collapsed {dropped_succeeded} repeated 'Build succeeded' lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -11910,22 +11855,14 @@ class GradleFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_progress:
-            notes.append(f"dropped {dropped_progress} task-progress lines")
-        if dropped_downloads:
-            notes.append(f"collapsed {dropped_downloads} dependency download lines")
-        if dropped_daemon:
-            notes.append(f"dropped {dropped_daemon} Gradle Daemon startup lines")
-        if dropped_maven_progress:
-            notes.append(f"dropped {dropped_maven_progress} Maven test-run progress lines")
-        if dropped_test_methods:
-            notes.append(f"dropped {dropped_test_methods} test PASSED/SKIPPED lines")
-        if dropped_build_scan:
-            notes.append(f"dropped {dropped_build_scan} build scan lines")
-        if dropped_deprecation:
-            notes.append(f"dropped {dropped_deprecation} deprecation warning lines")
-        if dropped_stack_frames:
-            notes.append(f"dropped {dropped_stack_frames} excess stack-trace frames")
+        _maybe_note(notes, dropped_progress, f"dropped {dropped_progress} task-progress lines")
+        _maybe_note(notes, dropped_downloads, f"collapsed {dropped_downloads} dependency download lines")
+        _maybe_note(notes, dropped_daemon, f"dropped {dropped_daemon} Gradle Daemon startup lines")
+        _maybe_note(notes, dropped_maven_progress, f"dropped {dropped_maven_progress} Maven test-run progress lines")
+        _maybe_note(notes, dropped_test_methods, f"dropped {dropped_test_methods} test PASSED/SKIPPED lines")
+        _maybe_note(notes, dropped_build_scan, f"dropped {dropped_build_scan} build scan lines")
+        _maybe_note(notes, dropped_deprecation, f"dropped {dropped_deprecation} deprecation warning lines")
+        _maybe_note(notes, dropped_stack_frames, f"dropped {dropped_stack_frames} excess stack-trace frames")
 
         self._emit_notes(kept, notes)
         return self._finalize(kept)
@@ -12113,12 +12050,9 @@ class BazelFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if compile_count:
-            notes.append(f"collapsed {compile_count} 'INFO: From …' compile-action lines")
-        if info_progress_count:
-            notes.append(f"collapsed {info_progress_count} INFO: progress lines")
-        if test_pass_count:
-            notes.append(f"collapsed {test_pass_count} PASSED test targets")
+        _maybe_note(notes, compile_count, f"collapsed {compile_count} 'INFO: From …' compile-action lines")
+        _maybe_note(notes, info_progress_count, f"collapsed {info_progress_count} INFO: progress lines")
+        _maybe_note(notes, test_pass_count, f"collapsed {test_pass_count} PASSED test targets")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -12271,11 +12205,9 @@ class MavenFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_downloads:
-            notes.append(f"dropped {dropped_downloads} download-progress lines")
+        _maybe_note(notes, dropped_downloads, f"dropped {dropped_downloads} download-progress lines")
         total_info_dropped = dropped_separators + dropped_boilerplate + dropped_reactor
-        if total_info_dropped:
-            notes.append(f"collapsed {total_info_dropped} [INFO] boilerplate/separator lines")
+        _maybe_note(notes, total_info_dropped, f"collapsed {total_info_dropped} [INFO] boilerplate/separator lines")
 
         self._emit_notes(kept, notes)
         return self._finalize(kept)
@@ -12541,14 +12473,10 @@ class SbtFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_loading:
-            notes.append(f"collapsed {dropped_loading} [info] loading/resolution lines")
-        if dropped_test_progress:
-            notes.append(f"collapsed {dropped_test_progress} test dot-progress lines")
-        if dropped_passing_tests:
-            notes.append(f"collapsed {dropped_passing_tests} verbose passing-test lines")
-        if dropped_warn_extra:
-            notes.append(f"collapsed {dropped_warn_extra} duplicate [warn] lines")
+        _maybe_note(notes, dropped_loading, f"collapsed {dropped_loading} [info] loading/resolution lines")
+        _maybe_note(notes, dropped_test_progress, f"collapsed {dropped_test_progress} test dot-progress lines")
+        _maybe_note(notes, dropped_passing_tests, f"collapsed {dropped_passing_tests} verbose passing-test lines")
+        _maybe_note(notes, dropped_warn_extra, f"collapsed {dropped_warn_extra} duplicate [warn] lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -12770,10 +12698,8 @@ class BundlerFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if using_count:
-            notes.append(f"collapsed {using_count} 'Using gem' lines")
-        if fetch_install_count:
-            notes.append(f"collapsed {fetch_install_count} 'Fetching/Installing gem' lines")
+        _maybe_note(notes, using_count, f"collapsed {using_count} 'Using gem' lines")
+        _maybe_note(notes, fetch_install_count, f"collapsed {fetch_install_count} 'Fetching/Installing gem' lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -12913,8 +12839,7 @@ class CmakeFilter(Filter):
         if found_packages:
             kept.append(f"[token-goat: Found {found_packages} packages (-- Found ... lines collapsed)]")
         notes: list[str] = []
-        if dropped_probes:
-            notes.append(f"collapsed {dropped_probes} cmake probe/feature-check lines")
+        _maybe_note(notes, dropped_probes, f"collapsed {dropped_probes} cmake probe/feature-check lines")
         if dropped_percent:
             # Include the last percent line so the agent sees the peak progress.
             if last_percent_line:
@@ -12954,8 +12879,7 @@ class CmakeFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if pass_count:
-            notes.append(f"collapsed {pass_count} passing ctest results")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} passing ctest results")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13191,10 +13115,8 @@ class FlutterFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if compile_count:
-            notes.append(f"collapsed {compile_count} 'Compiling lib/' lines")
-        if font_count:
-            notes.append(f"collapsed {font_count} font asset lines")
+        _maybe_note(notes, compile_count, f"collapsed {compile_count} 'Compiling lib/' lines")
+        _maybe_note(notes, font_count, f"collapsed {font_count} font asset lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13230,8 +13152,7 @@ class FlutterFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if progress_count:
-            notes.append(f"collapsed {progress_count} test progress lines")
+        _maybe_note(notes, progress_count, f"collapsed {progress_count} test progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13252,8 +13173,7 @@ class FlutterFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if pkg_count:
-            notes.append(f"collapsed {pkg_count} package dependency lines")
+        _maybe_note(notes, pkg_count, f"collapsed {pkg_count} package dependency lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13375,8 +13295,7 @@ class DartFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if progress_count:
-            notes.append(f"collapsed {progress_count} test progress lines")
+        _maybe_note(notes, progress_count, f"collapsed {progress_count} test progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13402,10 +13321,8 @@ class DartFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if pkg_count:
-            notes.append(f"collapsed {pkg_count} package lines")
-        if download_count:
-            notes.append(f"collapsed {download_count} download lines")
+        _maybe_note(notes, pkg_count, f"collapsed {pkg_count} package lines")
+        _maybe_note(notes, download_count, f"collapsed {download_count} download lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13483,10 +13400,8 @@ class PubFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if pkg_count:
-            notes.append(f"collapsed {pkg_count} package lines")
-        if download_count:
-            notes.append(f"collapsed {download_count} download lines")
+        _maybe_note(notes, pkg_count, f"collapsed {pkg_count} package lines")
+        _maybe_note(notes, download_count, f"collapsed {download_count} download lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13586,8 +13501,7 @@ class SwiftFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if compile_count:
-            notes.append(f"collapsed {compile_count} Swift build-phase lines")
+        _maybe_note(notes, compile_count, f"collapsed {compile_count} Swift build-phase lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13628,8 +13542,7 @@ class SwiftFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if pass_count:
-            notes.append(f"collapsed {pass_count} passing Swift test cases")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} passing Swift test cases")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13714,8 +13627,7 @@ class XcodeFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if compile_count:
-            notes.append(f"collapsed {compile_count} xcodebuild build-phase lines")
+        _maybe_note(notes, compile_count, f"collapsed {compile_count} xcodebuild build-phase lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13855,8 +13767,7 @@ class MixFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if dropped:
-            notes.append(f"dropped {dropped} mix compile progress lines")
+        _maybe_note(notes, dropped, f"dropped {dropped} mix compile progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -13910,8 +13821,7 @@ class MixFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if dropped:
-            notes.append(f"dropped {dropped} migration detail lines")
+        _maybe_note(notes, dropped, f"dropped {dropped} migration detail lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -14021,16 +13931,11 @@ class ComposerFilter(Filter):
         kept.extend(deduped)
 
         notes: list[str] = []
-        if install_count:
-            notes.append(f"collapsed {install_count} package install lines")
-        if download_count:
-            notes.append(f"collapsed {download_count} package download lines")
-        if dropped_progress:
-            notes.append(f"dropped {dropped_progress} download-progress lines")
-        if dropped_funding:
-            notes.append(f"dropped {dropped_funding} funding-notice lines")
-        if dropped_dup_warnings:
-            notes.append(f"deduplicated {dropped_dup_warnings} repeated warnings")
+        _maybe_note(notes, install_count, f"collapsed {install_count} package install lines")
+        _maybe_note(notes, download_count, f"collapsed {download_count} package download lines")
+        _maybe_note(notes, dropped_progress, f"dropped {dropped_progress} download-progress lines")
+        _maybe_note(notes, dropped_funding, f"dropped {dropped_funding} funding-notice lines")
+        _maybe_note(notes, dropped_dup_warnings, f"deduplicated {dropped_dup_warnings} repeated warnings")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -14169,10 +14074,8 @@ class PhpStanFilter(Filter):
             flush_file_dedup(current_file, file_msgs.get(current_file, {}))
 
         notes: list[str] = []
-        if dropped_sep:
-            notes.append(f"dropped {dropped_sep} table-separator lines")
-        if dropped_info:
-            notes.append(f"dropped {dropped_info} info/banner lines")
+        _maybe_note(notes, dropped_sep, f"dropped {dropped_sep} table-separator lines")
+        _maybe_note(notes, dropped_info, f"dropped {dropped_info} info/banner lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -14203,8 +14106,7 @@ class PhpStanFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_progress:
-            notes.append(f"dropped {dropped_progress} progress/info lines")
+        _maybe_note(notes, dropped_progress, f"dropped {dropped_progress} progress/info lines")
         collapsed = {k: v - 3 for k, v in error_type_counts.items() if v > 3}
         if collapsed:
             for etype, extra in sorted(collapsed.items()):
@@ -14303,8 +14205,7 @@ class SwiftLintFilter(Filter):
             kept.append(summary_line)
 
         notes: list[str] = []
-        if dropped_progress:
-            notes.append(f"dropped {dropped_progress} progress/info lines")
+        _maybe_note(notes, dropped_progress, f"dropped {dropped_progress} progress/info lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -14459,16 +14360,11 @@ class MSBuildFilter(Filter):
         notes: list[str] = []
         if build_started_count > 1:
             notes.append(f"collapsed {build_started_count - 1} repeated build-started headers")
-        if copy_count:
-            notes.append(f"collapsed {copy_count} file-copy lines")
-        if mkdir_count:
-            notes.append(f"collapsed {mkdir_count} directory-creation lines")
-        if task_count:
-            notes.append(f"collapsed {task_count} task-name lines")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} noise lines")
-        if dup_warning_count:
-            notes.append(f"deduplicated {dup_warning_count} repeated warnings")
+        _maybe_note(notes, copy_count, f"collapsed {copy_count} file-copy lines")
+        _maybe_note(notes, mkdir_count, f"collapsed {mkdir_count} directory-creation lines")
+        _maybe_note(notes, task_count, f"collapsed {task_count} task-name lines")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} noise lines")
+        _maybe_note(notes, dup_warning_count, f"deduplicated {dup_warning_count} repeated warnings")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -14573,14 +14469,10 @@ class NuGetFilter(Filter):
                 kept.insert(0, f"Restoring packages for {len(restoring_paths)} projects")
 
         notes: list[str] = []
-        if installing_count:
-            notes.append(f"collapsed {installing_count} package-install lines")
-        if ok_download_count:
-            notes.append(f"collapsed {ok_download_count} package-download lines")
-        if already_installed_count:
-            notes.append(f"collapsed {already_installed_count} already-installed lines")
-        if success_install_count:
-            notes.append(f"collapsed {success_install_count} successfully-installed lines")
+        _maybe_note(notes, installing_count, f"collapsed {installing_count} package-install lines")
+        _maybe_note(notes, ok_download_count, f"collapsed {ok_download_count} package-download lines")
+        _maybe_note(notes, already_installed_count, f"collapsed {already_installed_count} already-installed lines")
+        _maybe_note(notes, success_install_count, f"collapsed {success_install_count} successfully-installed lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -14698,16 +14590,11 @@ class PowerShellFilter(Filter):
         kept.extend(deduped)
 
         notes: list[str] = []
-        if verbose_count:
-            notes.append(f"collapsed {verbose_count} VERBOSE lines")
-        if debug_count:
-            notes.append(f"collapsed {debug_count} DEBUG lines")
-        if install_module_count:
-            notes.append(f"collapsed {install_module_count} Install-Module progress lines")
-        if progress_count:
-            notes.append(f"collapsed {progress_count} progress-record lines")
-        if dup_warning_count:
-            notes.append(f"deduplicated {dup_warning_count} repeated warnings")
+        _maybe_note(notes, verbose_count, f"collapsed {verbose_count} VERBOSE lines")
+        _maybe_note(notes, debug_count, f"collapsed {debug_count} DEBUG lines")
+        _maybe_note(notes, install_module_count, f"collapsed {install_module_count} Install-Module progress lines")
+        _maybe_note(notes, progress_count, f"collapsed {progress_count} progress-record lines")
+        _maybe_note(notes, dup_warning_count, f"deduplicated {dup_warning_count} repeated warnings")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -14907,8 +14794,7 @@ class BanditFilter(Filter):
             flush_issue()
 
         notes: list[str] = []
-        if low_dropped:
-            notes.append(f"collapsed {low_dropped} LOW severity issue block(s)")
+        _maybe_note(notes, low_dropped, f"collapsed {low_dropped} LOW severity issue block(s)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -15056,8 +14942,7 @@ class TrivyFilter(Filter):
 
         out_text = self._finalize(kept)
         notes: list[str] = []
-        if log_dropped:
-            notes.append(f"dropped {log_dropped} Trivy INFO/WARN/DEBUG log lines")
+        _maybe_note(notes, log_dropped, f"dropped {log_dropped} Trivy INFO/WARN/DEBUG log lines")
         self._emit_notes(kept, notes)
 
         if clean_err:
@@ -15761,8 +15646,7 @@ class MySQLFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if tables_collapsed:
-            notes.append(f"Dumping {tables_kept + tables_collapsed} tables...")
+        _maybe_note(notes, tables_collapsed, f"Dumping {tables_kept + tables_collapsed} tables...")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -16222,12 +16106,9 @@ class SysPackageFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dl_count:
-            notes.append(f"collapsed {dl_count} 'Get:N' download lines")
-        if install_progress:
-            notes.append(f"collapsed {install_progress} 'Unpacking/Setting up' lines")
-        if trigger_count:
-            notes.append(f"collapsed {trigger_count} 'Processing triggers' lines")
+        _maybe_note(notes, dl_count, f"collapsed {dl_count} 'Get:N' download lines")
+        _maybe_note(notes, install_progress, f"collapsed {install_progress} 'Unpacking/Setting up' lines")
+        _maybe_note(notes, trigger_count, f"collapsed {trigger_count} 'Processing triggers' lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -16253,10 +16134,8 @@ class SysPackageFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if fetch_count:
-            notes.append(f"collapsed {fetch_count} 'fetch' download lines")
-        if install_count:
-            notes.append(f"collapsed {install_count} 'Installing' progress lines")
+        _maybe_note(notes, fetch_count, f"collapsed {fetch_count} 'fetch' download lines")
+        _maybe_note(notes, install_count, f"collapsed {install_count} 'Installing' progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -16395,10 +16274,8 @@ class ProtocFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_info:
-            notes.append(f"dropped {dropped_info} [libprotobuf INFO] lines")
-        if deduped_warns:
-            notes.append(f"collapsed {deduped_warns} duplicate warning/diagnostic lines")
+        _maybe_note(notes, dropped_info, f"dropped {dropped_info} [libprotobuf INFO] lines")
+        _maybe_note(notes, deduped_warns, f"collapsed {deduped_warns} duplicate warning/diagnostic lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -16553,12 +16430,9 @@ class NxFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_separators:
-            notes.append(f"dropped {dropped_separators} separator/decoration lines")
-        if dropped_cache:
-            notes.append(f"dropped {dropped_cache} cache-hit annotation lines")
-        if dropped_task_headers:
-            notes.append(f"dropped {dropped_task_headers} per-task header lines")
+        _maybe_note(notes, dropped_separators, f"dropped {dropped_separators} separator/decoration lines")
+        _maybe_note(notes, dropped_cache, f"dropped {dropped_cache} cache-hit annotation lines")
+        _maybe_note(notes, dropped_task_headers, f"dropped {dropped_task_headers} per-task header lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -16635,10 +16509,8 @@ class LernaFilter(Filter):
             )
         out.extend(kept)
         notes: list[str] = []
-        if dropped_verbose:
-            notes.append(f"dropped {dropped_verbose} lerna verb/timing lines")
-        if dropped_notice:
-            notes.append(f"dropped {dropped_notice} lerna notice lines")
+        _maybe_note(notes, dropped_verbose, f"dropped {dropped_verbose} lerna verb/timing lines")
+        _maybe_note(notes, dropped_notice, f"dropped {dropped_notice} lerna notice lines")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -16746,8 +16618,7 @@ class PrettierFilter(Filter):
             )
         out.extend(kept)
         notes: list[str] = []
-        if dropped_unchanged:
-            notes.append(f"dropped {dropped_unchanged} unchanged-file lines")
+        _maybe_note(notes, dropped_unchanged, f"dropped {dropped_unchanged} unchanged-file lines")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -17002,10 +16873,8 @@ class OxlintFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if deduplicated:
-            notes.append(f"deduplicated {deduplicated} repeated-rule issue lines")
-        if dropped_location:
-            notes.append(f"dropped {dropped_location} location-pointer lines for deduped issues")
+        _maybe_note(notes, deduplicated, f"deduplicated {deduplicated} repeated-rule issue lines")
+        _maybe_note(notes, dropped_location, f"dropped {dropped_location} location-pointer lines for deduped issues")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -17143,12 +17012,9 @@ class PylintFilter(Filter):
             kept.append(pending_module)
 
         notes: list[str] = []
-        if deduplicated:
-            notes.append(f"deduplicated {deduplicated} repeated-code issue lines")
-        if dropped_separators:
-            notes.append(f"dropped {dropped_separators} separator lines")
-        if dropped_config:
-            notes.append(f"dropped {dropped_config} config-loading lines")
+        _maybe_note(notes, deduplicated, f"deduplicated {deduplicated} repeated-code issue lines")
+        _maybe_note(notes, dropped_separators, f"dropped {dropped_separators} separator lines")
+        _maybe_note(notes, dropped_config, f"dropped {dropped_config} config-loading lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -17279,8 +17145,7 @@ class BunFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if progress_dropped:
-            notes.append(f"collapsed {progress_dropped} per-package download/resolution lines")
+        _maybe_note(notes, progress_dropped, f"collapsed {progress_dropped} per-package download/resolution lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -17311,8 +17176,7 @@ class BunFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if passes_dropped:
-            notes.append(f"collapsed {passes_dropped} passing test lines (✓)")
+        _maybe_note(notes, passes_dropped, f"collapsed {passes_dropped} passing test lines (✓)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -17482,10 +17346,8 @@ class DenoFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if passes_dropped:
-            notes.append(f"collapsed {passes_dropped} passing test lines")
-        if downloads_dropped:
-            notes.append(f"dropped {downloads_dropped} module download/cache lines")
+        _maybe_note(notes, passes_dropped, f"collapsed {passes_dropped} passing test lines")
+        _maybe_note(notes, downloads_dropped, f"dropped {downloads_dropped} module download/cache lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -17510,8 +17372,7 @@ class DenoFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if downloads_dropped:
-            notes.append(f"dropped {downloads_dropped} module download lines")
+        _maybe_note(notes, downloads_dropped, f"dropped {downloads_dropped} module download lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -17541,10 +17402,8 @@ class DenoFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if check_dropped:
-            notes.append(f"dropped {check_dropped} Check progress lines")
-        if downloads_dropped:
-            notes.append(f"dropped {downloads_dropped} module download lines")
+        _maybe_note(notes, check_dropped, f"dropped {check_dropped} Check progress lines")
+        _maybe_note(notes, downloads_dropped, f"dropped {downloads_dropped} module download lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -17563,8 +17422,7 @@ class DenoFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if downloads_dropped:
-            notes.append(f"dropped {downloads_dropped} module download lines")
+        _maybe_note(notes, downloads_dropped, f"dropped {downloads_dropped} module download lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -17860,10 +17718,8 @@ class KtlintFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if deduplicated:
-            notes.append(f"deduplicated {deduplicated} repeated-rule violation lines")
-        if dropped_xml_tags:
-            notes.append(f"dropped {dropped_xml_tags} checkstyle XML wrapper tags")
+        _maybe_note(notes, deduplicated, f"deduplicated {deduplicated} repeated-rule violation lines")
+        _maybe_note(notes, dropped_xml_tags, f"dropped {dropped_xml_tags} checkstyle XML wrapper tags")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -17998,12 +17854,9 @@ class ZigFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if tests_passed:
-            notes.append(f"collapsed {tests_passed} passing test lines")
-        if fetch_count:
-            notes.append(f"collapsed {fetch_count} fetch/dependency lines")
-        if dropped_info:
-            notes.append(f"dropped {dropped_info} informational noise lines")
+        _maybe_note(notes, tests_passed, f"collapsed {tests_passed} passing test lines")
+        _maybe_note(notes, fetch_count, f"collapsed {fetch_count} fetch/dependency lines")
+        _maybe_note(notes, dropped_info, f"dropped {dropped_info} informational noise lines")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -18145,10 +17998,8 @@ class SassFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if dropped_map:
-            notes.append(f"dropped {dropped_map} source-map write lines")
-        if collapsed_deprecations:
-            notes.append(f"collapsed {collapsed_deprecations} duplicate deprecation warnings")
+        _maybe_note(notes, dropped_map, f"dropped {dropped_map} source-map write lines")
+        _maybe_note(notes, collapsed_deprecations, f"collapsed {collapsed_deprecations} duplicate deprecation warnings")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -18265,10 +18116,8 @@ class PulumiFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_progress:
-            notes.append(f"dropped {dropped_progress} resource progress lines")
-        if dropped_still:
-            notes.append(f"dropped {dropped_still} 'still ...' heartbeat lines")
+        _maybe_note(notes, dropped_progress, f"dropped {dropped_progress} resource progress lines")
+        _maybe_note(notes, dropped_still, f"dropped {dropped_still} 'still ...' heartbeat lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -18382,10 +18231,8 @@ class CdkFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_asset:
-            notes.append(f"dropped {dropped_asset} asset build/upload progress lines")
-        if dropped_in_progress:
-            notes.append(f"dropped {dropped_in_progress} IN_PROGRESS / timing lines")
+        _maybe_note(notes, dropped_asset, f"dropped {dropped_asset} asset build/upload progress lines")
+        _maybe_note(notes, dropped_in_progress, f"dropped {dropped_in_progress} IN_PROGRESS / timing lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -18498,10 +18345,8 @@ class WasmPackFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_info:
-            notes.append(f"dropped {dropped_info} [INFO] step announcement lines")
-        if dropped_compiling:
-            notes.append(f"dropped {dropped_compiling} Cargo dependency compile lines")
+        _maybe_note(notes, dropped_info, f"dropped {dropped_info} [INFO] step announcement lines")
+        _maybe_note(notes, dropped_compiling, f"dropped {dropped_compiling} Cargo dependency compile lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -18642,8 +18487,7 @@ class ElmFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} Elm dependency-resolution progress lines")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} Elm dependency-resolution progress lines")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -18789,8 +18633,7 @@ class JuliaFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if pass_count:
-            notes.append(f"collapsed {pass_count} passing Julia test lines")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} passing Julia test lines")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -18986,14 +18829,10 @@ class ToxFilter(Filter):
             notes.append(
                 f"collapsed {dropped_create} tox env-create/install progress lines"
             )
-        if dropped_pip:
-            notes.append(f"collapsed {dropped_pip} pip install progress lines")
-        if dropped_req_satisfied:
-            notes.append(f"collapsed {dropped_req_satisfied} 'Requirement already satisfied' lines")
-        if dropped_separators:
-            notes.append(f"dropped {dropped_separators} tox separator lines")
-        if dropped_polling:
-            notes.append(f"dropped {dropped_polling} tox parallel-runner polling lines")
+        _maybe_note(notes, dropped_pip, f"collapsed {dropped_pip} pip install progress lines")
+        _maybe_note(notes, dropped_req_satisfied, f"collapsed {dropped_req_satisfied} 'Requirement already satisfied' lines")
+        _maybe_note(notes, dropped_separators, f"dropped {dropped_separators} tox separator lines")
+        _maybe_note(notes, dropped_polling, f"dropped {dropped_polling} tox parallel-runner polling lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -19097,12 +18936,9 @@ class NoxFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if env_noise:
-            notes.append(f"collapsed {env_noise} nox env-create/reuse lines")
-        if pip_noise:
-            notes.append(f"collapsed {pip_noise} pip install progress lines")
-        if req_satisfied:
-            notes.append(f"collapsed {req_satisfied} 'Requirement already satisfied' lines")
+        _maybe_note(notes, env_noise, f"collapsed {env_noise} nox env-create/reuse lines")
+        _maybe_note(notes, pip_noise, f"collapsed {pip_noise} pip install progress lines")
+        _maybe_note(notes, req_satisfied, f"collapsed {req_satisfied} 'Requirement already satisfied' lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -19239,10 +19075,8 @@ class CrystalFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if pass_count:
-            notes.append(f"collapsed {pass_count} passing Crystal spec line(s)")
-        if dot_count:
-            notes.append(f"dropped {dot_count} dot-progress line(s)")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} passing Crystal spec line(s)")
+        _maybe_note(notes, dot_count, f"dropped {dot_count} dot-progress line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -19386,10 +19220,8 @@ class VaultFilter(Filter):
                 )
 
         notes: list[str] = []
-        if meta_count:
-            notes.append(f"collapsed {meta_count} Vault lease/token metadata line(s)")
-        if divider_count:
-            notes.append(f"dropped {divider_count} table divider line(s)")
+        _maybe_note(notes, meta_count, f"collapsed {meta_count} Vault lease/token metadata line(s)")
+        _maybe_note(notes, divider_count, f"dropped {divider_count} table divider line(s)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -19525,8 +19357,7 @@ class PackerFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if noise_count:
-            notes.append(f"dropped {noise_count} network/heartbeat/pause noise line(s)")
+        _maybe_note(notes, noise_count, f"dropped {noise_count} network/heartbeat/pause noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -19680,8 +19511,7 @@ class NixFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} Nix scheduler/sandbox noise line(s)")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} Nix scheduler/sandbox noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -19842,8 +19672,7 @@ class HaskellFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if dropped_warnings:
-            notes.append(f"deduplicated {dropped_warnings} repeated warning(s)")
+        _maybe_note(notes, dropped_warnings, f"deduplicated {dropped_warnings} repeated warning(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -19998,8 +19827,7 @@ class RCmdFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if loading_count:
-            notes.append(f"dropped {loading_count} namespace loading/attaching line(s)")
+        _maybe_note(notes, loading_count, f"dropped {loading_count} namespace loading/attaching line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -20237,10 +20065,8 @@ class VcpkgFilter(Filter):
             if installing_count:
                 parts.append(f"{installing_count} Installing")
             notes.append(f"collapsed {building_count + installing_count} vcpkg port lines ({', '.join(parts)})")
-        if substep_count:
-            notes.append(f"collapsed {substep_count} vcpkg sub-step lines")
-        if timing_count:
-            notes.append(f"dropped {timing_count} vcpkg timing/detection lines")
+        _maybe_note(notes, substep_count, f"collapsed {substep_count} vcpkg sub-step lines")
+        _maybe_note(notes, timing_count, f"dropped {timing_count} vcpkg timing/detection lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -20351,12 +20177,9 @@ class CppcheckFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if checking_count:
-            notes.append(f"collapsed {checking_count} 'Checking <file>...' progress lines")
-        if progress_count:
-            notes.append(f"dropped {progress_count} file-progress percentage lines")
-        if config_count:
-            notes.append(f"collapsed {config_count} configuration-check lines")
+        _maybe_note(notes, checking_count, f"collapsed {checking_count} 'Checking <file>...' progress lines")
+        _maybe_note(notes, progress_count, f"dropped {progress_count} file-progress percentage lines")
+        _maybe_note(notes, config_count, f"collapsed {config_count} configuration-check lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -20498,12 +20321,9 @@ class ClangTidyFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if warnings_generated:
-            notes.append(f"collapsed {warnings_generated} total 'N warnings generated' progress lines")
-        if include_chains:
-            notes.append(f"collapsed {include_chains} 'In file included from' chains")
-        if context_dropped:
-            notes.append(f"dropped {context_dropped} redundant source-context/caret lines")
+        _maybe_note(notes, warnings_generated, f"collapsed {warnings_generated} total 'N warnings generated' progress lines")
+        _maybe_note(notes, include_chains, f"collapsed {include_chains} 'In file included from' chains")
+        _maybe_note(notes, context_dropped, f"dropped {context_dropped} redundant source-context/caret lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -20680,10 +20500,8 @@ class WranglerFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if dropped_build:
-            notes.append(f"dropped {dropped_build} build-step noise line(s)")
-        if dropped_dev:
-            notes.append(f"dropped {dropped_dev} dev-mode noise line(s)")
+        _maybe_note(notes, dropped_build, f"dropped {dropped_build} build-step noise line(s)")
+        _maybe_note(notes, dropped_dev, f"dropped {dropped_dev} dev-mode noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -20855,10 +20673,8 @@ class HardhatFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if pass_count:
-            notes.append(f"collapsed {pass_count} passing test line(s)")
-        if tx_noise_count:
-            notes.append(f"dropped {tx_noise_count} transaction receipt noise line(s)")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} passing test line(s)")
+        _maybe_note(notes, tx_noise_count, f"dropped {tx_noise_count} transaction receipt noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -21006,10 +20822,8 @@ class ServerlessFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if in_progress_count:
-            notes.append(f"dropped {in_progress_count} CF _IN_PROGRESS event line(s)")
-        if dot_count:
-            notes.append(f"dropped {dot_count} polling dot line(s)")
+        _maybe_note(notes, in_progress_count, f"dropped {in_progress_count} CF _IN_PROGRESS event line(s)")
+        _maybe_note(notes, dot_count, f"dropped {dot_count} polling dot line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -21156,10 +20970,8 @@ class ErlangFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if pass_count:
-            notes.append(f"collapsed {pass_count} passing test line(s)")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} rebar3 step-noise line(s)")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} passing test line(s)")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} rebar3 step-noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -21293,8 +21105,7 @@ class FlyFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} DNS/polling noise line(s)")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} DNS/polling noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -21429,10 +21240,8 @@ class ForgeFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if pass_count:
-            notes.append(f"collapsed {pass_count} passing test line(s)")
-        if dropped_gas_sep:
-            notes.append(f"dropped {dropped_gas_sep} gas-report table separator row(s)")
+        _maybe_note(notes, pass_count, f"collapsed {pass_count} passing test line(s)")
+        _maybe_note(notes, dropped_gas_sep, f"dropped {dropped_gas_sep} gas-report table separator row(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -21576,8 +21385,7 @@ class AiderFilter(Filter):
             notes.append(f"token usage: {token_lines[-1]}")
         if cost_lines:
             notes.append(f"cost: {cost_lines[-1]}")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} noise line(s)")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -21676,8 +21484,7 @@ class GhCopilotFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} boilerplate/disclaimer line(s)")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} boilerplate/disclaimer line(s)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -21773,8 +21580,7 @@ class CopilotFilter(Filter):
         notes: list[str] = []
         if stat_lines:
             notes.append(f"stats: {stat_lines[-1]}")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} boilerplate/disclaimer line(s)")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} boilerplate/disclaimer line(s)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -21901,10 +21707,8 @@ class GeminiCliFilter(Filter):
         out.extend(kept)
 
         notes: list[str] = []
-        if last_token_meter:
-            notes.append(f"context: {last_token_meter}")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} noise line(s)")
+        _maybe_note(notes, last_token_meter, f"context: {last_token_meter}")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -22031,14 +21835,10 @@ class ClaudeCliFilter(Filter):
         out: list[str] = list(kept)
 
         notes: list[str] = []
-        if tool_log_count:
-            notes.append(f"collapsed {tool_log_count} tool-call log line(s)")
-        if last_stats:
-            notes.append(f"stats: {last_stats}")
-        if last_context:
-            notes.append(f"context: {last_context}")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} noise line(s)")
+        _maybe_note(notes, tool_log_count, f"collapsed {tool_log_count} tool-call log line(s)")
+        _maybe_note(notes, last_stats, f"stats: {last_stats}")
+        _maybe_note(notes, last_context, f"context: {last_context}")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -22128,8 +21928,7 @@ class CursorFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} startup/telemetry noise line(s)")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} startup/telemetry noise line(s)")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -22299,10 +22098,8 @@ class WindsurfFilter(Filter):
                 f"collapsed {cascade_tool_count} Cascade tool-call line(s); "
                 f"disable via TOKEN_GOAT_BASH_COMPRESS for full output"
             )
-        if last_context:
-            notes.append(f"context: {last_context}")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} startup/activation noise line(s)")
+        _maybe_note(notes, last_context, f"context: {last_context}")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} startup/activation noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -22433,14 +22230,10 @@ class OpenCodeFilter(Filter):
             )
 
         notes: list[str] = []
-        if last_provider:
-            notes.append(f"provider: {last_provider}")
-        if last_model:
-            notes.append(f"model: {last_model}")
-        if last_context:
-            notes.append(f"context: {last_context}")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} noise line(s)")
+        _maybe_note(notes, last_provider, f"provider: {last_provider}")
+        _maybe_note(notes, last_model, f"model: {last_model}")
+        _maybe_note(notes, last_context, f"context: {last_context}")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -22552,10 +22345,8 @@ class ContinueFilter(Filter):
             )
 
         notes: list[str] = []
-        if last_tokens:
-            notes.append(f"tokens: {last_tokens}")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} noise line(s)")
+        _maybe_note(notes, last_tokens, f"tokens: {last_tokens}")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -22710,14 +22501,10 @@ class ClineFilter(Filter):
             )
 
         notes: list[str] = []
-        if last_tokens:
-            notes.append(f"tokens: {last_tokens}")
-        if last_cost:
-            notes.append(f"cost: {last_cost}")
-        if last_context:
-            notes.append(f"context: {last_context}")
-        if dropped_noise:
-            notes.append(f"dropped {dropped_noise} noise line(s)")
+        _maybe_note(notes, last_tokens, f"tokens: {last_tokens}")
+        _maybe_note(notes, last_cost, f"cost: {last_cost}")
+        _maybe_note(notes, last_context, f"context: {last_context}")
+        _maybe_note(notes, dropped_noise, f"dropped {dropped_noise} noise line(s)")
         self._emit_notes(out, notes)
         return self._finalize(out)
 
@@ -22982,12 +22769,9 @@ class MesonFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if compile_count:
-            notes.append(f"collapsed {compile_count} [N/M] Compiling progress lines")
-        if probe_count:
-            notes.append(f"collapsed {probe_count} dependency/probe check lines")
-        if detail_count:
-            notes.append(f"suppressed {detail_count} compiler toolchain detail lines")
+        _maybe_note(notes, compile_count, f"collapsed {compile_count} [N/M] Compiling progress lines")
+        _maybe_note(notes, probe_count, f"collapsed {probe_count} dependency/probe check lines")
+        _maybe_note(notes, detail_count, f"suppressed {detail_count} compiler toolchain detail lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -23058,8 +22842,7 @@ class PlaywrightFilter(Filter):
                 continue
             kept.append(line)
         notes: list[str] = []
-        if suppressed:
-            notes.append(f"suppressed {suppressed} passed-test / install-progress lines")
+        _maybe_note(notes, suppressed, f"suppressed {suppressed} passed-test / install-progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -23237,14 +23020,10 @@ class CypressFilter(Filter):
         elif state == "IN_VIDEO":
             kept.append("[token-goat] warning: cypress output truncated inside video section")
         notes: list[str] = []
-        if n_header:
-            notes.append(f"suppressed {n_header} cypress header/results box lines")
-        if n_sep:
-            notes.append(f"suppressed {n_sep} separator lines")
-        if n_video:
-            notes.append(f"suppressed {n_video} video processing lines")
-        if n_pass:
-            notes.append(f"suppressed {n_pass} passing test lines")
+        _maybe_note(notes, n_header, f"suppressed {n_header} cypress header/results box lines")
+        _maybe_note(notes, n_sep, f"suppressed {n_sep} separator lines")
+        _maybe_note(notes, n_video, f"suppressed {n_video} video processing lines")
+        _maybe_note(notes, n_pass, f"suppressed {n_pass} passing test lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -23445,12 +23224,9 @@ class FfmpegFilter(Filter):
             dropped_progress -= 1  # re-added; not collapsed
 
         notes: list[str] = []
-        if dropped_build:
-            notes.append(f"dropped {dropped_build} build-info lines")
-        if dropped_meta:
-            notes.append(f"dropped {dropped_meta} metadata lines")
-        if dropped_progress:
-            notes.append(f"collapsed {dropped_progress} progress lines")
+        _maybe_note(notes, dropped_build, f"dropped {dropped_build} build-info lines")
+        _maybe_note(notes, dropped_meta, f"dropped {dropped_meta} metadata lines")
+        _maybe_note(notes, dropped_progress, f"collapsed {dropped_progress} progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -23658,8 +23434,7 @@ class NgFilter(Filter):
             _flush_rows(table_rows, "chunk table rows")
 
         notes: list[str] = []
-        if dropped_progress:
-            notes.append(f"dropped {dropped_progress} build progress lines")
+        _maybe_note(notes, dropped_progress, f"dropped {dropped_progress} build progress lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -23689,8 +23464,7 @@ class NgFilter(Filter):
             kept.append(line)
 
         notes: list[str] = []
-        if dropped_karma:
-            notes.append(f"dropped {dropped_karma} Karma log lines")
+        _maybe_note(notes, dropped_karma, f"dropped {dropped_karma} Karma log lines")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
