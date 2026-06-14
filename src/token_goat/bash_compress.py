@@ -164,6 +164,7 @@ __all__ = [
     "PytestFilter",
     "JestFilter",
     "VitestFilter",
+    "WebpackFilter",
     "NodePackageFilter",
     "NodeFilter",
     "DockerFilter",
@@ -2711,6 +2712,210 @@ class VitestFilter(Filter):
                 f"collapsed {pass_tick_count} passing tick{'s' if pass_tick_count != 1 else ''}"
             )
         self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- Webpack / Vite build / esbuild ----------------------------------------
+
+#: Webpack module lines: "  ./node_modules/react/index.js 190 bytes [built] [code generated]"
+_WEBPACK_MODULE_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\./node_modules/"
+)
+#: Webpack "modules by path ./node_modules/" section headers
+#: Used with both .match(line) and .search(merged), so re.MULTILINE is set.
+_WEBPACK_MOD_PATH_NODMOD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*modules by path \./node_modules/", re.MULTILINE
+)
+#: Webpack "+ N modules" continuation lines
+_WEBPACK_PLUS_MODULES_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+\+ \d+ modules?\s*$"
+)
+#: Webpack "runtime modules N bytes N modules"
+_WEBPACK_RUNTIME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*runtime modules\s"
+)
+#: Webpack final summary: "webpack 5.89.0 compiled successfully in 1234 ms"
+_WEBPACK_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^webpack\s+\d[\d.]+\s+compiled", re.MULTILINE
+)
+#: Vite transforming progress: "transforming (234) ░░░░░░  50% [12/234] ..."
+#: Used with both .match(line) and .search(merged), so re.MULTILINE is set.
+_VITE_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*transforming\s*\(\d+\)"
+    r"|^\s*rendering chunks?\s*\(\d+\)"
+    r"|^\s*computing gzip size\s*\(\d+\)",
+    re.MULTILINE,
+)
+#: Vite build header: "vite v5.0.0 building for production..."
+_VITE_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^vite\s+v[\d.]+", re.MULTILINE
+)
+#: Vite build completion: "✓ built in 1.23s" or "✓ 234 modules transformed."
+_VITE_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[✓√]\s+(?:built in|\d+\s+modules\s+transformed)", re.MULTILINE
+)
+
+
+class WebpackFilter(Filter):
+    """Compress webpack / esbuild / ``vite build`` output.
+
+    Webpack in verbose mode emits per-module entries for every dependency in
+    ``node_modules``, which on a large project easily produces thousands of
+    lines.  The information that matters to the developer is the list of output
+    assets and the final compilation result.
+
+    Compression model:
+
+    * **Webpack** — drop ``./node_modules/`` per-module lines, ``modules by path
+      ./node_modules/`` section headers, ``+ N modules`` continuation lines,
+      and ``runtime modules`` metadata lines.  Keep ``asset …`` size lines,
+      ``modules by path ./src/`` app-code sections, error/warning blocks, and
+      the final ``webpack X.X.X compiled …`` summary.
+    * **Vite build** — drop ``transforming (N)`` / ``rendering chunks (N)`` /
+      ``computing gzip size (N)`` progress lines.  Keep the header, the
+      ``✓ N modules transformed`` / ``dist/…`` asset-size table, and the
+      ``✓ built in Ns`` completion line.
+    * **esbuild** — output is typically 2–5 lines; pass through unchanged.
+    """
+
+    name = "webpack"
+    binaries = frozenset(["webpack", "webpack-cli", "vite", "esbuild"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+
+        def _base(s: str) -> str:
+            b = s.replace("\\", "/").rsplit("/", 1)[-1].lower()
+            for ext in (".exe", ".cmd"):
+                if b.endswith(ext):
+                    b = b[: -len(ext)]
+                    break
+            return b
+
+        b0 = _base(argv[0])
+
+        # Direct invocations
+        if b0 in ("webpack", "webpack-cli", "esbuild"):
+            return True
+        # vite build only (not vite dev/serve/preview)
+        if b0 == "vite":
+            positionals = _positional_args(argv[1:])
+            return bool(positionals) and positionals[0] == "build"
+
+        # npx / pnpx / bunx wrapper: scan past leading flags to find the tool name
+        if b0 in ("npx", "pnpx", "bunx"):
+            i = 1
+            # skip flag-like tokens (--yes, --package foo, -y …)
+            while i < len(argv):
+                tok = argv[i]
+                if not tok.startswith("-"):
+                    break
+                # flags that consume the next token as value
+                if tok in ("--package", "-p"):
+                    i += 2
+                else:
+                    i += 1
+            if i >= len(argv):
+                return False
+            b1 = _base(argv[i])
+            if b1 in ("webpack", "webpack-cli", "esbuild"):
+                return True
+            if b1 == "vite":
+                positionals = _positional_args(argv[i + 1 :])
+                return bool(positionals) and positionals[0] == "build"
+
+        return False
+
+    def compress(
+        self,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        # Detect which tool's output we have.
+        if _VITE_HEADER_RE.search(merged) or _VITE_DONE_RE.search(merged):
+            return self._compress_vite(merged)
+        if _WEBPACK_SUMMARY_RE.search(merged) or _WEBPACK_MOD_PATH_NODMOD_RE.search(merged):
+            return self._compress_webpack(merged)
+        # esbuild / unrecognised: pass through unchanged
+        return merged
+
+    # ------------------------------------------------------------------
+    # Tool-specific helpers
+    # ------------------------------------------------------------------
+
+    def _compress_vite(self, text: str) -> str:
+        """Drop vite build progress lines; keep asset table and summary."""
+        lines = text.split("\n")
+        kept: list[str] = []
+        progress_dropped = 0
+        for line in lines:
+            if _VITE_PROGRESS_RE.match(line):
+                progress_dropped += 1
+            else:
+                kept.append(line)
+        notes: list[str] = []
+        if progress_dropped:
+            notes.append(f"dropped {progress_dropped} transform/render progress line"
+                         f"{'s' if progress_dropped != 1 else ''}")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_webpack(self, text: str) -> str:
+        """Drop node_modules module entries; keep assets, app modules, errors."""
+        lines = text.split("\n")
+        kept: list[str] = []
+        nodmod_lines = 0
+        plus_mod_lines = 0
+        runtime_lines = 0
+        in_nodmod_section = False
+        for line in lines:
+            # "modules by path ./node_modules/..." — suppress this section header
+            if _WEBPACK_MOD_PATH_NODMOD_RE.match(line):
+                nodmod_lines += 1
+                in_nodmod_section = True
+                continue
+            # "modules by path ./src/..." — end node_modules section; keep
+            if line.startswith("modules by path ") and "node_modules" not in line:
+                in_nodmod_section = False
+                kept.append(line)
+                continue
+            # Individual node_modules module entries (indented)
+            if _WEBPACK_MODULE_LINE_RE.match(line) and "error" not in line.lower():
+                nodmod_lines += 1
+                continue
+            # "+ N modules" continuation lines
+            if _WEBPACK_PLUS_MODULES_RE.match(line):
+                plus_mod_lines += 1
+                continue
+            # "runtime modules N bytes N modules"
+            if _WEBPACK_RUNTIME_RE.match(line):
+                runtime_lines += 1
+                continue
+            # Inside a node_modules section: suppress indented sub-entries
+            if in_nodmod_section and line.startswith("  ") and "error" not in line.lower():
+                nodmod_lines += 1
+                continue
+            # Any non-blank, non-indented line ends the node_modules section
+            if line and not line.startswith(" "):
+                in_nodmod_section = False
+            kept.append(line)
+        notes: list[str] = []
+        total_dropped = nodmod_lines + plus_mod_lines + runtime_lines
+        if nodmod_lines:
+            notes.append(f"dropped {nodmod_lines} node_modules module line"
+                         f"{'s' if nodmod_lines != 1 else ''}")
+        if plus_mod_lines:
+            notes.append(f"dropped {plus_mod_lines} '+ N modules' line"
+                         f"{'s' if plus_mod_lines != 1 else ''}")
+        if runtime_lines:
+            notes.append(f"dropped {runtime_lines} runtime-module metadata line"
+                         f"{'s' if runtime_lines != 1 else ''}")
+        if total_dropped:
+            self._emit_notes(kept, notes)
         return self._finalize(kept)
 
 
@@ -21845,6 +22050,14 @@ FILTERS: list[Filter] = [
     # jest/mocha/ava/tap so ordering is cosmetic, but explicit placement keeps
     # test-runner filters together and documents the split clearly.
     VitestFilter(),
+    # WebpackFilter handles direct `webpack` / `webpack-cli`, `esbuild`, and
+    # `vite build` (build subcommand only; vitest test-runner is handled by
+    # VitestFilter above).  Also handles `npx webpack`, `npx webpack-cli`,
+    # `npx esbuild`, and `npx vite build`.  Must follow VitestFilter (disjoint
+    # binaries except `vite` vs `vitest`) and precede NodePackageFilter so
+    # that `npx webpack` and `npx vite build` route to the dedicated filter
+    # rather than the generic npm/pnpm/yarn/bun package-manager handler.
+    WebpackFilter(),
     # DepListFilter must precede CargoFilter, NodePackageFilter, PnpmFilter,
     # YarnFilter, PipFilter, and UvFilter: it is strictly more specific
     # (only fires when the subcommand is a listing variant such as ``list``,
