@@ -7167,6 +7167,124 @@ _GIT_LOCAL_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
 # Blank remote line with no content after the colon: "remote: " or "remote:"
 _GIT_REMOTE_BLANK_RE: Final[re.Pattern[str]] = re.compile(r"^remote:\s*$")
 
+# Pre-push hook task-runner trigger lines, e.g. lefthook/husky/npm wrappers:
+#   "> lefthook run pre-push", "> build", "> vite build", "husky - pre-push".
+_PREPUSH_HOOK_TRIGGER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:>\s+|❯\s+|\$\s+)?(?:lefthook|husky|pre-commit|simple-git-hooks)\b"
+    r"|^\s*>\s+\S+@",  # npm "> pkg@1.0.0 build" lifecycle banner
+    re.IGNORECASE,
+)
+# Bundler signature lines proving a pre-push block contains build output we can
+# safely collapse.  Matches vite/webpack/esbuild/rollup headers, the vite
+# "N modules transformed" / "built in Ns" markers, and dist asset-size rows
+# such as "dist/assets/index-BH4Mhpqg.js   321.26 kB │ gzip: 99.21 kB".
+_BUNDLER_SIGNATURE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*vite\s+v[\d.]+"
+    r"|building for production"
+    r"|modules?\s+transformed"
+    r"|rendering chunks"
+    r"|computing gzip size"
+    r"|transforming\s*\("
+    r"|^\s*webpack\s+\d[\d.]+\s+compiled"
+    r"|^\s*(?:Asset|asset)\s+\S+\s+\d"
+    r"|^\s*[\w./-]+\.(?:js|css|html|mjs|map|svg|png|woff2?)\s+[\d.]+\s*(?:k|m|g)?i?b\b"
+    r"|gzip:\s*[\d.]+\s*(?:k|m|g)?i?b"
+    r"|^\s*[⚡✨]?\s*esbuild",
+    re.IGNORECASE,
+)
+# Lines inside a bundler block that are pure progress/noise and never carry
+# information worth keeping (asset rows, module lists, transform progress).
+_BUNDLER_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"building for production"
+    r"|^\s*[✓√]?\s*\d+\s+modules?\s+transformed"
+    r"|rendering chunks"
+    r"|computing gzip size"
+    r"|^\s*transforming\s*\("
+    r"|^\s*[\w./-]+\.(?:js|css|html|mjs|map|svg|png|woff2?)\s+[\d.]+\s*(?:k|m|g)?i?b\b"
+    r"|^\s+\./node_modules/"
+    r"|^\s*modules by path"
+    r"|^\s+\+\s+\d+\s+modules?\s*$"
+    r"|^\s*runtime modules\s",
+    re.IGNORECASE,
+)
+# Final bundler success markers — kept (one line) as the block's outcome.
+_BUNDLER_DONE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*[✓√]\s+built in\s"
+    r"|^\s*webpack\s+\d[\d.]+\s+compiled\s+successfully"
+    r"|^\s*[⚡✨]\s+Done in\s",
+    re.IGNORECASE,
+)
+
+
+def _compress_git_push_bundler(lines: list[str]) -> list[str]:
+    """Collapse a pre-push hook's bundler output inside ``git push`` capture.
+
+    A pre-push hook commonly runs a bundler (vite, webpack, esbuild, rollup)
+    whose chunk tables, module lists, and asset-size rows are written to the
+    push command's stdout/stderr and can exceed 13 000 tokens.  This helper
+    detects the contiguous bundler block, drops the noise rows (asset tables,
+    module lists, transform/render progress), and replaces them with a single
+    ``[pre-push hook: bundler output suppressed — N lines]`` summary.
+
+    Preserved verbatim:
+
+    * the hook-trigger line (``> lefthook run pre-push``, ``> vite build`` …),
+    * any error/warning lines (so a failed build is never hidden),
+    * the final bundler success marker (``✓ built in 8.23s``),
+    * all git push output (ref-update lines, ``To <remote>``, tracking lines).
+
+    When no bundler signature is present the input is returned unchanged.
+    """
+    if not any(_BUNDLER_SIGNATURE_RE.search(ln) for ln in lines):
+        return lines
+
+    result: list[str] = []
+    suppressed = 0
+
+    def _flush() -> None:
+        nonlocal suppressed
+        if suppressed:
+            plural = "s" if suppressed != 1 else ""
+            result.append(
+                f"[pre-push hook: bundler output suppressed — {suppressed} line{plural}]"
+            )
+            suppressed = 0
+
+    for ln in lines:
+        stripped = ln.rstrip()
+        # Git push result lines and the hook trigger always survive; flush any
+        # pending suppression summary first so ordering is preserved.
+        if (
+            _GIT_PUSH_REF_RE.match(stripped)
+            or _GIT_PUSH_TRACK_RE.match(stripped)
+            or _PREPUSH_HOOK_TRIGGER_RE.match(stripped)
+            or _BUNDLER_DONE_RE.match(stripped)
+        ):
+            _flush()
+            result.append(stripped)
+            continue
+        # Surface errors/warnings unconditionally — a failed build must show.
+        if _ERROR_SIGNAL_RE.search(stripped) and not _BUNDLER_NOISE_RE.search(stripped):
+            _flush()
+            result.append(stripped)
+            continue
+        if _BUNDLER_NOISE_RE.search(stripped) or _BUNDLER_SIGNATURE_RE.search(stripped):
+            suppressed += 1
+            continue
+        # Blank lines inside the block fold into the suppression count rather
+        # than fragmenting the summary; blank lines outside pass through.
+        if not stripped:
+            if suppressed:
+                suppressed += 1
+                continue
+            result.append(stripped)
+            continue
+        _flush()
+        result.append(stripped)
+
+    _flush()
+    return result
+
 
 def _compress_git_push_remote_progress(lines: list[str]) -> list[str]:
     """Collapse repeated remote/local git-push percentage-progress lines.
@@ -7213,7 +7331,7 @@ def _compress_git_push_remote_progress(lines: list[str]) -> list[str]:
 def _compress_git_push(stdout: str, stderr: str) -> str:
     """Compress ``git push`` output.
 
-    Handles two distinct sources of verbosity:
+    Handles three distinct sources of verbosity:
 
     1. **Verbose remote/local progress** — each object-transfer stage
        (Counting, Compressing, Writing objects, Resolving deltas) can emit
@@ -7225,8 +7343,14 @@ def _compress_git_push(stdout: str, stderr: str) -> str:
        collapses the pytest summary and push result to 1–2 lines.  On
        failure the first error block is preserved verbatim.
 
-    Both cases may occur together.  When neither pattern is present the
-    output passes through unchanged.
+    3. **Pre-push hook runs a bundler** — vite/webpack/esbuild/rollup chunk
+       tables, module lists, and asset-size rows (often 13 000+ tokens) are
+       collapsed into a single ``[pre-push hook: bundler output suppressed —
+       N lines]`` summary.  The hook trigger, any error lines, the final
+       build-success marker, and all git push output are preserved.
+
+    The cases may occur together.  When none is present the output passes
+    through unchanged.
     """
     merged = (stdout.rstrip() + "\n" + stderr.rstrip()).strip() if stderr.strip() else stdout
     # Use splitlines() instead of split('\n') to handle both CRLF and LF
@@ -7238,8 +7362,9 @@ def _compress_git_push(stdout: str, stderr: str) -> str:
         _GIT_REMOTE_PROGRESS_RE.match(ln.rstrip()) or _GIT_LOCAL_PROGRESS_RE.match(ln.rstrip())
         for ln in lines
     )
+    has_bundler = any(_BUNDLER_SIGNATURE_RE.search(ln) for ln in lines)
 
-    if not has_dot_lines and not has_remote_progress:
+    if not has_dot_lines and not has_remote_progress and not has_bundler:
         # Nothing to compress; standard passthrough.
         return merged
 
@@ -7249,10 +7374,16 @@ def _compress_git_push(stdout: str, stderr: str) -> str:
     if has_remote_progress:
         lines = _compress_git_push_remote_progress(lines)
 
-    # Re-check for pytest dots after remote compression.
+    # Collapse any pre-push bundler block (vite/webpack/esbuild/rollup) before
+    # the pytest path — a no-op when no bundler signature is present.
+    if has_bundler:
+        lines = _compress_git_push_bundler(lines)
+
+    # Re-check for pytest dots after remote/bundler compression.
     dot_lines = [ln for ln in lines if _PYTEST_DOT_LINE_RE.match(ln)]
     if not dot_lines:
-        # Only remote/local progress was present — already compressed.
+        # Only remote/local progress and/or bundler output was present —
+        # already compressed.
         return "\n".join(lines)
 
     # --- Pytest pre-push hook path ---
@@ -7327,7 +7458,14 @@ class GitPushFilter(Filter):
            pre-push FAILED: 3 failed, 8330 passed
            [first error block preserved]
 
-    When neither pattern is detected the output is passed through unchanged.
+    3. **Pre-push hook runs a bundler** — vite/webpack/esbuild/rollup output
+       (chunk tables, module lists, asset-size rows; often 13 000+ tokens)
+       collapses to ``[pre-push hook: bundler output suppressed — N lines]``
+       while the hook trigger, error lines, final build-success marker, and
+       git push result lines are preserved.
+
+    When none of these patterns is detected the output is passed through
+    unchanged.
 
     Registered before :class:`GitFilter` so it claims ``git push`` exclusively.
     """

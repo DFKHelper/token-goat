@@ -907,3 +907,137 @@ class TestGitFilterCrlfSuppression:
         result = f.apply(echoed, "", 0, ["echo", echoed]).text
         assert "will be replaced" in result
         assert "original line endings" in result
+
+
+# ---------------------------------------------------------------------------
+# GitPushFilter — pre-push hook runs a bundler (vite/webpack/esbuild)
+# ---------------------------------------------------------------------------
+
+_VITE_PREPUSH_PASSING = (
+    "> lefthook run pre-push\n"
+    "> build\n"
+    "> vite build\n"
+    "vite v5.4.2 building for production...\n"
+    "transforming (1) index.html\n"
+    "transforming (212) src/main.tsx\n"
+    "✓ 423 modules transformed.\n"
+    "rendering chunks (1)...\n"
+    "computing gzip size (1)...\n"
+    "dist/index.html                     0.50 kB │ gzip:   0.31 kB\n"
+    "dist/assets/index-BH4Mhpqg.css     12.84 kB │ gzip:   3.21 kB\n"
+    "dist/assets/vendor-Df9aLp2k.js    142.10 kB │ gzip:  45.88 kB\n"
+    "dist/assets/index-Qa83Lm0p.js     321.26 kB │ gzip:  99.21 kB\n"
+    "dist/assets/chunk-Aa11Bb22.js      58.04 kB │ gzip:  18.77 kB\n"
+    "dist/assets/chunk-Cc33Dd44.js      44.91 kB │ gzip:  14.03 kB\n"
+    "dist/assets/chunk-Ee55Ff66.js      31.18 kB │ gzip:   9.55 kB\n"
+    "dist/assets/chunk-Gg77Hh88.js      22.07 kB │ gzip:   6.61 kB\n"
+    "dist/assets/logo-Ii99Jj00.svg       4.12 kB │ gzip:   1.98 kB\n"
+    "dist/assets/font-Kk11Ll22.woff2    18.40 kB\n"
+    "✓ built in 8.23s\n"
+    "   abc123..def456  main -> origin/main"
+)
+
+_VITE_PREPUSH_FAILING = (
+    "> lefthook run pre-push\n"
+    "> vite build\n"
+    "vite v5.4.2 building for production...\n"
+    "transforming (212) src/main.tsx\n"
+    "dist/assets/index-Qa83Lm0p.js     321.26 kB │ gzip:  99.21 kB\n"
+    "error during build:\n"
+    "[vite]: Rollup failed to resolve import \"./missing\" from \"src/app.tsx\".\n"
+    "  This is most likely unintended because it can break your application.\n"
+)
+
+_WEBPACK_PREPUSH = (
+    "> husky - pre-push hook\n"
+    "> webpack --mode production\n"
+    "asset main.js 321 KiB [emitted] [minimized] (name: main)\n"
+    "asset vendor.js 142 KiB [emitted] [minimized] (name: vendor)\n"
+    "  ./node_modules/react/index.js 190 bytes [built] [code generated]\n"
+    "  ./node_modules/react-dom/index.js 4.2 KiB [built] [code generated]\n"
+    "  ./node_modules/lodash/lodash.js 540 KiB [built] [code generated]\n"
+    "modules by path ./node_modules/ 4.2 MiB\n"
+    "runtime modules 1.2 KiB 6 modules\n"
+    "webpack 5.89.0 compiled successfully in 4821 ms\n"
+    "   abc123..def456  main -> origin/main"
+)
+
+
+class TestGitPushFilterBundler:
+    def test_vite_prepush_compressed_small(self) -> None:
+        f = bc.GitPushFilter()
+        result = _apply(f, _VITE_PREPUSH_PASSING, ["git", "push"])
+        lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(lines) <= 6, f"Expected <=6 lines, got {len(lines)}: {result!r}"
+
+    def test_vite_prepush_drops_asset_rows(self) -> None:
+        f = bc.GitPushFilter()
+        result = _apply(f, _VITE_PREPUSH_PASSING, ["git", "push"])
+        # No asset-size rows survive.
+        assert "gzip:" not in result
+        assert "dist/assets/index-Qa83Lm0p.js" not in result
+        assert "modules transformed" not in result
+
+    def test_vite_prepush_keeps_summary_marker(self) -> None:
+        f = bc.GitPushFilter()
+        result = _apply(f, _VITE_PREPUSH_PASSING, ["git", "push"])
+        assert "suppressed" in result
+        assert "built in 8.23s" in result
+
+    def test_vite_prepush_keeps_push_ref(self) -> None:
+        f = bc.GitPushFilter()
+        result = _apply(f, _VITE_PREPUSH_PASSING, ["git", "push"])
+        assert "origin/main" in result
+
+    def test_vite_prepush_keeps_hook_trigger(self) -> None:
+        f = bc.GitPushFilter()
+        result = _apply(f, _VITE_PREPUSH_PASSING, ["git", "push"])
+        assert "pre-push" in result
+
+    def test_vite_prepush_much_shorter(self) -> None:
+        f = bc.GitPushFilter()
+        result = _apply(f, _VITE_PREPUSH_PASSING, ["git", "push"])
+        assert len(result) < len(_VITE_PREPUSH_PASSING) // 3
+
+    def test_vite_prepush_failure_preserves_error(self) -> None:
+        f = bc.GitPushFilter()
+        result = _apply(f, _VITE_PREPUSH_FAILING, ["git", "push"], exit_code=1)
+        assert "error during build" in result
+        assert "Rollup failed to resolve import" in result
+        # Asset rows are still suppressed even on failure.
+        assert "gzip:" not in result
+
+    def test_webpack_prepush_compressed(self) -> None:
+        f = bc.GitPushFilter()
+        result = _apply(f, _WEBPACK_PREPUSH, ["git", "push"])
+        lines = [ln for ln in result.split("\n") if ln.strip()]
+        assert len(lines) <= 6, f"Expected <=6 lines, got {len(lines)}: {result!r}"
+        assert "node_modules" not in result
+        assert "compiled successfully" in result
+        assert "origin/main" in result
+
+    def test_to_remote_line_passes_through(self) -> None:
+        # "To <remote>" header line is git push output and must survive.
+        payload = (
+            "> lefthook run pre-push\n"
+            "> vite build\n"
+            "vite v5.4.2 building for production...\n"
+            "✓ 423 modules transformed.\n"
+            "dist/assets/index-Qa83Lm0p.js     321.26 kB │ gzip:  99.21 kB\n"
+            "dist/assets/vendor-Df9aLp2k.js    142.10 kB │ gzip:  45.88 kB\n"
+            "✓ built in 8.23s\n"
+            "To github.com:owner/repo.git\n"
+            "   abc123..def456  main -> origin/main"
+        )
+        f = bc.GitPushFilter()
+        result = _apply(f, payload, ["git", "push"])
+        assert "To github.com:owner/repo.git" in result
+        assert "origin/main" in result
+        assert "gzip:" not in result
+
+    def test_no_bundler_passthrough(self) -> None:
+        # Plain push with no bundler block is unchanged.
+        simple = "   abc123..def456  main -> origin/main"
+        f = bc.GitPushFilter()
+        result = _apply(f, simple, ["git", "push"])
+        assert result.strip() == simple.strip()
