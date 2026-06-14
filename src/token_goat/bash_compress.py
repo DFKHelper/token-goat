@@ -19240,9 +19240,9 @@ _VAULT_TABLE_DIVIDER_RE: Final[re.Pattern[str]] = re.compile(
 _VAULT_LEASE_META_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:lease_(?:id|renewable|duration|accessor)|"
     r"token_(?:policies|accessor|type|ttl|issue_time|expire_time|"
-    r"explicit_max_ttl|num_uses)|"
-    r"renewable\s+(?:true|false)|"
-    r"request_id\s+[0-9a-f-]{36})\s",
+    r"explicit_max_ttl|num_uses|renewable)|"
+    r"renewable|"
+    r"request_id)\s",
     re.IGNORECASE,
 )
 #: Vault "Success! Data written to: <path>" or "Success! Enabled ... at: ..."
