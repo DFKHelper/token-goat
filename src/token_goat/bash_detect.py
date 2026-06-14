@@ -22,7 +22,6 @@ from pathlib import Path
 # detection result is consistent with what full compression would use.
 # Generated from bash_compress.FILTERS (134 filters, 229 binaries).
 _BINARY_TO_FILTER: dict[str, str] = {
-    "./gradlew": "gradle",
     "./mvnw": "maven",
     "@biomejs/biome": "biome",
     "ack": "grep",

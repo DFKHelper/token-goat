@@ -11449,7 +11449,7 @@ _GRADLE_TASK_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
 _GRADLE_BUILD_RESULT_RE: Final[re.Pattern[str]] = re.compile(
     r"^BUILD (?:SUCCESSFUL|FAILED)"
 )
-#: Gradle failure section: "FAILURE: ..."
+#: Gradle failure section: "* What went wrong:"
 _GRADLE_FAILURE_SECTION_RE: Final[re.Pattern[str]] = re.compile(
     r"^\* What went wrong:"
 )
@@ -11465,32 +11465,86 @@ _GRADLE_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
 _GRADLE_DAEMON_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?:Starting Gradle Daemon|Gradle Daemon|Daemon started)"
 )
+#: Gradle build scan lines
+_GRADLE_BUILD_SCAN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Publishing build scan\.\.\.|https://scans\.gradle\.com/)"
+)
+#: Gradle deprecation warnings and linked doc lines
+_GRADLE_DEPRECATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:> [A-Za-z].*\bhas been deprecated\b|See https://docs\.gradle\.org/)"
+)
+#: Test method lines that passed or were skipped (noise to drop)
+_GRADLE_TEST_METHOD_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\S.*\s+>\s+\S.*\s+(?:PASSED|SKIPPED)\s*$"
+)
+#: Gradle FAILURE: header line
+_GRADLE_FAILURE_HEADER_RE: Final[re.Pattern[str]] = re.compile(r"^FAILURE:")
+#: Task FAILED line: "> Task :foo FAILED"
+_GRADLE_TASK_FAILED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^> Task :\S+ FAILED\s*$"
+)
+#: Stack frame lines: "    at com.example.Foo.bar(Foo.java:42)"
+_GRADLE_STACK_FRAME_RE: Final[re.Pattern[str]] = re.compile(r"^\s+at ")
+_GRADLE_EXCEPTION_CLASS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:(?:[\w.]+\.)?[A-Z]\w*(?:Exception|Error|Throwable)|Caused by:)"
+)
+#: Test completion summary: "N tests completed, M failed"
+_GRADLE_TEST_COMPLETION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+ tests? completed"
+)
+#: Maven-style test run progress (appears in some Gradle+Surefire setups)
+_GRADLE_TEST_RUN_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Tests run: \d+, Failures: \d+"
+)
 
 
 class GradleFilter(Filter):
     """Compress Gradle build, test, and dependency output.
 
     Gradle emits task progress lines, dependency resolution, and extensive
-    build output that is mostly noise unless there's a failure.
+    build output that is mostly noise unless there is a failure.
 
     Compression model:
 
-    * **build/test/check**: keep ``BUILD SUCCESSFUL/FAILED`` line + last 30
-      lines (includes test summary). Drop progress output (``> Task :``,
-      ``> Configure project``).
-    * **download progress** (``Download https://...``): collapse to a count
-      summary line regardless of subcommand.
-    * **daemon messages** (``Starting Gradle Daemon``, ``Daemon started``):
-      drop on successful builds; keep on failure so context is preserved.
-    * **dependencies**: head=10, tail=10 compression (dependency trees are
-      massive).
-    * **tasks**: head=20, tail=5 compression (task list can be large).
-    * **Failures** (exit_code != 0): keep all stderr + last 20 lines of stdout.
-    * **BUILD FAILED**: keep FAILURE section and "What went wrong:" block.
+    * **build/test/check/assemble/clean/run/jar/war/bootJar**: state machine
+      that always-keeps ``BUILD SUCCESSFUL/FAILED``, ``FAILURE:`` blocks,
+      ``> Task :X FAILED`` lines, ``error:`` compile errors, and test-failure
+      details; always-drops task-progress lines, download progress, daemon
+      messages, build-scan lines, deprecation warnings, and test-method
+      ``PASSED``/``SKIPPED`` lines.  Stack traces keep the first 10 ``at ``
+      frames; excess frames are dropped.
+    * **dependencies/deps**: head=10, tail=10 compression.
+    * **tasks**: head=20, tail=5 compression.
+    * **Other subcommands**: head/tail compression; stderr on failure.
     """
 
     name = "gradle"
-    binaries = frozenset(["gradle", "gradlew", "./gradlew"])
+    binaries = frozenset({"gradle", "gradlew"})  # ./gradlew reduces to stem "gradlew"
+    subcommands = frozenset({
+        "build", "test", "check", "assemble", "verify",
+        "clean", "run", "jar", "war", "bootjar", "bootrun",
+        "dependencies", "deps", "tasks",
+    })
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        """Match Gradle/Gradlew commands with case-insensitive subcommand check.
+
+        Gradle task names are camelCase (e.g. bootJar, bootRun); the
+        base Filter.matches() compares tokens verbatim against subcommands
+        which are stored lowercase.  This override lowercases each positional
+        token before the set lookup so that './gradlew bootJar' routes here
+        rather than falling through to GenericFilter.
+        """
+        if not argv:
+            return False
+        p = Path(argv[0])
+        stem = p.stem.lower()
+        name = p.name.lower()
+        if stem not in self.binaries and name not in self.binaries:
+            return False
+        if not self.subcommands:
+            return True
+        return any(tok.lower() in self.subcommands for tok in _positional_args(argv[1:])[:3])
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -11501,53 +11555,176 @@ class GradleFilter(Filter):
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
 
-        # On failure, preserve stderr and last 20 lines of output.
+        # Subcommand-specific compression.
+        if subcommand in ("dependencies", "deps"):
+            return _head_tail_compress(lines, head=10, tail=10, label="lines")
+        if subcommand == "tasks":
+            return _head_tail_compress(lines, head=20, tail=5, label="lines")
+        if subcommand in (
+            "build", "test", "check", "assemble", "verify",
+            "clean", "run", "jar", "war", "bootjar", "bootrun",
+        ):
+            return self._compress_build(lines)
+
+        # Default: on failure keep last 20 lines; on success head/tail.
         if exit_code != 0:
             last_lines = "\n".join(lines[-20:])
             err_output = _preserve_stderr_on_error(last_lines, stderr, exit_code)
             if err_output is not None:
                 return err_output
             return last_lines
-
-        # Subcommand-specific compression.
-        if subcommand in ("dependencies", "deps"):
-            return _head_tail_compress(lines, head=10, tail=10, label="lines")
-        if subcommand == "tasks":
-            return _head_tail_compress(lines, head=20, tail=5, label="lines")
-        if subcommand in ("build", "test", "check", "assemble", "verify"):
-            return self._compress_build(lines)
-
-        # Default: use head/tail for unknown subcommands.
         return _head_tail_compress(lines, head=10, tail=10, label="lines")
 
-    def _compress_build(self, lines: list[str]) -> str:
-        """Compress build/test/check output: keep result + last 30 lines.
+    def _compress_build(self, lines: list[str]) -> str:  # noqa: PLR0912
+        """Compress build/test output via a state machine.
 
-        Also collapses download-progress lines and drops daemon start messages
-        (both are pure noise on a successful build).
+        Always-keeps: ``BUILD SUCCESSFUL/FAILED``, ``FAILURE:`` blocks,
+        ``> Task :X FAILED`` lines, ``error:`` compile errors, test-failure
+        details (indented lines under a FAILED test), and stack traces (first
+        10 ``at `` frames per trace).
+
+        Always-drops: task-progress lines, download progress, daemon messages,
+        build-scan lines, deprecation warnings, test-method ``PASSED``/
+        ``SKIPPED`` lines, Maven-style test-run progress lines, and excess
+        stack frames beyond the first 10.
         """
         kept: list[str] = []
         dropped_progress = 0
         dropped_downloads = 0
         dropped_daemon = 0
+        dropped_test_methods = 0
+        dropped_maven_progress = 0
+        dropped_build_scan = 0
+        dropped_deprecation = 0
+        dropped_stack_frames = 0
+
+        in_failure_block = False
+        in_stack_trace = False
+        stack_frames_kept = 0
 
         for line in lines:
-            # Drop task/configure progress lines.
-            if _GRADLE_TASK_PROGRESS_RE.match(line):
+            stripped = line.rstrip("\r\n")
+
+            # --- Always-keep rules (evaluated before drop rules) ---
+
+            # BUILD SUCCESSFUL / BUILD FAILED
+            if _GRADLE_BUILD_RESULT_RE.match(stripped):
+                kept.append(line)
+                in_failure_block = False
+                in_stack_trace = False
+                continue
+
+            # FAILURE: block header
+            if _GRADLE_FAILURE_HEADER_RE.match(stripped):
+                in_failure_block = True
+                in_stack_trace = False
+                kept.append(line)
+                continue
+
+            # "* What went wrong:" (failure detail section)
+            if _GRADLE_FAILURE_SECTION_RE.match(stripped):
+                in_failure_block = True
+                in_stack_trace = False
+                kept.append(line)
+                continue
+
+            # > Task :foo FAILED -- task-level failure line
+            if _GRADLE_TASK_FAILED_RE.match(stripped):
+                in_failure_block = True
+                in_stack_trace = True
+                stack_frames_kept = 0
+                kept.append(line)
+                continue
+
+            # Exception class name or Caused-by intro starts/continues a trace.
+            # Use anchored regex so task names like :handleException are not caught.
+            if _GRADLE_EXCEPTION_CLASS_RE.match(stripped):
+                in_stack_trace = True
+                stack_frames_kept = 0
+                kept.append(line)
+                continue
+
+            # Compile error lines
+            if "error:" in stripped.lower():
+                kept.append(line)
+                continue
+
+            # Stack frames: keep first 10 per trace, drop the rest.
+            # Auto-arm in_stack_trace on the first "at " frame so the cap also
+            # applies when frames arrive after a blank line (no exception header).
+            if _GRADLE_STACK_FRAME_RE.match(line):
+                if not in_stack_trace:
+                    in_stack_trace = True
+                    stack_frames_kept = 0
+                if stack_frames_kept < 10:
+                    kept.append(line)
+                    stack_frames_kept += 1
+                else:
+                    dropped_stack_frames += 1
+                continue
+
+            # Inside a failure block: keep everything until a blank line resets it
+            if in_failure_block:
+                if stripped == "":
+                    in_failure_block = False
+                    in_stack_trace = False
+                kept.append(line)
+                continue
+
+            # Blank line outside a failure block resets stack-trace state so a
+            # subsequent trace in a separate failure section gets a fresh budget.
+            if stripped == "" and in_stack_trace:
+                in_stack_trace = False
+                stack_frames_kept = 0
+                kept.append(line)
+                continue
+
+            # Test completion summary: always keep
+            if _GRADLE_TEST_COMPLETION_RE.match(stripped):
+                kept.append(line)
+                continue
+            if _GRADLE_TEST_SUMMARY_RE.match(stripped):
+                kept.append(line)
+                continue
+
+            # --- Always-drop rules ---
+
+            # Task/configure progress (> Task :X without FAILED, > Configure project)
+            if _GRADLE_TASK_PROGRESS_RE.match(stripped):
                 dropped_progress += 1
                 continue
-            # Collapse download progress lines.
-            if _GRADLE_DOWNLOAD_RE.match(line):
+
+            # Download progress
+            if _GRADLE_DOWNLOAD_RE.match(stripped):
                 dropped_downloads += 1
                 continue
-            # Drop daemon startup messages on successful builds.
-            if _GRADLE_DAEMON_RE.match(line):
+
+            # Gradle Daemon startup messages
+            if _GRADLE_DAEMON_RE.match(stripped):
                 dropped_daemon += 1
                 continue
-            kept.append(line)
 
-        # Keep last 30 lines (includes test summary and result).
-        tail_lines = kept[-30:] if len(kept) > 30 else kept
+            # Build scan lines
+            if _GRADLE_BUILD_SCAN_RE.match(stripped):
+                dropped_build_scan += 1
+                continue
+
+            # Deprecation warnings and See-docs lines
+            if _GRADLE_DEPRECATION_RE.match(stripped):
+                dropped_deprecation += 1
+                continue
+
+            # Maven-style test run progress (some Gradle+Surefire setups emit these)
+            if _GRADLE_TEST_RUN_PROGRESS_RE.match(stripped):
+                dropped_maven_progress += 1
+                continue
+
+            # Test method PASSED/SKIPPED lines (individual test results -- noise)
+            if _GRADLE_TEST_METHOD_NOISE_RE.match(stripped):
+                dropped_test_methods += 1
+                continue
+
+            kept.append(line)
 
         notes: list[str] = []
         if dropped_progress:
@@ -11556,31 +11733,39 @@ class GradleFilter(Filter):
             notes.append(f"collapsed {dropped_downloads} dependency download lines")
         if dropped_daemon:
             notes.append(f"dropped {dropped_daemon} Gradle Daemon startup lines")
+        if dropped_maven_progress:
+            notes.append(f"dropped {dropped_maven_progress} Maven test-run progress lines")
+        if dropped_test_methods:
+            notes.append(f"dropped {dropped_test_methods} test PASSED/SKIPPED lines")
+        if dropped_build_scan:
+            notes.append(f"dropped {dropped_build_scan} build scan lines")
+        if dropped_deprecation:
+            notes.append(f"dropped {dropped_deprecation} deprecation warning lines")
+        if dropped_stack_frames:
+            notes.append(f"dropped {dropped_stack_frames} excess stack-trace frames")
 
-        self._emit_notes(tail_lines, notes)
-        return self._finalize(tail_lines)
-
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
 
 # --- Ant -------------------------------------------------------------------
 
 #: Ant task output lines: "[echo] ..." / "[mkdir] ..." / "[copy] ..." / "[javac] ..."
 _ANT_TASK_LINE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*\[([a-zA-Z0-9_-]+)\]\s"
+    r"""^\s*\[([a-zA-Z0-9_-]+)\]\s"""
 )
 #: Ant build result banners
 _ANT_BUILD_RESULT_RE: Final[re.Pattern[str]] = re.compile(
-    r"^BUILD (?:SUCCESSFUL|FAILED)"
+    r"""^BUILD (?:SUCCESSFUL|FAILED)"""
 )
 #: Ant javac error/warning lines: "[javac] /path/to/File.java:N: error: ..."
 #: or "[javac] error:" or "[javac] warning:"
 _ANT_JAVAC_DIAG_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*\[javac\]\s+(?:.*:\s+)?(?:error|warning):"
 )
-#: Pure-noise task types: echo, mkdir, copy, delete, move — collapsed to counts
+#: Pure-noise task types: echo, mkdir, copy, delete, move -- collapsed to counts
 _ANT_COLLAPSIBLE_TASKS: Final[frozenset[str]] = frozenset([
     "echo", "mkdir", "copy", "delete", "move", "chmod", "touch", "get",
 ])
-
 
 class AntFilter(Filter):
     """Compress ``ant`` build output.
