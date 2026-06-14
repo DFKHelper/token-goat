@@ -1098,8 +1098,17 @@ def _atomic_write_core(path: Path, content: str | bytes, mode: Literal["w", "wb"
                 with os.fdopen(fd, "wb") as fh:
                     fh.write(content)
             else:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(content)
+                # Encode to bytes ourselves with surrogate-safe handling rather
+                # than letting the text-mode writer encode lazily. A lone UTF-16
+                # surrogate (e.g. "\udc8f") can slip into session state when a
+                # Bash pipe is mis-decoded as cp1252 on Windows; a plain
+                # encoding="utf-8" writer raises UnicodeEncodeError ("surrogates
+                # not allowed") mid-write, aborting the rename and silently
+                # dropping the turn's session-cache state. Replacing surrogates
+                # with `?` (U+003F) keeps the write valid and the state intact.
+                encoded = content.encode("utf-8", "replace")
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(encoded)
         except Exception as _write_err:  # noqa: BLE001 — any write error: clean up tmp then re-raise
             tmp.unlink(missing_ok=True)
             _LOG.warning("atomic write failed for %s: %s", path.name, _write_err)

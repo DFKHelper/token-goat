@@ -528,6 +528,48 @@ class TestAtomicWriteCore:
         # The rename succeeded; no unlink should have been called.
         assert unlink_calls == [], f"unexpected unlink calls: {unlink_calls}"
 
+    def test_lone_surrogate_does_not_abort_write(self, tmp_path):
+        """A lone UTF-16 surrogate must not crash the atomic text write.
+
+        Regression: on Windows a Bash pipe carrying an emoji can be mis-decoded
+        as cp1252, leaving a lone surrogate like "\\udc8f" in session state.
+        ``str.encode("utf-8")`` rejects it ("surrogates not allowed"), which
+        previously aborted the rename and silently dropped the session-cache
+        turn. The hardened writer must replace the surrogate and persist the
+        file instead.
+        """
+        # Sanity: confirm the input genuinely cannot be UTF-8 encoded strictly,
+        # so the test exercises the real failure mode rather than a benign char.
+        with pytest.raises(UnicodeEncodeError):
+            "before\udc8fafter".encode()
+
+        target = tmp_path / "session.json"
+        content = "before\udc8fafter"
+
+        # Must not raise — the write should succeed despite the stray surrogate.
+        paths.atomic_write_text(target, content)
+
+        assert target.exists()
+        # Round-trips as valid UTF-8 and the raw surrogate is gone.
+        written = target.read_text(encoding="utf-8")
+        assert "\udc8f" not in written
+        # str.encode("utf-8", "replace") emits "?" (0x3F) for an un-encodable
+        # surrogate, matching token_goat.util.sanitize_surrogates elsewhere.
+        assert written == "before?after"
+        # No tmp file lingers after the successful write.
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_surrogate_free_text_is_byte_identical(self, tmp_path):
+        """Normal UTF-8 (including astral emoji) must survive byte-for-byte.
+
+        Guards against the surrogate-replacement path corrupting well-formed
+        multi-byte characters — only lone surrogates should ever change.
+        """
+        target = tmp_path / "ok.txt"
+        content = "tools 🛠️ banner — café"
+        paths.atomic_write_text(target, content)
+        assert target.read_text(encoding="utf-8") == content
+
 
 # ---------------------------------------------------------------------------
 # Item 8: _safe_child_path traversal-guard helper
