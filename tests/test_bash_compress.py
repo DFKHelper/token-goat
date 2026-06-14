@@ -7654,3 +7654,50 @@ class TestFilterTemplateMethod:
         f = _NoPassthroughFilter()
         result = f.compress("out", "err-text", 1, ["nopt"])
         assert result == "body:out"
+
+
+# ---------------------------------------------------------------------------
+# _is_diff_add / _is_diff_remove
+# ---------------------------------------------------------------------------
+
+
+class TestIsDiffAdd:
+    def test_plain_add_line(self):
+        assert bc._is_diff_add("+foo") is True
+
+    def test_file_header_excluded(self):
+        assert bc._is_diff_add("+++ b/src/file.py") is False
+
+    def test_triple_plus_content_excluded(self):
+        # content starting with ++ (e.g., C++ increment) is also excluded
+        assert bc._is_diff_add("+++count;") is False
+
+    def test_context_line_not_add(self):
+        assert bc._is_diff_add(" context line") is False
+
+    def test_remove_line_not_add(self):
+        assert bc._is_diff_add("-removed") is False
+
+    def test_empty_string(self):
+        assert bc._is_diff_add("") is False
+
+
+class TestIsDiffRemove:
+    def test_plain_remove_line(self):
+        assert bc._is_diff_remove("-bar") is True
+
+    def test_file_header_excluded(self):
+        assert bc._is_diff_remove("--- a/src/file.py") is False
+
+    def test_triple_dash_content_excluded(self):
+        # a diff line removing content that starts with '--' appears as '---...' and is excluded
+        assert bc._is_diff_remove("---option") is False
+
+    def test_context_line_not_remove(self):
+        assert bc._is_diff_remove(" context line") is False
+
+    def test_add_line_not_remove(self):
+        assert bc._is_diff_remove("+added") is False
+
+    def test_empty_string(self):
+        assert bc._is_diff_remove("") is False

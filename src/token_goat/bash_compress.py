@@ -66,6 +66,8 @@ __all__ = [
     "_safe_decode",
     "_collapse_to_count",
     "_dedup_lines",
+    "_is_diff_add",
+    "_is_diff_remove",
     "_keep_errors_verbatim",
     "_strip_timestamps",
     "bytes_to_tokens",
@@ -6017,6 +6019,26 @@ def _compress_git_log(stdout: str, stderr: str, *, max_commits: int = 10) -> str
     return text
 
 
+def _is_diff_add(line: str) -> bool:
+    """True for added content lines (starting with ``+``), excluding lines that start with ``+++``.
+
+    Note: the ``+++`` exclusion covers the file-header (``+++ b/filename``) but also
+    any added content that itself starts with ``++`` (e.g., ``++i;`` in C/C++).
+    """
+    return line.startswith("+") and not line.startswith("+++")
+
+
+def _is_diff_remove(line: str) -> bool:
+    """True for removed content lines (starting with ``-``), excluding lines that start with ``---``.
+
+    Note: the ``---`` exclusion covers the file-header (``--- a/filename``) but also
+    any removed content whose source text starts with ``--`` — because in the diff that
+    content appears as ``---...`` (e.g., removing ``--option`` produces the diff line
+    ``---option``).
+    """
+    return line.startswith("-") and not line.startswith("---")
+
+
 def _compress_git_diff(stdout: str, stderr: str, *, max_hunks_per_file: int = 3) -> str:
     """Compress git diff: keep first N hunks per file, summarise the rest."""
     file_blocks = split_blocks(stdout, _GIT_DIFF_FILE_RE)
@@ -6028,8 +6050,8 @@ def _compress_git_diff(stdout: str, stderr: str, *, max_hunks_per_file: int = 3)
         stat_lines = []
         for b in real_files:
             header = b.split("\n", 1)[0]
-            adds = sum(1 for ln in b.split("\n") if ln.startswith("+") and not ln.startswith("+++"))
-            dels = sum(1 for ln in b.split("\n") if ln.startswith("-") and not ln.startswith("---"))
+            adds = sum(1 for ln in b.split("\n") if _is_diff_add(ln))
+            dels = sum(1 for ln in b.split("\n") if _is_diff_remove(ln))
             stat_lines.append(f"{header}  +{adds} -{dels}")
         return (
             f"[token-goat: large diff ({len(real_files)} files); showing stat-only view]\n"
@@ -6439,7 +6461,7 @@ def _is_repetitive_json_hunk(hunk_lines: list[str]) -> bool:
     objects share ≤5 distinct key-sets — i.e. machine-generated structured
     data such as JSONL audit logs, test fixtures, or mutation records.
     """
-    added = [ln[1:] for ln in hunk_lines if ln.startswith("+") and not ln.startswith("+++")]
+    added = [ln[1:] for ln in hunk_lines if _is_diff_add(ln)]
     if len(added) < 8:
         return False
     valid: int = 0
@@ -6526,9 +6548,9 @@ def _compress_git_diff_body(stdout: str, stderr: str) -> str:
             if len(changed) > _MAX_HUNK_LINES:
                 if _is_repetitive_json_hunk(hunk_lines):
                     # Machine-generated JSON/JSONL: emit semantic summary + 2-line sample so the compaction LLM understands what changed without keeping hundreds of near-identical records.
-                    n_added = sum(1 for ln in hunk_lines if ln.startswith("+") and not ln.startswith("+++"))
-                    n_removed = sum(1 for ln in hunk_lines if ln.startswith("-") and not ln.startswith("---"))
-                    sample = [ln for ln in hunk_lines if ln.startswith("+") and not ln.startswith("+++")][:2]
+                    n_added = sum(1 for ln in hunk_lines if _is_diff_add(ln))
+                    n_removed = sum(1 for ln in hunk_lines if _is_diff_remove(ln))
+                    sample = [ln for ln in hunk_lines if _is_diff_add(ln)][:2]
                     parts = [f"+{n_added} JSON records added"]
                     if n_removed:
                         parts.append(f"-{n_removed} removed")
@@ -13019,8 +13041,8 @@ class DiffFilter(Filter):
             for block_str in real_files:
                 block_lines = block_str.split("\n")
                 header = block_lines[0]
-                adds = sum(1 for ln in block_lines if ln.startswith("+") and not ln.startswith("+++"))
-                dels = sum(1 for ln in block_lines if ln.startswith("-") and not ln.startswith("---"))
+                adds = sum(1 for ln in block_lines if _is_diff_add(ln))
+                dels = sum(1 for ln in block_lines if _is_diff_remove(ln))
                 stat_lines.append(f"{header}  +{adds} -{dels}")
             return "\n".join(stat_lines)
 
