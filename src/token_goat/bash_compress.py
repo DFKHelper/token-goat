@@ -2759,6 +2759,17 @@ _VITE_DONE_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+def _invokes_vite_build(args_after_vite: list[str]) -> bool:
+    """Return True when the args following the vite binary select the build subcommand.
+
+    Vite serves multiple roles (dev server, preview, build).  This predicate
+    is used in :meth:`WebpackFilter.matches` to restrict interception to
+    ``vite build`` while leaving ``vite dev`` / ``vite preview`` alone.
+    """
+    positionals = _positional_args(args_after_vite)
+    return bool(positionals) and positionals[0] == "build"
+
+
 class WebpackFilter(Filter):
     """Compress webpack / esbuild / ``vite build`` output.
 
@@ -2801,10 +2812,8 @@ class WebpackFilter(Filter):
         # Direct invocations
         if b0 in ("webpack", "webpack-cli", "esbuild"):
             return True
-        # vite build only (not vite dev/serve/preview)
         if b0 == "vite":
-            positionals = _positional_args(argv[1:])
-            return bool(positionals) and positionals[0] == "build"
+            return _invokes_vite_build(argv[1:])
 
         # npx / pnpx / bunx wrapper: scan past leading flags to find the tool name
         if b0 in ("npx", "pnpx", "bunx"):
@@ -2825,8 +2834,7 @@ class WebpackFilter(Filter):
             if b1 in ("webpack", "webpack-cli", "esbuild"):
                 return True
             if b1 == "vite":
-                positionals = _positional_args(argv[i + 1 :])
-                return bool(positionals) and positionals[0] == "build"
+                return _invokes_vite_build(argv[i + 1 :])
 
         return False
 
