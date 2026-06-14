@@ -269,6 +269,77 @@ _EXPORT_CONST_RE = re.compile(
     r"export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)"
 )
 
+# The assignment operator: a lone '=' that is NOT part of ==, ===, !=, <=, >=, or
+# the '=>' of an arrow function. Used to locate the value half of a const/let/var
+# export so we can classify it (arrow function vs plain value) — this correctly
+# skips '=>' that appears inside a function-type annotation (e.g. `: () => void`).
+_ASSIGN_RE = re.compile(r"(?<![=!<>])=(?![=>])")
+
+# Arrow-function value head: matches `(params) =>`, `async (params) =>`,
+# `<T>(params) =>`, a single bare-identifier param (`x =>`), and an optional
+# return-type annotation before the `=>`. Anchored to the start of the RHS.
+_ARROW_HEAD_RE = re.compile(
+    r"^(?:async\s+)?(?:<[^>]*>\s*)?"
+    r"(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)"
+    r"(?:\s*:[^=]+?)?\s*=>"
+)
+
+# Function-expression value head: `function`, `async function`, `function*`.
+_FUNC_EXPR_HEAD_RE = re.compile(r"^(?:async\s+)?function\b")
+
+# Source-level fallback for arrow-const exports that tree-sitter's export pass
+# does not surface (grammar-build dependent). Runs over the raw source after the
+# structure walk; any name not already found is added as a function symbol.
+_EXPORT_ARROW_FALLBACK_RE = re.compile(
+    r"^[ \t]*export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*"
+    r"=\s*(?:async\s+)?(?:<[^>]*>\s*)?"
+    r"(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)"
+    r"(?:\s*:[^=]+?)?\s*=>",
+    re.MULTILINE,
+)
+
+# Template-literal body matcher used to blank out backtick strings before the
+# arrow-const fallback scan, so an `export const … =>` written inside a template
+# (e.g. a code sample in a docs string) does not surface a phantom symbol. The
+# capture group holds the body; the replacement preserves its newline count so
+# offsets — and therefore reported line numbers — of later matches are unchanged.
+_TEMPLATE_LITERAL_RE = re.compile(r"`([^`]*?)`", re.DOTALL)
+
+
+def _blank_template_literals(source: str) -> str:
+    """Replace backtick template-literal bodies with same-height blank spans.
+
+    Returns ``source`` with each ``` `…` ``` body removed but its internal
+    newlines retained, keeping every surviving character's line number intact
+    (a plain removal would shift lines of any symbol declared after a multi-line
+    template). Deeply nested backtick templates are out of scope and vanishingly
+    rare in production code.
+    """
+    return _TEMPLATE_LITERAL_RE.sub(
+        lambda m: "`" + "\n" * m.group(1).count("\n") + "`", source
+    )
+
+
+def _const_export_kind(stmt: str, name_end: int) -> str:
+    """Classify a ``const``/``let``/``var`` export value as ``function`` or ``const``.
+
+    ``stmt`` is the full export statement text; ``name_end`` is the offset just
+    past the declared identifier, so the search for the assignment operator skips
+    the identifier (and any preceding ``export const`` keywords).
+
+    Arrow functions (``() => …``, ``async x => …``) and function expressions
+    (``function () {}``) are classified ``function`` so ``skeleton`` / ``outline``
+    surface them; every other value (calls, literals, objects, arrays) stays
+    ``const``.
+    """
+    assign = _ASSIGN_RE.search(stmt, name_end)
+    if assign is None:
+        return "const"
+    rhs = stmt[assign.end():].lstrip()
+    if _ARROW_HEAD_RE.match(rhs) or _FUNC_EXPR_HEAD_RE.match(rhs):
+        return "function"
+    return "const"
+
 
 def _extract_module(source_line: str) -> str:
     """Extract the module string from an import/export source text."""
@@ -384,21 +455,57 @@ def extract(
             export_name = tokens[1] if len(tokens) > 1 else name_raw[:80]
 
         # For const/let/var exports not already in structure, add a symbol.
-        # _EXPORT_CONST_RE is compiled once at module level.
+        # Arrow-function / function-expression values are promoted to kind
+        # "function" so skeleton/outline (which exclude plain "const") surface
+        # them — the common shape of modern React/TS modules. _EXPORT_CONST_RE
+        # is compiled once at module level.
         const_m = _EXPORT_CONST_RE.match(name_raw)
         if const_m:
             cname = const_m.group(1)
             key = (cname, line)
             if key not in seen_names:
                 seen_names.add(key)
+                ckind = _const_export_kind(name_raw, const_m.end())
                 symbols.append(
-                    Symbol(name=cname, kind="const", line=line, end_line=line, signature=None)
+                    Symbol(name=cname, kind=ckind, line=line, end_line=line, signature=None)
                 )
 
         # Record as ImpExp
         kind_str = str(exp.kind).rpartition(".")[-1].lower()
         ie_kind = "reexport" if kind_str == "reexport" else "export"
         imp_exp.append(ImpExp(kind=ie_kind, target=export_name, line=line))
+
+    # --- source fallback: arrow-const exports tree-sitter's export pass missed ---
+    # Some tree-sitter grammar builds do not surface `export const fn = () => {}`
+    # in result.exports, leaving such files with (0 symbols). Scan the raw source
+    # (with template literals blanked so backtick code samples can't spawn phantom
+    # symbols) and add any arrow-const export not already captured above.
+    #
+    # A name already present as kind "const" is *upgraded* to "function" rather
+    # than skipped: tree-sitter truncates a multi-line `export const f =\n(a) =>`
+    # to its first line, so the const-export pass above classified it "const"
+    # (it never saw the `=>`). The fallback regex spans the full arrow, so a hit
+    # here proves the value is callable and must be promoted — otherwise the
+    # multi-line arrow stays "const" and is filtered out of skeleton/outline.
+    by_name: dict[str, Symbol] = {}
+    for s in symbols:
+        # Prefer a "const" entry when names collide so the upgrade below targets
+        # the symbol that actually needs promoting (a same-named non-const symbol
+        # added earlier must not shadow it).
+        if s.name not in by_name or s.kind == "const":
+            by_name[s.name] = s
+    scan_text = _blank_template_literals(text)
+    for m in _EXPORT_ARROW_FALLBACK_RE.finditer(scan_text):
+        fname = m.group(1)
+        existing = by_name.get(fname)
+        if existing is not None:
+            if existing.kind == "const":
+                existing.kind = "function"
+            continue
+        fline = scan_text.count("\n", 0, m.start()) + 1
+        new_sym = Symbol(name=fname, kind="function", line=fline, end_line=fline, signature=None)
+        by_name[fname] = new_sym
+        symbols.append(new_sym)
 
     # --- imports ---
     common.add_imports(
