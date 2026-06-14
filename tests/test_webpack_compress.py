@@ -99,6 +99,42 @@ class TestWebpackFilterMatches:
     def test_npx_vite_serve_not_matched(self) -> None:
         assert not self.F.matches(["npx", "vite", "serve"])
 
+    # --- npx flag handling: --package/-p consume next token; all-flags runs off end ---
+
+    def test_npx_package_flag_consumes_next_token(self) -> None:
+        # --package <pkg> consumes its value, so the next positional is the real tool.
+        # The package name must NOT itself be in the webpack match set, otherwise the
+        # test would still pass if pair-consumption were removed (the scan would stop at
+        # the package name and match for the wrong reason).
+        assert self.F.matches(["npx", "--package", "some-pkg", "webpack", "--mode", "production"])
+
+    def test_npx_p_flag_consumes_next_token(self) -> None:
+        # -p is the short form of --package and also consumes the following token.
+        # Use a package name outside the webpack match set so the assertion only holds
+        # when -p actually consumes it and the scan reaches the real `webpack` tool.
+        assert self.F.matches(["npx", "-p", "my-plugin", "webpack"])
+
+    def test_npx_package_flag_vite_build(self) -> None:
+        assert self.F.matches(["npx", "--package", "vite", "vite", "build"])
+
+    def test_npx_package_flag_vite_dev_not_matched(self) -> None:
+        assert not self.F.matches(["npx", "--package", "vite", "vite", "dev"])
+
+    def test_npx_only_flags_no_tool_not_matched(self) -> None:
+        # Every token after npx is a flag, so the scan runs off the end -> no match.
+        assert not self.F.matches(["npx", "--yes"])
+
+    def test_npx_package_flag_consumes_last_token_not_matched(self) -> None:
+        # --package consumes the final token, leaving no tool name behind -> no match.
+        assert not self.F.matches(["npx", "--package", "webpack"])
+
+    # --- Flag-value leak: _positional_args treats a flag's value as positional ---
+
+    def test_vite_flag_value_before_build_not_matched(self) -> None:
+        # `--config vite.config.js` leaks `vite.config.js` as the first positional, so
+        # `build` is no longer positionals[0]. Documents actual (non-ideal) behavior.
+        assert not self.F.matches(["vite", "--config", "vite.config.js", "build"])
+
     # --- Negatives --------------------------------------------------------
 
     def test_npm_not_matched(self) -> None:
@@ -118,6 +154,39 @@ class TestWebpackFilterMatches:
 
 
 # ---------------------------------------------------------------------------
+# _invokes_vite_build predicate (direct unit coverage)
+# ---------------------------------------------------------------------------
+
+
+class TestInvokesViteBuild:
+    """Direct unit coverage for the `_invokes_vite_build` subcommand predicate.
+
+    The helper inspects the tokens *after* the ``vite`` binary and returns True
+    only when the first positional argument is ``build``. Flag values that are
+    not attached with ``=`` leak into the positional list (see ``_positional_args``),
+    which the leak cases below pin as the actual behavior.
+    """
+
+    @pytest.mark.parametrize(
+        ("args_after_vite", "expected"),
+        [
+            ([], False),  # bare `vite`: no subcommand
+            (["build"], True),  # `vite build`
+            (["dev"], False),  # `vite dev`
+            (["serve"], False),  # `vite serve`
+            (["preview"], False),  # `vite preview`
+            (["optimize"], False),  # unrelated subcommand
+            (["build", "--mode", "production"], True),  # trailing flags ignored
+            (["--force", "build"], True),  # boolean flag (no value) skipped, build is positionals[0]
+            (["--mode", "production", "build"], False),  # `production` leaks as positionals[0]
+            (["--config", "vite.config.js", "build"], False),  # flag value leaks as positionals[0]
+        ],
+    )
+    def test_invokes_vite_build(self, args_after_vite: list[str], expected: bool) -> None:
+        assert bc._invokes_vite_build(args_after_vite) is expected
+
+
+# ---------------------------------------------------------------------------
 # select_filter dispatch
 # ---------------------------------------------------------------------------
 
@@ -134,6 +203,12 @@ class TestWebpackFilterSelectFilter:
 
     def test_select_vite_build(self) -> None:
         assert isinstance(bc.select_filter(["vite", "build"]), bc.WebpackFilter)
+
+    def test_select_vite_build_filter_name_is_webpack(self) -> None:
+        # `vite build` must dispatch to the filter registered under name "webpack".
+        f = bc.select_filter(["vite", "build"])
+        assert f is not None
+        assert f.name == "webpack"
 
     def test_vite_dev_not_webpack_filter(self) -> None:
         result = bc.select_filter(["vite", "dev"])
