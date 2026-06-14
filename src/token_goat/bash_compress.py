@@ -159,6 +159,7 @@ __all__ = [
     "MakeFilter",
     "MypyFilter",
     "PipFilter",
+    "GemFilter",
     "TerraformFilter",
     "AnsibleFilter",
     "PytestFilter",
@@ -9388,6 +9389,126 @@ class PipFilter(Filter):
             notes.append(f"dropped {build_noise} build-wheel/metadata lines")
         if verbose_dropped:
             notes.append(f"dropped {verbose_dropped} verbose debug/trace lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
+# --- gem -------------------------------------------------------------------
+
+#: gem Fetching progress lines: "Fetching rails-7.1.3.4.gem"
+_GEM_FETCH_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Fetching\s+\S+\s*$"
+)
+#: gem documentation build lines (Parsing / Installing ri / Done installing documentation)
+_GEM_DOC_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Parsing documentation for|Installing ri documentation for"
+    r"|Done installing documentation for)\s+"
+)
+#: gem "Successfully installed X-Y.Z" lines
+_GEM_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Successfully installed\s+\S"
+)
+#: gem error / permission-denied lines not caught by _ERROR_SIGNAL_RE
+_GEM_ERROR_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:ERROR:|Gem::|You don't have write permissions|gem:)",
+    re.IGNORECASE,
+)
+
+
+class GemFilter(Filter):
+    """Compress ``gem install`` / ``gem update`` output.
+
+    RubyGems emits one line per package for fetch progress (``Fetching
+    rails-7.1.3.gem``), documentation generation (``Parsing documentation
+    for …``, ``Installing ri documentation for …``, ``Done installing
+    documentation for …``), and installation (``Successfully installed
+    rails-7.1.3``).  Installing a gem with many transitive dependencies
+    (e.g., ``gem install rails``) routinely produces 60–120 lines of noise.
+
+    Compression model:
+
+    * **install / update**: drop ``Fetching …`` download lines; drop
+      documentation-build lines (``Parsing documentation for …``,
+      ``Installing ri documentation for …``, ``Done installing
+      documentation for …``); collapse ``Successfully installed …``
+      lines to a head-2 + tail-1 sample when ≥ 5 gems are installed,
+      showing the full list when fewer than 5.
+    * **Keep** ``N gems installed`` / ``Gems updated: …`` summary lines.
+    * **Keep** native-extension warnings (``Building native extensions…``).
+    * **Keep** all error/warning lines (``ERROR:``, ``Gem::``, permission
+      denied messages).
+    * **Non-zero exit code**: preserved via normal ``_ERROR_SIGNAL_RE``
+      keep logic so all error context survives.
+    * **Other subcommands** (``uninstall``, ``list``, ``search``, ``help``,
+      ``contents``): light pass through capped at 1000 tokens.
+    """
+
+    name = "gem"
+    binaries = frozenset(["gem"])
+
+    def compress(
+        self,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+        argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        positionals = _positional_args(argv[1:])
+        subcommand = positionals[0].lower() if positionals else ""
+
+        if subcommand not in ("install", "update", "upgrade"):
+            return cap_tokens(merged, 1000)
+
+        lines = merged.split("\n")
+        kept: list[str] = []
+        fetching = 0
+        doc_noise = 0
+        success_lines: list[str] = []
+        success_insert_idx: int = -1  # kept-index where first success line appeared
+
+        for line in lines:
+            # Always preserve error/warning signals.
+            if _ERROR_SIGNAL_RE.search(line) or _GEM_ERROR_RE.match(line):
+                kept.append(line)
+                continue
+            # Fetching progress: "Fetching rails-7.1.3.4.gem"
+            if _GEM_FETCH_RE.match(line):
+                fetching += 1
+                continue
+            # Documentation build noise: Parsing / Installing ri / Done installing
+            if _GEM_DOC_RE.match(line):
+                doc_noise += 1
+                continue
+            # Successfully installed: collect separately for collapse; record
+            # the insertion point so later summary lines keep their correct
+            # position relative to the success block.
+            if _GEM_SUCCESS_RE.match(line):
+                if success_insert_idx < 0:
+                    success_insert_idx = len(kept)
+                success_lines.append(line)
+                continue
+            kept.append(line)
+
+        # Build collapsed success block and splice it in at the original position.
+        if success_lines:
+            if len(success_lines) <= 4:
+                collapsed: list[str] = list(success_lines)
+            else:
+                elided = len(success_lines) - 3
+                collapsed = (
+                    list(success_lines[:2])
+                    + [f"... ({elided} more installed) ..."]
+                    + [success_lines[-1]]
+                )
+            insert_at = success_insert_idx if success_insert_idx >= 0 else len(kept)
+            kept[insert_at:insert_at] = collapsed
+
+        notes: list[str] = []
+        if fetching:
+            notes.append(f"dropped {fetching} Fetching line{'s' if fetching != 1 else ''}")
+        if doc_noise:
+            notes.append(f"dropped {doc_noise} documentation line{'s' if doc_noise != 1 else ''}")
         self._emit_notes(kept, notes)
         return self._finalize(kept)
 
@@ -22229,6 +22350,7 @@ FILTERS: list[Filter] = [
     # XcodeFilter handles `xcodebuild` (disjoint from every other filter).
     XcodeFilter(),
     PipFilter(),
+    GemFilter(),
     UvFilter(),
     # CondaFilter handles conda/mamba/micromamba package management; disjoint
     # binaries from every other filter so position is cosmetic.

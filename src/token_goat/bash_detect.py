@@ -109,6 +109,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "forge": "forge",
     "fzf": "fzf",
     "gcloud": "gcloud",
+    "gem": "gem",
     "gemini": "gemini-cli",
     "gh": "gh-copilot",
     "ghc": "haskell",
