@@ -258,6 +258,8 @@ __all__ = [
     "CodexExecFilter",
     # Playwright E2E test runner
     "PlaywrightFilter",
+    # ffmpeg / ffprobe / ffplay media-processing CLI
+    "FfmpegFilter",
 ]
 
 import json as _json
@@ -22792,6 +22794,212 @@ class CypressFilter(Filter):
         return self._finalize(kept)
 
 
+# --- ffmpeg / ffprobe / ffplay -----------------------------------------------
+
+# "ffmpeg version 6.0 Copyright …" / "ffprobe version 5.1.3 …"
+_FFMPEG_VERSION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^ff(?:mpeg|probe|play)\s+version\s", re.IGNORECASE
+)
+# Build-info noise lines that appear in the header block:
+#   "  built with Apple clang version 14.0.3 …"
+#   "  configuration: --prefix=/usr/local/Cellar/ffmpeg/5.1.4 --enable-…"
+#   "  libavutil      57. 28.100 / 57. 28.100"
+#   "  libavcodec     59. 37.100 / 59. 37.100" (and libswscale, libpostproc, …)
+_FFMPEG_BUILD_NOISE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s+(?:built with\b|configuration:|lib(?:av|sw|post)\w+\s+\d)"
+)
+# "  Metadata:" or "    Metadata:" — section-header line with no key-value.
+_FFMPEG_METADATA_SECTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{2,}Metadata:\s*$"
+)
+# Metadata key-value lines indented ≥4 spaces with the format "key  : value" or "key: value".
+# Matches:  "    major_brand     : isom"  "    compatible_brands: isomiso2avc1mp41"
+# Does NOT match: "    Stream #0:0(und): Video: h264 …" (starts with "Stream #")
+_FFMPEG_METADATA_KV_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{4,}(?!Stream\s*#)[\w][\w ]*\s*:\s+"
+)
+# "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'input.mp4':"
+# "Output #0, matroska, to 'output.mkv':"
+_FFMPEG_INPUT_OUTPUT_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Input|Output)\s+#\d+,"
+)
+# "  Duration: 00:10:00.00, start: 0.000000, bitrate: 5000 kb/s"
+_FFMPEG_DURATION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{2,}Duration:\s"
+)
+# "    Stream #0:0(und): Video: h264 (High), yuv420p, 1920x1080 …"
+_FFMPEG_STREAM_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s{4,}Stream\s+#\d+:\d+"
+)
+# "Stream mapping:" section header
+_FFMPEG_STREAM_MAPPING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Stream mapping:\s*$"
+)
+# Real-time progress: "frame=  100 fps= 25 q=23.0 size=   512kB time=00:00:04.00 bitrate=…"
+_FFMPEG_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*frame=\s*\d+\s+fps="
+)
+# Final encoding-statistics line:
+# "video:373440kB audio:1559kB subtitle:0kB other streams:0kB global headers:0kB muxing overhead: …"
+_FFMPEG_FINAL_STATS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*video:\d+kB\s+audio:\d+kB"
+)
+# "Press [q] to quit, or [?] for help" — interactive UI hint.
+_FFMPEG_PRESS_Q_RE: Final[re.Pattern[str]] = re.compile(
+    r"^Press\s+\[q\]\s+to\s+quit"
+)
+
+
+class FfmpegFilter(Filter):
+    """Compress ``ffmpeg``, ``ffprobe``, and ``ffplay`` output.
+
+    These tools emit a verbose header block (build configuration, library
+    versions), per-stream metadata key-value pairs, and — when encoding — a
+    continuously-overwriting progress line followed by a final stats summary.
+
+    Compression model:
+
+    * **Drop** the build-info block: ``built with``, ``configuration:`` and
+      all ``lib*`` version lines (10–30 lines of noise on every invocation).
+    * **Keep** the tool version line (e.g. ``ffmpeg version 6.0 …``).
+    * **Keep** ``Input #N`` and ``Output #N`` container-format lines.
+    * **Keep** ``Duration:`` and ``Stream #N:M`` codec/track lines — these
+      describe the media essence and are the signal for diagnostic use.
+    * **Drop** ``Metadata:`` section headers and their key-value sub-lines
+      (``major_brand``, ``handler_name``, ``creation_time``, etc.).
+    * **Drop** the ``Press [q] to quit`` interactivity hint.
+    * **Collapse** ``frame=N fps=N …`` real-time progress lines to the last
+      one seen (they are already collapsed by :func:`strip_progress` when the
+      output is a TTY; when captured as plain text each frame is a separate
+      line so can number in the thousands for long encodes).
+    * **Keep** the final encoding-statistics line
+      (``video:NkB audio:NkB … muxing overhead: …``).
+    * **Always keep** error and warning diagnostic lines.
+    """
+
+    name = "ffmpeg"
+    binaries = frozenset(["ffmpeg", "ffprobe", "ffplay"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        # ffmpeg/ffprobe write all diagnostics to stderr; stdout carries muxed
+        # binary media when writing to a pipe.  Use stderr as the primary text
+        # stream and fall back to stdout only when stderr is empty.
+        primary = stderr if stderr.strip() else stdout
+        lines = primary.split("\n")
+
+        kept: list[str] = []
+        dropped_build = 0
+        dropped_meta = 0
+        dropped_progress = 0
+        last_progress: str | None = None
+        in_stream_mapping = False
+
+        for line in lines:
+            s = line.rstrip()
+
+            # Always keep error / warning lines.
+            lower = s.lower()
+            if "error" in lower or "warning" in lower:
+                kept.append(s)
+                in_stream_mapping = False
+                continue
+
+            # Version header: "ffmpeg version 6.0 Copyright …"
+            if _FFMPEG_VERSION_RE.match(s):
+                kept.append(s)
+                in_stream_mapping = False
+                continue
+
+            # Build-info block: "  built with …", "  configuration: …", "  libav… N"
+            if _FFMPEG_BUILD_NOISE_RE.match(s):
+                dropped_build += 1
+                continue
+
+            # Real-time progress: "frame=N fps=N q=… size=… time=… bitrate=…"
+            if _FFMPEG_PROGRESS_RE.match(s):
+                dropped_progress += 1
+                last_progress = s
+                in_stream_mapping = False
+                continue
+
+            # Final encoding stats: "video:NkB audio:NkB …"
+            if _FFMPEG_FINAL_STATS_RE.match(s):
+                if last_progress is not None:
+                    kept.append(last_progress)
+                    last_progress = None
+                    dropped_progress -= 1  # re-added; not collapsed
+                kept.append(s)
+                in_stream_mapping = False
+                continue
+
+            # "Press [q] to quit, or [?] for help" — interactivity hint.
+            if _FFMPEG_PRESS_Q_RE.match(s):
+                dropped_meta += 1
+                in_stream_mapping = False
+                continue
+
+            # "Stream mapping:" section header.
+            if _FFMPEG_STREAM_MAPPING_RE.match(s):
+                kept.append(s)
+                in_stream_mapping = True
+                continue
+
+            # Stream mapping content: "  Stream #0:0 -> #0:0 (copy)"
+            if in_stream_mapping and s.lstrip().startswith("Stream #"):
+                kept.append(s)
+                continue
+
+            # "  Metadata:" or "    Metadata:" section header.
+            if _FFMPEG_METADATA_SECTION_RE.match(s):
+                dropped_meta += 1
+                in_stream_mapping = False
+                continue
+
+            # Metadata key-value: "    major_brand     : isom"
+            if _FFMPEG_METADATA_KV_RE.match(s):
+                dropped_meta += 1
+                continue
+
+            # "Input #0, mov,mp4,…, from 'file':" / "Output #0, matroska, to 'file':"
+            if _FFMPEG_INPUT_OUTPUT_RE.match(s):
+                kept.append(s)
+                in_stream_mapping = False
+                continue
+
+            # "  Duration: HH:MM:SS.ss, start: …, bitrate: … kb/s"
+            if _FFMPEG_DURATION_RE.match(s):
+                kept.append(s)
+                continue
+
+            # "    Stream #N:M(lang): Video/Audio/Subtitle: …"
+            if _FFMPEG_STREAM_RE.match(s):
+                kept.append(s)
+                in_stream_mapping = False
+                continue
+
+            # Everything else: keep (unknown tool-specific messages, ffplay UI, etc.).
+            kept.append(s)
+            in_stream_mapping = False
+
+        # If progress lines were suppressed but no final-stats line followed
+        # (e.g. encoding was interrupted), surface the last progress frame.
+        if last_progress is not None:
+            kept.append(last_progress)
+            dropped_progress -= 1  # re-added; not collapsed
+
+        notes: list[str] = []
+        if dropped_build:
+            notes.append(f"dropped {dropped_build} build-info lines")
+        if dropped_meta:
+            notes.append(f"dropped {dropped_meta} metadata lines")
+        if dropped_progress:
+            notes.append(f"collapsed {dropped_progress} progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -23000,6 +23208,10 @@ FILTERS: list[Filter] = [
     CondaFilter(),
     CurlFilter(),
     RsyncFilter(),
+    # FfmpegFilter handles `ffmpeg`, `ffprobe`, and `ffplay`; disjoint binaries
+    # from every other filter so position is cosmetic — placed near other
+    # file-transfer and media-processing tools.
+    FfmpegFilter(),
     DotnetFilter(),
     # MSBuildFilter handles standalone `msbuild` / `MSBuild.exe` invocations;
     # disjoint from DotnetFilter (which handles `dotnet build` MSBuild wrapping).

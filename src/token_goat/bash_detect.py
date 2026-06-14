@@ -102,6 +102,9 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "eza": "eza",
     "fd": "fd",
     "fdfind": "fd",
+    "ffmpeg": "ffmpeg",
+    "ffplay": "ffmpeg",
+    "ffprobe": "ffmpeg",
     "fgrep": "grep",
     "find": "fd",  # plain-path output matches fd; -ls/-printf formats truncated at line boundaries
     "flutter": "flutter",
