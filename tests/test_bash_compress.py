@@ -7609,3 +7609,48 @@ class TestCompressPipelineAnsiClean:
         result = bc.compress_output(bc.GenericFilter(), ansi_stdout, "", 0, ["pytest"])
         assert "\x1b" not in result.text, "compress_output result must be ANSI-free"
         assert "test passed" in result.text
+
+
+# ---------------------------------------------------------------------------
+# Filter.compress template-method dispatch
+# ---------------------------------------------------------------------------
+
+class _StubFilter(bc.Filter):
+    """Minimal Filter subclass for testing the error_passthrough template method."""
+    name = "stub"
+    binaries: frozenset[str] = frozenset({"stub"})
+    error_passthrough = True
+
+    def _compress_body(self, stdout: str, stderr: str, exit_code: int, argv: list[str]) -> str:
+        return f"body:{stdout}"
+
+
+class TestFilterTemplateMethod:
+    """Direct unit tests for the Filter.compress template-method short-circuit."""
+
+    def test_error_passthrough_short_circuits_on_nonzero_exit(self) -> None:
+        """error_passthrough=True + non-zero exit + non-empty stderr returns combined output."""
+        f = _StubFilter()
+        # _preserve_stderr_on_error returns stdout + "---" + stderr when stdout is non-empty.
+        result = f.compress("out", "err-text", 1, ["stub"])
+        assert result == "out\n---\nerr-text"
+
+    def test_error_passthrough_falls_through_on_zero_exit(self) -> None:
+        """error_passthrough=True + exit 0 falls through to _compress_body (not short-circuited)."""
+        f = _StubFilter()
+        result = f.compress("out", "err-text", 0, ["stub"])
+        assert result == "body:out"
+
+    def test_no_error_passthrough_falls_through_on_nonzero_exit(self) -> None:
+        """error_passthrough=False (default) ignores exit code and always calls _compress_body."""
+        class _NoPassthroughFilter(bc.Filter):
+            name = "nopt"
+            binaries: frozenset[str] = frozenset({"nopt"})
+            # error_passthrough defaults to False
+
+            def _compress_body(self, stdout: str, stderr: str, exit_code: int, argv: list[str]) -> str:
+                return f"body:{stdout}"
+
+        f = _NoPassthroughFilter()
+        result = f.compress("out", "err-text", 1, ["nopt"])
+        assert result == "body:out"

@@ -275,7 +275,7 @@ import shlex
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import ClassVar, Final
 
 from .hooks_common import record_cached_stat
 from .render.ansi import strip_ansi
@@ -1636,7 +1636,28 @@ class Filter(BaseFilter):
     :meth:`apply` method handles ANSI / progress normalisation, byte caps,
     and the trailing compression marker so subclasses can focus on
     tool-specific structural compression.
+
+    Set :attr:`error_passthrough` to ``True`` on a subclass to make
+    :meth:`compress` short-circuit to the raw stderr output (combined with
+    stdout) before calling :meth:`_compress_body`, when the command exits with
+    a non-zero code and stderr is non-empty.  This replaces the three-line
+    preamble that many filters used to duplicate at the start of their own
+    :meth:`_compress_body`:
+
+    .. code-block:: python
+
+        # Old pattern — duplicated across 43+ filters:
+        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
+        if err_output is not None:
+            return err_output
     """
+
+    #: When ``True``, :meth:`compress` short-circuits to the raw stderr output
+    #: (combined with stdout) before invoking :meth:`_compress_body`, whenever
+    #: the command exits non-zero and stderr is non-empty.  Defaults to
+    #: ``False`` so that filters which handle errors structurally (e.g. pytest,
+    #: cargo) are unaffected.
+    error_passthrough: ClassVar[bool] = False
 
     def detect_from_command(self, cmd: str) -> bool:
         """Detect if this filter applies to the raw command string.
@@ -1727,17 +1748,37 @@ class Filter(BaseFilter):
     ) -> str:
         """Return the compressed body (no marker; no byte cap).
 
-        Subclasses override this.  *stdout* and *stderr* have already been run
-        through :func:`normalise` (ANSI / progress stripped, CRLF → LF) by
-        :meth:`apply`.  *argv* is the parsed command tokens (after prefix
-        stripping) so filters can dispatch on subcommands.  *exit_code* lets
-        filters preserve failure context (e.g. don't strip dots when the
-        command failed because a failure block is more important than a
-        passing summary line).
+        Template method: when :attr:`error_passthrough` is ``True``, returns
+        the raw error output immediately (via :func:`_preserve_stderr_on_error`)
+        before calling :meth:`_compress_body`.  Subclasses that need
+        error-passthrough behaviour set ``error_passthrough = True`` and
+        override :meth:`_compress_body` instead of this method.
 
-        The default implementation is a passthrough that concatenates stdout
-        and stderr with a separator, useful when the only compression is the
-        ANSI / progress strip that :meth:`apply` already performed.
+        Subclasses that handle errors structurally (e.g. pytest shows failed
+        tests even on non-zero exit; cargo parses error lines) leave
+        ``error_passthrough = False`` (the default) and override this method
+        directly.
+
+        *stdout* and *stderr* have already been run through :func:`normalise`
+        (ANSI / progress stripped, CRLF → LF) by :meth:`apply`.  *argv* is
+        the parsed command tokens (after prefix stripping).
+        """
+        if self.error_passthrough:
+            err = _preserve_stderr_on_error(stdout, stderr, exit_code)
+            if err is not None:
+                return err
+        return self._compress_body(stdout, stderr, exit_code, argv)
+
+    def _compress_body(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        """Inner compression logic called after the error-passthrough guard.
+
+        Override this (instead of :meth:`compress`) when the filter sets
+        ``error_passthrough = True``.  The default implementation is a
+        passthrough that concatenates stdout and stderr with a separator,
+        useful when the only compression is the ANSI / progress strip that
+        :meth:`apply` already performed.
         """
         if stderr and stdout:
             return f"{stdout.rstrip()}\n---\n{stderr.rstrip()}"
@@ -3819,18 +3860,14 @@ class KubectlFilter(Filter):
 
     Errors (exit_code != 0) preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "kubectl"
     binaries = frozenset(["kubectl", "k", "k9s", "oc"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        # Always preserve stderr on error
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0] if positionals else ""
         text = stdout
@@ -3942,6 +3979,7 @@ class DockerComposeFilter(Filter):
     * **Health-check retries**: collapse repeated waiting/retry lines to a
       count per container.
     """
+    error_passthrough = True
 
     name = "docker-compose"
     binaries = frozenset(["docker-compose", "docker"])
@@ -3961,13 +3999,9 @@ class DockerComposeFilter(Filter):
             return bool(positionals) and positionals[0] == "compose"
         return False
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
 
@@ -4076,17 +4110,14 @@ class HelmFilter(Filter):
       total line count.
     * All other subcommands: pass through.
     """
+    error_passthrough = True
 
     name = "helm"
     binaries = frozenset(["helm"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0] if positionals else ""
         text = stdout
@@ -4214,6 +4245,7 @@ class KubectlLogsFilter(Filter):
       cap to head=40, tail=40 to prevent unbounded context burn on ``--follow``
       streams that were interrupted.
     """
+    error_passthrough = True
 
     name = "kubectl-logs"
     binaries = frozenset(["kubectl", "k"])
@@ -4250,13 +4282,9 @@ class KubectlLogsFilter(Filter):
             return line[m2.end():]
         return line
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         lines = stdout.split("\n")
         non_empty = [ln for ln in lines if ln.strip()]
 
@@ -5023,18 +5051,14 @@ class AwsFilter(Filter):
     * **Table output**: same row-truncation as kubectl tables.
     * **Error output**: passed through unchanged.
     """
+    error_passthrough = True
 
     name = "aws"
     binaries = frozenset(["aws", "aws2"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        # Preserve stderr if command failed
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         text = stdout
         # Try JSON compression first; fall back to table truncation.
         compressed = _try_compress_json_list(text)
@@ -8125,18 +8149,14 @@ class TerraformFilter(Filter):
     * **terraform show** / **terraform state**: Use head=20, tail=10 compression.
     * **Errors** (exit_code != 0): Keep all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "terraform"
     binaries = frozenset(["terraform", "tofu", "terragrunt"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        # Preserve all stderr on error.
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0] if positionals else ""
         text = stdout
@@ -8412,6 +8432,7 @@ class AwsCliFilter(Filter):
       update.  ``COMPLETE``, ``FAILED``, and ``ROLLBACK`` events are always kept.
     * **Error messages**: kept verbatim (non-zero exit code or ``ERROR``/``An error``).
     """
+    error_passthrough = True
 
     name = "aws-cli"
     binaries = frozenset(["aws", "aws2"])
@@ -8420,14 +8441,9 @@ class AwsCliFilter(Filter):
     _JSON_ARRAY_THRESHOLD: int = 10
     _JSON_ARRAY_KEEP: int = 3
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        # Preserve all stderr on error.
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         positionals = _positional_args(argv[1:])
         # S3 transfer subcommands get transfer-line collapsing.
         is_s3_transfer = (
@@ -8657,19 +8673,16 @@ class GcloudFilter(Filter):
       collapsed to ``Resource description: N lines (use --format=json for full output)``.
     * **Errors** (non-zero exit code): kept verbatim.
     """
+    error_passthrough = True
 
     name = "gcloud"
     binaries = frozenset(["gcloud"])
 
     _STRUCTURED_LINE_THRESHOLD: int = 20
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         text = self._compress_gcloud(stdout)
         if stderr.strip():
             text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
@@ -8758,6 +8771,7 @@ class AzureCliFilter(Filter):
       :class:`AwsCliFilter`.
     * **Error messages** (non-zero exit code): kept verbatim.
     """
+    error_passthrough = True
 
     name = "azure-cli"
     binaries = frozenset(["az"])
@@ -8765,13 +8779,9 @@ class AzureCliFilter(Filter):
     _JSON_ARRAY_THRESHOLD: int = 10
     _JSON_ARRAY_KEEP: int = 3
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         text = self._compress_az(stdout)
         if stderr.strip():
             text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
@@ -9404,6 +9414,7 @@ class DepListFilter(Filter):
     * **Truncate** at 30 lines with a ``...[N more packages — use '<cmd>'
       to see full output]`` trailer when output exceeds the threshold.
     """
+    error_passthrough = True
 
     name = "dep-list"
     binaries = frozenset(["pip", "pip3", "uv", "poetry", "cargo"])
@@ -9420,13 +9431,9 @@ class DepListFilter(Filter):
             return any(tok in self.subcommands for tok in _positional_args(argv[1:])[:3])
         return super().matches(argv)
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        # Preserve error output unchanged so the full diagnostic survives.
-        early = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if early is not None:
-            return early
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
         # Strip only trailing blank lines; keep internal package-list formatting.
@@ -18197,17 +18204,14 @@ class PulumiFilter(Filter):
       always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "pulumi"
     binaries = frozenset(["pulumi"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -18318,17 +18322,14 @@ class CdkFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "cdk"
     binaries = frozenset(["cdk"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -18436,17 +18437,14 @@ class WasmPackFilter(Filter):
     * **Test summary lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "wasm-pack"
     binaries = frozenset(["wasm-pack"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -18551,6 +18549,7 @@ class ElmFilter(Filter):
     * **Error details** and diagnostic context: always kept verbatim.
     * **Errors** (exit_code != 0): stderr preserved unchanged.
     """
+    error_passthrough = True
 
     name = "elm"
     binaries = frozenset(["elm"])
@@ -18567,13 +18566,9 @@ class ElmFilter(Filter):
             return True
         return positionals[0] in self.subcommands
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -18708,17 +18703,14 @@ class JuliaFilter(Filter):
     * **``Testing PackageName`` header**: always kept.
     * **Errors** (exit_code != 0): stderr preserved unchanged.
     """
+    error_passthrough = True
 
     name = "julia"
     binaries = frozenset(["julia"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -18905,17 +18897,14 @@ class ToxFilter(Filter):
       handles it in the same call chain when tox delegates to pytest).
     * **Errors** (exit_code != 0): stderr preserved unchanged.
     """
+    error_passthrough = True
 
     name = "tox"
     binaries = frozenset(["tox"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -19046,17 +19035,14 @@ class NoxFilter(Filter):
       ``nox > * session: Passed/Failed/Skipped``, ``Successfully installed``,
       test output, and error lines: always kept.
     """
+    error_passthrough = True
 
     name = "nox"
     binaries = frozenset(["nox"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -19174,17 +19160,14 @@ class CrystalFilter(Filter):
     * **shards final summary** (``Shards are up to date``): always kept.
     * **Errors** (exit_code != 0): stderr preserved unchanged.
     """
+    error_passthrough = True
 
     name = "crystal"
     binaries = frozenset(["crystal", "shards"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -19309,17 +19292,14 @@ class VaultFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): stderr preserved unchanged.
     """
+    error_passthrough = True
 
     name = "vault"
     binaries = frozenset(["vault"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -19463,17 +19443,14 @@ class PackerFilter(Filter):
     * **Error / failure lines**: always kept.
     * **Errors** (exit_code != 0): stderr preserved unchanged.
     """
+    error_passthrough = True
 
     name = "packer"
     binaries = frozenset(["packer"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -19613,17 +19590,14 @@ class NixFilter(Filter):
     * **Error / warning lines**: always kept verbatim.
     * **Errors** (exit_code != 0): stderr preserved unchanged.
     """
+    error_passthrough = True
 
     name = "nix"
     binaries = frozenset(["nix", "nix-build", "nix-shell", "nix-env", "nix-store", "nixos-rebuild"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -19773,17 +19747,14 @@ class HaskellFilter(Filter):
     * **Error lines** (``cabal:``, ``error:``, GHC error output): always kept.
     * **Errors** (exit_code != 0): stderr preserved unchanged.
     """
+    error_passthrough = True
 
     name = "haskell"
     binaries = frozenset(["cabal", "stack", "ghc", "runghc", "runhaskell"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -19936,6 +19907,7 @@ class RCmdFilter(Filter):
     * **NOTE / WARNING / ERROR** lines: always kept verbatim.
     * **Errors** (exit_code != 0): stderr preserved unchanged.
     """
+    error_passthrough = True
 
     name = "r-cmd"
     binaries = frozenset(["r", "rscript"])
@@ -19950,13 +19922,9 @@ class RCmdFilter(Filter):
             return bool(positionals and positionals[0].upper() == "CMD")
         return stem == "rscript"
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -20075,17 +20043,14 @@ class ConanFilter(Filter):
     * **``Install finished``** / **``Package created``** summary lines: always kept.
     * **error/warning** diagnostics: always kept verbatim.
     """
+    error_passthrough = True
 
     name = "conan"
     binaries = frozenset(["conan", "conan2"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -20199,17 +20164,14 @@ class VcpkgFilter(Filter):
     * **Done/completion** lines (``Total install time``): always kept.
     * **error/warning** diagnostics: always kept verbatim.
     """
+    error_passthrough = True
 
     name = "vcpkg"
     binaries = frozenset(["vcpkg"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -20635,17 +20597,14 @@ class WranglerFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "wrangler"
     binaries = frozenset(["wrangler", "wrangler2"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -20810,17 +20769,14 @@ class HardhatFilter(Filter):
     * **Warning / error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "hardhat"
     binaries = frozenset(["hardhat"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -20977,17 +20933,14 @@ class ServerlessFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "serverless"
     binaries = frozenset(["serverless", "sls"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -21120,6 +21073,7 @@ class ErlangFilter(Filter):
     * **Failure lines** and error blocks: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "rebar3"
     binaries = frozenset(["rebar3", "rebar"])
@@ -21129,13 +21083,9 @@ class ErlangFilter(Filter):
         "clean", "xref", "check", "as",
     ])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -21265,6 +21215,7 @@ class FlyFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "fly"
     binaries = frozenset(["fly", "flyctl"])
@@ -21274,13 +21225,9 @@ class FlyFilter(Filter):
         "launch", "destroy", "resume", "suspend", "open",
     ])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -21403,6 +21350,7 @@ class ForgeFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "forge"
     binaries = frozenset(["forge"])
@@ -21412,13 +21360,9 @@ class ForgeFilter(Filter):
         "update", "remove", "init", "compile",
     ])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -21542,6 +21486,7 @@ class AiderFilter(Filter):
     * **Diff headers and error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "aider"
     binaries = frozenset(["aider"])
@@ -21553,13 +21498,9 @@ class AiderFilter(Filter):
         p = Path(argv[0])
         return p.stem.lower() in {"aider"}
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -21664,6 +21605,7 @@ class GhCopilotFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "gh-copilot"
     binaries = frozenset(["gh"])
@@ -21684,13 +21626,9 @@ class GhCopilotFilter(Filter):
             and positionals[1] in {"explain", "suggest"}
         )
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -21763,6 +21701,7 @@ class CopilotFilter(Filter):
     handled by :class:`GhCopilotFilter`.  Only the stem ``copilot`` (without a
     ``gh`` prefix) is claimed here.
     """
+    error_passthrough = True
 
     name = "copilot"
     binaries = frozenset(["copilot"])
@@ -21773,13 +21712,9 @@ class CopilotFilter(Filter):
         stem = Path(argv[0]).stem.lower()
         return stem == "copilot"
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -21877,6 +21812,7 @@ class GeminiCliFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "gemini-cli"
     binaries = frozenset(["gemini"])
@@ -21888,13 +21824,9 @@ class GeminiCliFilter(Filter):
         p = Path(argv[0])
         return p.stem.lower() in {"gemini"}
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -22010,6 +21942,7 @@ class ClaudeCliFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "claude-cli"
     binaries = frozenset(["claude"])
@@ -22031,13 +21964,9 @@ class ClaudeCliFilter(Filter):
         skip_subcmds = {"install", "update", "doctor", "config", "login", "logout"}
         return not (positionals and positionals[0] in skip_subcmds)
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -22137,6 +22066,7 @@ class CursorFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "cursor"
     binaries = frozenset(["cursor"])
@@ -22148,13 +22078,9 @@ class CursorFilter(Filter):
         p = Path(argv[0])
         return p.stem.lower() in {"cursor"}
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -22278,6 +22204,7 @@ class WindsurfFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "windsurf"
     binaries = frozenset(["windsurf"])
@@ -22289,13 +22216,9 @@ class WindsurfFilter(Filter):
         p = Path(argv[0])
         return p.stem.lower() in {"windsurf"}
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -22419,6 +22342,7 @@ class OpenCodeFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "opencode"
     binaries = frozenset(["opencode"])
@@ -22430,13 +22354,9 @@ class OpenCodeFilter(Filter):
         p = Path(argv[0])
         return p.stem.lower() in {"opencode"}
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -22550,6 +22470,7 @@ class ContinueFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "continue"
     binaries = frozenset(["continue"])
@@ -22561,13 +22482,9 @@ class ContinueFilter(Filter):
         p = Path(argv[0])
         return p.stem.lower() in {"continue"}
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -22696,6 +22613,7 @@ class ClineFilter(Filter):
     * **Error lines**: always kept.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "cline"
     binaries = frozenset(["cline", "claude-dev"])
@@ -22707,13 +22625,9 @@ class ClineFilter(Filter):
         p = Path(argv[0])
         return p.stem.lower() in {"cline", "claude-dev"}
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -22837,6 +22751,7 @@ class CodexExecFilter(Filter):
       returned unchanged so no content is lost.
     * **Errors** (exit_code != 0): preserve all stderr unchanged.
     """
+    error_passthrough = True
 
     name = "codex-exec"
     binaries = frozenset(["codex"])
@@ -22848,13 +22763,9 @@ class CodexExecFilter(Filter):
         p = Path(argv[0])
         return p.stem.lower() == "codex"
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         if not combined.strip():
             return combined
@@ -22995,6 +22906,7 @@ class MesonFilter(Filter):
     * **Errors and warnings**: always kept verbatim.
     * **Error exit** (exit_code != 0): preserve all output unchanged.
     """
+    error_passthrough = True
 
     name = "meson"
     binaries = frozenset(["meson"])
@@ -23007,13 +22919,9 @@ class MesonFilter(Filter):
             return False
         return _base(argv[0]) == "meson"
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         combined = self._combine_output(stdout, stderr)
         lines = combined.split("\n")
         kept: list[str] = []
@@ -23624,17 +23532,14 @@ class NgFilter(Filter):
     * **Short subcommands** (``generate``, ``add``, ``update``, ``lint``):
       light byte cap only; these are inherently brief.
     """
+    error_passthrough = True
 
     name = "ng"
     binaries = frozenset(["ng"])
 
-    def compress(
+    def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        err_output = _preserve_stderr_on_error(stdout, stderr, exit_code)
-        if err_output is not None:
-            return err_output
-
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0].lower() if positionals else ""
 
