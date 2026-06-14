@@ -434,6 +434,20 @@ def _sanitize_hint_path(p: str) -> str:
     return sanitize_log_str(p, max_len=_MAX_HINT_PATH_LEN)
 
 
+def _sanitize_hint_symbol(name: str) -> str:
+    """Sanitise a symbol name for safe interpolation inside a double-quoted CLI hint.
+
+    Builds on :func:`_sanitize_hint_path` (newline/CR strip + length cap) and
+    additionally neutralises embedded ``"`` characters.  Symbol names can legally
+    contain double quotes — a CSS attribute selector such as ``[type="submit"]``
+    is the canonical example — which would otherwise break the surrounding
+    ``token-goat read "<rel>::<symbol>"`` quoting and yield an un-runnable hint.
+    Single quotes are safe inside a double-quoted CLI argument, so we substitute
+    rather than backslash-escape (no shell-escaping ambiguity for the agent).
+    """
+    return _sanitize_hint_path(name).replace('"', "'")
+
+
 # Process-local cache for pattern display strings.  Patterns recur within a
 # session (e.g. exploratory grep loops, dedup hint re-emissions) and the
 # sanitize→length-check→slice work is identical for every emit.  Keying on
@@ -3990,6 +4004,81 @@ def _extract_ndjson_first_line_schema(path: Path) -> str | None:
         return None
 
 
+def _lookup_top_indexed_symbol(file_path: str) -> tuple[str, str] | None:
+    """Return ``(rel_path, top_symbol_name)`` for *file_path* from the index, or None.
+
+    Resolves the owning project by walking up from the file's own directory (no
+    ``cwd`` needed), computes the project-relative path, and runs the *same*
+    single indexed-symbols query the large-file read hint uses
+    (:func:`_get_indexed_symbols_and_line_count`).  Returns the first indexed
+    symbol — ordered by line, i.e. the top of the file.  Both the relative path
+    and the symbol name are sanitised for safe hint interpolation: the path via
+    :func:`_sanitize_hint_path` (newline/CR strip) and the symbol additionally
+    via :func:`_sanitize_hint_symbol` (double-quote neutralisation).
+
+    Used to replace literal ``::Placeholder`` tokens (``::table_name``,
+    ``::TypeName`` …) in structured-file hints with a concrete, runnable symbol
+    name when the index has one.
+
+    Returns ``None`` when the path is not absolute, no project is found, the file
+    is not under the project root, or the file has no indexed symbols.  Cheap:
+    one ``find_project`` walk plus one DB ``SELECT``.  Never raises.
+    """
+    try:
+        abs_path = Path(file_path)
+        if not abs_path.is_absolute():
+            return None
+        project = find_project(abs_path.parent)
+        if project is None:
+            return None
+        try:
+            rel = abs_path.relative_to(project.root).as_posix()
+        except ValueError:
+            return None
+        symbols, _lines, _exact = _get_indexed_symbols_and_line_count(rel, project.hash)
+        if not symbols:
+            return None
+        return _sanitize_hint_path(rel), _sanitize_hint_symbol(symbols[0]["name"])
+    except Exception:  # noqa: BLE001 — fail-soft; the hint path must never raise
+        return None
+
+
+def _structured_read_or_outline(
+    top: tuple[str, str] | None,
+    safe_path: str,
+    one_label: str,
+    list_label: str,
+    *,
+    fallback_cmd: str = "outline",
+) -> str:
+    """Build the surgical-command clause for a structured-file hint.
+
+    When *top* names a real indexed symbol, suggest a concrete
+    ``token-goat read "<rel>::<symbol>"`` plus an ``outline`` to list the rest.
+    Otherwise fall back to a command that works without an index so the agent
+    never receives an un-actionable ``::Placeholder`` token it cannot run.
+
+    *fallback_cmd* selects that no-symbol fallback. ``"outline"`` (the default)
+    suits types whose parsers map to indexed symbols. ``"section"`` suits raw-text
+    types such as CSS and SQL, whose parsers commonly yield *no* indexed symbols:
+    ``outline`` would then print the misleading "No indexed top-level symbols
+    found, run ``token-goat index --full``" — even though the index is fine —
+    whereas ``token-goat section`` operates on the raw text and degrades
+    gracefully (it lists the available headings when the placeholder misses).
+    """
+    if top is not None:
+        rel, sym = top
+        return (
+            f"use `token-goat read \"{rel}::{sym}\"` for {one_label} "
+            f"or `token-goat outline \"{safe_path}\"` to list all"
+        )
+    if fallback_cmd == "section":
+        return (
+            f"use `token-goat section \"{safe_path}::<heading>\"` to read {list_label} by name"
+        )
+    return f"use `token-goat outline \"{safe_path}\"` to list {list_label}, then read one"
+
+
 @_failsoft_hint
 def build_structured_file_hint(
     *,
@@ -4153,68 +4242,67 @@ def _build_structured_file_hint_inner(
             0,
         )
 
+    # New structured types (CSS/SQL/GraphQL/proto/env/Makefile) historically
+    # emitted literal ``::Placeholder`` tokens the agent could not run.  Look up
+    # the real top-of-file symbol from the index once (single DB query) so the
+    # hint can name a concrete symbol; ``None`` triggers the ``outline`` fallback.
+    # Skipped for the legacy ``is_lock`` tail below, which suggests grep instead.
+    if is_css or is_sql or is_graphql or is_proto or is_env or is_makefile:
+        top = _lookup_top_indexed_symbol(file_path)
+    else:
+        top = None
+
     if is_css:
         css_kind = ext.lstrip(".")  # "css", "scss", or "sass"
-        return ReadHint(
-            _apply_terse(
-                f"🎨 large {css_kind} ({size_kb}KB) — "
-                f"use `token-goat read \"{safe_path}::.class-name\"` for a rule "
-                f"or `token-goat section \"{safe_path}::media-queries\"` for a section"
-            ),
-            0,
+        clause = _structured_read_or_outline(
+            top, safe_path, "a rule", "rules", fallback_cmd="section"
         )
+        return ReadHint(_apply_terse(f"🎨 large {css_kind} ({size_kb}KB) — {clause}"), 0)
 
     if is_sql:
-        return ReadHint(
-            _apply_terse(
-                f"🗄️ large sql ({size_kb}KB) — "
-                f"use `token-goat read \"{safe_path}::table_name\"` to read one table/procedure "
-                f"or `token-goat section \"{safe_path}::CreateTable\"` for a block"
-            ),
-            0,
+        clause = _structured_read_or_outline(
+            top, safe_path, "one table/procedure", "tables/procedures", fallback_cmd="section"
         )
+        return ReadHint(_apply_terse(f"🗄️ large sql ({size_kb}KB) — {clause}"), 0)
 
     if is_graphql:
-        return ReadHint(
-            _apply_terse(
-                f"📐 large graphql ({size_kb}KB) — "
-                f"use `token-goat read \"{safe_path}::TypeName\"` to read one type "
-                f"or `token-goat section \"{safe_path}::TypeName\"` for a block"
-            ),
-            0,
-        )
+        clause = _structured_read_or_outline(top, safe_path, "one type", "types")
+        return ReadHint(_apply_terse(f"📐 large graphql ({size_kb}KB) — {clause}"), 0)
 
     if is_proto:
-        return ReadHint(
-            _apply_terse(
-                f"📦 large proto ({size_kb}KB) — "
-                f"use `token-goat read \"{safe_path}::MessageName\"` to read one message/service "
-                f"or `token-goat section \"{safe_path}::MessageName\"` for a block"
-            ),
-            0,
+        clause = _structured_read_or_outline(
+            top, safe_path, "one message/service", "messages/services"
         )
+        return ReadHint(_apply_terse(f"📦 large proto ({size_kb}KB) — {clause}"), 0)
 
     if is_env:
-        return ReadHint(
-            _apply_terse(
-                f"🔑 env file ({size_kb if size_kb > 0 else '<1'}KB) — "
-                f"use `token-goat read \"{safe_path}::VAR_NAME\"` to find a specific variable "
+        sz = size_kb if size_kb > 0 else "<1"
+        if top is not None:
+            rel, sym = top
+            clause = (
+                f"use `token-goat read \"{rel}::{sym}\"` for one variable "
                 f"or grep/rg for the key you need"
-            ),
-            0,
-        )
+            )
+        else:
+            clause = (
+                f"use `token-goat outline \"{safe_path}\"` to list variables "
+                f"or grep/rg for the key you need"
+            )
+        return ReadHint(_apply_terse(f"🔑 env file ({sz}KB) — {clause}"), 0)
 
     if is_makefile:
         row_count = _estimate_row_count(path, file_size)
         row_str = f"~{row_count:,}lines" if row_count > 0 else "many lines"
-        return ReadHint(
-            _apply_terse(
-                f"⚙️ Makefile ({size_kb if size_kb > 0 else '<1'}KB, {row_str}) — "
-                f"use `token-goat read \"{safe_path}::target-name\"` to read one target "
-                f"or `token-goat section \"{safe_path}::target-name\"` for a block"
-            ),
-            0,
-        )
+        sz = size_kb if size_kb > 0 else "<1"
+        if top is not None:
+            rel, sym = top
+            clause = (
+                f"use `token-goat read \"{rel}::{sym}\"` for one target "
+                f"or `token-goat outline \"{safe_path}\"` to list all"
+            )
+        else:
+            clause = f"use `token-goat outline \"{safe_path}\"` to list targets, then read one"
+        return ReadHint(_apply_terse(f"⚙️ Makefile ({sz}KB, {row_str}) — {clause}"), 0)
 
     # is_lock
     row_count = _estimate_row_count(path, file_size)

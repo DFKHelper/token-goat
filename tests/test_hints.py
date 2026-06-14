@@ -3708,7 +3708,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for large .css file"
         text = str(result)
         assert "css" in text.lower(), f"hint should mention css: {text}"
-        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
+        assert "token-goat" in text, f"hint should suggest a token-goat command: {text}"
 
     def test_scss_hint_fires_for_large_scss_file(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3742,13 +3742,25 @@ class TestStructuredFileHintsNewTypes:
         result = build_structured_file_hint(file_path=f, offset=0, limit=100)
         assert result is None, "offset+limit should suppress css hint"
 
-    def test_css_hint_mentions_section(self, tmp_path: Path) -> None:
+    def test_css_hint_suggests_surgical_recall(self, tmp_path: Path) -> None:
+        # tmp_path file is not under an indexed project, so the symbol lookup
+        # returns nothing.  CSS parsers map to no indexed symbols, so the fallback
+        # must be `token-goat section` (raw-text, degrades gracefully) — never
+        # `outline` (which would print a misleading "run index --full") and never
+        # an un-runnable `::.class-name` placeholder.
         from token_goat.hints import build_structured_file_hint
 
         f = self._make_file(tmp_path, "main.css", 15_000)
         result = build_structured_file_hint(file_path=f, offset=None, limit=None)
         assert result is not None
-        assert "section" in str(result).lower(), "hint should mention token-goat section"
+        text = str(result).lower()
+        assert "token-goat section" in text or "token-goat read" in text, (
+            f"hint should suggest a runnable surgical command: {text}"
+        )
+        assert "token-goat outline" not in text, (
+            f"CSS fallback must not use the misleading outline command: {text}"
+        )
+        assert "::.class-name" not in text, "hint must not emit a literal placeholder"
 
     # ── SQL ────────────────────────────────────────────────────────────────
 
@@ -3760,7 +3772,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for large .sql file"
         text = str(result)
         assert "sql" in text.lower(), f"hint should mention sql: {text}"
-        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
+        assert "token-goat" in text, f"hint should suggest a token-goat command: {text}"
 
     def test_sql_hint_suppressed_for_small_file(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3786,7 +3798,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for large .graphql file"
         text = str(result)
         assert "graphql" in text.lower(), f"hint should mention graphql: {text}"
-        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
+        assert "token-goat" in text, f"hint should suggest a token-goat command: {text}"
 
     def test_gql_hint_fires_for_large_gql_file(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3821,7 +3833,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for large .proto file"
         text = str(result)
         assert "proto" in text.lower(), f"hint should mention proto: {text}"
-        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
+        assert "token-goat" in text, f"hint should suggest a token-goat command: {text}"
 
     def test_proto_hint_suppressed_for_small_file(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3847,7 +3859,7 @@ class TestStructuredFileHintsNewTypes:
         assert result is not None, "hint should fire for .env file above threshold"
         text = str(result)
         assert "env" in text.lower(), f"hint should mention env: {text}"
-        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
+        assert "token-goat" in text, f"hint should suggest a token-goat command: {text}"
 
     def test_env_example_hint_fires(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3877,16 +3889,19 @@ class TestStructuredFileHintsNewTypes:
         result = build_structured_file_hint(file_path=f, offset=0, limit=20)
         assert result is None, "offset+limit should suppress env hint"
 
-    def test_env_hint_mentions_var_name(self, tmp_path: Path) -> None:
+    def test_env_hint_suggests_variable_lookup(self, tmp_path: Path) -> None:
+        # No indexed symbols for a tmp_path .env → outline + grep fallback,
+        # never a bare `::VAR_NAME` placeholder.
         from token_goat.hints import build_structured_file_hint
 
         f = self._make_file(tmp_path, ".env.example", 1_500)
         result = build_structured_file_hint(file_path=f, offset=None, limit=None)
         assert result is not None
-        text = str(result)
-        assert "VAR_NAME" in text or "symbol" in text.lower(), (
-            f"env hint should mention variable lookup: {text}"
+        text = str(result).lower()
+        assert "outline" in text or "grep" in text or "variable" in text, (
+            f"env hint should suggest a runnable variable lookup: {text}"
         )
+        assert "::var_name" not in text, "env hint must not emit a literal placeholder"
 
     # ── Makefile ───────────────────────────────────────────────────────────
 
@@ -3900,7 +3915,7 @@ class TestStructuredFileHintsNewTypes:
         assert "makefile" in text.lower() or "target" in text.lower(), (
             f"hint should mention makefile or target: {text}"
         )
-        assert "token-goat read" in text, f"hint should suggest token-goat read: {text}"
+        assert "token-goat" in text, f"hint should suggest a token-goat command: {text}"
 
     def test_gnumakefile_hint_fires(self, tmp_path: Path) -> None:
         from token_goat.hints import build_structured_file_hint
@@ -3948,6 +3963,247 @@ class TestStructuredFileHintsNewTypes:
         f = self._make_file(tmp_path, "data.xyz", 500_000)
         result = build_structured_file_hint(file_path=f, offset=None, limit=None)
         assert result is None, "unknown extension must not emit a hint"
+
+
+class TestStructuredHintSymbolInterpolation:
+    """Structured-file hints name a real indexed symbol when one exists, and fall
+    back to a runnable command (never a literal `::Placeholder`) when not — to
+    `token-goat outline` for symbol-indexed types, or `token-goat section` for the
+    raw-text CSS/SQL types whose parsers index no symbols.
+
+    All DB access is mocked — `_lookup_top_indexed_symbol`, `find_project`, and
+    `_get_indexed_symbols_and_line_count` are monkeypatched so no real SQLite is
+    opened, keeping every test in this class sub-millisecond.
+    """
+
+    def _make_file(self, tmp_path: Path, name: str, size: int) -> str:
+        p = tmp_path / name
+        p.write_bytes(b"x" * size)
+        return str(p)
+
+    # ── branch-level: a real symbol is interpolated into the read command ──────
+
+    def test_interpolates_real_symbol_for_each_type(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from token_goat import hints
+
+        # (filename, size_bytes, rel_path, symbol, leftover placeholders that must NOT appear)
+        cases = [
+            ("schema.sql", 8_000, "db/schema.sql", "users", ("::table_name", "::CreateTable")),
+            ("app.css", 15_000, "src/app.css", ".btn-primary", ("::.class-name", "::media-queries")),
+            ("schema.graphql", 3_000, "api/schema.graphql", "Account", ("::TypeName",)),
+            ("service.proto", 3_000, "rpc/service.proto", "GetUser", ("::MessageName",)),
+            (".env", 1_000, ".env", "DATABASE_URL", ("::VAR_NAME",)),
+            ("Makefile", 2_000, "Makefile", "build", ("::target-name",)),
+        ]
+        for name, size, rel, sym, placeholders in cases:
+            monkeypatch.setattr(
+                hints, "_lookup_top_indexed_symbol", lambda fp, _r=rel, _s=sym: (_r, _s)
+            )
+            f = self._make_file(tmp_path, name, size)
+            result = hints.build_structured_file_hint(file_path=f, offset=None, limit=None)
+            assert result is not None, f"hint should fire for {name}"
+            text = str(result)
+            assert f'token-goat read "{rel}::{sym}"' in text, (
+                f"{name}: expected real symbol in read command, got: {text}"
+            )
+            for ph in placeholders:
+                assert ph not in text, f"{name}: placeholder {ph} leaked: {text}"
+
+    # ── branch-level: outline fallback when nothing is indexed ────────────────
+
+    def test_fallback_command_when_no_symbol(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """No indexed symbol → a runnable fallback, never a ``::Placeholder``.
+
+        CSS and SQL parsers commonly index *no* symbols, and ``outline`` would
+        then print the misleading "No indexed top-level symbols found, run
+        ``token-goat index --full``".  Those two types must fall back to
+        ``token-goat section`` (raw-text, degrades gracefully); the remaining
+        types keep the ``outline`` fallback.
+        """
+        from token_goat import hints
+
+        monkeypatch.setattr(hints, "_lookup_top_indexed_symbol", lambda fp: None)
+        # (filename, size, expected_fallback_cmd, placeholders that must NOT appear)
+        cases = [
+            ("schema.sql", 8_000, "section", ("::table_name", "::CreateTable")),
+            ("app.css", 15_000, "section", ("::.class-name", "::media-queries")),
+            ("schema.graphql", 3_000, "outline", ("::TypeName",)),
+            ("service.proto", 3_000, "outline", ("::MessageName",)),
+            (".env", 1_000, "outline", ("::VAR_NAME",)),
+            ("Makefile", 2_000, "outline", ("::target-name",)),
+        ]
+        for name, size, expected_cmd, placeholders in cases:
+            f = self._make_file(tmp_path, name, size)
+            result = hints.build_structured_file_hint(file_path=f, offset=None, limit=None)
+            assert result is not None, f"hint should fire for {name}"
+            text = str(result)
+            assert f"token-goat {expected_cmd}" in text, (
+                f"{name}: expected {expected_cmd} fallback, got: {text}"
+            )
+            if expected_cmd == "section":
+                # The section fallback must not regress into the misleading outline command.
+                assert "token-goat outline" not in text, (
+                    f"{name}: outline fallback leaked for raw-text type: {text}"
+                )
+            for ph in placeholders:
+                assert ph not in text, f"{name}: placeholder {ph} leaked into fallback: {text}"
+
+    # ── safety: a symbol name containing `"` must not break command quoting ────
+
+    def test_symbol_name_double_quote_rendered_safely(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A symbol such as the CSS attribute selector ``[type="submit"]`` carries a
+        literal double quote.  Interpolated raw into ``read "path::symbol"`` it would
+        terminate the quoting mid-command and yield an un-runnable hint.  The real
+        ``_lookup_top_indexed_symbol`` must neutralise it (``"`` → ``'``), so the
+        emitted command stays balanced and runnable.
+        """
+        from types import SimpleNamespace
+
+        from token_goat import hints
+
+        root = tmp_path
+        target = root / "app.css"
+        target.write_bytes(b"x" * 15_000)
+        # Drive the *real* lookup (not a stub) so the sanitiser actually runs.
+        monkeypatch.setattr(
+            hints, "find_project",
+            lambda start: SimpleNamespace(root=root, hash="abc", marker=".git"),
+        )
+        monkeypatch.setattr(
+            hints, "_get_indexed_symbols_and_line_count",
+            lambda rel, h: (
+                [{"kind": "rule", "name": '[type="submit"]', "line": 1, "end_line": 3}],
+                10,
+                True,
+            ),
+        )
+        result = hints.build_structured_file_hint(
+            file_path=str(target), offset=None, limit=None
+        )
+        assert result is not None
+        text = str(result)
+        # The raw double-quoted selector must NOT survive verbatim — it would split
+        # the command's quoting.
+        assert '[type="submit"]' not in text, f"unescaped double quote leaked: {text}"
+        # Single-quote substitution keeps the command well-formed and runnable.
+        assert "[type='submit']" in text, f"expected single-quote substitution: {text}"
+        assert "token-goat read \"app.css::[type='submit']\"" in text, text
+
+    def test_sanitize_hint_symbol_neutralises_double_quotes(self) -> None:
+        """Unit contract for the symbol sanitiser used by the hint builders."""
+        from token_goat import hints
+
+        assert hints._sanitize_hint_symbol('[type="submit"]') == "[type='submit']"
+        # Newline/CR stripping is inherited from _sanitize_hint_path.
+        out = hints._sanitize_hint_symbol('a"b\nc\rd')
+        assert '"' not in out and "\n" not in out and "\r" not in out
+
+    # ── fallback command selection (outline vs section) ───────────────────────
+
+    def test_structured_read_or_outline_section_fallback(self) -> None:
+        """CSS/SQL pass ``fallback_cmd="section"`` so the no-symbol clause points at
+        ``token-goat section`` (raw-text) instead of the misleading ``outline``."""
+        from token_goat import hints
+
+        clause = hints._structured_read_or_outline(
+            None, "db/schema.sql", "one table", "tables", fallback_cmd="section"
+        )
+        assert 'token-goat section "db/schema.sql::<heading>"' in clause, clause
+        assert "token-goat outline" not in clause, clause
+
+    def test_structured_read_or_outline_outline_fallback_is_default(self) -> None:
+        """The default fallback stays ``outline`` for the symbol-indexed types."""
+        from token_goat import hints
+
+        clause = hints._structured_read_or_outline(
+            None, "api/schema.graphql", "one type", "types"
+        )
+        assert 'token-goat outline "api/schema.graphql"' in clause, clause
+        assert "token-goat section" not in clause, clause
+
+    # ── helper-level: _lookup_top_indexed_symbol resolution ───────────────────
+
+    def test_lookup_returns_top_symbol(self, tmp_path: Path, monkeypatch) -> None:
+        from types import SimpleNamespace
+
+        from token_goat import hints
+
+        root = tmp_path
+        target = root / "db" / "schema.sql"
+        target.parent.mkdir(parents=True)
+        target.write_text("-- sql")
+        monkeypatch.setattr(
+            hints, "find_project",
+            lambda start: SimpleNamespace(root=root, hash="deadbeef", marker=".git"),
+        )
+        # Symbols come back ordered by line; index 0 is the top of the file.
+        monkeypatch.setattr(
+            hints, "_get_indexed_symbols_and_line_count",
+            lambda rel, h: (
+                [
+                    {"kind": "table", "name": "users", "line": 1, "end_line": 9},
+                    {"kind": "table", "name": "orders", "line": 11, "end_line": 20},
+                ],
+                30,
+                True,
+            ),
+        )
+        assert hints._lookup_top_indexed_symbol(str(target)) == ("db/schema.sql", "users")
+
+    def test_lookup_returns_none_when_no_symbols(self, tmp_path: Path, monkeypatch) -> None:
+        from types import SimpleNamespace
+
+        from token_goat import hints
+
+        root = tmp_path
+        target = root / "schema.sql"
+        target.write_text("-- sql")
+        monkeypatch.setattr(
+            hints, "find_project",
+            lambda start: SimpleNamespace(root=root, hash="abc", marker=".git"),
+        )
+        monkeypatch.setattr(
+            hints, "_get_indexed_symbols_and_line_count", lambda rel, h: ([], 5, True)
+        )
+        assert hints._lookup_top_indexed_symbol(str(target)) is None
+
+    def test_lookup_returns_none_for_relative_path(self) -> None:
+        from token_goat import hints
+
+        # Without an absolute path we cannot safely resolve a project — bail out.
+        assert hints._lookup_top_indexed_symbol("relative/schema.sql") is None
+
+    def test_lookup_returns_none_when_no_project(self, tmp_path: Path, monkeypatch) -> None:
+        from token_goat import hints
+
+        monkeypatch.setattr(hints, "find_project", lambda start: None)
+        target = tmp_path / "schema.sql"
+        target.write_text("x")
+        assert hints._lookup_top_indexed_symbol(str(target)) is None
+
+    def test_lookup_returns_none_when_file_outside_project_root(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from token_goat import hints
+
+        # Project root that is NOT an ancestor of the file → relative_to raises.
+        other_root = tmp_path / "elsewhere"
+        other_root.mkdir()
+        target = tmp_path / "schema.sql"
+        target.write_text("x")
+        monkeypatch.setattr(
+            hints, "find_project",
+            lambda start: SimpleNamespace(root=other_root, hash="abc", marker=".git"),
+        )
+        assert hints._lookup_top_indexed_symbol(str(target)) is None
 
 
 # ---------------------------------------------------------------------------
