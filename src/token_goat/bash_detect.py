@@ -180,7 +180,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "pipx": "pip",
     "playwright": "playwright",
     "poetry": "dep-list",
-    "pnpm": "npm_install",
+    "pnpm": "pnpm",
     "pnpx": "nx",
     "podman": "docker",
     "powershell": "powershell",
@@ -260,7 +260,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "wrangler": "wrangler",
     "wrangler2": "wrangler",
     "xcodebuild": "xcode",
-    "yarn": "npm_install",
+    "yarn": "yarn",
     "yq": "yq",
     "zig": "zig",
 }

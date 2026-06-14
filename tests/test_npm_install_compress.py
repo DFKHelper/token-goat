@@ -443,10 +443,10 @@ class TestNpmInstallRegressions:
         assert detect(["npm", "install"]) == "npm_install"
 
     def test_detect_returns_npm_install_for_yarn(self) -> None:
-        assert detect(["yarn", "install"]) == "npm_install"
+        assert detect(["yarn", "install"]) == "yarn"
 
     def test_detect_returns_npm_install_for_pnpm(self) -> None:
-        assert detect(["pnpm", "install"]) == "npm_install"
+        assert detect(["pnpm", "install"]) == "pnpm"
 
     def test_select_filter_routes_npm_install(self) -> None:
         f = select_filter(["npm", "install"])

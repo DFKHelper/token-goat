@@ -9248,8 +9248,19 @@ class DepListFilter(Filter):
     """
 
     name = "dep-list"
-    binaries = frozenset(["pip", "pip3", "uv", "npm", "poetry", "cargo", "pnpm", "yarn"])
+    binaries = frozenset(["pip", "pip3", "uv", "poetry", "cargo"])
     subcommands = frozenset(["list", "freeze", "show", "ls", "tree"])
+
+    # npm, pnpm, and yarn are intentionally absent from ``binaries`` so that
+    # bash_detect routes those binaries to their dedicated install filters (the
+    # install fast-path wins the sync table).  We still compress their listing
+    # subcommands (list / ls / etc.), so we check them explicitly here.
+    _PKG_MGR_STEMS = frozenset(["npm", "pnpm", "yarn"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if argv and Path(argv[0]).stem.lower() in self._PKG_MGR_STEMS:
+            return any(tok in self.subcommands for tok in _positional_args(argv[1:])[:3])
+        return super().matches(argv)
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -10122,7 +10133,7 @@ class NpmInstallFilter(Filter):
     """
 
     name = "npm_install"
-    binaries = frozenset(["npm", "yarn", "pnpm"])
+    binaries = frozenset(["npm"])
 
     _NPM_SUBCMDS = frozenset(["install", "i", "ci"])
     _YARN_SUBCMDS = frozenset(["install", "add", ""])

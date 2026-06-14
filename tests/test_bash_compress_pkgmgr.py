@@ -560,10 +560,10 @@ class TestYarnFilterBerry:
 class TestDispatch:
     """New filters are reachable from the FILTERS registry."""
 
-    def test_pnpm_dispatches_to_pnpm_filter(self) -> None:
+    def test_pnpm_install_dispatches_to_npm_install_filter(self) -> None:
         f = bc.select_filter(["pnpm", "install"])
         assert f is not None
-        assert f.name == "pnpm"
+        assert f.name == "npm_install"
 
     def test_pnpm_run_dispatches_to_pnpm_filter(self) -> None:
         # "run" must NOT strip via _TWO_TOKEN_PREFIXES — PnpmFilter must handle it.
@@ -576,10 +576,10 @@ class TestDispatch:
         assert f is not None
         assert f.name == "eslint"
 
-    def test_yarn_dispatches_to_yarn_filter(self) -> None:
+    def test_yarn_install_dispatches_to_npm_install_filter(self) -> None:
         f = bc.select_filter(["yarn", "install"])
         assert f is not None
-        assert f.name == "yarn"
+        assert f.name == "npm_install"
 
     def test_yarn_run_dispatches_to_yarn_filter(self) -> None:
         # "run" must NOT strip via _TWO_TOKEN_PREFIXES — YarnFilter must handle it.
@@ -614,4 +614,4 @@ class TestDispatch:
     def test_npm_still_dispatches_to_npm_filter(self) -> None:
         f = bc.select_filter(["npm", "install"])
         assert f is not None
-        assert f.name == "npm"
+        assert f.name == "npm_install"

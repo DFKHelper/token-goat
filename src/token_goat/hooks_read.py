@@ -4458,6 +4458,54 @@ def _check_ignored_bash_hint(cache: object, command: str, cwd: str | None = None
     _check_ignored_hint_by_key(cache, cmd_sha, f"bash cmd {sanitize_log_str(command, max_len=60)}")
 
 
+def _is_memory_file(path: str) -> bool:
+    """Return True when *path* is an individual Claude memory file.
+
+    Matches paths that contain both ``.claude`` and ``memory`` directory
+    components and end with ``.md``, but excludes ``MEMORY.md`` (the index).
+    """
+    p = Path(path)
+    name_lower = p.name.lower()
+    if name_lower == "memory.md":
+        return False
+    if not name_lower.endswith(".md"):
+        return False
+    parts_lower = [part.lower() for part in p.parts]
+    return ".claude" in parts_lower and "memory" in parts_lower
+
+
+def _strip_memory_frontmatter(content: str) -> tuple[str, int]:
+    """Strip YAML frontmatter from a memory file body.
+
+    If *content* starts with ``---\\n`` (LF or CRLF), strips everything up to
+    and including the closing ``---`` fence line and any immediately following
+    blank line.
+
+    Returns ``(stripped_content, lines_stripped)`` where *lines_stripped* is 0
+    when no frontmatter was found or the closing fence is missing.
+    """
+    if not content.startswith("---\n") and not content.startswith("---\r\n"):
+        return content, 0
+
+    lines = content.splitlines(keepends=True)
+    close_idx: int | None = None
+    for i in range(1, len(lines)):
+        if lines[i].rstrip("\r\n") == "---":
+            close_idx = i
+            break
+
+    if close_idx is None:
+        # Malformed — no closing fence; pass through unchanged.
+        return content, 0
+
+    body_start = close_idx + 1
+    # Skip a single blank line that conventionally follows YAML frontmatter.
+    if body_start < len(lines) and lines[body_start].rstrip("\r\n") == "":
+        body_start += 1
+
+    return "".join(lines[body_start:]), body_start
+
+
 def post_read(payload: HookPayload) -> HookResponse:
     """Post-read hook: record file/symbol accesses to session cache.
 
@@ -4465,7 +4513,12 @@ def post_read(payload: HookPayload) -> HookResponse:
     subsequent reads can detect overlaps and re-read attempts, enabling session hints
     on follow-up file accesses in the same session.
 
-    Returns CONTINUE() after recording; never modifies tool input/output.
+    For individual Claude memory files (paths matching ``*/.claude/*/memory/*.md``,
+    excluding ``MEMORY.md``), strips the YAML frontmatter block and returns the body
+    via ``systemMessage`` to avoid repeating metadata already present in the index.
+
+    Returns CONTINUE() after recording; modifies tool output only for memory files
+    with frontmatter.
     """
     session_id, _cwd = get_hook_context(payload)
     if session_id is None:
@@ -4524,6 +4577,14 @@ def post_read(payload: HookPayload) -> HookResponse:
             # be served as a small unified diff instead of a full-file Read.
             # Best-effort — snapshot failures never block the hook.
             _try_snapshot(session_id, file_path, cache=cache)
+            # Memory file frontmatter stripping: when the agent reads an
+            # individual memory file, strip the YAML block (already captured in
+            # MEMORY.md) and surface only the body via systemMessage.
+            if _is_memory_file(file_path) and _resp_text:
+                _mem_body, _n_stripped = _strip_memory_frontmatter(_resp_text)
+                if _n_stripped > 0:
+                    _note = f"[token-goat] memory file: {_n_stripped} frontmatter lines stripped\n"
+                    return {"continue": True, "systemMessage": _note + _mem_body}
     elif tool_name == "Grep":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")
