@@ -1020,6 +1020,44 @@ def _line_ranges_global_bounds(
     return global_min, global_max
 
 
+def _total_cached_lines(line_ranges: list[tuple[int, int]]) -> int:
+    """Return the count of distinct lines covered by ``line_ranges``.
+
+    Computes the size of the *union* of the ``(start, end)`` tuples (1-indexed,
+    inclusive), so overlapping ranges are not double-counted.  Used to size the
+    "already in context" token figure for exact-match re-read hints: the waste a
+    re-read implies is the full content already consumed across every cached
+    range, not just the narrow window the agent re-requested.
+
+    A ``(0, 0)`` sentinel range (full-file collapse marker) contributes nothing
+    here; callers that see the sentinel handle it on a dedicated path before
+    reaching this helper.
+
+    Args:
+        line_ranges: List of ``(start_line, end_line)`` tuples.  An empty list
+                     returns 0.
+
+    Returns:
+        The number of distinct lines covered by the merged ranges.
+    """
+    spans = sorted(
+        (s, e) for s, e in line_ranges if e >= s and (s, e) != (0, 0)
+    )
+    if not spans:
+        return 0
+    total = 0
+    cur_start, cur_end = spans[0]
+    for s, e in spans[1:]:
+        if s <= cur_end + 1:  # contiguous or overlapping — extend the current span
+            if e > cur_end:
+                cur_end = e
+        else:  # gap — close out the current span and start a new one
+            total += cur_end - cur_start + 1
+            cur_start, cur_end = s, e
+    total += cur_end - cur_start + 1
+    return total
+
+
 def _should_suppress_full_file_hint(n_lines: int | None, threshold: int | None = None) -> bool:
     """Return True when a full-file hint should be suppressed based on line count.
 
@@ -1319,7 +1357,17 @@ def _hint_from_cache(
                 fname, requested_lines,
             )
             return None
-        wasted = _est_tokens_from_lines(requested_lines)
+        # Report the waste against the full content already in context, not the
+        # narrow requested sub-window.  On an exact-match re-read the agent
+        # already holds every cached range; a partial re-read (offset=50,
+        # limit=100 over a file cached 1-500) re-sends only those 100 lines, but
+        # the figure the user cares about is how much of the file is already
+        # consumed — the union of all cached line ranges, which for a fully-read
+        # file is the whole file.  Using requested_lines undercounts that badly
+        # (it would report ~300t for a 34kt file).  Fall back to the requested
+        # window only when the cached coverage somehow resolves to less.
+        cached_lines = _total_cached_lines(line_ranges)
+        wasted = _est_tokens_from_lines(max(cached_lines, requested_lines))
         sym_suffix = _symbols_suffix(entry.symbols_read)
         return ReadHint(
             _apply_terse(

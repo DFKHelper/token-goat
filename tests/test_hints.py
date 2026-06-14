@@ -18,6 +18,7 @@ from token_goat.hints import (
     _hint_fingerprint,
     _line_count,
     _sha256_hex,
+    _total_cached_lines,
     build_bash_dedup_hint,
     build_read_hint,
 )
@@ -153,6 +154,62 @@ class TestCachedExactRange:
         )
         assert hint is not None
         assert "⌘" in hint  # terse form of "cached"
+
+    def test_partial_reread_reports_full_cached_waste_not_request_window(self, tmp_data_dir):
+        """An exact-match partial re-read reports waste for the FULL cached content.
+
+        Regression for the "~NNNNt wasted" undercount: when a large file is fully
+        cached (e.g. 1-500) and the agent re-reads a narrow sub-window (51-150),
+        the waste figure must reflect the whole file already in context (500
+        lines), not just the 100-line requested window.  The pre-fix code used
+        ``_est_tokens_from_lines(requested_lines)`` and reported the partial
+        figure; this test fails on that code and passes on the fix.
+        """
+        sid = "s_partial_waste"
+        path = "C:/proj/big.py"
+        # Cache the whole file: lines 1-500.
+        _mark(tmp_data_dir, sid, path, offset=0, limit=500)
+
+        # Re-read a narrow sub-window fully inside the cached range.
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=50,   # 0-indexed → start line 51
+            limit=100,   # lines 51-150
+            cwd=None,
+        )
+        assert hint is not None
+        assert "waste" in hint.lower()
+
+        full_tokens = _est_tokens_from_lines(500)
+        request_tokens = _est_tokens_from_lines(100)
+        # The hint must advertise the full-file waste, never the partial window.
+        assert str(full_tokens) in hint
+        assert str(request_tokens) not in hint
+        # And the machine-readable tokens_saved annotation matches the full figure.
+        assert hint.tokens_saved == full_tokens
+
+
+class TestTotalCachedLines:
+    """Unit coverage for the union-counting helper behind the waste figure."""
+
+    def test_single_range(self):
+        assert _total_cached_lines([(1, 100)]) == 100
+
+    def test_overlapping_ranges_not_double_counted(self):
+        # 1-100 and 50-150 union to 1-150 = 150 distinct lines.
+        assert _total_cached_lines([(1, 100), (50, 150)]) == 150
+
+    def test_adjacent_ranges_merge(self):
+        # 1-100 and 101-200 are contiguous → 200 distinct lines.
+        assert _total_cached_lines([(1, 100), (101, 200)]) == 200
+
+    def test_disjoint_ranges_sum(self):
+        assert _total_cached_lines([(1, 100), (301, 400)]) == 200
+
+    def test_sentinel_and_empty_ignored(self):
+        assert _total_cached_lines([(0, 0)]) == 0
+        assert _total_cached_lines([]) == 0
 
 
 # ---------------------------------------------------------------------------
