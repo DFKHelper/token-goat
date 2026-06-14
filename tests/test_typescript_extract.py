@@ -4,6 +4,16 @@ Modern React/TS modules frequently expose their public surface entirely as
 ``export const fn = () => {}`` arrow-function exports.  These must be promoted
 to ``kind="function"`` symbols so ``skeleton`` / ``outline`` (which filter to
 structural kinds and exclude plain ``const``) do not report ``(0 symbols)``.
+
+Performance note: every test here is a pure, in-process ``extract()`` call on a
+byte string — no disk, DB, subprocess, or ``tmp_path``.  The 19 cases execute in
+~0.15s.  When this file is run *in isolation* the wall-clock is dominated by
+pytest-xdist spinning up one worker per core (``-n auto`` from ``addopts``), which
+on a many-core box costs ~0.1s/worker of pure startup and is wasted on CPU-trivial
+tests.  For a tight local edit loop run them serially:
+``uv run pytest tests/test_typescript_extract.py -o addopts="--strict-markers"``
+(or ``-n0``).  The full suite keeps ``-n auto`` because the startup amortizes
+across ~14k tests, so no shared config is changed.
 """
 
 from __future__ import annotations
