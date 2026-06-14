@@ -255,6 +255,8 @@ __all__ = [
     "ClineFilter",
     # Codex (OpenAI Codex CLI) AI coding assistant
     "CodexExecFilter",
+    # Playwright E2E test runner
+    "PlaywrightFilter",
 ]
 
 import json as _json
@@ -22389,6 +22391,78 @@ class CodexExecFilter(Filter):
         return self._finalize(out)
 
 
+# --- Playwright E2E test runner -------------------------------------------
+
+_PW_PASS_RE: Final[re.Pattern[str]] = re.compile(r"^\s+[✓✔]\s")
+_PW_DOWNLOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(Downloading|Downloaded|Installing)\s+\w"
+    r"|^\s*[\d.]+\s+[KMG]b\s+\[",
+    re.IGNORECASE,
+)
+
+
+class PlaywrightFilter(Filter):
+    """Compress ``playwright test`` / ``npx playwright test`` output.
+
+    Playwright emits one result line per test-browser combination.  A large
+    suite running across chromium, firefox, and webkit can produce thousands
+    of lines for even a modest test suite.  Passed-test lines carry no
+    diagnostic value; only failures and the final summary matter.
+
+    Compression model:
+
+    * **Suppressed**: ``✓`` / ``✔`` passed-test lines; browser download
+      progress lines from ``playwright install`` (``Downloading Chromium
+      ...``, ``111.2 Mb [====] 100%``).
+    * **Kept**: ``✗`` / ``✘`` failed-test lines, error messages and stack
+      traces, the ``Running N tests using N workers`` header, and summary
+      lines (``N passed (Xs)``, ``N failed``).
+    """
+
+    name = "playwright"
+    binaries = frozenset(["playwright"])
+
+    _SUBCMDS: frozenset[str] = frozenset(
+        ["test", "show-trace", "codegen", "screenshot", "pdf", "install"]
+    )
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        def _base(s: str) -> str:
+            return Path(s).stem.lower()
+
+        if not argv:
+            return False
+        base = _base(argv[0])
+        if base == "playwright":
+            return not argv[1:] or argv[1].lower() in self._SUBCMDS
+        if base in {"npx", "pnpx", "bunx"}:
+            rest = [a for a in argv[1:] if not a.startswith("-")]
+            if rest and _base(rest[0]) == "playwright":
+                return not rest[1:] or rest[1].lower() in self._SUBCMDS
+        return False
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        lines = (stdout + stderr).splitlines(keepends=True)
+        kept: list[str] = []
+        suppressed = 0
+        for line in lines:
+            stripped = line.rstrip("\n")
+            if _PW_PASS_RE.match(stripped):
+                suppressed += 1
+                continue
+            if _PW_DOWNLOAD_RE.match(stripped):
+                suppressed += 1
+                continue
+            kept.append(line)
+        notes: list[str] = []
+        if suppressed:
+            notes.append(f"suppressed {suppressed} passed-test / install-progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -22422,6 +22496,9 @@ FILTERS: list[Filter] = [
     NpmInstallFilter(),
     # PnpmFilter and YarnFilter are more specific than NodePackageFilter and must
     # precede it so that pnpm/yarn commands get dedicated compression rather than
+    # PlaywrightFilter must precede BunFilter so that `bunx playwright test`
+    # routes to PlaywrightFilter rather than the generic bun handler.
+    PlaywrightFilter(),
     # the generic npm/pnpm/yarn/bun handler.  BunFilter also precedes
     # NodePackageFilter so that `bun install/test/build` get dedicated
     # compression rather than the generic npm/pnpm/yarn/bun fallback.

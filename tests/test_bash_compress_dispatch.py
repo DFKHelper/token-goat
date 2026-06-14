@@ -48,6 +48,10 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["npm", "ci"], "npm_install"),
     (["pnpm", "install"], "npm_install"),
     (["yarn", "install"], "npm_install"),
+    (["playwright", "test"], "playwright"),
+    (["playwright", "install"], "playwright"),
+    (["npx", "playwright", "test"], "playwright"),
+    (["bunx", "playwright", "test"], "playwright"),
     (["bun", "install"], "bun"),
     # ---- NodeFilter (eval probes only) ----
     (["node", "-e", "console.log(1)"], "node"),

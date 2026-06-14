@@ -176,6 +176,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "pip": "dep-list",
     "pip3": "dep-list",
     "pipx": "pip",
+    "playwright": "playwright",
     "poetry": "dep-list",
     "pnpm": "npm_install",
     "pnpx": "nx",
