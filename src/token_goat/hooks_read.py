@@ -6913,6 +6913,57 @@ def post_bash(payload: HookPayload) -> HookResponse:
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: curl verbose compress failed", exc_info=True)
 
+    # docker build output compressor (Iter 38):
+    # Collapses redundant `---> Using cache` / `---> <hash>` / BuildKit sub-step
+    # lines, keeping only step headers, RUN output, and error lines.
+    # Fires on successful docker build / buildx build commands with >= 10 lines.
+    if stdout and exit_code in (None, 0) and len(stdout.splitlines()) >= 10:
+        try:
+            import shlex as _shlex_docker  # noqa: PLC0415
+
+            from . import bash_compress as _bc_docker  # noqa: PLC0415
+            try:
+                _docker_argv = _shlex_docker.split(display_cmd, posix=False)
+            except ValueError:
+                _docker_argv = display_cmd.strip().split()
+            _docker_argv_clean = [t.strip("\"'") for t in _docker_argv]
+            if (
+                _bc_docker._is_docker_build_cmd(_docker_argv_clean)
+                and _bc_docker._has_docker_build_output(stdout)
+            ):
+                _docker_compressed, _docker_lines_removed = _bc_docker.compress_docker_build(stdout)
+                if _docker_lines_removed > 0 and _docker_compressed.strip():
+                    _docker_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_docker_cache  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _docker_meta = _bc_docker_cache.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _docker_meta is not None:
+                                _bc_docker_cache.write_sidecar(_docker_meta)
+                                _docker_out_id = _docker_meta.output_id
+                    _docker_recall = (
+                        f"\nFull output: bash-output {_docker_out_id}"
+                        if _docker_out_id else ""
+                    )
+                    _docker_header = (
+                        f"[token-goat] docker build: {_docker_lines_removed} build steps "
+                        f"compressed (cache/hash/sub-step lines removed). "
+                        f"Kept: step headers, RUN output, errors.{_docker_recall}"
+                    )
+                    _LOG.info(
+                        "post-bash: docker build compressed lines_removed=%d cmd=%.60s",
+                        _docker_lines_removed, display_cmd,
+                    )
+                    return {
+                        "continue": True,
+                        "systemMessage": _docker_header + "\n\n" + _docker_compressed,
+                    }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: docker build compress failed", exc_info=True)
+
     # Large plain-text stdout fallback compressor (Iter 19):
     # Fires AFTER all specialized handlers (JSON/XML, pytest, sleep/poll, etc.).
     # When a successful command emits >= _LARGE_STDOUT_LINE_THRESHOLD lines of plain text,

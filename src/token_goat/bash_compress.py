@@ -22648,3 +22648,112 @@ def compress_curl_verbose(stdout: str) -> tuple[str, int]:
         out.append(line)
 
     return "".join(out), lines_removed
+
+
+# ── docker build output ──────────────────────────────────────────────────────
+_DOCKER_BUILD_STEP_RE: Final[re.Pattern[str]] = re.compile(r"^Step \d+/\d+ : ", re.MULTILINE)
+_DOCKER_ARROW_RE: Final[re.Pattern[str]] = re.compile(r"^ --->")
+_DOCKER_SUPPRESS_ARROW_RE: Final[re.Pattern[str]] = re.compile(
+    r"^ ---> (?:Using cache|Running in [0-9a-f]+|[0-9a-f]{12,})\s*$"
+)
+_DOCKER_BUILDKIT_STEP_RE: Final[re.Pattern[str]] = re.compile(r"^ => (?:CACHED )?\[")
+_DOCKER_BUILDKIT_SUBSTEP_RE: Final[re.Pattern[str]] = re.compile(r"^ => => ")
+_DOCKER_BUILDKIT_SUMMARY_RE: Final[re.Pattern[str]] = re.compile(r"^\[\+\] Building", re.MULTILINE)
+_DOCKER_BUILD_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Successfully (?:built|tagged)|FINISHED)"
+)
+_DOCKER_SUPPRESS_MISC_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?:Sending build context to Docker daemon|Removing intermediate container)"
+)
+
+
+def _is_docker_build_cmd(argv: list[str]) -> bool:
+    """Return True when argv is a docker build / buildx build invocation."""
+    if not argv:
+        return False
+
+    def _base(s: str) -> str:
+        return Path(s).stem.lower()
+
+    base = _base(argv[0])
+    if base not in ("docker", "docker-compose", "docker-buildx"):
+        return False
+    args = [a.lower() for a in argv[1:]]
+    return "build" in args
+
+
+def _has_docker_build_output(stdout: str) -> bool:
+    """Return True when stdout looks like docker build output."""
+    return bool(
+        _DOCKER_BUILD_STEP_RE.search(stdout)
+        or _DOCKER_BUILDKIT_SUMMARY_RE.search(stdout)
+    )
+
+
+def compress_docker_build(stdout: str) -> tuple[str, int]:
+    """Compress docker build output, keeping step headers and errors.
+
+    Returns (compressed_text, lines_removed).
+    """
+    lines = stdout.splitlines(keepends=True)
+    out: list[str] = []
+    lines_removed = 0
+    in_run_step = False  # True when inside a RUN step (keep its output)
+
+    for line in lines:
+        stripped = line.rstrip("\r\n")
+
+        # Suppress misc noise at the start
+        if _DOCKER_SUPPRESS_MISC_RE.match(stripped):
+            lines_removed += 1
+            continue
+
+        # Classic format: Step N/M
+        if _DOCKER_BUILD_STEP_RE.match(stripped):
+            in_run_step = "RUN " in stripped.upper() or stripped.upper().endswith(" RUN")
+            out.append(line)
+            continue
+
+        # Classic format: ---> lines to suppress (Using cache, Running in, bare hash)
+        if _DOCKER_SUPPRESS_ARROW_RE.match(stripped):
+            lines_removed += 1
+            continue
+
+        # Classic format: keep other ---> lines (e.g., error context)
+        if _DOCKER_ARROW_RE.match(stripped):
+            out.append(line)
+            continue
+
+        # BuildKit summary [+] Building
+        if _DOCKER_BUILDKIT_SUMMARY_RE.match(stripped):
+            out.append(line)
+            continue
+
+        # BuildKit step lines: keep [N/M] and CACHED [N/M]
+        if _DOCKER_BUILDKIT_STEP_RE.match(stripped):
+            out.append(line)
+            continue
+
+        # BuildKit sub-step lines: suppress
+        if _DOCKER_BUILDKIT_SUBSTEP_RE.match(stripped):
+            lines_removed += 1
+            continue
+
+        # Success/FINISHED lines
+        if _DOCKER_BUILD_SUCCESS_RE.match(stripped):
+            out.append(line)
+            continue
+
+        # Error / failure lines — always keep
+        lower = stripped.lower()
+        if "error" in lower or "failed" in lower or "fail" in lower:
+            out.append(line)
+            continue
+
+        # Non-step lines: keep if inside a RUN step (command output), suppress otherwise
+        if in_run_step:
+            out.append(line)
+        else:
+            lines_removed += 1
+
+    return "".join(out), lines_removed
