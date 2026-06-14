@@ -43,11 +43,11 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["cargo", "check"], "cargo"),
     (["cargo", "clippy"], "cargo"),
     (["cargo", "run"], "cargo"),
-    # ---- NodePackageFilter ----
-    (["npm", "install"], "npm"),
-    (["npm", "ci"], "npm"),
-    (["pnpm", "install"], "pnpm"),
-    (["yarn", "install"], "yarn"),
+    # ---- NpmInstallFilter ----
+    (["npm", "install"], "npm_install"),
+    (["npm", "ci"], "npm_install"),
+    (["pnpm", "install"], "npm_install"),
+    (["yarn", "install"], "npm_install"),
     (["bun", "install"], "bun"),
     # ---- NodeFilter (eval probes only) ----
     (["node", "-e", "console.log(1)"], "node"),

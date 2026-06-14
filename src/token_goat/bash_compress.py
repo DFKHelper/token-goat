@@ -167,6 +167,7 @@ __all__ = [
     "VitestFilter",
     "WebpackFilter",
     "NodePackageFilter",
+    "NpmInstallFilter",
     "NodeFilter",
     "DockerFilter",
     "KubectlFilter",
@@ -10038,6 +10039,220 @@ class CondaFilter(Filter):
             + other_lines[dep_start_idx + 1 :]
         )
         return "\n".join(result)
+
+
+# --- npm install / yarn install / pnpm install ----------------------------
+
+#: npm warn deprecated lines (keep first 3, suppress the rest)
+_NPM_INST_DEPRECATED_RE: Final[re.Pattern[str]] = re.compile(
+    r"^npm warn deprecated\b", re.IGNORECASE
+)
+#: npm notice lines — generic suppression gate
+_NPM_INST_NOTICE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^npm notice\b", re.IGNORECASE
+)
+#: npm notice lockfile — actionable, keep
+_NPM_INST_NOTICE_LOCKFILE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^npm notice.*lock", re.IGNORECASE
+)
+#: "found 0 vulnerabilities" — suppress; nonzero falls through and is kept
+_NPM_INST_ZERO_VULN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^found 0 vulnerabilities\b", re.IGNORECASE
+)
+#: "N packages are looking for funding" — suppress
+_NPM_INST_FUNDING_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\d+\s+packages? are looking for funding\b", re.IGNORECASE
+)
+#: "run `npm fund`" advisory — suppress
+_NPM_INST_FUND_RUN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*run `npm fund`", re.IGNORECASE
+)
+#: yarn peer-dependency warning lines — suppress
+_YARN_INST_PEER_DEP_RE: Final[re.Pattern[str]] = re.compile(
+    r'^warning ".+ > .+" has (?:unmet|incorrect) peer dependency', re.IGNORECASE
+)
+#: yarn classic phase headers [N/N] — suppress
+_YARN_INST_PHASE_RE: Final[re.Pattern[str]] = re.compile(r"^\[\d+/\d+\]")
+#: yarn info lines — suppress
+_YARN_INST_INFO_RE: Final[re.Pattern[str]] = re.compile(r"^info\b", re.IGNORECASE)
+#: yarn success lines — suppress
+_YARN_INST_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(r"^success\b", re.IGNORECASE)
+#: pnpm +++ progress bars — suppress
+_PNPM_INST_PLUS_BAR_RE: Final[re.Pattern[str]] = re.compile(r"^\++\s*$")
+#: pnpm Progress: line — keep if "done" at end, suppress otherwise
+_PNPM_INST_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(r"^Progress:", re.IGNORECASE)
+
+
+class NpmInstallFilter(Filter):
+    """Compress ``npm install`` / ``yarn install`` / ``pnpm install`` output.
+
+    Package managers emit large amounts of install noise (deprecated package
+    warnings, peer-dependency warnings, progress bars, phase headers) that have
+    zero diagnostic value when an install succeeds.  The important signals are
+    error messages and the final summary (package count, vulnerability report).
+
+    Compression model — npm:
+
+    * **Keep** every ``npm ERR!`` / error line verbatim.
+    * **Keep** first 3 ``npm warn deprecated`` lines; suppress the rest.
+    * **Keep** other ``npm warn`` lines verbatim (e.g. ``EBADPLATFORM``).
+    * **Keep** ``npm notice`` lines only when they mention a lockfile.
+    * **Keep** ``found N vulnerabilities`` when N > 0; suppress ``found 0``.
+    * **Keep** ``added N packages`` / ``removed N`` / ``changed N`` summary.
+    * **Suppress** ``N packages are looking for funding`` and ``run `npm fund` ```.
+
+    Compression model — yarn classic:
+
+    * **Keep** error lines and non-peer-dep warning lines verbatim.
+    * **Suppress** phase headers (``[1/4] Resolving packages...`` etc.).
+    * **Suppress** ``info …`` lines.
+    * **Suppress** ``success …`` lines.
+    * **Suppress** peer-dep warning lines.
+
+    Compression model — pnpm:
+
+    * **Keep** error lines verbatim.
+    * **Keep** ``Packages: +N`` summary line.
+    * **Suppress** ``++++++…`` progress bar lines.
+    * **Keep** ``Progress: … done`` (final done summary); suppress intermediate
+      Progress lines without ``done``.
+    """
+
+    name = "npm_install"
+    binaries = frozenset(["npm", "yarn", "pnpm"])
+
+    _NPM_SUBCMDS = frozenset(["install", "i", "ci"])
+    _YARN_SUBCMDS = frozenset(["install", "add", ""])
+    _PNPM_SUBCMDS = frozenset(["install", "add", "i"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+
+        def _base(s: str) -> str:
+            return Path(s).stem.lower()
+
+        stem = _base(argv[0])
+        positionals = [a for a in argv[1:] if not a.startswith("-")]
+        subcmd = positionals[0].lower() if positionals else ""
+
+        if stem == "npm":
+            return subcmd in self._NPM_SUBCMDS
+        if stem == "yarn":
+            return subcmd in self._YARN_SUBCMDS
+        if stem == "pnpm":
+            return subcmd in self._PNPM_SUBCMDS
+        return False
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        def _base(s: str) -> str:
+            return Path(s).stem.lower()
+
+        stem = _base(argv[0]) if argv else ""
+        merged = self._combine_output(stdout, stderr)
+
+        if stem == "npm":
+            return self._compress_npm(merged)
+        if stem == "yarn":
+            return self._compress_yarn(merged)
+        if stem == "pnpm":
+            return self._compress_pnpm(merged)
+        return self._finalize(merged.split("\n"))
+
+    def _compress_npm(self, text: str) -> str:
+        lines = text.split("\n")
+        kept: list[str] = []
+        deprecated_count = 0
+        deprecated_suppressed = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _NPM_INST_DEPRECATED_RE.match(line):
+                deprecated_count += 1
+                if deprecated_count <= 3:
+                    kept.append(line)
+                else:
+                    deprecated_suppressed += 1
+                continue
+            if _NPM_INST_NOTICE_RE.match(line):
+                if _NPM_INST_NOTICE_LOCKFILE_RE.search(line):
+                    kept.append(line)
+                continue
+            if _NPM_INST_ZERO_VULN_RE.match(line):
+                continue
+            if _NPM_INST_FUNDING_RE.match(line):
+                continue
+            if _NPM_INST_FUND_RUN_RE.match(line):
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if deprecated_suppressed:
+            notes.append(
+                f"suppressed {deprecated_suppressed} additional deprecated"
+                f" warnings (showed first 3 of {deprecated_count})"
+            )
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_yarn(self, text: str) -> str:
+        lines = text.split("\n")
+        kept: list[str] = []
+        noise_suppressed = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _YARN_INST_PEER_DEP_RE.match(line):
+                noise_suppressed += 1
+                continue
+            if _YARN_INST_PHASE_RE.match(line):
+                noise_suppressed += 1
+                continue
+            if _YARN_INST_INFO_RE.match(line):
+                noise_suppressed += 1
+                continue
+            if _YARN_INST_SUCCESS_RE.match(line):
+                noise_suppressed += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if noise_suppressed:
+            notes.append(f"suppressed {noise_suppressed} yarn install progress/noise lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
+
+    def _compress_pnpm(self, text: str) -> str:
+        lines = text.split("\n")
+        kept: list[str] = []
+        progress_suppressed = 0
+
+        for line in lines:
+            if _ERROR_SIGNAL_RE.search(line):
+                kept.append(line)
+                continue
+            if _PNPM_INST_PLUS_BAR_RE.match(line):
+                progress_suppressed += 1
+                continue
+            if _PNPM_INST_PROGRESS_RE.match(line):
+                if "done" in line.lower():
+                    kept.append(line)
+                else:
+                    progress_suppressed += 1
+                continue
+            kept.append(line)
+
+        notes: list[str] = []
+        if progress_suppressed:
+            notes.append(f"suppressed {progress_suppressed} pnpm progress lines")
+        self._emit_notes(kept, notes)
+        return self._finalize(kept)
 
 
 # --- pnpm -------------------------------------------------------------------
@@ -22197,6 +22412,14 @@ FILTERS: list[Filter] = [
     # ``npm list``, ``uv pip list``, ``poetry show``, etc.
     DepListFilter(),
     CargoFilter(),
+    # NpmInstallFilter handles npm/yarn/pnpm install subcommands specifically and
+    # must precede PnpmFilter and YarnFilter (which claim those binaries broadly)
+    # so that install output gets the dedicated deprecated-warn capping, zero-vuln
+    # suppression, and phase-header collapsing.  Non-install pnpm/yarn commands
+    # (run, exec, info, etc.) are unmatched by NpmInstallFilter and fall through
+    # to PnpmFilter / YarnFilter as before.  Also precedes NodePackageFilter which
+    # handles npm generically (audit, run, etc.).
+    NpmInstallFilter(),
     # PnpmFilter and YarnFilter are more specific than NodePackageFilter and must
     # precede it so that pnpm/yarn commands get dedicated compression rather than
     # the generic npm/pnpm/yarn/bun handler.  BunFilter also precedes
