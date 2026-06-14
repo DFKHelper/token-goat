@@ -22389,3 +22389,130 @@ def filter_by_name(name: str) -> Filter | None:
         if f.name == name:
             return f
     return None
+
+
+# ── Jest / Vitest post-bash detection helpers ─────────────────────────────────
+# Module-level functions for the post-bash hook that detect and compress
+# jest/vitest verbose output after command execution.  Complement the pre-bash
+# JestFilter / VitestFilter which handle direct jest/mocha/vitest binaries.
+# These helpers extend coverage to ``npm test``, ``npx jest``, ``yarn test``,
+# and ``pnpm test`` invocations by matching on output shape, not just argv.
+
+_JEST_NPM_CMD_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:test|jest|vitest)\b", re.IGNORECASE,
+)
+# Per-test ✓ tick lines under a PASS suite block (indented 2+ spaces).
+_JEST_PASS_TICK_RE: Final[re.Pattern[str]] = re.compile(r"^\s{2,}[✓✔√]\s")
+# Vitest file-level pass/fail lines (single leading space, for post-bash use).
+_VT_FILE_PASS_RE: Final[re.Pattern[str]] = re.compile(r"^ ✓ ")
+_VT_FILE_FAIL_RE: Final[re.Pattern[str]] = re.compile(r"^ [×✗✕✘] ")
+# Word-only PASS/FAIL detection: excludes vitest Unicode symbols (×, ✗, etc.)
+# that also appear in _JEST_FAIL_LINE_RE but belong to vitest, not jest.
+_JEST_WORD_DETECT_RE: Final[re.Pattern[str]] = re.compile(r"^\s*(?:PASS|FAIL)\s+\S")
+
+
+def _is_jest_cmd(argv: list[str]) -> bool:
+    """Return True when argv looks like a jest/vitest invocation.
+
+    Matches direct jest/vitest/react-scripts binaries and package-manager
+    shims (``npx jest``, ``npm test``, ``yarn test``, ``pnpm test``).
+    """
+    if not argv:
+        return False
+
+    def _base(s: str) -> str:
+        b = s.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        for ext in (".exe", ".cmd"):
+            if b.endswith(ext):
+                b = b[: -len(ext)]
+                break
+        return b
+
+    base = _base(argv[0])
+    if base in ("jest", "vitest", "react-scripts"):
+        return True
+    if base in ("npx", "yarn", "pnpm", "npm") and len(argv) >= 2:
+        # Skip leading flags (e.g. npx --yes jest, yarn --cwd ./app jest)
+        for tok in argv[1:]:
+            if tok.startswith("-"):
+                continue
+            return bool(_JEST_NPM_CMD_RE.search(tok))
+    return False
+
+
+def _has_jest_output(stdout: str) -> bool:
+    """Return True when stdout contains jest-style PASS/FAIL suite headers.
+
+    Uses a word-only pattern (PASS/FAIL ASCII) rather than the shared
+    _JEST_FAIL_LINE_RE so that vitest Unicode symbols (×, ✗) do not trigger
+    a false positive here.  _has_vitest_output handles those separately.
+    """
+    return any(_JEST_WORD_DETECT_RE.match(ln) for ln in stdout.splitlines())
+
+
+def _has_vitest_output(stdout: str) -> bool:
+    """Return True when stdout contains vitest-style file-level ✓ / × headers."""
+    return any(
+        _VT_FILE_PASS_RE.match(ln) or _VT_FILE_FAIL_RE.match(ln)
+        for ln in stdout.splitlines()
+    )
+
+
+def compress_jest_output(stdout: str) -> tuple[str, int, int]:
+    """Compress jest/vitest verbose output for the post-bash hook.
+
+    Returns ``(compressed_text, pass_count, fail_count)``.  Suppresses PASS
+    suite headers and their per-test ✓ children; keeps FAIL blocks and the
+    summary block intact.  This is a lighter-weight variant of
+    :class:`JestFilter` (no stderr merging, no console-block collapsing)
+    designed for the post-bash hook code path.
+    """
+    lines = stdout.splitlines(keepends=True)
+    out: list[str] = []
+    pass_count = 0
+    fail_count = 0
+    in_pass_block = False
+
+    is_vitest = _has_vitest_output(stdout) and not _has_jest_output(stdout)
+
+    if is_vitest:
+        # Vitest: suppress file-level ✓ lines and their per-test ✓ children;
+        # keep × lines, failure detail blocks, and summary.
+        in_pass_file = False
+        for line in lines:
+            if _VT_FILE_PASS_RE.match(line):
+                pass_count += 1
+                in_pass_file = True
+                continue
+            if _VT_FILE_FAIL_RE.match(line):
+                fail_count += 1
+                in_pass_file = False
+                out.append(line)
+                continue
+            if in_pass_file and _VITEST_TEST_PASS_RE.match(line):
+                continue  # per-test ✓ under a passing file block
+            if in_pass_file and not line.startswith((" ", "\t")):
+                in_pass_file = False
+            out.append(line)
+    else:
+        # Jest: suppress PASS headers and their indented ✓ children.
+        for line in lines:
+            if _JEST_PASS_LINE_RE.match(line):
+                pass_count += 1
+                in_pass_block = True
+                continue
+            if _JEST_FAIL_LINE_RE.match(line):
+                fail_count += 1
+                in_pass_block = False
+                out.append(line)
+                continue
+            if in_pass_block:
+                if line.startswith((" ", "\t")):
+                    if _JEST_PASS_TICK_RE.match(line):
+                        continue
+                    out.append(line)
+                    continue
+                in_pass_block = False
+            out.append(line)
+
+    return "".join(out), pass_count, fail_count

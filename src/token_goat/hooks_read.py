@@ -6794,6 +6794,63 @@ def post_bash(payload: HookPayload) -> HookResponse:
         except Exception:  # noqa: BLE001 — fail-soft; never block the hook
             _LOG.debug("post-bash: JUnit XML summary failed", exc_info=True)
 
+    # Jest / Vitest verbose output (Iter 36):
+    # Fires after JUnit XML and before the large-stdout fallback.
+    # Suppresses PASS suite headers (and their per-test ✓ children) from jest/vitest
+    # output, keeping FAIL blocks and the summary block intact.  Catches ``npm test``,
+    # ``npx jest``, ``yarn test``, and ``pnpm test`` invocations that don't match the
+    # pre-bash JestFilter / VitestFilter (which only fires on direct binary names).
+    if stdout and len(stdout.splitlines()) >= 5:
+        try:
+            import shlex as _shlex_jest  # noqa: PLC0415
+
+            from . import bash_compress as _bc_jest  # noqa: PLC0415
+            try:
+                _jest_argv = _shlex_jest.split(display_cmd, posix=False)
+            except ValueError:
+                _jest_argv = display_cmd.strip().split()
+            _jest_argv_clean = [t.strip("\"'") for t in _jest_argv]
+            if (
+                _bc_jest._is_jest_cmd(_jest_argv_clean)
+                and (_bc_jest._has_jest_output(stdout) or _bc_jest._has_vitest_output(stdout))
+                and exit_code in (None, 0, 1)
+            ):
+                _jest_compressed, _jest_pass_ct, _jest_fail_ct = _bc_jest.compress_jest_output(stdout)
+                if _jest_pass_ct > 0 and _jest_compressed.strip():
+                    _jest_lines_orig = len(stdout.splitlines())
+                    _jest_lines_new = len(_jest_compressed.splitlines())
+                    _jest_saved = _jest_lines_orig - _jest_lines_new
+                    _jest_out_id: str | None = None
+                    if session_id:
+                        from . import bash_cache as _bc_jest_cache  # noqa: PLC0415
+                        with contextlib.suppress(Exception):
+                            _jest_meta = _bc_jest_cache.store_output(
+                                session_id, display_cmd, stdout, stderr, exit_code,
+                                cwd=cwd, min_cache_bytes=0,
+                            )
+                            if _jest_meta is not None:
+                                _bc_jest_cache.write_sidecar(_jest_meta)
+                                _jest_out_id = _jest_meta.output_id
+                    _jest_recall = (
+                        f" (bash-output {_jest_out_id} to recall full output)"
+                        if _jest_out_id else ""
+                    )
+                    _jest_header = (
+                        f"[token-goat] jest: {_jest_pass_ct} PASS suite(s) suppressed "
+                        f"({_jest_saved} lines removed), {_jest_fail_ct} FAIL suite(s) shown"
+                        f"{_jest_recall}"
+                    )
+                    _LOG.info(
+                        "post-bash: jest output compressed pass=%d fail=%d cmd=%.60s",
+                        _jest_pass_ct, _jest_fail_ct, display_cmd,
+                    )
+                    return {
+                        "continue": True,
+                        "systemMessage": _jest_header + "\n\n" + _jest_compressed,
+                    }
+        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+            _LOG.debug("post-bash: jest compress failed", exc_info=True)
+
     # Large plain-text stdout fallback compressor (Iter 19):
     # Fires AFTER all specialized handlers (JSON/XML, pytest, sleep/poll, etc.).
     # When a successful command emits >= _LARGE_STDOUT_LINE_THRESHOLD lines of plain text,
