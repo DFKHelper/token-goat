@@ -4156,6 +4156,51 @@ class TestStructuredHintSymbolInterpolation:
         )
         assert hints._lookup_top_indexed_symbol(str(target)) == ("db/schema.sql", "users")
 
+    def test_lookup_sanitizes_newline_in_rel_path(self, tmp_path: Path, monkeypatch) -> None:
+        """A ``rel`` path carrying a raw ``\\n`` must be neutralised before it is
+        returned for hint interpolation.
+
+        The project-relative path is derived from the *file path* the hook is
+        handed, and that path can contain attacker-controlled bytes (it is read
+        back from session JSON written by a prior hook invocation). If a newline
+        survived into the returned ``rel`` it would split a single hint into what
+        looks like multiple ``Note:`` lines in the model's context. Pre-fix code
+        returned ``rel`` verbatim; the fix runs it through ``_sanitize_hint_path``.
+
+        Fully mocked — ``find_project`` and ``_get_indexed_symbols_and_line_count``
+        are patched, so no real DB or on-disk file with a newline name is needed
+        (Windows could not create one anyway).
+        """
+        from types import SimpleNamespace
+
+        from token_goat import hints
+
+        root = tmp_path
+        # A path component carrying a raw newline (and a CR for good measure).
+        target = root / "src" / "dirty\npath\r.sql"
+        monkeypatch.setattr(
+            hints, "find_project",
+            lambda start: SimpleNamespace(root=root, hash="deadbeef", marker=".git"),
+        )
+        monkeypatch.setattr(
+            hints, "_get_indexed_symbols_and_line_count",
+            lambda rel, h: ([{"kind": "table", "name": "users", "line": 1, "end_line": 9}], 9, True),
+        )
+
+        result = hints._lookup_top_indexed_symbol(str(target))
+        assert result is not None
+        rel, symbol = result
+        # The newline/CR are neutralised, not passed through verbatim.
+        assert "\n" not in rel, repr(rel)
+        assert "\r" not in rel, repr(rel)
+        assert symbol == "users"
+
+        # And a hint built from the sanitised rel stays a single line — no raw
+        # newline mid-string that could fake extra hint entries.
+        hint = f"Note: indexed symbol `{rel}::{symbol}` available."
+        assert "\n" not in hint, repr(hint)
+        assert "\r" not in hint, repr(hint)
+
     def test_lookup_returns_none_when_no_symbols(self, tmp_path: Path, monkeypatch) -> None:
         from types import SimpleNamespace
 
