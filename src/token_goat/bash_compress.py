@@ -115,6 +115,7 @@ __all__ = [
     "RubyFilter",
     "SbtFilter",
     "SwiftFilter",
+    "TailTruncFilter",
     "TreeFilter",
     "UvFilter",
     "CondaFilter",
@@ -276,6 +277,7 @@ __all__ = [
     "JsonArrayFilter",
 ]
 
+import base64 as _base64
 import json as _json
 import math
 import re
@@ -4573,6 +4575,62 @@ _GH_RUN_FAIL_STEP_RE: Final[re.Pattern[str]] = re.compile(
 # load-bearing), only deduplicate identical adjacent lines.
 
 
+# Matches strings composed solely of base64 alphabet characters and newlines.
+_GH_CONTENT_B64_RE: re.Pattern[str] = re.compile(r"^[A-Za-z0-9+/=\n]+$")
+# Minimum length for a value to be treated as base64 content (avoids false positives).
+_GH_BASE64_MIN_LEN: int = 200
+
+
+def _redact_gh_base64_content(stdout: str) -> str:
+    """Replace base64-encoded ``content`` fields in GitHub API JSON stdout.
+
+    ``gh api repos/<owner>/<repo>/contents/<path>`` returns a JSON object with
+    a ``content`` key holding the raw base64-encoded file bytes.  Those blobs
+    are enormous and useless in context.  This helper detects and redacts them
+    before the output goes through the rest of the GhFilter pipeline.
+    """
+    stripped = stdout.strip()
+    if not stripped or stripped[0] not in ("{", "["):
+        return stdout
+    try:
+        data: object = _json.loads(stdout)
+    except (ValueError, TypeError):
+        return stdout
+
+    def _is_b64_content(val: object) -> bool:
+        return (isinstance(val, str) and len(val) > _GH_BASE64_MIN_LEN and bool(_GH_CONTENT_B64_RE.match(val)))
+
+    def _redact_obj(obj: dict[str, object]) -> dict[str, object]:
+        raw = obj.get("content")
+        if not _is_b64_content(raw):
+            return obj
+        try:
+            n_bytes = len(_base64.b64decode(raw, validate=False))  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001
+            n_bytes = 0
+        return {**obj, "content": f"<base64 content: {n_bytes} bytes decoded>"}
+
+    changed = False
+    if isinstance(data, dict):
+        redacted: object = _redact_obj(data)
+        changed = redacted is not data
+        data = redacted
+    elif isinstance(data, list):
+        new_list: list[object] = []
+        for item in data:
+            new_item = _redact_obj(item) if isinstance(item, dict) else item
+            if new_item is not item:
+                changed = True
+            new_list.append(new_item)
+        if changed:
+            data = new_list
+
+    if not changed:
+        return stdout
+    pretty = "\n" in stripped
+    return _json.dumps(data, indent=2 if pretty else None)
+
+
 class GhFilter(Filter):
     """Compress ``gh`` (GitHub CLI) output.
 
@@ -4602,6 +4660,7 @@ class GhFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
+        stdout = _redact_gh_base64_content(stdout)
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0] if positionals else ""
         action = positionals[1] if len(positionals) > 1 else ""
@@ -24288,6 +24347,33 @@ class FileTypeFilter(Filter):
         return self._finalize(kept)
 
 
+class TailTruncFilter(Filter):
+    """Safety-net catch-all: truncate unmatched outputs longer than 500 lines.
+
+    Keeps the first 50 and last 50 lines with a suppressed-count marker in
+    the middle.  Placed last in FILTERS so every more-specific filter wins;
+    only activates when nothing else matched and the output is very long.
+    Outputs of 500 lines or fewer pass through verbatim.
+    """
+
+    name = "tail-trunc"
+    binaries: frozenset[str] = frozenset()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        return True  # catch-all: always claim as last-resort fallback
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        if len(lines) <= 500:
+            return merged
+        suppressed = len(lines) - 100
+        marker = f"[... {suppressed} lines suppressed — use TOKEN_GOAT_BASH_COMPRESS=0 to disable ...]"
+        return "\n".join(lines[:50] + [marker] + lines[-50:])
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -24689,6 +24775,10 @@ FILTERS: list[Filter] = [
     JsonArrayFilter(),
     BinaryInspectFilter(),
     FileTypeFilter(),
+    # TailTruncFilter must be LAST: catch-all that fires when no specific filter
+    # matched.  Only activates for outputs >500 lines to avoid overhead on short
+    # outputs that don't need truncation.
+    TailTruncFilter(),
 ]
 
 
