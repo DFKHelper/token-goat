@@ -161,7 +161,7 @@ class TestStripMemoryFrontmatter:
 _SID = "test-session-memory-strip"
 _CWD = r"C:\Projects\token-goat"
 
-_MEMORY_PATH = r"C:\Users\zelys\.claude\projects\C--Projects-token-goat\memory\feedback_wsl.md"
+_MEMORY_PATH = "/home/user/.claude/projects/C--Projects-token-goat/memory/feedback_wsl.md"
 
 _MEMORY_CONTENT = """\
 ---
@@ -235,14 +235,14 @@ class TestPostReadMemoryStrip:
         assert "systemMessage" not in result or "frontmatter" not in result.get("systemMessage", "")
 
     def test_memory_index_not_stripped(self) -> None:
-        index_path = r"C:\Users\zelys\.claude\projects\C--Projects-token-goat\memory\MEMORY.md"
+        index_path = "/home/user/.claude/projects/C--Projects-token-goat/memory/MEMORY.md"
         payload = _make_payload(index_path, _MEMORY_CONTENT)
         result = self._call(payload)
         # MEMORY.md should not trigger stripping
         assert "systemMessage" not in result or "frontmatter" not in result.get("systemMessage", "")
 
     def test_non_memory_file_not_stripped(self) -> None:
-        regular_path = r"C:\Projects\token-goat\src\token_goat\hooks_read.py"
+        regular_path = "/home/user/projects/token-goat/src/token_goat/hooks_read.py"
         payload = _make_payload(regular_path, _MEMORY_CONTENT)
         result = self._call(payload)
         assert "systemMessage" not in result or "frontmatter" not in result.get("systemMessage", "")
