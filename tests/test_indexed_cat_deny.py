@@ -39,7 +39,10 @@ def _make_cp(tier: str) -> SimpleNamespace:
 class TestHandleIndexedCatDeny:
     def _call(self, file_path: str, tool_input: dict, tier: str, skeleton: str) -> Any:
         from token_goat.hooks_read import _handle_indexed_cat_deny
-        with patch("token_goat.hooks_read._try_get_inline_skeleton", return_value=skeleton):
+        with (
+            patch("token_goat.hooks_read._try_get_inline_skeleton", return_value=skeleton),
+            patch("token_goat.db.record_stat"),
+        ):
             return _handle_indexed_cat_deny(file_path, tool_input, tier)
 
     def test_warm_indexed_returns_deny(self, tmp_path: Path) -> None:
@@ -147,7 +150,10 @@ class _FakeCache:
 class TestHandleIndexedCatAdvisory:
     def _call(self, file_path: str, tool_input: dict, skeleton: str, cache: Any) -> Any:
         from token_goat.hooks_read import _handle_indexed_cat_advisory
-        with patch("token_goat.hooks_read._try_get_inline_skeleton", return_value=skeleton):
+        with (
+            patch("token_goat.hooks_read._try_get_inline_skeleton", return_value=skeleton),
+            patch("token_goat.db.record_stat"),
+        ):
             return _handle_indexed_cat_advisory(file_path, tool_input, cache)
 
     def test_indexed_whole_file_returns_advisory(self, tmp_path: Path) -> None:
