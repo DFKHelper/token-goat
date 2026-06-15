@@ -305,6 +305,48 @@ def over_cap_file_hint(file_part: str, project: Project | None) -> str | None:
     return None
 
 
+def no_indexed_symbols_note(file_rel: str) -> str:
+    """Note shown for an indexed file that has zero symbols, where a skeleton or
+    outline hint would mislead (running it would just print an empty list)."""
+    return (
+        f"Note: {file_rel} has no indexed symbols "
+        "— it may be a config file or too small to parse"
+    )
+
+
+def skeleton_or_empty_hint(project_hash: str, file_rel: str) -> str:
+    """Hint to emit after a symbol miss that resolved to a single indexed file.
+
+    When the file actually has symbols, point at ``skeleton`` so the caller can
+    see what is available. When the file has zero indexed symbols, suggesting
+    skeleton is misleading, so explain why instead (config file / too small).
+    """
+    if db.count_symbols_for_file(project_hash, file_rel) == 0:
+        return no_indexed_symbols_note(file_rel)
+    return f'Try: token-goat skeleton "{file_rel}" to see what\'s indexed'
+
+
+def resolve_scoped_file(project_hash: str, like_param: str) -> str | None:
+    """Resolve a partial ``--file`` scope to a single concrete indexed path.
+
+    *like_param* is an already-escaped SQL LIKE pattern (e.g. ``%auth.py%``).
+    Queries the ``files`` table — not ``symbols`` — so files with zero indexed
+    symbols still resolve. Returns the matched ``rel_path`` only when exactly one
+    file matches; ``None`` for zero matches or an ambiguous (multi-file) scope.
+    """
+    try:
+        with db.open_project_readonly(project_hash) as conn:
+            rows = conn.execute(
+                "SELECT rel_path FROM files WHERE rel_path LIKE ? ESCAPE '\\' LIMIT 2",
+                (like_param,),
+            ).fetchall()
+    except (sqlite3.Error, FileNotFoundError, OSError):
+        return None
+    if len(rows) == 1:
+        return str(rows[0]["rel_path"])
+    return None
+
+
 def _path_part_matches(file_part: str, rel_path: str) -> bool:
     """Return whether *file_part* (a user-supplied needle) matches *rel_path*.
 
@@ -1856,8 +1898,11 @@ def outline(
                 separators=(",", ":"),
             ))
         elif not quiet:
-            typer.echo(f"No indexed top-level symbols found for {file_rel}.")
-            typer.echo("(Run `token-goat index --full` if this file has not been indexed yet.)")
+            if db.count_symbols_for_file(proj.hash, file_rel) == 0:
+                typer.echo(no_indexed_symbols_note(file_rel))
+            else:
+                typer.echo(f"No indexed top-level symbols found for {file_rel}.")
+                typer.echo("(Run `token-goat index --full` if this file has not been indexed yet.)")
         return
 
     filtered = rows_with_depth[:_OUTLINE_MAX_SYMBOLS]

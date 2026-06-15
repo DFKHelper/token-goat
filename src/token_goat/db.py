@@ -1200,6 +1200,28 @@ def file_count(project_hash: str) -> int:
         return 0
 
 
+def count_symbols_for_file(project_hash: str, file_rel: str) -> int:
+    """How many symbols are indexed for a single file. 0 means the file is indexed
+    but yielded no symbols — a config file, an empty module, or content the parser
+    could not extract anything structural from. Distinct from "file not indexed".
+    """
+    try:
+        with open_project_readonly(project_hash) as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM symbols WHERE file_rel = ?",
+                (file_rel,),
+            ).fetchone()
+            return int(row[0]) if row else 0
+    except FileNotFoundError:
+        return 0  # DB does not exist yet — normal for un-indexed projects
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning(
+            "count_symbols_for_file(%s…, %s) failed, returning 0: %s",
+            project_hash[:8], file_rel, exc,
+        )
+        return 0
+
+
 def project_has_files(project_hash: str) -> bool:
     """Return True when the project DB already contains at least one file row."""
     try:

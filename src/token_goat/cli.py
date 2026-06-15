@@ -932,6 +932,7 @@ def symbol(
         close_matches: list[str] | None = None,
         redirected_from: str | None = None,
         over_cap_hint: str | None = None,
+        file_scope_hint: str | None = None,
     ) -> None:
         """Emit symbol results as JSON or plain text; print a not-found message when empty.
 
@@ -972,6 +973,9 @@ def symbol(
             # empty result set is distinguishable from "symbol not in that file".
             if file and not results and over_cap_hint is not None:
                 envelope["over_cap"] = over_cap_hint
+            # When the --file scope resolved to a single indexed file, attach the skeleton-or-empty hint so JSON callers see the same guidance as text.
+            if file and not results and file_scope_hint is not None:
+                envelope["file_hint"] = file_scope_hint
             typer.echo(json.dumps(envelope, separators=(",", ":")))
         elif results:
             if redirected_from is not None:
@@ -996,6 +1000,9 @@ def symbol(
                         typer.echo(over_cap_hint)
                     else:
                         typer.echo(f"No symbol {name!r} found in files matching {file!r}")
+                        # Point at skeleton when the scoped file has symbols, or explain the emptiness when it has none; suppressed when the scope is ambiguous or matched no indexed file.
+                        if file_scope_hint:
+                            typer.echo(file_scope_hint)
                 else:
                     typer.echo(not_found_extra if not_found_extra else f"No matches for {name!r}")
                     if close_matches and not not_found_extra:
@@ -1246,12 +1253,19 @@ def symbol(
     over_cap_hint = (
         read_commands.over_cap_file_hint(file, proj) if (file and not results) else None
     )
+    # When --file scoped the miss to a single indexed file, resolve it and attach a skeleton hint (file has symbols) or a "no indexed symbols" note (it does not); only over-cap takes precedence and ambiguous/unmatched scopes get None.
+    file_scope_hint: str | None = None
+    if file and not results and over_cap_hint is None and _file_like_param is not None:
+        _matched_file = read_commands.resolve_scoped_file(proj.hash, _file_like_param)
+        if _matched_file is not None:
+            file_scope_hint = read_commands.skeleton_or_empty_hint(proj.hash, _matched_file)
     _emit_results(
         results,
         not_found_extra=not_found_extra,
         close_matches=close,
         redirected_from=redirected,
         over_cap_hint=over_cap_hint,
+        file_scope_hint=file_scope_hint,
     )
     if file and not results:
         raise typer.Exit(1)
