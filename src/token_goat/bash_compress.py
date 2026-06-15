@@ -11000,6 +11000,100 @@ class YarnFilter(Filter):
 
 # --- Directory listing: eza / exa / ls / tree ---------------------------------
 
+#: Pass-through threshold: listings no longer than this are returned unchanged.
+_LS_PASSTHROUGH = 25
+#: Maximum file/dir entry lines to keep per section before the summary marker.
+_LS_MAX_ENTRIES = 10
+#: Marker emitted when entries are hidden.
+_LS_HIDDEN_MARKER = "[token-goat: {n} more entries — use eza --tree or ls | grep PATTERN to filter]"
+
+
+class LsFilter(Filter):
+    """Compress ``ls`` / ``eza`` / ``ll`` / ``dir`` directory listing output.
+
+    Compression model:
+
+    * **Pass-through** when total output is <=25 lines — small listings are fully readable.
+    * **Truncate** for longer output: keep ``total N`` disk-usage header when present,
+      keep the first 10 entry lines, then append a count marker for hidden entries.
+    * **Multi-section** output (``ls dir1 dir2`` introduces each target with a ``dirname:``
+      header line) keeps every header and compresses entries independently per section.
+
+    Deliberately avoids parsing permission bits, timestamps, or owner fields — only
+    line count matters.
+    """
+
+    name = "ls"
+    binaries = frozenset(["ls", "eza", "ll", "dir"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.splitlines()
+        if len(lines) <= _LS_PASSTHROUGH:
+            return merged
+        return self._split_and_compress(lines)
+
+    @staticmethod
+    def _is_section_header(line: str) -> bool:
+        """True when *line* looks like a multi-dir ls section header (e.g. ``./dir:``)."""
+        stripped = line.rstrip()
+        if not stripped or not stripped.endswith(":"):
+            return False
+        # Permission lines start with - d l c b p s (file type chars)
+        if stripped[0] in "-dlcbps":
+            return False
+        # Section headers are single tokens (no internal spaces except at start)
+        token = stripped[:-1]  # strip trailing colon
+        return " " not in token.strip()
+
+    @staticmethod
+    def _compress_one_section(lines: list[str]) -> list[str]:
+        """Compress one ls section; expects blank lines already removed."""
+        out: list[str] = []
+        if lines and lines[0].lstrip().startswith("total "):
+            out.append(lines[0])
+            entries = lines[1:]
+        else:
+            entries = lines
+        kept = 0
+        hidden = 0
+        for ln in entries:
+            if kept < _LS_MAX_ENTRIES:
+                out.append(ln)
+                kept += 1
+            else:
+                hidden += 1
+        if hidden:
+            out.append(_LS_HIDDEN_MARKER.format(n=hidden))
+        return out
+
+    def _split_and_compress(self, lines: list[str]) -> str:
+        """Split at section headers and compress each section independently."""
+        sections: list[tuple[str | None, list[str]]] = []
+        cur_header: str | None = None
+        cur_lines: list[str] = []
+        for ln in lines:
+            if self._is_section_header(ln):
+                sections.append((cur_header, cur_lines))
+                cur_header = ln
+                cur_lines = []
+            else:
+                cur_lines.append(ln)
+        sections.append((cur_header, cur_lines))
+
+        out: list[str] = []
+        for header, sec in sections:
+            if header is not None:
+                out.append(header)
+            non_blank = [ln for ln in sec if ln.strip()]
+            if not non_blank:
+                continue
+            out.extend(self._compress_one_section(non_blank))
+        return "\n".join(out)
+
+
 class EzaFilter(Filter):
     """Compress ``eza`` / ``exa`` / ``ls`` directory listing output.
 
@@ -24350,6 +24444,10 @@ FILTERS: list[Filter] = [
     # DiffFilter handles plain POSIX diff output.  GitFilter already covers
     # git-diff; DiffFilter is for diff, diff3, sdiff, and colordiff.
     DiffFilter(),
+    # LsFilter precedes EzaFilter: both claim `ls` and `eza`, but LsFilter
+    # applies a simpler line-count truncation for basic listing commands while
+    # EzaFilter provides richer tree/column-aware compression for eza/exa.
+    LsFilter(),
     EzaFilter(),
     FdFilter(),
     WcFilter(),

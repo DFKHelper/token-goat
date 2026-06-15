@@ -135,11 +135,15 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     # _strip_prefixes leaves ['uv', 'pip', 'install', ...] intact; UvFilter
     # matches on 'uv' stem and finds 'pip' in its pm_subcommands list.
     (["uv", "pip", "install", "requests"], "uv"),
-    # ---- EzaFilter ----
-    (["eza", "--git", "--long"], "eza"),
-    (["eza", "--tree", "--level", "2"], "eza"),
-    (["ls", "-la"], "eza"),
-    (["ls", "-lah"], "eza"),
+    # ---- LsFilter (precedes EzaFilter; claims ls/eza/ll/dir) ----
+    (["ls", "-la"], "ls"),
+    (["ls", "-lah"], "ls"),
+    (["eza", "--git", "--long"], "ls"),
+    (["eza", "--tree", "--level", "2"], "ls"),
+    (["ll"], "ls"),
+    (["dir"], "ls"),
+    # ---- EzaFilter (exa only — ls/eza claimed above by LsFilter) ----
+    (["exa", "--long"], "eza"),
     # ---- TreeFilter ----
     (["tree"], "tree"),
     (["tree", "-L", "3"], "tree"),

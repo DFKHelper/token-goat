@@ -96,16 +96,16 @@ class TestEzaFilterEdgeCases:
         assert "directories" in result or "files" in result
 
     def test_eza_registered_in_filters(self) -> None:
-        """EzaFilter is registered and selected by select_filter."""
+        """LsFilter precedes EzaFilter and claims eza — select_filter returns 'ls'."""
         selected = bc.select_filter(["eza", "--git", "--long"])
         assert selected is not None
-        assert selected.name == "eza"
+        assert selected.name == "ls"
 
     def test_ls_registered_in_filters(self) -> None:
-        """EzaFilter is also selected for 'ls' commands."""
+        """LsFilter handles 'ls' commands — select_filter returns 'ls'."""
         selected = bc.select_filter(["ls", "-la"])
         assert selected is not None
-        assert selected.name == "eza"
+        assert selected.name == "ls"
 
 
 # ---------------------------------------------------------------------------
