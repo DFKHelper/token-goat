@@ -4587,6 +4587,71 @@ def normalize_for_cache(manifest_text: str) -> str:
     return "\n".join(lines)
 
 
+def write_session_manifest(project_hash: str, session_id: str, manifest_json: dict[str, Any]) -> None:
+    """Write per-session manifest JSON for cross-session deduplication.
+
+    Writes atomically to <data_dir>/projects/<project_hash>/sessions/<session_id>.json.
+    Safe to call from concurrent processes — atomic rename prevents torn reads.
+    """
+    sessions_dir = paths.data_dir() / "projects" / project_hash / "sessions"
+    paths.ensure_dir(sessions_dir)
+    dest = sessions_dir / f"{session_id}.json"
+    paths.atomic_write_text(dest, json.dumps(manifest_json))
+
+
+def read_all_session_manifests(project_hash: str, max_age_seconds: int = 3600) -> list[dict[str, Any]]:
+    """Read all session manifest JSON files for *project_hash*, skipping stale and corrupt entries.
+
+    Files older than *max_age_seconds* (based on filesystem mtime) are excluded so
+    abandoned sessions do not pollute the merged view.  Unreadable or corrupt JSON
+    is silently skipped to remain robust against concurrent writes.
+    """
+    sessions_dir = paths.data_dir() / "projects" / project_hash / "sessions"
+    if not sessions_dir.exists():
+        return []
+    now = time.time()
+    results: list[dict[str, Any]] = []
+    for p in sessions_dir.glob("*.json"):
+        try:
+            if now - p.stat().st_mtime > max_age_seconds:
+                continue
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "files" in data:
+                results.append(data)
+        except Exception:  # noqa: BLE001
+            pass
+    return results
+
+
+def merge_session_manifests(manifests: list[dict[str, Any]], budget_tokens: int) -> list[dict[str, Any]]:
+    """Merge file entries from multiple sessions, deduplicating by rel_path.
+
+    When the same path appears in multiple manifests, keeps the entry with the
+    highest *hit_count* (read frequency).  Returns entries sorted by hit_count
+    descending, capped so that total estimated tokens does not exceed *budget_tokens*
+    (rough estimate: 10 characters of rel_path ≈ 1 token).
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for manifest in manifests:
+        for entry in manifest.get("files", []):
+            rel = entry.get("rel_path", "")
+            if not rel:
+                continue
+            existing = merged.get(rel)
+            if existing is None or entry.get("hit_count", 0) > existing.get("hit_count", 0):
+                merged[rel] = entry
+    sorted_entries = sorted(merged.values(), key=lambda e: e.get("hit_count", 0), reverse=True)
+    result: list[dict[str, Any]] = []
+    total_tokens = 0
+    for entry in sorted_entries:
+        entry_tokens = max(1, len(entry.get("rel_path", "")) // 10)
+        if total_tokens + entry_tokens > budget_tokens:
+            break
+        result.append(entry)
+        total_tokens += entry_tokens
+    return result
+
+
 def _cap_line(line: str, max_len: int = 120) -> str:
     """Cap a line to max_len characters, truncating with '…' if exceeded.
 

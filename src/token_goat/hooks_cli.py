@@ -1110,6 +1110,46 @@ def pre_compact(payload: HookPayload) -> HookResponse:
         _write_compact_skip_sentinel(str(session_id))
         return CONTINUE()
 
+    # --- Cross-session manifest deduplication ---
+    # Write this session's file coverage so concurrent sessions can read it,
+    # then merge all live session manifests to avoid duplicating coverage
+    # when two Claude Code windows work on the same project simultaneously.
+    cwd = payload.get("cwd")
+    if cwd:
+        try:
+            from pathlib import Path as _Path  # noqa: PLC0415
+
+            from .project import canonicalize as _canon  # noqa: PLC0415
+            from .project import project_hash as _ph  # noqa: PLC0415
+            from .session import FileEntry as _FileEntry  # noqa: PLC0415
+            _proj_hash = _ph(_canon(_Path(str(cwd))))
+            _session_files = [
+                {"rel_path": e.rel_or_abs, "hit_count": e.read_count, "last_read_ts": e.last_read_ts}
+                for e in (getattr(session_cache, "files", None) or {}).values()
+                if getattr(e, "rel_or_abs", "")
+            ]
+            compact_mod.write_session_manifest(_proj_hash, str(session_id), {
+                "session_id": str(session_id),
+                "files": _session_files,
+                "updated_at": time.time(),
+            })
+            _all_manifests = compact_mod.read_all_session_manifests(_proj_hash)
+            _merged = compact_mod.merge_session_manifests(_all_manifests, budget_tokens=200)
+            _current_files: dict[str, object] = getattr(session_cache, "files", {}) or {}
+            for _mentry in _merged:
+                _rel = _mentry.get("rel_path", "")
+                if _rel and _rel not in _current_files:
+                    _current_files[_rel] = _FileEntry(
+                        rel_or_abs=_rel,
+                        last_read_ts=float(_mentry.get("last_read_ts", 0.0)),
+                        read_count=int(_mentry.get("hit_count", 1)),
+                        line_ranges=[],
+                        symbols_read=[],
+                    )
+            session_cache.files = _current_files  # type: ignore[assignment]
+        except Exception:  # noqa: BLE001
+            _LOG.debug("pre-compact: cross-session dedup failed", exc_info=True)
+
     # --- Noop session fast-path ---
     # If the session has zero edits, zero bash commands, and zero symbols
     # accessed there is nothing worth preserving.  Skip manifest construction
