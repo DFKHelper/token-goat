@@ -92,10 +92,17 @@ class TestNoRewrite:
         assert "compress" in new_cmd
         assert "deploy" in new_cmd
 
-    def test_chain_with_all_unknown_segments_not_wrapped(self, tmp_data_dir, monkeypatch):
+    def test_chain_with_all_unknown_segments_wrapped_by_tail_trunc(self, tmp_data_dir, monkeypatch):
+        # TailTruncFilter is now the catch-all: && compound commands with unknown
+        # segments are wrapped (each segment gets tail-trunc) instead of skipped.
         monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)
         result = _dispatch(_payload("totally-bogus-1 && totally-bogus-2"))
-        assert "hookSpecificOutput" not in result
+        hso = result.get("hookSpecificOutput", {})
+        assert hso, "expected hookSpecificOutput for compound unknown command"
+        new_cmd = hso.get("updatedInput", {}).get("command", "")
+        assert "tail-trunc" in new_cmd
+        assert "totally-bogus-1" in new_cmd
+        assert "totally-bogus-2" in new_cmd
 
     def test_already_wrapped_command_not_double_wrapped(self, tmp_data_dir, monkeypatch):
         monkeypatch.delenv("TOKEN_GOAT_BASH_COMPRESS", raising=False)

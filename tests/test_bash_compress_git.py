@@ -706,8 +706,12 @@ class TestDetectSingleSegment:
     def test_rejects_command_substitution(self) -> None:
         assert bc._detect_single_segment("git log $(git rev-parse HEAD)") is None
 
-    def test_returns_none_for_unknown_command(self) -> None:
-        assert bc._detect_single_segment("my_totally_unregistered_tool --flag") is None
+    def test_unknown_command_routes_to_tail_trunc(self) -> None:
+        # TailTruncFilter is the catch-all; unknown tools no longer return None.
+        result = bc._detect_single_segment("my_totally_unregistered_tool --flag")
+        assert result is not None
+        filter_, _ = result
+        assert isinstance(filter_, bc.TailTruncFilter)
 
 
 class TestTryWrapCompoundSegments:
@@ -733,22 +737,28 @@ class TestTryWrapCompoundSegments:
         assert result is not None
         assert result.index("git-diff") < result.index("git-log")
 
-    def test_leaves_unknown_segment_unwrapped(self) -> None:
+    def test_unknown_segment_routes_to_tail_trunc(self) -> None:
+        # TailTruncFilter is now the catch-all: unknown segments (echo hello)
+        # are wrapped with tail-trunc instead of left bare.
         result = bc.try_wrap_compound_segments(
             "git diff && echo hello",
             wrapper_args=self._wrapper,
         )
         assert result is not None
         assert "wrapped[git-diff](git diff)" in result
-        assert "echo hello" in result
-        assert "wrapped" not in result.split("&&")[1]
+        # "echo hello" is now wrapped by TailTruncFilter (the catch-all).
+        assert "wrapped[tail-trunc](echo hello)" in result
 
-    def test_returns_none_when_no_segment_matches(self) -> None:
+    def test_all_unknown_segments_route_to_tail_trunc(self) -> None:
+        # TailTruncFilter is now the catch-all: all-unknown compound commands
+        # are wrapped instead of being left unwrapped (returned None).
         result = bc.try_wrap_compound_segments(
             "echo foo && echo bar",
             wrapper_args=self._wrapper,
         )
-        assert result is None
+        assert result is not None
+        assert "wrapped[tail-trunc](echo foo)" in result
+        assert "wrapped[tail-trunc](echo bar)" in result
 
     def test_returns_none_for_pipe(self) -> None:
         assert bc.try_wrap_compound_segments("git diff | grep foo", wrapper_args=self._wrapper) is None

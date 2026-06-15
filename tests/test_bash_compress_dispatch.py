@@ -179,7 +179,10 @@ def test_dispatch_matches(argv: list[str], expected_name: str) -> None:
 # 2. No-match pass-through
 # ---------------------------------------------------------------------------
 
-_NO_MATCH_COMMANDS: list[list[str]] = [
+# TailTruncFilter is the last catch-all in FILTERS (always matches); commands
+# not claimed by any more-specific filter now route to it.  For ≤500-line
+# outputs it passes through verbatim, so the change is invisible to callers.
+_TAIL_TRUNC_COMMANDS: list[list[str]] = [
     ["cat", "file.txt"],
     ["ssh", "user@host"],
     ["custom-build-tool", "--all"],
@@ -187,26 +190,27 @@ _NO_MATCH_COMMANDS: list[list[str]] = [
 ]
 
 
-@pytest.mark.parametrize("argv", _NO_MATCH_COMMANDS)
-def test_no_match_returns_none(argv: list[str]) -> None:
-    """Commands with no matching filter return None from select_filter."""
-    assert bc.select_filter(argv) is None
+@pytest.mark.parametrize("argv", _TAIL_TRUNC_COMMANDS)
+def test_unknown_commands_route_to_tail_trunc(argv: list[str]) -> None:
+    """Commands with no specific filter now fall through to TailTruncFilter."""
+    result = bc.select_filter(argv)
+    assert result is not None
+    assert isinstance(result, bc.TailTruncFilter)
 
 
 def test_no_match_output_verbatim() -> None:
-    """When no filter matches, the caller gets raw output back.
+    """Short output from an unknown command passes through unchanged.
 
-    In practice the hook layer won't wrap such a command at all (select_filter
-    returns None), but we verify that calling compress_output with the Generic
-    filter still preserves signal when no structural noise is present.
+    TailTruncFilter is now the catch-all fallback (≤500 lines → verbatim
+    pass-through), so signal is preserved just as when GenericFilter is used.
     """
     stdout = "special-tool: v1.2.3 installed successfully\nDone."
     stderr = ""
-    # No filter → caller passes through unchanged; verify select_filter is None.
-    assert bc.select_filter(["special-tool"]) is None
-    # Directly using GenericFilter should preserve all signal content.
-    gf = bc.GenericFilter()
-    result = gf.apply(stdout, stderr, 0, ["special-tool"])
+    # Unknown command now routes to TailTruncFilter (the catch-all).
+    flt = bc.select_filter(["special-tool"])
+    assert isinstance(flt, bc.TailTruncFilter)
+    # Short output passes through verbatim.
+    result = flt.apply(stdout, stderr, 0, ["special-tool"])
     assert "special-tool: v1.2.3 installed successfully" in result.text
     assert "Done." in result.text
 
@@ -1507,8 +1511,12 @@ class TestDetectFromCommand:
     def test_empty_command_returns_none(self) -> None:
         assert bc.detect_from_command("") is None
 
-    def test_unknown_command_returns_none(self) -> None:
-        assert bc.detect_from_command("unknown-tool --flag") is None
+    def test_unknown_command_routes_to_tail_trunc(self) -> None:
+        # TailTruncFilter is the catch-all; detect_from_command now returns it.
+        result = bc.detect_from_command("unknown-tool --flag")
+        assert result is not None
+        filter_, _ = result
+        assert isinstance(filter_, bc.TailTruncFilter)
 
     def test_prefix_stripped_correctly(self) -> None:
         result = bc.detect_from_command("sudo uv run pytest tests/")

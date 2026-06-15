@@ -351,8 +351,10 @@ class TestSelectFilter:
         f = bc.select_filter(["git", "status"])
         assert f is not None and f.name in ("git", "git-status")
 
-    def test_unknown_command_returns_none(self):
-        assert bc.select_filter(["totally-unknown-binary"]) is None
+    def test_unknown_command_routes_to_tail_trunc(self):
+        # TailTruncFilter is now the catch-all fallback for unrecognised commands.
+        result = bc.select_filter(["totally-unknown-binary"])
+        assert isinstance(result, bc.TailTruncFilter)
 
     def test_empty_argv_returns_none(self):
         assert bc.select_filter([]) is None
@@ -397,7 +399,11 @@ class TestDetectFromCommand:
         assert bc.detect_from_command("") is None
 
     def test_unknown_binary(self):
-        assert bc.detect_from_command("totally-unknown") is None
+        # TailTruncFilter is the catch-all; detect_from_command now returns it for any binary.
+        result = bc.detect_from_command("totally-unknown")
+        assert result is not None
+        filter_, _ = result
+        assert isinstance(filter_, bc.TailTruncFilter)
 
     def test_quoted_angle_bracket_not_rejected(self):
         """A > or < inside a quoted argument must not be treated as a shell redirect.
@@ -2715,9 +2721,10 @@ class TestMypyFilterExtra:
 class TestFilterDispatchEdgeCases:
     """Edge cases for filter dispatch and empty-input handling."""
 
-    def test_unknown_binary_returns_none(self) -> None:
-        """select_filter returns None for an unrecognised binary."""
-        assert bc.select_filter(["unknowntool", "--flag"]) is None
+    def test_unknown_binary_routes_to_tail_trunc(self) -> None:
+        """select_filter returns TailTruncFilter for an unrecognised binary (catch-all)."""
+        result = bc.select_filter(["unknowntool", "--flag"])
+        assert isinstance(result, bc.TailTruncFilter)
 
     def test_empty_argv_returns_none(self) -> None:
         """select_filter returns None for empty argv."""
