@@ -3895,6 +3895,7 @@ def cmd_bash_output(
     head_tail: bool = _OPT_HEAD_TAIL,
     section: str | None = _OPT_SECTION,
     json_output: bool = _OPT_JSON,
+    diff: bool = typer.Option(False, "--diff", help="Show unified diff of what was elided by the smart-default trimming (compressed vs full)."),  # noqa: B008
 ) -> None:
     """Retrieve a sliced view of a cached Bash output.
 
@@ -3905,19 +3906,46 @@ def cmd_bash_output(
 
     By default (no flags), large outputs are trimmed to the first
     30 lines and last 80 lines with an elision marker.  Pass ``--full`` to
-    get everything.  Combine ``--head``, ``--tail``, ``--grep``, and
-    ``--section`` to narrow further; those flags suppress the smart default
-    automatically.  ``--grep`` accepts regex patterns (falls back to literal
-    on invalid syntax) and is case-insensitive by default; add
-    ``--case-sensitive`` for exact matching.  ``--section HEADING`` extracts a
-    specific markdown section by heading text (case-insensitive; supports
-    ``Heading#2`` for the second occurrence).  Use ``--head-tail`` to get just
-    the first+last 20 lines (useful for large outputs where you only need the
-    gist).  Use ``--grep-max N`` to cap the number of matching lines returned
-    (default 20; 0 = no cap).  JSON mode includes the full path and stored
-    byte size.
+    get everything.  Pass ``--diff`` to see a unified diff of what the
+    smart-default trimming removed (lines present in the full output but
+    absent from the default view).  Combine ``--head``, ``--tail``,
+    ``--grep``, and ``--section`` to narrow further; those flags suppress the
+    smart default automatically.  ``--grep`` accepts regex patterns (falls
+    back to literal on invalid syntax) and is case-insensitive by default;
+    add ``--case-sensitive`` for exact matching.  ``--section HEADING``
+    extracts a specific markdown section by heading text (case-insensitive;
+    supports ``Heading#2`` for the second occurrence).  Use ``--head-tail``
+    to get just the first+last 20 lines (useful for large outputs where you
+    only need the gist).  Use ``--grep-max N`` to cap the number of matching
+    lines returned (default 20; 0 = no cap).  JSON mode includes the full
+    path and stored byte size.
     """
     from . import bash_cache  # noqa: PLC0415
+
+    if full and diff:
+        _error("Use --full or --diff, not both.")
+        raise typer.Exit(1)
+
+    if diff:
+        import difflib  # noqa: PLC0415
+        body = bash_cache.load_output(output_id)
+        if body is None:
+            _error(f"no cached output for id: {output_id}")
+            raise typer.Exit(1)
+        full_lines = body.splitlines()
+        compressed_lines = _apply_smart_default(full_lines)
+        diff_lines = list(difflib.unified_diff(
+            compressed_lines,
+            full_lines,
+            fromfile="compressed",
+            tofile="full",
+            lineterm="",
+        ))
+        if diff_lines:
+            typer.echo("\n".join(diff_lines))
+        else:
+            typer.echo("(no diff: output is short enough that trimming was not applied)")
+        return
 
     _run_output_recall_command(
         output_id=output_id,
