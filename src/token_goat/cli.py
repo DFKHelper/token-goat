@@ -3336,9 +3336,32 @@ def stats(
             "Example: --since 7 for last 7 days, --since 1 for today."
         ),
     ),
+    session_id: str | None = _OPT_SESSION_ID,
+    global_: bool = typer.Option(False, "--global", help="Show all-time compression metrics instead of session-scoped view"),  # noqa: B008
 ) -> None:
-    """Show cumulative token savings."""
+    """Show cumulative token savings.
+
+    With ``--session-id`` or ``--global``, prints a focused compression summary
+    (bash outputs compressed, tokens saved, reread denies, images shrunk) instead
+    of the full rich table.  Use ``--json`` with either flag for machine-readable output.
+    """
     from . import cli_stats  # noqa: PLC0415
+
+    # --session-id / --global trigger the focused compression metrics view.
+    if session_id is not None or global_:
+        from . import db as _db  # noqa: PLC0415
+        sid = None if global_ else session_id
+        label = "all-time" if global_ else f"session {session_id[:8] if session_id else ''}"
+        data = _db.get_compression_stats(session_id=sid)
+        if json_output:
+            typer.echo(json.dumps(data, separators=(",", ":")))
+        else:
+            typer.echo(f"Token savings ({label}):")
+            typer.echo(f"  Bash outputs compressed : {data['outputs_compressed']:,}")
+            typer.echo(f"  Estimated tokens saved  : {data['tokens_saved']:,}")
+            typer.echo(f"  Reread denies           : {data['reread_denies']:,}")
+            typer.echo(f"  Images shrunk           : {data['images_shrunk']:,}")
+        return
 
     # --since is a friendlier alias for --window; it takes precedence when both are specified.
     effective_window = since if since is not None else window

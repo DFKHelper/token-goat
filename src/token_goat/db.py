@@ -44,6 +44,7 @@ __all__ = [
     "list_all_project_hashes",
     "get_file_exports",
     "get_file_importers",
+    "get_compression_stats",
     "get_file_imports",
     "get_refs_with_callers",
     "get_symbol_callers",
@@ -2025,3 +2026,72 @@ def get_file_importers(
         return []
     except Exception:  # noqa: BLE001
         return []
+
+
+def get_compression_stats(session_id: str | None = None) -> dict:
+    """Return focused compression metrics from the global stats table.
+
+    When *session_id* is provided the query is restricted to events recorded
+    since that session's ``started_ts``; pass ``None`` for all-time aggregates.
+
+    Returns a dict with keys:
+      tokens_saved        – sum of tokens_saved across positive (non-overhead) rows
+      outputs_compressed  – count of bash_output_cached events
+      reread_denies       – count of reread_deny events
+      images_shrunk       – count of image_shrink / image_shrink_cache_hit events
+      top_filters         – top-3 kinds by tokens_saved: [{"filter": str, "tokens_saved": int}]
+    """
+    since_ts: float | None = None
+    if session_id is not None:
+        try:
+            from .session import safe_load as _safe_load  # noqa: PLC0415
+            _cache = _safe_load(session_id, caller="get_compression_stats")
+            if _cache is not None:
+                since_ts = _cache.started_ts
+        except Exception:  # noqa: BLE001
+            pass
+
+    ts_clause = "AND ts >= ?" if since_ts is not None else ""
+    base_params: tuple = (since_ts,) if since_ts is not None else ()
+
+    try:
+        with open_global_readonly() as conn:
+            _row = conn.execute(
+                f"SELECT COALESCE(SUM(tokens_saved),0) FROM stats WHERE tokens_saved > 0 AND kind NOT LIKE '%_overhead' {ts_clause}",
+                base_params,
+            ).fetchone()
+            tokens_saved = int(_row[0]) if _row else 0
+
+            _row = conn.execute(
+                f"SELECT COUNT(*) FROM stats WHERE kind = 'bash_output_cached' {ts_clause}",
+                base_params,
+            ).fetchone()
+            outputs_compressed = int(_row[0]) if _row else 0
+
+            _row = conn.execute(
+                f"SELECT COUNT(*) FROM stats WHERE kind = 'reread_deny' {ts_clause}",
+                base_params,
+            ).fetchone()
+            reread_denies = int(_row[0]) if _row else 0
+
+            _row = conn.execute(
+                f"SELECT COUNT(*) FROM stats WHERE kind IN ('image_shrink','image_shrink_cache_hit') {ts_clause}",
+                base_params,
+            ).fetchone()
+            images_shrunk = int(_row[0]) if _row else 0
+
+            _rows = conn.execute(
+                f"SELECT kind, SUM(tokens_saved) AS ts_sum FROM stats WHERE tokens_saved > 0 AND kind NOT LIKE '%_overhead' {ts_clause} GROUP BY kind ORDER BY ts_sum DESC LIMIT 3",
+                base_params,
+            ).fetchall()
+            top_filters = [{"filter": str(r[0]), "tokens_saved": int(r[1])} for r in _rows]
+    except Exception:  # noqa: BLE001
+        return {"tokens_saved": 0, "outputs_compressed": 0, "reread_denies": 0, "images_shrunk": 0, "top_filters": []}
+
+    return {
+        "tokens_saved": tokens_saved,
+        "outputs_compressed": outputs_compressed,
+        "reread_denies": reread_denies,
+        "images_shrunk": images_shrunk,
+        "top_filters": top_filters,
+    }
