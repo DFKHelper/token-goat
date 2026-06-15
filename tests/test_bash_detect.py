@@ -159,9 +159,13 @@ class TestBashCompressNotImportedForUnknownBinary:
     a filter name (or '&&' is present in the command).
     """
 
-    def test_bash_compress_not_imported_for_unknown_cmd(self, tmp_data_dir) -> None:
+    def test_bash_compress_not_imported_for_unknown_cmd(self, tmp_data_dir, monkeypatch) -> None:
         """An unrecognised binary command must not trigger bash_compress import."""
-        sys.modules.pop("token_goat.bash_compress", None)
+        # Use monkeypatch so the eviction is undone after the test; a bare
+        # sys.modules.pop() would permanently remove the entry in this worker
+        # process, causing later imports to produce a new class identity and
+        # breaking isinstance() checks in other test modules.
+        monkeypatch.delitem(sys.modules, "token_goat.bash_compress", raising=False)
 
         payload: dict = {
             "session_id": "det_sess_1",
