@@ -269,6 +269,8 @@ __all__ = [
     "NgFilter",
     # TypeScript compiler (tsc --watch, --build, --noEmit)
     "TscFilter",
+    # JSON array deduplication / truncation
+    "JsonArrayFilter",
 ]
 
 import json as _json
@@ -23861,6 +23863,92 @@ class DotenvFilter(Filter):
         return self._finalize(kept)
 
 
+# --- JSON array deduplication / truncation -----------------------------------
+
+_JSON_ARRAY_MAX_ITEMS = 50
+
+
+class JsonArrayFilter(Filter):
+    """Compress JSON array output (e.g. ``npm ls --json``, ``gh api``, ``kubectl … -o json``).
+
+    Compression model:
+
+    * **Non-array / invalid JSON** — passed through unchanged.
+    * **Key-set deduplication** — objects sharing the same ``frozenset`` of
+      top-level keys are collapsed; all but the first are dropped and a
+      ``[... N duplicate objects with keys {k1, k2, …} omitted]`` line is
+      appended per group.  Non-dict items are kept as-is.
+    * **Truncation** — after deduplication, if the array still exceeds
+      :data:`_JSON_ARRAY_MAX_ITEMS` items the excess is dropped and a
+      ``[... N more items not shown]`` suffix is appended.
+    * **Passthrough** — when nothing was changed (no dups, no truncation) the
+      original text is returned byte-for-byte so downstream callers can detect
+      zero savings.
+    """
+
+    name = "json_array"
+    # "json" is the binary stem registered in bash_detect._BINARY_TO_FILTER;
+    # content-based detection (stdout starts with '[') is the primary path.
+    binaries: frozenset[str] = frozenset(["json"])
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        if not argv:
+            return False
+        return Path(argv[0]).stem.lower() in self.binaries
+
+    def detect_from_command(self, cmd: str) -> bool:  # noqa: D102
+        return False  # content-based only; the hook layer routes via detect()
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        text = stdout if stdout.strip() else (stdout + stderr)
+        stripped = text.strip()
+        if not (stripped.startswith("[") and stripped.endswith("]")):
+            return text
+        try:
+            data = _json.loads(stripped)
+        except _json.JSONDecodeError:
+            return text
+        if not isinstance(data, list):
+            return text
+
+        # --- key-set deduplication (dicts only) ----------------------------
+        seen: dict[frozenset[str], int] = {}  # keyset → first-index position
+        kept: list[object] = []
+        dup_counts: dict[frozenset[str], int] = {}
+        for item in data:
+            if isinstance(item, dict):
+                ks = frozenset(item.keys())
+                if ks in seen:
+                    dup_counts[ks] = dup_counts.get(ks, 0) + 1
+                else:
+                    seen[ks] = len(kept)
+                    kept.append(item)
+            else:
+                kept.append(item)
+        changed = bool(dup_counts)
+
+        # --- truncation ----------------------------------------------------
+        suffix_lines: list[str] = []
+        if dup_counts:
+            for ks, n in dup_counts.items():
+                keys_repr = ", ".join(sorted(ks))
+                suffix_lines.append(f"[... {n} duplicate objects with keys {{{keys_repr}}} omitted]")
+        if len(kept) > _JSON_ARRAY_MAX_ITEMS:
+            extra = len(kept) - _JSON_ARRAY_MAX_ITEMS
+            kept = kept[:_JSON_ARRAY_MAX_ITEMS]
+            suffix_lines.append(f"[... {extra} more items not shown]")
+            changed = True
+
+        if not changed:
+            return text
+
+        parts = [_json.dumps(kept, indent=2)]
+        parts.extend(suffix_lines)
+        return "\n".join(parts)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -24243,6 +24331,10 @@ FILTERS: list[Filter] = [
     # NgFilter handles Angular CLI (`ng build`, `ng test`, `ng serve`); disjoint
     # binary from every other filter so position is cosmetic.
     NgFilter(),
+    # JsonArrayFilter handles JSON array output; content-based detection only —
+    # no fixed binary so it is placed last and invoked explicitly by the hook
+    # when stdout starts with '['.
+    JsonArrayFilter(),
 ]
 
 

@@ -131,6 +131,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "javac": "javac",
     "jest": "jest",
     "jq": "jq",
+    "json": "json_array",
     "julia": "julia",
     "k": "kubectl-logs",
     "k9s": "kubectl",
@@ -271,12 +272,16 @@ _BINARY_TO_FILTER: dict[str, str] = {
 }
 
 
-def detect(argv: list[str]) -> str | None:
+def detect(argv: list[str], *, stdout: str = "") -> str | None:
     """Return the filter name for *argv*, or ``None`` if no filter matches.
 
     Checks the binary stem (``Path(argv[0]).stem.lower()``) against the static
     lookup table.  Returns the filter name string (e.g. ``"pytest"``) when a
     match is found, ``None`` otherwise.
+
+    When no binary-level match is found and *stdout* is provided, a content-
+    based fallback routes JSON array output (stripped stdout starts with ``[``)
+    to the ``"json_array"`` filter regardless of the command name.
 
     This function intentionally does NOT check subcommands — that finer
     discrimination is left to bash_compress.select_filter() which is only
@@ -285,4 +290,10 @@ def detect(argv: list[str]) -> str | None:
     if not argv:
         return None
     stem = Path(argv[0].replace("\\", "/")).stem.lower()
-    return _BINARY_TO_FILTER.get(stem)
+    result = _BINARY_TO_FILTER.get(stem)
+    if result is not None:
+        return result
+    # Content-based fallback: JSON array output from any unknown command.
+    if stdout and stdout.strip().startswith("["):
+        return "json_array"
+    return None
