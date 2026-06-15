@@ -1825,11 +1825,11 @@ class TestGrepFilter:
         ["rg", "pattern", "src/"],
         ["grep", "-r", "pattern", "."],
     ])
-    def test_select_filter_returns_grep(self, argv):
-        """select_filter dispatches grep-family commands to GrepFilter."""
+    def test_select_filter_returns_rg_for_rg_grep(self, argv):
+        """select_filter dispatches rg/grep commands to RgFilter (context-line suppressor)."""
         f = bc.select_filter(argv)
         assert f is not None
-        assert f.name == "grep"
+        assert f.name == "rg"
 
     def test_select_filter_git_still_dispatches_git_log(self):
         """Git log is handled by GitLogFilter (or GitFilter as fallback), not GrepFilter."""

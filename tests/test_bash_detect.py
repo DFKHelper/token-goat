@@ -37,8 +37,8 @@ class TestDetectKnownBinaries:
     def test_mvn(self) -> None:
         assert bash_detect.detect(["mvn"]) == "maven"
 
-    def test_rg_mapped_to_grep(self) -> None:
-        assert bash_detect.detect(["rg"]) == "grep"
+    def test_rg_mapped_to_rg(self) -> None:
+        assert bash_detect.detect(["rg"]) == "rg"
 
     def test_kubectl(self) -> None:
         assert bash_detect.detect(["kubectl"]) == "kubectl-logs"

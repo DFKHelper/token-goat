@@ -95,9 +95,9 @@ _DISPATCH_CASES: list[tuple[list[str], str]] = [
     (["tsc", "--noEmit"], "tsc"),
     # ---- LinterFilter ----
     (["pyright", "src/"], "linter"),
-    # ---- GrepFilter ----
-    (["grep", "-r", "pattern", "src/"], "grep"),
-    (["rg", "pattern", "src/"], "grep"),
+    # ---- RgFilter (context-line suppressor, first-match for rg/grep) ----
+    (["grep", "-r", "pattern", "src/"], "rg"),
+    (["rg", "pattern", "src/"], "rg"),
     (["ag", "pattern"], "grep"),
     # ---- GitFilter and dedicated sub-filters ----
     # git status / log / diff / commit / push are claimed by dedicated sub-filters;

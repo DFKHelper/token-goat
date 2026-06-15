@@ -181,6 +181,7 @@ __all__ = [
     "ESLintFilter",
     "LinterFilter",
     "GrepFilter",
+    "RgFilter",
     "GitFilter",
     "GoTestFilter",
     "PreCommitFilter",
@@ -9657,6 +9658,57 @@ class GrepFilter(Filter):
             f"to {len(out_lines)} — disable via TOKEN_GOAT_BASH_COMPRESS]"
         )
         return "\n".join(out_lines)
+
+
+# --- rg / grep context-line suppressor --------------------------------------
+
+#: Threshold: outputs with this many or fewer lines pass through unchanged.
+_RG_CONTEXT_THRESHOLD: Final[int] = 30
+
+
+class RgFilter(Filter):
+    """Strip context lines from rg/grep -C/-A/-B output when output is large.
+
+    rg and grep with context flags produce three line types:
+    - Match lines: filepath:linenum:content (colons around linenum)
+    - Context lines: filepath-linenum-content (dashes around linenum)
+    - Group separators: --
+
+    When output exceeds _RG_CONTEXT_THRESHOLD lines and context output is
+    detected (via -- separator lines), context lines and separators are dropped.
+    Pure match output (no -- separators) and short output pass through unchanged.
+    """
+
+    name = "rg"
+    binaries = frozenset(["rg", "grep"])
+
+    _SEP = "--"
+    _CTX_LINE_RE: ClassVar[re.Pattern[str]] = re.compile(r"^.+-\d+-")
+    _MATCH_LINE_RE: ClassVar[re.Pattern[str]] = re.compile(r"^.+:\d+:")
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        text = self._combine_output(stdout, stderr)
+        lines = text.split("\n")
+        if len(lines) <= _RG_CONTEXT_THRESHOLD:
+            return text
+        if not any(ln == self._SEP for ln in lines):
+            return text
+        kept: list[str] = []
+        suppressed = 0
+        for ln in lines:
+            if ln == self._SEP or (self._CTX_LINE_RE.match(ln) and not self._MATCH_LINE_RE.match(ln)):
+                suppressed += 1
+            else:
+                kept.append(ln)
+        if suppressed == 0:
+            return text
+        kept.append(
+            f"[token-goat: {suppressed} context lines suppressed"
+            f" — rerun with -l for filenames only or without -C/-A/-B for matches only]"
+        )
+        return "\n".join(kept)
 
 
 # --- dep-list (pip list / npm list / cargo tree / poetry show / ...) --------
@@ -24168,6 +24220,7 @@ FILTERS: list[Filter] = [
     ESLintFilter(),
     BiomeFilter(),
     LinterFilter(),
+    RgFilter(),
     GrepFilter(),
     # Dedicated git sub-filters must precede GitFilter: each claims a specific
     # subcommand (log / diff / show / status / blame / commit / push) with richer
