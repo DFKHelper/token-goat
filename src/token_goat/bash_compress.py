@@ -287,6 +287,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Final
 
+from .entropy import has_high_entropy_token
 from .hooks_common import record_cached_stat
 from .render.ansi import strip_ansi
 from .util import env_int, get_logger, sanitize_control_chars
@@ -24348,10 +24349,13 @@ class JsonArrayFilter(Filter):
         for item in data:
             if isinstance(item, dict):
                 ks = frozenset(item.keys())
-                if ks in seen:
+                # Preserve objects whose values contain high-entropy tokens (UUIDs, hashes, JWTs).
+                preserve = any(isinstance(v, str) and has_high_entropy_token(v) for v in item.values())
+                if ks in seen and not preserve:
                     dup_counts[ks] = dup_counts.get(ks, 0) + 1
                 else:
-                    seen[ks] = len(kept)
+                    if ks not in seen:
+                        seen[ks] = len(kept)
                     kept.append(item)
             else:
                 kept.append(item)
