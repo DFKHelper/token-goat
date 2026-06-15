@@ -240,6 +240,79 @@ def _close_file_matches(project: Project, file_part: str) -> list[str]:
     return [basename_to_rel[b] for b in close_basenames]
 
 
+def _load_skipped_large(project_hash: str) -> list[dict]:
+    """Return files recorded as skipped during indexing for exceeding the size cap.
+
+    Reads the ``skipped_large_files`` meta row written by
+    :func:`token_goat.parser.index_project`.  Each entry is a dict with
+    ``rel_path`` (POSIX, project-relative) and ``size_bytes``.  Returns an empty
+    list when the project is unindexed, has no over-cap files, or the meta row is
+    absent/malformed — callers then fall back to the generic "not found" path.
+    """
+    try:
+        with db.open_project_readonly(project_hash) as conn:
+            row = conn.execute(
+                "SELECT value FROM meta WHERE key = ?", ("skipped_large_files",)
+            ).fetchone()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
+        _LOG.debug("skipped-large meta query failed for %s: %s", project_hash[:8], exc)
+        return []
+    raw = row["value"] if row is not None else None
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict)]
+
+
+def over_cap_file_hint(file_part: str, project: Project | None) -> str | None:
+    """Return an actionable hint when *file_part* names a file that exists in the
+    project but was skipped at index time for exceeding the size cap.
+
+    The indexer records over-cap files in the ``skipped_large_files`` meta row
+    instead of indexing them, so symbol/read/outline lookups miss with a generic
+    "not found" plus unrelated "did you mean…?" suggestions.  This surfaces the
+    real reason and points at line-range reads, which still work on unindexed
+    files.  Returns ``None`` when nothing matches so genuine typos keep the normal
+    suggestion behaviour.
+
+    Matching is path-aware (case-insensitive exact path, trailing path-component,
+    or shared basename) because callers pass a variety of forms: a full ``a/b/c.js``
+    path from ``read``, a partial ``--file`` needle from ``symbol``, or a bare
+    basename.  A plain substring test was avoided because it false-matches across
+    filename boundaries (``service.py`` inside ``user_service.py``).  The skip list
+    is tiny (usually zero entries), so the linear scan is effectively free.
+    """
+    if project is None or not file_part:
+        return None
+    entries = _load_skipped_large(project.hash)
+    if not entries:
+        return None
+    needle = file_part.replace("\\", "/").lower()
+    if needle.startswith("./"):
+        needle = needle[2:]
+    needle_base = needle.rsplit("/", 1)[-1]
+    for entry in entries:
+        rel = str(entry.get("rel_path", ""))
+        rel_norm = rel.replace("\\", "/").lower()
+        if not rel_norm:
+            continue
+        rel_base = rel_norm.rsplit("/", 1)[-1]
+        if rel_norm == needle or rel_norm.endswith("/" + needle) or (needle_base and needle_base == rel_base):
+            from .parser import MAX_FILE_SIZE  # noqa: PLC0415
+            limit_mb = MAX_FILE_SIZE / 1024 / 1024
+            return (
+                f"File '{rel}' exists but was not indexed "
+                f"(file size exceeds the {limit_mb:.0f} MB limit). "
+                f'Use line-range reads: `token-goat read "{rel}::1-200"` to read sections.'
+            )
+    return None
+
+
 def _emit_read_error(
     *,
     code: str,
@@ -322,6 +395,18 @@ def _emit_file_not_found_error(
                 project_hash=current_proj.hash,
             )
         else:
+            over_cap = over_cap_file_hint(file_part, current_proj)
+            if over_cap is not None:
+                _emit_read_error(
+                    code="file_over_cap",
+                    message=over_cap,
+                    json_output=json_output,
+                    file_part=file_part,
+                    project_hash=current_proj.hash,
+                )
+                # Exit non-zero so callers (and shells) see the over-cap miss as a
+                # failure, even on read paths whose generic miss returns 0.
+                raise typer.Exit(1)
             suggestions = _close_file_matches(current_proj, file_part)
             base_message = f"File not found in any indexed project: {file_part}"
             if suggestions and not json_output:
@@ -1458,6 +1543,10 @@ def outline(
     """
     target = _resolve_file_target(file)
     if target.project is None or target.rel_path is None:
+        over_cap = over_cap_file_hint(file, target.current_project)
+        if over_cap is not None:
+            typer.echo(over_cap)
+            raise typer.Exit(1)
         typer.echo(f"File not found in any indexed project: {file}")
         hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
         if hint:

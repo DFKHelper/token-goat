@@ -26,6 +26,7 @@ __all__ = [
 import contextlib
 import hashlib
 import heapq
+import json
 import os
 import sqlite3
 import threading
@@ -1101,6 +1102,22 @@ def index_project(
             _upsert_meta(conn, "last_full_index_at", str(int(time.time())))
             _upsert_meta(conn, "project_root", project.root.as_posix())
             _upsert_meta(conn, "project_marker", project.marker)
+            # Persist the over-cap skip list so later read/symbol/outline misses
+            # can explain *why* a known file is unreadable (it exceeded the size
+            # cap) instead of emitting a generic "not found" with unrelated
+            # suggestions.  Only the "skipped" tier is stored — symbol-only files
+            # are still in the symbol index, so reads against them resolve.
+            _upsert_meta(
+                conn,
+                "skipped_large_files",
+                json.dumps(
+                    [
+                        {"rel_path": lf.rel_path, "size_bytes": lf.size_bytes}
+                        for lf in _skipped_large
+                    ],
+                    separators=(",", ":"),
+                ),
+            )
 
         # Update global registry
         with db.open_global() as gconn:

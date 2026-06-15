@@ -931,6 +931,7 @@ def symbol(
         not_found_extra: str | None = None,
         close_matches: list[str] | None = None,
         redirected_from: str | None = None,
+        over_cap_hint: str | None = None,
     ) -> None:
         """Emit symbol results as JSON or plain text; print a not-found message when empty.
 
@@ -966,6 +967,11 @@ def symbol(
             }
             if redirected_from is not None:
                 envelope["redirected_from"] = redirected_from
+            # When --file scopes the search to a file skipped at index time for
+            # exceeding the size cap, surface that signal in the envelope so an
+            # empty result set is distinguishable from "symbol not in that file".
+            if file and not results and over_cap_hint is not None:
+                envelope["over_cap"] = over_cap_hint
             typer.echo(json.dumps(envelope, separators=(",", ":")))
         elif results:
             if redirected_from is not None:
@@ -982,7 +988,14 @@ def symbol(
             # close matches in a half-indexed project would be misleading.
             if not quiet:
                 if file:
-                    typer.echo(f"No symbol {name!r} found in files matching {file!r}")
+                    # When --file names a file that exists but was skipped at
+                    # index time for exceeding the size cap, explain that instead
+                    # of the generic "no symbol found" miss (the symbol may well
+                    # live in the unindexed file; line-range reads still work).
+                    if over_cap_hint:
+                        typer.echo(over_cap_hint)
+                    else:
+                        typer.echo(f"No symbol {name!r} found in files matching {file!r}")
                 else:
                     typer.echo(not_found_extra if not_found_extra else f"No matches for {name!r}")
                     if close_matches and not not_found_extra:
@@ -1227,11 +1240,18 @@ def symbol(
     not_found_extra = hint
     if inline_hit and not not_found_extra:
         not_found_extra = None
+    # If --file scoped the search to a file that was skipped at index time for
+    # exceeding the size cap, surface that as the miss reason rather than the
+    # generic "no symbol found in files matching" message.
+    over_cap_hint = (
+        read_commands.over_cap_file_hint(file, proj) if (file and not results) else None
+    )
     _emit_results(
         results,
         not_found_extra=not_found_extra,
         close_matches=close,
         redirected_from=redirected,
+        over_cap_hint=over_cap_hint,
     )
     if file and not results:
         raise typer.Exit(1)
