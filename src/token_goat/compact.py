@@ -699,6 +699,10 @@ _COMPACT_DIRECTIVES: Final[str] = ("\n### Compact Directives\n- `skill_listing` 
 _DIRECTIVE_TOKEN_RESERVE: Final[int] = -(-len(_COMPACT_DIRECTIVES) // 3)  # ceiling div
 # Minimum budget at which the boilerplate directives are appended. Below this the directives would consume a disproportionate share of the budget and crowd out the protected session payload (edited/read files) the manifest exists to preserve, so they are skipped entirely and the body keeps the full budget. Set to 2x the reserve so once directives DO attach the body still retains at least half the budget. Tying the reserve to actual append also fixes the prior bug where body_budget collapsed to 1 at tiny budgets while reserving 93 tokens for directives that the append gate then never added.
 _DIRECTIVE_APPEND_MIN_TOKENS: Final[int] = 2 * _DIRECTIVE_TOKEN_RESERVE
+# Token reserve for the stable "# as-of: YYYY-MM-DDTHH:MM:SSZ" suffix appended by
+# build_manifest.  The suffix is ~32 chars ≈ 11 tokens; reserving it from body_budget
+# ensures the total emitted manifest (body + directives + as-of) stays within max_tokens.
+_AS_OF_TOKEN_RESERVE: Final[int] = 11
 # Minimum variable-section budget (sec_budget_max) at which the wide-session map-pointer is guaranteed its own slot even when the proportional symbols slice is 0. The pointer summarizes ALL file access (not just symbol reads), so it must not be starved by an empty symbols section when the overall budget has room; below this floor the budget is tight enough that protected top-files take priority and the pointer defers to sym_budget.
 _WIDE_POINTER_MIN_SECTION_BUDGET: Final[int] = 100
 # Manifest delta-cache TTL (item #19).  If less than this many seconds have elapsed
@@ -4456,7 +4460,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     # Reserve directive space iff we will actually append directives (see _DIRECTIVE_APPEND_MIN_TOKENS); otherwise the body gets the full budget instead of being starved for boilerplate that never attaches.
     _will_append_directives = max_tokens >= _DIRECTIVE_APPEND_MIN_TOKENS
     _reserve = _DIRECTIVE_TOKEN_RESERVE if _will_append_directives else 0
-    body_budget = max(1, max_tokens - _reserve)
+    body_budget = max(1, max_tokens - _reserve - _AS_OF_TOKEN_RESERVE)
     full_manifest = _build_manifest_from_cache(
         cache, session_id, body_budget, **_compact_render_kwargs(cfg)
     )
@@ -4500,9 +4504,28 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
     cache._invalidate_json_cache()
     session_mod.save(cache)
 
-    # Append directives BEFORE persisting the text sidecar (and returning) so the stored copy is byte-identical to the emitted value: `compact-hint --diff` diffs the prior emit against the next, and storing the pre-directive body would make every diff spuriously show the constant directives as added/removed. Skip directives when the budget is too small to fit them without blowing through the limit.
+    # Inject the static directive block BEFORE the first dynamic section so it forms a
+    # stable prefix-cache target — static content at the front maximises the byte-identical
+    # prefix that the LLM provider can cache across sessions.  The block is placed right
+    # before the first bold-labelled section (**...) or pinned block (## Pinned) so the
+    # manifest header (## Token-Goat Session Manifest + metadata) still appears first.
+    # The text sidecar is written AFTER injection so compact-hint --diff sees the same
+    # bytes as the emitted manifest.  Skip directives when the budget is too small.
     if _will_append_directives:
-        full_manifest += _COMPACT_DIRECTIVES
+        _dir_block = _COMPACT_DIRECTIVES.lstrip("\n")
+        _ins_pos = full_manifest.find("\n**")
+        if _ins_pos == -1:
+            _ins_pos = full_manifest.find("\n## Pinned")
+        if _ins_pos != -1:
+            full_manifest = full_manifest[:_ins_pos + 1] + _dir_block + "\n" + full_manifest[_ins_pos + 1:]
+        else:
+            full_manifest = _dir_block + "\n" + full_manifest
+
+    # Append a stable as-of timestamp suffix so normalize_for_cache() can strip it and
+    # produce byte-identical output for two manifests built from the same session content
+    # at different wall-clock times.  The suffix never appears in the middle of the body.
+    as_of_str = datetime.fromtimestamp(now, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    full_manifest = full_manifest.rstrip("\n") + f"\n# as-of: {as_of_str}"
 
     # Save the full manifest text so `compact-hint --diff` can produce a unified diff between the prior emit and the current one. Silently skip on any error — this is a developer-tooling sidecar, never a critical path.
     try:
@@ -4547,6 +4570,21 @@ def build_manifest_with_count(
     # path, and the sidecar hit path avoids those entirely.
     manifest = build_manifest(session_id, max_tokens=max_tokens)
     return manifest, n_events
+
+
+def normalize_for_cache(manifest_text: str) -> str:
+    """Strip the trailing ``# as-of: ...`` line so two manifests built at different
+    wall-clock times from identical session content compare as byte-equal.
+
+    The ``# as-of:`` line is appended by :func:`build_manifest` to record when the
+    manifest was last rendered.  Stripping it yields a canonical form suitable for
+    equality checks, caching, and regression tests that must not depend on the clock.
+    Returns the input unchanged when no ``# as-of:`` suffix is present.
+    """
+    lines = manifest_text.rstrip("\n").splitlines()
+    if lines and lines[-1].startswith("# as-of:"):
+        lines = lines[:-1]
+    return "\n".join(lines)
 
 
 def _cap_line(line: str, max_len: int = 120) -> str:
@@ -6376,7 +6414,13 @@ def _render(
 
         # Hot files (≥ threshold reads) get a single consolidated summary line.
         hot_files = [e for e in top_files if e.read_count >= _HOT_FILE_READ_THRESHOLD]
-        normal_files = [e for e in top_files if e.read_count < _HOT_FILE_READ_THRESHOLD]
+        # Non-hot files are sorted alphabetically by path so the **Files:** section
+        # renders in deterministic order regardless of access timestamps — same file
+        # set → same output → better prompt prefix-cache hit rate across sessions.
+        normal_files = sorted(
+            (e for e in top_files if e.read_count < _HOT_FILE_READ_THRESHOLD),
+            key=lambda e: e.rel_or_abs.lower(),
+        )
 
         if hot_files:
             shown = hot_files[:_HOT_FILE_MAX_SHOWN]

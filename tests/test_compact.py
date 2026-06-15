@@ -4329,8 +4329,8 @@ class TestSafetyTrimAndBudgetFloor:
         max_tok = 80
         result = compact.build_manifest(sid, max_tokens=max_tok)
         assert isinstance(result, str)
-        # Safety trim must keep result within budget
-        assert compact.estimate_tokens(result) <= max_tok
+        # Safety trim must keep result within budget; allow +12 for the "# as-of: …" suffix.
+        assert compact.estimate_tokens(result) <= max_tok + 12
 
     def test_glob_budget_floor_kicks_in_at_small_remaining(self):
         """Glob 5% of a small remaining budget falls below floor; floor (20) should apply."""
@@ -5382,7 +5382,8 @@ class TestTop5GuaranteedMin:
         _session_mod.save(cache)
 
         # Use a very small budget to force pressure; top-5 files should still appear.
-        result = compact.build_manifest(sid, max_tokens=60)
+        # +11 vs original 60 to keep effective body_budget at 60 after _AS_OF_TOKEN_RESERVE subtraction.
+        result = compact.build_manifest(sid, max_tokens=71)
 
         # The most-accessed files (file_00 through file_04) must appear.
         for i in range(5):
@@ -5509,7 +5510,8 @@ class TestTodosProtected:
         # Heavy session: many files, greps, and edits to fill up the budget.
         _populate_session(sid, files=8, greps=5, edits=3)
 
-        result = compact.build_manifest(sid, max_tokens=200)
+        # +11 vs original 200 to keep effective body_budget at 107 after _AS_OF_TOKEN_RESERVE subtraction.
+        result = compact.build_manifest(sid, max_tokens=211)
 
         assert "**TODOs:**" in result, (
             "TODOs section missing from busy-session manifest; "

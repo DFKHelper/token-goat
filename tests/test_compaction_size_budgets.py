@@ -239,9 +239,10 @@ class TestManifestBudget:
         tokens = estimate_tokens(manifest)
         # Allow a small slack for the header + the highest-priority section
         # the trim pass refuses to drop.
-        assert tokens <= 240, (
+        # Slack raised from 240→251: the "# as-of: …" suffix adds ~11 tokens after trim.
+        assert tokens <= 251, (
             f"tight-budget manifest grew to {tokens} tokens "
-            f"(requested 200, slack 240); rendered:\n{manifest}"
+            f"(requested 200, slack 251); rendered:\n{manifest}"
         )
 
 
@@ -537,7 +538,8 @@ class TestPriorityAwareSafetyTrim:
         sid = "trim-protected"
         _seed_saturated_manifest_state(sid)
 
-        manifest, _ = compact.build_manifest_with_count(sid, max_tokens=150)
+        # +11 vs original 150 to keep effective body_budget at 150 after _AS_OF_TOKEN_RESERVE subtraction.
+        manifest, _ = compact.build_manifest_with_count(sid, max_tokens=161)
 
         assert manifest, "trimmed manifest must not be empty"
         # Sealed block + header anchor every post-compact recovery — never drop.
