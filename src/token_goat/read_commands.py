@@ -246,12 +246,15 @@ def _emit_read_error(
     message: str,
     json_output: bool,
     candidates: Sequence[str] = (),
+    err: bool = False,
     **details: object,
 ) -> None:
     """Emit a structured read error in either text or JSON form.
 
     In JSON mode, outputs {"ok": False, "error": {...}} with code, message, and optional
-    candidates/details. In text mode, outputs the message to stderr with candidates indented below.
+    candidates/details. In text mode, miss diagnostics (file/symbol not found, did-you-mean
+    suggestions) go to stdout so they survive ``2>/dev/null``; pass ``err=True`` for genuine
+    input/usage errors that belong on stderr.
     """
     if json_output:
         error: dict[str, object] = {"code": code, "message": message}
@@ -261,9 +264,9 @@ def _emit_read_error(
         typer.echo(json.dumps({"ok": False, "error": error}, separators=(",", ":")))
         return
 
-    typer.echo(message, err=True)
+    typer.echo(message, err=err)
     for candidate in candidates:
-        typer.echo(f"  - {candidate}", err=True)
+        typer.echo(f"  - {candidate}", err=err)
 
 
 def _emit_ambiguous_file_match(file_part: str, candidates: Sequence[str], *, json_output: bool) -> None:
@@ -667,6 +670,7 @@ def _run_read_like_command(
             code="invalid_target",
             message=f"Error: target must be '<file>::<{separator_label}>'",
             json_output=json_output,
+            err=True,
             target=target,
         )
         raise typer.Exit(2)
@@ -1002,6 +1006,7 @@ def _run_read_line_range(
             message=f"Error: line range '{item_part}' is invalid (expected 'N-M' with N≥1 and M≥N)",
             json_output=json_output,
             target=target,
+            err=True,
         )
         raise typer.Exit(2)
 
@@ -1453,10 +1458,10 @@ def outline(
     """
     target = _resolve_file_target(file)
     if target.project is None or target.rel_path is None:
-        typer.echo(f"File not found in any indexed project: {file}", err=True)
+        typer.echo(f"File not found in any indexed project: {file}")
         hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
         if hint:
-            typer.echo(hint, err=True)
+            typer.echo(hint)
         raise typer.Exit(1)
 
     proj = target.project
@@ -1907,7 +1912,7 @@ def stub_view(
         if listing is not None:
             _echo_dir_listing(file, listing)
             return
-        typer.echo(f"File not found in any indexed project: {file}", err=True)
+        typer.echo(f"File not found in any indexed project: {file}")
         raise typer.Exit(1)
 
     proj = target.project
@@ -1988,10 +1993,10 @@ def exports(
     """
     target = _resolve_file_target(file)
     if target.project is None or target.rel_path is None:
-        typer.echo(f"File not found in any indexed project: {file}", err=True)
+        typer.echo(f"File not found in any indexed project: {file}")
         hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
         if hint:
-            typer.echo(hint, err=True)
+            typer.echo(hint)
         raise typer.Exit(1)
 
     proj = target.project
@@ -2074,10 +2079,10 @@ def imports(
     """
     target = _resolve_file_target(file_target)
     if target.project is None or target.rel_path is None:
-        typer.echo(f"File not found in any indexed project: {file_target}", err=True)
+        typer.echo(f"File not found in any indexed project: {file_target}")
         hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
         if hint:
-            typer.echo(hint, err=True)
+            typer.echo(hint)
         raise typer.Exit(1)
 
     proj = target.project
@@ -2164,10 +2169,10 @@ def refs(
 
     file_target = _resolve_file_target(file_part)
     if file_target.project is None or file_target.rel_path is None:
-        typer.echo(f"File not found in any indexed project: {file_part}", err=True)
+        typer.echo(f"File not found in any indexed project: {file_part}")
         hint = _not_indexed_hint(file_target.current_project.hash) if file_target.current_project else None
         if hint:
-            typer.echo(hint, err=True)
+            typer.echo(hint)
         raise typer.Exit(1)
 
     proj = file_target.project
@@ -2462,6 +2467,7 @@ def blame(
             message="Error: target must be '<file>::<symbol>'",
             json_output=json_output,
             target=target,
+            err=True,
         )
         raise typer.Exit(2)
 
@@ -2475,6 +2481,7 @@ def blame(
             message="Error: both <file> and <symbol> must be non-empty",
             json_output=json_output,
             target=target,
+            err=True,
         )
         raise typer.Exit(2)
 
@@ -2541,7 +2548,7 @@ def blame(
         if json_output:
             typer.echo(json.dumps({"ok": False, "error": msg}, separators=(",", ":")))
         else:
-            typer.echo(msg, err=True)
+            typer.echo(msg)
         raise typer.Exit(0)
 
     if json_output:
@@ -2720,10 +2727,10 @@ def test_for(
     """
     target = _resolve_file_target(file_target)
     if target.project is None or target.rel_path is None:
-        typer.echo(f"File not found in any indexed project: {file_target}", err=True)
+        typer.echo(f"File not found in any indexed project: {file_target}")
         hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
         if hint:
-            typer.echo(hint, err=True)
+            typer.echo(hint)
         raise typer.Exit(1)
 
     proj = target.project
@@ -2813,7 +2820,7 @@ def types(
     """
     proj = find_project(Path.cwd())
     if proj is None:
-        typer.echo("Not inside an indexed project.", err=True)
+        typer.echo("Not inside an indexed project.")
         raise typer.Exit(1)
 
     # Resolve optional file target to a project-relative path (partial LIKE match filter).
@@ -2821,10 +2828,10 @@ def types(
     if file_target is not None:
         ft = _resolve_file_target(file_target)
         if ft.rel_path is None:
-            typer.echo(f"File not found in any indexed project: {file_target}", err=True)
+            typer.echo(f"File not found in any indexed project: {file_target}")
             hint = _not_indexed_hint(proj.hash)
             if hint:
-                typer.echo(hint, err=True)
+                typer.echo(hint)
             raise typer.Exit(1)
         file_rel = ft.rel_path
 

@@ -805,8 +805,9 @@ def _log_session_close(
 
     Shared by ``open_global`` and ``open_project`` to avoid duplicating the
     identical timing/warning pattern in both finally blocks.  A session that
-    took 1 s or more is logged at WARNING so slow DB operations are visible in
-    production logs without manual filtering.
+    took 1 s or more is logged at DEBUG so the elapsed time is available when
+    debug logging is enabled without adding stderr noise to short-lived CLI
+    commands.
 
     When *checkpoint* is True, a best-effort ``PRAGMA wal_checkpoint(PASSIVE)``
     is executed before closing the connection.  PASSIVE moves as many WAL frames
@@ -822,7 +823,7 @@ def _log_session_close(
     """
     session_ms = (time.monotonic() - t0) * 1000
     if session_ms >= 1000:
-        _LOG.warning("%s session slow: %.1fms total", label, session_ms)
+        _LOG.debug("%s session slow: %.1fms total", label, session_ms)
     else:
         _LOG.debug("closing %s (session %.1fms)", label, session_ms)
     if checkpoint and conn is not None:

@@ -94,7 +94,7 @@ def test_nonexistent_path_preserves_file_not_found(
         read_commands.stub_view("does/not/exist-xyzzy")
 
     assert exc_info.value.exit_code == 1
-    assert "File not found in any indexed project" in capsys.readouterr().err
+    assert "File not found in any indexed project" in capsys.readouterr().out
 
 
 def test_actual_file_still_renders_skeleton(

@@ -186,8 +186,8 @@ class TestOutlineTextOutput:
         from token_goat.read_commands import outline
         with pytest.raises((SystemExit, click.exceptions.Exit)):
             outline("totally_nonexistent_file.py")
-        _out, err = capsys.readouterr()
-        assert "not found" in err.lower() or "No" in err
+        out, _err = capsys.readouterr()
+        assert "not found" in out.lower() or "No" in out
 
 
 # ---------------------------------------------------------------------------

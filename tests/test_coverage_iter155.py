@@ -163,7 +163,7 @@ class TestRunReadLikeCommand:
             )
 
         captured = capsys.readouterr()
-        assert "Symbol" in captured.err
+        assert "Symbol" in captured.out
 
 
 # ===========================================================================

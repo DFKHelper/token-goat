@@ -192,6 +192,20 @@ class TestBlameCommand:
         code = exc.exit_code if isinstance(exc, typer.Exit) else exc.code
         assert code == 2
 
+    def test_missing_separator_error_on_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises((typer.Exit, SystemExit)):
+            blame("noseparator")
+        captured = capsys.readouterr()
+        assert "Error" in captured.err
+        assert "Error" not in captured.out
+
+    def test_empty_symbol_error_on_stderr(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises((typer.Exit, SystemExit)):
+            blame("::sym")
+        captured = capsys.readouterr()
+        assert "Error" in captured.err
+        assert "Error" not in captured.out
+
     def test_text_output_format(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _patch_blame_infra():
             blame("src/auth.py::login")
@@ -246,8 +260,8 @@ class TestBlameCommand:
             with pytest.raises((typer.Exit, SystemExit)):
                 blame("src/auth.py::nonexistent")
 
-        err = capsys.readouterr().err
-        assert "not found" in err.lower() or "symbol" in err.lower()
+        out = capsys.readouterr().out
+        assert "not found" in out.lower() or "symbol" in out.lower()
 
     def test_git_not_available_graceful_fallback(
         self, capsys: pytest.CaptureFixture[str]
