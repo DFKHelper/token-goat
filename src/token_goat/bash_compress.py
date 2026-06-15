@@ -3343,6 +3343,9 @@ class CargoFilter(Filter):
             if _tb_i < len(_tb_pass) and _tb_pass[_tb_i]:
                 _tb_new.append(f"[{_tb_pass[_tb_i]} tests passed]")
             kept = _tb_new
+        # Strip "Running unittests/tests" banner from build preamble on a clean pass.
+        if not fail_names and build_part:
+            build_part = "\n".join(ln for ln in build_part.split("\n") if not _CARGO_TEST_RUNNING_RE.match(ln))
         notes: list[str] = []
         _maybe_note(notes, pass_count, f"collapsed {pass_count} passing test lines")
         self._emit_notes(kept, notes)
