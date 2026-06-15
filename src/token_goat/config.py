@@ -1027,6 +1027,8 @@ class HintsConfig:
     # ``[[hints.prompt_triggers]]`` in config.toml.
     # When True, pre_read serves a user-created compact sidecar for large reference docs when one exists and is fresh (source hash matches). Compact must be created explicitly with `token-goat compact-doc <path>`. Default on; disable via [hints] stable_doc_compacts = false.
     stable_doc_compacts: bool = True
+    # Minimum total-line count before the truncated-read advisory fires in post_read. Files shorter than this are skipped (default 200). Set to 0 to disable.
+    truncated_read_min_lines: int = 200
 
     prompt_triggers: list[PromptTrigger] = field(default_factory=list)
 
@@ -1829,6 +1831,10 @@ def load() -> Config:
             "hints.baseline_budget_tokens",
         ),
         prompt_triggers=_parse_prompt_triggers(hints_raw.get("prompt_triggers", [])),
+        truncated_read_min_lines=_validated_int(
+            hints_raw.get("truncated_read_min_lines", 200), 200, 0, 1_000_000,
+            "hints.truncated_read_min_lines",
+        ),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.
     _apply_env_enable(hints_cfg, "json_sidecar", _ENV_HINT_JSON_SIDECAR, "hints.json_sidecar")

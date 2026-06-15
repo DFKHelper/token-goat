@@ -109,6 +109,21 @@ _BINARY_EXTENSIONS: frozenset[str] = frozenset([
 # Token-goat does not index such files and any hint would be useless overhead.
 _LARGE_FILE_HINT_SKIP_BYTES: int = 10 * 1024 * 1024  # 10 MB
 
+# Image extensions not covered by _BINARY_EXTENSIONS (those go via the shrink path).
+_IMAGE_EXTENSIONS: frozenset[str] = frozenset([".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".svg", ".webp", ".tiff", ".tif"])
+# Combined skip set for truncated-read advisory hints (binary + image).
+_TRUNCATED_HINT_SKIP_EXTS: frozenset[str] = _BINARY_EXTENSIONS | _IMAGE_EXTENSIONS
+
+# Regex patterns to detect Claude Code partial-read sentinels in tool result text.
+# Pattern A: "lines 1-200 of 1500" or "lines 1–200 of 1500" (hyphen or en-dash).
+_PARTIAL_READ_RE_HYPHEN: _re.Pattern[str] = _re.compile(
+    r"lines?\s+(\d+)\s*[-–]\s*(\d+)\s+of\s+(\d+)", _re.IGNORECASE,
+)
+# Pattern B: "showing lines 1 to 200 of 1500".
+_PARTIAL_READ_RE_TO: _re.Pattern[str] = _re.compile(
+    r"showing\s+lines?\s+(\d+)\s+to\s+(\d+)\s+of\s+(\d+)", _re.IGNORECASE,
+)
+
 
 def _safe_split_argv(cmd: str) -> list[str]:
     """Split a shell command string into an argv list, safely handling metacharacters.
@@ -4575,6 +4590,22 @@ def _strip_memory_frontmatter(content: str) -> tuple[str, int]:
     return "".join(lines[body_start:]), body_start
 
 
+def _detect_partial_read(text: str) -> tuple[int, int, int] | None:
+    """Parse a Claude Code partial-read sentinel from tool result text.
+
+    Returns (start_line, end_line, total_lines) when a sentinel is found, or None.
+    Supports hyphen/en-dash form ("lines 1-200 of 1500") and word form
+    ("showing lines 1 to 200 of 1500").
+    """
+    m = _PARTIAL_READ_RE_HYPHEN.search(text)
+    if m:
+        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    m = _PARTIAL_READ_RE_TO.search(text)
+    if m:
+        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return None
+
+
 def post_read(payload: HookPayload) -> HookResponse:
     """Post-read hook: record file/symbol accesses to session cache.
 
@@ -4646,6 +4677,34 @@ def post_read(payload: HookPayload) -> HookResponse:
             # be served as a small unified diff instead of a full-file Read.
             # Best-effort — snapshot failures never block the hook.
             _try_snapshot(session_id, file_path, cache=cache)
+            # Truncated-read advisory: detect partial-read sentinels in the tool result
+            # and suggest surgical alternatives to avoid token-expensive full-file re-reads.
+            if _resp_text:
+                _partial = _detect_partial_read(_resp_text)
+                if _partial is not None:
+                    _pr_start, _pr_end, _pr_total = _partial
+                    _pr_ext = Path(file_path).suffix.lower()
+                    import os as _os  # noqa: PLC0415
+                    _pr_disabled = _os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in {"0", "false", "no", "off"}
+                    try:
+                        from . import config as _cfg_trunc  # noqa: PLC0415
+                        _pr_min = _cfg_trunc.load().hints.truncated_read_min_lines
+                    except Exception:  # noqa: BLE001
+                        _pr_min = 200
+                    _pr_skip = (
+                        (_pr_start == 1 and _pr_end >= _pr_total)
+                        or _pr_total <= _pr_min
+                        or _pr_ext in _TRUNCATED_HINT_SKIP_EXTS
+                        or _pr_disabled
+                    )
+                    if not _pr_skip:
+                        _pr_hint = (
+                            f"[token-goat] File is {_pr_total} lines. Consider:\n"
+                            f'  token-goat section "{file_path}::Heading"  — extract named section (~95% smaller)\n'
+                            f"  token-goat skeleton {file_path}            — full symbol list without bodies\n"
+                            f'  token-goat read "{file_path}::N-M"        — targeted line range'
+                        )
+                        return {"continue": True, "systemMessage": _pr_hint}
             # Memory file frontmatter stripping: when the agent reads an
             # individual memory file, strip the YAML block (already captured in
             # MEMORY.md) and surface only the body via systemMessage.
