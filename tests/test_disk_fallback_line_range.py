@@ -11,8 +11,11 @@ only.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+from conftest import make_project_from_root
 from typer.testing import CliRunner
 
 from token_goat.cli import app
@@ -20,16 +23,24 @@ from token_goat.cli import app
 runner = CliRunner()
 
 
-# Just over the indexer's default 2048 KB (2,097,152 B) skip cap *and* the read
-# path's 2 MB ``_read_file_lines`` cap, spread across many short lines so a 1-10
-# line read returns tiny content.  The file is skipped at index time, so its size
-# never costs parse latency; the fallback streams and stops at the requested end.
-_OVER_CAP_LINES = 60_000  # 60k * ~36 B ≈ 2.16 MB
-
-
 def _line_text(i: int) -> str:
     """Deterministic content for 1-based line *i* (35 chars, no newline)."""
     return f"L{i:05d} " + "x" * 28
+
+
+def _make_over_cap_file(root: Path, name: str = "huge.js") -> None:
+    """Write *name* under *root*: 100 readable lines, then binary-pad past the cap.
+
+    The indexer skips any file larger than ``MAX_FILE_SIZE`` (2,000,000 B), so the
+    file is never parsed — only stat'd.  Appending one long ``x`` run after the
+    100th line drives the size to 2.2 MB in a single ``write_bytes`` call
+    (microseconds), replacing a 60k-iteration Python string loop while keeping
+    lines 1-100 exactly as the assertions expect.  The pad is pure ``x`` bytes, so
+    no ``_line_text`` value (each carries an ``L#####`` prefix) ever appears in it.
+    """
+    body = "\n".join(_line_text(i) for i in range(1, 101)).encode()
+    pad = b"\n" + b"x" * (2_200_000 - len(body) - 1)
+    (root / name).write_bytes(body + pad)
 
 
 def _index_with_multiline_over_cap(
@@ -47,8 +58,7 @@ def _index_with_multiline_over_cap(
     root.mkdir()
     (root / ".git").mkdir()
     (root / "keeper.py").write_text("def keep():\n    return 1\n", encoding="utf-8")
-    big = root / oversized
-    big.write_text("\n".join(_line_text(i) for i in range(1, _OVER_CAP_LINES + 1)), encoding="utf-8")
+    _make_over_cap_file(root, oversized)
 
     proj = make_project(root)
 
@@ -83,16 +93,40 @@ def _index_clean_project(tmp_path, make_project, *, subdir: str = "projA"):
     return root, proj
 
 
+@pytest.fixture(scope="module")
+def over_cap_root(module_tmp_data_dir, tmp_path_factory):
+    """Build and index the shared over-cap project ONCE for the read-only group.
+
+    Seven of the eight tests need the same layout: a tiny ``keeper.py`` that
+    indexes cleanly beside a 2.2 MB ``huge.js`` that exceeds the cap and is skipped
+    at index time, so every read exercises the disk-fallback surface.  None of
+    those tests mutate the indexed DB (they only invoke ``read``), so module scope
+    is safe and ``index_project`` is paid once instead of seven times.  The
+    cross-project isolation test, which needs two distinct projects, keeps its own
+    function-scoped setup.
+    """
+    import token_goat.config as _config_mod
+    from token_goat.config import Config
+    from token_goat.parser import index_project
+
+    root = tmp_path_factory.mktemp("over_cap_proj")
+    (root / ".git").mkdir()
+    (root / "keeper.py").write_text("def keep():\n    return 1\n", encoding="utf-8")
+    _make_over_cap_file(root, "huge.js")
+
+    proj = make_project_from_root(root)
+    with patch.object(_config_mod, "load", return_value=Config()):
+        index_project(proj, full=True)
+    return root
+
+
 # ---------------------------------------------------------------------------
 # Disk fallback succeeds on an over-cap file
 # ---------------------------------------------------------------------------
 
-def test_line_range_disk_fallback_reads_over_cap_file(
-    tmp_path, tmp_data_dir, make_project, monkeypatch
-):
+def test_line_range_disk_fallback_reads_over_cap_file(over_cap_root, monkeypatch):
     """``read "huge.js::1-10"`` on a skipped file streams lines from disk."""
-    root, _proj = _index_with_multiline_over_cap(tmp_path, make_project)
-    monkeypatch.chdir(root)
+    monkeypatch.chdir(over_cap_root)
 
     result = runner.invoke(app, ["read", "huge.js::1-10"])
 
@@ -108,14 +142,11 @@ def test_line_range_disk_fallback_reads_over_cap_file(
     assert "File not found in any indexed project" not in out
 
 
-def test_line_range_disk_fallback_json_envelope(
-    tmp_path, tmp_data_dir, make_project, monkeypatch
-):
+def test_line_range_disk_fallback_json_envelope(over_cap_root, monkeypatch):
     """``read --json "huge.js::1-3"`` reports a ``disk_fallback`` flag and text."""
     import json as _json
 
-    root, _proj = _index_with_multiline_over_cap(tmp_path, make_project)
-    monkeypatch.chdir(root)
+    monkeypatch.chdir(over_cap_root)
 
     result = runner.invoke(app, ["read", "--json", "huge.js::1-3"])
 
@@ -132,12 +163,9 @@ def test_line_range_disk_fallback_json_envelope(
 # Disk fallback is bounded
 # ---------------------------------------------------------------------------
 
-def test_line_range_disk_fallback_bounded(
-    tmp_path, tmp_data_dir, make_project, monkeypatch
-):
+def test_line_range_disk_fallback_bounded(over_cap_root, monkeypatch):
     """A >5000-line span on an unindexed file is refused with a clear error."""
-    root, _proj = _index_with_multiline_over_cap(tmp_path, make_project)
-    monkeypatch.chdir(root)
+    monkeypatch.chdir(over_cap_root)
 
     result = runner.invoke(app, ["read", "huge.js::1-6000"])
 
@@ -149,14 +177,11 @@ def test_line_range_disk_fallback_bounded(
     assert "[disk-fallback:" not in out
 
 
-def test_line_range_disk_fallback_bounded_json(
-    tmp_path, tmp_data_dir, make_project, monkeypatch
-):
+def test_line_range_disk_fallback_bounded_json(over_cap_root, monkeypatch):
     """The bounded error surfaces structurally under ``--json``."""
     import json as _json
 
-    root, _proj = _index_with_multiline_over_cap(tmp_path, make_project)
-    monkeypatch.chdir(root)
+    monkeypatch.chdir(over_cap_root)
 
     result = runner.invoke(app, ["read", "--json", "huge.js::1-6000"])
 
@@ -170,12 +195,9 @@ def test_line_range_disk_fallback_bounded_json(
 # No regression for indexed files
 # ---------------------------------------------------------------------------
 
-def test_line_range_indexed_file_no_fallback(
-    tmp_path, tmp_data_dir, make_project, monkeypatch
-):
+def test_line_range_indexed_file_no_fallback(over_cap_root, monkeypatch):
     """An indexed file still reads from the index — no disk-fallback banner."""
-    root, _proj = _index_with_multiline_over_cap(tmp_path, make_project)
-    monkeypatch.chdir(root)
+    monkeypatch.chdir(over_cap_root)
 
     result = runner.invoke(app, ["read", "keeper.py::1-2"])
 
@@ -191,12 +213,9 @@ def test_line_range_indexed_file_no_fallback(
 # A genuinely missing file still misses
 # ---------------------------------------------------------------------------
 
-def test_line_range_nonexistent_file_still_not_found(
-    tmp_path, tmp_data_dir, make_project, monkeypatch
-):
+def test_line_range_nonexistent_file_still_not_found(over_cap_root, monkeypatch):
     """A line-range read of a file that exists nowhere keeps the not-found path."""
-    root, _proj = _index_with_multiline_over_cap(tmp_path, make_project)
-    monkeypatch.chdir(root)
+    monkeypatch.chdir(over_cap_root)
 
     result = runner.invoke(app, ["read", "ghost.js::1-10"])
 
@@ -206,15 +225,12 @@ def test_line_range_nonexistent_file_still_not_found(
     assert "disk-fallback" not in out
 
 
-def test_line_range_disk_fallback_refuses_path_escape(
-    tmp_path, tmp_data_dir, make_project, monkeypatch
-):
+def test_line_range_disk_fallback_refuses_path_escape(over_cap_root, monkeypatch):
     """A ``../`` escape needle never resolves outside the project root."""
-    root, _proj = _index_with_multiline_over_cap(tmp_path, make_project)
     # A secret file sitting beside (outside) the project root.
-    secret = tmp_path / "secret.txt"
+    secret = over_cap_root.parent / "secret.txt"
     secret.write_text("TOP SECRET\n", encoding="utf-8")
-    monkeypatch.chdir(root)
+    monkeypatch.chdir(over_cap_root)
 
     result = runner.invoke(app, ["read", "../secret.txt::1-1"])
 
