@@ -84,6 +84,7 @@ __all__ = [
     "AntFilter",
     "BatFilter",
     "BazelFilter",
+    "BinaryInspectFilter",
     "BundlerFilter",
     "CmakeFilter",
     "ComposerFilter",
@@ -95,6 +96,7 @@ __all__ = [
     "DotnetFilter",
     "EzaFilter",
     "FdFilter",
+    "FileTypeFilter",
     "WcFilter",
     "FlutterFilter",
     "GoFilter",
@@ -24181,6 +24183,111 @@ class JsonArrayFilter(Filter):
         return "\n".join(parts)
 
 
+# --- Binary inspection (xxd / hexdump / od) ----------------------------------
+
+# Short dumps pass through unchanged (e.g. single-line `file` output leaking in).
+_BIN_INSPECT_PASSTHROUGH: Final[int] = 4
+
+# Magic-byte prefixes (lowercase hex, longest-match checked first).
+_MAGIC_MAP: Final[tuple[tuple[str, str], ...]] = (
+    ("89504e47", "PNG image"),
+    ("ffd8ff",   "JPEG image"),
+    ("25504446", "PDF document"),
+    ("504b0304", "ZIP archive"),
+    ("7f454c46", "ELF binary"),
+    ("4d5a",     "Windows EXE/DLL"),
+    ("cafebabe", "Java class file"),
+    ("1f8b",     "gzip archive"),
+    ("377abcaf", "7-zip archive"),
+)
+
+# Matches xxd ("OFFSET: XX XX ...") or hexdump -C ("OFFSET  XX XX ...").
+_HEX_DUMP_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[0-9a-f]{4,}(?::\s+|\s{2,})([0-9a-f][0-9a-f\s]+)",
+    re.IGNORECASE,
+)
+
+
+def _identify_hex_magic(first_line: str) -> tuple[str, str]:
+    """Return (magic_hex, description) for the first hex-dump line.
+
+    Falls back to ("", "unrecognised format") when the line cannot be parsed.
+    """
+    m = _HEX_DUMP_LINE_RE.match(first_line)
+    if not m:
+        return "", "unrecognised format"
+    # Strip spaces from the data portion and normalise to lowercase.
+    raw = m.group(1).replace(" ", "").lower()
+    magic8 = raw[:8]
+    if len(magic8) < 4:
+        return "", "unrecognised format"
+    for prefix, description in _MAGIC_MAP:
+        if magic8.startswith(prefix):
+            return magic8[:len(prefix)], description
+    return magic8, "unknown binary type"
+
+
+class BinaryInspectFilter(Filter):
+    """Compress hex-dump output from ``xxd``, ``hexdump``, ``od``, and ``hd``.
+
+    Compression model:
+
+    * **Pass through** short output (≤ ``_BIN_INSPECT_PASSTHROUGH`` lines).
+    * **Keep** the first 2 hex lines verbatim (shows magic bytes in context).
+    * **Identify** the file type from the first 4 magic bytes.
+    * **Replace** remaining lines with a single semantic summary line.
+    """
+
+    name = "xxd"
+    binaries: frozenset[str] = frozenset(["xxd", "hexdump", "od", "hd"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.splitlines()
+        if len(lines) <= _BIN_INSPECT_PASSTHROUGH:
+            return merged
+        total = len(lines)
+        magic_hex, description = _identify_hex_magic(lines[0].rstrip("\r\n"))
+        if magic_hex:
+            summary = (
+                f"[token-goat: hex dump of {total} lines"
+                f" — detected: {description} (magic: {magic_hex})]"
+            )
+        else:
+            summary = f"[token-goat: hex dump of {total} lines — {description}]"
+        kept: list[str] = list(lines[:2])
+        kept.append(summary + "\n")
+        return self._finalize(kept)
+
+
+class FileTypeFilter(Filter):
+    """Pass-through wrapper for the ``file`` command.
+
+    ``file`` output is already semantic (e.g. "foo.png: PNG image, 800x600").
+    This filter registers the binary so it is never accidentally routed to a
+    generic handler.  Long batch runs (directory scans) are truncated to 20
+    lines plus a count.
+    """
+
+    name = "file"
+    binaries: frozenset[str] = frozenset(["file"])
+    _BATCH_LIMIT: int = 20
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.splitlines()
+        if len(lines) <= self._BATCH_LIMIT:
+            return merged
+        remaining = len(lines) - self._BATCH_LIMIT
+        kept = list(lines[:self._BATCH_LIMIT])
+        kept.append(f"[token-goat: {remaining} more file entries truncated]\n")
+        return self._finalize(kept)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -24580,6 +24687,8 @@ FILTERS: list[Filter] = [
     # late position is a safety buffer behind more-specific filters.
     EnvFilter(),
     JsonArrayFilter(),
+    BinaryInspectFilter(),
+    FileTypeFilter(),
 ]
 
 

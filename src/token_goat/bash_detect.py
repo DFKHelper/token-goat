@@ -270,9 +270,15 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "wrangler": "wrangler",
     "wrangler2": "wrangler",
     "xcodebuild": "xcode",
+    "xxd": "xxd",
     "yarn": "yarn",
     "yq": "yq",
     "zig": "zig",
+    # Binary inspection
+    "file": "file",
+    "hd": "xxd",
+    "hexdump": "xxd",
+    "od": "xxd",
 }
 
 
