@@ -390,22 +390,25 @@ class TestGitStatusVerboseFilterFull:
         )
         f = bc.GitStatusVerboseFilter()
         result = _apply(f, text, ["git", "status"])
-        assert "src/foo.py" in result
+        # Per-file listing is collapsed to a grouped count; advice is stripped.
+        assert "1 modified" in result
+        assert "src/foo.py" not in result
         assert 'use "git add' not in result
         assert 'use "git restore' not in result
         assert "no changes added to commit" not in result
 
-    def test_nothing_to_commit_stripped(self) -> None:
+    def test_nothing_to_commit_preserved(self) -> None:
         text = (
             "On branch main\n"
             "nothing to commit, working tree clean\n"
         )
         f = bc.GitStatusVerboseFilter()
         result = _apply(f, text, ["git", "status"])
-        assert "nothing to commit" not in result
+        # The clean-tree signal is the whole point of the command — keep it.
+        assert "nothing to commit, working tree clean" in result
         assert "On branch main" in result
 
-    def test_short_untracked_list_kept(self) -> None:
+    def test_untracked_list_grouped_to_count(self) -> None:
         files = "\n".join(f"\t    new_file_{i}.py" for i in range(3))
         text = (
             "On branch main\n"
@@ -416,10 +419,10 @@ class TestGitStatusVerboseFilterFull:
         )
         f = bc.GitStatusVerboseFilter()
         result = _apply(f, text, ["git", "status"])
-        assert "new_file_0.py" in result
-        assert "new_file_2.py" in result
+        assert "3 untracked" in result
+        assert "new_file_0.py" not in result
 
-    def test_long_untracked_list_truncated(self) -> None:
+    def test_long_untracked_list_grouped_to_count(self) -> None:
         files = "\n".join(f"\tnew_file_{i}.py" for i in range(15))
         text = (
             "On branch main\n"
@@ -430,8 +433,8 @@ class TestGitStatusVerboseFilterFull:
         )
         f = bc.GitStatusVerboseFilter()
         result = _apply(f, text, ["git", "status"])
-        assert "new_file_0.py" in result
-        assert "more untracked files" in result
+        assert "15 untracked" in result
+        assert "new_file_0.py" not in result
         assert "new_file_14.py" not in result
 
 

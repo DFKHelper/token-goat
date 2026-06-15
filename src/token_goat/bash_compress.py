@@ -6704,84 +6704,122 @@ class GitDiffFilter(Filter):
 
 # ---- GitStatusVerboseFilter helpers -----------------------------------------
 
-_GIT_STATUS_UNTRACKED_HEADER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^Untracked files:"
-)
-_GIT_STATUS_NOISE_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*\(use \"git (?:add|restore|rm|checkout|reset)"
-    r"|^no changes added to commit"
-    r"|^nothing to commit, working tree clean"
-    r"|^nothing added to commit but untracked files present"
-)
 # Short/porcelain format detection: every non-empty line starts with two
 # XY status chars followed by a space (e.g. "M  foo.py", "?? bar.py").
 _SHORT_STATUS_RE: Final[re.Pattern[str]] = re.compile(r"^[MADRCU?! ][MADRCU?! ] ")
+# Verbose-status section headers.  "Unmerged paths" is grouped separately so
+# that conflict markers are preserved verbatim rather than collapsed to counts.
+_GIT_STATUS_SECTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(Changes to be committed|Changes not staged for commit"
+    r"|Untracked files|Ignored files|Unmerged paths):"
+)
+_GIT_STATUS_SECTION_KEYS: Final[dict[str, str]] = {
+    "Changes to be committed": "staged",
+    "Changes not staged for commit": "unstaged",
+    "Untracked files": "untracked",
+    "Ignored files": "ignored",
+    "Unmerged paths": "unmerged",
+}
+# Instructional / advice lines that carry no state — always stripped.  The
+# clean-tree line ("nothing to commit, working tree clean") is deliberately
+# NOT matched here: it is the key signal of a clean checkout and is preserved.
+_GIT_STATUS_ADVICE_RE: Final[re.Pattern[str]] = re.compile(
+    r'^\s*\(use "git '
+    r"|^no changes added to commit"
+    r"|^nothing added to commit but untracked files present"
+)
 
 
-def _compress_git_status_verbose(stdout: str, stderr: str) -> str:
+def _git_status_is_short(argv: list[str] | None, lines: list[str]) -> bool:
+    """Return True when output is the compact short/porcelain form.
+
+    Detected either by an explicit ``-s`` / ``--short`` / ``--porcelain`` flag
+    in *argv* (covers ``--porcelain=v2`` whose rows the body sniffer misses) or
+    by sniffing: every non-empty line begins with the two-char XY status code.
+    """
+    for tok in argv or []:
+        if tok in ("-s", "--short", "--porcelain", "-z"):
+            return True
+        if tok.startswith("--porcelain="):
+            return True
+        # Combined single-dash flags such as "-sb" / "-uno -s".
+        if tok.startswith("-") and not tok.startswith("--") and "s" in tok:
+            return True
+    non_empty = [ln for ln in lines if ln.strip()]
+    return bool(non_empty and all(_SHORT_STATUS_RE.match(ln) for ln in non_empty[:5]))
+
+
+def _git_status_file_label(line: str, section: str) -> str:
+    """Map one verbose status file entry to its grouping label.
+
+    Staged / unstaged entries are ``"<label>:   <path>"`` (modified, deleted,
+    new file, renamed, …).  Untracked / ignored entries have no label, so the
+    section name itself is used.
+    """
+    body = line.strip()
+    if section in ("untracked", "ignored"):
+        return section
+    if ":" in body:
+        return body.split(":", 1)[0].strip()
+    return section
+
+
+def _compress_git_status_verbose(
+    stdout: str, stderr: str, argv: list[str] | None = None,
+) -> str:
     """Compress full ``git status``.
 
-    * Short / porcelain format (lines start with ``M ``, ``?? ``, etc.) is
-      passed through as-is — already compact.
-    * Full verbose format: strip boilerplate advice lines; if untracked file
-      list exceeds 10 items, keep first 5 + count marker.
+    * Short / porcelain format is passed through unchanged — already compact.
+    * Full verbose format collapses each change section's per-file listing to a
+      grouped count (``3 modified, 1 deleted``) and strips boilerplate advice
+      lines.  Preserved verbatim: branch / tracking lines, the clean-tree line,
+      and ``Unmerged paths`` conflict entries.
     """
     lines = stdout.split("\n")
     if not lines:
         return stdout
 
-    # Detect short/porcelain format: non-empty lines all match XY-space pattern.
-    non_empty = [ln for ln in lines if ln.strip()]
-    if non_empty and all(_SHORT_STATUS_RE.match(ln) for ln in non_empty[:5]):
-        # Already compact — pass through.
+    if _git_status_is_short(argv, lines):
         out = stdout
         if stderr.strip():
             out = out.rstrip() + "\n---\n" + stderr.rstrip()
         return out
 
-    # Full verbose mode: strip noise lines, truncate untracked file list.
     kept: list[str] = []
-    in_untracked = False
-    untracked_files: list[str] = []
+    section: str | None = None
+    counts: dict[str, int] = {}
+
+    def flush() -> None:
+        nonlocal counts
+        # Unmerged entries are emitted inline (preserved); only grouped
+        # sections accumulate counts that need a summary line on flush.
+        if section not in (None, "unmerged") and counts:
+            parts = [f"{n} {label}" for label, n in counts.items()]
+            kept.append("\t" + ", ".join(parts))
+        counts = {}
 
     for line in lines:
-        if _GIT_STATUS_NOISE_RE.match(line):
-            continue
-        if _GIT_STATUS_UNTRACKED_HEADER_RE.match(line):
-            in_untracked = True
+        header = _GIT_STATUS_SECTION_RE.match(line)
+        if header:
+            flush()
+            section = _GIT_STATUS_SECTION_KEYS[header.group(1)]
             kept.append(line)
             continue
-        if in_untracked:
-            # Untracked file entries are indented with a tab.
-            if line.startswith("\t") and line.strip():
-                untracked_files.append(line)
-                continue
+        if _GIT_STATUS_ADVICE_RE.match(line):
+            continue
+        if section is not None and line.startswith("\t") and line.strip():
+            if section == "unmerged":
+                kept.append(line)  # preserve conflict markers verbatim
             else:
-                # Flush collected untracked files.
-                _MAX_UNTRACKED = 5
-                if len(untracked_files) > _MAX_UNTRACKED:
-                    elided = len(untracked_files) - _MAX_UNTRACKED
-                    kept.extend(untracked_files[:_MAX_UNTRACKED])
-                    kept.append(
-                        f"\t[token-goat: +{elided} more untracked files]"
-                    )
-                else:
-                    kept.extend(untracked_files)
-                untracked_files = []
-                in_untracked = False
-                kept.append(line)
-                continue
+                label = _git_status_file_label(line, section)
+                counts[label] = counts.get(label, 0) + 1
+            continue
+        # Any other line (branch, tracking, blank, clean-tree) ends the section.
+        flush()
+        section = None
         kept.append(line)
 
-    # Flush any trailing untracked section.
-    if untracked_files:
-        _MAX_UNTRACKED = 5
-        if len(untracked_files) > _MAX_UNTRACKED:
-            elided = len(untracked_files) - _MAX_UNTRACKED
-            kept.extend(untracked_files[:_MAX_UNTRACKED])
-            kept.append(f"\t[token-goat: +{elided} more untracked files]")
-        else:
-            kept.extend(untracked_files)
+    flush()
 
     out = "\n".join(kept)
     if stderr.strip():
@@ -6792,9 +6830,11 @@ def _compress_git_status_verbose(stdout: str, stderr: str) -> str:
 class GitStatusVerboseFilter(Filter):
     """Compress ``git status`` output.
 
-    * Passes short / porcelain format (``-s`` / ``--short``) through unchanged.
-    * Full verbose format: removes boilerplate advice lines; truncates untracked
-      file lists exceeding 10 items to first 5 + count.
+    * Passes short / porcelain format (``-s`` / ``--short`` / ``--porcelain``)
+      through unchanged.
+    * Full verbose format: collapses each section's per-file listing to a
+      grouped count (``3 modified, 1 deleted``), strips boilerplate advice
+      lines, and preserves branch / clean-tree / merge-conflict lines.
 
     Registered before :class:`GitFilter` for higher-fidelity status handling.
     """
@@ -6806,7 +6846,7 @@ class GitStatusVerboseFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        return _compress_git_status_verbose(stdout, stderr)
+        return _compress_git_status_verbose(stdout, stderr, argv)
 
 
 # ---- GitBlameFilter helpers --------------------------------------------------
