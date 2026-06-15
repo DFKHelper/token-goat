@@ -44,7 +44,7 @@ class TestRecordStatTruncation:
             db.record_stat(None, kind, detail=detail)
 
         assert captured, "INSERT was never called"
-        ts, k, tokens_saved, bytes_saved, d = captured[0]
+        ts, k, tokens_saved, bytes_saved, d, _last_access = captured[0]
         return k, d
 
     def test_kind_over_limit_truncated(self):

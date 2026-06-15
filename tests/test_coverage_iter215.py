@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS stats (
     kind TEXT NOT NULL,
     tokens_saved INTEGER NOT NULL DEFAULT 0,
     bytes_saved INTEGER NOT NULL DEFAULT 0,
-    detail TEXT
+    detail TEXT,
+    last_access_epoch REAL
 );
 """
 

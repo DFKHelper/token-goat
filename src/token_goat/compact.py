@@ -6414,13 +6414,25 @@ def _render(
 
         # Hot files (≥ threshold reads) get a single consolidated summary line.
         hot_files = [e for e in top_files if e.read_count >= _HOT_FILE_READ_THRESHOLD]
-        # Non-hot files are sorted alphabetically by path so the **Files:** section
-        # renders in deterministic order regardless of access timestamps — same file
-        # set → same output → better prompt prefix-cache hit rate across sessions.
-        normal_files = sorted(
-            (e for e in top_files if e.read_count < _HOT_FILE_READ_THRESHOLD),
-            key=lambda e: e.rel_or_abs.lower(),
-        )
+        # Non-hot files: sort by importance score (highest first) so that low-score
+        # files appear at the tail and are dropped first under budget/trim pressure.
+        # Fall back to alphabetical order when no DB score data is available.
+        _score_map: dict[str, float] = {}
+        if cwd is not None:
+            try:
+                from pathlib import Path as _Path  # noqa: PLC0415
+
+                from . import db as _db_mod  # noqa: PLC0415
+                from .project import canonicalize as _canonicalize  # noqa: PLC0415
+                from .project import project_hash as _project_hash_fn
+                _score_map = _db_mod.get_entry_scores(_project_hash_fn(_canonicalize(_Path(cwd))))
+            except Exception:  # noqa: BLE001
+                pass
+        _normal_candidates = [e for e in top_files if e.read_count < _HOT_FILE_READ_THRESHOLD]
+        if _score_map:
+            normal_files = sorted(_normal_candidates, key=lambda e: _score_map.get(e.rel_or_abs, 0.0), reverse=True)
+        else:
+            normal_files = sorted(_normal_candidates, key=lambda e: e.rel_or_abs.lower())
 
         if hot_files:
             shown = hot_files[:_HOT_FILE_MAX_SHOWN]

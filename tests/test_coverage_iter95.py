@@ -223,15 +223,15 @@ def test_schema_migrated_cache_prevents_repeated_pragma(tmp_path):
     conn = _TrackingConnection(str(db_path))
     conn.row_factory = sqlite3.Row
 
-    # First call: should run PRAGMA
+    # First call: should run PRAGMA for files and stats (2 calls).
     db_module._ensure_project_schema(conn, db_path=db_path)
     first_count = len(conn.pragma_calls)
-    assert first_count == 1, f"Expected 1 PRAGMA call on first open, got {first_count}"
+    assert first_count == 2, f"Expected 2 PRAGMA calls on first open, got {first_count}"
 
-    # Second call: cache hit, should skip PRAGMA
+    # Second call: cache hit, should skip all PRAGMA calls.
     db_module._ensure_project_schema(conn, db_path=db_path)
     second_count = len(conn.pragma_calls)
-    assert second_count == 1, (
+    assert second_count == 2, (
         f"Expected no additional PRAGMA calls, got {second_count - first_count} extra"
     )
 
@@ -247,8 +247,8 @@ def test_schema_migrated_cache_runs_pragma_when_db_path_is_none():
 
     db_module._ensure_project_schema(conn, db_path=None)
     db_module._ensure_project_schema(conn, db_path=None)
-    assert len(conn.pragma_calls) == 2, (
-        f"Expected 2 PRAGMA calls (no caching), got {len(conn.pragma_calls)}"
+    assert len(conn.pragma_calls) == 4, (
+        f"Expected 4 PRAGMA calls (2 per open, no caching when db_path=None), got {len(conn.pragma_calls)}"
     )
 
     conn.close()

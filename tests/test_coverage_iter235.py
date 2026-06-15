@@ -243,7 +243,7 @@ def _make_in_memory_conn():
     conn.execute(
         "CREATE TABLE stats "
         "(id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT, "
-        "tokens_saved INTEGER, bytes_saved INTEGER, detail TEXT)"
+        "tokens_saved INTEGER, bytes_saved INTEGER, detail TEXT, last_access_epoch REAL)"
     )
     conn.commit()
     return conn

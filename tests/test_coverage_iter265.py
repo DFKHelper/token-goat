@@ -443,7 +443,7 @@ class TestRecordStat:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS stats "
             "(id INTEGER PRIMARY KEY, ts INTEGER, kind TEXT, tokens_saved INTEGER, "
-            "bytes_saved INTEGER, detail TEXT)"
+            "bytes_saved INTEGER, detail TEXT, last_access_epoch REAL)"
         )
         conn.commit()
         conn.close()

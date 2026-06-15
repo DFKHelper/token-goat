@@ -45,6 +45,7 @@ __all__ = [
     "get_file_exports",
     "get_file_importers",
     "get_compression_stats",
+    "get_entry_scores",
     "get_file_imports",
     "get_refs_with_callers",
     "get_symbol_callers",
@@ -65,6 +66,7 @@ __all__ = [
 ]
 
 import contextlib
+import math
 import os
 import re
 import sqlite3
@@ -94,6 +96,8 @@ _INTEGRITY_CHECKED: dict[Path, bool] = {}
 # _rebuild() also evicts entries from this dict so a freshly quarantined+reopened
 # DB always re-runs the migration check rather than assuming it is already done.
 _SCHEMA_MIGRATED: dict[Path, bool] = {}
+# Tracks which DB paths have had the last_access_epoch stats migration applied this process.
+_STATS_EPOCH_MIGRATED: set[Path] = set()
 
 
 class DBError(Exception):
@@ -637,6 +641,13 @@ def _ensure_global_schema(conn: sqlite3.Connection) -> None:
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
+        db_path = paths.global_db_path()
+        if db_path not in _STATS_EPOCH_MIGRATED:
+            global_stats_cols = {row["name"] for row in conn.execute("PRAGMA table_info(stats)").fetchall()}
+            if "last_access_epoch" not in global_stats_cols:
+                _LOG.info("schema migration: adding last_access_epoch column to global stats table")
+                conn.execute("ALTER TABLE stats ADD COLUMN last_access_epoch REAL")
+            _STATS_EPOCH_MIGRATED.add(db_path)
     except sqlite3.OperationalError as e:
         # Read-only fallback connection (sandbox) cannot run DDL. The schema
         # already exists from prior writable opens — read-only callers can
@@ -673,6 +684,16 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
                     f" ({db_path.name})" if db_path else "",
                 )
                 conn.execute("ALTER TABLE files ADD COLUMN line_count INTEGER")
+            if db_path is None or db_path not in _STATS_EPOCH_MIGRATED:
+                stats_cols = {row["name"] for row in conn.execute("PRAGMA table_info(stats)").fetchall()}
+                if "last_access_epoch" not in stats_cols:
+                    _LOG.info(
+                        "schema migration: adding last_access_epoch column to stats table%s",
+                        f" ({db_path.name})" if db_path else "",
+                    )
+                    conn.execute("ALTER TABLE stats ADD COLUMN last_access_epoch REAL")
+                if db_path is not None:
+                    _STATS_EPOCH_MIGRATED.add(db_path)
             if db_path is not None:
                 _SCHEMA_MIGRATED[db_path] = True
         # INSERT OR REPLACE (not INSERT OR IGNORE) so the version row is
@@ -1434,8 +1455,8 @@ def record_stat(
         kind = kind[:_MAX_STAT_KIND_LEN]
     if detail is not None and len(detail) > _MAX_STAT_DETAIL_LEN:
         detail = detail[:_MAX_STAT_DETAIL_LEN]
-    sql = "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail) VALUES (?, ?, ?, ?, ?)"
-    params = (ts, kind, tokens_saved, bytes_saved, detail)
+    sql = "INSERT INTO stats (ts, kind, tokens_saved, bytes_saved, detail, last_access_epoch) VALUES (?, ?, ?, ?, ?, ?)"
+    params = (ts, kind, tokens_saved, bytes_saved, detail, time.time())
     def _do() -> None:
         if project_hash is not None:
             with open_project(project_hash) as conn:
@@ -2095,3 +2116,32 @@ def get_compression_stats(session_id: str | None = None) -> dict:
         "images_shrunk": images_shrunk,
         "top_filters": top_filters,
     }
+
+
+def get_entry_scores(project_hash: str) -> dict[str, float]:
+    """Return file_rel → importance score for use by compact manifest trim ordering.
+
+    Score = hit_count * exp(-lambda * age_days) where lambda=0.1 and age_days is
+    derived from last_access_epoch. When last_access_epoch is NULL, age_days=30.
+    Keys are the raw ``detail`` values from the stats table (typically file paths
+    recorded by read/section/symbol events). Returns an empty dict on any error.
+    """
+    _LAMBDA = 0.1
+    _NULL_AGE_DAYS = 30.0
+    now = time.time()
+    result: dict[str, float] = {}
+    try:
+        with open_project_readonly(project_hash) as conn:
+            rows = conn.execute(
+                "SELECT detail, COUNT(*) AS hit_count, MAX(last_access_epoch) AS last_access "
+                "FROM stats WHERE detail IS NOT NULL GROUP BY detail"
+            ).fetchall()
+        for row in rows:
+            file_rel = str(row["detail"])
+            hit_count = int(row["hit_count"])
+            last_access = row["last_access"]
+            age_days = (now - float(last_access)) / 86400.0 if last_access is not None else _NULL_AGE_DAYS
+            result[file_rel] = hit_count * math.exp(-_LAMBDA * age_days)
+    except Exception:  # noqa: BLE001
+        pass
+    return result
