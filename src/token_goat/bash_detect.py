@@ -60,7 +60,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "bundler": "bundler",
     "bunx": "bun",
     "cabal": "haskell",
-    "cargo": "dep-list",
+    "cargo": "cargo",
     "ccmake": "cmake",
     "cdk": "cdk",
     "clang-tidy": "clang-tidy",

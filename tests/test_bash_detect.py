@@ -25,8 +25,8 @@ class TestDetectKnownBinaries:
         assert bash_detect.detect(["npm"]) == "npm_install"
 
     def test_cargo(self) -> None:
-        # DepListFilter precedes CargoFilter in FILTERS and claims cargo binaries.
-        assert bash_detect.detect(["cargo"]) == "dep-list"
+        # cargo maps to the CargoFilter for build/test/check/clippy compression.
+        assert bash_detect.detect(["cargo"]) == "cargo"
 
     def test_docker(self) -> None:
         assert bash_detect.detect(["docker"]) == "docker-compose"

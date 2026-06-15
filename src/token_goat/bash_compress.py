@@ -9748,14 +9748,14 @@ class DepListFilter(Filter):
     error_passthrough = True
 
     name = "dep-list"
-    binaries = frozenset(["pip", "pip3", "uv", "poetry", "cargo"])
+    binaries = frozenset(["pip", "pip3", "uv", "poetry"])
     subcommands = frozenset(["list", "freeze", "show", "ls", "tree"])
 
     # npm, pnpm, and yarn are intentionally absent from ``binaries`` so that
     # bash_detect routes those binaries to their dedicated install filters (the
     # install fast-path wins the sync table).  We still compress their listing
     # subcommands (list / ls / etc.), so we check them explicitly here.
-    _PKG_MGR_STEMS = frozenset(["npm", "pnpm", "yarn"])
+    _PKG_MGR_STEMS = frozenset(["npm", "pnpm", "yarn", "cargo"])
 
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         if argv and Path(argv[0]).stem.lower() in self._PKG_MGR_STEMS:
