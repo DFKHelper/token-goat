@@ -292,17 +292,9 @@ def over_cap_file_hint(file_part: str, project: Project | None) -> str | None:
     entries = _load_skipped_large(project.hash)
     if not entries:
         return None
-    needle = file_part.replace("\\", "/").lower()
-    if needle.startswith("./"):
-        needle = needle[2:]
-    needle_base = needle.rsplit("/", 1)[-1]
     for entry in entries:
         rel = str(entry.get("rel_path", ""))
-        rel_norm = rel.replace("\\", "/").lower()
-        if not rel_norm:
-            continue
-        rel_base = rel_norm.rsplit("/", 1)[-1]
-        if rel_norm == needle or rel_norm.endswith("/" + needle) or (needle_base and needle_base == rel_base):
+        if rel and _path_part_matches(file_part, rel):
             from .parser import MAX_FILE_SIZE  # noqa: PLC0415
             limit_mb = MAX_FILE_SIZE / 1024 / 1024
             return (
@@ -311,6 +303,169 @@ def over_cap_file_hint(file_part: str, project: Project | None) -> str | None:
                 f'Use line-range reads: `token-goat read "{rel}::1-200"` to read sections.'
             )
     return None
+
+
+def _path_part_matches(file_part: str, rel_path: str) -> bool:
+    """Return whether *file_part* (a user-supplied needle) matches *rel_path*.
+
+    Path-aware, case-insensitive match shared by :func:`over_cap_file_hint` and the
+    line-range disk fallback: an exact normalized path, a trailing path-component
+    (``a/b/c.js`` ends with ``/c.js``), or a shared basename all count.  A bare
+    substring test is deliberately avoided because it false-matches across filename
+    boundaries (``service.py`` inside ``user_service.py``).
+    """
+    needle = file_part.replace("\\", "/").lower()
+    if needle.startswith("./"):
+        needle = needle[2:]
+    if not needle:
+        return False
+    rel_norm = rel_path.replace("\\", "/").lower()
+    if not rel_norm:
+        return False
+    needle_base = needle.rsplit("/", 1)[-1]
+    rel_base = rel_norm.rsplit("/", 1)[-1]
+    return (
+        rel_norm == needle
+        or rel_norm.endswith("/" + needle)
+        or (bool(needle_base) and needle_base == rel_base)
+    )
+
+
+def _safe_resolve_within(candidate: Path, root: Path) -> Path | None:
+    """Resolve *candidate* and return it only if it stays inside *root*.
+
+    Security gate for the line-range disk fallback: a needle such as
+    ``../../etc/passwd`` joined onto a project root must never resolve to a file
+    outside that root.  *root* is expected to already be resolved.  Returns the
+    resolved path when it is a descendant of *root*, otherwise ``None``.
+    """
+    try:
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    try:
+        resolved.relative_to(root)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _disk_fallback_search_roots(
+    current_project: Project | None,
+) -> list[tuple[str, Path]]:
+    """Resolve the ``(project_hash, root)`` pairs the disk fallback may scan.
+
+    With an active *current_project* the result holds exactly that one project,
+    taken straight from its already-canonical ``root`` Path (no second DB lookup).
+    Confining the scan to the active project is the isolation invariant: a
+    line-range read issued from project A must never reach into project B.
+
+    With no active project (``current_project`` is ``None`` — a rare edge case,
+    e.g. the cwd is outside every indexed project) the scan fans out across every
+    registered project so the file can still be located; the caller then discloses
+    which root the hit came from so the cross-project origin is never hidden.
+    """
+    if current_project is not None:
+        root = current_project.root
+        if not isinstance(root, Path):
+            root = Path(root)
+        try:
+            if not root.is_dir():
+                return []
+        except OSError:
+            return []
+        return [(current_project.hash, root)]
+
+    try:
+        with db.open_global_readonly() as gconn:
+            rows = gconn.execute("SELECT hash, root FROM projects").fetchall()
+    except (FileNotFoundError, sqlite3.Error) as exc:
+        _LOG.debug("disk-fallback: global project list unavailable: %s", exc)
+        return []
+    targets: list[tuple[str, Path]] = []
+    for row in rows:
+        proj_hash = row["hash"]
+        root_raw = row["root"]
+        if not proj_hash or not root_raw:
+            continue
+        try:
+            root = Path(root_raw).resolve()
+        except OSError:
+            continue
+        if root.is_dir():
+            targets.append((proj_hash, root))
+    return targets
+
+
+def _find_unindexed_file_on_disk(
+    file_part: str, current_project: Project | None = None
+) -> tuple[Path, str, Path] | None:
+    """Locate an unindexed (e.g. over-cap) file on disk inside an indexed project.
+
+    The line-range read path normally resolves files through the index.  When a
+    file was skipped at index time for exceeding the size cap (or is otherwise not
+    indexed) the index lookup misses, yet the file still exists on disk — and the
+    over-cap hint actively points users at ``token-goat read "file::N-M"``.  This
+    bridges that gap, returning ``(abs_path, rel_path_posix, project_root)`` for the
+    first hit or ``None``.
+
+    Project isolation is the invariant.  When *current_project* is supplied the
+    search is confined to that single project's root and its ``skipped_large_files``
+    meta — a ``read`` issued from project A must never silently serve a same-named
+    file from project B.  Only when no project is active (``current_project`` is
+    ``None``) does the search fan out across every indexed project, and the caller
+    then discloses the source root so the cross-project origin stays visible.
+
+    Two match strategies are tried per project, both confined to the project root
+    (no arbitrary filesystem reads):
+
+    1. ``skipped_large_files`` meta entries, matched path-aware via
+       :func:`_path_part_matches` — the primary over-cap case.
+    2. A direct ``root / file_part`` join for any other on-disk file addressed by
+       its exact project-relative path.
+    """
+    needle = file_part.replace("\\", "/").strip()
+    if needle.startswith("./"):
+        needle = needle[2:]
+    if not needle:
+        return None
+    for proj_hash, root in _disk_fallback_search_roots(current_project):
+        for entry in _load_skipped_large(proj_hash):
+            rel = str(entry.get("rel_path", "")).replace("\\", "/")
+            if rel and _path_part_matches(file_part, rel):
+                resolved = _safe_resolve_within(root / rel, root)
+                if resolved is not None and resolved.is_file():
+                    return resolved, resolved.relative_to(root).as_posix(), root
+        resolved = _safe_resolve_within(root / needle, root)
+        if resolved is not None and resolved.is_file():
+            return resolved, resolved.relative_to(root).as_posix(), root
+    return None
+
+
+def _read_disk_line_range(abs_path: Path, start: int, end: int) -> list[str] | None:
+    """Stream lines *start*..*end* (1-based, inclusive) from *abs_path*.
+
+    Reads line-by-line so an over-cap file — which the 2 MB ``_read_file_lines``
+    cap would reject outright — can still be sampled without loading it entirely
+    into memory.  Universal-newline text mode (``utf-8-sig`` + ``errors="replace"``)
+    mirrors the encoding handling of the indexed read path.  Returns the collected
+    lines, or ``None`` on I/O error or when *start* is past end-of-file.
+    """
+    collected: list[str] = []
+    try:
+        with abs_path.open("r", encoding="utf-8-sig", errors="replace") as fh:
+            for lineno, raw in enumerate(fh, start=1):
+                if lineno < start:
+                    continue
+                if lineno > end:
+                    break
+                collected.append(raw[:-1] if raw.endswith("\n") else raw)
+    except OSError as exc:
+        _LOG.warning("disk-fallback read failed: %s: %s", abs_path, exc)
+        return None
+    if not collected:
+        return None
+    return collected
 
 
 def _emit_read_error(
@@ -1070,6 +1225,87 @@ def deps(
                    + (" ..." if len(unresolved) > 20 else ""))
 
 
+_DISK_FALLBACK_MAX_LINES = 5000  # one line-range disk read may span at most this many lines
+
+
+def _run_disk_fallback_line_range(
+    *,
+    abs_path: Path,
+    rel_path: str,
+    start: int,
+    end: int,
+    item_part: str,
+    session_id: str | None,
+    json_output: bool,
+    no_header: bool,
+    source_root: Path | None = None,
+) -> None:
+    """Emit a bounded raw line-range read for an unindexed/over-cap on-disk file.
+
+    Reached from :func:`_run_read_line_range` when the index misses but
+    :func:`_find_unindexed_file_on_disk` located the file inside a project root.
+    The read is capped at :data:`_DISK_FALLBACK_MAX_LINES`; a wider span is a usage
+    error.  Output carries a ``[disk-fallback: <rel> (not indexed)]`` banner on
+    stderr so callers know this is a raw read, not a symbol extraction.
+
+    *source_root* is set only when the file was located outside the active project
+    (the no-current-project fan-out path).  When present, the project root is
+    disclosed in both the banner and the JSON envelope (``_project_root``) so the
+    cross-project origin matches the disclosure the indexed cross-project path
+    provides and is never hidden.
+    """
+    span = end - start + 1
+    if span > _DISK_FALLBACK_MAX_LINES:
+        _emit_read_error(
+            code="disk_fallback_range_too_large",
+            message=(
+                f"Line range {start}-{end} spans {span} lines, exceeding the "
+                f"{_DISK_FALLBACK_MAX_LINES}-line disk-fallback cap for unindexed files. "
+                f"Narrow the range (≤{_DISK_FALLBACK_MAX_LINES} lines per call)."
+            ),
+            json_output=json_output,
+            err=True,
+            rel_path=rel_path,
+            item=item_part,
+        )
+        raise typer.Exit(2)
+
+    lines = _read_disk_line_range(abs_path, start, end)
+    if lines is None:
+        _emit_read_error(
+            code="line_range_out_of_bounds",
+            message=f"Line range {start}-{end} is out of bounds for {rel_path}",
+            json_output=json_output,
+            rel_path=rel_path,
+            item=item_part,
+        )
+        raise typer.Exit(0)
+
+    if session_id:
+        session.mark_file_read(session_id, rel_path)
+
+    text = "\n".join(lines)
+    end_line = start + len(lines) - 1
+    if json_output:
+        out = {
+            "file": rel_path,
+            "start_line": start,
+            "end_line": end_line,
+            "text": text,
+            "disk_fallback": True,
+        }
+        if source_root is not None:
+            out["_project_root"] = str(source_root)
+        typer.echo(json.dumps(out, separators=(",", ":")))
+        return
+
+    if source_root is not None:
+        typer.echo(f"[disk-fallback: {rel_path} from {source_root} (not indexed)]", err=True)
+    else:
+        typer.echo(f"[disk-fallback: {rel_path} (not indexed)]", err=True)
+    _emit_text_result(text, rel_path, item_part, "lines", no_header)
+
+
 def _run_read_line_range(
     *,
     target: str,
@@ -1107,6 +1343,25 @@ def _run_read_line_range(
         raise typer.Exit(0) from None
 
     if file_target.rel_path is None:
+        disk_match = _find_unindexed_file_on_disk(file_part, file_target.current_project)
+        if disk_match is not None:
+            abs_path, rel_path, source_root = disk_match
+            # Disclose the source root only on the no-current-project fan-out path;
+            # an in-project hit needs no disclosure (the file belongs to the cwd's
+            # own project, exactly like the normal indexed read).
+            disclose_root = source_root if file_target.current_project is None else None
+            _run_disk_fallback_line_range(
+                abs_path=abs_path,
+                rel_path=rel_path,
+                start=start,
+                end=end,
+                item_part=item_part,
+                session_id=session_id,
+                json_output=json_output,
+                no_header=no_header,
+                source_root=disclose_root,
+            )
+            return
         _emit_file_not_found_error(file_part, file_target.current_project, json_output=json_output)
         raise typer.Exit(0)
 
