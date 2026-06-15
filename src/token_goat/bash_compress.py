@@ -163,6 +163,7 @@ __all__ = [
     "MypyFilter",
     "PipFilter",
     "GemFilter",
+    "DotenvFilter",
     "TerraformFilter",
     "AnsibleFilter",
     "PytestFilter",
@@ -23749,6 +23750,111 @@ class NgFilter(Filter):
         return self._finalize(kept)
 
 
+# --- dotenv ----------------------------------------------------------------
+
+#: python-dotenv / dotenv-cli diagnostics worth keeping verbatim — parse
+#: failures are actionable, not banner noise.
+_DOTENV_PARSE_WARN_RE: Final[re.Pattern[str]] = re.compile(
+    r"python-dotenv|could not parse|failed to parse|parse error",
+    re.IGNORECASE,
+)
+#: "Exported 23 variables" / "Loaded 23 variables" / "loaded 23 vars" count lines.
+_DOTENV_EXPORT_COUNT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:Exported|Loaded|loaded)\s+(\d+)\s+var(?:iable)?s?\b",
+    re.IGNORECASE,
+)
+#: "Skipped 2 variables (already set)" — collapse but never add to the tally.
+_DOTENV_SKIPPED_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bSkipped\s+\d+\s+var(?:iable)?s?\b",
+    re.IGNORECASE,
+)
+#: Count-less loading banners: "[dotenv] Loading .env", "Loading .env environment
+#: variables...", "Loaded variables from .env".
+_DOTENV_PLAIN_LOAD_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:^|\s)\[dotenv\]\s+Load|(?:Loading|Loaded)\b[^\n]*\.env|\.env environment variables",
+    re.IGNORECASE,
+)
+
+
+def _is_dotenv_banner(line: str) -> bool:
+    """Return True for a collapsible dotenv loading / exported / skipped banner.
+
+    Diagnostic and error lines are never banners; they fall through to be kept
+    verbatim by the caller.
+    """
+    if _DOTENV_PARSE_WARN_RE.search(line) or _ERROR_SIGNAL_RE.search(line):
+        return False
+    return bool(
+        _DOTENV_EXPORT_COUNT_RE.search(line)
+        or _DOTENV_SKIPPED_RE.search(line)
+        or _DOTENV_PLAIN_LOAD_RE.search(line)
+    )
+
+
+class DotenvFilter(Filter):
+    """Compress dotenv / python-dotenv / dotenv-cli loading banners.
+
+    Tools that hydrate the environment from a ``.env`` file emit chatty
+    loading banners with no actionable content::
+
+        [dotenv] Loading .env
+        [dotenv] Exported 23 variables
+        [dotenv] Skipped 2 variables (already set)
+
+    or, from python-dotenv / pipenv::
+
+        Loading .env environment variables...
+        Loaded variables from .env
+
+    Compression model:
+
+    * **Collapse** two or more loading / ``Exported N variables`` /
+      ``Skipped N variables`` banner lines into a single
+      ``[dotenv] loaded N vars`` summary (``N`` is the exported/loaded tally;
+      skipped counts are excluded).  When no count is present the summary
+      degrades to ``[dotenv] loaded .env``.
+    * **Keep** ``python-dotenv could not parse …`` parse warnings and their
+      indented ``Path:`` / ``Line:`` continuation lines verbatim — they are
+      actionable.
+    * **Pass through** unchanged when there is at most one banner line (a lone
+      ``Loading environment from .env`` message has nothing to collapse).
+
+    Dispatched on the ``dotenv`` binary (python-dotenv CLI / npm ``dotenv-cli``);
+    that binary is disjoint from every other filter so its registry position is
+    cosmetic.
+    """
+
+    name = "dotenv"
+    binaries = frozenset(["dotenv"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.split("\n")
+        banner_idx = {i for i, ln in enumerate(lines) if _is_dotenv_banner(ln)}
+        # Nothing to collapse: single-line / no-banner messages pass through.
+        if len(banner_idx) < 2:
+            return self._finalize(lines)
+        kept: list[str] = []
+        loaded_total = 0
+        insert_pos: int | None = None
+        for i, line in enumerate(lines):
+            if i in banner_idx:
+                if insert_pos is None:
+                    insert_pos = len(kept)
+                m = _DOTENV_EXPORT_COUNT_RE.search(line)
+                if m:
+                    loaded_total += int(m.group(1))
+                continue
+            kept.append(line)
+        summary = (
+            f"[dotenv] loaded {loaded_total} vars" if loaded_total else "[dotenv] loaded .env"
+        )
+        kept.insert(insert_pos if insert_pos is not None else 0, summary)
+        return self._finalize(kept)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -23945,6 +24051,9 @@ FILTERS: list[Filter] = [
     # other deployment-style tooling.
     AnsibleFilter(),
     PreCommitFilter(),
+    # DotenvFilter handles the `dotenv` CLI (python-dotenv / npm dotenv-cli);
+    # disjoint binary from every other filter so position is cosmetic.
+    DotenvFilter(),
     # FlutterFilter handles `flutter build/test/run/pub`; DartFilter handles
     # `dart compile/test/pub/analyze`; PubFilter handles standalone `pub get/upgrade`.
     # All three are disjoint from every other filter.

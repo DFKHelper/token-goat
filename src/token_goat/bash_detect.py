@@ -92,6 +92,7 @@ _BINARY_TO_FILTER: dict[str, str] = {
     "dmypy": "mypy",
     "docker": "docker-compose",
     "docker-compose": "docker-compose",
+    "dotenv": "dotenv",
     "dotnet": "dotnet",
     "egrep": "grep",
     "elm": "elm",
