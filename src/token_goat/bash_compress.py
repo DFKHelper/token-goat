@@ -1201,6 +1201,48 @@ def _first_positional(
     return "", len(argv)
 
 
+# Tool-specific "value flags" (flags that consume the following token as their
+# value), used by the _is_*_cmd dispatch helpers below to skip over global
+# flags when locating a subcommand via _first_positional(). Defined once at
+# import time rather than rebuilt on every call.
+_GIT_GLOBAL_VALUE_FLAGS: Final[frozenset[str]] = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+})
+_PIP_VALUE_FLAGS: Final[frozenset[str]] = frozenset({
+    "--index-url", "-i", "--extra-index-url", "--trusted-host",
+    "--cert", "--client-cert", "--proxy", "--timeout", "--retries",
+    "--log", "--cache-dir", "--build-dir", "--target",
+})
+_CARGO_VALUE_FLAGS: Final[frozenset[str]] = frozenset({"-C", "--manifest-path", "--config", "--target-dir", "-Z"})
+_NPM_VALUE_FLAGS: Final[frozenset[str]] = frozenset({"-C", "--prefix", "--userconfig", "--globalconfig"})
+_YARN_VALUE_FLAGS: Final[frozenset[str]] = frozenset({"--cwd"})
+_UV_VALUE_FLAGS: Final[frozenset[str]] = frozenset({
+    "--project", "--directory", "--python", "-p", "--cache-dir", "--config-file",
+})
+_DC_VALUE_FLAGS: Final[frozenset[str]] = frozenset({
+    "--file", "-f", "--project-name", "-p", "--project-directory",
+    "--env-file", "--profile", "--ansi", "--parallel",
+})
+_KUBECTL_VALUE_FLAGS: Final[frozenset[str]] = frozenset({
+    "-n", "--namespace", "--context", "--kubeconfig", "--server", "-s",
+    "--token", "--user", "--cluster", "--log-level", "--log-flush-frequency",
+    "--request-timeout", "--as", "--as-group", "--as-uid",
+    "--tls-server-name", "--certificate-authority", "--client-certificate",
+    "--client-key", "--cache-dir",
+})
+_PODMAN_VALUE_FLAGS: Final[frozenset[str]] = frozenset({
+    "--connection", "-c", "--identity", "--log-level", "--url",
+})
+_DOCKER_GLOBAL_VALUE_FLAGS: Final[frozenset[str]] = frozenset({
+    "--host", "-H", "--config", "--context", "--log-level", "-l",
+})
+# Shared compose flags: used by both "docker compose" and "docker-compose".
+_DOCKER_COMPOSE_SUBCMD_FLAGS: Final[frozenset[str]] = frozenset({
+    "--file", "-f", "--project-name", "-p", "--project-directory",
+    "--env-file", "--profile", "--ansi", "--parallel",
+})
+
+
 def _is_git_log_cmd(argv: list[str]) -> bool:
     """Return ``True`` when *argv* is a ``git log`` command.
 
@@ -1219,9 +1261,6 @@ def _is_git_log_cmd(argv: list[str]) -> bool:
         return False
     # Scan argv[1:] for the subcommand, skipping global git flags (--no-pager,
     # -C <path>, -c <key=val>, --git-dir=<path>, etc.) that appear before it.
-    _GIT_GLOBAL_VALUE_FLAGS = frozenset({
-        "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
-    })
     sub, _ = _first_positional(argv, _GIT_GLOBAL_VALUE_FLAGS)
     return sub == "log"
 
@@ -1249,37 +1288,26 @@ def _is_pkg_install_cmd(argv: list[str]) -> bool:
 
     # pip / pip3 ---------------------------------------------------------
     if base in {"pip", "pip3"}:
-        _PIP_VALUE_FLAGS = frozenset({
-            "--index-url", "-i", "--extra-index-url", "--trusted-host",
-            "--cert", "--client-cert", "--proxy", "--timeout", "--retries",
-            "--log", "--cache-dir", "--build-dir", "--target",
-        })
         sub, _ = _first_positional(argv, _PIP_VALUE_FLAGS)
         return sub in {"install", "download"}
 
     # cargo ---------------------------------------------------------------
     if base == "cargo":
-        _CARGO_VALUE_FLAGS = frozenset({"-C", "--manifest-path", "--config", "--target-dir", "-Z"})
         sub, _ = _first_positional(argv, _CARGO_VALUE_FLAGS)
         return sub == "install"
 
     # npm -----------------------------------------------------------------
     if base == "npm":
-        _NPM_VALUE_FLAGS = frozenset({"-C", "--prefix", "--userconfig", "--globalconfig"})
         sub, _ = _first_positional(argv, _NPM_VALUE_FLAGS)
         return sub in {"install", "i", "ci", "update"}
 
     # yarn ----------------------------------------------------------------
     if base == "yarn":
-        _YARN_VALUE_FLAGS = frozenset({"--cwd"})
         sub, _ = _first_positional(argv, _YARN_VALUE_FLAGS)
         return sub in {"install", "add", "upgrade"}
 
     # uv ------------------------------------------------------------------
     if base == "uv":
-        _UV_VALUE_FLAGS = frozenset({
-            "--project", "--directory", "--python", "-p", "--cache-dir", "--config-file",
-        })
         sub, sub_idx = _first_positional(argv, _UV_VALUE_FLAGS)
         if sub in {"sync", "install", "add"}:
             return True
@@ -1368,44 +1396,22 @@ def _is_container_log_cmd(argv: list[str]) -> bool:
 
     # docker-compose ---------------------------------------------------------
     if base == "docker-compose":
-        _DC_VALUE_FLAGS = frozenset({
-            "--file", "-f", "--project-name", "-p", "--project-directory",
-            "--env-file", "--profile", "--ansi", "--parallel",
-        })
         sub, _ = _first_positional(argv, _DC_VALUE_FLAGS)
         return sub == "logs"
 
     # kubectl ----------------------------------------------------------------
     if base == "kubectl":
-        _KUBECTL_VALUE_FLAGS = frozenset({
-            "-n", "--namespace", "--context", "--kubeconfig", "--server", "-s",
-            "--token", "--user", "--cluster", "--log-level", "--log-flush-frequency",
-            "--request-timeout", "--as", "--as-group", "--as-uid",
-            "--tls-server-name", "--certificate-authority", "--client-certificate",
-            "--client-key", "--cache-dir",
-        })
         sub, _ = _first_positional(argv, _KUBECTL_VALUE_FLAGS)
         return sub == "logs"
 
     # podman -----------------------------------------------------------------
     if base == "podman":
-        _PODMAN_VALUE_FLAGS = frozenset({
-            "--connection", "-c", "--identity", "--log-level", "--url",
-        })
         sub, _ = _first_positional(argv, _PODMAN_VALUE_FLAGS)
         return sub == "logs"
 
     # docker -----------------------------------------------------------------
     if base == "docker":
         # Docker has global flags before the subcommand.
-        _DOCKER_GLOBAL_VALUE_FLAGS = frozenset({
-            "--host", "-H", "--config", "--context", "--log-level", "-l",
-        })
-        # Shared compose flags: used by both "docker compose" and "docker-compose".
-        _DOCKER_COMPOSE_SUBCMD_FLAGS = frozenset({
-            "--file", "-f", "--project-name", "-p", "--project-directory",
-            "--env-file", "--profile", "--ansi", "--parallel",
-        })
         sub, sub_idx = _first_positional(argv, _DOCKER_GLOBAL_VALUE_FLAGS)
         if sub == "compose":
             # docker compose [flags] logs ...
