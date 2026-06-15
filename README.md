@@ -5,6 +5,8 @@ image: /token-goat/assets/goat-social.png
 permalink: /
 ---
 
+# Token-Goat
+
 <p align="center">
   <img src="assets/logo.png" alt="Token-Goat" width="700">
 </p>
@@ -181,7 +183,7 @@ Numbers below come from synthetic-fixture benchmarks in the test suite. Each row
 
 Concrete before/after for the four interception points. Token counts use the ~4-chars-per-token rule of thumb.
 
-**1. Image — screenshot interception**
+### 1. Image — screenshot interception
 
 ```
 $ ls -lh screenshot.png
@@ -196,7 +198,7 @@ out: ~74 KB WebP   (94% smaller)
 
 The same image at JPEG quality 85 lands around 120 KB. WebP wins by another ~39% on screenshot-shaped content (large flat regions, sharp text edges).
 
-**2. Surgical read — one function, not the whole file**
+### 2. Surgical read — one function, not the whole file
 
 ```
 # Without token-goat: full file read.
@@ -210,7 +212,7 @@ out: 38 lines              # ~300 tokens   (97% smaller)
 
 Same applies to `token-goat section "README.md::Install"` — one heading instead of the whole document. Anchor IDs and setext headings resolve too, so `section "doc.md::Quick-start"` works when the file uses `Quick start` as an `<h2>` with an explicit `{#quick-start}` anchor.
 
-**3. Compact manifest — preserve what mattered**
+### 3. Compact manifest — preserve what mattered
 
 ```
 # Without token-goat: PreCompact fires with no extra context.
@@ -223,7 +225,7 @@ out: ~280 tokens covering 8 edited files + 12 symbols accessed + 4 key reads
 
 The 280-token manifest is one-shot during compaction. The win is downstream: post-compaction, the agent doesn't re-read files it had already edited, saving a full-file Read pass on each one.
 
-**4. Repomap — orientation without an `ls -R` dump**
+### 4. Repomap — orientation without an `ls -R` dump
 
 ```
 # Without token-goat: recursive ls + a handful of Read calls to figure out the repo.
@@ -237,7 +239,7 @@ out: ~4 KB                  # top-ranked files + key symbols   (92% smaller)
 
 `--budget` is a hard cap. Below 6 KB the output automatically switches to short-label mode (`f:` files, `s:` symbols, `c:` calls) to fit more signal per byte. `token-goat map --compact` is a shortcut for a 300-token budget when you only need the high-rank cluster.
 
-**5. Bash output compression**
+### 5. Bash output compression
 
 ```
 # Without token-goat: pytest dumps every PASSED line + dots + tracebacks.
@@ -259,7 +261,7 @@ FAILED tests/test_x.py::test_one
 
 130 built-in filters cover the noisiest dev commands: `pytest`, `jest` / `vitest`, `cargo`, `npm` / `pnpm` / `yarn` / `bun`, `docker`, `kubectl` / `helm`, `aws`, `ruff` / `eslint` / `mypy` / `pylint` / `oxlint`, `git`, `make` / `gradle` / `mvn` / `ant` / `bazel`, `go test` / `golangci-lint`, `terraform` / `pulumi` / `cdk`, `pip` / `uv` / `conda`, `python`, `gh`, `ansible`, `pre-commit`, `grep`, `eza` / `ls`, `fd`, `bat`, `jq`, `yq`, `curl` / `wget`, `rsync`, `dotnet`, `cmake` / `ctest`, `swift` / `xcodebuild`, `ruby` / `bundler`, `elixir` / `mix`, `php` / `composer`, `flutter` / `dart`, `rust` / `cargo`, `kotlin` / `ktlint`, `zig`, `crystal`, `haskell` / `cabal`, `nix`, `R`, `c++` (conan / vcpkg / cppcheck / clang-tidy), `wrangler` / `hardhat` / `serverless`, `erlang`, `fly.io`, `forge`, `elm`, `julia`, `tox`, `vault`, `packer`, `nx` / `lerna` / `turbo`, `prettier` / `biome`, `sass`, `wasm-pack`, `deno`, **and AI tool CLIs**: `aider`, `gemini`, `claude`, `gh copilot`, `copilot`, `cursor`, `windsurf` (incl. Cascade), `opencode`, `continue`, `cline`. Each filter strips ANSI escapes, collapses `\r` progress bars, dedupes repeated lines, groups linter issues by rule, keeps every error block verbatim, and caps total output at 1000 lines / 64 KiB. Compound commands (`cmd1 && cmd2`) are wrapped per segment, so `git diff && git log` compresses both halves. Disable globally with `TOKEN_GOAT_BASH_COMPRESS=0`, per-filter via `[bash_compress] disabled_filters = ["docker"]` in config.toml, or preview the output of any command with `token-goat compress --cmd '<your command>'`. To exclude project-specific directories from indexing (temporary venvs, build sandboxes), add `[indexing] skip_dirs = ["my-tmpdir"]` to config.toml.
 
-**6. Context pressure**
+### 6. Context pressure
 
 Token-goat tracks how close a session is to the autocompact trigger and tightens its hints as the window fills. Surgical-read suggestions kick in on progressively smaller files as pressure builds (500 lines at cool, down to 50 at critical), so large reads get flagged before they tip the session over. The PreCompact manifest also shrinks: capped at 500 tokens once the window runs hot, 300 once critical, so it stops contributing to the pressure it measures. The denominator is always the fixed 660,000-token autocompact trigger budget, not the model's raw context window, so the same thresholds apply across models. Run `token-goat doctor --context` to see the current footprint.
 
@@ -494,7 +496,7 @@ token-goat doctor
 
 If the `Pillow codecs` line reports any `MISSING` or `FAIL`, follow the platform section below.
 
-### Windows
+### Image support — Windows
 
 The official Pillow wheel for Windows bundles libwebp, libjpeg-turbo, and libpng. A failing codec almost always means Pillow was reinstalled inside a stripped-down environment. Reinstall token-goat (and its bundled Pillow wheel) end-to-end:
 
@@ -503,7 +505,7 @@ uv tool install --reinstall --force token-goat
 token-goat doctor
 ```
 
-### macOS
+### Image support — macOS
 
 Same story as Windows — the universal wheel ships every codec. Reinstall to get the wheel back:
 
@@ -519,7 +521,7 @@ brew install webp jpeg-turbo libpng
 uv tool install --reinstall --force token-goat
 ```
 
-### Linux / WSL
+### Image support — Linux / WSL
 
 Almost every Linux distro pulls the manylinux Pillow wheel, which bundles every codec. The exceptions are: musl-based distros (Alpine), some ARM boards lacking a matching wheel, and environments where the user forced `--no-binary :all:`. In those cases, install the system headers, then reinstall:
 
@@ -549,7 +551,7 @@ sudo apk add libwebp-dev libjpeg-turbo-dev libpng-dev
 uv tool install --reinstall --force token-goat
 ```
 
-### AI automated setup
+### Image support — AI automated setup
 
 Non-interactive snippets agents can run unattended. Each one is idempotent: it checks current state before changing anything, and re-runs `token-goat doctor` at the end so the agent can verify success from the output.
 
@@ -611,7 +613,7 @@ When it's working, the output shows rounded box borders (╭─╮), gradient ba
 
 ---
 
-### Windows
+### Stats display — Windows
 
 The old Windows console host — `cmd.exe`, the legacy "Windows PowerShell" app — does not support 24-bit color. Windows Terminal does.
 
@@ -637,7 +639,7 @@ $env:COLORTERM = "truecolor"
 
 ---
 
-### macOS
+### Stats display — macOS
 
 Terminal.app on Catalina and later, iTerm2, and the VS Code integrated terminal all handle truecolor and Unicode without configuration. Most users need nothing here. (macOS is untested — see the badge at the top.)
 
@@ -654,7 +656,7 @@ export COLORTERM=truecolor
 
 ---
 
-### Linux / WSL
+### Stats display — Linux / WSL
 
 **WSL users:** you're running inside Windows Terminal. Follow the Windows steps above — same terminal, same font.
 
@@ -675,7 +677,7 @@ sudo pacman -S ttf-jetbrains-mono-nerd
 
 ---
 
-### AI automated setup
+### Stats display — AI automated setup
 
 Scripts for non-interactive setup. No prompts.
 
