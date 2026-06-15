@@ -81,6 +81,10 @@ def test_edit_to_query_end_to_end(filename, content, symbol, tmp_path, tmp_data_
     the full chain, not just the Python one.
     """
     monkeypatch.setattr(hooks_edit, "_nudge_worker_if_down", lambda: None)
+    # The worker's memory guard checks the test runner's RSS (can exceed 500 MB in a
+    # full suite run), which would skip indexing and break Leg 2.  Disable the guard
+    # here — this test exercises indexing correctness, not memory pressure behavior.
+    monkeypatch.setattr(worker, "_is_under_memory_pressure", lambda: False)
 
     proj_root = _make_project(tmp_path)
     src = proj_root / filename
@@ -112,6 +116,7 @@ def test_incremental_edit_propagates_end_to_end(tmp_path, tmp_data_dir, monkeypa
     leg of the same chain — _process_dirty_entries runs index_project(full=False)
     once the project is registered, a different branch from the first-index path."""
     monkeypatch.setattr(hooks_edit, "_nudge_worker_if_down", lambda: None)
+    monkeypatch.setattr(worker, "_is_under_memory_pressure", lambda: False)
 
     proj_root = _make_project(tmp_path)
     src = proj_root / "widget.py"
