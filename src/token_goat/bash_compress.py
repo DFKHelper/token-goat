@@ -2993,6 +2993,8 @@ _CARGO_BENCH_RESULT_RE: Final[re.Pattern[str]] = re.compile(
 _CARGO_BENCH_RUNNING_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*running \d+ test"
 )
+#: Pass C: Finished preamble lines suppressible when no failure follows
+_CARGO_FINISHED_PREAMBLE_RE: Final[re.Pattern[str]] = re.compile(r"^\s*Finished (?:dev|release|bench|custom)\s")
 
 
 def _is_cargo_compile_cmd(argv: list[str]) -> bool:
@@ -3255,7 +3257,7 @@ class CargoFilter(Filter):
             return self._combine_output(stdout, stderr)
         return self._compress_build(stdout, stderr)
 
-    def _compress_build(self, stdout: str, stderr: str) -> str:
+    def _compress_build(self, stdout: str, stderr: str, *, suppress_finished: bool = True) -> str:
         # Note: reversed order — cargo's useful diagnostics come on stderr; stdout
         # typically contains only build script output that is secondary context.
         merged = self._combine_output(stderr, stdout)
@@ -3272,15 +3274,23 @@ class CargoFilter(Filter):
                 continue
             kept.append(line)
         if compiled:
-            if len(compiled) <= 4:
+            if len(compiled) < 3:
                 kept = compiled + kept
             else:
-                kept = [
-                    *compiled[:2],
-                    f"[token-goat: collapsed {len(compiled) - 4} 'Compiling …' lines]",
-                    *compiled[-2:],
-                    *kept,
-                ]
+                # Pass A: ≥3 Compiling lines → single count sentinel
+                kept = [f"[compiling {len(compiled)} crates…]"] + kept
+        # Pass C: suppress Finished preambles on clean builds (only when Pass A fired
+        # and the caller wants it — not for test/bench subcommands that need it as context).
+        if suppress_finished and len(compiled) >= 3:
+            _cc_kept: list[str] = []
+            for _ci, _cl in enumerate(kept):
+                if _CARGO_FINISHED_PREAMBLE_RE.match(_cl):
+                    _cn = next((_l for _l in kept[_ci + 1:] if _l.strip()), "")
+                    if "FAILED" in _cn or "error[" in _cn:
+                        _cc_kept.append(_cl)
+                else:
+                    _cc_kept.append(_cl)
+            kept = _cc_kept
         if dropped_progress:
             kept.append(f"[token-goat: dropped {dropped_progress} cargo progress lines]")
         return self._finalize(kept)
@@ -3288,7 +3298,7 @@ class CargoFilter(Filter):
     def _compress_test(self, stdout: str, stderr: str) -> str:
         # cargo test: stderr has compiler progress, stdout has test output.
         # Merge compiler noise first, then test results.
-        build_part = self._compress_build("", stderr) if stderr.strip() else ""
+        build_part = self._compress_build("", stderr, suppress_finished=False) if stderr.strip() else ""
         test_lines = stdout.split("\n")
         kept: list[str] = []
         pass_count = 0
@@ -3306,6 +3316,33 @@ class CargoFilter(Filter):
                 kept.append(line)
                 continue
             kept.append(line)
+        # Pass B: inject per-binary pass count sentinels at binary boundaries
+        _tb_pass: list[int] = []
+        _tb_cur = 0
+        _tb_seen = False
+        for _tl in test_lines:
+            if _CARGO_TEST_PASS_RE.match(_tl):
+                _tb_cur += 1
+            elif _CARGO_TEST_RUNNING_RE.match(_tl):
+                if _tb_seen:
+                    _tb_pass.append(_tb_cur)
+                _tb_cur = 0
+                _tb_seen = True
+        _tb_pass.append(_tb_cur)
+        if _tb_pass:
+            _tb_i = 0
+            _tb_first = False
+            _tb_new: list[str] = []
+            for _tl2 in kept:
+                if _CARGO_TEST_RUNNING_RE.match(_tl2):
+                    if _tb_first and _tb_i < len(_tb_pass) and _tb_pass[_tb_i]:
+                        _tb_new.append(f"[{_tb_pass[_tb_i]} tests passed]")
+                        _tb_i += 1
+                    _tb_first = True
+                _tb_new.append(_tl2)
+            if _tb_i < len(_tb_pass) and _tb_pass[_tb_i]:
+                _tb_new.append(f"[{_tb_pass[_tb_i]} tests passed]")
+            kept = _tb_new
         notes: list[str] = []
         _maybe_note(notes, pass_count, f"collapsed {pass_count} passing test lines")
         self._emit_notes(kept, notes)
@@ -3374,7 +3411,7 @@ class CargoFilter(Filter):
         * Keeps ``test result:`` summary lines verbatim.
         """
         # Build phase on stderr — collapse compiler noise, keep errors/warnings.
-        build_part = self._compress_build("", stderr) if stderr.strip() else ""
+        build_part = self._compress_build("", stderr, suppress_finished=False) if stderr.strip() else ""
 
         bench_lines = stdout.split("\n")
         kept: list[str] = []
@@ -3792,6 +3829,12 @@ _DOCKER_PULL_LAYER_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*[a-f0-9]{12}:\s+(?:Pull complete|Verifying Checksum|Download complete|Already exists|Waiting|Pulling fs layer)",
     re.IGNORECASE,
 )
+# Old-format (non-BuildKit) docker build enhancement-pass patterns
+_DOCKER_OLD_CACHE_RE: Final[re.Pattern[str]] = re.compile(r"^ *---> Using cache\s*$")
+_DOCKER_OLD_SHA_RE: Final[re.Pattern[str]] = re.compile(r"^ *---> sha256:[0-9a-f]{12,}\s*$")
+_DOCKER_OLD_STEP_RE: Final[re.Pattern[str]] = re.compile(r"^Step \d+/\d+ : ")
+_DOCKER_OLD_SUCCESS_RE: Final[re.Pattern[str]] = re.compile(r"^Successfully built [0-9a-f]+")
+_DOCKER_OLD_INTERMEDIATE_RE: Final[re.Pattern[str]] = re.compile(r"^Removing intermediate container [0-9a-f]+")
 
 
 class DockerFilter(Filter):
@@ -3860,6 +3903,55 @@ class DockerFilter(Filter):
                 dropped_body += 1
                 continue
             kept.append(line)
+        # Enhancement passes for old-format (non-BuildKit) docker build output
+        if any(_DOCKER_OLD_STEP_RE.match(_l) for _l in lines):
+            _old_step_count = sum(1 for _l in lines if _DOCKER_OLD_STEP_RE.match(_l))
+            _old_cache_count = sum(1 for _l in lines if _DOCKER_OLD_CACHE_RE.match(_l))
+            _old_new: list[str] = []
+            _old_step_hdr: str | None = None
+            _old_step_err = False
+            _old_dropped_cache = 0
+            _old_dropped_sha = 0
+            _old_dropped_imd = 0
+            _old_dropped_step = 0
+            for _ol in kept:
+                if _DOCKER_OLD_SUCCESS_RE.match(_ol):
+                    if _old_step_hdr and not _old_step_err:
+                        _old_dropped_step += 1
+                    elif _old_step_hdr:
+                        _old_new.append(_old_step_hdr)
+                    _old_step_hdr = None
+                    _old_new.append(_ol)
+                    continue
+                if _DOCKER_OLD_CACHE_RE.match(_ol):
+                    _old_dropped_cache += 1
+                    continue
+                if _DOCKER_OLD_SHA_RE.match(_ol):
+                    _old_dropped_sha += 1
+                    continue
+                if _DOCKER_OLD_INTERMEDIATE_RE.match(_ol):
+                    _old_dropped_imd += 1
+                    continue
+                if _DOCKER_OLD_STEP_RE.match(_ol):
+                    if _old_step_hdr:
+                        if _old_step_err:
+                            _old_new.append(_old_step_hdr)
+                        else:
+                            _old_dropped_step += 1
+                    _old_step_hdr = _ol
+                    _old_step_err = False
+                    continue
+                if "error" in _ol.lower():
+                    _old_step_err = True
+                _old_new.append(_ol)
+            if _old_step_hdr:
+                if _old_step_err:
+                    _old_new.append(_old_step_hdr)
+                else:
+                    _old_dropped_step += 1
+            if _old_cache_count > 0:
+                _old_new.insert(0, f"[building {_old_step_count} layers, {_old_cache_count} cached]")
+            kept = _old_new
         parts: list[str] = []
         if dropped_digest:
             parts.append(f"{dropped_digest} digest")
@@ -7616,6 +7708,8 @@ _GO_TEST_FAIL_RE: Final[re.Pattern[str]] = re.compile(
 _GO_TEST_PKG_RESULT_RE: Final[re.Pattern[str]] = re.compile(
     r"^(ok|FAIL|---\sFAIL|\?)\s+\S"
 )
+#: Pass A: unconditional RUN/PAUSE/CONT suppression (NAME kept for sub-test labeling)
+_GO_TEST_RPC_RE: Final[re.Pattern[str]] = re.compile(r"^=== (RUN|PAUSE|CONT)\s")
 
 # go build / go mod / go vet / go generate patterns
 _GO_BUILD_PKG_HEADER_RE: Final[re.Pattern[str]] = re.compile(
@@ -7793,6 +7887,10 @@ class GoTestFilter(Filter):
                 race_block_lines.append(line)
                 continue
 
+            # Pass A: unconditionally suppress RUN/PAUSE/CONT outside and inside fail blocks
+            if _GO_TEST_RPC_RE.match(line):
+                dropped_run += 1
+                continue
             # FAIL opens a multi-line block preserved until next testcase.
             if _GO_TEST_FAIL_RE.match(line):
                 in_fail_block = True
@@ -7825,6 +7923,12 @@ class GoTestFilter(Filter):
         # Flush any unclosed race block (e.g. truncated output).
         if race_block_lines:
             _flush_race_block()
+
+        # Pass C: append aggregate package summary when both ok and FAIL packages present
+        _go_ok_count = sum(1 for _l in kept if re.match(r"^ok\s+\S+\s+\d", _l))
+        _go_fail_count = sum(1 for _l in kept if re.match(r"^FAIL	\S+", _l))
+        if _go_ok_count > 0 and _go_fail_count > 0 and _go_ok_count + _go_fail_count >= 2:
+            kept.append(f"[{_go_ok_count} packages passed, {_go_fail_count} packages failed]")
 
         notes: list[str] = []
         _maybe_note(notes, race_count, f"kept {race_count} DATA RACE block(s) verbatim (goroutine stacks collapsed)")
@@ -8195,6 +8299,12 @@ _CONFIGURE_INFO_RE: Final[re.Pattern[str]] = re.compile(
 _MAKE_PERCENT_RE: Final[re.Pattern[str]] = re.compile(
     r"^\[\s*\d+%\]\s+(?:Building|Linking|Scanning|Generating|Installing|Compiling)"
 )
+#: Pass A: extended compiler invocations not covered by _MAKE_ECHO_RE; suppressed with look-ahead
+_MAKE_COMPILER_EXT_RE: Final[re.Pattern[str]] = re.compile(r"^(?:clang[+][+] |ld |ar |as |nasm |ninja )")
+#: Pass C: nothing-to-do noise lines
+_MAKE_NOTHING_TO_DO_RE: Final[re.Pattern[str]] = re.compile(r"^make\[\d+\]: Nothing to be done")
+#: Preserve rule: lines with these signals are never suppressed by new passes
+_MAKE_PRESERVE_SIGNAL_RE: Final[re.Pattern[str]] = re.compile(r"error:|warning:|undefined reference|undefined symbol", re.IGNORECASE)
 
 
 class MakeFilter(Filter):
@@ -8273,7 +8383,15 @@ class MakeFilter(Filter):
         dropped_echo = 0
         dropped_go_download = 0
         dropped_percent = 0
-        for line in lines:
+        dropped_nothing_to_do = 0
+        # Pass A pre-scan: identify compiler lines followed by an error (must be force-kept)
+        _mk_force_keep: set[int] = set()
+        for _mki, _mkl in enumerate(lines):
+            if (_MAKE_ECHO_RE.match(_mkl) or _MAKE_COMPILER_EXT_RE.match(_mkl)) and not _MAKE_PRESERVE_SIGNAL_RE.search(_mkl):
+                _mk_next = next((lines[j] for j in range(_mki + 1, len(lines)) if lines[j].strip()), "")
+                if "error" in _mk_next.lower() or (_mk_next.startswith("make[") and "Error" in _mk_next):
+                    _mk_force_keep.add(_mki)
+        for _mii, line in enumerate(lines):
             if _MAKE_RECURSE_RE.match(line):
                 dropped_recurse += 1
                 continue
@@ -8291,8 +8409,21 @@ class MakeFilter(Filter):
                 _MAKE_ECHO_RE.match(line)
                 and "error" not in line.lower()
                 and "warning" not in line.lower()
+                and _mii not in _mk_force_keep
             ):
                 dropped_echo += 1
+                continue
+            # Pass A: suppress extended compiler invocations with look-ahead
+            if (
+                _MAKE_COMPILER_EXT_RE.match(line)
+                and not _MAKE_PRESERVE_SIGNAL_RE.search(line)
+                and _mii not in _mk_force_keep
+            ):
+                dropped_echo += 1
+                continue
+            # Pass C: suppress nothing-to-do lines
+            if _MAKE_NOTHING_TO_DO_RE.match(line) and not _MAKE_PRESERVE_SIGNAL_RE.search(line):
+                dropped_nothing_to_do += 1
                 continue
             kept.append(line)
         notes: list[str] = []
@@ -8300,6 +8431,7 @@ class MakeFilter(Filter):
         _maybe_note(notes, dropped_echo, f"{dropped_echo} compiler-invocation echoes")
         _maybe_note(notes, dropped_go_download, f"{dropped_go_download} 'go: downloading' lines")
         _maybe_note(notes, dropped_percent, f"{dropped_percent} '[N%] Building …' progress lines")
+        _maybe_note(notes, dropped_nothing_to_do, f"{dropped_nothing_to_do} 'nothing to be done' lines")
         # MakeFilter uses ", " join + "dropped" prefix (verbatim grammar match)
         # rather than the standard ";" join, since all entries share the
         # "dropped X" verb.

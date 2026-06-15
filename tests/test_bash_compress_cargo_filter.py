@@ -47,24 +47,21 @@ def test_few_compiling_lines_kept_verbatim() -> None:
 
 
 def test_many_compiling_lines_collapsed() -> None:
-    # More than 4 Compiling lines → first 2 + marker + last 2 (others dropped).
+    # ≥3 Compiling lines → single [compiling N crates…] sentinel (Pass A).
     lines = [f"   Compiling crate_{i} v0.1.{i} (/tmp/c{i})" for i in range(10)]
     lines.append("    Finished dev [unoptimized] target(s) in 3.0s")
     result = _compress("\n".join(lines))
-    assert "Compiling crate_0" in result
-    assert "Compiling crate_1" in result
-    assert "Compiling crate_8" in result
-    assert "Compiling crate_9" in result
-    # Middle 6 lines suppressed (10 - 4 = 6).
-    assert "collapsed 6" in result
+    assert "[compiling 10 crates" in result
+    assert "Compiling crate_0" not in result
     assert "Compiling crate_5" not in result
 
 
 def test_collapse_marker_count_matches_suppressed() -> None:
     lines = [f"   Compiling crate_{i} v0.1.0 (/tmp)" for i in range(8)]
     result = _compress("\n".join(lines))
-    # 8 compiling lines: first 2 + last 2 kept → 4 suppressed.
-    assert "collapsed 4" in result
+    # ≥3 Compiling → single sentinel (Pass A).
+    assert "[compiling 8 crates" in result
+    assert "Compiling crate_0" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +97,8 @@ def test_error_lines_preserved() -> None:
     assert "aborting due to previous error" in result
 
 
-def test_finished_line_preserved() -> None:
+def test_finished_line_suppressed_without_error() -> None:
+    # Pass A collapses ≥3 Compiling; Pass C suppresses clean Finished preambles.
     lines = [
         "   Compiling foo v0.1.0 (/tmp/foo)",
         "   Compiling bar v0.1.0 (/tmp/bar)",
@@ -110,7 +108,8 @@ def test_finished_line_preserved() -> None:
         "    Finished release [optimized] target(s) in 10.5s",
     ]
     result = _compress("\n".join(lines))
-    assert "Finished release" in result
+    assert "[compiling 5 crates" in result
+    assert "Finished release" not in result
 
 
 # ---------------------------------------------------------------------------

@@ -409,9 +409,10 @@ class TestCargoFilterBench:
         assert "bench_z" in out
 
     def test_many_compiling_lines_collapsed(self) -> None:
-        """More than 4 Compiling lines → middle ones collapsed with a note."""
+        """≥3 Compiling lines → collapsed to a single [compiling N crates…] sentinel."""
         out = _compress_cargo_bench(_CARGO_BENCH_SINGLE, stderr=_CARGO_BENCH_STDERR_LARGE)
-        assert "collapsed" in out
+        assert "[compiling" in out
+        assert "Compiling crate0" not in out
 
     def test_finished_line_kept_when_build_present(self) -> None:
         out = _compress_cargo_bench(_CARGO_BENCH_SINGLE, stderr=_CARGO_BENCH_STDERR_SMALL)

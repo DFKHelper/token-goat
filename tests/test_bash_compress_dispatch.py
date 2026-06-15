@@ -527,8 +527,7 @@ class TestCargoFilter:
     def test_compiling_lines_collapsed(self) -> None:
         f = bc.CargoFilter()
         out = _apply(f, stdout="", stderr=_CARGO_OUTPUT_STDERR)
-        assert "Compiling" in out
-        assert "collapsed" in out
+        assert "[compiling" in out
 
     def test_savings_ratio(self) -> None:
         f = bc.CargoFilter()
@@ -584,8 +583,8 @@ class TestCargoFilter:
             [f"   Compiling crate{i} v1.0.{i}" for i in range(20)]
         ) + "\n   Finished dev target(s) in 5s\n"
         result = f.apply("", big_stderr, 0, ["cargo", "build"])
-        assert "collapsed" in result.text
-        assert "Finished" in result.text
+        assert "[compiling 20 crates" in result.text
+        assert "Finished" not in result.text
 
 
 # --- NodePackageFilter ------------------------------------------------------

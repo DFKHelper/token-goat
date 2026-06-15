@@ -828,9 +828,8 @@ class TestCargoFilter:
         text += "\n    Finished dev [unoptimized + debuginfo] target(s) in 5.0s\n"
         f = bc.CargoFilter()
         result = f.apply(text, "", 0, ["cargo", "build"])
-        assert "Compiling crate-0" in result.text
-        assert "Compiling crate-19" in result.text
-        assert "collapsed 16 'Compiling" in result.text
+        assert "[compiling 20 crates" in result.text
+        assert "Compiling crate-0" not in result.text
 
     def test_keeps_short_compile_list(self):
         text = "   Compiling foo v0.1.0\n   Compiling bar v0.1.0\n"
