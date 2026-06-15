@@ -23863,6 +23863,92 @@ class DotenvFilter(Filter):
         return self._finalize(kept)
 
 
+# --- env / printenv output collapsing ----------------------------------------
+
+# Variables always kept verbatim regardless of count.
+_ENV_KEEP_VARS: Final[frozenset[str]] = frozenset({
+    "PATH", "PYTHONPATH", "VIRTUAL_ENV", "CONDA_DEFAULT_ENV", "CONDA_PREFIX",
+    "NODE_ENV", "NODE_VERSION", "NODE_PATH",
+    "GOPATH", "GOROOT", "GOBIN",
+    "JAVA_HOME", "JAVA_OPTS",
+    "CARGO_HOME", "RUSTUP_HOME", "RUST_LOG",
+    "GEM_HOME", "BUNDLE_PATH",
+    "HOME", "USER", "USERNAME", "LOGNAME", "SHELL", "PWD", "OLDPWD",
+    "TERM", "LANG", "LC_ALL", "TZ",
+    "VIRTUAL_ENV_PROMPT",
+    "npm_config_prefix", "npm_config_cache",
+})
+# Prefixes: keep any var whose name starts with one of these.
+_ENV_KEEP_PREFIXES: Final[tuple[str, ...]] = (
+    "CLAUDE_", "TOKEN_GOAT_", "CI_", "GITHUB_", "GITLAB_", "CIRCLECI_",
+    "AWS_", "GCP_", "AZURE_", "GOOGLE_",
+    "PYTHON", "UV_", "PIP_",
+    "CONDA_", "NPM_", "PNPM_", "YARN_",
+    "DOCKER_", "KUBECONFIG", "KUBE_",
+    "TF_", "PULUMI_",
+    "JAVA_", "MAVEN_", "GRADLE_",
+    "CARGO_", "RUSTUP_", "RUST_",
+)
+# Threshold: if total KEY=value lines is at or below this, pass through as-is.
+_ENV_PASSTHROUGH_THRESHOLD: Final[int] = 20
+
+_ENV_LINE_RE: Final[re.Pattern[str]] = re.compile(r"^([A-Za-z_][A-Za-z_0-9]*)=(.*)$")
+
+
+class EnvFilter(Filter):
+    """Compress ``env`` / ``printenv`` environment-variable dumps.
+
+    Compression model:
+
+    * **Pass through** short dumps (≤ ``_ENV_PASSTHROUGH_THRESHOLD`` vars).
+    * **Keep** important variables verbatim: ``PATH``, ``VIRTUAL_ENV``,
+      ``NODE_ENV``, ``GOPATH``, ``JAVA_HOME``, and similar dev-environment
+      sentinels.  Also keeps any variable whose name starts with a recognised
+      tooling prefix (``GITHUB_``, ``AWS_``, ``TF_``, etc.).
+    * **Suppress** remaining variables and emit a count summary.
+    * **Keep** any non-assignment line verbatim (error output, etc.).
+    """
+
+    name = "env"
+    binaries = frozenset(["env", "printenv"])
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.splitlines()
+
+        # Count total KEY=value lines to decide whether to compress.
+        total_vars = sum(1 for ln in lines if _ENV_LINE_RE.match(ln))
+        if total_vars <= _ENV_PASSTHROUGH_THRESHOLD:
+            return merged
+
+        kept: list[str] = []
+        suppressed = 0
+
+        for line in lines:
+            m = _ENV_LINE_RE.match(line)
+            if not m:
+                # Non-assignment lines (errors, blank lines, etc.) — keep verbatim.
+                kept.append(line)
+                continue
+            var_name = m.group(1)
+            if var_name in _ENV_KEEP_VARS or any(
+                var_name.startswith(p) for p in _ENV_KEEP_PREFIXES
+            ):
+                kept.append(line)
+            else:
+                suppressed += 1
+
+        if suppressed:
+            kept.append(
+                f"[token-goat: {suppressed} env vars suppressed"
+                f" ({total_vars} total) — run `env | grep NAME` to inspect]"
+            )
+
+        return self._finalize(kept)
+
+
 # --- JSON array deduplication / truncation -----------------------------------
 
 _JSON_ARRAY_MAX_ITEMS = 50
@@ -24334,6 +24420,14 @@ FILTERS: list[Filter] = [
     # JsonArrayFilter handles JSON array output; content-based detection only —
     # no fixed binary so it is placed last and invoked explicitly by the hook
     # when stdout starts with '['.
+    # EnvFilter handles `env` and `printenv` dumps; suppresses the bulk of
+    # unimportant variables and keeps dev-environment sentinels (PATH,
+    # VIRTUAL_ENV, NODE_ENV, GITHUB_*, AWS_*, etc.).  Placed last because
+    # the `env` binary name would otherwise claim unrelated commands prefixed
+    # with `env` (e.g. `env NODE_ENV=production npm run build`) — EnvFilter
+    # only matches bare `env` / `env -0` / `printenv` invocations, but the
+    # late position is a safety buffer behind more-specific filters.
+    EnvFilter(),
     JsonArrayFilter(),
 ]
 
@@ -24359,7 +24453,15 @@ def select_filter(argv: list[str]) -> Filter | None:
         return None
     resolved = _strip_prefixes(argv)
     if not resolved:
-        return None
+        # Prefix-stripping consumed the entire argv (e.g. bare `env`, `env -0`).
+        # Fall back to the first original token so standalone env-dump commands
+        # like `env` and `env -0` can still be routed to a dedicated filter.
+        # No other filter has `env` / `sudo` / `time` etc. in their binaries,
+        # so this fallback is safe: it only fires when a filter explicitly opts
+        # in by listing a passthrough-prefix binary name.
+        resolved = argv[:1]
+        if not resolved:
+            return None
     for f in FILTERS:
         try:
             if f.matches(resolved):
