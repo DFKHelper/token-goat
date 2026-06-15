@@ -15,8 +15,11 @@ __all__ = [
 _ENTROPY_THRESHOLD: float = 0.85
 _ENTROPY_MIN_LEN: int = 8
 
-# Split on whitespace and '=' so "key=value" pairs are scored separately from their keys.
-_TOKEN_SPLIT_RE: re.Pattern[str] = re.compile(r"[\s=]+")
+# Split on whitespace, '=', and ':' so "key=value" and "host:token" pairs are scored separately.
+_TOKEN_SPLIT_RE: re.Pattern[str] = re.compile(r"[\s=:]+")
+
+# Match tokens with non-alphabetic characters (digits, hyphens, underscores, etc.).
+_HAS_NONALPHA_RE: re.Pattern[str] = re.compile(r"[0-9\-_./+=@]")
 
 
 def score_entropy(token: str) -> float:
@@ -40,12 +43,16 @@ def has_high_entropy_token(
     min_entropy: float = _ENTROPY_THRESHOLD,
     min_length: int = _ENTROPY_MIN_LEN,
 ) -> bool:
-    """Return True if any token in line has normalized entropy >= min_entropy and length >= min_length.
+    """Return True if any token in line has normalized entropy >= min_entropy, length >= min_length, and contains non-alphabetic chars.
 
-    Tokens are extracted by splitting on whitespace and '=' so that key=value
-    pairs are evaluated independently from their keys.
+    Tokens are extracted by splitting on whitespace, '=', and ':' so that key=value
+    and host:token pairs are evaluated independently. A token is only flagged if it
+    has both high entropy AND contains at least one digit, hyphen, underscore, or other
+    special character — this filters out normal English words.
     """
     for token in _TOKEN_SPLIT_RE.split(line):
-        if len(token) >= min_length and score_entropy(token) >= min_entropy:
+        if (len(token) >= min_length
+                and score_entropy(token) >= min_entropy
+                and _HAS_NONALPHA_RE.search(token) is not None):
             return True
     return False
