@@ -1029,6 +1029,8 @@ class HintsConfig:
     stable_doc_compacts: bool = True
     # Minimum total-line count before the truncated-read advisory fires in post_read. Files shorter than this are skipped (default 200). Set to 0 to disable.
     truncated_read_min_lines: int = 200
+    # Number of tool calls after a read during which re-read hints are suppressed. Content is still fresh in context so the hint is noise. Default 4. Set to 0 to disable suppression (hints always fire). Clamped to [0, 100].
+    protect_recent_reads: int = 4
 
     prompt_triggers: list[PromptTrigger] = field(default_factory=list)
 
@@ -1834,6 +1836,10 @@ def load() -> Config:
         truncated_read_min_lines=_validated_int(
             hints_raw.get("truncated_read_min_lines", 200), 200, 0, 1_000_000,
             "hints.truncated_read_min_lines",
+        ),
+        protect_recent_reads=_validated_int(
+            hints_raw.get("protect_recent_reads", 4), 4, 0, 100,
+            "hints.protect_recent_reads",
         ),
     )
     # Opt-in env override: TOKEN_GOAT_HINT_JSON_SIDECAR=1/true/yes/on enables.

@@ -80,6 +80,11 @@ from .util import utf8_bytes as _utf8_bytes
 # by compact_assist for consistency.
 _ENV_BASH_COMPRESS = "TOKEN_GOAT_BASH_COMPRESS"
 
+# Monotonically increasing counter incremented at the top of pre_read on every tool call.
+# Stored in FileEntry.last_read_call_index so the recent-read suppression window can
+# compute how many tool calls have elapsed since a file was last read.
+_call_index: int = 0
+
 # File extensions that are known to be binary (non-text) content.  Pre-read
 # hints (session hints, diff hints, structured-file hints) are skipped for
 # these files because token-goat never indexes them and the hints would be
@@ -3721,6 +3726,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
     Read-tool path, so no new early-return can silently drop the dedup
     fingerprint.
     """
+    global _call_index
+    _call_index += 1
+
     from .hints import build_read_hint  # noqa: PLC0415
 
     tool_name = payload.get("tool_name")
@@ -4180,13 +4188,36 @@ def pre_read(payload: HookPayload) -> HookResponse:
                             sanitize_log_str(file_path, max_len=512),
                         )
                 if not _backoff_active:
+                    # Recent-read suppression: skip hint when file was read very recently
+                    # (within protect_recent_reads tool calls) — content is still in context.
+                    _recent_suppress = False
+                    if entry is not None and entry.last_read_call_index > 0:
+                        try:
+                            from . import config as _cfg_mod_rr  # noqa: PLC0415
+                            _protect = _cfg_mod_rr.load().hints.protect_recent_reads
+                        except Exception:  # noqa: BLE001 — fail-soft
+                            _protect = 4
+                        if _protect > 0 and (_call_index - entry.last_read_call_index) <= _protect:
+                            _recent_suppress = True
+                            _LOG.debug(
+                                "pre-read: session hint suppressed (recent-read window=%d, gap=%d) for %s",
+                                _protect,
+                                _call_index - entry.last_read_call_index,
+                                sanitize_log_str(file_path),
+                            )
+                            cache.record_hint_suppressed("hint_recent_read_suppressed")
+                            record_cached_stat(
+                                "hint_recent_read_suppressed",
+                                sanitize_log_str(file_path, max_len=512),
+                            )
+                    if _recent_suppress:
+                        pass
                     # Skip if file was last read before the most recent compact —
                     # that content is gone from the context window.
-                    _compact_ts = getattr(cache, "last_compact_ts", 0.0)
-                    if (
+                    elif (
                         entry is not None
-                        and _compact_ts
-                        and entry.last_read_ts < _compact_ts
+                        and (compact_ts := getattr(cache, "last_compact_ts", 0.0))
+                        and entry.last_read_ts < compact_ts
                     ):
                         _LOG.debug(
                             "pre-read: session hint suppressed (post-compact) for %s",
@@ -4643,7 +4674,7 @@ def post_read(payload: HookPayload) -> HookResponse:
         if file_path:
             offset = tool_input.get("offset")
             limit = tool_input.get("limit")
-            session.mark_file_read(session_id, file_path, offset, limit, cache=cache)
+            session.mark_file_read(session_id, file_path, offset, limit, cache=cache, call_index=_call_index)
             _LOG.debug(
                 "post-read: recorded Read file=%s offset=%s limit=%s",
                 sanitize_log_str(file_path), offset, limit,

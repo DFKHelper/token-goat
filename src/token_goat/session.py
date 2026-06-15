@@ -871,6 +871,7 @@ class FileEntry:
     # See _handle_reread_deny.
     read_mtime_ns: int | None = None  # os.stat(path).st_mtime_ns at last read; None = not recorded
     read_size: int | None = None  # os.stat(path).st_size at last read; None = not recorded
+    last_read_call_index: int = 0  # hooks_read._call_index value when this file was last read; 0 = never recorded
 
 
 @dataclass
@@ -2443,6 +2444,8 @@ def _serialize_file_entry(entry: FileEntry) -> _FileEntryDict:
         d["read_mtime_ns"] = entry.read_mtime_ns
     if entry.read_size is not None:
         d["read_size"] = entry.read_size
+    if entry.last_read_call_index:
+        d["last_read_call_index"] = entry.last_read_call_index
     return d
 
 
@@ -2716,6 +2719,7 @@ def _parse_file_entry(key: str, v: dict[str, Any], now: float) -> FileEntry | No
             symbols_ts=symbols_ts,
             read_mtime_ns=_coerce_nonneg_int_or_none(v.get("read_mtime_ns")),
             read_size=_coerce_nonneg_int_or_none(v.get("read_size")),
+            last_read_call_index=int(v.get("last_read_call_index") or 0),
         )
     except (TypeError, ValueError, KeyError) as exc:
         _LOG.debug(
@@ -2896,6 +2900,7 @@ class _FileEntryDict(TypedDict, total=False):
     last_edit_ts: float
     read_mtime_ns: int
     read_size: int
+    last_read_call_index: int
 
 
 class _GrepEntryDict(TypedDict, total=False):
@@ -3841,6 +3846,7 @@ def mark_file_read(
     *,
     symbol: str | None = None,
     cache: SessionCache | None = None,
+    call_index: int | None = None,
 ) -> SessionCache:
     """Record that a file (or a named symbol within it) was read in this session.
 
@@ -3872,6 +3878,8 @@ def mark_file_read(
         cache.files[key] = entry
     entry.read_count += 1
     entry.last_read_ts = now
+    if call_index is not None:
+        entry.last_read_call_index = call_index
     # Capture the file's on-disk fingerprint (mtime_ns, size) as of this read. A later
     # reread_deny compares it against the live stat to detect out-of-session edits: post_edit
     # records edits against the editing session's id, so when a sub-agent under a different
