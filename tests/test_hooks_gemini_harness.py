@@ -133,6 +133,40 @@ def test_normalize_missing_tool_name_returns_empty():
     assert result == {}
 
 
+def test_normalize_session_start_payload_emits_no_warning(caplog):
+    """SessionStart (and other non-tool lifecycle events) carry no ``tool_name``.
+
+    Regression: this path previously logged at WARNING, so a single session start
+    fanning out across ~45 non-tool events spammed 45 identical warnings into the
+    log.  The missing-``tool_name`` case is the *expected* shape for these events,
+    so normalize_payload must stay silent at WARNING and degrade quietly.
+    """
+    import logging
+
+    payload = {
+        "session_id": "abc-123",
+        "source": "startup",
+        "cwd": "/some/project",
+        "hook_event_name": "SessionStart",
+    }
+    with caplog.at_level(logging.DEBUG, logger="token_goat.hooks"):
+        result = normalize_payload(payload, harness="claude")
+    # Return contract preserved: no tool_name → empty dict.
+    assert result == {}
+    warnings = [
+        r for r in caplog.records if r.levelno >= logging.WARNING and "tool_name" in r.getMessage()
+    ]
+    assert len(warnings) == 0, (
+        f"SessionStart payload must not emit tool_name WARNINGs, got: "
+        f"{[r.getMessage() for r in warnings]!r}"
+    )
+    # The diagnostic is still available at DEBUG for operators chasing malformed payloads.
+    assert any(
+        "tool_name missing or invalid" in r.getMessage() and r.levelno == logging.DEBUG
+        for r in caplog.records
+    ), "expected the missing-tool_name diagnostic to remain available at DEBUG level"
+
+
 # ---------------------------------------------------------------------------
 # denormalize_response — Gemini harness
 # ---------------------------------------------------------------------------

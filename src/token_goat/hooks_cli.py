@@ -138,7 +138,13 @@ def normalize_payload(payload: HookPayload, harness: Harness = "claude") -> Hook
 
     tool_name = payload.get("tool_name")
     if not isinstance(tool_name, str) or not tool_name.strip():
-        _LOG.warning(
+        # Non-tool lifecycle events (SessionStart, UserPromptSubmit, SubagentStop,
+        # PreCompact, Stop) legitimately carry no ``tool_name``; this is the normal
+        # payload shape for them, not an error.  A single session start fans out into
+        # dozens of such events, so logging at WARNING produced 45+ identical noise
+        # lines per SessionStart.  DEBUG keeps the signal for operators chasing a
+        # genuinely malformed tool payload without spamming the log on every clean run.
+        _LOG.debug(
             "normalize_payload: tool_name missing or invalid; received %s",
             repr(tool_name),
         )
