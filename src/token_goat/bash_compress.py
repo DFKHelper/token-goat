@@ -1723,7 +1723,7 @@ class Filter(BaseFilter):
         """
         if not argv:
             return False
-        p = Path(argv[0])
+        p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
         if stem not in self.binaries and name not in self.binaries:
@@ -4029,7 +4029,7 @@ class DockerComposeFilter(Filter):
     def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
-        p = Path(argv[0])
+        p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
         # docker-compose binary
@@ -4303,7 +4303,7 @@ class KubectlLogsFilter(Filter):
     def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
-        p = Path(argv[0])
+        p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
         if stem not in {"kubectl", "k"} and name not in {"kubectl", "k"}:
@@ -4826,7 +4826,7 @@ class GhRunLogFilter(Filter):
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         if not argv:
             return False
-        p = Path(argv[0])
+        p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
         if stem not in {"gh"} and name not in {"gh"}:
@@ -7219,7 +7219,7 @@ class GitCommitFilter(Filter):
         """Match ``git commit`` with any variant including --amend, --fixup."""
         if not argv:
             return False
-        p = Path(argv[0])
+        p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
         if stem not in self.binaries and name not in self.binaries:
@@ -10692,7 +10692,7 @@ class NpmInstallFilter(Filter):
             return False
 
         def _base(s: str) -> str:
-            return Path(s).stem.lower()
+            return Path(s.replace("\\", "/")).stem.lower()
 
         stem = _base(argv[0])
         positionals = [a for a in argv[1:] if not a.startswith("-")]
@@ -10710,7 +10710,7 @@ class NpmInstallFilter(Filter):
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         def _base(s: str) -> str:
-            return Path(s).stem.lower()
+            return Path(s.replace("\\", "/")).stem.lower()
 
         stem = _base(argv[0]) if argv else ""
         merged = self._combine_output(stdout, stderr)
@@ -12161,7 +12161,7 @@ class GradleFilter(Filter):
         """
         if not argv:
             return False
-        p = Path(argv[0])
+        p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
         if stem not in self.binaries and name not in self.binaries:
@@ -12903,7 +12903,7 @@ class SbtFilter(Filter):
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         if not argv:
             return False
-        p = Path(argv[0])
+        p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
         # Match "sbt" and "./sbt" (common wrapper script invocation).
@@ -13028,7 +13028,7 @@ class RubyFilter(Filter):
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         if not argv:
             return False
-        p = Path(argv[0])
+        p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
         # Match rspec, minitest, ruby, rake directly.
@@ -21939,7 +21939,7 @@ class GhCopilotFilter(Filter):
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         if not argv:
             return False
-        p = Path(argv[0])
+        p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
         if stem not in {"gh"} and name not in {"gh"}:
@@ -23218,7 +23218,7 @@ class MesonFilter(Filter):
 
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         def _base(s: str) -> str:
-            return Path(s).stem.lower()
+            return Path(s.replace("\\", "/")).stem.lower()
 
         if not argv:
             return False
@@ -23309,7 +23309,7 @@ class PlaywrightFilter(Filter):
 
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         def _base(s: str) -> str:
-            return Path(s).stem.lower()
+            return Path(s.replace("\\", "/")).stem.lower()
 
         if not argv:
             return False
@@ -23404,7 +23404,7 @@ class CypressFilter(Filter):
 
     def matches(self, argv: list[str]) -> bool:  # noqa: D102
         def _base(s: str) -> str:
-            return Path(s).stem.lower()
+            return Path(s.replace("\\", "/")).stem.lower()
 
         if not argv:
             return False
