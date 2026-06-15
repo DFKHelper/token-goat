@@ -742,6 +742,14 @@ def _enrich_symbols_with_snippets(
 @app.command(rich_help_panel="Core")
 def symbol(
     name: str,
+    file: str | None = typer.Argument(  # noqa: B008
+        None,
+        help=(
+            "Optional file path to scope the search (case-insensitive partial "
+            "match on rel_path, e.g. 'auth/service.py' matches 'src/auth/service.py'). "
+            "Disambiguates a symbol name defined in more than one file."
+        ),
+    ),
     all_projects: bool = typer.Option(False, "--all-projects"),
     as_json: bool = _OPT_JSON,
     limit: int = typer.Option(50, "--limit"),
@@ -804,6 +812,12 @@ def symbol(
 
     Glob patterns: ``get_*`` matches any symbol starting with ``get_``.
 
+    File scope: pass an optional second positional FILE to restrict matches to
+    symbols whose ``rel_path`` contains that path (case-insensitive, partial —
+    ``token-goat symbol UserService auth/service.py``).  Useful when the same
+    symbol name is defined in several files.  When a FILE scope is given and no
+    symbol matches inside it, the command exits 1 with an informative message.
+
     Type filter: ``--type fn`` returns only functions; ``--type class --type interface``
     returns classes and interfaces.  Shorthand ``fn`` maps to ``function``.
 
@@ -818,6 +832,28 @@ def symbol(
 
     kind_filter = _symbol_kind_filter(filter_types) if filter_types else []
     is_glob = _is_glob_pattern(name)
+
+    _file_needle = file.replace("\\", "/").lower() if file else None
+    # Pre-built SQL LIKE pattern for pushing the file scope into the WHERE
+    # clause so it applies BEFORE the row LIMIT (otherwise a target file among
+    # the rows truncated by LIMIT produces a false "No symbol found"). LIKE
+    # wildcards are escaped so the needle matches literally; file paths often
+    # contain '_' (a single-char wildcard). Backslashes were already normalized
+    # to '/', so '\' is a safe ESCAPE character.
+    _file_like_param: str | None = None
+    if _file_needle is not None:
+        _escaped_needle = (
+            _file_needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        _file_like_param = f"%{_escaped_needle}%"
+
+    def _apply_file_scope(rows: list[dict]) -> list[dict]:
+        if _file_needle is None:
+            return rows
+        return [
+            r for r in rows
+            if _file_needle in str(r.get("file", "")).replace("\\", "/").lower()
+        ]
 
     use_tty_color = sys.stdout.isatty() and not as_json
 
@@ -945,11 +981,14 @@ def symbol(
             # alongside the not-indexed hint is intentionally suppressed —
             # close matches in a half-indexed project would be misleading.
             if not quiet:
-                typer.echo(not_found_extra if not_found_extra else f"No matches for {name!r}")
-                if close_matches and not not_found_extra:
-                    from .render.common import render_list  # noqa: PLC0415
-                    typer.echo("Did you mean:")
-                    typer.echo(render_list(close_matches, bullet="-"))
+                if file:
+                    typer.echo(f"No symbol {name!r} found in files matching {file!r}")
+                else:
+                    typer.echo(not_found_extra if not_found_extra else f"No matches for {name!r}")
+                    if close_matches and not not_found_extra:
+                        from .render.common import render_list  # noqa: PLC0415
+                        typer.echo("Did you mean:")
+                        typer.echo(render_list(close_matches, bullet="-"))
 
     def _global_query(target: str) -> list[dict]:
         """Run the symbols_global query for *target* and shape the rows.
@@ -966,16 +1005,21 @@ def symbol(
             placeholders = ",".join("?" * len(kind_filter))
             kind_clause = f" AND sg.kind IN ({placeholders})"
             kind_params = tuple(kind_filter)
+        file_clause = ""
+        file_params: tuple[object, ...] = ()
+        if _file_like_param is not None:
+            file_clause = " AND sg.file_rel LIKE ? ESCAPE '\\'"
+            file_params = (_file_like_param,)
         sql = (
             "SELECT sg.project_hash, p.root, sg.name, sg.kind, sg.file_rel, sg.line, sg.signature "
             "FROM symbols_global sg "
             "JOIN projects p ON p.hash = sg.project_hash "
-            f"WHERE sg.name {name_op} ?{kind_clause} LIMIT ?"
+            f"WHERE sg.name {name_op} ?{kind_clause}{file_clause} LIMIT ?"
         )
         with _db.open_global() as gconn:
             rows_raw_inner = gconn.execute(
                 sql,
-                (name_param, *kind_params, limit),
+                (name_param, *kind_params, *file_params, limit),
             ).fetchall()
         raw = [
             {
@@ -1061,6 +1105,8 @@ def symbol(
             bytes_saved=_sym_bytes_saved,
         )
         _emit_results(results, close_matches=close, redirected_from=redirected)
+        if file and not results:
+            raise typer.Exit(1)
         return
 
     proj = _require_project()
@@ -1079,11 +1125,16 @@ def symbol(
             placeholders = ",".join("?" * len(kind_filter))
             kind_clause = f" AND kind IN ({placeholders})"
             kind_params = tuple(kind_filter)
-        sql = f"SELECT name, kind, file_rel, line, end_line, signature FROM symbols WHERE name {name_op} ?{kind_clause} LIMIT ?"
+        file_clause = ""
+        file_params: tuple[object, ...] = ()
+        if _file_like_param is not None:
+            file_clause = " AND file_rel LIKE ? ESCAPE '\\'"
+            file_params = (_file_like_param,)
+        sql = f"SELECT name, kind, file_rel, line, end_line, signature FROM symbols WHERE name {name_op} ?{kind_clause}{file_clause} LIMIT ?"
         rows_raw_inner = _query_project(
             proj.hash,
             sql,
-            (name_param, *kind_params, limit),
+            (name_param, *kind_params, *file_params, limit),
         )
         raw = [
             {
@@ -1124,7 +1175,7 @@ def symbol(
     if not results and not hint:
         # Project is indexed but symbol not found — check recently-modified files
         # that the background worker may not have processed yet.
-        inline = _inline_symbol_search(name, proj, kind_filter=kind_filter or None)
+        inline = _apply_file_scope(_inline_symbol_search(name, proj, kind_filter=kind_filter or None))
         if inline:
             results = inline
             inline_hit = True
@@ -1182,6 +1233,8 @@ def symbol(
         close_matches=close,
         redirected_from=redirected,
     )
+    if file and not results:
+        raise typer.Exit(1)
 
 
 @app.command(rich_help_panel="Core")

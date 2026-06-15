@@ -158,11 +158,14 @@ def test_hint_commands_use_registered_subcommands() -> None:
     assert not unknown, f"hint templates reference unknown token-goat subcommands: {unknown}"
 
 
-def test_symbol_hint_commands_take_single_non_path_positional() -> None:
-    """``token-goat symbol`` templates must pass exactly one non-path positional.
+def test_symbol_hint_commands_take_name_and_optional_file_positional() -> None:
+    """``token-goat symbol`` templates pass a symbol name plus an optional file.
 
-    Catches both the path-as-name form (``symbol {safe_path}``) and the
-    two-positional usage error (``symbol <name> "{safe_path}"``).
+    ``symbol NAME [FILE]`` accepts at most two positionals: a symbol name (which
+    must not itself be a path) and an optional file path that disambiguates a
+    name defined in more than one file. Catches the path-as-name form
+    (``symbol {safe_path}``) and the three-positional overflow
+    (``symbol <name> <file> <extra>``).
     """
     offenders: list[tuple[str, str]] = []
     for cmd in _extract_commands(_HINTS_TEXT):
@@ -170,12 +173,12 @@ def test_symbol_hint_commands_take_single_non_path_positional() -> None:
         if len(tokens) < 2 or tokens[1] != "symbol":
             continue
         positionals = _positional_args(tokens)
-        if len(positionals) > 1:
+        if len(positionals) > 2:
             offenders.append((cmd, f"{len(positionals)} positional args"))
         elif positionals and _looks_like_path(positionals[0]):
             offenders.append((cmd, "file path passed as symbol name"))
     assert not offenders, (
-        "`token-goat symbol` takes exactly one positional symbol name; "
+        "`token-goat symbol` takes a symbol name plus an optional file path; "
         f"broken hint templates: {offenders}"
     )
 
@@ -187,14 +190,14 @@ def test_symbol_command_detectors_catch_known_broken_forms() -> None:
     independent of the current (now-fixed) state of the live templates.
     """
     broken = [
-        "token-goat symbol {safe_path}",                # path placeholder as name
-        'token-goat symbol .class-name "{safe_path}"',  # two positionals
-        'token-goat symbol table_name "{safe_path}"',
+        "token-goat symbol {safe_path}",                       # path placeholder as name
+        'token-goat symbol .class-name "{safe_path}" extra',   # three positionals
+        'token-goat symbol name "models/user.py" "extra.py"',  # three positionals
     ]
     for cmd in broken:
         tokens = _tokenize(cmd)
         positionals = _positional_args(tokens)
-        flagged = len(positionals) > 1 or (
+        flagged = len(positionals) > 2 or (
             bool(positionals) and _looks_like_path(positionals[0])
         )
         assert flagged, f"detector failed to catch broken form: {cmd}"
@@ -202,11 +205,13 @@ def test_symbol_command_detectors_catch_known_broken_forms() -> None:
     good = [
         "token-goat symbol index_project",
         "token-goat symbol get_path",  # legit symbol whose name contains 'path'
+        'token-goat symbol MyClass "auth/service.py"',  # NAME + optional FILE scope
+        'token-goat symbol table_name "models/user.py"',
     ]
     for cmd in good:
         tokens = _tokenize(cmd)
         positionals = _positional_args(tokens)
-        ok = len(positionals) <= 1 and not (
+        ok = len(positionals) <= 2 and not (
             bool(positionals) and _looks_like_path(positionals[0])
         )
         assert ok, f"detector wrongly flagged valid form: {cmd}"
@@ -254,12 +259,13 @@ def test_arity_model_tracks_known_command_signatures() -> None:
 
     Pins the contract so a refactor that silently changes a referenced command's
     positional count surfaces here rather than as a confusing failure in the
-    over-arity test. ``read``/``section``/``symbol`` take exactly one positional;
-    ``index`` takes none; ``web-output`` accepts an optional one.
+    over-arity test. ``read``/``section`` take exactly one positional; ``symbol``
+    takes up to two (name plus an optional file scope); ``index`` takes none;
+    ``web-output`` accepts an optional one.
     """
     assert _MAX_POSITIONAL_ARITY.get("read") == 1
     assert _MAX_POSITIONAL_ARITY.get("section") == 1
-    assert _MAX_POSITIONAL_ARITY.get("symbol") == 1
+    assert _MAX_POSITIONAL_ARITY.get("symbol") == 2
     assert _MAX_POSITIONAL_ARITY.get("outline") == 1
     assert _MAX_POSITIONAL_ARITY.get("index") == 0
     assert _MAX_POSITIONAL_ARITY.get("web-output") == 1
