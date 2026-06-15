@@ -974,10 +974,18 @@ def _run_read_like_command(
         raise typer.Exit(0) from None
 
     if file_target.rel_path is None:
+        db.record_miss(file_part, "")
         _emit_file_not_found_error(file_part, file_target.current_project, json_output=json_output)
+        if db.get_miss_count(file_part, "") >= 3 and not json_output:
+            typer.echo(
+                f"[hint] Searched for '{file_part}' 3+ times without a match."
+                " Consider: token-goat map --compact to check what's indexed,"
+                " or add an alias in CLAUDE.md."
+            )
         raise typer.Exit(0)
 
     assert file_target.project is not None  # guaranteed once rel_path is resolved
+    db.reset_miss(file_part, "")
 
     # In-session result cache (per Claude session).  Cache hit on
     # (rel_path, item, kind, file_sha) avoids the DB round-trip and file read.
@@ -1059,6 +1067,13 @@ def _run_read_like_command(
         # the raw ``file_part`` ("index.ts") that triggered the lookup is already
         # echoed back in the user's command and isn't useful downstream, so we
         # omit it to save ~30-150 bytes of redundant payload per miss.
+        db.record_miss(item_part, file_target.rel_path or "")
+        if db.get_miss_count(item_part, file_target.rel_path or "") >= 3 and not json_output:
+            base_message += (
+                f"\n[hint] Searched for '{item_part}' 3+ times without a match."
+                " Consider: token-goat map --compact to check what's indexed,"
+                " or add an alias in CLAUDE.md."
+            )
         _emit_read_error(
             code=f"{_label_lower}_not_found",
             message=base_message,
@@ -1073,6 +1088,7 @@ def _run_read_like_command(
         # matches the skill-section not-found paths, which already exit 1.
         raise typer.Exit(1)
 
+    db.reset_miss(item_part, file_target.rel_path or "")
     if session_id:
         session.mark_file_read(session_id, file_target.rel_path, symbol=item_part)
         # Store the freshly-computed result for future same-session lookups.

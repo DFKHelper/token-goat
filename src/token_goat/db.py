@@ -475,6 +475,17 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Tracks how many times a needle (symbol/file/section name) was searched without a hit.
+-- Enables proactive hints after repeated misses on the same target.
+-- Rows are deleted on successful resolution so the counter resets after a hit.
+CREATE TABLE IF NOT EXISTS miss_patterns (
+    needle          TEXT    NOT NULL,
+    file_hint       TEXT    NOT NULL DEFAULT '',
+    miss_count      INTEGER NOT NULL DEFAULT 1,
+    last_miss_epoch REAL    NOT NULL,
+    PRIMARY KEY (needle, file_hint)
+);
 """
 
 _PROJECT_TABLES = """
@@ -1386,6 +1397,8 @@ def index_health(project_hash: str) -> dict[str, object]:
 
 _MAX_STAT_KIND_LEN: int = 64
 _MAX_STAT_DETAIL_LEN: int = 512
+_MISS_NEEDLE_MAX: int = 512
+_MISS_FILE_HINT_MAX: int = 512
 
 # Amortization threshold: only update global.db when the stored last_ts is
 # older than this many seconds.  Prevents hot-path writes on every grep call
@@ -1466,6 +1479,68 @@ def record_stat(
                 conn.execute(sql, params)
 
     _best_effort_write(_do, "record_stat")
+
+
+def record_miss(needle: str, file_hint: str = "") -> None:
+    """Increment the miss counter for *(needle, file_hint)* in the global DB.
+
+    Uses an upsert so the first call inserts with miss_count=1 and subsequent
+    calls atomically increment.  Both strings are truncated to bounded lengths
+    so adversarial or pathologically long inputs don't cause unbounded row growth.
+    """
+    needle = needle[:_MISS_NEEDLE_MAX]
+    file_hint = file_hint[:_MISS_FILE_HINT_MAX]
+    now = time.time()
+
+    def _do() -> None:
+        with open_global() as conn:
+            conn.execute(
+                """
+                INSERT INTO miss_patterns (needle, file_hint, miss_count, last_miss_epoch)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(needle, file_hint) DO UPDATE SET
+                    miss_count = miss_count + 1,
+                    last_miss_epoch = excluded.last_miss_epoch
+                """,
+                (needle, file_hint, now),
+            )
+
+    _best_effort_write(_do, "record_miss")
+
+
+def get_miss_count(needle: str, file_hint: str = "") -> int:
+    """Return the current miss count for *(needle, file_hint)*; 0 if not found."""
+    needle = needle[:_MISS_NEEDLE_MAX]
+    file_hint = file_hint[:_MISS_FILE_HINT_MAX]
+    try:
+        with open_global_readonly() as conn:
+            row = conn.execute(
+                "SELECT miss_count FROM miss_patterns WHERE needle = ? AND file_hint = ?",
+                (needle, file_hint),
+            ).fetchone()
+        return int(row["miss_count"]) if row else 0
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def reset_miss(needle: str, file_hint: str = "") -> None:
+    """Delete the miss-pattern row for *(needle, file_hint)* on a successful resolve.
+
+    Resetting on success means the counter only reflects *consecutive* misses,
+    so a needle that was eventually found won't keep triggering hints in future
+    sessions.
+    """
+    needle = needle[:_MISS_NEEDLE_MAX]
+    file_hint = file_hint[:_MISS_FILE_HINT_MAX]
+
+    def _do() -> None:
+        with open_global() as conn:
+            conn.execute(
+                "DELETE FROM miss_patterns WHERE needle = ? AND file_hint = ?",
+                (needle, file_hint),
+            )
+
+    _best_effort_write(_do, "reset_miss")
 
 
 def get_symbol_callers(
