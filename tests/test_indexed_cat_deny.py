@@ -121,3 +121,117 @@ class TestBashCatFlag:
         if result is None:
             pytest.skip("bash_parser did not recognize cat -n command")
         assert result.get("_tg_from_bash_cat") is True
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for _handle_indexed_cat_advisory (cool-tier non-blocking nudge)
+# ---------------------------------------------------------------------------
+
+class _FakeCache:
+    """Minimal session cache implementing only the dedup surface emit_if_new_hint touches."""
+
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+        self.emitted: list[str] = []
+
+    def has_hint_fingerprint(self, fp: str) -> bool:
+        return fp in self._seen
+
+    def mark_hint_seen(self, fp: str) -> None:
+        self._seen.add(fp)
+
+    def record_hint_emitted(self, stat_key: str) -> None:
+        self.emitted.append(stat_key)
+
+
+class TestHandleIndexedCatAdvisory:
+    def _call(self, file_path: str, tool_input: dict, skeleton: str, cache: Any) -> Any:
+        from token_goat.hooks_read import _handle_indexed_cat_advisory
+        with patch("token_goat.hooks_read._try_get_inline_skeleton", return_value=skeleton):
+            return _handle_indexed_cat_advisory(file_path, tool_input, cache)
+
+    def test_indexed_whole_file_returns_advisory(self, tmp_path: Path) -> None:
+        fp = str(tmp_path / "foo.py")
+        ti: dict[str, Any] = {"file_path": fp, "offset": None, "limit": None}
+        resp = self._call(fp, ti, "  10  function  my_func", _FakeCache())
+        assert resp is not None
+        # Advisory is non-blocking: a context hint, NOT a deny.
+        hso = resp.get("hookSpecificOutput", {})
+        assert hso.get("permissionDecision") != "deny"
+        ctx = hso.get("additionalContext", "")
+        assert "token-goat read" in ctx
+        assert "my_func" in ctx
+        assert "foo.py" in ctx
+
+    def test_advisory_names_the_exact_read_command(self, tmp_path: Path) -> None:
+        fp = str(tmp_path / "service.py")
+        ti: dict[str, Any] = {"file_path": fp, "offset": None, "limit": None}
+        resp = self._call(fp, ti, "  1  class  MyService", _FakeCache())
+        ctx = resp["hookSpecificOutput"]["additionalContext"]
+        assert f'token-goat read "{fp}::<symbol>"' in ctx
+        assert "token-goat skeleton" in ctx
+
+    def test_non_indexed_file_returns_none(self, tmp_path: Path) -> None:
+        # README.md / non-source: no skeleton from the index → no hint.
+        fp = str(tmp_path / "README.md")
+        ti: dict[str, Any] = {"file_path": fp, "offset": None, "limit": None}
+        resp = self._call(fp, ti, "", _FakeCache())  # empty skeleton == not indexed
+        assert resp is None
+
+    def test_windowed_read_returns_none(self, tmp_path: Path) -> None:
+        fp = str(tmp_path / "foo.py")
+        ti: dict[str, Any] = {"file_path": fp, "offset": None, "limit": 30}  # head -n 30
+        resp = self._call(fp, ti, "  10  function  my_func", _FakeCache())
+        assert resp is None
+
+    def test_offset_windowed_read_returns_none(self, tmp_path: Path) -> None:
+        fp = str(tmp_path / "foo.py")
+        ti: dict[str, Any] = {"file_path": fp, "offset": 10, "limit": None}  # tail -n +10
+        resp = self._call(fp, ti, "  10  function  my_func", _FakeCache())
+        assert resp is None
+
+    def test_dedup_second_call_returns_none(self, tmp_path: Path) -> None:
+        fp = str(tmp_path / "foo.py")
+        ti: dict[str, Any] = {"file_path": fp, "offset": None, "limit": None}
+        cache = _FakeCache()
+        first = self._call(fp, ti, "  10  function  my_func", cache)
+        assert first is not None
+        # Same (file, hint) fingerprint already recorded → suppressed.
+        second = self._call(fp, ti, "  10  function  my_func", cache)
+        assert second is None
+        assert cache.emitted == ["indexed_cat_advisory"]
+
+    def test_none_cache_returns_none(self, tmp_path: Path) -> None:
+        # emit_if_new_hint returns False when cache is None → no hint.
+        fp = str(tmp_path / "foo.py")
+        ti: dict[str, Any] = {"file_path": fp, "offset": None, "limit": None}
+        resp = self._call(fp, ti, "  10  function  my_func", None)
+        assert resp is None
+
+
+class TestIndexedCatAdvisoryEndToEnd:
+    """Drive _handle_indexed_cat_advisory against a *real* indexed project (no skeleton mock)."""
+
+    def test_real_indexed_file_emits_advisory(self, py_project_tuple: Any) -> None:
+        from token_goat.hooks_read import _handle_indexed_cat_advisory
+
+        proj_root, _proj = py_project_tuple
+        app_py = str(proj_root / "app.py")
+        ti: dict[str, Any] = {"file_path": app_py, "offset": None, "limit": None}
+        resp = _handle_indexed_cat_advisory(app_py, ti, _FakeCache())
+        assert resp is not None
+        ctx = resp["hookSpecificOutput"]["additionalContext"]
+        # Pulled from the live index: UserService/greet are real symbols in app.py.
+        assert "UserService" in ctx
+        assert 'token-goat read "' in ctx
+
+    def test_real_non_source_file_no_advisory(self, py_project_tuple: Any) -> None:
+        from token_goat.hooks_read import _handle_indexed_cat_advisory
+
+        proj_root, _proj = py_project_tuple
+        # A plain text file the indexer has no symbols for → no hint.
+        plain = proj_root / "notes.txt"
+        plain.write_text("just some notes, not source\n", encoding="utf-8")
+        ti: dict[str, Any] = {"file_path": str(plain), "offset": None, "limit": None}
+        resp = _handle_indexed_cat_advisory(str(plain), ti, _FakeCache())
+        assert resp is None
