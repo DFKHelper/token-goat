@@ -889,11 +889,10 @@ def _check_compact_skip_sentinel_detail(session_id: str) -> _SkipResult:
 
     now = time.time()
     age = now - sentinel_mtime
-    if age < 0.0:
-        # Future-dated sentinel: clock skew, NTP step, manual edit, or a stale
-        # file copied from another machine.  Log once per occurrence and fall
-        # through to the slow path; the slow path will rewrite the sentinel
-        # with a sane mtime on the next no-op exit.
+    if age < -1.0:
+        # Future-dated sentinel: genuine clock skew (NTP step, manual edit, or
+        # stale file from another machine).  Sub-second negative ages are normal
+        # Windows filesystem/wall-clock jitter and are treated as age ~= 0.
         _LOG.warning(
             "compact-skip sentinel mtime is in the future session=%s skew=%.0fs"
             " — ignoring sentinel, falling back to full pre-compact path",
