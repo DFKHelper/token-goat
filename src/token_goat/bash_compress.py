@@ -6792,6 +6792,9 @@ def _compress_git_diff_body(stdout: str, stderr: str) -> str:
                 out_blocks.append(block)
             continue
 
+        # Apply density hunk cap before large-hunk truncation.
+        block_lines = _score_and_cap_hunks(block_lines, _DIFF_DENSITY_MAX_HUNKS_PER_FILE)
+        block = "\n".join(block_lines)
         # Large-hunk truncation: compress each hunk independently.
         hunks = split_blocks(block, _GIT_DIFF_HUNK_RE)
         if len(hunks) <= 1:
@@ -13532,6 +13535,8 @@ _DIFF_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(r"^ ")
 
 #: Maximum hunks to keep per file in a plain diff.
 _DIFF_MAX_HUNKS_PER_FILE = 3
+#: Maximum hunks per file kept after density scoring (keeps highest-density hunks first).
+_DIFF_DENSITY_MAX_HUNKS_PER_FILE = 10
 #: Maximum total files to show in full before switching to stat-only view.
 _DIFF_MAX_FULL_FILES = 20
 
@@ -13609,10 +13614,12 @@ class DiffFilter(Filter):
             if not first_line or not _DIFF_FILE_HEADER_RE.match(first_line):
                 out_parts.append(block_str)
                 continue
+            # Apply density cap first, then positional cap.
+            block_lines = _score_and_cap_hunks(block_lines, _DIFF_DENSITY_MAX_HUNKS_PER_FILE)
             # Split this file's block into hunks.
             hunk_blocks = _split_into_hunks(block_lines)
             if len(hunk_blocks) <= _DIFF_MAX_HUNKS_PER_FILE + 1:
-                out_parts.append(block_str)
+                out_parts.append("\n".join(block_lines))
                 continue
             head = hunk_blocks[:_DIFF_MAX_HUNKS_PER_FILE + 1]
             elided = len(hunk_blocks) - _DIFF_MAX_HUNKS_PER_FILE - 1
@@ -13641,6 +13648,49 @@ def _split_into_hunks(block: list[str]) -> list[list[str]]:
     if current:
         hunks.append(current)
     return hunks
+
+
+def _score_and_cap_hunks(hunk_lines: list[str], max_hunks: int) -> list[str]:
+    """Keep top *max_hunks* hunks by change density; replace dropped ones with a sentinel.
+
+    Density = (added_lines + deleted_lines) / total_content_lines, where content lines
+    exclude the @@ header.  0.0 = pure context; 1.0 = every line changed.  Hunks scoring
+    lower than the Nth-highest are dropped and summarised in a single sentinel line so the
+    model sees the high-signal hunks without whitespace/formatting noise.
+
+    When *max_hunks* is 0, returns *hunk_lines* unchanged (cap disabled).
+    When the file has <= *max_hunks* hunks, returns *hunk_lines* unchanged.
+    """
+    if max_hunks <= 0:
+        return hunk_lines
+    hunks = _split_into_hunks(hunk_lines)
+    # hunks[0] is the file header block (--- / +++ lines before first @@)
+    actual = hunks[1:]
+    if len(actual) <= max_hunks:
+        return hunk_lines
+
+    def _density(h: list[str]) -> float:
+        # Skip the @@ header line (index 0) for the ratio; it is not content.
+        content = h[1:] if h else []
+        total = len(content)
+        if total == 0:
+            return 0.0
+        changed = sum(1 for ln in content if ln.startswith("+") or ln.startswith("-"))
+        return changed / total
+
+    scored = [(i, _density(h)) for i, h in enumerate(actual)]
+    keep_set = {idx for idx, _ in sorted(scored, key=lambda x: x[1], reverse=True)[:max_hunks]}
+    dropped_densities = [d for i, d in scored if i not in keep_set]
+    avg = sum(dropped_densities) / len(dropped_densities) if dropped_densities else 0.0
+
+    out: list[str] = list(hunks[0])
+    for i, hunk in enumerate(actual):
+        if i in keep_set:
+            out.extend(hunk)
+    n_dropped = len(dropped_densities)
+    out.append(f"[... {n_dropped} more hunks, avg density {avg:.2f} — likely whitespace/formatting]")
+    return out
+
 
 
 # --- Flutter / Dart / pub --------------------------------------------------

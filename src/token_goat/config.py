@@ -177,6 +177,7 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
     "indexing",
     "compression",
     "context",
+    "bash_diff",
 ])
 
 
@@ -588,6 +589,20 @@ class BashCompressConfig:
     cache_max_file_count: int = 4096
     cache_max_bytes: int = 16 * 1024 * 1024
     cache_max_bytes_per_output: int = 50 * 1024 * 1024
+
+
+@dataclass
+class BashDiffConfig:
+    """Per-file hunk density cap applied by diff filters.
+
+    Attributes:
+        max_hunks_per_file: Keep only this many hunks per file, chosen by highest change density.
+            Files with at most this many hunks are left untouched.  Default 10.
+        hunk_density_cap: Master switch; set to false to disable density filtering entirely.
+    """
+
+    max_hunks_per_file: int = 10
+    hunk_density_cap: bool = True
 
 
 @dataclass
@@ -1265,6 +1280,7 @@ class Config:
     indexing: IndexingConfig = field(default_factory=IndexingConfig)
     compression: CompressionConfig = field(default_factory=CompressionConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    bash_diff: BashDiffConfig = field(default_factory=BashDiffConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -1999,6 +2015,12 @@ def load() -> Config:
     _ctx_window = _env_int("TOKEN_GOAT_MODEL_WINDOW_TOKENS", _ctx_window, 10_000, 10_000_000, "context.model_window_tokens")
     ctx_cfg = ContextConfig(model_window_tokens=_ctx_window)
 
+    bd_raw = cast("dict[str, Any]", raw.get("bash_diff", {}))
+    bd_cfg = BashDiffConfig(
+        max_hunks_per_file=_validated_int(bd_raw.get("max_hunks_per_file", 10), 10, 0, 10000, "bash_diff.max_hunks_per_file"),
+        hunk_density_cap=_validated_bool(bd_raw.get("hunk_density_cap", True), True, "bash_diff.hunk_density_cap"),
+    )
+
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
         "bash_compress enabled=%s disabled_filters=%s max_lines=%d max_bytes=%d timeout=%d cache_files=%d cache_bytes=%d; "
@@ -2054,7 +2076,7 @@ def load() -> Config:
         image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, overflow_guard=og,
         stats=stats,
         hints=hints_cfg, hooks=hk, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
-        compression=cmp_cfg, context=ctx_cfg,
+        compression=cmp_cfg, context=ctx_cfg, bash_diff=bd_cfg,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
     return result

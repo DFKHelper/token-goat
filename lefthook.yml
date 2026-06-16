@@ -8,6 +8,7 @@ pre-commit:
       glob: "*.py"
 
 pre-push:
+  parallel: true
   commands:
     typecheck:
       glob: "**/*.py"
