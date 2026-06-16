@@ -280,11 +280,14 @@ __all__ = [
     "JsonArrayFilter",
     # Severity-scored log stream compressor
     "SeverityLogFilter",
+    # Process listing compressor (ps/top/tasklist)
+    "PsFilter",
 ]
 
 import base64 as _base64
 import json as _json
 import math
+import os
 import re
 import shlex
 from collections.abc import Callable, Iterable
@@ -24846,6 +24849,155 @@ class TailTruncFilter(Filter):
         return "\n".join(lines[:50] + [marker] + lines[-50:])
 
 
+_PS_MIN_LINES: Final[int] = 20
+_PS_HEADER_KEYWORDS: Final[tuple[str, ...]] = ("PID", "COMMAND", "CMD", "IMAGE NAME", "%CPU", "UID")
+_PS_TOP_PREFIXES: Final[tuple[str, ...]] = ("top -", "tasks:", "%cpu", "mib ", "kib ", "gib ")
+_PS_DEV_SUBSTRINGS: Final[tuple[str, ...]] = (
+    "python", "node", "uvicorn", "gunicorn", "django", "flask", "fastapi",
+    "cargo", "rustc", "go ", "java", "ruby", "rails", "php", "postgres",
+    "mysql", "redis", "nginx", "caddy", "docker", "kubectl", "npm",
+    "pnpm", "yarn", "bun", "deno", "git", "ssh",
+)
+
+
+def _ps_keep_line(
+    line: str,
+    *,
+    cpu_col: int | None,
+    mem_col: int | None,
+    cmd_start: int,
+    is_tasklist: bool,
+    current_user: str,
+) -> bool:
+    """Return True if a process line should be kept by PsFilter."""
+    if is_tasklist:
+        # tasklist has no user/cpu/mem columns by default; check whole line
+        return any(sub in line.lower() for sub in _PS_DEV_SUBSTRINGS)
+    cols = line.split()
+    if not cols:
+        return False
+    # Keep user-owned processes (USER is col0 in ps aux/ps -ef)
+    if current_user and cols[0].lower() == current_user:
+        return True
+    # Check command column for dev-relevant substrings
+    cmd_str = " ".join(cols[cmd_start:]).lower() if len(cols) > cmd_start else line.lower()
+    if any(sub in cmd_str for sub in _PS_DEV_SUBSTRINGS):
+        return True
+    # Check CPU/MEM resource thresholds when available
+    if cpu_col is not None and mem_col is not None and len(cols) > max(cpu_col, mem_col):
+        try:
+            if float(cols[cpu_col]) > 5.0 or float(cols[mem_col]) > 2.0:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+class PsFilter(Filter):
+    """Compress ps/top/tasklist process listing output.
+
+    Keeps the header, dev-relevant processes, high-resource processes, and
+    user-owned processes.  Drops kernel threads, system daemons, and idle
+    processes.  Appends a ``[suppressed N system processes]`` sentinel line
+    when any lines are dropped.  Passes through unchanged when the output is
+    ≤ 20 lines or when nothing was suppressed.
+    """
+
+    name = "ps"
+    binaries = frozenset(["ps", "top", "pstree", "tasklist"])
+
+    @staticmethod
+    def detect(stdout: str) -> bool:
+        """Return True when stdout looks like ps, top, or tasklist tabular output."""
+        for line in stdout.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # top batch mode starts with a summary line
+            if stripped.lower().startswith("top -"):
+                return True
+            # Column header contains known process-table keywords
+            upper = stripped.upper()
+            if any(kw in upper for kw in _PS_HEADER_KEYWORDS):
+                return True
+            break
+        return False
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        lines = stdout.splitlines()
+        if len(lines) <= _PS_MIN_LINES:
+            return stdout
+        # Locate the column-header line (skip top's summary block)
+        col_header_idx = -1
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            lower = stripped.lower()
+            # Skip top summary lines (top -, Tasks:, %Cpu, MiB, KiB, GiB)
+            if any(lower.startswith(pfx) for pfx in _PS_TOP_PREFIXES):
+                continue
+            upper = stripped.upper()
+            if any(kw in upper for kw in _PS_HEADER_KEYWORDS):
+                col_header_idx = i
+                break
+        if col_header_idx == -1:
+            return stdout
+        header_upper = lines[col_header_idx].upper()
+        is_tasklist = "IMAGE NAME" in header_upper
+        # Dynamically locate %CPU, %MEM, and COMMAND columns from the header tokens.
+        # ps aux layout: USER PID %CPU %MEM ... COMMAND (col2/3/10)
+        # top layout:   PID USER PR NI VIRT RES SHR S %CPU %MEM TIME+ COMMAND (col8/9/11)
+        header_tokens = lines[col_header_idx].split()
+        cpu_col: int | None = next(
+            (i for i, t in enumerate(header_tokens) if t.upper() == "%CPU"), None
+        )
+        mem_col: int | None = next(
+            (i for i, t in enumerate(header_tokens) if t.upper() == "%MEM"), None
+        )
+        _cmd_col_names = frozenset(["COMMAND", "CMD"])
+        cmd_start: int = next(
+            (i for i, t in enumerate(header_tokens) if t.upper() in _cmd_col_names),
+            10,  # fallback: ps aux default
+        )
+        current_user = (os.getenv("USERNAME") or os.getenv("USER") or "").lower()
+        kept: list[str] = []
+        suppressed_count = 0
+        for i, line in enumerate(lines):
+            # Keep all lines up to and including the column header
+            if i <= col_header_idx:
+                kept.append(line)
+                continue
+            stripped = line.strip()
+            if not stripped:
+                kept.append(line)
+                continue
+            # Keep tasklist separator lines (=== === ...)
+            if is_tasklist and all(c in ("=", " ") for c in stripped):
+                kept.append(line)
+                continue
+            if _ps_keep_line(
+                line,
+                cpu_col=cpu_col,
+                mem_col=mem_col,
+                cmd_start=cmd_start,
+                is_tasklist=is_tasklist,
+                current_user=current_user,
+            ):
+                kept.append(line)
+            else:
+                suppressed_count += 1
+        if suppressed_count == 0:
+            return stdout
+        # Strip trailing blank lines before appending sentinel
+        while kept and not kept[-1].strip():
+            kept.pop()
+        kept.append(f"[suppressed {suppressed_count} system processes]")
+        return self._finalize(kept)
+
+
 FILTERS: list[Filter] = [
     PytestFilter(),
     JestFilter(),
@@ -25247,6 +25399,10 @@ FILTERS: list[Filter] = [
     JsonArrayFilter(),
     BinaryInspectFilter(),
     FileTypeFilter(),
+    # PsFilter handles ps/top/pstree/tasklist process listings; disjoint
+    # binaries from every other filter so position is cosmetic — placed near
+    # the end alongside other system-inspection tools.
+    PsFilter(),
     # SeverityLogFilter is content-based; placed ahead of TailTruncFilter so it claims structured log streams when invoked via filter_by_name or explicitly.
     SeverityLogFilter(),
     # TailTruncFilter must be LAST: catch-all that fires when no specific filter matched; only activates for outputs >500 lines to avoid overhead on short outputs.
