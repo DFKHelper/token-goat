@@ -6145,7 +6145,7 @@ def doctor(  # noqa: C901
     cli_doctor.doctor(fix=fix, crashes=False, context=context)
 
 
-_VALID_TARGETS = {"claude", "codex", "gemini", "opencode", "openclaw", "all"}
+_VALID_TARGETS = {"claude", "codex", "gemini", "opencode", "openclaw", "pi", "all"}
 
 
 @app.command("context-stats", rich_help_panel="Install")
@@ -6182,13 +6182,14 @@ def cmd_install(
     codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),  # noqa: B008
     opencode: bool = typer.Option(False, "--opencode", help="Also install opencode plugin bridge"),  # noqa: B008
     openclaw: bool = typer.Option(False, "--openclaw", help="Also install openclaw plugin bridge"),  # noqa: B008
+    pi: bool = typer.Option(False, "--pi", help="Also install pi extension bridge (global ~/.pi/agent/extensions)"),  # noqa: B008
     target: list[str] = typer.Option(  # noqa: B008
         None,
         "--target",
         help=(
             "Install hooks for a specific tool. May be repeated. "
-            "Choices: claude, codex, gemini, opencode, openclaw, all. "
-            "Overrides --codex/--opencode/--openclaw when provided."
+            "Choices: claude, codex, gemini, opencode, openclaw, pi, all. "
+            "Overrides --codex/--opencode/--openclaw/--pi when provided."
         ),
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print what would change; make no changes"),  # noqa: B008
@@ -6248,6 +6249,7 @@ def cmd_install(
             install_codex=codex,
             install_opencode=opencode,
             install_openclaw=openclaw,
+            install_pi=pi,
             targets=targets,
         )
         typer.echo("token-goat install --dry-run (no changes made):")
@@ -6273,6 +6275,7 @@ def cmd_install(
         install_codex=codex,
         install_opencode=opencode,
         install_openclaw=openclaw,
+        install_pi=pi,
         targets=targets,
     )
     typer.echo("token-goat install:")
@@ -6318,11 +6321,12 @@ def cmd_uninstall(
     gemini: bool = typer.Option(False, "--gemini", help="Also remove Gemini CLI hook integration"),  # noqa: B008
     opencode: bool = typer.Option(False, "--opencode", help="Also remove opencode plugin bridge"),  # noqa: B008
     openclaw: bool = typer.Option(False, "--openclaw", help="Also remove openclaw plugin bridge"),  # noqa: B008
+    pi: bool = typer.Option(False, "--pi", help="Also remove pi extension bridge (global ~/.pi/agent/extensions)"),  # noqa: B008
 ) -> None:
     """Cleanly reverse install."""
     from . import install as inst  # noqa: PLC0415
 
-    result = inst.uninstall_all(purge=purge, codex=codex, gemini=gemini, opencode=opencode, openclaw=openclaw)
+    result = inst.uninstall_all(purge=purge, codex=codex, gemini=gemini, opencode=opencode, openclaw=openclaw, pi=pi)
     typer.echo("token-goat uninstall:")
     for step, detail in result.items():
         typer.echo(f"  {step}: {detail}")
