@@ -4744,6 +4744,33 @@ def post_read(payload: HookPayload) -> HookResponse:
                 if _n_stripped > 0:
                     _note = f"[token-goat] memory file: {_n_stripped} frontmatter lines stripped\n"
                     return {"continue": True, "systemMessage": _note + _mem_body}
+            # Structural code compression: for large source files replace verbatim content with a skeleton that keeps only signatures and imports.
+            import os as _os_cc  # noqa: PLC0415
+            _cc_disabled = _os_cc.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in {"0", "false", "no", "off"}
+            if not _cc_disabled and _resp_text:
+                _cc_ext = Path(file_path).suffix.lower()
+                _cc_line_count = _resp_text.count("\n") + 1
+                try:
+                    from . import config as _cc_cfg_mod  # noqa: PLC0415
+                    _cc_raw_min = _cc_cfg_mod.load().post_read_code_compress.min_lines
+                    _cc_min: int = _cc_raw_min if is_real_int(_cc_raw_min) else 200
+                except Exception:  # noqa: BLE001
+                    _cc_min = 200
+                if _cc_line_count >= _cc_min:
+                    try:
+                        from .code_compress import (
+                            compress_to_skeleton as _compress_skel,  # noqa: PLC0415
+                        )
+                        _skeleton = _compress_skel(_resp_text, _cc_ext)
+                        if _skeleton is not None:
+                            _sk_lines = _skeleton.count("\n") + 1
+                            _cc_footer = (
+                                f"\n[token-goat: structural view — {_cc_line_count} lines → {_sk_lines} skeleton lines;"
+                                f' use `token-goat read "{file_path}::SymbolName"` for full body]'
+                            )
+                            return {"continue": True, "systemMessage": _skeleton + _cc_footer}
+                    except Exception:  # noqa: BLE001
+                        pass
     elif tool_name == "Grep":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")

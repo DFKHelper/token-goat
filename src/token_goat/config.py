@@ -3,6 +3,7 @@ from __future__ import annotations
 
 __all__ = [
     "BashCompressConfig",
+    "CodeCompressConfig",
     "CompactAssistConfig",
     "CompressionConfig",
     "Config",
@@ -617,6 +618,22 @@ class SeverityLogConfig:
 
     context_lines: int = 3
     score_threshold: float = 0.5
+
+
+@dataclass
+class CodeCompressConfig:
+    """Configuration for post-read structural code compression.
+
+    When a Read tool call returns a source file with at least ``min_lines``
+    lines, token-goat replaces the verbatim content with a skeleton view that
+    keeps only imports, type aliases, __all__, and def/class signatures.
+
+    Attributes:
+        min_lines: Minimum line count to trigger compression. Files shorter
+            than this are passed through unchanged. Default 200.
+    """
+
+    min_lines: int = 200
 
 
 @dataclass
@@ -1296,6 +1313,7 @@ class Config:
     context: ContextConfig = field(default_factory=ContextConfig)
     bash_diff: BashDiffConfig = field(default_factory=BashDiffConfig)
     bash_severity_log: SeverityLogConfig = field(default_factory=SeverityLogConfig)
+    post_read_code_compress: CodeCompressConfig = field(default_factory=CodeCompressConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -2040,6 +2058,10 @@ def load() -> Config:
         context_lines=_validated_int(bsl_raw.get("context_lines", 3), 3, 0, 100, "bash_severity_log.context_lines"),
         score_threshold=_validated_float(bsl_raw.get("score_threshold", 0.5), 0.5, 0.0, 1.0, "bash_severity_log.score_threshold"),
     )
+    prc_raw = cast("dict[str, Any]", cast("dict[str, Any]", raw.get("post_read", {})).get("code_compress", {}))
+    prc_cfg = CodeCompressConfig(
+        min_lines=_validated_int(prc_raw.get("min_lines", 200), 200, 1, 100_000, "post_read.code_compress.min_lines"),
+    )
 
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
@@ -2097,6 +2119,7 @@ def load() -> Config:
         stats=stats,
         hints=hints_cfg, hooks=hk, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
         compression=cmp_cfg, context=ctx_cfg, bash_diff=bd_cfg, bash_severity_log=bsl_cfg,
+        post_read_code_compress=prc_cfg,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
     return result
