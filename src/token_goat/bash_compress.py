@@ -277,6 +277,8 @@ __all__ = [
     "TscFilter",
     # JSON array deduplication / truncation
     "JsonArrayFilter",
+    # Severity-scored log stream compressor
+    "SeverityLogFilter",
 ]
 
 import base64 as _base64
@@ -24540,6 +24542,139 @@ class FileTypeFilter(Filter):
         return self._finalize(kept)
 
 
+# Regexes for severity-scored log line classification (SeverityLogFilter).
+_LOG_LEVEL_RE: re.Pattern[str] = re.compile(
+    r'\b(ERROR|FAIL(?:URE|ED)?|CRITICAL|EXCEPTION|FATAL)\b'
+    r'|\[ERROR\]|\[CRITICAL\]|\[FATAL\]|level=(?:error|critical|fatal)',
+    re.IGNORECASE,
+)
+_LOG_WARN_RE: re.Pattern[str] = re.compile(
+    r'\b(WARN(?:ING)?)\b|\[WARN(?:ING)?\]|level=warn', re.IGNORECASE,
+)
+_LOG_INFO_RE: re.Pattern[str] = re.compile(
+    r'\b(INFO)\b|\[INFO\]|level=info', re.IGNORECASE,
+)
+_LOG_DEBUG_RE: re.Pattern[str] = re.compile(
+    r'\b(DEBUG|TRACE|VERBOSE)\b|\[DEBUG\]|\[TRACE\]|level=(?:debug|trace)', re.IGNORECASE,
+)
+# Combined keyword regex used for log-stream detection (30% threshold check).
+_LOG_ANY_RE: re.Pattern[str] = re.compile(
+    r'\b(?:ERROR|FAIL(?:URE|ED)?|CRITICAL|EXCEPTION|FATAL|WARN(?:ING)?|INFO|DEBUG|TRACE|VERBOSE)\b'
+    r'|\[(?:ERROR|CRITICAL|FATAL|WARN(?:ING)?|INFO|DEBUG|TRACE)\]'
+    r'|level=(?:error|critical|fatal|warn|info|debug|trace)',
+    re.IGNORECASE,
+)
+# Stack-trace continuation lines kept unconditionally inside a trace window.
+_TRACE_CONTINUATION_RE: re.Pattern[str] = re.compile(
+    r'^\s+(?:at |File "|in |\w+Error:|\w+Exception:)'
+    r'|^\s+\w+[\w.]+\(.*\)$'
+    r'|^\s+\.{3}\s*\d+\s+more'
+    r'|^Caused by:'
+    r'|^During handling of the above exception',
+)
+
+
+def _score_log_line(line: str) -> float:
+    """Return severity score for a single log line (0.0–1.0)."""
+    if _LOG_LEVEL_RE.search(line):
+        return 1.0
+    if _LOG_WARN_RE.search(line):
+        return 0.5
+    if _LOG_INFO_RE.search(line):
+        return 0.1
+    if _LOG_DEBUG_RE.search(line):
+        return 0.0
+    return 0.0
+
+
+def _compress_severity_log(text: str, context_n: int, threshold: float) -> str:
+    """Apply severity-scored filtering to log text; return compressed output."""
+    lines = text.splitlines()
+    n = len(lines)
+    scores = [_score_log_line(ln) for ln in lines]
+    # First pass: identify primary-kept lines (high score or inside a trace window).
+    primary: set[int] = set()
+    in_trace = False
+    for i, (ln, score) in enumerate(zip(lines, scores, strict=True)):
+        if in_trace:
+            if not ln.strip():
+                in_trace = False
+            elif _TRACE_CONTINUATION_RE.match(ln):
+                primary.add(i)
+            else:
+                in_trace = False
+                if score >= threshold:
+                    primary.add(i)
+                    if score >= 1.0:
+                        in_trace = True
+        else:
+            if score >= threshold:
+                primary.add(i)
+                if score >= 1.0:
+                    in_trace = True
+    # Second pass: expand by context_n around every primary-kept line.
+    expanded: set[int] = set()
+    for idx in primary:
+        for j in range(max(0, idx - context_n), min(n, idx + context_n + 1)):
+            expanded.add(j)
+    # Build output, inserting suppression sentinels at each gap.
+    result: list[str] = []
+    suppressed = 0
+    for i, ln in enumerate(lines):
+        if i in expanded:
+            if suppressed > 0:
+                result.append(f"[suppressed {suppressed} lines]")
+                suppressed = 0
+            result.append(ln)
+        else:
+            suppressed += 1
+    if suppressed > 0:
+        result.append(f"[suppressed {suppressed} lines]")
+    return Filter._finalize(result)
+
+
+class SeverityLogFilter(Filter):
+    """Severity-scored compressor for structured log streams.
+
+    Keeps every line scoring at or above *score_threshold* (ERROR/WARN by
+    default), plus *context_lines* neighbours on each side.  Runs of
+    lower-severity lines are replaced by ``[suppressed N lines]`` sentinels.
+    Multi-line stack traces opened by an ERROR/FAIL line are preserved as a
+    unit until a blank line or non-continuation line closes the window.
+    """
+
+    name = "severity_log"
+    binaries: frozenset[str] = frozenset()
+
+    @classmethod
+    def detect(cls, stdout: str) -> bool:
+        """Return True when stdout looks like a structured log stream.
+
+        Requires at least 5 lines, with ≥30 % containing a log-level keyword.
+        """
+        lines = stdout.splitlines()
+        if len(lines) < 5:
+            return False
+        keyword_count = sum(1 for ln in lines if _LOG_ANY_RE.search(ln))
+        return keyword_count / len(lines) >= 0.30
+
+    def detect_from_command(self, cmd: str) -> bool:  # noqa: D102
+        return False  # content-based only; hook layer routes via detect()
+
+    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+        return False  # content-based only; never claimed via binary dispatch
+
+    def compress(
+        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
+    ) -> str:
+        combined = self._combine_output(stdout, stderr)
+        if not self.detect(combined):
+            return combined
+        from . import config as _cfg_mod  # noqa: PLC0415
+        cfg = _cfg_mod.load().bash_severity_log
+        return _compress_severity_log(combined, cfg.context_lines, cfg.score_threshold)
+
+
 class TailTruncFilter(Filter):
     """Safety-net catch-all: truncate unmatched outputs longer than 500 lines.
 
@@ -24968,9 +25103,9 @@ FILTERS: list[Filter] = [
     JsonArrayFilter(),
     BinaryInspectFilter(),
     FileTypeFilter(),
-    # TailTruncFilter must be LAST: catch-all that fires when no specific filter
-    # matched.  Only activates for outputs >500 lines to avoid overhead on short
-    # outputs that don't need truncation.
+    # SeverityLogFilter is content-based; placed ahead of TailTruncFilter so it claims structured log streams when invoked via filter_by_name or explicitly.
+    SeverityLogFilter(),
+    # TailTruncFilter must be LAST: catch-all that fires when no specific filter matched; only activates for outputs >500 lines to avoid overhead on short outputs.
     TailTruncFilter(),
 ]
 

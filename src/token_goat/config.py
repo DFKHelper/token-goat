@@ -178,6 +178,7 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
     "compression",
     "context",
     "bash_diff",
+    "bash_severity_log",
 ])
 
 
@@ -603,6 +604,19 @@ class BashDiffConfig:
 
     max_hunks_per_file: int = 10
     hunk_density_cap: bool = True
+
+
+@dataclass
+class SeverityLogConfig:
+    """Config for severity-scored log stream compression (SeverityLogFilter).
+
+    Attributes:
+        context_lines: Lines to keep above and below each high-severity line.
+        score_threshold: Minimum score to keep a line unconditionally (0.0–1.0).
+    """
+
+    context_lines: int = 3
+    score_threshold: float = 0.5
 
 
 @dataclass
@@ -1281,6 +1295,7 @@ class Config:
     compression: CompressionConfig = field(default_factory=CompressionConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     bash_diff: BashDiffConfig = field(default_factory=BashDiffConfig)
+    bash_severity_log: SeverityLogConfig = field(default_factory=SeverityLogConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -2020,6 +2035,11 @@ def load() -> Config:
         max_hunks_per_file=_validated_int(bd_raw.get("max_hunks_per_file", 10), 10, 0, 10000, "bash_diff.max_hunks_per_file"),
         hunk_density_cap=_validated_bool(bd_raw.get("hunk_density_cap", True), True, "bash_diff.hunk_density_cap"),
     )
+    bsl_raw = cast("dict[str, Any]", raw.get("bash_severity_log", {}))
+    bsl_cfg = SeverityLogConfig(
+        context_lines=_validated_int(bsl_raw.get("context_lines", 3), 3, 0, 100, "bash_severity_log.context_lines"),
+        score_threshold=_validated_float(bsl_raw.get("score_threshold", 0.5), 0.5, 0.0, 1.0, "bash_severity_log.score_threshold"),
+    )
 
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
@@ -2076,7 +2096,7 @@ def load() -> Config:
         image_shrink=is_cfg, curator=cur, hint_budget=hb, repomap=rm, overflow_guard=og,
         stats=stats,
         hints=hints_cfg, hooks=hk, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
-        compression=cmp_cfg, context=ctx_cfg, bash_diff=bd_cfg,
+        compression=cmp_cfg, context=ctx_cfg, bash_diff=bd_cfg, bash_severity_log=bsl_cfg,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
     return result
