@@ -1,9 +1,9 @@
 name: CI
 on: [push, pull_request]
 
-# Heavy testing (full suite, both platforms) runs pre-push via lefthook on
-# the developer's machine (Windows serial + WSL parallel). CI is a lightweight
-# gate: lint, type-check, and a non-gating Windows compat pass.
+# Full test suite (Windows serial + WSL parallel, ~14 900 tests) runs
+# pre-push via lefthook on the developer's machine before any push reaches
+# GitHub. CI is a thin gate: lint and type-check only.
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
@@ -23,49 +23,3 @@ jobs:
         run: uv run ruff check
       - name: Type check
         run: uv run mypy src
-
-  test-windows:
-    # Non-gating Windows compat check. The Windows-2022 runner produces
-    # transient C-extension crashes (STATUS_ILLEGAL_INSTRUCTION from AVX2
-    # mismatches in fastembed/sqlite-vec) at ~40% rate per attempt, requiring
-    # a serial retry loop. Full suite already runs pre-push via lefthook;
-    # this job surfaces Windows-specific regressions without blocking the build.
-    runs-on: windows-2022
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv python install 3.13
-      - run: uv sync --all-extras
-      - name: Test
-        env:
-          TOKEN_GOAT_NO_WORKER_SPAWN: "1"
-          TOKEN_GOAT_HARNESS_OVERRIDE: "claudecode"
-          TOKEN_GOAT_MEMORY_PRESSURE_MB: "99999"
-        run: |
-          for attempt in 1 2 3; do
-            echo "=== Test attempt $attempt of 3 ==="
-            uv run pytest -n 0 -m "not slow" -rfER --tb=short && exit 0
-            echo "=== Attempt $attempt failed; retrying ==="
-          done
-          exit 1
-        shell: bash
-      - name: Test (slow tier)
-        continue-on-error: true
-        env:
-          TOKEN_GOAT_NO_WORKER_SPAWN: "1"
-          TOKEN_GOAT_HARNESS_OVERRIDE: "claudecode"
-          TOKEN_GOAT_MEMORY_PRESSURE_MB: "99999"
-        run: uv run pytest -m "slow" -rfER --tb=short
-      - name: Kill leftover detached worker daemons
-        if: always()
-        run: |
-          Get-CimInstance Win32_Process |
-            Where-Object { $_.CommandLine -like '*token_goat*worker*--daemon*' } |
-            ForEach-Object {
-              Write-Host "killing leftover worker pid=$($_.ProcessId)"
-              Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-            }
