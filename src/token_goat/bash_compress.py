@@ -54,6 +54,7 @@ subprocess wrapper that runs the user's command lives in :mod:`bash_runner`.
 from __future__ import annotations
 
 import abc
+import contextlib
 
 from token_goat import config as _config_module
 
@@ -9886,20 +9887,12 @@ class GrepFilter(Filter):
 
 #: Threshold: outputs with this many or fewer lines pass through unchanged.
 _RG_CONTEXT_THRESHOLD: Final[int] = 30
+_RG_TOP_GROUPS: Final[int] = 5
+_RG_GROUP_THRESHOLD: Final[int] = 10
 
 
 class RgFilter(Filter):
-    """Strip context lines from rg/grep -C/-A/-B output when output is large.
-
-    rg and grep with context flags produce three line types:
-    - Match lines: filepath:linenum:content (colons around linenum)
-    - Context lines: filepath-linenum-content (dashes around linenum)
-    - Group separators: --
-
-    When output exceeds _RG_CONTEXT_THRESHOLD lines and context output is
-    detected (via -- separator lines), context lines and separators are dropped.
-    Pure match output (no -- separators) and short output pass through unchanged.
-    """
+    """Strip context lines from rg/grep -C/-A/-B output when output is large."""
 
     name = "rg"
     binaries = frozenset(["rg", "grep"])
@@ -9908,15 +9901,62 @@ class RgFilter(Filter):
     _CTX_LINE_RE: ClassVar[re.Pattern[str]] = re.compile(r"^.+-\d+-")
     _MATCH_LINE_RE: ClassVar[re.Pattern[str]] = re.compile(r"^.+:\d+:")
 
+    @staticmethod
+    def _parse_context_depth(argv: list[str]) -> int:
+        # Return max of -A, -B, -C values found in argv (0 if none).
+        depth = 0
+        long_flags = {"--after-context", "--before-context", "--context"}
+        i = 0
+        while i < len(argv):
+            a = argv[i]
+            if (a in {"-A", "-B", "-C"} or a in long_flags) and i + 1 < len(argv):
+                with contextlib.suppress(ValueError):
+                    depth = max(depth, int(argv[i + 1]))
+                i += 2
+                continue
+            for short in ("-A", "-B", "-C"):
+                if a.startswith(short) and len(a) > 2:
+                    with contextlib.suppress(ValueError):
+                        depth = max(depth, int(a[2:]))
+            i += 1
+        return depth
+
+    @staticmethod
+    def _is_files_only(argv: list[str]) -> bool:
+        # Return True if rg was called with -l/--files-with-matches; output is already compact.
+        return any(a in {"-l", "--files-with-matches"} for a in argv)
+
+    @staticmethod
+    def _is_count_only(argv: list[str]) -> bool:
+        # Return True if rg was called with -c/--count; output is already compact.
+        return any(a in {"-c", "--count"} for a in argv)
+
+    def _compress_groups(self, groups: list[str]) -> str:
+        # Keep top _RG_TOP_GROUPS groups by match line count; replace rest with sentinel.
+        scored = sorted(range(len(groups)), key=lambda i: -sum(1 for ln in groups[i].splitlines() if self._MATCH_LINE_RE.match(ln)))
+        top_idx = set(scored[:_RG_TOP_GROUPS])
+        kept = [g for i, g in enumerate(groups) if i in top_idx]
+        suppressed = len(groups) - len(kept)
+        joined = ("\n" + self._SEP + "\n").join(kept)
+        return joined + f"\n[token-goat: {suppressed} more match groups suppressed — rerun with -l for filenames only]"
+
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
         text = self._combine_output(stdout, stderr)
+        # Files-only and count-only output is already compact; pass through unchanged.
+        if self._is_files_only(argv) or self._is_count_only(argv):
+            return text
         lines = text.split("\n")
         if len(lines) <= _RG_CONTEXT_THRESHOLD:
             return text
         if not any(ln == self._SEP for ln in lines):
             return text
+        # Inter-match group compression: many groups → keep only the top _RG_TOP_GROUPS.
+        groups = [g for g in text.split("\n" + self._SEP + "\n") if g.strip()]
+        if len(groups) > _RG_GROUP_THRESHOLD:
+            return self._compress_groups(groups)
+        # Context line stripping for large output with few groups.
         kept: list[str] = []
         suppressed = 0
         for ln in lines:
@@ -9932,12 +9972,7 @@ class RgFilter(Filter):
         )
         return "\n".join(kept)
 
-
-# --- dep-list (pip list / npm list / cargo tree / poetry show / ...) --------
-
-#: Line threshold: output longer than this is truncated with a count trailer.
 _DEP_LIST_THRESHOLD: Final[int] = 30
-
 
 class DepListFilter(Filter):
     """Compress verbose dependency-listing output from package managers.
