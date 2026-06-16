@@ -11261,8 +11261,52 @@ class YarnFilter(Filter):
 _LS_PASSTHROUGH = 25
 #: Maximum file/dir entry lines to keep per section before the summary marker.
 _LS_MAX_ENTRIES = 10
-#: Marker emitted when entries are hidden.
+#: Marker emitted when entries are hidden (no extension summary available).
 _LS_HIDDEN_MARKER = "[token-goat: {n} more entries — use eza --tree or ls | grep PATTERN to filter]"
+#: Marker emitted when entries are hidden with an extension summary appended.
+_LS_HIDDEN_MARKER_EXT = "[token-goat: {n} more entries — by type: {ext_summary}]"
+
+
+def _ls_ext_from_line(line: str) -> str | None:
+    """Extract the lowercase extension from a directory-listing entry line.
+    Returns None for directories (skipped), '' for files with no extension."""
+    stripped = line.rstrip()
+    if stripped.endswith("/"):
+        return None
+    parts = stripped.split()
+    if not parts:
+        return None
+    # Long-format ls -la: first field is permissions; leading 'd' means directory.
+    if parts[0] and parts[0][0] == "d":
+        return None
+    fname = parts[-1].rstrip("/")
+    dot_idx = fname.rfind(".")
+    # dot_idx <= 0 covers both "no dot" and leading-dot-only (.gitignore) cases.
+    if dot_idx <= 0:
+        return ""
+    return fname[dot_idx:].lower()
+
+
+def _ls_ext_summary(entries: list[str], top_n: int = 4) -> str:
+    """Build a 'by type' extension summary from a list of ls entry lines.
+    Returns a string like '.py×18 .js×12 .ts×8 other×9', or '' when there are no data."""
+    from collections import Counter
+    ext_counts: Counter[str] = Counter()
+    other_count = 0
+    for ln in entries:
+        ext = _ls_ext_from_line(ln)
+        if ext is None:
+            continue
+        if not ext:
+            other_count += 1
+        else:
+            ext_counts[ext] += 1
+    top = ext_counts.most_common(top_n)
+    parts = [f"{ext}×{cnt}" for ext, cnt in top]
+    remaining = sum(ext_counts.values()) - sum(c for _, c in top) + other_count
+    if remaining > 0:
+        parts.append(f"other×{remaining}")
+    return " ".join(parts)
 
 
 class LsFilter(Filter):
@@ -11314,15 +11358,15 @@ class LsFilter(Filter):
             entries = lines[1:]
         else:
             entries = lines
-        kept = 0
-        hidden = 0
-        for ln in entries:
-            if kept < _LS_MAX_ENTRIES:
-                out.append(ln)
-                kept += 1
-            else:
-                hidden += 1
-        if hidden:
+        if len(entries) <= _LS_MAX_ENTRIES:
+            out.extend(entries)
+            return out
+        out.extend(entries[:_LS_MAX_ENTRIES])
+        hidden = len(entries) - _LS_MAX_ENTRIES
+        ext_part = _ls_ext_summary(entries)
+        if ext_part:
+            out.append(_LS_HIDDEN_MARKER_EXT.format(n=hidden, ext_summary=ext_part))
+        else:
             out.append(_LS_HIDDEN_MARKER.format(n=hidden))
         return out
 
@@ -11446,6 +11490,87 @@ class EzaFilter(Filter):
         return "\n".join(kept).rstrip()
 
 
+# --- tree -------------------------------------------------------------
+
+#: Pass-through threshold: tree outputs with this many lines or fewer are returned unchanged.
+_TREE_PASSTHROUGH = 30
+
+
+class TreeFilter(Filter):
+    """Compress ``tree`` directory tree output for deeply nested structures.
+
+    * Trees with <=30 lines pass through unchanged.
+    * Deeper trees collapse items at depth >=3 (two or more indent groups)
+      into a single ``[N items]`` marker per depth-2 parent directory.
+    * The trailing ``N directories, M files`` summary line is always preserved.
+    """
+
+    name = "tree"
+    binaries = frozenset(["tree"])
+
+    def detect(self, lines: list[str]) -> bool:
+        """Return True when *lines* look like ``tree`` command output."""
+        return any("├──" in ln or "└──" in ln for ln in lines[:10])
+
+    def compress(self, stdout: str, stderr: str, exit_code: int, argv: list[str]) -> str:
+        merged = self._combine_output(stdout, stderr)
+        lines = merged.splitlines()
+        if len(lines) <= _TREE_PASSTHROUGH:
+            return merged
+        if not self.detect(lines):
+            return merged
+        return self._compress_tree(lines)
+
+    @staticmethod
+    def _tree_depth_and_prefix(line: str) -> tuple[int, str]:
+        """Return (depth, prefix) for a tree connector line, or (-1, '') for non-entries.
+        Depth is 0-indexed: 0 = first level under root, 1 = second level, etc."""
+        for connector in ("├── ", "└── "):
+            idx = line.find(connector)
+            if idx >= 0:
+                return idx // 4, line[:idx]
+        return -1, ""
+
+    def _compress_tree(self, lines: list[str]) -> str:
+        """Collapse depth>=2 items per depth-1 parent into a '[N items]' marker."""
+        body = list(lines)
+        summary = ""
+        if body and re.match(r"^\d+ director", body[-1].strip()):
+            summary = body.pop()
+
+        out: list[str] = []
+        pending_count = 0
+        pending_prefix = ""
+
+        def flush() -> None:
+            nonlocal pending_count, pending_prefix
+            if pending_count:
+                out.append(f"{pending_prefix}└── [{pending_count} items]")
+                pending_count = 0
+                pending_prefix = ""
+
+        for line in body:
+            depth, prefix = self._tree_depth_and_prefix(line)
+            if depth < 0:
+                # Non-connector line (root '.', blank lines, etc.)
+                flush()
+                out.append(line)
+            elif depth <= 1:
+                # Task depth <=2: keep verbatim.
+                flush()
+                out.append(line)
+            else:
+                # Task depth >=3: collect under nearest depth-1 parent.
+                if not pending_prefix:
+                    pending_prefix = prefix
+                pending_count += 1
+
+        flush()
+        if summary:
+            out.append(summary)
+        return "\n".join(out)
+
+
 # --- fd / fdfind -------------------------------------------------------
 
 #: Threshold: outputs with more lines than this are compressed.
@@ -11513,38 +11638,6 @@ class WcFilter(Filter):
         lines = text.splitlines()
         stripped = [ln.lstrip() for ln in lines]
         return "\n".join(stripped).rstrip()
-
-
-class TreeFilter(Filter):
-    """Compress ``tree`` binary output.
-
-    The ``tree`` command can produce thousands of lines for large directories.
-    This filter keeps the first 50 lines (root structure) + last 10 lines
-    (including final summary) + a marker in the middle.
-
-    Compression model:
-
-    * **Pass-through** when output ≤ 60 lines — readable in full.
-    * **Summarise** when output > 60: keep first 50 + last 10 + marker.
-      Always preserve the final summary line (e.g., "3 directories, 14 files").
-    """
-
-    name = "tree"
-    binaries = frozenset(["tree"])
-
-    def compress(
-        self, stdout: str, stderr: str, exit_code: int, argv: list[str],
-    ) -> str:
-        merged = self._combine_output(stdout, stderr)
-        text = normalise(merged)
-
-        lines = text.split("\n")
-        non_empty = [ln for ln in lines if ln.strip()]
-
-        if len(non_empty) <= 60:
-            return text.rstrip()
-
-        return _head_tail_compress(non_empty, head=50, tail=10, label="items").rstrip()
 
 
 # --- bat / batcat (syntax-highlighted file viewer) ---------------------------

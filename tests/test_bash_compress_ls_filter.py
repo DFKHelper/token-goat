@@ -177,3 +177,76 @@ class TestLsFilterSectionHeaderEdgeCases:
         result = f.compress(output, "", 0, ["ls", "-la"])
         # 3 lines is well under the 25-line passthrough threshold -- output unchanged.
         assert result == output
+
+
+# ---------------------------------------------------------------------------
+# 5. Extension grouping in truncation marker
+# ---------------------------------------------------------------------------
+
+class TestLsFilterExtensionGrouping:
+    """Extension summary is appended to the hidden-entries marker on truncation."""
+
+    @staticmethod
+    def _make_mixed_listing(counts: dict[str, int]) -> str:
+        """Build a listing with *counts* files per extension (e.g. {'.py': 18})."""
+        lines: list[str] = []
+        for ext, n in counts.items():
+            for i in range(n):
+                fname = f"file{i}{ext}" if ext else f"Makefile{i}"
+                lines.append(f"-rw-r--r-- 1 u g 0 Jan 1 {fname}")
+        return "\n".join(lines)
+
+    def test_by_type_label_in_marker(self) -> None:
+        """Truncated listing >=47 files includes 'by type:' in the marker."""
+        output = self._make_mixed_listing({".py": 18, ".js": 12, ".ts": 8, ".json": 5, ".csv": 4})
+        assert output.count("\n") + 1 == 47
+        f = bc.LsFilter()
+        result = f.compress(output, "", 0, ["ls"])
+        assert "by type:" in result
+        assert ".py×18" in result
+        assert ".js×12" in result
+
+    def test_top_4_extensions_plus_other(self) -> None:
+        """Only top 4 extensions appear by name; the rest are bucketed as other×N."""
+        output = self._make_mixed_listing({".py": 10, ".js": 8, ".ts": 6, ".json": 4, ".txt": 3, ".md": 2})
+        f = bc.LsFilter()
+        result = f.compress(output, "", 0, ["ls"])
+        assert "by type:" in result
+        # Top-4 by count: .py .js .ts .json; remaining .txt(3)+.md(2)=5 → other×5
+        assert "other×5" in result
+        # .txt and .md must NOT appear as named extensions in the summary section
+        summary_part = result.split("by type:")[-1] if "by type:" in result else ""
+        assert ".txt" not in summary_part
+        assert ".md" not in summary_part
+
+    def test_directories_excluded_from_ext_count(self) -> None:
+        """Directory entries (leading 'd' permissions) do not appear in ext summary."""
+        lines: list[str] = []
+        for i in range(20):
+            lines.append(f"drwxr-xr-x 2 u g 0 Jan 1 subdir{i}/")
+        for i in range(15):
+            lines.append(f"-rw-r--r-- 1 u g 0 Jan 1 module{i}.py")
+        output = "\n".join(lines)
+        f = bc.LsFilter()
+        result = f.compress(output, "", 0, ["ls", "-la"])
+        assert "by type:" in result
+        # Only .py files counted — directories contribute nothing.
+        assert ".py×15" in result
+
+    def test_no_extension_counted_as_other(self) -> None:
+        """Files with no extension (Makefile, LICENSE, etc.) count as other×N."""
+        lines = [f"-rw-r--r-- 1 u g 0 Jan 1 Makefile{i}" for i in range(30)]
+        output = "\n".join(lines)
+        f = bc.LsFilter()
+        result = f.compress(output, "", 0, ["ls"])
+        assert "other×30" in result
+
+    def test_still_shows_10_entries_before_marker(self) -> None:
+        """Extension grouping does not reduce the 10-entry truncation window."""
+        lines = [f"-rw-r--r-- 1 u g 0 Jan 1 file{i}.py" for i in range(30)]
+        output = "\n".join(lines)
+        f = bc.LsFilter()
+        result = f.compress(output, "", 0, ["ls"])
+        result_lines = result.splitlines()
+        marker_idx = next(i for i, ln in enumerate(result_lines) if "[token-goat:" in ln)
+        assert marker_idx == 10
