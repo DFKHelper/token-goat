@@ -436,6 +436,7 @@ def dedupe_consecutive(
     *,
     min_run: int = 2,
     fmt: str = "{line}  (×{count})",
+    entropy_bypass: bool = False,
 ) -> list[str]:
     """Collapse runs of identical consecutive lines to ``line  (×N)``.
 
@@ -448,11 +449,26 @@ def dedupe_consecutive(
     repeats an identical line for each item.  Non-consecutive duplicates are
     *not* deduped because their separation may carry meaning (e.g. one error
     block per file, with the same trailing summary line between).
+
+    When *entropy_bypass* is True, lines containing high-entropy tokens (UUIDs,
+    SHAs, JWTs, API keys) are always emitted verbatim and never participate in
+    run-length deduplication — each occurrence is preserved intact.
     """
     out: list[str] = []
     prev: str | None = None
     count = 0
     for line in lines:
+        if entropy_bypass and has_high_entropy_token(line):
+            # Flush any pending run, then emit the high-entropy line verbatim.
+            if prev is not None:
+                if count >= min_run:
+                    out.append(fmt.format(line=prev, count=count))
+                else:
+                    out.extend([prev] * count)
+            prev = None
+            count = 0
+            out.append(line)
+            continue
         if line == prev:
             count += 1
             continue
@@ -2119,8 +2135,8 @@ class GenericFilter(Filter):
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
-        out_lines = dedupe_consecutive(stdout.split("\n"))
-        err_lines = dedupe_consecutive(stderr.split("\n"))
+        out_lines = dedupe_consecutive(stdout.split("\n"), entropy_bypass=True)
+        err_lines = dedupe_consecutive(stderr.split("\n"), entropy_bypass=True)
         if stderr.strip():
             result = "\n".join(out_lines).rstrip() + "\n---\n" + "\n".join(err_lines).rstrip()
         else:
