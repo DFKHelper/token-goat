@@ -5,13 +5,15 @@ _compress_git_diff_body for files that exceed max_hunks_per_file.
 """
 from __future__ import annotations
 
+import unittest.mock
+
 import token_goat.bash_compress as bc
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_DENSITY_DEFAULT = bc._DIFF_DENSITY_MAX_HUNKS_PER_FILE  # 10
+_DENSITY_DEFAULT = 10
 
 
 def _make_hunk(n_context: int, n_changed: int, index: int = 0) -> list[str]:
@@ -227,3 +229,18 @@ class TestGitDiffFilterDensityIntegration:
         diff = _git_diff_block(n_hunks=10)
         result = bc._compress_git_diff_body(diff, "")
         assert "more hunks, avg density" not in result
+
+    def test_diff_with_15_hunks_not_capped_when_hunk_density_cap_disabled(self) -> None:
+        """When hunk_density_cap=False in config, 15 hunks are NOT reduced to 10."""
+        from token_goat import config as _cfg_mod
+        diff = _git_diff_block(n_hunks=15)
+        # Mock config.load() to return a config with hunk_density_cap=False
+        mock_cfg = unittest.mock.MagicMock()
+        mock_cfg.bash_diff.hunk_density_cap = False
+        mock_cfg.bash_diff.max_hunks_per_file = 10
+        with unittest.mock.patch.object(_cfg_mod, "load", return_value=mock_cfg):
+            result = bc._compress_git_diff_body(diff, "")
+        # With hunk_density_cap=False, the density cap is skipped; result should have all 15 hunks
+        hunk_headers = [ln for ln in result.splitlines() if ln.startswith("@@ ")]
+        assert len(hunk_headers) == 15, f"Expected 15 hunks, got {len(hunk_headers)}"
+        assert "more hunks, avg density" not in result, "density cap marker should not appear"

@@ -55,6 +55,8 @@ from __future__ import annotations
 
 import abc
 
+from token_goat import config as _config_module
+
 __all__ = [
     "DEFAULT_MAX_BYTES",
     "DEFAULT_MAX_INPUT_BYTES",
@@ -6793,7 +6795,9 @@ def _compress_git_diff_body(stdout: str, stderr: str) -> str:
             continue
 
         # Apply density hunk cap before large-hunk truncation.
-        block_lines = _score_and_cap_hunks(block_lines, _DIFF_DENSITY_MAX_HUNKS_PER_FILE)
+        _cfg = _config_module.load()
+        _max_hunks = _cfg.bash_diff.max_hunks_per_file if _cfg.bash_diff.hunk_density_cap else 0
+        block_lines = _score_and_cap_hunks(block_lines, _max_hunks)
         block = "\n".join(block_lines)
         # Large-hunk truncation: compress each hunk independently.
         hunks = split_blocks(block, _GIT_DIFF_HUNK_RE)
@@ -13535,8 +13539,6 @@ _DIFF_CONTEXT_RE: Final[re.Pattern[str]] = re.compile(r"^ ")
 
 #: Maximum hunks to keep per file in a plain diff.
 _DIFF_MAX_HUNKS_PER_FILE = 3
-#: Maximum hunks per file kept after density scoring (keeps highest-density hunks first).
-_DIFF_DENSITY_MAX_HUNKS_PER_FILE = 10
 #: Maximum total files to show in full before switching to stat-only view.
 _DIFF_MAX_FULL_FILES = 20
 
@@ -13615,7 +13617,9 @@ class DiffFilter(Filter):
                 out_parts.append(block_str)
                 continue
             # Apply density cap first, then positional cap.
-            block_lines = _score_and_cap_hunks(block_lines, _DIFF_DENSITY_MAX_HUNKS_PER_FILE)
+            _cfg = _config_module.load()
+            _max_hunks = _cfg.bash_diff.max_hunks_per_file if _cfg.bash_diff.hunk_density_cap else 0
+            block_lines = _score_and_cap_hunks(block_lines, _max_hunks)
             # Split this file's block into hunks.
             hunk_blocks = _split_into_hunks(block_lines)
             if len(hunk_blocks) <= _DIFF_MAX_HUNKS_PER_FILE + 1:
