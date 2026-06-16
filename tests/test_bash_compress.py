@@ -3032,23 +3032,30 @@ class TestTreeFilter:
         assert result == short_output
 
     def test_compress_long_tree_output(self) -> None:
-        """TreeFilter compresses >60 lines: first 50 + last 10 + marker."""
+        """TreeFilter compresses deep trees: depth-3+ items collapsed per parent."""
         f = bc.TreeFilter()
-        # Create a 100-line tree output
-        lines = ["root/"]
-        for i in range(99):
-            lines.append(f"├── item{i}/")
-        # Add summary line
-        lines.append("10 directories")
+        # Build 3 top-dirs × 3 subdirs × 10 files (> 30 lines) so compression fires.
+        lines = ["."]
+        for t in range(3):
+            top_conn = "└── " if t == 2 else "├── "
+            top_cont = "    " if t == 2 else "│   "
+            lines.append(f"{top_conn}topdir{t}/")
+            for s in range(3):
+                sub_conn = "└── " if s == 2 else "├── "
+                sub_cont = "    " if s == 2 else "│   "
+                lines.append(f"{top_cont}{sub_conn}subdir{s}/")
+                for fi in range(10):
+                    file_conn = "└── " if fi == 9 else "├── "
+                    lines.append(f"{top_cont}{sub_cont}{file_conn}file{fi}.py")
+        lines.append("9 directories, 90 files")
         output = "\n".join(lines)
 
         result = f.compress(output, "", 0, ["tree"])
 
-        # Should contain marker
-        assert "elided" in result
-        # Result should be shorter
-        result_lines = [ln for ln in result.split("\n") if ln.strip()]
-        assert len(result_lines) <= 65  # 50 + 10 + marker + summary
+        # Depth-3 files should be collapsed into [N items] markers.
+        assert "items]" in result
+        # Result is shorter than the input.
+        assert len(result.splitlines()) < len(output.splitlines())
 
     def test_preserves_summary_line(self) -> None:
         """TreeFilter preserves the final summary line."""
@@ -3655,17 +3662,25 @@ class TestTreeFilterBoundaries:
         assert "elided" not in result
         assert result.rstrip() == output.rstrip()
 
-    def test_truncation_at_61_lines(self) -> None:
-        """61 non-empty lines triggers compression: 61 - 50 - 10 = 1 elided."""
+    def test_compression_fires_above_30_lines(self) -> None:
+        """31+ lines with depth-3 items triggers depth-collapse compression."""
         f = bc.TreeFilter()
-        lines = ["root/"]
-        lines += [f"├── file{i}.txt" for i in range(60)]
-        assert len(lines) == 61
+        # 1 topdir × 6 subdirs × 4 files = 34 lines (> 30 threshold).
+        lines = ["."]
+        for s in range(6):
+            sub_conn = "└── " if s == 5 else "├── "
+            sub_cont = "    " if s == 5 else "│   "
+            lines.append("├── topdir0/")
+            lines.append(f"│   {sub_conn}subdir{s}/")
+            for fi in range(4):
+                file_conn = "└── " if fi == 3 else "├── "
+                lines.append(f"│   {sub_cont}{file_conn}file{fi}.py")
+        assert len(lines) > 30
         output = "\n".join(lines)
 
         result = f.compress(output, "", 0, ["tree"])
 
-        assert "1 more items elided" in result
+        assert "items]" in result
 
     def test_summary_line_always_in_tail(self) -> None:
         """The canonical 'N directories, M files' summary is in the tail so it survives."""
@@ -3680,10 +3695,10 @@ class TestTreeFilterBoundaries:
         # Summary must survive — it is always the last line(s) so the tail keeps it.
         assert "3 directories, 77 files" in result
 
-    def test_summary_line_preserved_near_60_boundary(self) -> None:
-        """Summary line at position 61+ still survives (tail keeps last 10 lines)."""
+    def test_summary_line_preserved_above_30_line_threshold(self) -> None:
+        """Summary line survives even when the tree exceeds the 30-line threshold."""
         f = bc.TreeFilter()
-        # Build exactly 65 lines so tail covers positions 55-64.
+        # Build 65 flat depth-0 lines + summary (flat trees pass through unchanged).
         lines = ["root/"]
         lines += [f"├── file{i}" for i in range(63)]
         lines.append("5 directories, 58 files")
@@ -3693,7 +3708,6 @@ class TestTreeFilterBoundaries:
         result = f.compress(output, "", 0, ["tree"])
 
         assert "5 directories, 58 files" in result
-        assert "elided" in result  # compression did fire
 
 
 # ---------------------------------------------------------------------------
