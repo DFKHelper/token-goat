@@ -148,7 +148,7 @@ class TestStatsCLI:
         result = runner.invoke(cli.app, ["stats"])
         assert result.exit_code == 0
 
-    def test_help_text_contains_global_option(self):
-        result = runner.invoke(cli.app, ["stats", "--help"])
+    def test_global_option_is_functional(self, tmp_data_dir):
+        # Verifies --global is registered and accepted (not a help-text parse).
+        result = runner.invoke(cli.app, ["stats", "--global"])
         assert result.exit_code == 0
-        assert "--global" in result.stdout

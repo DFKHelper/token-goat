@@ -1,6 +1,10 @@
 name: CI
 on: [push, pull_request]
 
+# Heavy testing (full suite, both platforms) runs pre-push via lefthook on
+# the developer's machine (Windows serial + WSL parallel). CI is a lightweight
+# gate: lint, type-check, and a non-gating Windows compat pass.
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
@@ -20,32 +24,12 @@ jobs:
       - name: Type check
         run: uv run mypy src
 
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv python install ${{ matrix.python-version }}
-      - run: uv sync --all-extras --python ${{ matrix.python-version }}
-      - name: Test
-        env:
-          TOKEN_GOAT_NO_WORKER_SPAWN: "1"
-          TOKEN_GOAT_HARNESS_OVERRIDE: "claudecode"
-        run: uv run pytest -n auto -m "not slow" -rfER --tb=short
-
   test-windows:
     # Non-gating Windows compat check. The Windows-2022 runner produces
     # transient C-extension crashes (STATUS_ILLEGAL_INSTRUCTION from AVX2
     # mismatches in fastembed/sqlite-vec) at ~40% rate per attempt, requiring
-    # a serial retry loop. Linux is the primary gate; this job surfaces
-    # Windows-specific regressions without blocking the build.
+    # a serial retry loop. Full suite already runs pre-push via lefthook;
+    # this job surfaces Windows-specific regressions without blocking the build.
     runs-on: windows-2022
     continue-on-error: true
     steps:
@@ -60,6 +44,7 @@ jobs:
         env:
           TOKEN_GOAT_NO_WORKER_SPAWN: "1"
           TOKEN_GOAT_HARNESS_OVERRIDE: "claudecode"
+          TOKEN_GOAT_MEMORY_PRESSURE_MB: "99999"
         run: |
           for attempt in 1 2 3; do
             echo "=== Test attempt $attempt of 3 ==="
@@ -73,6 +58,7 @@ jobs:
         env:
           TOKEN_GOAT_NO_WORKER_SPAWN: "1"
           TOKEN_GOAT_HARNESS_OVERRIDE: "claudecode"
+          TOKEN_GOAT_MEMORY_PRESSURE_MB: "99999"
         run: uv run pytest -m "slow" -rfER --tb=short
       - name: Kill leftover detached worker daemons
         if: always()

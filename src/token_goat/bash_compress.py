@@ -7960,7 +7960,7 @@ class GoTestFilter(Filter):
         # Pass C: append aggregate package summary when both ok and FAIL packages present
         _go_ok_count = sum(1 for _l in kept if re.match(r"^ok\s+\S+\s+\d", _l))
         _go_fail_count = sum(1 for _l in kept if re.match(r"^FAIL	\S+", _l))
-        if _go_ok_count > 0 and _go_fail_count > 0 and _go_ok_count + _go_fail_count >= 2:
+        if _go_ok_count + _go_fail_count >= 2:
             kept.append(f"[{_go_ok_count} packages passed, {_go_fail_count} packages failed]")
 
         notes: list[str] = []
@@ -24947,9 +24947,7 @@ class PsFilter(Filter):
             return stdout
         header_upper = lines[col_header_idx].upper()
         is_tasklist = "IMAGE NAME" in header_upper
-        # Dynamically locate %CPU, %MEM, and COMMAND columns from the header tokens.
-        # ps aux layout: USER PID %CPU %MEM ... COMMAND (col2/3/10)
-        # top layout:   PID USER PR NI VIRT RES SHR S %CPU %MEM TIME+ COMMAND (col8/9/11)
+        # Dynamically locate %CPU/%MEM/COMMAND cols from header; ps aux=col2/3/10, top=col8/9/11, tasklist=n/a.
         header_tokens = lines[col_header_idx].split()
         cpu_col: int | None = next(
             (i for i, t in enumerate(header_tokens) if t.upper() == "%CPU"), None
@@ -25399,9 +25397,7 @@ FILTERS: list[Filter] = [
     JsonArrayFilter(),
     BinaryInspectFilter(),
     FileTypeFilter(),
-    # PsFilter handles ps/top/pstree/tasklist process listings; disjoint
-    # binaries from every other filter so position is cosmetic — placed near
-    # the end alongside other system-inspection tools.
+    # PsFilter handles ps/top/pstree/tasklist; disjoint from every other filter so position is cosmetic — placed near end alongside other system-inspection tools.
     PsFilter(),
     # SeverityLogFilter is content-based; placed ahead of TailTruncFilter so it claims structured log streams when invoked via filter_by_name or explicitly.
     SeverityLogFilter(),
