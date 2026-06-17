@@ -13,7 +13,7 @@ permalink: /
 
 **Reduces AI token use/costs by 40–90%, and improves its focus. Fully automated, always online.**
 
-**Guards against prompt injection — web content is scanned and wrapped in an untrusted fence before it reaches the model. Disable with one config line.**
+**Also defends against prompt injection. Every fetched page is scanned for attack patterns and wrapped in an untrusted-content fence before hitting the model. One config line to disable.**
 
 **Your AI re-reads the same file three times. Every compaction causes amnesia. Every build log buries the one line that matters. You pay for all of it. Token-Goat fixes all of it — automatically.**
 
@@ -133,7 +133,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | `kubectl events` lists raw repetitive events | Events grouped by REASON with a per-group count; field-selector hint added to narrow scope |
 | `kubectl describe` floods labels and annotations | Labels/annotations blocks collapsed to line counts; Conditions table kept in full; container resource fields preserved |
 | `npm install` verbose output with sill/http/verb/spinner lines | Verbose timing, sill, http, verb lines suppressed; warn lines beyond first 3 collapsed; braille spinner reify lines dropped |
-| Web page content arrives raw into model context | Content wrapped in untrusted fence; injection patterns flagged and logged by pattern label |
+| Fetched web content lands raw in model context | Scanned for attack patterns, wrapped in an untrusted-content fence; matched pattern name written to the log |
 
 On a per-token API plan, 100K wasted tokens per session runs about $0.30. Five sessions a week is ~$450/year. AI coding cost reduction at that scale comes from fixing the waste, not from using the product less. Token-goat is free. And on subscription plans, it can result in limits feeling 10x higher.
 
