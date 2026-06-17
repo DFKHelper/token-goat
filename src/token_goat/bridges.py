@@ -132,11 +132,6 @@ const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Glob", "Bash", "WebFetch"]);
 
 const _seenSessions = new Set<string>();
 
-function reverseArgMap(tool: string): Record<string, string> {
-  const fwd = ARGS_TO_TG[tool] ?? {};
-  return Object.fromEntries(Object.entries(fwd).map(([cc, tg]) => [tg, cc]));
-}
-
 function callHook(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
   try {
     const r = spawnSync("token-goat", ["hook", event], {
@@ -409,6 +404,10 @@ function reverseArgMap(tool: string): Record<string, string> {
   return Object.fromEntries(Object.entries(fwd).map(([piKey, tgKey]) => [tgKey, piKey]));
 }
 
+function snakeToCamel(s: string): string {
+  return s.replace(/_([a-z])/g, (m) => m[1].toUpperCase());
+}
+
 function toToolInput(tool: string, input: Record<string, unknown>): Record<string, unknown> {
   const argMap = ARGS_TO_TG[tool] ?? {};
   const out: Record<string, unknown> = {};
@@ -465,7 +464,8 @@ export default function (pi: ExtensionAPI) {
     if (updated) {
       const rev = reverseArgMap(event.toolName);
       for (const [tgKey, val] of Object.entries(updated)) {
-        input[rev[tgKey] ?? tgKey] = val;
+        const piKey = rev[tgKey] ?? snakeToCamel(tgKey);
+        input[piKey] = val;
       }
     }
   });
