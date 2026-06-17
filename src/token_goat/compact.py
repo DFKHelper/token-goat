@@ -1794,7 +1794,7 @@ def _group_edited_by_dir(
         else:
             # 3+ files: use grouped format
             # Sort files within the group by edit count descending, maintaining relative order
-            group_sorted = sorted(group, key=lambda x: x[1], reverse=True)
+            group_sorted = sorted(group, key=itemgetter(1), reverse=True)
             file_parts = [f"{basename}{_count_suffix(count)}" for basename, count in group_sorted]
             files_str = ", ".join(file_parts)
 
@@ -5369,7 +5369,7 @@ def _render_most_accessed_section(
     if not candidates:
         return []
 
-    candidates.sort(key=lambda x: x[1], reverse=True)
+    candidates.sort(key=itemgetter(1), reverse=True)
     top_symbols = candidates[:max_entries]
 
     lines: list[str] = ["### Most Accessed"]
