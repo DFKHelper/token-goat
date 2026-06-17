@@ -532,6 +532,28 @@ def _fetch_chunk_metadata(
     return sym_rows, sec_rows, language
 
 
+def _try_add_chunk(
+    rel_path: str,
+    start: int,
+    end: int,
+    lines: list[str],
+    kind: str,
+    chunks: list[Chunk],
+    covered: list[tuple[int, int]] | None = None,
+) -> bool:
+    """Append a Chunk if its text falls within [MIN_CHUNK_CHARS, MAX_CHUNK_CHARS].
+
+    Returns True when appended (and extends covered if provided), False when dropped.
+    """
+    chunk_text = "\n".join(lines[start - 1 : end])
+    if not (MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS):
+        return False
+    chunks.append(Chunk(rel_path, start, end, chunk_text, kind))
+    if covered is not None:
+        covered.append((start, end))
+    return True
+
+
 def extract_chunks_for_file(
     project: Project,
     conn: sqlite3.Connection,
@@ -594,12 +616,8 @@ def extract_chunks_for_file(
         end: int = row["end_line"]
         if end <= start:
             continue
-        chunk_text = "\n".join(lines[start - 1 : end])
-        if not (MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS):
+        if not _try_add_chunk(rel_path, start, end, lines, row["kind"], chunks, covered):
             n_dropped_size += 1
-            continue
-        chunks.append(Chunk(rel_path, start, end, chunk_text, row["kind"]))
-        covered.append((start, end))
 
     # 2) Section-based chunks (markdown / html / liquid)
     for row in sec_rows:
@@ -607,12 +625,8 @@ def extract_chunks_for_file(
         end = row["end_line"]
         if end <= start:
             continue
-        chunk_text = "\n".join(lines[start - 1 : end])
-        if not (MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS):
+        if not _try_add_chunk(rel_path, start, end, lines, "section", chunks, covered):
             n_dropped_size += 1
-            continue
-        chunks.append(Chunk(rel_path, start, end, chunk_text, "section"))
-        covered.append((start, end))
 
     # 3) Sliding-window fallback for uncovered ranges (code files only)
     #
@@ -653,10 +667,7 @@ def extract_chunks_for_file(
             # overlapping windows would produce near-duplicate embeddings that inflate
             # the index without improving recall).
             window_end = min(line_no + WINDOW_LINES - 1, n)
-            chunk_text = "\n".join(lines[line_no - 1 : window_end])
-            if MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS:
-                chunks.append(Chunk(rel_path, line_no, window_end, chunk_text, "window"))
-            else:
+            if not _try_add_chunk(rel_path, line_no, window_end, lines, "window", chunks):
                 n_dropped_size += 1
             line_no = window_end + 1
 
