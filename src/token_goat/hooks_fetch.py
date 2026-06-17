@@ -753,6 +753,18 @@ def post_fetch(payload: HookPayload) -> HookResponse:
     except Exception:  # noqa: BLE001 — fail-soft: stripping must never break caching
         pass
 
+    # Injection protection: scan the first 4 KB for prompt-injection patterns.
+    # Prepend a visible warning to the cached body so every future recall —
+    # web-output, compact, hints — inherits the flag without a re-scan.
+    from .injection import contains_injection  # noqa: PLC0415
+    _INJECTION_WARNING = "[WARNING: this page contains possible prompt injection patterns]\n\n"
+    if contains_injection(body[:4096]):
+        body = _INJECTION_WARNING + body
+        _LOG.warning(
+            "post-fetch: injection pattern detected in fetched content: %s",
+            sanitize_log_str(url, max_len=100),
+        )
+
     body_size = len(body.encode("utf-8", errors="replace"))
 
     from . import config, session, web_cache  # noqa: PLC0415
