@@ -28,7 +28,6 @@ __all__ = [
 ]
 
 import os
-import time
 import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Final, TypedDict, cast
@@ -38,68 +37,24 @@ from .util import get_logger
 
 _LOG = get_logger("config")
 
-# Process-level config cache: (Config, mtime, env_fingerprint, monotonic_ts) or None.
-# The cache is keyed by (config_file_mtime, env_fingerprint) so it invalidates on
-# file edits AND on env-var changes (common in tests that monkeypatch TOKEN_GOAT_*).
-# Type annotation uses Any to avoid forward-referencing Config before it is defined.
-_config_mtime_cache: tuple[Config, float, str, float] | None = None
-
-
-# Env vars that affect the parsed Config result.  Changes to any of these bust
-# the process-level cache even when the TOML file has not changed on disk.
-_CONFIG_ENV_KEYS: tuple[str, ...] = (
-    "TOKEN_GOAT_COMPACT_ASSIST",
-    "TOKENWISE_COMPACT_ASSIST",
-    "TOKEN_GOAT_BASH_COMPRESS",
-    "TOKEN_GOAT_SESSION_BRIEF",
-    "TOKEN_GOAT_SKILL_PRESERVATION",
-    "TOKEN_GOAT_PREFER_AVIF",
-    "TOKEN_GOAT_ORPHAN_SWEEP",
-    "TOKEN_GOAT_CURATOR",
-    "TOKEN_GOAT_HINT_BUDGET",
-    "TOKEN_GOAT_HINT_JSON_SIDECAR",
-    "TOKEN_GOAT_BASH_DEDUP_MIN_BYTES",
-    "TOKEN_GOAT_WEB_DEDUP_MIN_BYTES",
-    "TOKEN_GOAT_GREP_DEDUP_MIN_MATCHES",
-    "TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD",
-    "TOKEN_GOAT_WEB_CACHE_MAX_FILES",
-    "TOKEN_GOAT_WEB_CACHE_MAX_BYTES",
-    "TOKEN_GOAT_WEB_COMPRESS",
-    "TOKEN_GOAT_BASH_CACHE_MIN_BYTES",
-    "TOKEN_GOAT_BASH_CACHE_MAX_FILES",
-    "TOKEN_GOAT_BASH_CACHE_MAX_BYTES",
-    "TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT",
-    "TOKEN_GOAT_WORKER_WATCHDOG",
-    "TOKEN_GOAT_WORKER_MAX_POOL",
-    "TOKEN_GOAT_HOOK_WATCHDOG_MS",
-    "TOKEN_GOAT_COMPRESS_PROFILE",
-    "TOKEN_GOAT_SKILL_COMPRESS",
-    "TOKEN_GOAT_LAZY_SKILL_INJECTION",
-    "TOKEN_GOAT_SERVE_DIFF_ON_REREAD",
-    "TOKEN_GOAT_SESSION_HINT_MIN_BYTES",
-    "TOKEN_GOAT_LARGE_READ_BYTES",
-    "TOKEN_GOAT_OVERFLOW_GUARD",
-    "TOKEN_GOAT_OVERFLOW_MAX_TOKENS",
-    "TOKEN_GOAT_BASELINE_BUDGET_TOKENS",
-)
+# Process-level config cache: (Config, mtime, env_fingerprint) or None.
+# Keyed by (config_file_mtime, env_fingerprint) — invalidates on file edits
+# AND env-var changes (common in tests that monkeypatch TOKEN_GOAT_*).
+_config_mtime_cache: tuple[Config, float, str] | None = None
 
 
 def _config_env_fingerprint() -> str:
-    """Return a short string that encodes the current values of all config env vars.
+    """Return a string encoding all TOKEN_GOAT_* (and TOKENWISE_COMPACT_ASSIST) env var values.
 
     Used as a secondary cache key so that test monkeypatching (or a user exporting
     TOKEN_GOAT_* between hook calls) busts the process-level cache without requiring
-    a file-system change.  The string is constructed by joining ``key=value`` pairs
-    for every config env var that is set; unset vars are omitted.  Collision
-    resistance is not required — correctness only needs the fingerprint to differ
-    when any relevant env var has a different value.
+    a file-system change. Auto-picks up new TOKEN_GOAT_* vars without a static list.
     """
     parts = []
-    for key in _CONFIG_ENV_KEYS:
-        val = os.environ.get(key)
-        if val is not None:
+    for key, val in os.environ.items():
+        if key.startswith("TOKEN_GOAT_") or key == "TOKENWISE_COMPACT_ASSIST":
             parts.append(f"{key}={val}")
-    return "|".join(parts)
+    return "|".join(sorted(parts))
 
 _ENV_COMPACT_ASSIST: Final[str] = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable
 _ENV_COMPACT_ASSIST_LEGACY: Final[str] = "TOKENWISE_COMPACT_ASSIST"  # backward-compat alias
@@ -1555,7 +1510,7 @@ def load() -> Config:
         current_mtime = 0.0
     current_env_fp = _config_env_fingerprint()
     if _config_mtime_cache is not None:
-        cached_cfg, cached_mtime, cached_env_fp, _ = _config_mtime_cache
+        cached_cfg, cached_mtime, cached_env_fp = _config_mtime_cache
         if current_mtime == cached_mtime and current_env_fp == cached_env_fp:
             return cached_cfg
 
@@ -2121,7 +2076,7 @@ def load() -> Config:
         compression=cmp_cfg, context=ctx_cfg, bash_diff=bd_cfg, bash_severity_log=bsl_cfg,
         post_read_code_compress=prc_cfg,
     )
-    _config_mtime_cache = (result, current_mtime, current_env_fp, time.monotonic())
+    _config_mtime_cache = (result, current_mtime, current_env_fp)
     return result
 
 
