@@ -74,6 +74,60 @@ from .util import env_int as _env_int
 from .util import sanitize_surrogates as _sanitize_surrogates
 from .util import utf8_bytes as _utf8_bytes
 
+
+# ============================================================================
+# Predicate Helpers: Cache & File Validation
+# ============================================================================
+# These extract repeated boolean conditions for cache availability, file
+# size gates, modification detection, and fingerprint dedup. Reduces nesting
+# and clarifies intent at call sites.
+
+def _cache_is_available(cache: object) -> bool:
+    """Check if cache object is available and not None."""
+    return cache is not None
+
+
+def _is_file_size_sufficient(file_size: int, min_bytes: int) -> bool:
+    """Check if file size meets threshold (skip hint if too small)."""
+    return min_bytes <= 0 or file_size >= min_bytes
+
+
+def _file_is_modified(
+    disk_mtime_ns: int,
+    disk_size: int,
+    entry_mtime_ns: int | None,
+    entry_size: int,
+) -> bool:
+    """Check if file has been modified since last read.
+
+    Returns True if file was modified (deny re-read); False if unchanged.
+    Requires entry_mtime_ns to be not None (legacy entries skip this gate).
+    """
+    if entry_mtime_ns is None:
+        return False  # legacy entry — fall through to SHA check
+    return disk_mtime_ns != entry_mtime_ns or disk_size != entry_size
+
+
+def _fingerprint_already_seen(cache: object, fingerprint: str) -> bool:
+    """Check if a hint fingerprint has already been emitted (dedup gate)."""
+    try:
+        return cache.has_hint_fingerprint(fingerprint)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _project_is_indexable(file_path: str) -> bool:
+    """Check if file's project exists and is indexed.
+
+    Returns True if find_project succeeds; False otherwise.
+    """
+    try:
+        from .project import find_project  # noqa: PLC0415
+        return find_project(Path(file_path).parent) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 # Environment variable that disables Bash output compression at the hook layer.
 # Recognised values: "0", "false", "no", "off" (case-insensitive).  Any other
 # value (including unset) leaves compression enabled.  Matches the pattern used

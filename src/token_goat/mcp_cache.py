@@ -8,7 +8,6 @@ pre-fetch hook can detect repeat calls and deny them with a cached hint.
 from __future__ import annotations
 
 import json
-import logging
 import re
 import time
 from dataclasses import dataclass
@@ -29,6 +28,7 @@ from .cache_common import (
     store_blob_gz,
     write_sidecar_metadata,
 )
+from .util import get_logger
 
 __all__ = [
     "McpOutputMeta",
@@ -51,7 +51,7 @@ __all__ = [
 # Default eviction cap for the MCP output cache (32 MB).
 MCP_DEFAULT_MAX_TOTAL_BYTES: int = 32 * 1024 * 1024
 
-_LOG = logging.getLogger(__name__)
+_LOG = get_logger("mcp_cache")
 
 # Maximum bytes stored per MCP result blob (2 MB).
 MCP_MAX_CACHE_BYTES: int = 2 * 1024 * 1024

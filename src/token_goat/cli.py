@@ -161,6 +161,27 @@ _OPT_CONTEXT_LINES: int = typer.Option(0, "--context", "-c", help="Extra lines b
 _OPT_SESSION_ID: str | None = typer.Option(None, "--session-id", "-s")  # noqa: B008
 
 
+def _format_path_output(path: Path, json_mode: bool = False) -> str:
+    """Format a path for output, optionally as JSON.
+
+    Handles path resolution and relative-path fallback uniformly across commands.
+    When not in JSON mode, returns the resolved path as a string (absolute);
+    when in JSON mode, returns a JSON object string with path and optional size.
+
+    Args:
+        path:      Path to format (will be resolved).
+        json_mode: When True, return JSON object string ``{"path": "...", "size": N}``.
+                   When False, return bare resolved path string.
+
+    Returns:
+        Formatted path string (either JSON or plain absolute path).
+    """
+    abs_path = path.resolve()
+    if json_mode:
+        return json.dumps({"path": str(abs_path), "size": abs_path.stat().st_size}, separators=(",", ":"))
+    return str(abs_path)
+
+
 def _emit_path_result(path: Path, json_output: bool) -> None:
     """Echo a local file path result, either as JSON or plain text.
 
@@ -173,10 +194,7 @@ def _emit_path_result(path: Path, json_output: bool) -> None:
         json_output: When True, emit ``{"path": "...", "size": N}`` as JSON.
                      When False, emit the bare path string.
     """
-    if json_output:
-        typer.echo(json.dumps({"path": str(path), "size": path.stat().st_size}, separators=(",", ":")))
-    else:
-        typer.echo(str(path))
+    typer.echo(_format_path_output(path, json_mode=json_output))
 
 
 def _validate_session_id(session_id: str) -> None:
@@ -2936,7 +2954,8 @@ def cmd_gdrive_sections(
         return
 
     # Plain-text output: path on line 1, then a compact heading list.
-    typer.echo(str(index.get("path", local_path)))
+    path_to_display = Path(cast(str, index.get("path", local_path)))
+    typer.echo(_format_path_output(path_to_display))
     size_bytes = cast(int, index.get("size_bytes", 0))
     line_count = cast(int, index.get("line_count", 0))
     typer.echo(f"size={size_bytes}B lines={line_count} sections={len(sections)}")
@@ -5129,7 +5148,7 @@ def cmd_compact_doc(
 
     abs_path = Path(path).resolve()
     if not abs_path.exists():
-        _error(f"File not found: {abs_path}")
+        _error(f"File not found: {_format_path_output(abs_path)}")
         raise typer.Exit(1)
     suffix = abs_path.suffix.lower()
     if suffix not in {".md", ".markdown"}:
@@ -5158,7 +5177,7 @@ def cmd_compact_doc(
     try:
         source_text = abs_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
-        _error(f"Cannot read {abs_path}: {exc}")
+        _error(f"Cannot read {_format_path_output(abs_path)}: {exc}")
         raise typer.Exit(1) from exc
 
     body = _dc.build_extractive_compact(source_text, max_sentences=sentences)
@@ -6340,19 +6359,22 @@ def cmd_image_shrink(
     """Manually shrink an image (also used by hooks)."""
     from . import image_shrink  # noqa: PLC0415
 
-    if not src.exists():
-        _error(f"file not found: {src}")
+    abs_src = src.resolve()
+    if not abs_src.exists():
+        _error(f"file not found: {_format_path_output(abs_src)}")
         raise typer.Exit(1)
-    out = image_shrink.shrink(src)
+    out = image_shrink.shrink(abs_src)
     if out is None:
-        typer.echo(f"Not shrunk (below threshold or not an image): {src}")
+        typer.echo(f"Not shrunk (below threshold or not an image): {_format_path_output(abs_src)}")
         raise typer.Exit(0)
-    stats = image_shrink.stats_for(src, out)
+    stats = image_shrink.stats_for(abs_src, out)
     if json_output:
-        typer.echo(json.dumps({"shrunken_path": str(out), **stats}, separators=(",", ":")))
+        typer.echo(json.dumps({"shrunken_path": _format_path_output(out), **stats}, separators=(",", ":")))
     else:
+        src_fmt = _format_path_output(abs_src)
+        out_fmt = _format_path_output(out)
         typer.echo(
-            f"{src} → {out} "
+            f"{src_fmt} → {out_fmt} "
             f"({stats['src_bytes']:,} → {stats['out_bytes']:,} bytes, "
             f"saved {stats['bytes_saved']:,})"
         )
