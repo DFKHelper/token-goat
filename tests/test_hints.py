@@ -835,7 +835,13 @@ class TestCachedStaleEntry:
         sid = "s_edited_exact"
         path = "C:/proj/edited.py"
         # Read lines 1-200, then edit the file — last_edit_ts > last_read_ts.
+        # Backdate last_read_ts so the subsequent mark_file_edited timestamp is
+        # guaranteed strictly greater (avoids a sub-millisecond timing race).
         session.mark_file_read(sid, path, offset=0, limit=200)
+        from token_goat.session import _normalize_path
+        _cache = session.load(sid)
+        _cache.files[_normalize_path(path)].last_read_ts -= 1.0
+        session.save(_cache)
         session.mark_file_edited(sid, path)
 
         hint = build_read_hint(
