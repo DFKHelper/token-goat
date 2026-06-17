@@ -1508,8 +1508,6 @@ def _try_diff_hint(
     )
     from .injection import check_hint_for_injection  # noqa: PLC0415
     hint_str = check_hint_for_injection(str(hint), source=file_path)
-    if hint_str is None:
-        return None
     return pre_tool_use_with_context(hint_str)
 
 
