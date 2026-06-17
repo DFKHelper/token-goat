@@ -152,6 +152,8 @@ def _lazy_import(name: str) -> Any:
 
 #: ``--json`` flag shared by every command that can emit structured output.
 _OPT_JSON: bool = typer.Option(False, "--json", help="Output structured JSON instead of human-readable text.")  # noqa: B008
+#: ``--limit`` / ``-n`` option shared by web-history, bash-history, mcp-history, skill-history.
+_OPT_LIMIT_HISTORY: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)")  # noqa: B008
 
 #: ``--context`` / ``-c`` lines option shared by bash-output and web-output commands.
 _OPT_CONTEXT_LINES: int = typer.Option(0, "--context", "-c", help="Extra lines before/after")  # noqa: B008
@@ -4190,7 +4192,7 @@ def _run_history_listing_command(
 @app.command("web-history", rich_help_panel="Core")
 def cmd_web_history(
     json_output: bool = _OPT_JSON,
-    limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),
+    limit: int = _OPT_LIMIT_HISTORY,
 ) -> None:
     """List cached WebFetch responses, newest first.
 
@@ -4269,7 +4271,7 @@ def cmd_mcp_output(
 @app.command("mcp-history", rich_help_panel="Core")
 def cmd_mcp_history(
     json_output: bool = _OPT_JSON,
-    limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),  # noqa: B008
+    limit: int = _OPT_LIMIT_HISTORY,
 ) -> None:
     """List cached MCP tool results, newest first.
 
@@ -4338,7 +4340,7 @@ def _parse_since_duration(since: str) -> float | None:
 @app.command("bash-history", rich_help_panel="Core")
 def cmd_bash_history(
     json_output: bool = _OPT_JSON,
-    limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),
+    limit: int = _OPT_LIMIT_HISTORY,
     since: str | None = typer.Option(  # noqa: B008
         None,
         "--since",
@@ -5205,7 +5207,7 @@ def cmd_compact_doc(
 @app.command("skill-history", rich_help_panel="Core")
 def cmd_skill_history(
     json_output: bool = _OPT_JSON,
-    limit: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)"),
+    limit: int = _OPT_LIMIT_HISTORY,
 ) -> None:
     """List cached Skill bodies, newest first.
 
