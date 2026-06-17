@@ -2355,6 +2355,7 @@ def detect_installed_harnesses() -> dict[str, bool]:
     - ``gemini``  — detected when ``~/.gemini/`` exists (Gemini CLI stores its config there).
     - ``opencode`` — detected when the opencode plugins dir exists.
     - ``openclaw`` — detected when ``~/.openclaw/`` exists.
+    - ``pi``       — detected when ``~/.pi/`` exists (pi-coding-agent config dir).
     - ``cline``    — detected when the ``cline`` or ``claude-dev`` binary is on PATH or package is importable.
     - ``windsurf`` — detected when ``windsurf`` binary is on PATH or config dir exists.
     - ``copilot-cli`` — detected when ``copilot`` or ``github-copilot-cli`` binary is on PATH.
@@ -2381,9 +2382,11 @@ def detect_installed_harnesses() -> dict[str, bool]:
 
         result["opencode"] = _br.opencode_plugins_dir().parent.exists()
         result["openclaw"] = (Path.home() / ".openclaw").exists()
+        result["pi"] = (Path.home() / ".pi").exists()
     except Exception:  # noqa: BLE001
         result["opencode"] = False
         result["openclaw"] = False
+        result["pi"] = False
 
     # Other harnesses
     result["cline"] = detect_cline()
@@ -2435,6 +2438,7 @@ def check_status() -> dict[str, str]:
     from . import bridges  # noqa: PLC0415
     status["opencode plugin"] = bridges._check_opencode_plugin()
     status["openclaw plugin"] = bridges._check_openclaw_plugin()
+    status["pi plugin"] = bridges._check_pi_plugin()
     return status
 
 
@@ -2585,6 +2589,7 @@ def plan_install(
     install_codex: bool = False,
     install_opencode: bool = False,
     install_openclaw: bool = False,
+    install_pi: bool = False,
     targets: set[str] | None = None,
 ) -> list[_PlanEntry]:
     """Return what :func:`install_all` *would* do, without making any changes.
@@ -2601,11 +2606,12 @@ def plan_install(
     """
     install_gemini = False
     if targets is not None:
-        effective = targets if "all" not in targets else {"claude", "codex", "gemini", "opencode", "openclaw"}
+        effective = targets if "all" not in targets else {"claude", "codex", "gemini", "opencode", "openclaw", "pi"}
         install_codex = "codex" in effective
         install_gemini = "gemini" in effective
         install_opencode = "opencode" in effective
         install_openclaw = "openclaw" in effective
+        install_pi = "pi" in effective
     plan: list[_PlanEntry] = []
 
     # 1. settings.json
@@ -2771,8 +2777,8 @@ def plan_install(
             detail=detail,
         ))
 
-    # 7. optional opencode / openclaw
-    if install_opencode or install_openclaw:
+    # 7. optional opencode / openclaw / pi
+    if install_opencode or install_openclaw or install_pi:
         try:
             from . import bridges  # noqa: PLC0415
         except Exception as e:  # noqa: BLE001
@@ -2796,6 +2802,13 @@ def plan_install(
                 target=str(getattr(bridges, "openclaw_plugin_path", lambda: "<unknown>")()),
                 action="create",
                 detail="would write/refresh TS shim",
+            ))
+        if install_pi and bridges is not None:
+            plan.append(_PlanEntry(
+                component="pi: extension",
+                target=str(getattr(bridges, "pi_plugin_path", lambda: "<unknown>")()),
+                action="create",
+                detail="would write/refresh TS extension",
             ))
 
     return plan
@@ -2952,31 +2965,38 @@ def install_all(
     install_codex: bool = False,
     install_opencode: bool = False,
     install_openclaw: bool = False,
+    install_pi: bool = False,
     targets: set[str] | None = None,
 ) -> dict[str, str]:
     """Run the full install. Returns a dict of step -> result string.
 
     *targets* is an optional set of tool names (``claude``, ``codex``,
-    ``opencode``, ``openclaw``, ``all``).  When provided it overrides the
+    ``opencode``, ``openclaw``, ``pi``, ``all``).  When provided it overrides the
     individual boolean flags: passing ``targets={"codex"}`` is equivalent to
     ``install_codex=True`` with all other booleans at their defaults.
     ``targets={"all"}`` enables every optional integration.
     When *targets* is ``None`` the legacy boolean flags are honoured unchanged.
+
+    The ``pi`` target installs the bridge into the global pi extensions
+    directory (``~/.pi/agent/extensions``).  For a project-local install, call
+    :func:`token_goat.bridges.install_pi_plugin` with a ``target_dir`` directly.
     """
     install_gemini = False
     if targets is not None:
-        effective = targets if "all" not in targets else {"claude", "codex", "gemini", "opencode", "openclaw"}
+        effective = targets if "all" not in targets else {"claude", "codex", "gemini", "opencode", "openclaw", "pi"}
         install_codex = "codex" in effective
         install_gemini = "gemini" in effective
         install_opencode = "opencode" in effective
         install_openclaw = "openclaw" in effective
+        install_pi = "pi" in effective
     t0 = time.monotonic()
     _LOG.info(
-        "install_all: starting (platform=%s codex=%s opencode=%s openclaw=%s targets=%s)",
+        "install_all: starting (platform=%s codex=%s opencode=%s openclaw=%s pi=%s targets=%s)",
         sys.platform,
         install_codex,
         install_opencode,
         install_openclaw,
+        install_pi,
         targets,
     )
     paths.ensure_dirs()
@@ -3037,7 +3057,7 @@ def install_all(
     if install_gemini:
         _run_step(result, "gemini: hooks", patch_gemini_settings)
 
-    if install_opencode or install_openclaw:
+    if install_opencode or install_openclaw or install_pi:
         from . import bridges  # noqa: PLC0415
 
     if install_opencode:
@@ -3045,6 +3065,9 @@ def install_all(
 
     if install_openclaw:
         _run_step(result, "openclaw: plugin", bridges.install_openclaw_plugin)
+
+    if install_pi:
+        _run_step(result, "pi: extension", bridges.install_pi_plugin)
 
     codec_report = probe_image_codecs()
     result["image codecs"] = (
@@ -3162,17 +3185,19 @@ def uninstall_all(
     gemini: bool = False,
     opencode: bool = False,
     openclaw: bool = False,
+    pi: bool = False,
 ) -> dict[str, str]:
     """Reverse install. With purge=True also deletes the data directory."""
     t0 = time.monotonic()
     _LOG.info(
-        "uninstall_all: starting (platform=%s purge=%s codex=%s gemini=%s opencode=%s openclaw=%s)",
+        "uninstall_all: starting (platform=%s purge=%s codex=%s gemini=%s opencode=%s openclaw=%s pi=%s)",
         sys.platform,
         purge,
         codex,
         gemini,
         opencode,
         openclaw,
+        pi,
     )
     result: dict[str, str] = {}
 
@@ -3206,7 +3231,7 @@ def uninstall_all(
     if gemini:
         result["gemini: hooks"] = _ok_fail(True, f"unpatched — {unpatch_gemini_settings()}")
 
-    if opencode or openclaw:
+    if opencode or openclaw or pi:
         from . import bridges  # noqa: PLC0415
 
     if opencode:
@@ -3214,6 +3239,9 @@ def uninstall_all(
 
     if openclaw:
         result["openclaw: plugin"] = bridges.uninstall_openclaw_plugin()
+
+    if pi:
+        result["pi: extension"] = bridges.uninstall_pi_plugin()
 
     failures = [k for k, v in result.items() if v.startswith("FAIL")]
     elapsed_ms = (time.monotonic() - t0) * 1000

@@ -17,7 +17,9 @@ permalink: /
 
 Token-Goat sits silently between your AI and your tools. Re-read a file? It gets a one-line hint and a narrow-slice suggestion instead of the full file again. Grab a screenshot? A 100 KB copy reaches the model instead of 10 MB. Run `pytest`, `npm install`, `docker build`, or `cargo`? The thousands of progress bars and passing-test names are stripped to the failures before the output even reaches the context window. Compact a long session? It gets a clean structured manifest of edited files and key symbols so nothing important is forgotten. Sessions drop 40–90%+ in cost. You change nothing about how you work.
 
-Works with **Claude Code**, **Gemini CLI**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, OpenCode, and OpenClaw.
+Works with **Claude Code**, **Gemini CLI**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, OpenCode, OpenClaw, and **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
+
+> **This fork ([`pi-token-goat`](https://github.com/eSaadster/pi-token-goat))** adds a **pi** integration on top of upstream [token-goat](https://github.com/DFKHelper/token-goat): a TypeScript extension bridges pi's extension events (`tool_call`, `tool_result`, `session_before_compact`, …) into token-goat's hook engine, so bash compression, surgical-read routing, re-read denial, image shrinking, post-edit indexing, and the compaction manifest all work inside pi. See [pi users](#pi-users).
 
 **Ask your AI to install it fully (give it this GitHub link), or install in one command (install UV first if needed):**
 
@@ -290,6 +292,24 @@ token-goat install --openclaw
 
 The `--openclaw` flag patches Claude Code and drops a TypeScript bridge plugin into `~/.openclaw/plugins/` and registers it in `openclaw.json` — one command, no separate base install. Image shrinking, post-edit indexing, and pre-fetch denial work. Session hints and compact assist don't — no context injection point, no compaction event.
 
+### pi users
+
+```
+token-goat install --pi
+```
+
+The `--pi` flag patches Claude Code and drops a TypeScript extension into pi's global extensions directory (`~/.pi/agent/extensions/token-goat.ts`). pi auto-discovers it on the next launch (approve the project-trust prompt the first time). The extension is a normal pi extension — a default-exported factory that subscribes to `session_start`, `tool_call`, `tool_result`, `session_before_compact`, and `session_compact` — and bridges those events into token-goat's `token-goat hook <event>` subprocess protocol.
+
+What works: **bash output compression** (the bash command is rewritten in `tool_call`), **re-read denial** (`tool_call` returns `{ block, reason }` for confirmed re-reads), **image shrinking** and **surgical-read redirects** (args rewritten in place), **post-edit indexing** and **output caching** (`tool_result`), and the **compaction manifest** (captured at `session_before_compact`, re-injected after `session_compact` since pi's compaction replaces rather than appends). Skill-overhead preservation does not apply — pi has no Skill tool; skills are template expansions. To remove: `token-goat uninstall --pi`.
+
+**Project-local install (single project only).** pi also loads extensions from a project's `.pi/extensions/` directory (after the project is trusted). To install for one project without touching the global directory, drop the extension there:
+
+```
+python -c "from token_goat import bridges; from pathlib import Path; bridges.install_pi_plugin(target_dir=Path('.pi/extensions').resolve())"
+```
+
+This writes `.pi/extensions/token-goat.ts` in the current project only. Remove it by deleting that file.
+
 ### Cline, Windsurf, Cursor, Copilot CLI, and other AI tool CLIs
 
 No separate install step needed. Token-goat compresses the terminal output of these tools automatically as soon as they appear on your PATH. Run `token-goat doctor` to confirm they are detected — the "Third-party AI tools" section will show `detected — bash output compression active`.
@@ -439,6 +459,12 @@ Contains the symbol index (`global.db`, per-project `.db` files), session cache,
 |------|------|
 | `~/.openclaw/plugins/token-goat-bridge.ts` | TypeScript bridge plugin. Fires on `before_tool_call` and `after_tool_call`. Covers image shrinking, post-edit indexing, and pre-fetch denial. |
 | `~/.openclaw/openclaw.json` | Plugin entry added under `plugins.entries`. Existing entries preserved. |
+
+**With `--pi`** (pi extension)
+
+| Path | What |
+|------|------|
+| `~/.pi/agent/extensions/token-goat.ts` | TypeScript extension (default-exported `ExtensionAPI` factory). Subscribes to `session_start`, `tool_call`, `tool_result`, `session_before_compact`, and `session_compact`. Covers bash compression, re-read denial, image shrinking, surgical-read redirects, post-edit indexing, output caching, and the compaction manifest. A project-local install writes `<project>/.pi/extensions/token-goat.ts` instead. |
 
 ## Zero maintenance
 
@@ -734,7 +760,7 @@ Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
 token-goat uninstall
 ```
 
-Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, or `--openclaw` to also strip those integrations. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
+Reverses everything in [What gets installed?](#what-gets-installed): the scheduled task or systemd unit, the registry value or `.desktop` or `.plist`, the hook entries in `settings.json`, the `CLAUDE.md` block, the skill directory. Add `--codex`, `--gemini`, `--opencode`, `--openclaw`, or `--pi` to also strip those integrations. Add `--purge` to also delete the data directory (cache, index, models, logs). Nothing else on the system depends on it.
 
 ## About
 

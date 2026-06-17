@@ -137,6 +137,7 @@ def test_detect_installed_harnesses_returns_dict():
         "gemini",
         "opencode",
         "openclaw",
+        "pi",
         "cline",
         "windsurf",
         "copilot-cli",

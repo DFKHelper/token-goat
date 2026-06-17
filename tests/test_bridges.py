@@ -243,6 +243,88 @@ class TestPluginTsSources:
             f"Expected exactly 1 output.context.push call (guarded), found {push_count}"
         )
 
+    # --- pi extension TS source smoke checks ---
+
+    def test_pi_ts_contains_spawnSync(self) -> None:
+        assert "spawnSync" in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_contains_token_goat(self) -> None:
+        assert "token-goat" in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_exports_default_factory(self) -> None:
+        assert "export default function" in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_imports_extension_api(self) -> None:
+        # The factory's single argument is typed against pi's ExtensionAPI.
+        assert "ExtensionAPI" in bridges.PI_EXTENSION_TS
+        assert "@earendil-works/pi-coding-agent" in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_subscribes_session_start(self) -> None:
+        assert 'pi.on("session_start"' in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_subscribes_tool_call(self) -> None:
+        assert 'pi.on("tool_call"' in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_subscribes_tool_result(self) -> None:
+        assert 'pi.on("tool_result"' in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_subscribes_compaction_events(self) -> None:
+        assert 'pi.on("session_before_compact"' in bridges.PI_EXTENSION_TS
+        assert 'pi.on("session_compact"' in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_maps_read_tool(self) -> None:
+        # TS object keys are unquoted: `read: "Read",`
+        assert 'read: "Read"' in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_maps_find_to_glob(self) -> None:
+        # pi's find tool is the glob-equivalent.
+        assert 'find: "Glob"' in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_has_deny_support(self) -> None:
+        assert "block: true" in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_has_updated_input_support(self) -> None:
+        assert "updatedInput" in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_bash_routes_to_post_bash(self) -> None:
+        assert 'Bash: "post-bash"' in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_post_edit_for_write(self) -> None:
+        assert 'Write: "post-edit"' in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_has_post_hook_table(self) -> None:
+        assert "POST_HOOK" in bridges.PI_EXTENSION_TS
+        assert "POST_HOOK[tg]" in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_has_pre_hook_tools_guard(self) -> None:
+        assert "PRE_HOOK_TOOLS" in bridges.PI_EXTENSION_TS
+        assert "PRE_HOOK_TOOLS.has(tg)" in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_pre_hook_tools_excludes_edit(self) -> None:
+        match = re.search(r'const PRE_HOOK_TOOLS = new Set\(\[([^\]]+)\]\)', bridges.PI_EXTENSION_TS)
+        assert match, "PRE_HOOK_TOOLS Set literal not found in PI_EXTENSION_TS"
+        members = match.group(1)
+        assert '"Edit"' not in members
+        assert '"Write"' not in members
+        assert '"Read"' in members
+        assert '"Bash"' in members
+
+    def test_pi_ts_callhook_checks_r_error(self) -> None:
+        assert "r.error" in bridges.PI_EXTENSION_TS
+
+    def test_pi_ts_callhook_error_before_stdout(self) -> None:
+        pts = bridges.PI_EXTENSION_TS
+        error_pos = pts.find("r.error")
+        stdout_pos = pts.find("r.stdout")
+        assert error_pos != -1 and stdout_pos != -1
+        assert error_pos < stdout_pos, "r.error check must precede r.stdout access"
+
+    def test_pi_ts_no_backslash_escapes(self) -> None:
+        # The TS is embedded in a plain (non-raw) Python triple-quoted string.
+        # Backslashes would risk invalid-escape SyntaxWarnings and corrupted
+        # regex, so the source must avoid them entirely.
+        assert "\\" not in bridges.PI_EXTENSION_TS
+
 
 # ---------------------------------------------------------------------------
 # Bridge TS event-table alignment with hook_registry
@@ -293,27 +375,40 @@ class TestBridgeEventRegistryAlignment:
             f"Canonical events: {sorted(canonical)}"
         )
 
+    def test_pi_events_all_registered(self) -> None:
+        canonical = set(hook_registry.all_events())
+        bridge_events = _extract_bridge_events(bridges.PI_EXTENSION_TS)
+        assert bridge_events, "regex found no event names in PI_EXTENSION_TS — pattern may need update"
+        unknown = bridge_events - canonical
+        assert not unknown, (
+            f"PI_EXTENSION_TS references event(s) not in hook_registry: {sorted(unknown)}\n"
+            f"Canonical events: {sorted(canonical)}"
+        )
+
     def test_combined_bridge_events_cover_common_subset(self) -> None:
         """Each bridge must reference the core events appropriate for its harness.
 
-        opencode has compaction support (experimental.session.compacting), so it
-        must include pre-compact.  openclaw has no compaction API, so pre-compact
-        is intentionally absent there.
+        opencode and pi have compaction support, so they must include
+        pre-compact.  openclaw has no compaction API, so pre-compact is
+        intentionally absent there.
         """
         # Events required in both bridges (common integration surface)
         shared_core = {"session-start", "pre-read", "pre-fetch", "post-edit", "post-bash"}
         # Events only required where the harness supports them
-        opencode_only = {"pre-compact"}
+        compaction_bridges = {"pre-compact"}
 
         opencode_events = _extract_bridge_events(bridges.OPENCODE_PLUGIN_TS)
         openclaw_events = _extract_bridge_events(bridges.OPENCLAW_PLUGIN_TS)
+        pi_events = _extract_bridge_events(bridges.PI_EXTENSION_TS)
 
         for event in shared_core:
             assert event in opencode_events, f"shared core event '{event}' missing from OPENCODE_PLUGIN_TS"
             assert event in openclaw_events, f"shared core event '{event}' missing from OPENCLAW_PLUGIN_TS"
+            assert event in pi_events, f"shared core event '{event}' missing from PI_EXTENSION_TS"
 
-        for event in opencode_only:
-            assert event in opencode_events, f"opencode-only event '{event}' missing from OPENCODE_PLUGIN_TS"
+        for event in compaction_bridges:
+            assert event in opencode_events, f"compaction event '{event}' missing from OPENCODE_PLUGIN_TS"
+            assert event in pi_events, f"compaction event '{event}' missing from PI_EXTENSION_TS"
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +486,19 @@ class TestPathHelpers:
     def test_openclaw_config_path(self) -> None:
         result = bridges.openclaw_config_path()
         assert result == Path.home() / ".openclaw" / "openclaw.json"
+
+    def test_pi_extensions_dir(self) -> None:
+        result = bridges.pi_extensions_dir()
+        assert result == Path.home() / ".pi" / "agent" / "extensions"
+
+    def test_pi_plugin_path_default(self) -> None:
+        result = bridges.pi_plugin_path()
+        assert result == bridges.pi_extensions_dir() / bridges._PI_FILENAME
+
+    def test_pi_plugin_path_target_dir(self, tmp_path: Path) -> None:
+        target = tmp_path / "proj" / ".pi" / "extensions"
+        result = bridges.pi_plugin_path(target)
+        assert result == target / bridges._PI_FILENAME
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +738,94 @@ class TestOpenclawPlugin:
 
 
 # ---------------------------------------------------------------------------
+# Pi install / uninstall / check
+# ---------------------------------------------------------------------------
+
+
+class TestPiPlugin:
+    def test_install_writes_file(self, tmp_path: Path) -> None:
+        with patch.object(bridges, "pi_extensions_dir", return_value=tmp_path / "extensions"):
+            path_str = bridges.install_pi_plugin()
+        written = Path(path_str)
+        assert written.exists()
+        assert written.read_text(encoding="utf-8") == bridges.PI_EXTENSION_TS
+
+    def test_install_creates_parent_dirs(self, tmp_path: Path) -> None:
+        nested = tmp_path / "a" / "b" / "extensions"
+        with patch.object(bridges, "pi_extensions_dir", return_value=nested):
+            bridges.install_pi_plugin()
+        assert nested.exists()
+
+    def test_install_returns_path_string(self, tmp_path: Path) -> None:
+        with patch.object(bridges, "pi_extensions_dir", return_value=tmp_path):
+            result = bridges.install_pi_plugin()
+        assert isinstance(result, str)
+        assert "token-goat.ts" in result
+
+    def test_install_target_dir_overrides_global(self, tmp_path: Path) -> None:
+        # Project-local install: target_dir wins over pi_extensions_dir().
+        proj = tmp_path / "proj" / ".pi" / "extensions"
+        global_dir = tmp_path / "global"
+        with patch.object(bridges, "pi_extensions_dir", return_value=global_dir):
+            path_str = bridges.install_pi_plugin(target_dir=proj)
+        assert Path(path_str) == proj / bridges._PI_FILENAME
+        assert (proj / bridges._PI_FILENAME).exists()
+        assert not global_dir.exists()
+
+    def test_install_is_idempotent(self, tmp_path: Path) -> None:
+        with patch.object(bridges, "pi_extensions_dir", return_value=tmp_path):
+            bridges.install_pi_plugin()
+            bridges.install_pi_plugin()
+        assert (tmp_path / bridges._PI_FILENAME).exists()
+
+    def test_uninstall_removes_file(self, tmp_path: Path) -> None:
+        plugin_path = tmp_path / bridges._PI_FILENAME
+        _write_fake_plugin(plugin_path, bridges.PI_EXTENSION_TS)
+        with patch.object(bridges, "pi_extensions_dir", return_value=tmp_path):
+            result = bridges.uninstall_pi_plugin()
+        assert not plugin_path.exists()
+        assert "removed" in result
+
+    def test_uninstall_target_dir(self, tmp_path: Path) -> None:
+        proj = tmp_path / "proj" / ".pi" / "extensions"
+        bridges.install_pi_plugin(target_dir=proj)
+        result = bridges.uninstall_pi_plugin(target_dir=proj)
+        assert "removed" in result
+        assert not (proj / bridges._PI_FILENAME).exists()
+
+    def test_uninstall_not_found(self, tmp_path: Path) -> None:
+        with patch.object(bridges, "pi_extensions_dir", return_value=tmp_path):
+            result = bridges.uninstall_pi_plugin()
+        assert result == "not found"
+
+    def test_check_not_installed(self, tmp_path: Path) -> None:
+        with patch.object(bridges, "pi_extensions_dir", return_value=tmp_path):
+            result = bridges._check_pi_plugin()
+        assert result == "not installed"
+
+    def test_check_installed(self, tmp_path: Path) -> None:
+        plugin_path = tmp_path / bridges._PI_FILENAME
+        _write_fake_plugin(plugin_path, bridges.PI_EXTENSION_TS)
+        with patch.object(bridges, "pi_extensions_dir", return_value=tmp_path):
+            result = bridges._check_pi_plugin()
+        assert result == "installed"
+
+    def test_check_foreign_file(self, tmp_path: Path) -> None:
+        plugin_path = tmp_path / bridges._PI_FILENAME
+        _write_fake_plugin(plugin_path, "// some other extension")
+        with patch.object(bridges, "pi_extensions_dir", return_value=tmp_path):
+            result = bridges._check_pi_plugin()
+        assert "not token-goat bridge" in result
+
+    def test_check_after_install_uninstall(self, tmp_path: Path) -> None:
+        with patch.object(bridges, "pi_extensions_dir", return_value=tmp_path):
+            bridges.install_pi_plugin()
+            assert bridges._check_pi_plugin() == "installed"
+            bridges.uninstall_pi_plugin()
+            assert bridges._check_pi_plugin() == "not installed"
+
+
+# ---------------------------------------------------------------------------
 # install.py integration: check_status, install_all, uninstall_all
 # ---------------------------------------------------------------------------
 
@@ -658,6 +854,97 @@ class TestInstallIntegration:
         ):
             status = install.check_status()
         assert "openclaw plugin" in status
+
+    def test_check_status_includes_pi(self) -> None:
+        from token_goat import install
+
+        with (
+            patch.object(install, "_check_codex_config", return_value="not installed"),
+            patch.object(bridges, "_check_opencode_plugin", return_value="not installed"),
+            patch.object(bridges, "_check_openclaw_plugin", return_value="not installed"),
+            patch.object(bridges, "_check_pi_plugin", return_value="not installed"),
+        ):
+            status = install.check_status()
+        assert "pi plugin" in status
+
+    def test_install_all_pi_called_when_flag_set(self) -> None:
+        from token_goat import install
+
+        with (
+            patch.object(bridges, "install_pi_plugin", return_value="/fake/path") as mock_install,
+            patch.object(install, "patch_settings_json", return_value=(True, "ok")),
+            patch.object(install, "patch_claude_md", return_value="ok"),
+            patch.object(install, "write_skill", return_value="ok"),
+            patch.object(install, "_remove_legacy_launchers", return_value=[]),
+            patch("token_goat.worker.ensure_running", return_value=0),
+            _patch_platform_installs(install),
+        ):
+            result = install.install_all(install_pi=True)
+        mock_install.assert_called_once()
+        assert "pi: extension" in result
+        assert "ok" in result["pi: extension"]
+
+    def test_install_all_pi_via_target(self) -> None:
+        from token_goat import install
+
+        with (
+            patch.object(bridges, "install_pi_plugin", return_value="/fake/path") as mock_install,
+            patch.object(install, "patch_settings_json", return_value=(True, "ok")),
+            patch.object(install, "patch_claude_md", return_value="ok"),
+            patch.object(install, "write_skill", return_value="ok"),
+            patch.object(install, "_remove_legacy_launchers", return_value=[]),
+            patch("token_goat.worker.ensure_running", return_value=0),
+            _patch_platform_installs(install),
+        ):
+            result = install.install_all(targets={"pi"})
+        mock_install.assert_called_once()
+        assert "pi: extension" in result
+
+    def test_install_all_pi_not_called_without_flag(self) -> None:
+        from token_goat import install
+
+        with (
+            patch.object(bridges, "install_pi_plugin") as mock_pi,
+            patch.object(install, "patch_settings_json", return_value=(True, "ok")),
+            patch.object(install, "patch_claude_md", return_value="ok"),
+            patch.object(install, "write_skill", return_value="ok"),
+            patch.object(install, "_remove_legacy_launchers", return_value=[]),
+            patch("token_goat.worker.ensure_running", return_value=0),
+            _patch_platform_installs(install),
+        ):
+            install.install_all()
+        mock_pi.assert_not_called()
+
+    def test_uninstall_all_pi_called_when_flag_set(self) -> None:
+        from token_goat import install
+
+        with (
+            patch.object(bridges, "uninstall_pi_plugin", return_value="removed") as mock_un,
+            patch.object(install, "_stop_worker", return_value="stopped"),
+            patch.object(install, "unpatch_settings_json", return_value="ok"),
+            patch.object(install, "unpatch_claude_md", return_value="ok"),
+            patch.object(install, "remove_skill", return_value="ok"),
+            patch.object(install, "_remove_legacy_launchers", return_value=[]),
+            _patch_platform_uninstalls(install),
+        ):
+            result = install.uninstall_all(pi=True)
+        mock_un.assert_called_once()
+        assert "pi: extension" in result
+
+    def test_install_all_pi_fail_soft(self) -> None:
+        from token_goat import install
+
+        with (
+            patch.object(bridges, "install_pi_plugin", side_effect=RuntimeError("disk full")),
+            patch.object(install, "patch_settings_json", return_value=(True, "ok")),
+            patch.object(install, "patch_claude_md", return_value="ok"),
+            patch.object(install, "write_skill", return_value="ok"),
+            patch.object(install, "_remove_legacy_launchers", return_value=[]),
+            patch("token_goat.worker.ensure_running", return_value=0),
+            _patch_platform_installs(install),
+        ):
+            result = install.install_all(install_pi=True)
+        assert "FAIL" in result["pi: extension"]
 
     def test_install_all_opencode_called_when_flag_set(self) -> None:
         from token_goat import install
