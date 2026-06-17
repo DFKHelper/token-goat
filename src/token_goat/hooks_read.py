@@ -1857,12 +1857,12 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
     if not _cache_is_available(cache):
         return None
 
-    _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
+    _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}  # type: ignore[union-attr]
 
     # --- single-file path ---------------------------------------------------
     _written_key = session._normalize_path(path)  # type: ignore[attr-defined]  # private function on lazy-loaded session module (types.ModuleType has no typed attrs)
     _edit_count = _edited.get(_written_key, 0)
-    if _edit_count >= 1 and _written_key not in cache.files:
+    if _edit_count >= 1 and _written_key not in cache.files:  # type: ignore[union-attr]
         fname = sanitize_log_str(Path(path).name, max_len=256)
         hint_text = (
             f"Note: `{fname}` was written {_edit_count}x this session and not yet read back. "
@@ -1886,7 +1886,7 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
     _dir_prefix = _dir_key if _dir_key.endswith("/") else _dir_key + "/"
     _dir_matches = [
         (p, c) for p, c in _edited.items()
-        if p.startswith(_dir_prefix) and p not in cache.files and c >= 1
+        if p.startswith(_dir_prefix) and p not in cache.files and c >= 1  # type: ignore[union-attr]
     ]
     if not _dir_matches:
         return None
