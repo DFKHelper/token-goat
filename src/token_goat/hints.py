@@ -1570,6 +1570,19 @@ def _get_go_module_prefix(project_hash: str) -> str | None:
         return None
 
 
+def _should_include_in_unread(cache: session.SessionCache | None, rel_path: str) -> bool:
+    """Determine if a matched file should be included in the unread list.
+
+    Returns ``True`` when the file is a candidate for co-read suggestions:
+    - cache is None (no session cache available, so we include everything), OR
+    - the file is not in cache.files (not yet read in this session).
+
+    Returns ``False`` if the cache is available and the file has already been
+    read in this session, suppressing duplicate suggestions.
+    """
+    return not cache or rel_path not in cache.files
+
+
 def _resolve_ts_candidates(target: str, importing_rel: str) -> list[str]:
     """Resolve a relative TS/JS import target to candidate rel_path strings.
 
@@ -1629,7 +1642,7 @@ def _get_unread_coread_files_py(
             ).fetchone()
             if row:
                 matched_rel = row[0]
-                if not cache or matched_rel not in cache.files:
+                if _should_include_in_unread(cache, matched_rel):
                     unread.append((matched_rel, module_name))
                 break
         if len(unread) >= 3:
@@ -1675,7 +1688,7 @@ def _get_unread_coread_files_ts(
             if row:
                 matched_rel = row[0]
                 display_name = Path(matched_rel).name
-                if not cache or matched_rel not in cache.files:
+                if _should_include_in_unread(cache, matched_rel):
                     unread.append((matched_rel, display_name))
                 break
         if len(unread) >= 3:
@@ -1725,7 +1738,7 @@ def _get_unread_coread_files_go(
         if row:
             matched_rel = row[0]
             display_name = pkg_dir.split("/")[-1]  # just the package name
-            if not cache or matched_rel not in cache.files:
+            if _should_include_in_unread(cache, matched_rel):
                 unread.append((matched_rel, display_name))
         if len(unread) >= 3:
             break

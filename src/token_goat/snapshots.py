@@ -170,6 +170,46 @@ def _kind_sidecar_path(snapshot_p: Path) -> Path:
     return snapshot_p.with_suffix(snapshot_p.suffix + ".kind")
 
 
+def _read_snapshot_kind(sidecar_path: Path) -> str | None:
+    """Read and validate the snapshot kind from a sidecar file.
+
+    Returns one of the values in :data:`_VALID_KINDS`, or ``None`` when the
+    sidecar does not exist, cannot be read, or contains an invalid kind.
+    Never raises — any I/O error returns ``None`` so callers are not blocked.
+    """
+    if not sidecar_path.exists():
+        return None
+    try:
+        with sidecar_path.open("rb") as fh:
+            raw = fh.read(32)
+    except OSError:
+        return None
+    try:
+        text = raw.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    return text if text in _VALID_KINDS else None
+
+
+def _write_snapshot_kind(sidecar_path: Path, kind: str, file_path_for_log: str) -> bool:
+    """Write the snapshot kind to a sidecar file atomically.
+
+    Returns True on success, False on I/O error. Logs at debug level on failure;
+    the snapshot itself remains valid even if the sidecar write fails (degrades
+    gracefully to unknown kind).
+    """
+    safe_kind = kind if kind in _VALID_KINDS else _KIND_READ
+    try:
+        paths.atomic_write_bytes(sidecar_path, safe_kind.encode("ascii"))
+        return True
+    except OSError as exc:
+        _LOG.debug(
+            "snapshots: kind sidecar write failed for %s: %s",
+            sanitize_log_str(file_path_for_log), exc,
+        )
+        return False
+
+
 def _evict_oldest(d: Path, max_count: int) -> int:
     """Drop the oldest snapshots in *d* until at most *max_count* remain.
 
@@ -274,7 +314,6 @@ def store(
     if p is None:
         return None
     sha = hashlib.sha256(content).hexdigest()
-    safe_kind = kind if kind in _VALID_KINDS else _KIND_READ
 
     # Content-hash dedup: skip the disk write when the existing snapshot is
     # byte-for-byte identical.  Common when a file is re-read without edits
@@ -300,13 +339,7 @@ def store(
         # still valid, the diff hint just won't recognise this as a
         # predictive hit (degrades gracefully to the original behaviour).
         sidecar = _kind_sidecar_path(p)
-        try:
-            paths.atomic_write_bytes(sidecar, safe_kind.encode("ascii"))
-        except OSError as exc:
-            _LOG.debug(
-                "snapshots: kind sidecar write failed for %s: %s",
-                sanitize_log_str(file_path), exc,
-            )
+        _write_snapshot_kind(sidecar, kind, file_path)
         return SnapshotResult(path=p, content_sha=sha, size_bytes=len(content))
     return None
 
@@ -326,20 +359,7 @@ def load_kind(session_id: str, file_path: str) -> str | None:
     if p is None:
         return None
     sidecar = _kind_sidecar_path(p)
-    if not sidecar.exists():
-        return None
-    try:
-        # Sidecar is at most a short ASCII word; cap the read to 32 bytes so
-        # a planted oversize sidecar cannot waste memory on a bogus payload.
-        with sidecar.open("rb") as fh:
-            raw = fh.read(32)
-    except OSError:
-        return None
-    try:
-        text = raw.decode("ascii").strip()
-    except UnicodeDecodeError:
-        return None
-    return text if text in _VALID_KINDS else None
+    return _read_snapshot_kind(sidecar)
 
 
 def load(

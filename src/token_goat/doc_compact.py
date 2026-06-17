@@ -26,15 +26,16 @@ Staleness: when the source file is edited the worker calls mark_compact_stale(),
 from __future__ import annotations
 
 import hashlib
-import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .util import get_logger
+
 if TYPE_CHECKING:
     pass
 
-_LOG = logging.getLogger(__name__)
+_LOG = get_logger("doc_compact")
 
 # Maximum heading preview items in section-map hints.
 _SECTION_MAP_MAX = 10
