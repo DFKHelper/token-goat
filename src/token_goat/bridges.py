@@ -132,6 +132,11 @@ const PRE_HOOK_TOOLS = new Set(["Read", "Grep", "Glob", "Bash", "WebFetch"]);
 
 const _seenSessions = new Set<string>();
 
+function reverseArgMap(tool: string): Record<string, string> {
+  const fwd = ARGS_TO_TG[tool] ?? {};
+  return Object.fromEntries(Object.entries(fwd).map(([ccKey, tgKey]) => [tgKey, ccKey]));
+}
+
 function callHook(event: string, payload: Record<string, unknown>): Record<string, unknown> | null {
   try {
     const r = spawnSync("token-goat", ["hook", event], {
