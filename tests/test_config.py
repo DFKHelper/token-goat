@@ -87,8 +87,8 @@ class TestConfigMtimeCache:
         cfg_mod.save(c1)
         assert cfg_mod._config_mtime_cache is None, "save() must clear _config_mtime_cache"
 
-    def test_cache_tuple_has_four_fields(self, tmp_path, monkeypatch):
-        """Cache entry is (Config, mtime_float, env_fingerprint_str, monotonic_float)."""
+    def test_cache_tuple_has_three_fields(self, tmp_path, monkeypatch):
+        """Cache entry is (Config, mtime_float, env_fingerprint_str)."""
         import token_goat.config as cfg_mod
         import token_goat.paths as paths_mod
 
@@ -97,12 +97,10 @@ class TestConfigMtimeCache:
 
         cfg_mod.load()
         assert cfg_mod._config_mtime_cache is not None
-        assert len(cfg_mod._config_mtime_cache) == 4
-        cfg_obj, mtime_val, env_fp, mono_val = cfg_mod._config_mtime_cache
+        assert len(cfg_mod._config_mtime_cache) == 3
+        cfg_obj, mtime_val, env_fp = cfg_mod._config_mtime_cache
         assert isinstance(mtime_val, float)
         assert isinstance(env_fp, str)
-        assert isinstance(mono_val, float)
-        assert mono_val > 0
 
 
 class TestConfigUnknownSectionWarning:
