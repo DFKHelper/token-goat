@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **pi-coding-agent extension bridge.** `token-goat install --pi` writes a TypeScript extension to `~/.pi/agent/extensions/token-goat.ts` that bridges pi's extension events (`session_start`, `tool_call`, `tool_result`, `session_before_compact`, `session_compact`) to token-goat's subprocess hook protocol. Read/grep/glob/bash/fetch tool calls fire pre- and post-hooks; arg names are remapped between pi's camelCase API and token-goat's snake_case wire format. Compaction is handled via pi's replace-only model: the token-goat manifest is captured at `session_before_compact` and injected as a `nextTurn` message after `session_compact` so it survives into the new context window. `token-goat uninstall --pi` removes the extension. Project-local installs are supported by passing a `target_dir` directly to `token_goat.bridges.install_pi_plugin`. Original implementation by [@eSaadster](https://github.com/eSaadster).
+
 ## [1.9.0] - 2026-06-16
 
 ### Added
