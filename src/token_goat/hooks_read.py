@@ -1506,8 +1506,12 @@ def _try_diff_hint(
         "pre-read: diff-hint injected for %s (tokens_saved=%d)",
         sanitize_log_str(file_path), hint.tokens_saved,
     )
+    from . import config as _cfg_inj  # noqa: PLC0415
     from .injection import check_hint_for_injection  # noqa: PLC0415
-    hint_str = check_hint_for_injection(str(hint), source=file_path)
+    if _cfg_inj.load().injection.enabled:
+        hint_str = check_hint_for_injection(str(hint), source=file_path)
+    else:
+        hint_str = str(hint)
     return pre_tool_use_with_context(hint_str)
 
 

@@ -13,6 +13,7 @@ __all__ = [
     "HintsConfig",
     "HooksConfig",
     "ImageShrinkConfig",
+    "InjectionConfig",
     "IndexingConfig",
     "OverflowGuardConfig",
     "RepomapConfig",
@@ -135,6 +136,7 @@ _KNOWN_SECTIONS: Final[frozenset[str]] = frozenset([
     "context",
     "bash_diff",
     "bash_severity_log",
+    "injection",
 ])
 
 
@@ -179,6 +181,20 @@ def _env_int(env_key: str, default: int, lo: int, hi: int, config_path: str) -> 
     except (TypeError, ValueError):
         _LOG.warning("%s env override invalid (not an int): %s; using default %d", config_path, env_val, default)
         return default
+
+
+def _env_bool(env_key: str, default: bool) -> bool:
+    """Read a boolean from an environment variable.
+
+    Accepts 1/true/yes (case-insensitive) as True, 0/false/no as False.
+    Returns *default* when the variable is unset or has an unrecognised value.
+    """
+    val = os.environ.get(env_key, "").strip().lower()
+    if val in ("1", "true", "yes"):
+        return True
+    if val in ("0", "false", "no"):
+        return False
+    return default
 
 
 class _CompactAssistToml(TypedDict, total=False):
@@ -351,6 +367,12 @@ class _OverflowGuardToml(TypedDict, total=False):
     max_tokens: int
 
 
+class _InjectionToml(TypedDict, total=False):
+    """Expected shape of the [injection] TOML section."""
+
+    enabled: bool
+
+
 class _ConfigToml(TypedDict, total=False):
     """Expected shape of the token-goat config TOML file."""
 
@@ -371,6 +393,7 @@ class _ConfigToml(TypedDict, total=False):
     indexing: _IndexingToml
     compression: _CompressionToml
     overflow_guard: _OverflowGuardToml
+    injection: _InjectionToml
     context: _ContextToml
 
 
@@ -1241,6 +1264,22 @@ class ContextConfig:
 
 
 @dataclass
+class InjectionConfig:
+    """Configuration for prompt injection and exfiltration detection.
+
+    Attributes:
+        enabled: When ``True`` (default), fetched web content is scanned for
+            injection/exfiltration patterns, warning banners are prepended when
+            patterns are found, and all content is wrapped in untrusted-content
+            fences.  File hints are scanned and exfiltration matches are
+            redacted.  Set to ``False`` to disable all injection protection.
+            Override with the ``TOKEN_GOAT_INJECTION_ENABLED`` env var.
+    """
+
+    enabled: bool = True
+
+
+@dataclass
 class Config:
     """Top-level token-goat configuration.
 
@@ -1269,6 +1308,7 @@ class Config:
     bash_diff: BashDiffConfig = field(default_factory=BashDiffConfig)
     bash_severity_log: SeverityLogConfig = field(default_factory=SeverityLogConfig)
     post_read_code_compress: CodeCompressConfig = field(default_factory=CodeCompressConfig)
+    injection: InjectionConfig = field(default_factory=InjectionConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -2017,6 +2057,11 @@ def load() -> Config:
     prc_cfg = CodeCompressConfig(
         min_lines=_validated_int(prc_raw.get("min_lines", 200), 200, 1, 100_000, "post_read.code_compress.min_lines"),
     )
+    inj_raw: _InjectionToml = cast("_InjectionToml", raw.get("injection", {}))
+    inj_cfg = InjectionConfig(
+        enabled=_validated_bool(inj_raw.get("enabled", True), True, "injection.enabled"),
+    )
+    inj_cfg.enabled = _env_bool("TOKEN_GOAT_INJECTION_ENABLED", inj_cfg.enabled)
 
     _LOG.debug(
         "config resolved: compact_assist enabled=%s triggers=%s min_events=%d max_tokens=%d; "
@@ -2074,7 +2119,7 @@ def load() -> Config:
         stats=stats,
         hints=hints_cfg, hooks=hk, webfetch=wf_cfg, worker=wk, indexing=idx_cfg,
         compression=cmp_cfg, context=ctx_cfg, bash_diff=bd_cfg, bash_severity_log=bsl_cfg,
-        post_read_code_compress=prc_cfg,
+        post_read_code_compress=prc_cfg, injection=inj_cfg,
     )
     _config_mtime_cache = (result, current_mtime, current_env_fp)
     return result
@@ -2192,6 +2237,9 @@ def save(config: Config) -> None:
         },
         "compression": {
             "profile": config.compression.profile,
+        },
+        "injection": {
+            "enabled": config.injection.enabled,
         },
     }
     try:
