@@ -2471,40 +2471,6 @@ def _record_dedup_stale(kind: str, detail: str) -> None:
         )
 
 
-def _failsoft_dedup_hint(
-    fn: Callable[[], ReadHint | None],
-    *,
-    caller: str,
-    session_id: str,
-) -> ReadHint | None:
-    """Invoke *fn* and return its result, suppressing any exception.
-
-    All three dedup hint builders (bash, grep, web) share the same fail-soft
-    contract: if the inner implementation raises unexpectedly, the exception
-    is logged at WARNING level and ``None`` is returned so the pre-tool hook
-    continues unchanged.  This helper centralises that boilerplate — the only
-    per-caller variation is the *caller* label used in the warning message.
-
-    Args:
-        fn:         Zero-argument callable wrapping the inner hint builder with
-                    all its keyword arguments already bound (typically a lambda
-                    or :func:`functools.partial`).
-        caller:     Short name used in the warning log, e.g. ``"build_bash_dedup_hint"``.
-        session_id: Used in the warning log to help correlate the error to a session.
-
-    Returns:
-        The hint returned by *fn*, or ``None`` on any exception.
-    """
-    try:
-        return fn()
-    except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-tool hook path
-        _LOG.warning(
-            "%s: unexpected error (session=%s): %s",
-            caller, (session_id or "")[:16], exc, exc_info=True,
-        )
-        return None
-
-
 def _check_dedup_preconditions(
     *,
     session_id: str,
