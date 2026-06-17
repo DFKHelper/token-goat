@@ -4,7 +4,17 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-06-17
+
 ### Added
+
+- **Prompt injection and exfiltration protection for web content.** `hooks_fetch.py` now runs `flag_external_content()` on every fetched page (head + tail window scan) before caching. When an injection or exfiltration pattern is detected, a labelled warning prefix is prepended to the cached body so every future recall inherits the flag without a re-scan. All fetched content is wrapped in an `=== BEGIN/END UNTRUSTED WEB CONTENT ===` fence so the model always knows its provenance. Logging names the matched pattern label (`ignore-all-instructions`, `exfil-api-key`, etc.).
+
+- **Eight injection-detection improvements in `injection.py`.** NFKC normalisation + invisible-char stripping on a detection-only copy; Unicode Tag-block (U+E0000–E007F) detection as a smuggling signal; `_SEP = [\s\W]{1,4}` bounded separator that handles markdown bold and punctuation without bridging across words; named `(label, pattern)` tuples for per-match telemetry; `_classify()` returning a 3-tuple `(inj, exf, label)`; `flag_external_content()` with head+tail windowing; `wrap_external_content()` for the deterministic fence; and a precision-first `check_hint_for_injection()` that redacts only the matched span (never prepends a multi-line banner) and checks only exfil + Tag-block in hint text.
+
+- **New exfiltration-to-URL pattern.** Catches `send/post/exfiltrate secrets … to https://…` and `… to webhook` phrases.
+
+- **`InjectionConfig` config toggle.** `[injection] enabled = false` in config TOML or `TOKEN_GOAT_INJECTION_ENABLED=0` env var disables all injection scanning. Default: enabled.
 
 - **pi-coding-agent extension bridge.** `token-goat install --pi` writes a TypeScript extension to `~/.pi/agent/extensions/token-goat.ts` that bridges pi's extension events (`session_start`, `tool_call`, `tool_result`, `session_before_compact`, `session_compact`) to token-goat's subprocess hook protocol. Read/grep/glob/bash/fetch tool calls fire pre- and post-hooks; arg names are remapped between pi's camelCase API and token-goat's snake_case wire format. Compaction is handled via pi's replace-only model: the token-goat manifest is captured at `session_before_compact` and injected as a `nextTurn` message after `session_compact` so it survives into the new context window. `token-goat uninstall --pi` removes the extension. Project-local installs are supported by passing a `target_dir` directly to `token_goat.bridges.install_pi_plugin`. Original implementation by [@eSaadster](https://github.com/eSaadster).
 
