@@ -1950,12 +1950,7 @@ class Filter(BaseFilter):
                     norm_bytes,
                     100 * (1 - norm_bytes / original_bytes),
                 )
-                body = "\n".join(dedupe_consecutive(norm_out.split("\n")))
-                if norm_err.strip():
-                    body = (
-                        body.rstrip() + "\n---\n"
-                        + "\n".join(dedupe_consecutive(norm_err.split("\n"))).rstrip()
-                    )
+                body = _compress_bash_output(norm_out, norm_err)
                 notes.append("early-exit: normalisation alone sufficient")
             elif norm_bytes > MAX_INSPECT_BYTES:
                 _LOG.debug(
@@ -2015,6 +2010,67 @@ def _fallback_truncate(stdout: str, stderr: str, max_lines: int) -> str:
     if stderr:
         return "\n".join(out_lines) + "\n---\n" + "\n".join(err_lines)
     return "\n".join(out_lines)
+
+
+def _compress_bash_output(stdout: str, stderr: str) -> str:
+    """Pipeline: deduplicate consecutive lines in stdout and stderr with separator.
+
+    Used when a filter decides that ANSI/progress normalisation alone is
+    sufficient and structure-specific parsing would be overkill. Deduplicates
+    consecutive identical lines in each stream and combines with a ``---``
+    separator if stderr is non-empty.
+
+    Args:
+        stdout: Normalised stdout text (ANSI/progress already stripped).
+        stderr: Normalised stderr text (ANSI/progress already stripped).
+
+    Returns:
+        Joined text: deduplicated stdout; if stderr, then ``\\n---\\n`` and
+        deduplicated stderr. Single-stream only if stderr is empty.
+    """
+    out_lines = dedupe_consecutive(stdout.split("\n"), entropy_bypass=True)
+    body = "\n".join(out_lines)
+    if stderr.strip():
+        err_lines = dedupe_consecutive(stderr.split("\n"), entropy_bypass=True)
+        body = body.rstrip() + "\n---\n" + "\n".join(err_lines).rstrip()
+    return body
+
+
+def _dedupe_combined_output(text: str) -> str:
+    """Pipeline: deduplicate + squeeze blank lines in combined text.
+
+    Used by fallback filters (git, cargo, ruby) when combining stdout/stderr
+    and applying only deduplication + blank-line squeezing (no structure-specific
+    logic). Centralises the common idiom:
+    ``_squeeze_blank_lines("\\n".join(dedupe_consecutive(text.split("\\n"))))``
+
+    Args:
+        text: Combined/merged stdout and stderr text (ANSI/progress already stripped).
+
+    Returns:
+        Deduplicated text with runs of blank lines squeezed to singles.
+    """
+    return _squeeze_blank_lines("\n".join(dedupe_consecutive(text.split("\n"))))
+
+
+def _compress_test_output(lines: list[str], max_lines: int = 300) -> str:
+    """Pipeline: numeric deduplication + middle truncation for diff/test output.
+
+    Used for structured test output (diffs, test matrices) where we want to
+    collapse runs of similar numeric lines (e.g. repeated diff line numbers)
+    and then apply smart middle truncation to cap total size.
+
+    Args:
+        lines: List of lines to compress.
+        max_lines: Maximum number of lines to keep (default 300).
+
+    Returns:
+        Joined text with numeric runs collapsed and middle lines elided if
+        the input exceeds *max_lines*.
+    """
+    deduped = dedupe_numeric_runs(lines, min_run=5)
+    truncated = truncate_middle(deduped, max_lines)
+    return "\n".join(truncated)
 
 
 def _positional_args(args: list[str]) -> list[str]:
@@ -6319,7 +6375,7 @@ class GitFilter(Filter):
             return _compress_git_remote(stdout, stderr)
         # Fallback: ANSI / progress already stripped; dedupe consecutive.
         merged = self._combine_output(stdout, stderr)
-        return _squeeze_blank_lines("\n".join(dedupe_consecutive(merged.split("\n"))))
+        return _dedupe_combined_output(merged)
 
 
 def _compress_git_status(stdout: str, stderr: str) -> str:
@@ -12475,7 +12531,7 @@ class DotnetFilter(Filter):
         if subcommand == "format":
             return self._compress_format(lines)
         # run, ef, tool, etc. — pass through with basic dedup
-        return _squeeze_blank_lines("\n".join(dedupe_consecutive(lines)))
+        return _dedupe_combined_output("\n".join(lines))
 
     def _compress_restore(self, lines: list[str]) -> str:
         kept: list[str] = []
@@ -13572,7 +13628,7 @@ class RubyFilter(Filter):
 
         # rake: dedupe only — task output is load-bearing.
         if binary == "rake":
-            return _squeeze_blank_lines("\n".join(dedupe_consecutive(merged.split("\n"))))
+            return _dedupe_combined_output(merged)
 
         # rspec / minitest / ruby: dot-progress compression.
         return self._compress_test(merged)
@@ -13968,8 +14024,7 @@ class DiffFilter(Filter):
         if has_unified:
             return self._compress_unified(lines)
         # Normal diff: dedupe numerically and truncate middle.
-        deduped = dedupe_numeric_runs(lines, min_run=5)
-        return "\n".join(truncate_middle(deduped, 300))
+        return _compress_test_output(lines, max_lines=300)
 
     def _compress_unified(self, lines: list[str]) -> str:
         """Compress a unified diff by capping hunks per file."""

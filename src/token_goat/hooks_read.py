@@ -67,66 +67,10 @@ from .hooks_common import (
     sanitize_opt,
     validate_cwd,
 )
-from .hooks_common import (
-    LOG as _LOG,
-)
+from .hooks_common import LOG as _LOG
 from .util import env_int as _env_int
 from .util import sanitize_surrogates as _sanitize_surrogates
 from .util import utf8_bytes as _utf8_bytes
-
-
-# ============================================================================
-# Predicate Helpers: Cache & File Validation
-# ============================================================================
-# These extract repeated boolean conditions for cache availability, file
-# size gates, modification detection, and fingerprint dedup. Reduces nesting
-# and clarifies intent at call sites.
-
-def _cache_is_available(cache: object) -> bool:
-    """Check if cache object is available and not None."""
-    return cache is not None
-
-
-def _is_file_size_sufficient(file_size: int, min_bytes: int) -> bool:
-    """Check if file size meets threshold (skip hint if too small)."""
-    return min_bytes <= 0 or file_size >= min_bytes
-
-
-def _file_is_modified(
-    disk_mtime_ns: int,
-    disk_size: int,
-    entry_mtime_ns: int | None,
-    entry_size: int,
-) -> bool:
-    """Check if file has been modified since last read.
-
-    Returns True if file was modified (deny re-read); False if unchanged.
-    Requires entry_mtime_ns to be not None (legacy entries skip this gate).
-    """
-    if entry_mtime_ns is None:
-        return False  # legacy entry — fall through to SHA check
-    return disk_mtime_ns != entry_mtime_ns or disk_size != entry_size
-
-
-def _fingerprint_already_seen(cache: object, fingerprint: str) -> bool:
-    """Check if a hint fingerprint has already been emitted (dedup gate)."""
-    try:
-        return cache.has_hint_fingerprint(fingerprint)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _project_is_indexable(file_path: str) -> bool:
-    """Check if file's project exists and is indexed.
-
-    Returns True if find_project succeeds; False otherwise.
-    """
-    try:
-        from .project import find_project  # noqa: PLC0415
-        return find_project(Path(file_path).parent) is not None
-    except Exception:  # noqa: BLE001
-        return False
-
 
 # Environment variable that disables Bash output compression at the hook layer.
 # Recognised values: "0", "false", "no", "off" (case-insensitive).  Any other
@@ -231,6 +175,59 @@ def _is_binary_or_large_file(file_path: str) -> bool:
         size = Path(file_path).stat().st_size
         return size >= _LARGE_FILE_HINT_SKIP_BYTES
     except OSError:
+        return False
+
+
+# ============================================================================
+# Predicate Helpers: Cache & File Validation
+# ============================================================================
+# These extract repeated boolean conditions for cache availability, file
+# size gates, modification detection, and fingerprint dedup. Reduces nesting
+# and clarifies intent at call sites.
+
+def _cache_is_available(cache: object) -> bool:
+    """Check if cache object is available and not None."""
+    return cache is not None
+
+
+def _is_file_size_sufficient(file_size: int, min_bytes: int) -> bool:
+    """Check if file size meets threshold (skip hint if too small)."""
+    return min_bytes <= 0 or file_size >= min_bytes
+
+
+def _file_is_modified(
+    disk_mtime_ns: int,
+    disk_size: int,
+    entry_mtime_ns: int | None,
+    entry_size: int,
+) -> bool:
+    """Check if file has been modified since last read.
+
+    Returns True if file was modified (deny re-read); False if unchanged.
+    Requires entry_mtime_ns to be not None (legacy entries skip this gate).
+    """
+    if entry_mtime_ns is None:
+        return False  # legacy entry — fall through to SHA check
+    return disk_mtime_ns != entry_mtime_ns or disk_size != entry_size
+
+
+def _fingerprint_already_seen(cache: object, fingerprint: str) -> bool:
+    """Check if a hint fingerprint has already been emitted (dedup gate)."""
+    try:
+        return cache.has_hint_fingerprint(fingerprint)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _project_is_indexable(file_path: str) -> bool:
+    """Check if file's project exists and is indexed.
+
+    Returns True if find_project succeeds; False otherwise.
+    """
+    try:
+        from .project import find_project  # noqa: PLC0415
+        return find_project(Path(file_path).parent) is not None
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -888,7 +885,7 @@ def _handle_skill_file_read(
     (returns None) but also emits a stale-compact advisory hint so the model
     knows to run ``token-goat skill-compact <name>`` after loading the new body.
     """
-    if cache is None:
+    if not _cache_is_available(cache):
         return None
 
     skill_history: dict[str, object] = getattr(cache, "skill_history", {})
@@ -1681,7 +1678,7 @@ def _handle_grep_result_content_dedup(payload: HookPayload) -> HookResponse | No
         return None
 
     cache = load_session_safe(session_id)
-    if cache is None:
+    if not _cache_is_available(cache):
         return None
 
     tool_input = get_tool_input(payload)
@@ -1855,7 +1852,7 @@ def _handle_grep_written_not_read(payload: HookPayload) -> HookResponse | None:
         return None
 
     cache = load_session_safe(session_id)
-    if cache is None:
+    if not _cache_is_available(cache):
         return None
 
     _edited: dict[str, int] = cache.edited_files if isinstance(cache.edited_files, dict) else {}
@@ -2577,7 +2574,7 @@ def _handle_bash_streak_hint(payload: HookPayload) -> HookResponse | None:
         return None
     sess = _get_session()
     cache = sess.safe_load(sid, caller="bash_streak_hint")
-    if cache is None:
+    if not _cache_is_available(cache):
         return None
     from . import paths as _paths  # noqa: PLC0415
     key = _paths.normalize_key(intent.target_path)
@@ -3584,7 +3581,7 @@ def _handle_reread_deny(
     except Exception:  # noqa: BLE001 — fail-soft; never block a Read
         return None
 
-    if cache is None:
+    if not _cache_is_available(cache):
         return None
 
     try:
@@ -3611,7 +3608,7 @@ def _handle_reread_deny(
         return None
 
     # Size gate: skip tiny files where the hint cost (~25 tok) exceeds the saving.
-    if min_bytes > 0 and disk_stat.st_size < min_bytes:
+    if not _is_file_size_sufficient(disk_stat.st_size, min_bytes):
         return None
 
     # Cross-session freshness gate: if the file's on-disk (mtime_ns, size) no longer
@@ -3624,9 +3621,7 @@ def _handle_reread_deny(
     # The guard is `is not None`, not a truthiness test: an epoch-mtime file records 0, a
     # real value that must still be compared — treating 0 as unrecorded would silently
     # disable the freshness gate for such files and deny stale content.)
-    if entry.read_mtime_ns is not None and (
-        disk_stat.st_mtime_ns != entry.read_mtime_ns or disk_stat.st_size != entry.read_size
-    ):
+    if _file_is_modified(disk_stat.st_mtime_ns, disk_stat.st_size, entry.read_mtime_ns, entry.read_size):
         return None
 
     # Parse the requested window (1-indexed inclusive).
@@ -3659,10 +3654,10 @@ def _handle_reread_deny(
     # Anti-loop guard: allow the read through on the second identical attempt.
     _end_tag = str(req_end) if req_end is not None else "eof"
     deny_fp = f"reread_deny:{key}:{req_start}:{_end_tag}"
+    if _fingerprint_already_seen(cache, deny_fp):
+        _LOG.debug("reread_deny: anti-loop pass-through for %s (%d+)", sanitize_log_str(file_path), req_start)
+        return None
     try:
-        if cache.has_hint_fingerprint(deny_fp):  # type: ignore[attr-defined]
-            _LOG.debug("reread_deny: anti-loop pass-through for %s (%d+)", sanitize_log_str(file_path), req_start)
-            return None
         cache.mark_hint_seen(deny_fp)  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001 — fail-soft; never block a Read
         return None
@@ -3739,7 +3734,7 @@ def _handle_task_output_read(
 
     _sess_mod = _get_session()
     cache = _sess_mod.safe_load(session_id, caller="_handle_task_output_read")
-    if cache is None:
+    if not _cache_is_available(cache):
         return None
 
     stored: dict[str, str] = getattr(cache, "stored_task_outputs", {})
