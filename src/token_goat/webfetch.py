@@ -374,6 +374,35 @@ def _hash_file_sha256(path: Path) -> str | None:
         return None
 
 
+def _resolve_shrunk_path(shrunk_pointer: str) -> Path | None:
+    """Return Path(shrunk_pointer) if it lives under a known cache root, else None.
+
+    Sidecar files are on disk and could be tampered with; an attacker-controlled
+    path like ``../../.ssh/id_rsa`` would cause token-goat to serve an arbitrary
+    file. Resolve symlinks and confirm containment before trusting the value.
+    """
+    candidate = Path(shrunk_pointer)
+    allowed_roots = (paths.image_cache_dir().resolve(), paths.web_cache_dir().resolve())
+    try:
+        resolved = candidate.resolve()
+        contained = any(
+            resolved == root or str(resolved).startswith(str(root) + ("/" if str(root)[-1] != "/" else ""))
+            for root in allowed_roots
+        )
+        with contextlib.suppress(AttributeError):
+            contained = any(resolved.is_relative_to(root) for root in allowed_roots)
+    except (OSError, ValueError):
+        contained = False
+    if not contained:
+        _LOG.warning(
+            "web cache: shrunk_path sidecar points outside allowed cache roots "
+            "(possible tampered sidecar); ignoring pointer: %s",
+            candidate,
+        )
+        return None
+    return candidate
+
+
 def _content_index_path(content_sha256: str) -> Path:
     """Return the path to the content-hash index pointer for *content_sha256*.
 
@@ -786,29 +815,7 @@ def fetch_url(
         # while the shrunk file exists on disk; a vanished file falls
         # through to the slow path which re-hashes and re-shrinks.
         if shrink_if_image and (shrunk_pointer := meta.get("shrunk_path")):
-            _shrunk_path_init = Path(shrunk_pointer)
-            shrunk_path: Path | None = _shrunk_path_init
-            # Path containment check: a tampered sidecar could redirect to any
-            # file on disk (e.g. ~/.ssh/id_rsa).  Resolve symlinks then confirm
-            # the target lives under an allowed cache root before trusting it.
-            _allowed_roots = (paths.image_cache_dir().resolve(), paths.web_cache_dir().resolve())
-            try:
-                _resolved = _shrunk_path_init.resolve()
-                _contained = any(
-                    _resolved == _root or str(_resolved).startswith(str(_root) + ("/" if str(_root)[-1] != "/" else ""))
-                    for _root in _allowed_roots
-                )
-                with contextlib.suppress(AttributeError):
-                    _contained = any(_resolved.is_relative_to(_root) for _root in _allowed_roots)
-            except (OSError, ValueError):
-                _contained = False
-            if not _contained:
-                _LOG.warning(
-                    "web cache: shrunk_path sidecar points outside allowed cache roots "
-                    "(possible tampered sidecar); ignoring pointer: %s",
-                    shrunk_path,
-                )
-                shrunk_path = None
+            shrunk_path = _resolve_shrunk_path(shrunk_pointer)
             if shrunk_path is not None and shrunk_path.exists():
                 _LOG.info("web cache hit (shrunk pointer): %s", shrunk_path.name)
                 return shrunk_path
@@ -924,8 +931,8 @@ def fetch_url(
             canonical_meta = _read_cache_meta(canonical)
             shrunk_pointer = canonical_meta.get("shrunk_path")
             if shrunk_pointer:
-                shrunk_path = Path(shrunk_pointer)
-                if shrunk_path.exists() and shrink_if_image:
+                shrunk_path = _resolve_shrunk_path(shrunk_pointer)
+                if shrunk_path is not None and shrunk_path.exists() and shrink_if_image:
                     _LOG.info(
                         "web content dedup hit: %s shares bytes with %s (shrunk: %s)",
                         cache_path.name, canonical.name, shrunk_path.name,
