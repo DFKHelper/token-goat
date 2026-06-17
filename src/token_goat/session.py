@@ -120,7 +120,7 @@ import time
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from itertools import islice
-from operator import attrgetter
+from operator import attrgetter, itemgetter
 from pathlib import Path
 from typing import Any, Final, TypedDict, TypeVar, cast
 
@@ -552,7 +552,7 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     if len(merged.hints_seen) > HINTS_SEEN_MAX:
         # LRU eviction: keep the entries with the highest seen counts
         # (most recent/frequently seen hints are more relevant for future dedup).
-        sorted_hints = sorted(merged_hints.items(), key=lambda x: x[1], reverse=True)
+        sorted_hints = sorted(merged_hints.items(), key=itemgetter(1), reverse=True)
         merged.hints_seen = dict(sorted_hints[:HINTS_SEEN_MAX])
 
     # hints_content_dedup: dict merge — take max count for each content hash, bounded by HINTS_CONTENT_DEDUP_MAX
@@ -671,9 +671,7 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
 
     # pytest_failures: local wins per cmd_sha — local's entry is from the run
     # that just completed, so it is always the most recent for that command.
-    merged_pf = dict(remote.pytest_failures)
-    merged_pf.update(local.pytest_failures)
-    merged.pytest_failures = merged_pf
+    merged.pytest_failures = remote.pytest_failures | local.pytest_failures
 
     remote_glob_keys = {(glob.pattern, glob.path) for glob in remote.glob_history}
     for glob in local.glob_history:
@@ -795,36 +793,28 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     merged.pinned_symbols = merged_pinned[:PINNED_SYMBOLS_MAX]
 
     # read_content_hashes: local wins (most recent Read takes precedence).
-    merged_rch: dict[str, str] = dict(remote.read_content_hashes)
-    merged_rch.update(local.read_content_hashes)
-    merged.read_content_hashes = merged_rch
+    merged.read_content_hashes = remote.read_content_hashes | local.read_content_hashes
     if len(merged.read_content_hashes) > READ_CONTENT_HASHES_MAX:
         _rch_evict = len(merged.read_content_hashes) - (READ_CONTENT_HASHES_MAX - _READ_CONTENT_HASHES_EVICT)
         for _ in range(_rch_evict):
             merged.read_content_hashes.pop(next(iter(merged.read_content_hashes)))
 
     # log_file_cache: local wins (most recent stat+read takes precedence).
-    merged_lfc: dict[str, str] = dict(remote.log_file_cache)
-    merged_lfc.update(local.log_file_cache)
-    merged.log_file_cache = merged_lfc
+    merged.log_file_cache = remote.log_file_cache | local.log_file_cache
     if len(merged.log_file_cache) > LOG_FILE_CACHE_MAX:
         _lfc_evict = len(merged.log_file_cache) - (LOG_FILE_CACHE_MAX - _LOG_FILE_CACHE_EVICT)
         for _ in range(_lfc_evict):
             merged.log_file_cache.pop(next(iter(merged.log_file_cache)))
 
     # dir_listing_cache: local wins (most recent listing takes precedence).
-    merged_dlc: dict[str, str] = dict(remote.dir_listing_cache)
-    merged_dlc.update(local.dir_listing_cache)
-    merged.dir_listing_cache = merged_dlc
+    merged.dir_listing_cache = remote.dir_listing_cache | local.dir_listing_cache
     if len(merged.dir_listing_cache) > DIR_LISTING_CACHE_MAX:
         _dlc_evict = len(merged.dir_listing_cache) - (DIR_LISTING_CACHE_MAX - _DIR_LISTING_CACHE_EVICT)
         for _ in range(_dlc_evict):
             merged.dir_listing_cache.pop(next(iter(merged.dir_listing_cache)))
 
     # cmd_output_hashes: local wins (most recent run takes precedence).
-    merged_coh: dict[str, str] = dict(remote.cmd_output_hashes)
-    merged_coh.update(local.cmd_output_hashes)
-    merged.cmd_output_hashes = merged_coh
+    merged.cmd_output_hashes = remote.cmd_output_hashes | local.cmd_output_hashes
     if len(merged.cmd_output_hashes) > CMD_OUTPUT_HASHES_MAX:
         _coh_evict = len(merged.cmd_output_hashes) - (CMD_OUTPUT_HASHES_MAX - _CMD_OUTPUT_HASHES_EVICT)
         for _ in range(_coh_evict):
@@ -1656,7 +1646,7 @@ class SessionCache:
         # False-positive re-emission of a suppressed hint is acceptable;
         # unbounded growth is not.
         if len(self.hints_seen) > HINTS_SEEN_MAX:
-            sorted_hints = sorted(self.hints_seen.items(), key=lambda x: x[1], reverse=True)
+            sorted_hints = sorted(self.hints_seen.items(), key=itemgetter(1), reverse=True)
             self.hints_seen = dict(sorted_hints[:HINTS_SEEN_MAX])
         self.last_activity_ts = time.time()
         self._invalidate_json_cache()
@@ -3514,7 +3504,7 @@ def _trim_session_for_size(cache: SessionCache, max_bytes: int) -> bool:
             cache.glob_history = sorted(cache.glob_history, key=lambda g: g.ts)[drop_n:]
         elif target_name == "hints_seen":
             # Drop lowest-count (least-important) fingerprints first.
-            sorted_hints = sorted(cache.hints_seen.items(), key=lambda x: x[1])
+            sorted_hints = sorted(cache.hints_seen.items(), key=itemgetter(1))
             cache.hints_seen = dict(sorted_hints[drop_n:])
         elif target_name == "bash_dedup_emitted_ids":
             # Arbitrary order; just drop *drop_n* items.
