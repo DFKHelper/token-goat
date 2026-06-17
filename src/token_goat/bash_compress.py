@@ -883,8 +883,7 @@ def _head_tail_compress(
     elided = total - head - tail
     head_lines = lines[:head]
     tail_lines = lines[-tail:]
-    result = head_lines + [f"... [{elided} more {label} elided by token-goat]"] + tail_lines
-    return "\n".join(result)
+    return "\n".join(head_lines + [f"... [{elided} more {label} elided by token-goat]"] + tail_lines)
 
 
 def _maybe_note(notes: list[str], value: int | str | None, msg: str) -> None:
@@ -1529,9 +1528,7 @@ class CompressedOutput:
         consistent.  Returns 0 when ``bytes_saved`` is 0.
         """
         n = self.bytes_saved
-        if n <= 0:
-            return 0
-        return max(1, n // 3 + 1)
+        return 0 if n <= 0 else max(1, n // 3 + 1)
 
     @property
     def percent_saved(self) -> float:
@@ -1772,8 +1769,7 @@ class Filter(BaseFilter):
         a line-walk.  Centralises the ``_squeeze_blank_lines("\\n".join(kept))``
         idiom that appears in 14 filters.
         """
-        joined = "\n".join(kept)
-        return _squeeze_blank_lines(joined)
+        return _squeeze_blank_lines("\n".join(kept))
 
     def compress(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
