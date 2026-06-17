@@ -126,7 +126,7 @@ from typing import Any, Final, TypedDict, TypeVar, cast
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
-from .util import env_int, get_logger, strip_bom, utf8_bytes
+from .util import env_int, get_logger, utf8_bytes
 
 _LOG = get_logger("session")
 
@@ -3269,36 +3269,6 @@ def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def _load_or_empty_json(path: Path) -> dict[str, object]:
-    """Load JSON from *path*, returning empty dict on read or parse errors.
-
-    Attempts to read and parse the file at *path* as JSON. If the file cannot
-    be read (OSError) or parsed (JSONDecodeError), logs a debug message and
-    returns an empty dict.
-
-    On Windows, files may be written with a UTF-8 BOM (Byte Order Mark), which
-    becomes U+FEFF at the start of the string. The BOM is stripped before
-    parsing to prevent JSONDecodeError.
-
-    Parameters
-    ----------
-    path
-        The file path to read JSON from.
-
-    Returns
-    -------
-    dict[str, object]
-        The parsed JSON as a dict, or an empty dict on any error.
-    """
-    try:
-        raw = path.read_text(encoding="utf-8")
-        raw = strip_bom(raw)
-        return json.loads(raw)
-    except (OSError, json.JSONDecodeError) as e:
-        _LOG.debug("load failed for %s: %s — returning empty", path, e)
-        return {}
-
-
 def load(session_id: str) -> SessionCache:
     """Load the on-disk session cache for *session_id*, or create a fresh one.
 
@@ -3792,18 +3762,6 @@ def _prepare_path_mutation(
     return cache, _normalize_path(path)
 
 
-def _symbols_set(entry: FileEntry) -> frozenset[str]:
-    """Return a frozenset of already-read symbols for fast O(1) membership tests.
-
-    Built inline from the list on each call; the list stays authoritative for
-    serialization.  This helper is only called when a new symbol is being
-    considered for addition — the common case (no new symbol) never pays this
-    cost.  A frozenset is used rather than a set because its construction from
-    a list is equally fast and it communicates immutability clearly.
-    """
-    return frozenset(entry.symbols_read)
-
-
 def _commit_mutation(cache: SessionCache, now: float) -> SessionCache:
     """Stamp *now* as the last-activity time, flush the JSON cache, persist, and return.
 
@@ -3919,8 +3877,6 @@ def mark_file_read(
             return _commit_mutation(cache, now)
         # Direct list membership check — symbols_read is typically <10 entries so
         # the O(n) scan is cheaper than building a frozenset just to do one lookup.
-        # _symbols_set() is retained for callers that do repeated lookups, but the
-        # single-lookup case here avoids the frozenset allocation entirely.
         already_known = symbol in entry.symbols_read
         if not already_known:
             entry.symbols_read.append(symbol)

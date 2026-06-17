@@ -219,18 +219,6 @@ def _fingerprint_already_seen(cache: object, fingerprint: str) -> bool:
         return False
 
 
-def _project_is_indexable(file_path: str) -> bool:
-    """Check if file's project exists and is indexed.
-
-    Returns True if find_project succeeds; False otherwise.
-    """
-    try:
-        from .project import find_project  # noqa: PLC0415
-        return find_project(Path(file_path).parent) is not None
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _bash_compress_enabled() -> bool:
     """Return False when the user has explicitly disabled bash output compression.
 
@@ -1665,66 +1653,6 @@ def _try_diff_serve(
         reason="token-goat serves diff instead of full file re-read to save tokens",
         context=context_msg,
     )
-
-
-def _handle_grep_result_content_dedup(payload: HookPayload) -> HookResponse | None:
-    """Return a hint when grep results match a prior grep's results by content hash.
-
-    When two different grep patterns return identical results, emit a hint:
-    "Same results as previous grep for '<prior_pattern>'" (HIGH priority, since it
-    saves the agent from re-reading identical output).
-
-    This is separate from pattern dedup (_handle_grep_dedup): the same pattern is
-    caught there. This handler catches different patterns with the same output.
-
-    Returns ``None`` when no result-content hit is available.
-    """
-    session_id, _cwd = get_hook_context(payload)
-    if session_id is None:
-        return None
-
-    cache = load_session_safe(session_id)
-    if not _cache_is_available(cache):
-        return None
-
-    tool_input = get_tool_input(payload)
-    pattern = tool_input.get("pattern")
-    if not isinstance(pattern, str) or not pattern:
-        return None
-
-    # We don't have the result content at pre-time; we would need to get it from
-    # a prior grep that same pattern that might be cached. But at pre-read we don't
-    # know what the result will be yet.
-    # So this is really a post-read dedup: we hash after the grep runs and record it.
-    # The pre-read hook would check on the NEXT identical-content grep.
-    #
-    # For now, this is not implemented as a pre-hook because we'd need a cache of
-    # recent result hashes indexed by content. That would require storing the hash
-    # at post-read time and keying it by hash rather than pattern.
-    # This is handled in post_read by record_grep_result_hash.
-    # The pre-hook would need to reverse-lookup: given a hypothetical result hash,
-    # was this pattern seen before? But we don't have the result yet.
-    #
-    # Instead, implement content dedup as a "hint about recent greps with same content".
-    # When post-read sees a result hash that already exists in grep_result_hashes,
-    # it could record this... but we're doing post-read processing, not hint injection.
-    #
-    # The solution: on pre-grep, check if we've seen this exact result content before.
-    # But we don't know the result yet, so we can't compute the hash.
-    #
-    # Defer this to POST-read: after the grep runs and we can hash the output,
-    # check if that hash was seen before. If yes, we record it in the session but
-    # cannot emit a hint at pre-time (the grep already ran and the hint is too late).
-    # Instead, implement as follows:
-    #
-    # Actually, the task says to implement POST dedup in hooks_read.py post_grep.
-    # We do that by hashing the result and checking session.has_grep_result_hash().
-    # If yes, we could emit a stat or log, but by post-read the grep has already
-    # executed. The hint would need to fire at pre-read time on the NEXT grep.
-    #
-    # So this pre-hook is not needed; the dedup detection happens in post_read.
-    # Return None to pass through.
-    return None
 
 
 def _extract_grep_args(payload: HookPayload) -> tuple[str, str | None] | None:

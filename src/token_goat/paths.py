@@ -384,15 +384,6 @@ def project_db_path(project_hash: str) -> Path:
     return _safe_child_path(data_dir() / "projects", project_hash, ".db", "project_hash")
 
 
-def _has_windows_drive_prefix(s: str) -> bool:
-    """Return True when *s* begins with a Windows drive letter followed by a colon.
-
-    Accepts both upper- and lowercase drive letters (``C:``, ``c:``) so it can be
-    used both for case-aware normalization and for absolute-path classification.
-    """
-    return len(s) >= 2 and s[1] == ":" and s[0].isalpha()
-
-
 def normalize_key(p: str) -> str:
     """Canonical path-key normalizer for session/hint/compact/stats lookups.
 

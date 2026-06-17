@@ -887,26 +887,6 @@ def _head_tail_compress(
     return "\n".join(result)
 
 
-def _pass_if_short(text: str, threshold: int = 30) -> str | None:
-    """Return *text* unchanged if it contains <= *threshold* non-empty lines.
-
-    Used by filters that skip expensive processing when input is already short.
-    Returns the text if short (no processing needed), or ``None`` to signal
-    the caller to proceed with detailed compression logic.
-
-    Args:
-        text: The text to check.
-        threshold: Maximum number of non-empty lines to consider "short".
-
-    Returns:
-        *text* if short, ``None`` if the filter should proceed with compression.
-    """
-    non_empty = [ln for ln in text.split("\n") if ln.strip()]
-    if len(non_empty) <= threshold:
-        return text
-    return None
-
-
 def _maybe_note(notes: list[str], value: int | str | None, msg: str) -> None:
     """Append *msg* to *notes* when *value* is truthy (non-zero, non-empty, non-None).
 
@@ -4572,19 +4552,6 @@ class KubectlLogsFilter(Filter):
         positionals = _positional_args(argv[1:])
         return bool(positionals) and positionals[0] == "logs"
 
-    @staticmethod
-    def _strip_pod_prefix(line: str) -> str:
-        """Return *line* with the pod/container prefix removed, if present."""
-        # ``[pod/name/container] `` prefix (--prefix flag)
-        m = re.match(r"^\[[^\]]+\]\s+", line)
-        if m:
-            return line[m.end():]
-        # ``pod-name | `` prefix (multi-container log tools)
-        m2 = re.match(r"^[a-z0-9][a-z0-9\-\.]*\s+\|\s+", line)
-        if m2:
-            return line[m2.end():]
-        return line
-
     def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
     ) -> str:
@@ -4632,34 +4599,6 @@ def _strip_timestamp(line: str) -> str:
     return _TIMESTAMP_PREFIX_RE.sub("", line).strip()
 
 
-def _dedup_log_lines(lines: list[str], keep_first_n: int = 3) -> list[str]:
-    """Deduplicate log lines that differ only in leading timestamps.
-
-    Groups consecutive lines by their timestamp-stripped content.  The first
-    *keep_first_n* in each run are kept verbatim; additional lines are
-    collapsed to a single ``N more similar lines`` marker.
-    """
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        key = _strip_timestamp(line)
-        # Count consecutive lines with the same de-timestamped content
-        j = i + 1
-        while j < len(lines) and _strip_timestamp(lines[j]) == key:
-            j += 1
-        run = lines[i:j]
-        if len(run) <= keep_first_n:
-            out.extend(run)
-        else:
-            out.extend(run[:keep_first_n])
-            out.append(
-                f"[token-goat: {len(run) - keep_first_n} more similar lines omitted]"
-            )
-        i = j
-    return out
-
-
 # Pod/container prefix patterns for ``kubectl logs --prefix`` and sidecar-style
 # output. Compiled at module level — used by _dedup_log_lines_with_pod_prefix
 # which is called once per log block but benefits from a pre-compiled pattern.
@@ -4672,7 +4611,7 @@ _KUBECTL_POD_PREFIX_RE: Final[re.Pattern[str]] = re.compile(
 def _dedup_log_lines_with_pod_prefix(lines: list[str], keep_first_n: int = 3) -> list[str]:
     """Deduplicate log lines that differ only in timestamps and/or pod prefixes.
 
-    Extends :func:`_dedup_log_lines` to handle ``kubectl logs --prefix`` and
+    Handles ``kubectl logs --prefix`` and
     ``kubectl logs -l <selector>`` output where each line is prefixed with a
     pod/container identifier like ``[pod/my-pod-abc/main] `` or ``pod-xyz | ``.
     Lines that share the same timestamp-stripped, pod-stripped content are

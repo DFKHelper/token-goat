@@ -232,19 +232,6 @@ def record_watchdog_timeout() -> None:
     )
 
 
-def _reset_watchdog_state() -> None:
-    """Reset the adaptive timeout state on successful hook completion.
-
-    Called internally when a hook subprocess completes successfully; resets the
-    consecutive timeout counter to zero so the next timeout (if any) starts the
-    doubling sequence fresh.
-    """
-    global _consecutive_timeouts  # noqa: PLW0603
-    if _consecutive_timeouts > 0:
-        LOG.debug("hook subprocess completed successfully; resetting timeout counter")
-        _consecutive_timeouts = 0
-
-
 # The most common hook response: let the harness proceed unchanged.
 # Using a function (not a bare dict) keeps each call site independent — callers
 # that mutate the return value won't corrupt subsequent callers.
