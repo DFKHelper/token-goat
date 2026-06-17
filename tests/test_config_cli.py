@@ -363,6 +363,7 @@ class TestConfigValidate:
             "context": config_mod.ContextConfig,
             "bash_diff": config_mod.BashDiffConfig,
             "bash_severity_log": config_mod.SeverityLogConfig,
+            "injection": config_mod.InjectionConfig,
         }
         # Verify that section_to_cls covers exactly _KNOWN_SECTIONS minus schema_version.
         expected = config_mod._KNOWN_SECTIONS - {"schema_version"}

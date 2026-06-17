@@ -142,10 +142,11 @@ class TestPostFetchHook:
         cache = session.load("pf-2")
         assert len(cache.web_history) == 1
         entry = next(iter(cache.web_history.values()))
-        assert entry.body_bytes == 5000
+        # body_bytes reflects the stored size including the untrusted-content fence (~70 bytes)
+        assert entry.body_bytes == 5070
         assert entry.status_code == 200
         loaded = web_cache.load_output(entry.output_id)
-        assert loaded is not None and loaded.startswith("X")
+        assert loaded is not None and "X" in loaded
 
     def test_image_url_not_cached(self, tmp_data_dir):
         """Image URLs are handled by the existing image-cache; not double-cached here."""
@@ -186,7 +187,8 @@ class TestPostFetchHook:
         cache = session.load("pf-5")
         assert len(cache.web_history) == 1
         entry = next(iter(cache.web_history.values()))
-        assert entry.body_bytes == 6000
+        # body_bytes reflects stored size including the untrusted-content fence (~70 bytes)
+        assert entry.body_bytes == 6070
         assert entry.status_code == 201
 
 

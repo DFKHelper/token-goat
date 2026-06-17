@@ -452,7 +452,8 @@ class TestWebSizeHint:
         msg = hint_records[0].message
 
         # Check that size, token estimate, and savings are mentioned
-        assert "20.0 KB" in msg or "20 KB" in msg, f"Size not in hint: {msg}"
+        # Fence adds ~70 bytes so 20 KB body stores as ~20.1 KB; accept either rounding
+        assert any(s in msg for s in ("20.0 KB", "20 KB", "20.1 KB")), f"Size not in hint: {msg}"
         assert "tokens" in msg.lower(), f"Token estimate not in hint: {msg}"
         # The logged hint mentions --grep as context for what the user can do
         assert "--grep" in msg, f"--grep reference expected in hint: {msg}"
