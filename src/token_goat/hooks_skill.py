@@ -26,6 +26,7 @@ from __future__ import annotations
 
 __all__ = ["pre_skill", "post_skill"]
 
+import contextlib
 from pathlib import Path
 
 from .hooks_common import (
@@ -132,7 +133,7 @@ def _resolve_skill_body_path(skill_name: str) -> str:
             # raising.  We pick the first plugin-dir match by alphabetical version
             # order — newest install path tends to sort last so we walk in reverse.
             cache_root = home / ".claude" / "plugins" / "cache"
-            try:
+            with contextlib.suppress(OSError):
                 if cache_root.is_dir():
                     for mkt in cache_root.iterdir():
                         if not mkt.is_dir():
@@ -150,8 +151,6 @@ def _resolve_skill_body_path(skill_name: str) -> str:
                         for ver in versions:
                             candidates.append(ver / "skills" / name / "SKILL.md")
                             candidates.append(ver / "skills" / name / f"{name}.md")
-            except OSError:
-                pass
             # Fallback: a user may also have mirrored the plugin skill under the
             # bare name in ``~/.claude/skills/<name>/SKILL.md``.
             candidates.append(home / ".claude" / "skills" / name / "SKILL.md")

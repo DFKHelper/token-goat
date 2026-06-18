@@ -38,6 +38,7 @@ from __future__ import annotations
 
 __all__ = ["session_start"]
 
+import contextlib
 import re
 from typing import TYPE_CHECKING, Final
 
@@ -106,11 +107,9 @@ def _prune_memory_index(session_id: str | None, cwd: str | None) -> None:
         sentinel_dir = paths.ensure_dir(paths.data_dir() / "memory_prune")
         sentinel = sentinel_dir / f"{proj_dir.name}.last"
         now = time.time()
-        try:
+        with contextlib.suppress(OSError):
             if sentinel.exists() and (now - sentinel.stat().st_mtime) < _MEMORY_PRUNE_THROTTLE_H * 3600:
                 return
-        except OSError:
-            pass
 
         from . import memory_prune  # noqa: PLC0415
 
@@ -1866,7 +1865,7 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
         pass
 
     # Last Bash exit code from session cache bash history
-    try:
+    with contextlib.suppress(Exception):
         if cache is not None:
             bash_hist = getattr(cache, "bash_history", {})
             if bash_hist:
@@ -1875,8 +1874,6 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
                     exit_code = getattr(latest, "exit_code", None)
                     if exit_code is not None:
                         parts.append(f"last_exit: {exit_code}")
-    except Exception:  # noqa: BLE001
-        pass
 
     # Context threshold advisory — fires on first crossing of 50% / 70%, or every
     # turn above 85% (urgency zone).  Gates on config [hints] context_threshold_advisory.

@@ -834,12 +834,10 @@ def enqueue_dirty(
             return
 
         # Byte-size cap: single stat() instead of reading all entries.
-        try:
+        with contextlib.suppress(OSError):
             if queue_path.exists() and queue_path.stat().st_size >= DIRTY_QUEUE_MAX_BYTES:
                 _LOG.info("dirty queue byte cap reached (%d B); dropping entry: %s", DIRTY_QUEUE_MAX_BYTES, rel_path)
                 return
-        except OSError:
-            pass  # stat failed — proceed with the append anyway
 
         try:
             with queue_path.open("a", encoding="utf-8") as f:
