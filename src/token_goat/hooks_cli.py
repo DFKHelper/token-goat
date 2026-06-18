@@ -25,6 +25,7 @@ __all__ = [
     "safe_run",
 ]
 
+import asyncio
 import contextlib
 import contextvars
 import functools
@@ -1361,70 +1362,56 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
     # widen the budget on slow Windows boxes without restarting the agent.
     watchdog_ms = _resolved_watchdog_ms()
     timeout_s = watchdog_ms / 1000.0
-    # Run the handler in a daemon thread so a hung handler cannot block the
-    # dispatcher beyond the watchdog budget.  The thread keeps running to
-    # completion in the background (preserving fail_soft semantics — the
-    # handler's own try/except still fires); we just stop waiting for it.
-    # daemon=True ensures the process can exit on Windows even if the thread
-    # is wedged on an unkillable syscall.
-    handler_result: dict[str, object] = {}
-    result_lock = threading.Lock()
+    # Run the handler in a daemon thread so a hung handler cannot block the dispatcher; asyncio.wait_for raises TimeoutError precisely at the budget instead of relying on is_alive() after an unguaranteed join.
+    async def _run_async() -> dict[str, object]:
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[dict[str, object]] = loop.create_future()
 
-    def _run_handler() -> None:
-        try:
-            # Set the hook context before running the handler so DB layers and
-            # other components can query the remaining watchdog budget and apply
-            # shorter timeouts when running hot.
-            _hook_context.set((t0, watchdog_ms, safe_event))
+        def _run_handler() -> None:
             try:
-                handler_result_local = dict(handler(payload))
-                # Guard the shared dict update with a lock to prevent data races
-                # (reading handler_result in the main thread while the worker thread
-                # is writing it would cause undefined behaviour in CPython and
-                # actual corruption in other implementations).
-                with result_lock:
-                    handler_result.update(handler_result_local)
-            finally:
-                _hook_context.set(None)
-        except BaseException:
-            # Top-level safety net: catch exceptions from handlers whose
-            # fail_soft decorator is missing or ineffective (e.g. test injection).
-            # Leave handler_result empty so the setdefault below adds continue:true.
-            _LOG.exception("handler %s raised; relying on dispatcher safety net", safe_event)
+                # Set hook context so DB layers can query the remaining watchdog budget.
+                _hook_context.set((t0, watchdog_ms, safe_event))
+                try:
+                    result = dict(handler(payload))
+                finally:
+                    _hook_context.set(None)
+            except BaseException:
+                # Top-level safety net: catch exceptions from handlers whose fail_soft is missing or ineffective.
+                _LOG.exception("handler %s raised; relying on dispatcher safety net", safe_event)
+                result = dict(CONTINUE())
 
-    worker = threading.Thread(
-        target=_run_handler,
-        name=f"tg-hook-{safe_event}",
-        daemon=True,
-    )
-    worker.start()
-    worker.join(timeout_s)
-    if worker.is_alive():
-        _LOG.warning(
-            "hook %s watchdog tripped after %.0fms — abandoning wait (handler continues in background)",
-            safe_event,
-            watchdog_ms,
-        )
-        watchdog_result: dict[str, object] = dict(CONTINUE())
-        watchdog_result["_tg_elapsed_ms"] = round((time.monotonic() - t0) * 1000, 2)
-        watchdog_result["_tg_watchdog_tripped"] = True
-        watchdog_result["_tg_watchdog_budget_ms"] = watchdog_ms
-        return watchdog_result
-    # Guard the read of the shared dict after the timeout expires and we know
-    # the worker thread has finished (is_alive() returned False).
-    with result_lock:
-        result = dict(handler_result)
-    elapsed_ms = (time.monotonic() - t0) * 1000
-    if elapsed_ms >= _HOOK_SLOW_MS:
-        _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", safe_event, elapsed_ms)
-    else:
-        speed_tag = "moderate" if elapsed_ms >= _HOOK_MODERATE_MS else "fast"
-        _LOG.debug("hook %s completed in %.1fms (%s)", safe_event, elapsed_ms, speed_tag)
-    result["_tg_elapsed_ms"] = round(elapsed_ms, 2)
-    # Top-level safety net: every valid hook response must carry {"continue": True}.
-    # fail_soft already guarantees this on exception paths, but a handler that
-    # returns an unexpected shape (e.g. empty dict, missing key) would otherwise
-    # produce a response the harness cannot parse.  Force the field to True so the
-    # harness never blocks on a malformed-but-non-crashing handler return.
-    result.setdefault("continue", True)
-    return result
+            def _set() -> None:
+                if not fut.done():
+                    fut.set_result(result)
+
+            with contextlib.suppress(RuntimeError):  # loop closed after timeout — normal on watchdog trip
+                loop.call_soon_threadsafe(_set)
+
+        worker = threading.Thread(target=_run_handler, name=f"tg-hook-{safe_event}", daemon=True)
+        worker.start()
+
+        try:
+            result = await asyncio.wait_for(fut, timeout=timeout_s)
+            elapsed_ms = (time.monotonic() - t0) * 1000
+            if elapsed_ms >= _HOOK_SLOW_MS:
+                _LOG.warning("hook %s slow: %.1fms (check for blockage or I/O delays)", safe_event, elapsed_ms)
+            else:
+                speed_tag = "moderate" if elapsed_ms >= _HOOK_MODERATE_MS else "fast"
+                _LOG.debug("hook %s completed in %.1fms (%s)", safe_event, elapsed_ms, speed_tag)
+            result["_tg_elapsed_ms"] = round(elapsed_ms, 2)
+            # Every valid hook response must carry {"continue": True}; a handler returning an unexpected shape must not block the harness.
+            result.setdefault("continue", True)
+            return result
+        except TimeoutError:
+            _LOG.warning(
+                "hook %s watchdog tripped after %.0fms — abandoning wait (handler continues in background)",
+                safe_event,
+                watchdog_ms,
+            )
+            watchdog_result: dict[str, object] = dict(CONTINUE())
+            watchdog_result["_tg_elapsed_ms"] = round((time.monotonic() - t0) * 1000, 2)
+            watchdog_result["_tg_watchdog_tripped"] = True
+            watchdog_result["_tg_watchdog_budget_ms"] = watchdog_ms
+            return watchdog_result
+
+    return asyncio.run(_run_async())

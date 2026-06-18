@@ -388,7 +388,7 @@ def _is_system_path(path_str: str) -> bool:
     path_lower = path_str.lower().replace("\\", "/")
     is_absolute = path_lower.startswith("/")
     parts = path_lower.split("/")
-    resolved_parts = []
+    resolved_parts: list[str] = []
     for part in parts:
         if part == "..":
             if resolved_parts and resolved_parts[-1] != "..":
