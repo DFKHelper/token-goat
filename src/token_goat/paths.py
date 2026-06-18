@@ -36,6 +36,7 @@ __all__ = [
     "open_log_file",
     "precompact_estimate_path",
     "project_db_path",
+    "project_ignore_file_path",
     "python_runner_argv",
     "python_runner_command",
     "recovery_pending_path",
@@ -704,6 +705,11 @@ def dirty_queue_path() -> Path:
 def config_path() -> Path:
     """Path to config.toml."""
     return data_dir() / "config.toml"
+
+
+def project_ignore_file_path(project_root: Path) -> Path:
+    """Path to the per-project custom exclusion file (.tokengoatignore at project root)."""
+    return project_root / ".tokengoatignore"
 
 
 def gdrive_creds_path() -> Path:

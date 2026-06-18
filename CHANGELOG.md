@@ -4,6 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **`.tokengoatignore` — per-project exclusion file at project root.** Add gitignore-style glob patterns (one per line, `#` comments supported) to skip files and directories from indexing, on top of built-in skip lists. Use `token-goat ignores` to list active patterns (built-in and custom).
+
+
 ### Fixed
 
 - **Path traversal bypass in `_is_system_path()`.** `bash_parser.py` appended `..` even at root of an absolute path, letting `/../../etc/passwd` slip past the system-path block. Now discards `..` at root. Four regression cases: `/../etc/passwd`, `/../../etc/passwd`, `/etc/./../../etc/passwd`, `/sys/../../../sys/kernel`.
