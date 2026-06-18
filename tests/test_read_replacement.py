@@ -1690,6 +1690,23 @@ class TestSurgicalReadSuggestionsOnMiss:
         assert "Did you mean" in combined
         assert "greet" in combined
 
+    def test_read_miss_single_match_emits_runnable_command(self, indexed_ts_cli):
+        """`token-goat read file::TypoName` with exactly one close match emits
+        a directly runnable `token-goat read "file::RealName"` command instead
+        of a generic 'Did you mean:' list, so the agent can retry without
+        constructing the command manually."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["read", "index.ts::greetz"])
+        combined = result.output + (result.stderr or "")
+        # Single match: inline runnable command, not a bulleted list
+        assert "Did you mean: `token-goat read" in combined
+        assert "greet" in combined
+        assert "  - " not in combined, "single match should not use list format"
+
     def test_read_miss_json_carries_candidates(self, indexed_ts_cli):
         """JSON-mode miss must include `candidates` so non-human callers
         (scripts, hooks) can act on the suggestion list programmatically."""

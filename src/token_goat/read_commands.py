@@ -1046,7 +1046,14 @@ def _run_read_like_command(
             suggestions = []
         base_message = f"{missing_label} not found: {item_part} (in {file_target.rel_path})"
         if suggestions and not json_output:
-            base_message = base_message + "\nDid you mean:"
+            if len(suggestions) == 1 and _label_lower == "symbol":
+                base_message = (
+                    base_message
+                    + f'\nDid you mean: `token-goat read "{file_target.rel_path}::{suggestions[0]}"`'
+                )
+                suggestions = []
+            else:
+                base_message = base_message + "\nDid you mean:"
         elif not json_output and _label_lower == "symbol":
             # No close matches to suggest — point the agent at ``outline``, which
             # lists every symbol in the file, so it has a concrete next step
