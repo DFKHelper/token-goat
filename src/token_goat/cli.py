@@ -1604,6 +1604,12 @@ def semantic(
             "Results include the project root path as a prefix."
         ),
     ),
+    mode: str = typer.Option(
+        "vector",
+        "--mode",
+        "-m",
+        help="Search mode: vector (default), keyword (BM25 only), or hybrid (RRF fusion).",
+    ),
 ) -> None:
     """Semantic search using local embeddings (fastembed + sqlite-vec)."""
     from . import embeddings
@@ -1737,14 +1743,19 @@ def semantic(
     proj = _require_project()
 
     try:
-        hits = embeddings.semantic_search(
-            proj,
-            query,
-            k=k,
-            max_distance=threshold,
-            boost_verbatim=not no_rerank,
-            demote_generated=not no_rerank,
-        )
+        if mode == "keyword":
+            hits = embeddings.bm25_search(proj, query, k=k)
+        elif mode == "hybrid":
+            hits = embeddings.hybrid_search(proj, query, k=k, max_distance=threshold)
+        else:
+            hits = embeddings.semantic_search(
+                proj,
+                query,
+                k=k,
+                max_distance=threshold,
+                boost_verbatim=not no_rerank,
+                demote_generated=not no_rerank,
+            )
     except embeddings.EmbeddingsUnavailable as e:
         _warn(
             f"embeddings unavailable ({e}). Falling back to keyword search "
