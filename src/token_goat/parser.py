@@ -31,7 +31,7 @@ import os
 import sqlite3
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -990,7 +990,7 @@ def index_project(
     n_symbols = 0
     languages: set[str] = set()
     # Per-extension file counts for summary output (e.g. {".py": 45, ".ts": 12}).
-    ext_counts: dict[str, int] = {}
+    ext_counts: Counter[str] = Counter()
     # Collect rel_paths seen in this walk so the end-of-loop stale-file prune
     # can reuse them without a second O(n) relative_to() pass over all files.
     on_disk: set[str] = set()
@@ -1050,7 +1050,7 @@ def index_project(
                         languages.add(fi.language)
                         # Track per-extension counts for the summary breakdown.
                         _ext = fp.suffix.lower() or fp.name.lower()
-                        ext_counts[_ext] = ext_counts.get(_ext, 0) + 1
+                        ext_counts[_ext] += 1
                         if verbose:
                             import typer as _typer
                             sym_word = "symbol" if len(fi.symbols) == 1 else "symbols"

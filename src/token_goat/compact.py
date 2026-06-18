@@ -49,6 +49,7 @@ import math
 import os
 import re
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
@@ -421,7 +422,7 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
 
         # --- Signal 1: Extract area/component from edited file paths ---
         # Group edited files by directory; count files per dir
-        dir_counts: dict[str, int] = {}
+        dir_counts: Counter[str] = Counter()
         for fpath in edited_files_raw:
             try:
                 parent = str(_Path(str(fpath)).parent)
@@ -429,7 +430,7 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
                 if parent.startswith("."):
                     parent = parent[2:].lstrip("/\\") or "root"
                 if parent:
-                    dir_counts[parent] = dir_counts.get(parent, 0) + 1
+                    dir_counts[parent] += 1
             except Exception:
                 _LOG.debug("_build_session_topic: failed to parse path %r (skip)", fpath, exc_info=True)
 
@@ -6363,11 +6364,11 @@ def _render(
     grep_budget = sec_budgets["greps"]
     # Tally raw occurrence counts BEFORE _select_top_grep_entries deduplicates by
     # pattern; otherwise _dedup_grep_entries always sees count=1 and [×N] never fires.
-    _raw_grep_counts: dict[str, int] = {}
+    _raw_grep_counts: Counter[str] = Counter()
     for _rg in raw_greps:
         _rp = getattr(_rg, "pattern", "")
         if _rp:
-            _raw_grep_counts[_rp] = _raw_grep_counts.get(_rp, 0) + 1
+            _raw_grep_counts[_rp] += 1
     grep_entries = _dedup_grep_entries(
         _select_top_grep_entries(raw_greps),
         raw_counts=_raw_grep_counts,
