@@ -965,13 +965,18 @@ def claude_plugins_dir() -> Path:
     return claude_config_dir() / "plugins"
 
 
-def ensure_dir(path: Path) -> Path:
+def ensure_dir(path: Path, mode: int = 0o700) -> Path:
     """Create the directory (and any missing parents) and return it.
 
     Centralises the `path.mkdir(parents=True, exist_ok=True)` boilerplate
     that several modules repeat. Returns the same path so callers can
     chain on a single line:
         cache_dir = paths.ensure_dir(paths.image_cache_dir())
+
+    On POSIX, directories are created with `mode` (default 0o700, owner-only)
+    to prevent other local users from reading sensitive data (session caches,
+    embeddings). On Windows, NTFS ACLs already provide isolation via the
+    user-profile location, so mode has no effect.
 
     Race-tolerant on Windows: ``pathlib.Path.mkdir(parents=True, exist_ok=True)``
     has a known race where two concurrent processes can both raise
@@ -986,7 +991,7 @@ def ensure_dir(path: Path) -> Path:
     last_exc: FileExistsError | None = None
     for attempt in range(3):
         try:
-            path.mkdir(parents=True, exist_ok=True)
+            path.mkdir(parents=True, exist_ok=True, mode=mode)
             return path
         except FileExistsError as exc:
             last_exc = exc
