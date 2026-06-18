@@ -24,15 +24,17 @@ import operator
 import re
 import sqlite3
 import time
-from collections.abc import Sequence
 from itertools import islice
 from pathlib import Path
-from typing import Final, TypedDict
+from typing import TYPE_CHECKING, Final, TypedDict
 
 from . import db
 from .paths import is_safe_rel_path as _is_safe_rel_path
 from .project import Project
 from .util import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # Maximum file size allowed for symbol/section extraction.  Mirrors parser.MAX_FILE_SIZE
 # (2 MB) so a file that grew after indexing cannot cause an unbounded in-memory read

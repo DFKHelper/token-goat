@@ -37,10 +37,13 @@ from __future__ import annotations
 __all__ = ["extract"]
 
 import re
+from typing import TYPE_CHECKING
 
-from ..parser import ImpExp, Ref, Section, Symbol
 from ..util import get_logger
 from . import common
+
+if TYPE_CHECKING:
+    from ..parser import ImpExp, Ref, Section, Symbol
 
 _LOG = get_logger("languages.toml_idx")
 

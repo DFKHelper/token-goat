@@ -57,12 +57,15 @@ import re
 import stat as _stat_module
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import paths
 from .cache_common import safe_cache_op
 from .hooks_common import sanitize_log_str
 from .util import get_logger
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _LOG = get_logger("snapshots")
 

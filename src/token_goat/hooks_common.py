@@ -65,11 +65,12 @@ __all__ = [
     "validate_cwd",
 ]
 
-from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, TypeGuard, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .session import SessionCache
 
 # ---------------------------------------------------------------------------

@@ -38,12 +38,13 @@ import hashlib
 import re as _re
 import shlex as _shlex
 import time
-import types
-from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    import types
+    from collections.abc import Callable
+
     from . import session as _session_module_type  # noqa: F401 — used in annotation only
 
 from .hooks_common import (

@@ -49,7 +49,6 @@ import math
 import os
 import re
 import time
-from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from operator import attrgetter, itemgetter
@@ -539,7 +538,10 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
         return ""
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .session import FileEntry, SessionCache
+    from .session import FileEntry as _FileEntry
 
 
 def _run_git(args: list[str], cwd: str, timeout: float = 5) -> str | None:
@@ -6465,7 +6467,6 @@ def _render(
     files_lines: list[str] = []
     files_core_lines: list[str] = []
     files_used = 0
-    from .session import FileEntry as _FileEntry  # noqa: PLC0415
     included_top_files: list[_FileEntry] = []
 
     if top_files:

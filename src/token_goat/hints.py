@@ -668,7 +668,7 @@ def _failsoft_hint(fn: _F) -> _F:
                 fn.__name__, session_id_str, exc, exc_info=True,
             )
             return None
-    return cast(_F, _wrapper)
+    return cast("_F", _wrapper)
 
 
 def _symbols_suffix(symbols_read: list[str], max_chars: int = _SYMBOLS_SUFFIX_MAX_CHARS) -> str:

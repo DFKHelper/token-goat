@@ -36,18 +36,20 @@ import contextlib
 import gzip
 import hashlib
 import json
-import logging
 import os
 import re
 import stat as _stat_module
 import sys
 import time
-from collections.abc import Callable, Generator
 from contextlib import contextmanager, suppress
-from pathlib import Path
-from typing import Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from .util import get_logger
+
+if TYPE_CHECKING:
+    import logging
+    from collections.abc import Callable, Generator
+    from pathlib import Path
 
 # Filename pattern shared by both the bash-output and web-output caches.
 # Components are intentionally kept short so the full path stays well within

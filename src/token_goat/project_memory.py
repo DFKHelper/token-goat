@@ -25,10 +25,13 @@ __all__ = [
 ]
 
 import re
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import paths
 from .util import get_logger
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _LOG = get_logger("project_memory")
 

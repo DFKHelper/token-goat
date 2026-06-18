@@ -5,15 +5,17 @@ import contextlib
 import sqlite3
 import sys
 import time
-from collections.abc import Callable
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
 
 from . import paths
 from .util import _humanize_bytes as _humanize_bytes_doctor
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _cache_dir_stats(d: Path) -> tuple[int, int, int | None]:

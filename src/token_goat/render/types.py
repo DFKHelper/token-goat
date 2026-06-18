@@ -28,7 +28,10 @@ __all__ = [
 ]
 
 from dataclasses import dataclass, field
-from datetime import date
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from datetime import date
 
 
 @dataclass

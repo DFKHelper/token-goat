@@ -18,12 +18,14 @@ import os
 import re
 import sys
 import time
-from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from . import image_shrink, paths
 from .hooks_common import sanitize_log_str
 from .util import get_logger
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _LOG = get_logger("gdrive")
 

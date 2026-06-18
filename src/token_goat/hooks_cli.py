@@ -37,13 +37,15 @@ import time
 import traceback
 from collections.abc import Callable
 from datetime import datetime
-from pathlib import Path
-from typing import Final, Literal, ParamSpec, TypeVar, cast
+from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar, cast
 
 from . import paths
 from .hook_registry import CANONICAL_TOOLS
 from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
 from .util import configure_stdout_encoding, get_logger, sanitize_surrogates
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Ensure UTF-8 encoding on stdout/stderr for Windows cp1252 terminals.
 configure_stdout_encoding()
@@ -681,7 +683,7 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
     # cast is correct here: functools.wraps preserves the signature but Python's
     # type system cannot express "same callable type with wrapped body", so we
     # assert the identity to satisfy _HookHandler at call sites.
-    return cast(_HookHandler, wrapper)
+    return cast("_HookHandler", wrapper)
 
 # Hook submodules are imported on first dispatch, not at module load time.
 # Each event needs only one submodule, so a Bash tool call that triggers
@@ -719,7 +721,7 @@ def _resolve_handler(event: str) -> Callable[[HookPayload], HookResponse] | None
 
     try:
         submodule = importlib.import_module(f".{submodule_name}", package=__package__)
-        bare_handler = cast(Callable[[HookPayload], HookResponse], getattr(submodule, attr_name))
+        bare_handler = cast("Callable[[HookPayload], HookResponse]", getattr(submodule, attr_name))
     except (ImportError, AttributeError) as exc:
         _LOG.error(
             "_resolve_handler: failed to load %s.%s for event %r: %s",

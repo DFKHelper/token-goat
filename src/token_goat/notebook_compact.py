@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 #: Minimum bytes saved by output stripping before a redirect is worth emitting.
 NB_STRIP_MIN_SAVINGS: int = 4096

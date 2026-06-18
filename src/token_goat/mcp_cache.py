@@ -11,7 +11,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .cache_common import (
     OutputStatDict,
@@ -29,6 +29,9 @@ from .cache_common import (
     write_sidecar_metadata,
 )
 from .util import get_logger
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = [
     "McpOutputMeta",

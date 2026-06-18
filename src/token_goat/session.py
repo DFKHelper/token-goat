@@ -117,16 +117,18 @@ import stat as _stat_module
 import sys
 import threading
 import time
-from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from itertools import islice
 from operator import attrgetter, itemgetter
-from pathlib import Path
-from typing import Any, Final, TypedDict, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Final, TypedDict, TypeVar, cast
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
 from .util import env_int, get_logger, utf8_bytes
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator
+    from pathlib import Path
 
 _LOG = get_logger("session")
 

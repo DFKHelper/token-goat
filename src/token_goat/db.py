@@ -72,12 +72,14 @@ import re
 import sqlite3
 import sys
 import time
-from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from . import paths
 from .util import get_logger, normalize_path
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 SCHEMA_VERSION: Final[int] = 2
 EMBED_DIM: Final[int] = 384  # BAAI/bge-small-en-v1.5

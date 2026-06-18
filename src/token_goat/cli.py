@@ -33,12 +33,13 @@ import re
 import sqlite3
 import sys
 import time
-from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast, get_args
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .project import Project
 
 # Force UTF-8 on stdout/stderr (Windows defaults to cp1252 which can't encode
@@ -2895,7 +2896,7 @@ def cmd_gdrive_sections(
 
     # Cap the section list so an enormous doc (hundreds of headings) doesn't
     # itself become the token sink we are trying to avoid.
-    sections = cast(list[dict[str, object]], index.get("sections", []))
+    sections = cast("list[dict[str, object]]", index.get("sections", []))
     truncated = False
     if len(sections) > max_sections:
         sections = sections[:max_sections]
@@ -2909,10 +2910,10 @@ def cmd_gdrive_sections(
         return
 
     # Plain-text output: path on line 1, then a compact heading list.
-    path_to_display = Path(cast(str, index.get("path", local_path)))
+    path_to_display = Path(cast("str", index.get("path", local_path)))
     typer.echo(_format_path_output(path_to_display))
-    size_bytes = cast(int, index.get("size_bytes", 0))
-    line_count = cast(int, index.get("line_count", 0))
+    size_bytes = cast("int", index.get("size_bytes", 0))
+    line_count = cast("int", index.get("line_count", 0))
     typer.echo(f"size={size_bytes}B lines={line_count} sections={len(sections)}")
     if not index.get("extractor_available", False):
         typer.echo(
@@ -2921,11 +2922,11 @@ def cmd_gdrive_sections(
         )
         return
     for sec in sections:
-        prefix = "#" * cast(int, sec.get("level", 1))
-        heading = cast(str, sec.get("heading", ""))
-        line = cast(int, sec.get("line", 0))
+        prefix = "#" * cast("int", sec.get("level", 1))
+        heading = cast("str", sec.get("heading", ""))
+        line = cast("int", sec.get("line", 0))
         end_line = sec.get("end_line")
-        approx = cast(int, sec.get("approx_bytes", 0))
+        approx = cast("int", sec.get("approx_bytes", 0))
         end_str = "" if end_line is None else f"-{end_line}"
         typer.echo(f"L{line}{end_str} ~{approx}B {prefix} {heading}")
     if truncated:
@@ -4109,7 +4110,7 @@ def _run_history_listing_command(
     entries = list_outputs()
     if since_secs is not None:
         cutoff = time.time() - since_secs
-        entries = [e for e in entries if float(cast(float, e["mtime"])) >= cutoff]
+        entries = [e for e in entries if float(cast("float", e["mtime"])) >= cutoff]
     if limit > 0:
         entries = entries[:limit]
 
@@ -4131,8 +4132,8 @@ def _run_history_listing_command(
     now = time.time()
     for e in entries:
         oid = str(e["output_id"])
-        size = int(cast(int, e["size_bytes"]))
-        age = int(now - float(cast(float, e["mtime"])))
+        size = int(cast("int", e["size_bytes"]))
+        age = int(now - float(cast("float", e["mtime"])))
         sidecar = read_sidecar(oid)
         typer.echo(format_entry(oid, size, age, sidecar))
 
@@ -6544,7 +6545,7 @@ def _parse_harness(raw: str) -> hooks_cli.Harness:
     ``--harness`` flag from a newer harness version does not abort the hook.
     """
     if raw in _VALID_HARNESSES:
-        return cast(hooks_cli.Harness, raw)
+        return cast("hooks_cli.Harness", raw)
     _LOG.debug("unknown harness %r; defaulting to 'claude'", raw)
     return "claude"
 
@@ -8116,11 +8117,11 @@ def cmd_sessions(
         sid = str(r["session_id"])
         sid_short = sid[:24] if len(sid) > 24 else sid
         proj = str(r["project"])[:20]
-        age = _format_relative_time(now - cast(float, r["last_activity_ts"]))
+        age = _format_relative_time(now - cast("float", r["last_activity_ts"]))
         typer.echo(
-            f"{sid_short:>26}  {proj:<20}  {age:>11}  {cast(int, r['file_count']):>5}  "
-            f"{cast(int, r['edit_count']):>5}  {cast(int, r['hints_emitted']):>5}  "
-            f"{cast(int, r['bash_count']):>4}  {cast(int, r['web_count']):>4}"
+            f"{sid_short:>26}  {proj:<20}  {age:>11}  {cast('int', r['file_count']):>5}  "
+            f"{cast('int', r['edit_count']):>5}  {cast('int', r['hints_emitted']):>5}  "
+            f"{cast('int', r['bash_count']):>4}  {cast('int', r['web_count']):>4}"
         )
 
 

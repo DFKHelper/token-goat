@@ -34,15 +34,16 @@ __all__ = [
     "sym_kind_str",
 ]
 
-import logging
 import re
-import types
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from ..util import get_logger
 
 if TYPE_CHECKING:
+    import logging
+    import types
+    from collections.abc import Callable
+
     from ..parser import ImpExp, Ref, Section, Symbol
 
 _LOG = get_logger("languages.common")

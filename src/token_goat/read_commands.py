@@ -3264,7 +3264,7 @@ def types(
         kind_label = _TYPE_KIND_LABEL.get(str(t["type_kind"]), str(t["type_kind"]))
         name = str(t["name"])
         loc = f"{t['file']}:{t['start_line']}"
-        fields: list[str] = cast(list[str], t["fields"])
+        fields: list[str] = cast("list[str]", t["fields"])
         if fields:
             if len(fields) <= _TYPES_FIELDS_INLINE_CAP:
                 fields_str = ", ".join(fields)
@@ -3681,7 +3681,7 @@ def recent(
         path_str = str(entry["path"])
         label = str(entry["source"])
         typer.echo(f"{path_str}  ({label})")
-        syms = cast(list[str], entry["symbols"])
+        syms = cast("list[str]", entry["symbols"])
         if syms:
             typer.echo(f"  {', '.join(syms)}")
 

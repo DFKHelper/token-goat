@@ -13,10 +13,9 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, TypedDict, cast
+from typing import IO, TYPE_CHECKING, TypedDict, cast
 
 from .util import env_float, get_logger
 
@@ -62,6 +61,9 @@ except ModuleNotFoundError:
 from . import db, parser, paths
 from .hooks_common import sanitize_log_str
 from .project import Project
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 
 class CleanupStats(TypedDict, total=False):
@@ -961,7 +963,7 @@ def drain_dirty_queue() -> list[DirtyQueueEntry] | None:
                 _LOG.warning("dirty queue entry is not a dict: %s", line[:120])
                 malformed_count += 1
                 continue
-            raw_entries.append(cast(DirtyQueueEntry, entry))
+            raw_entries.append(cast("DirtyQueueEntry", entry))
         except json.JSONDecodeError:
             _LOG.warning("bad dirty queue entry (not valid JSON): %s", line[:120])
             malformed_count += 1
