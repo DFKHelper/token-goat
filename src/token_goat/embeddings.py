@@ -9,9 +9,11 @@ __all__ = [
     "EmbeddingsUnavailable",
     "SearchHit",
     "SimilarSymbolHit",
+    "bm25_search",
     "embed_texts",
     "extract_chunks_for_file",
     "find_similar_symbols",
+    "hybrid_search",
     "index_project_embeddings",
     "is_available",
     "merge_nearby_hits",
@@ -19,6 +21,7 @@ __all__ = [
 ]
 
 import array
+import contextlib
 import hashlib
 import logging
 import os
@@ -792,6 +795,11 @@ def _insert_chunks_and_collect_embed_rows(
             (ch.file_rel, ch.start_line, ch.end_line, sha, ch.kind, ch.text),
         )
         chunk_id: int = cur.lastrowid  # type: ignore[assignment]  # INSERT always sets lastrowid
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute(
+                "INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
+                (chunk_id, ch.text),
+            )
         embed_rows.append((chunk_id, _pack_vec(vec)))
     return embed_rows
 
@@ -811,15 +819,22 @@ def _delete_stale_chunks(
     Returns the number of chunk rows deleted (0 if none were stale).
     """
     key_placeholders = ",".join("(?,?,?)" for _ in batch_keys)
-    stale_ids = [
-        row["id"]
-        for row in conn.execute(
-            f"SELECT id FROM chunks WHERE (file_rel, start_line, end_line) IN ({key_placeholders})",
-            [v for key in batch_keys for v in key],
-        ).fetchall()
-    ]
-    if not stale_ids:
+    stale_rows = conn.execute(
+        f"SELECT id, text FROM chunks WHERE (file_rel, start_line, end_line) IN ({key_placeholders})",
+        [v for key in batch_keys for v in key],
+    ).fetchall()
+    if not stale_rows:
         return 0
+    stale_ids = [row["id"] for row in stale_rows]
+    # Remove stale entries from FTS before the chunk rows disappear (external content table requires old text).
+    try:
+        for row in stale_rows:
+            conn.execute(
+                "INSERT INTO chunks_fts(chunks_fts, rowid, text) VALUES('delete',?,?)",
+                (row["id"], row["text"]),
+            )
+    except sqlite3.OperationalError:
+        pass
     id_placeholders = ",".join("?" for _ in stale_ids)
     conn.execute(f"DELETE FROM embeddings WHERE chunk_id IN ({id_placeholders})", stale_ids)
     conn.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", stale_ids)
@@ -1116,6 +1131,106 @@ def semantic_search(
         )
 
     return hits
+
+
+# ---------------------------------------------------------------------------
+# Keyword and hybrid search
+# ---------------------------------------------------------------------------
+
+def bm25_search(
+    project: Project,
+    query: str,
+    *,
+    k: int = 8,
+) -> list[SearchHit]:
+    """Keyword search using SQLite FTS5 BM25 ranking over the chunks table."""
+    if not query or not query.strip():
+        return []
+    if not db.fts_available(project.hash):
+        return []
+    results: list[SearchHit] = []
+    try:
+        with db.open_project_readonly(project.hash) as conn:
+            rows = conn.execute(
+                """SELECT c.file_rel, c.start_line, c.end_line, c.text, c.kind,
+                          bm25(chunks_fts) AS bm25_score
+                   FROM chunks_fts
+                   JOIN chunks c ON c.id = chunks_fts.rowid
+                   WHERE chunks_fts MATCH ?
+                   ORDER BY bm25_score
+                   LIMIT ?""",
+                (query, k),
+            ).fetchall()
+        for row in rows:
+            # bm25() returns negative values; store as-is so smaller = better matches SearchHit.distance semantics.
+            results.append(SearchHit(
+                file_rel=row[0],
+                start_line=row[1],
+                end_line=row[2],
+                text=row[3],
+                distance=float(row[5]),
+                kind=row[4],
+            ))
+    except sqlite3.OperationalError:
+        pass
+    return results
+
+
+def _rrf_fuse(
+    vector_hits: list[SearchHit],
+    keyword_hits: list[SearchHit],
+    *,
+    k: int = 60,
+    alpha: float = 0.5,
+) -> list[SearchHit]:
+    """Fuse two ranked lists via Reciprocal Rank Fusion (RRF)."""
+    from collections import defaultdict
+    rrf_scores: dict[tuple[str, int], float] = defaultdict(float)
+    hits_by_key: dict[tuple[str, int], SearchHit] = {}
+
+    for rank, hit in enumerate(vector_hits):
+        key = (hit.file_rel, hit.start_line)
+        rrf_scores[key] += alpha * (1.0 / (k + rank + 1))
+        hits_by_key[key] = hit
+
+    for rank, hit in enumerate(keyword_hits):
+        key = (hit.file_rel, hit.start_line)
+        rrf_scores[key] += (1 - alpha) * (1.0 / (k + rank + 1))
+        if key not in hits_by_key:
+            hits_by_key[key] = hit
+
+    # Sort by RRF score descending; convert to distance (negated) to fit SearchHit semantics.
+    fused = sorted(rrf_scores.keys(), key=lambda ky: rrf_scores[ky], reverse=True)
+    result = []
+    for key in fused:
+        hit = hits_by_key[key]
+        result.append(SearchHit(
+            file_rel=hit.file_rel,
+            start_line=hit.start_line,
+            end_line=hit.end_line,
+            text=hit.text,
+            distance=-rrf_scores[key],  # negate so smaller distance = higher RRF score
+            kind=hit.kind,
+        ))
+    return result
+
+
+def hybrid_search(
+    project: Project,
+    query: str,
+    *,
+    k: int = 8,
+    alpha: float = 0.5,
+    model_name: str = DEFAULT_MODEL,
+    max_distance: float | None = DEFAULT_DISTANCE_THRESHOLD,
+) -> list[SearchHit]:
+    """Hybrid search combining vector and BM25 results via Reciprocal Rank Fusion."""
+    vec_hits = semantic_search(
+        project, query, k=k * 2, model_name=model_name, max_distance=max_distance
+    )
+    kw_hits = bm25_search(project, query, k=k * 2)
+    fused = _rrf_fuse(vec_hits, kw_hits, alpha=alpha)
+    return fused[:k]
 
 
 # ---------------------------------------------------------------------------

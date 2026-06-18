@@ -41,6 +41,7 @@ __all__ = [
     "DBReadOnlyError",
     "VecExtensionUnavailable",
     "file_count",
+    "fts_available",
     "get_compression_stats",
     "get_entry_scores",
     "get_file_exports",
@@ -641,6 +642,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0(
 );
 """
 
+_CHUNKS_FTS_DDL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    text,
+    content='chunks',
+    content_rowid='id',
+    tokenize='unicode61 remove_diacritics 1'
+);
+"""
+
 
 def _ensure_global_schema(conn: sqlite3.Connection) -> None:
     """Create or verify the global-DB tables and stamp the schema version.
@@ -741,6 +751,12 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
             conn.execute(
                 "INSERT OR IGNORE INTO meta (key, value) VALUES ('embeddings_disabled', '1')"
             )
+    try:
+        conn.executescript(_CHUNKS_FTS_DDL)
+    except sqlite3.OperationalError as e:
+        _LOG.warning("chunks_fts table unavailable: %s", e)
+        with contextlib.suppress(sqlite3.OperationalError):
+            conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('fts_disabled', '1')")
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -907,7 +923,7 @@ _PROJECT_HASH_RE = re.compile(r"^[0-9a-f]+$")
 # Using an allowlist instead of relying solely on call-site literals prevents
 # SQL injection if _count() is ever called with externally-derived input.
 _KNOWN_PROJECT_TABLES = frozenset(
-    ["files", "symbols", "refs", "sections", "chunks", "embeddings"]
+    ["files", "symbols", "refs", "sections", "chunks", "embeddings", "chunks_fts"]
 )
 
 
@@ -1398,6 +1414,16 @@ def index_health(project_hash: str) -> dict[str, object]:
     except (sqlite3.Error, DBError, OSError) as exc:
         _LOG.warning("index_health failed for %s: %s", project_hash[:8], exc)
     return result
+
+
+def fts_available(project_hash: str) -> bool:
+    """Return True if the FTS5 index is usable for this project."""
+    try:
+        with open_project_readonly(project_hash) as conn:
+            val = conn.execute("SELECT value FROM meta WHERE key='fts_disabled'").fetchone()
+            return val is None
+    except Exception:
+        return False
 
 
 _MAX_STAT_KIND_LEN: int = 64
