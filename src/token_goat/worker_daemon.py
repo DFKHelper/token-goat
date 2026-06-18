@@ -23,13 +23,14 @@ import signal
 import sys
 import threading
 import time
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from . import worker as _worker
 from .util import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .worker import CleanupStats, DirtyQueueEntry
 
 # ---------------------------------------------------------------------------

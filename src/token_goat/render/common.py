@@ -12,10 +12,11 @@ from __future__ import annotations
 
 __all__ = ["render_list", "render_panel", "render_table"]
 
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from rich.console import RenderableType
     from rich.panel import Panel as RichPanel
     from rich.table import Table as RichTable

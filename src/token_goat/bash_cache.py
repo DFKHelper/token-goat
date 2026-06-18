@@ -60,7 +60,7 @@ __all__ = [
 import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import paths
 from .cache_common import (
@@ -84,6 +84,9 @@ from .cache_common import (
 )
 from .hooks_common import sanitize_log_str
 from .util import get_logger, normalize_path, strip_ansi
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _LOG = get_logger("bash_cache")
 

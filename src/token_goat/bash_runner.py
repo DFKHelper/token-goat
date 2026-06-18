@@ -48,12 +48,14 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
 from io import BytesIO
-from typing import IO, Final
+from typing import IO, TYPE_CHECKING, Final
 
 from . import bash_compress
 from .util import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _LOG = get_logger("bash_runner")
 

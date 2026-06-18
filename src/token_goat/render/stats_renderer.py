@@ -26,14 +26,17 @@ import json
 import math
 import operator
 import shutil
-from collections.abc import Iterable
-from datetime import date
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from ..util import get_logger
 from .ansi import RESET, RGB, C, fg, lerp_rgb, pad_l, pad_r, strip_ansi, vlen
-from .types import CommandStat, DayStat, KindStat, ProjectStat, SourceStat, StatsData
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from datetime import date
+
+    from .types import CommandStat, DayStat, KindStat, ProjectStat, SourceStat, StatsData
 
 _LOG = get_logger("render.stats_renderer")
 
@@ -98,7 +101,7 @@ def _load_stats_messages() -> _StatsMessages:
     """
     try:
         return cast(
-            _StatsMessages,
+            "_StatsMessages",
             json.loads(Path(__file__).with_name("stats_messages.json").read_text(encoding="utf-8")),
         )
     except (OSError, json.JSONDecodeError, KeyError) as exc:

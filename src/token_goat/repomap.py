@@ -31,7 +31,6 @@ import heapq
 import sqlite3
 import time
 from collections import Counter, defaultdict
-from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Final, Protocol, TypedDict
@@ -40,6 +39,8 @@ from . import db
 from .util import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from .project import Project
 
 

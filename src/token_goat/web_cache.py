@@ -58,7 +58,7 @@ __all__ = [
 
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse, urlunparse
 
 from .cache_common import (
@@ -84,6 +84,9 @@ from .cache_common import (
 )
 from .hooks_common import sanitize_log_str
 from .util import get_logger, strip_ansi
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _LOG = get_logger("web_cache")
 

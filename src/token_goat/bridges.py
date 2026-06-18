@@ -71,7 +71,7 @@ def _load_json_config(path: Path) -> dict[str, object]:
     # After the isinstance guard, data is dict[str, Any].  We cast to
     # dict[str, object] (the return annotation) which is sound: object is the
     # base of all types, so every value in dict[str, Any] satisfies object.
-    return cast(dict[str, object], data)
+    return cast("dict[str, object]", data)
 
 
 def _save_json_config(path: Path, cfg: dict[str, object]) -> None:

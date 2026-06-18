@@ -290,15 +290,17 @@ import math
 import os
 import re
 import shlex
-from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Final
+from typing import TYPE_CHECKING, ClassVar, Final
 
 from .entropy import has_high_entropy_token
 from .hooks_common import record_cached_stat
 from .render.ansi import strip_ansi
 from .util import env_int, get_logger, sanitize_control_chars
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
 
 _LOG = get_logger("bash_compress")
 

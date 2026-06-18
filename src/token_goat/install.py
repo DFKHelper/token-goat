@@ -9,13 +9,15 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from . import paths
 from .util import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class _HookCommandEntry(TypedDict):
@@ -1161,7 +1163,7 @@ def _merge_token_goat_hooks(
         existing_entries = existing_hooks.get(event, [])
         kept = _strip_token_goat_entries(existing_entries)
         stripped_count = len(existing_entries) - len(kept)
-        existing_hooks[event] = kept + cast(list[dict[str, object]], entries)
+        existing_hooks[event] = kept + cast("list[dict[str, object]]", entries)
         if stripped_count:
             replaced.append(f"{event}(replaced {stripped_count})")
         else:

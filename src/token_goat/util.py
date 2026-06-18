@@ -12,10 +12,13 @@ import re
 import subprocess
 import sys
 from logging import Logger
-from pathlib import Path
 from subprocess import CompletedProcess
+from typing import TYPE_CHECKING
 
 from .render.ansi import strip_ansi as strip_ansi  # noqa: PLC0414  re-export
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 __all__ = [
     "strip_ansi",
