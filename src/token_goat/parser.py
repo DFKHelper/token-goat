@@ -17,6 +17,7 @@ __all__ = [
     "index_file",
     "index_project",
     "iter_source_files",
+    "load_project_ignore_patterns",
     "parser_cache_clear",
     "parser_cache_stats",
     "register_extractor",
@@ -24,6 +25,7 @@ __all__ = [
 ]
 
 import contextlib
+import fnmatch
 import hashlib
 import heapq
 import json
@@ -189,6 +191,46 @@ def _is_generated_filename(name: str) -> bool:
     if lower in SKIP_FILE_BASENAMES:
         return True
     return any(lower.endswith(suf) for suf in SKIP_FILE_SUFFIXES)
+
+
+def load_project_ignore_patterns(project_root: Path) -> list[str]:
+    """Load custom exclusion patterns from .tokengoatignore at project root.
+
+    Returns a list of non-empty, non-comment lines. Strips comments (text after #)
+    and blank lines. Returns [] if file doesn't exist or is unreadable.
+    """
+    from . import paths
+    ignore_file = paths.project_ignore_file_path(project_root)
+    if not ignore_file.exists():
+        return []
+    try:
+        content = ignore_file.read_text(encoding="utf-8")
+    except OSError as e:
+        _LOG.debug("failed to read %s: %s", ignore_file, e)
+        return []
+    patterns = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        patterns.append(line)
+    return patterns
+
+
+def _matches_ignore_pattern(rel_path: str, patterns: list[str]) -> bool:
+    """Return True if rel_path matches any of the gitignore-style patterns.
+
+    Tests both the full relative path and its basename. Normalizes path separators
+    to forward slash before matching.
+    """
+    if not patterns:
+        return False
+    normalized = rel_path.replace("\\", "/")
+    basename = normalized.split("/")[-1]
+    for pattern in patterns:
+        if fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(basename, pattern):
+            return True
+    return False
 
 
 @dataclass
@@ -540,6 +582,7 @@ def iter_source_files(
     skip_threshold: int = MAX_FILE_SIZE,
     ext_filter: frozenset[str] | None = None,
     extra_skip_dirs: frozenset[str] = frozenset(),
+    ignore_patterns: list[str] | None = None,
 ) -> Iterable[Path]:
     """Yield absolute paths of indexable source files under the project root.
 
@@ -560,14 +603,18 @@ def iter_source_files(
         extra_skip_dirs: Additional directory basenames to skip, merged with
             the built-in ``SKIP_DIRS`` frozenset.  Populated from
             ``config.indexing.skip_dirs`` in ``index_project``.
+        ignore_patterns: List of gitignore-style glob patterns to exclude files/dirs.
+            Loaded from .tokengoatignore if present. Defaults to None (no extra patterns).
     """
     root = project.root
     resolved_root = root.resolve()
     _effective_skip_dirs = SKIP_DIRS | extra_skip_dirs if extra_skip_dirs else SKIP_DIRS
+    _ignore_patterns = ignore_patterns or []
     skipped_dirs = 0
     skipped_symlinks = 0
     skipped_oversized = 0
     skipped_generated = 0
+    skipped_ignore = 0
     for dirpath, dirs, files in os.walk(root):
         initial_dirs = dirs[:]
         dirs[:] = [d for d in dirs if d not in _effective_skip_dirs]
@@ -622,6 +669,14 @@ def iter_source_files(
                     continue
             except OSError:
                 continue
+            if _ignore_patterns:
+                try:
+                    rel_path = path.relative_to(root).as_posix()
+                    if _matches_ignore_pattern(rel_path, _ignore_patterns):
+                        skipped_ignore += 1
+                        continue
+                except ValueError:
+                    pass
             yield path
     if skipped_dirs > 0:
         _LOG.debug("file walk excluded %d skip-listed directories", skipped_dirs)
@@ -631,6 +686,8 @@ def iter_source_files(
         _LOG.info("file walk skipped %d oversized files (> %d bytes)", skipped_oversized, skip_threshold)
     if skipped_generated > 0:
         _LOG.debug("file walk skipped %d generated/lockfile artifacts", skipped_generated)
+    if skipped_ignore > 0:
+        _LOG.debug("file walk skipped %d files matching .tokengoatignore patterns", skipped_ignore)
 
 
 def _line_count_from_bytes(raw: bytes) -> int:
@@ -932,6 +989,11 @@ def index_project(
         _skip_threshold = MAX_FILE_SIZE
         _symbol_only_threshold = 0
 
+    # Load per-project ignore patterns from .tokengoatignore
+    _ignore_patterns = load_project_ignore_patterns(project.root)
+    if _ignore_patterns:
+        _LOG.info("index_project: loaded %d custom exclusion patterns from .tokengoatignore", len(_ignore_patterns))
+
     # Register the project in the global registry up front, before the
     # potentially slow (or hang-prone) file walk. The final registry update
     # below fills in real file_count/languages once indexing completes. Without
@@ -956,7 +1018,7 @@ def index_project(
     _skipped_large: list[LargeFileInfo] = []
     if _skip_threshold < MAX_FILE_SIZE * 100:  # only scan when threshold is meaningful
         with contextlib.suppress(Exception):
-            for _lp in iter_source_files(project, skip_threshold=MAX_FILE_SIZE * 100, extra_skip_dirs=_extra_skip_dirs):
+            for _lp in iter_source_files(project, skip_threshold=MAX_FILE_SIZE * 100, extra_skip_dirs=_extra_skip_dirs, ignore_patterns=_ignore_patterns):
                 try:
                     _lp_size = _lp.stat().st_size
                 except OSError:
@@ -976,7 +1038,7 @@ def index_project(
                         _lp_rel, _lp_size, _skip_threshold,
                     )
 
-    files = list(iter_source_files(project, skip_threshold=_skip_threshold, ext_filter=ext_filter, extra_skip_dirs=_extra_skip_dirs))
+    files = list(iter_source_files(project, skip_threshold=_skip_threshold, ext_filter=ext_filter, extra_skip_dirs=_extra_skip_dirs, ignore_patterns=_ignore_patterns))
     n_total = len(files)
     if n_total == 0:
         _LOG.debug(

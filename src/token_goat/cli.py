@@ -3295,6 +3295,59 @@ def index(
 
 
 @app.command(rich_help_panel="Core")
+def ignores(
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Show active exclusion patterns for the current project.
+
+    Displays built-in skip lists (directories, filenames, suffixes) and any
+    custom patterns from .tokengoatignore.
+    """
+    from . import paths as _paths
+    from .parser import (
+        SKIP_DIRS,
+        SKIP_FILE_BASENAMES,
+        SKIP_FILE_SUFFIXES,
+        load_project_ignore_patterns,
+    )
+    from .project import find_project
+
+    proj = find_project(Path.cwd())
+    if proj is None:
+        _error("no project detected — run from a project directory")
+        raise typer.Exit(1)
+
+    ignore_patterns = load_project_ignore_patterns(proj.root)
+    ignore_file = _paths.project_ignore_file_path(proj.root)
+
+    if json_output:
+        output = {
+            "skip_dirs": sorted(SKIP_DIRS),
+            "skip_basenames": sorted(SKIP_FILE_BASENAMES),
+            "skip_suffixes": list(SKIP_FILE_SUFFIXES),
+            "project_patterns": ignore_patterns,
+            "project_file_path": ignore_file.as_posix(),
+        }
+        typer.echo(json.dumps(output, indent=2))
+    else:
+        typer.echo(f"Built-in skip directories ({len(SKIP_DIRS)}):")
+        for d in sorted(SKIP_DIRS):
+            typer.echo(f"  {d}/")
+        typer.echo(f"\nBuilt-in skip filenames ({len(SKIP_FILE_BASENAMES)}):")
+        for f in sorted(SKIP_FILE_BASENAMES):
+            typer.echo(f"  {f}")
+        typer.echo(f"\nBuilt-in skip suffixes ({len(SKIP_FILE_SUFFIXES)}):")
+        for s in SKIP_FILE_SUFFIXES:
+            typer.echo(f"  {s}")
+        if ignore_patterns:
+            typer.echo(f"\nProject-specific patterns from {ignore_file.name} ({len(ignore_patterns)}):")
+            for p in ignore_patterns:
+                typer.echo(f"  {p}")
+        else:
+            typer.echo(f"\nProject-specific patterns: none (no {ignore_file.name})")
+
+
+@app.command(rich_help_panel="Core")
 def stats(
     window: int = typer.Option(30, "--window", "-w", help="Days to include (0 = all time)"),
     json_output: bool = _OPT_JSON,
