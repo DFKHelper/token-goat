@@ -240,7 +240,7 @@ class TestHarnessConfig:
 
     def test_harness_field_accepted_in_constructor(self) -> None:
         """All valid harness values are accepted by CompactAssistConfig."""
-        for val in ("auto", "claudecode", "codex", "opencode", "generic"):
+        for val in ("auto", "claudecode", "codex", "opencode", "gemini", "generic"):
             ca = CompactAssistConfig(harness=val)
             assert ca.harness == val, f"expected harness={val!r}, got {ca.harness!r}"
 
@@ -422,9 +422,9 @@ class TestManifestHarnessOpencode:
         monkeypatch.setattr("token_goat.compact._load_config", lambda: opencode_cfg)
 
         result = compact.build_manifest(sid)
-        if result and "ralph" in result:
-            # Skills section must be present for opencode (unlike codex)
-            assert "**Skills:**" in result
+        assert result, "Expected non-empty manifest for populated session"
+        # Skills section must be present for opencode (unlike codex)
+        assert "**Skills:**" in result, f"Expected '**Skills:**' in opencode manifest:\n{result}"
 
     def test_opencode_tag_is_near_top(
         self, tmp_data_dir: object, monkeypatch: pytest.MonkeyPatch
@@ -512,6 +512,8 @@ class TestAutoFallbackToGeneric:
         monkeypatch.delenv("CODEX_SESSION", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENCODE_SESSION", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         auto_cfg = _make_cfg(harness="auto")
         monkeypatch.setattr("token_goat.compact._load_config", lambda: auto_cfg)
@@ -572,3 +574,130 @@ class TestAutoTriggerMultiplierPerHarness:
             harness="claudecode",
         )
         assert multiplier == 10.0
+
+    def test_gemini_default_multiplier(self) -> None:
+        """Gemini harness gets 3.0x default multiplier."""
+        multiplier = compact.get_auto_trigger_multiplier(
+            config_explicit_multiplier=2.0,
+            harness="gemini",
+        )
+        assert multiplier == 3.0
+
+
+class TestManifestHarnessGemini:
+    """Gemini CLI harness: manifest includes harness tag and full sections."""
+
+    def test_gemini_injects_harness_tag(
+        self, tmp_data_dir: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gemini harness injects '### harness: gemini' into the header."""
+        sid = "gemini-tag-test"
+        _populate(sid, files=2, greps=1, edits=1)
+
+        gemini_cfg = _make_cfg(harness="gemini")
+        monkeypatch.setattr("token_goat.compact._load_config", lambda: gemini_cfg)
+
+        result = compact.build_manifest(sid)
+        assert result, "Expected non-empty manifest for populated session"
+        assert "### harness: gemini" in result, (
+            f"Expected '### harness: gemini' in manifest but not found:\n{result}"
+        )
+
+    def test_gemini_keeps_skills_section(
+        self, tmp_data_dir: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gemini harness does not suppress the skills section."""
+        sid = "gemini-keeps-skills-test"
+        _populate(sid, files=2, greps=1, edits=1)
+        _add_skill(sid, "ralph")
+
+        gemini_cfg = _make_cfg(harness="gemini")
+        monkeypatch.setattr("token_goat.compact._load_config", lambda: gemini_cfg)
+
+        result = compact.build_manifest(sid)
+        assert result, "Expected non-empty manifest for populated session"
+        # Skills section must be present for gemini (unlike codex)
+        assert "**Skills:**" in result, f"Expected '**Skills:**' in gemini manifest:\n{result}"
+
+    def test_gemini_tag_is_near_top(
+        self, tmp_data_dir: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The harness tag appears in the header area (within first 20 lines)."""
+        sid = "gemini-tag-position-test"
+        _populate(sid, files=2, greps=1, edits=1)
+
+        gemini_cfg = _make_cfg(harness="gemini")
+        monkeypatch.setattr("token_goat.compact._load_config", lambda: gemini_cfg)
+
+        result = compact.build_manifest(sid)
+        assert result
+        lines = result.splitlines()
+        tag_lines = [i for i, ln in enumerate(lines) if "### harness: gemini" in ln]
+        assert tag_lines, "### harness: gemini not found in manifest"
+        assert tag_lines[0] < 20, (
+            f"harness tag found at line {tag_lines[0]}, expected within first 20 lines"
+        )
+
+
+class TestDetectHarnessGemini:
+    """detect_harness() correctly identifies the Gemini CLI harness."""
+
+    def test_config_override_gemini(self) -> None:
+        """A config_override value of 'gemini' is returned directly."""
+        assert detect_harness("gemini") == "gemini"
+
+    def test_gemini_api_key_without_anthropic_returns_gemini(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """auto detection: GEMINI_API_KEY without ANTHROPIC_API_KEY → gemini."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("CODEX_SESSION", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENCODE_SESSION", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_HARNESS_OVERRIDE", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+        assert detect_harness("auto") == "gemini"
+
+    def test_google_api_key_without_anthropic_returns_gemini(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """auto detection: GOOGLE_API_KEY without ANTHROPIC_API_KEY → gemini."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("CODEX_SESSION", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENCODE_SESSION", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_HARNESS_OVERRIDE", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.setenv("GOOGLE_API_KEY", "fake-google-key")
+        assert detect_harness("auto") == "gemini"
+
+    def test_gemini_api_key_with_anthropic_returns_claudecode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GEMINI_API_KEY + ANTHROPIC_API_KEY → Claude Code wins (higher precedence)."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-key")
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("TOKEN_GOAT_HARNESS_OVERRIDE", raising=False)
+        assert detect_harness("auto") == "claudecode"
+
+    def test_known_harnesses_includes_gemini(self) -> None:
+        """_KNOWN_HARNESSES must include 'gemini' so override and config validation work."""
+        from token_goat.compact import _KNOWN_HARNESSES
+        assert "gemini" in _KNOWN_HARNESSES
+
+    def test_valid_harness_config_includes_gemini(self) -> None:
+        """config._VALID_HARNESS_VALUES must include 'gemini' for TOML validation."""
+        from token_goat.config import _VALID_HARNESS_VALUES
+        assert "gemini" in _VALID_HARNESS_VALUES
+
+    def test_token_goat_harness_override_gemini(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TOKEN_GOAT_HARNESS_OVERRIDE=gemini is accepted and returned."""
+        monkeypatch.setenv("TOKEN_GOAT_HARNESS_OVERRIDE", "gemini")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        assert detect_harness("auto") == "gemini"
