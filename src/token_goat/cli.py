@@ -2674,9 +2674,7 @@ def cache_audit() -> None:
         size_kb = len(content.encode()) / 1024
         if size_kb > 50:
             issues.append(f"CLAUDE.md is {size_kb:.1f}KB — large system prompts bust cache on every token-count change")
-        for pat in ("{{date}}", "{{time}}", "Date:", "Time:", "today is"):
-            if pat.lower() in content.lower():
-                issues.append(f"CLAUDE.md contains dynamic pattern {pat!r} — changes every session, busting cache")
+        issues.extend(f"CLAUDE.md contains dynamic pattern {pat!r} — changes every session, busting cache" for pat in ("{{date}}", "{{time}}", "Date:", "Time:", "today is") if pat.lower() in content.lower())
 
     if issues:
         from .render.common import render_list  # noqa: PLC0415
@@ -3099,10 +3097,7 @@ def _watch_project(proj: Project) -> None:
             time.sleep(_WATCH_POLL_INTERVAL)
             new_mtimes = _scan_mtimes()
 
-            changed: list[str] = []
-            for rel, mtime in new_mtimes.items():
-                if mtimes.get(rel) != mtime:
-                    changed.append(rel)
+            changed = [rel for rel, mtime in new_mtimes.items() if mtimes.get(rel) != mtime]
             # Also track deletions (removed files need no reindex, just update snapshot)
 
             for rel in changed:

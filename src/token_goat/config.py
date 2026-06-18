@@ -51,10 +51,7 @@ def _config_env_fingerprint() -> str:
     TOKEN_GOAT_* between hook calls) busts the process-level cache without requiring
     a file-system change. Auto-picks up new TOKEN_GOAT_* vars without a static list.
     """
-    parts = []
-    for key, val in os.environ.items():
-        if key.startswith("TOKEN_GOAT_") or key == "TOKENWISE_COMPACT_ASSIST":
-            parts.append(f"{key}={val}")
+    parts = [f"{key}={val}" for key, val in os.environ.items() if key.startswith("TOKEN_GOAT_") or key == "TOKENWISE_COMPACT_ASSIST"]
     return "|".join(sorted(parts))
 
 _ENV_COMPACT_ASSIST: Final[str] = "TOKEN_GOAT_COMPACT_ASSIST"  # set to "0"/"false"/"no"/"off" to disable

@@ -714,9 +714,7 @@ def _iter_skill_names(skills_root: Path, plugins_cache: Path) -> list[str]:
     names: list[str] = []
     if skills_root.is_dir():
         with contextlib.suppress(OSError):
-            for entry in skills_root.iterdir():
-                if entry.is_dir():
-                    names.append(entry.name)
+            names.extend(entry.name for entry in skills_root.iterdir() if entry.is_dir())
     if plugins_cache.is_dir():
         with contextlib.suppress(OSError):
             for mkt in plugins_cache.iterdir():
@@ -737,9 +735,7 @@ def _iter_skill_names(skills_root: Path, plugins_cache: Path) -> list[str]:
                         if not ver_skills.is_dir():
                             continue
                         with contextlib.suppress(OSError):
-                            for skill_entry in ver_skills.iterdir():
-                                if skill_entry.is_dir():
-                                    names.append(f"{plugin_dir.name}:{skill_entry.name}")
+                            names.extend(f"{plugin_dir.name}:{skill_entry.name}" for skill_entry in ver_skills.iterdir() if skill_entry.is_dir())
                         break
     return names
 

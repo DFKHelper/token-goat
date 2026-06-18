@@ -359,9 +359,7 @@ def audit_claude_md(files: list[Path]) -> list[ClaudeMdReport]:
             if line.startswith("##"):
                 heading = line.strip()
                 seen_headings.setdefault(heading, []).append(i)
-        for heading, lnos in seen_headings.items():
-            if len(lnos) > 1:
-                dup_sections.append((heading, lnos))
+        dup_sections.extend((heading, lnos) for heading, lnos in seen_headings.items() if len(lnos) > 1)
 
         reports.append(
             ClaudeMdReport(

@@ -543,9 +543,7 @@ def _enumerate_plugin_skill_dirs(
         skills_dir = marketplaces_root / marketplace / "plugins" / plugin_slug / "skills"
         with contextlib.suppress(OSError):
             if skills_dir.is_dir():
-                for skill_dir in skills_dir.iterdir():
-                    if skill_dir.is_dir():
-                        results.append((plugin_slug, skill_dir))
+                results.extend((plugin_slug, d) for d in skills_dir.iterdir() if d.is_dir())
     return results
 
 

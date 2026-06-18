@@ -2411,9 +2411,7 @@ def detect_harnesses() -> list[str]:
     # Return names of detected harnesses in deterministic order
     found: list[str] = ["claude"]  # always first
     # Append others in alphabetical order
-    for name in sorted(harnesses_dict.keys()):
-        if name != "claude" and harnesses_dict[name]:
-            found.append(name)
+    found.extend(name for name in sorted(harnesses_dict.keys()) if name != "claude" and harnesses_dict[name])
     return found
 
 
@@ -3011,16 +3009,19 @@ def install_all(
         _LOG.warning("install step: hook wrapper — FAIL: %s", e)
 
     settings_ok, settings_detail = patch_settings_json()
-    result["settings.json"] = _ok_fail(settings_ok, settings_detail)
-    _LOG.info("install step: settings.json — %s", _ok_fail(settings_ok, settings_detail))
+    settings_status = _ok_fail(settings_ok, settings_detail)
+    result["settings.json"] = settings_status
+    _LOG.info("install step: settings.json — %s", settings_status)
 
     md_out = patch_claude_md()
-    result["CLAUDE.md"] = _ok_fail(True, md_out)
-    _LOG.info("install step: CLAUDE.md — %s", _ok_fail(True, md_out))
+    md_status = _ok_fail(True, md_out)
+    result["CLAUDE.md"] = md_status
+    _LOG.info("install step: CLAUDE.md — %s", md_status)
 
     skill_path = write_skill()
-    result["skill"] = _ok_fail(True, skill_path)
-    _LOG.info("install step: skill — %s", _ok_fail(True, skill_path))
+    skill_status = _ok_fail(True, skill_path)
+    result["skill"] = skill_status
+    _LOG.info("install step: skill — %s", skill_status)
 
     try:
         pregen_result = pregen_skill_compacts()
