@@ -32,6 +32,7 @@ every response-builder has a precise return type instead of ``dict[str, Any]``.
 """
 from __future__ import annotations
 
+from .config import HOOKS_WATCHDOG_DEFAULT_MS as _HOOKS_WATCHDOG_DEFAULT_MS
 from .util import get_logger
 
 __all__ = [
@@ -177,7 +178,7 @@ LOG = get_logger("hooks")
 # Module-level state for adaptive timeout: when a hook subprocess times out,
 # the effective timeout is doubled (capped at 30 s) for subsequent calls in
 # the same session. This adapts to slow CI machines or cold-cache environments.
-_effective_watchdog_ms: int = 5000  # Will be overridden by config on first call to get_effective_watchdog_ms()
+_effective_watchdog_ms: int = _HOOKS_WATCHDOG_DEFAULT_MS  # Will be overridden by config on first call to get_effective_watchdog_ms()
 _consecutive_timeouts: int = 0
 _timeout_configured: bool = False
 
@@ -186,7 +187,7 @@ def get_effective_watchdog_ms() -> int:
     """Return the current effective hook watchdog timeout in milliseconds.
 
     On first invocation, loads the [hooks].watchdog_ms value from config (or the
-    default 5000 ms), with env-var TOKEN_GOAT_HOOK_WATCHDOG_MS taking precedence.
+    default 700 ms), with env-var TOKEN_GOAT_HOOK_WATCHDOG_MS taking precedence.
     The value is clamped to [100, 30000].
 
     On subsequent invocations within the same process, returns the adapted value
@@ -200,8 +201,8 @@ def get_effective_watchdog_ms() -> int:
             _effective_watchdog_ms = config.load().hooks.watchdog_ms
             LOG.debug("hook watchdog initialized: %d ms", _effective_watchdog_ms)
         except Exception:
-            _effective_watchdog_ms = 5000
-            LOG.debug("hook watchdog config load failed, using default 5000 ms")
+            _effective_watchdog_ms = _HOOKS_WATCHDOG_DEFAULT_MS
+            LOG.debug("hook watchdog config load failed, using default %d ms", _HOOKS_WATCHDOG_DEFAULT_MS)
         _timeout_configured = True
 
     return _effective_watchdog_ms

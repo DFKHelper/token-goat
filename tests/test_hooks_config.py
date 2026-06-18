@@ -1,6 +1,8 @@
 """Tests for hooks configuration and adaptive watchdog timeout."""
 from __future__ import annotations
 
+from token_goat.config import HOOKS_WATCHDOG_DEFAULT_MS
+
 
 class TestHooksConfig:
     """Tests for [hooks] configuration section, watchdog_ms, and adaptive timeout."""
@@ -8,7 +10,7 @@ class TestHooksConfig:
     def _reset_hook_state(self) -> None:
         """Reset module-level hook watchdog state between tests."""
         import token_goat.hooks_common as hc_mod
-        hc_mod._effective_watchdog_ms = 5000
+        hc_mod._effective_watchdog_ms = HOOKS_WATCHDOG_DEFAULT_MS
         hc_mod._consecutive_timeouts = 0
         hc_mod._timeout_configured = False
 
@@ -17,8 +19,8 @@ class TestHooksConfig:
         import token_goat.config as cfg_mod
         cfg_mod._config_mtime_cache = None
 
-    def test_default_hooks_watchdog_is_5000(self, tmp_path, monkeypatch):
-        """Default [hooks].watchdog_ms should be 5000."""
+    def test_default_hooks_watchdog_matches_constant(self, tmp_path, monkeypatch):
+        """Default [hooks].watchdog_ms should equal HOOKS_WATCHDOG_DEFAULT_MS."""
         import token_goat.config as cfg_mod
         import token_goat.paths as paths_mod
 
@@ -26,7 +28,7 @@ class TestHooksConfig:
         self._reset_config_cache()
 
         cfg = cfg_mod.load()
-        assert cfg.hooks.watchdog_ms == 5000
+        assert cfg.hooks.watchdog_ms == HOOKS_WATCHDOG_DEFAULT_MS
 
     def test_config_toml_watchdog_setting(self, tmp_path, monkeypatch):
         """[hooks].watchdog_ms from TOML should override default."""
@@ -56,7 +58,7 @@ class TestHooksConfig:
         assert cfg.hooks.watchdog_ms == 10000
 
     def test_watchdog_out_of_range_uses_default(self, tmp_path, monkeypatch):
-        """watchdog_ms out of range [100, 30000] should fallback to default 5000."""
+        """watchdog_ms out of range [100, 30000] should fallback to HOOKS_WATCHDOG_DEFAULT_MS."""
         import token_goat.config as cfg_mod
         import token_goat.paths as paths_mod
 
@@ -66,7 +68,7 @@ class TestHooksConfig:
         self._reset_config_cache()
 
         cfg = cfg_mod.load()
-        assert cfg.hooks.watchdog_ms == 5000
+        assert cfg.hooks.watchdog_ms == HOOKS_WATCHDOG_DEFAULT_MS
 
     def test_watchdog_at_boundaries(self, tmp_path, monkeypatch):
         """watchdog_ms at min/max boundaries should be accepted."""
@@ -89,8 +91,8 @@ class TestHooksConfig:
         cfg = cfg_mod.load()
         assert cfg.hooks.watchdog_ms == 30000
 
-    def test_get_effective_watchdog_ms_returns_5000_default(self, monkeypatch):
-        """get_effective_watchdog_ms() should return 5000 when no config exists."""
+    def test_get_effective_watchdog_ms_returns_default(self, monkeypatch):
+        """get_effective_watchdog_ms() should return HOOKS_WATCHDOG_DEFAULT_MS when no config exists."""
         import token_goat.hooks_common as hc_mod
         import token_goat.paths as paths_mod
 
@@ -99,7 +101,7 @@ class TestHooksConfig:
         self._reset_config_cache()
 
         ms = hc_mod.get_effective_watchdog_ms()
-        assert ms == 5000
+        assert ms == HOOKS_WATCHDOG_DEFAULT_MS
 
     def test_get_effective_watchdog_loads_from_config(self, tmp_path, monkeypatch):
         """get_effective_watchdog_ms() should load config value on first call."""
@@ -126,7 +128,7 @@ class TestHooksConfig:
 
         ms1 = hc_mod.get_effective_watchdog_ms()
         ms2 = hc_mod.get_effective_watchdog_ms()
-        assert ms1 == ms2 == 5000
+        assert ms1 == ms2 == HOOKS_WATCHDOG_DEFAULT_MS
 
     def test_record_watchdog_timeout_doubles_timeout(self, monkeypatch):
         """record_watchdog_timeout() should double the effective timeout."""
@@ -137,14 +139,14 @@ class TestHooksConfig:
         self._reset_hook_state()
         self._reset_config_cache()
 
-        # Start with baseline 5000
+        # Start with baseline (default)
         ms1 = hc_mod.get_effective_watchdog_ms()
-        assert ms1 == 5000
+        assert ms1 == HOOKS_WATCHDOG_DEFAULT_MS
 
-        # After timeout, should double to 10000
+        # After timeout, should double to 1400
         hc_mod.record_watchdog_timeout()
         ms2 = hc_mod.get_effective_watchdog_ms()
-        assert ms2 == 10000
+        assert ms2 == ms1 * 2
 
     def test_timeout_doubles_multiple_times(self, monkeypatch):
         """Multiple consecutive timeouts should keep doubling (capped at 30s)."""
@@ -156,21 +158,21 @@ class TestHooksConfig:
         self._reset_config_cache()
 
         ms_initial = hc_mod.get_effective_watchdog_ms()
-        assert ms_initial == 5000
+        assert ms_initial == HOOKS_WATCHDOG_DEFAULT_MS
 
-        # First timeout: 5000 → 10000
-        hc_mod.record_watchdog_timeout()
-        assert hc_mod.get_effective_watchdog_ms() == 10000
+        # Doubling chain: each timeout doubles, capped at 30000
+        prev = ms_initial
+        while prev * 2 < 30000:
+            hc_mod.record_watchdog_timeout()
+            cur = hc_mod.get_effective_watchdog_ms()
+            assert cur == prev * 2
+            prev = cur
 
-        # Second timeout: 10000 → 20000
-        hc_mod.record_watchdog_timeout()
-        assert hc_mod.get_effective_watchdog_ms() == 20000
-
-        # Third timeout: 20000 → 30000
+        # One more: should hit or stay at 30000
         hc_mod.record_watchdog_timeout()
         assert hc_mod.get_effective_watchdog_ms() == 30000
 
-        # Fourth timeout: already at cap, stays 30000
+        # Additional timeouts at cap: stays at 30000
         hc_mod.record_watchdog_timeout()
         assert hc_mod.get_effective_watchdog_ms() == 30000
 
