@@ -21,8 +21,6 @@ Token-Goat sits silently between your AI and your tools. Re-read a file? It gets
 
 Works with **Claude Code**, **Gemini CLI**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, OpenCode, OpenClaw, and **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
 
-> **This fork ([`pi-token-goat`](https://github.com/eSaadster/pi-token-goat))** adds a **pi** integration on top of upstream [token-goat](https://github.com/DFKHelper/token-goat): a TypeScript extension bridges pi's extension events (`tool_call`, `tool_result`, `session_before_compact`, …) into token-goat's hook engine, so bash compression, surgical-read routing, re-read denial, image shrinking, post-edit indexing, and the compaction manifest all work inside pi. See [pi users](#pi-users).
-
 **Ask your AI to install it fully (give it this GitHub link), or install in one command (install UV first if needed):**
 
 ```
