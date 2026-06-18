@@ -7390,7 +7390,7 @@ def config_validate(
                     _issue["suggestion"] = f"did you mean: {section_key}.{suggestion}"
                 issues.append(_issue)
 
-    ok = len(issues) == 0
+    ok = not issues
     if json_output:
         typer.echo(json.dumps({"ok": ok, "issues": issues, "config_path": str(cfg_path)}, separators=(",", ":")))
         if not ok:
