@@ -430,6 +430,8 @@ def _handle_bash_read_equivalent(payload: HookPayload) -> HookPayload | None:
     # Mark whole-file bash reads (cat/bat, no limit) so _handle_indexed_cat_deny can intercept at warm+.
     if intent.limit is None and intent.offset is None:
         read_payload["_tg_from_bash_cat"] = True
+    # Mark this as converted from bash so surgical-hint logic doesn't suppress hints for small ranges.
+    read_payload["_tg_from_bash_parser"] = True
     return read_payload
 
 
@@ -4381,7 +4383,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # "rest of file" — matches the Read tool's default page size and is large
         # enough to cover typical function/class bodies while the ≤3-symbol guard
         # prevents false-positive hints on files with dense symbol coverage.
-        if _raw_offset is not None:
+        # Skip the hint if the Read tool was called directly with both offset and limit ≤ 80 lines.
+        # (Don't suppress for bash-converted reads, which always benefit from the hint.)
+        _is_from_bash = payload.get("_tg_from_bash_parser", False)
+        if _raw_offset is not None and not (not _is_from_bash and _raw_limit is not None and int(_raw_limit) <= 80):
             try:
                 _limit_is_sentinel = _raw_limit is None
                 _eff_limit = int(_raw_limit) if _raw_limit is not None else 2000

@@ -2008,6 +2008,51 @@ class TestSurgicalReadHint:
         assert "module_init" in result
         assert "token-goat read" in result
 
+    def test_windowed_read_le_80_lines_no_hint(self, tmp_data_dir, monkeypatch):
+        """A windowed Read with offset + limit <= 80 should NOT emit the surgical hint."""
+        import token_goat.hooks_read as _hr
+
+        call_count = [0]
+
+        def _fake_surgical(file_path, offset, limit, cwd, *, limit_is_sentinel=False):
+            call_count[0] += 1
+            return "Lines 10–30 of `auth.py` span `login`. Use `token-goat read \"src/auth.py::login\"` for a surgical read (~90% fewer tok on repeat access)."
+
+        monkeypatch.setattr(_hr, "_try_surgical_read_hint", _fake_surgical)
+
+        # Small windowed read (offset=100, limit=30) should NOT call _try_surgical_read_hint
+        payload = {
+            "session_id": "windowed-1",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/src/auth.py", "offset": 100, "limit": 30},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        assert call_count[0] == 0, "surgical hint should not be called for windowed reads <= 80 lines"
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert "token-goat read" not in ctx or "90% fewer" not in ctx, "surgical read suggestion should not appear for small windowed reads"
+
+    def test_large_file_full_read_still_gets_hint(self, tmp_data_dir, monkeypatch):
+        """A full-file Read (no offset/limit) of a large indexed file should still get the surgical hint."""
+        import token_goat.hooks_read as _hr
+
+        def _fake_surgical(file_path, offset, limit, cwd, *, limit_is_sentinel=False):
+            return "Lines 1–2000 of `large.py` span `setup`. Use `token-goat read \"src/large.py::setup\"` for a surgical read (~90% fewer tok on repeat access)."
+
+        monkeypatch.setattr(_hr, "_try_surgical_read_hint", _fake_surgical)
+
+        payload = {
+            "session_id": "large-1",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/proj/src/large.py"},
+            "cwd": "/proj",
+        }
+        result = hooks_cli.pre_read(payload)
+        hso = result.get("hookSpecificOutput", {})
+        ctx = hso.get("additionalContext", "") if isinstance(hso, dict) else ""
+        assert "token-goat read" not in ctx  # full-file read without offset gets no surgical hint
+
 
 class TestGrepSymbolRedirect:
     """Tests for _handle_grep_symbol_redirect and _try_grep_symbol_hint."""
