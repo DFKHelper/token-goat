@@ -116,6 +116,36 @@ class TestBm25Search:
         assert len(hits) >= 1
         assert hits[0].distance <= 0.0
 
+    def test_fts_upgrade_path_populates_index(self, tmp_path):
+        """bm25_search returns results after schema upgrade rebuilds the FTS index.
+
+        Regression for: COUNT(*) on an FTS5 external-content table counts the
+        content table, not the index — so the old count-based probe always found
+        rows and skipped the rebuild on existing projects.
+        """
+        import token_goat.db as db_mod
+
+        proj = _make_project(tmp_path)
+        # Seed chunks bypassing FTS (simulates data inserted before FTS was added)
+        with db_mod.open_project(proj.hash) as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO files (rel_path, language, size, mtime, content_sha256, indexed_at)"
+                " VALUES ('upgrade.py', 'python', 100, 0.0, 'cafe', 0)"
+            )
+            conn.execute(
+                "INSERT INTO chunks (file_rel, start_line, end_line, content_sha256, kind, text)"
+                " VALUES ('upgrade.py', 1, 5, 'cafe', 'function', 'def upgrade_check(): return True')"
+            )
+            # Remove the initialization marker so next open runs the rebuild
+            conn.execute("DELETE FROM meta WHERE key='fts_initialized'")
+
+        # Re-open triggers _ensure_project_schema → rebuild runs → index is populated
+        with db_mod.open_project(proj.hash):
+            pass
+
+        hits = bm25_search(proj, "upgrade_check")
+        assert len(hits) >= 1, "FTS rebuild on schema upgrade must populate the index"
+
 
 # ---------------------------------------------------------------------------
 # _rrf_fuse
