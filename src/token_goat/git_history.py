@@ -149,9 +149,10 @@ def _needs_reindex(conn: sqlite3.Connection) -> bool:
         if row is None:
             return True
         age = time.time() - float(row[0])
-        return age > _REINDEX_STALENESS_SECS
     except Exception:
         return True
+    else:
+        return age > _REINDEX_STALENESS_SECS
 
 
 def index_project_history(project_root: Path, project_hash: str) -> int:
