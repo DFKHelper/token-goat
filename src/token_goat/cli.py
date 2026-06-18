@@ -2750,77 +2750,33 @@ def cmd_session_summary(
         if not session_id:
             # Find most recently modified session file
             sessions_dir = _paths.sessions_dir()
-            if not sessions_dir.exists():
-                result_text = "No active session"
-                if json_output:
-                    _emit_json({
-                        "session_id": None,
-                        "files_read": 0,
-                        "files_edited": 0,
-                        "commits_this_session": 0,
-                        "tokens_saved_estimate": 0,
-                        "message": "No active session",
-                    })
-                else:
-                    typer.echo(result_text)
-                return
+            if sessions_dir.exists():
+                session_files = [f for f in sessions_dir.iterdir() if f.suffix == ".json"]
+                if session_files:
+                    most_recent = max(session_files, key=lambda f: f.stat().st_mtime)
+                    session_id = most_recent.stem
 
-            session_files = [f for f in sessions_dir.iterdir() if f.suffix == ".json"]
-            if not session_files:
-                result_text = "No active session"
-                if json_output:
-                    _emit_json({
-                        "session_id": None,
-                        "files_read": 0,
-                        "files_edited": 0,
-                        "commits_this_session": 0,
-                        "tokens_saved_estimate": 0,
-                        "message": "No active session",
-                    })
-                else:
-                    typer.echo(result_text)
-                return
-
-            # Get most recently modified
-            most_recent = max(session_files, key=lambda f: f.stat().st_mtime)
-            session_id = most_recent.stem
+    if not session_id:
+        msg = {"session_id": None, "files_read": 0, "files_edited": 0, "commits_this_session": 0, "tokens_saved_estimate": 0, "message": "No active session"}
+        _emit_json(msg) if json_output else typer.echo("No active session")
+        raise typer.Exit(0) from None
 
     _validate_session_id(session_id)
 
     # Check if session file actually exists before trying to load
     sess_path = _paths.session_cache_path(session_id)
     if not sess_path.exists():
-        result_text = "No active session"
-        if json_output:
-            _emit_json({
-                "session_id": session_id,
-                "files_read": 0,
-                "files_edited": 0,
-                "commits_this_session": 0,
-                "tokens_saved_estimate": 0,
-                "message": "Session not found",
-            })
-        else:
-            typer.echo(result_text)
-        return
+        msg = {"session_id": session_id, "files_read": 0, "files_edited": 0, "commits_this_session": 0, "tokens_saved_estimate": 0, "message": "Session not found"}
+        _emit_json(msg) if json_output else typer.echo("No active session")
+        raise typer.Exit(0)
 
     # Load session cache
     try:
         sess = session_mod.load(session_id)
     except Exception:  # noqa: BLE001
-        result_text = "No active session"
-        if json_output:
-            _emit_json({
-                "session_id": session_id,
-                "files_read": 0,
-                "files_edited": 0,
-                "commits_this_session": 0,
-                "tokens_saved_estimate": 0,
-                "message": "Session not found or corrupted",
-            })
-        else:
-            typer.echo(result_text)
-        return
+        msg = {"session_id": session_id, "files_read": 0, "files_edited": 0, "commits_this_session": 0, "tokens_saved_estimate": 0, "message": "Session not found or corrupted"}
+        _emit_json(msg) if json_output else typer.echo("No active session")
+        raise typer.Exit(0) from None
 
     # Count files read and edited
     files_read = len(sess.files)
@@ -3421,14 +3377,12 @@ def cost(
         # Resolve session ID (full, short, or most recent)
         def _resolve_session_id(raw: str) -> str | None:
             """Resolve full / short session id against the on-disk cache."""
-            if raw and len(raw) >= 32:
+            if len(raw) >= 32:
                 return raw
-            if raw:
-                # Short prefix lookup.
-                if sessions_dir.exists():
-                    for f in sessions_dir.glob(f"{raw}*.json"):
-                        return f.stem
-                return None
+            # Short prefix lookup.
+            if sessions_dir.exists():
+                for f in sessions_dir.glob(f"{raw}*.json"):
+                    return f.stem
             return None
 
         resolved = _resolve_session_id(session.strip())
@@ -3463,8 +3417,7 @@ def cost(
         # For dedup hits (bash/web/grep repeat), assume 200 tokens saved each
         tokens_saved = avoided_reads * 500 + dedup_hits * 200
 
-        session_str = f"Session {resolved[:8]}"
-        typer.echo(f"{session_str}: ~{tokens_saved:,} tokens saved via {avoided_reads} cached reads + {dedup_hits} dedup hits")
+        typer.echo(f"Session {resolved[:8]}: ~{tokens_saved:,} tokens saved via {avoided_reads} cached reads + {dedup_hits} dedup hits")
         raise typer.Exit(0)
 
     # All-time summary (no --session flag)
@@ -3473,13 +3426,11 @@ def cost(
     total_tokens = summary.total_tokens_saved
     total_bytes = summary.total_bytes_saved
 
-    # Top 3 sources by tokens saved
     by_source = summary.by_source
+    top_str = ""
     if by_source:
         top_sources = sorted(by_source.items(), key=lambda x: x[1]["tokens_saved"], reverse=True)[:3]
         top_str = " (" + ", ".join(f"{src}: {data['tokens_saved']:,}" for src, data in top_sources) + ")"
-    else:
-        top_str = ""
 
     typer.echo(f"All-time: {total_tokens:,} tokens saved, {total_bytes / 1024 / 1024:.1f} MB data avoided{top_str}")
 

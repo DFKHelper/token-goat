@@ -1247,15 +1247,14 @@ def _handle_doc_compact(
         # Compact serve: deny the full read, inject compact body as context.
         content = hint_text[len(DOC_COMPACT_SERVE_SENTINEL):]
         from .db import record_stat  # noqa: PLC0415
-        tokens_saved = hint.tokens_saved
-        if tokens_saved > 0:
+        if hint.tokens_saved > 0:
             try:
                 from .project import find_project  # noqa: PLC0415
                 _proj = find_project(validate_cwd(cwd) or Path())
                 record_stat(
                     _proj.hash if _proj else None,
                     "doc_compact_served",
-                    tokens_saved=tokens_saved,
+                    tokens_saved=hint.tokens_saved,
                     detail=file_path,
                 )
             except Exception:  # noqa: BLE001
@@ -5055,11 +5054,9 @@ def _coerce_text(value: object) -> str:
                 # Older harnesses omit the type key entirely; accept those.
                 # Explicitly non-text types (image, resource, …) are skipped.
                 if item.get("type") in ("text", None):
-                    txt: str | None = item.get("text")  # type: ignore[assignment]  # dict.get() returns Any; annotated narrower than Any requires this suppression
-                else:
-                    txt = None
-                if isinstance(txt, str):
-                    parts.append(txt)
+                    txt = item.get("text")  # type: ignore[assignment]
+                    if isinstance(txt, str):
+                        parts.append(txt)
             elif isinstance(item, str):
                 parts.append(item)
         return "".join(parts)
