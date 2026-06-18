@@ -2198,6 +2198,28 @@ def deps(
 
 
 @app.command(rich_help_panel="Core")
+def arch(
+    json_output: bool = _OPT_JSON,
+    top: int = typer.Option(10, "--top", "-n", help="Number of hub modules to show."),
+) -> None:
+    """Show a project-wide architecture summary: hubs, entry points, circular deps.
+
+    Analyses the full import graph to identify the most-imported modules,
+    files that are never imported (entry points), and circular dependency chains.
+    Use ``--top`` to control how many hubs are listed."""
+    from . import arch as _arch
+
+    proj = _require_project()
+    project_name = Path(proj.root).name
+    result = _arch.build_arch(proj.hash, top_hubs=top)
+
+    if json_output:
+        typer.echo(_arch.format_arch_json(result, project_name))
+    else:
+        typer.echo(_arch.format_arch_text(result, project_name))
+
+
+@app.command(rich_help_panel="Core")
 def read(
     target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project' or 'auth.py::Session.refresh' for a qualified method."),
     session_id: str | None = _OPT_SESSION_ID,
