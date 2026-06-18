@@ -1476,6 +1476,32 @@ def refs(
         typer.echo(f"{loc}{ctx_part}")
 
 
+@app.command(rich_help_panel="Core")
+def callers(
+    name: str,
+    as_json: bool = _OPT_JSON,
+    limit: int = typer.Option(100, "--limit"),
+) -> None:
+    """Show which functions and methods call a given symbol.
+
+    Groups results by caller: for each function that references <name>, shows
+    the caller's file, name, and every line where it invokes the symbol.
+
+    Complements ``refs`` (which lists raw usage lines) by surfacing the
+    call hierarchy — useful for understanding downstream impact before
+    changing a symbol's signature.
+
+    Examples::
+
+        token-goat callers dispatch
+        token-goat callers semantic_search --json
+        token-goat callers index_file --limit 50
+    """
+    from . import read_commands
+
+    read_commands.callers(name, json_output=as_json, limit=limit)
+
+
 def _keyword_fallback_hits(
     proj: Project,
     query: str,
