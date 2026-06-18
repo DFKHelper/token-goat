@@ -380,22 +380,32 @@ def _is_system_path(path_str: str) -> bool:
     /usr/local and application log files are NOT automatically rejected as they
     may be legitimate project resources.
 
-    Paths are normalised to forward slashes before comparison so that Windows
-    paths arriving with backslashes (``C:\\Windows\\...``) and the same path
-    with forward slashes (``C:/Windows/...``) or from WSL (``/mnt/c/Windows/...``)
-    are all treated consistently.
+    Paths are normalised to forward slashes before comparison, and traversal
+    components (./, ../) are resolved to prevent bypass attacks like
+    /etc/../../../etc/passwd or ../../etc/passwd (the latter resolves to /etc
+    after normalization on Unix systems).
     """
-    # Normalise to lowercase forward-slash form for uniform comparison.
     path_lower = path_str.lower().replace("\\", "/")
-    # POSIX system paths (critical system dirs only)
-    if path_lower.startswith(("/etc/", "/sys/", "/proc/", "/dev/")):
+    is_absolute = path_lower.startswith("/")
+    parts = path_lower.split("/")
+    resolved_parts = []
+    for part in parts:
+        if part == "..":
+            if resolved_parts and resolved_parts[-1] != "..":
+                resolved_parts.pop()
+            elif not is_absolute:
+                resolved_parts.append(part)
+            # absolute path: discard ".." at root (can't escape /)
+        elif part and part != ".":
+            resolved_parts.append(part)
+    path_normalized = "/".join(resolved_parts)
+    if is_absolute and not path_normalized.startswith("/"):
+        path_normalized = "/" + path_normalized
+    if path_normalized.startswith(("/etc/", "/sys/", "/proc/", "/dev/")):
         return True
-    # WSL-mounted Windows system paths (e.g. /mnt/c/windows/...)
-    if path_lower.startswith(("/mnt/c/windows/", "/mnt/c/program files", "/mnt/c/programdata/")):
+    if path_normalized.startswith(("/mnt/c/windows/", "/mnt/c/program files", "/mnt/c/programdata/")):
         return True
-    # Windows system paths — match both backslash and forward-slash forms
-    # after normalisation (backslashes already replaced above).
-    return path_lower.startswith(
+    return path_normalized.startswith(
         (
             "c:/windows/",
             "c:/program files",

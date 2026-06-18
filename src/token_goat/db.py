@@ -1379,7 +1379,7 @@ def index_health(project_hash: str) -> dict[str, object]:
                 """
                 if table not in _KNOWN_PROJECT_TABLES:
                     raise ValueError(f"_count: unknown table name {table!r}")
-                row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+                row = conn.execute(f'SELECT COUNT(*) FROM [{table}]').fetchone()
                 return int(row[0]) if row else 0
 
             result["file_count"] = _count("files")

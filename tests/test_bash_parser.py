@@ -1305,3 +1305,22 @@ class TestGetContentNewCapabilities:
         assert intent.kind == "read"
         assert intent.target_path == "file1.txt"
         assert intent.target_paths == ["file1.txt", "file2.txt"]
+
+
+def test_cat_absolute_etc_with_dots_rejected():
+    """Absolute path /etc/./passwd with . components still rejected as system path."""
+    intent = parse("cat /etc/./passwd")
+    assert intent.kind == "unknown"
+    assert "system path" in intent.reason
+
+
+@pytest.mark.parametrize("path", [
+    "/../etc/passwd",
+    "/../../etc/passwd",
+    "/etc/./../../etc/passwd",
+    "/sys/../../../sys/kernel",
+])
+def test_root_traversal_bypasses_rejected(path):
+    """Paths that traverse above root and re-enter a system dir must still be blocked."""
+    intent = parse(f"cat {path}")
+    assert intent.kind == "unknown", f"Expected system-path block for {path!r}"
