@@ -114,10 +114,11 @@ def _try_adc() -> _GoogleCredentials | None:
         import google.auth
 
         creds, _project = google.auth.default(scopes=_DRIVE_SCOPES)
-        return creds  # type: ignore[return-value]  # google.auth returns untyped object
     except Exception as e:
         _LOG.info("ADC unavailable: %s", e)
         return None
+    else:
+        return creds  # type: ignore[return-value]  # google.auth returns untyped object
 
 
 def _try_stored_oauth() -> _GoogleCredentials | None:
@@ -163,12 +164,13 @@ def _try_stored_oauth() -> _GoogleCredentials | None:
             # Do NOT log creds.to_json() — it contains refresh tokens
             _write_creds_secure(creds_path, creds.to_json())
             _LOG.info("OAuth credentials refreshed in %.3fs", time.monotonic() - t_refresh)
-        return creds
     except Exception as exc:
         # Do NOT log exc directly — the message may contain credential material.
         # Log the exception type so the failure mode is diagnosable without leaking secrets.
         _LOG.warning("stored OAuth invalid or refresh failed (%s)", type(exc).__name__)
         return None
+    else:
+        return creds
 
 
 def get_credentials() -> _GoogleCredentials:
@@ -469,11 +471,11 @@ def list_drive_files(folder_id: str | None = None, max_results: int = 20) -> lis
             }
             for f in files
         ]
-        return output
-
     except Exception as e:
         _LOG.debug("list_drive_files failed: %s", e)
         return []
+    else:
+        return output
 
 
 def run_oauth_oob_flow(client_secrets_path: Path) -> Path:
