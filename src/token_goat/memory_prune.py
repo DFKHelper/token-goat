@@ -132,11 +132,8 @@ def prune_index(memory_dir: Path, *, dry_run: bool = False) -> PruneResult:
         return result
 
     # Reconstruct in original line order by merging passthrough + kept entries via a lineno map.
-    line_map: dict[int, str] = {}
-    for lineno, raw in passthrough:
-        line_map[lineno] = raw
-    for entry in keep:
-        line_map[entry.lineno] = entry.raw
+    line_map: dict[int, str] = {lineno: raw for lineno, raw in passthrough}
+    line_map.update({entry.lineno: entry.raw for entry in keep})
 
     # Sort by original line number and join.
     reconstructed = "".join(line_map[k] for k in sorted(line_map))

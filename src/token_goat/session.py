@@ -2159,12 +2159,12 @@ class SessionCache:
 
         # stored_task_outputs: dict[str, str] (persisted) → dict[str, str] (in-memory).
         # Missing in older sessions (or stored as legacy list) → empty dict.
-        stored_task_outputs: dict[str, str] = {}
         raw_task_outputs = d.get("stored_task_outputs", {})
-        if isinstance(raw_task_outputs, dict):
-            for tid, oid in raw_task_outputs.items():
-                if isinstance(tid, str) and tid and isinstance(oid, str) and oid:
-                    stored_task_outputs[tid] = oid
+        stored_task_outputs: dict[str, str] = {
+            tid: oid
+            for tid, oid in (raw_task_outputs.items() if isinstance(raw_task_outputs, dict) else [])
+            if isinstance(tid, str) and tid and isinstance(oid, str) and oid
+        }
 
         # hints_emitted / hints_ignored: int counters, default 0 for older sessions.
         hints_emitted = _coerce_nonneg_int(d.get("hints_emitted", 0))
@@ -2287,42 +2287,42 @@ class SessionCache:
                     pytest_failures[_pf_k] = [s for s in _pf_v if isinstance(s, str)]
 
         # read_content_hashes: dict[str, str] — missing in older sessions → empty dict.
-        read_content_hashes: dict[str, str] = {}
         raw_rch = d.get("read_content_hashes", {})
-        if isinstance(raw_rch, dict):
-            for _rch_k, _rch_v in raw_rch.items():
-                if isinstance(_rch_k, str) and isinstance(_rch_v, str):
-                    read_content_hashes[_rch_k] = _rch_v
+        read_content_hashes: dict[str, str] = {
+            _rch_k: _rch_v
+            for _rch_k, _rch_v in (raw_rch.items() if isinstance(raw_rch, dict) else [])
+            if isinstance(_rch_k, str) and isinstance(_rch_v, str)
+        }
 
         # log_file_cache: dict[str, str] — missing in older sessions → empty dict.
         # Keys are compound strings "{norm_path}:{size}:{mtime:.9f}"; values are
         # content hashes.  Malformed or non-string entries are silently dropped.
-        log_file_cache: dict[str, str] = {}
         raw_lfc = d.get("log_file_cache", {})
-        if isinstance(raw_lfc, dict):
-            for _lfc_k, _lfc_v in raw_lfc.items():
-                if isinstance(_lfc_k, str) and isinstance(_lfc_v, str) and _lfc_k and _lfc_v:
-                    log_file_cache[_lfc_k] = _lfc_v
+        log_file_cache: dict[str, str] = {
+            _lfc_k: _lfc_v
+            for _lfc_k, _lfc_v in (raw_lfc.items() if isinstance(raw_lfc, dict) else [])
+            if isinstance(_lfc_k, str) and isinstance(_lfc_v, str) and _lfc_k and _lfc_v
+        }
 
         # dir_listing_cache: dict[str, str] — missing in older sessions → empty dict.
         # Keys are compound strings "{norm_dir_path}:{cmd_fingerprint}"; values are
         # 16-hex-char output hashes.  Malformed or non-string entries are silently dropped.
-        dir_listing_cache: dict[str, str] = {}
         raw_dlc = d.get("dir_listing_cache", {})
-        if isinstance(raw_dlc, dict):
-            for _dlc_k, _dlc_v in raw_dlc.items():
-                if isinstance(_dlc_k, str) and isinstance(_dlc_v, str) and _dlc_k and _dlc_v:
-                    dir_listing_cache[_dlc_k] = _dlc_v
+        dir_listing_cache: dict[str, str] = {
+            _dlc_k: _dlc_v
+            for _dlc_k, _dlc_v in (raw_dlc.items() if isinstance(raw_dlc, dict) else [])
+            if isinstance(_dlc_k, str) and isinstance(_dlc_v, str) and _dlc_k and _dlc_v
+        }
 
         # cmd_output_hashes: dict[str, str] — missing in older sessions → empty dict.
         # Keys are display_cmd strings; values are sha256_hex of the last stdout seen.
         # Malformed or non-string entries are silently dropped.
-        cmd_output_hashes: dict[str, str] = {}
         raw_coh = d.get("cmd_output_hashes", {})
-        if isinstance(raw_coh, dict):
-            for _coh_k, _coh_v in raw_coh.items():
-                if isinstance(_coh_k, str) and isinstance(_coh_v, str) and _coh_k and _coh_v:
-                    cmd_output_hashes[_coh_k] = _coh_v
+        cmd_output_hashes: dict[str, str] = {
+            _coh_k: _coh_v
+            for _coh_k, _coh_v in (raw_coh.items() if isinstance(raw_coh, dict) else [])
+            if isinstance(_coh_k, str) and isinstance(_coh_v, str) and _coh_k and _coh_v
+        }
 
         return cls(
             session_id=session_id,

@@ -1346,11 +1346,11 @@ def render_by_command(summary: StatsSummary) -> str:
             lines.append("  (no command data recorded yet)")
             return "\n".join(lines)
         lines.append(f"  {'command':<16}  {'tokens':>10}  {'bytes':>10}  {'events':>7}")
-        for c in summary.by_command:
-            lines.append(
-                f"  {c['command']:<16}  {_fmt_tokens(c['tokens_saved']):>10}  "
-                f"{_fmt_bytes(c['bytes_saved']):>10}  {c['events']:>7}"
-            )
+        lines.extend(
+            f"  {c['command']:<16}  {_fmt_tokens(c['tokens_saved']):>10}  "
+            f"{_fmt_bytes(c['bytes_saved']):>10}  {c['events']:>7}"
+            for c in summary.by_command
+        )
         return "\n".join(lines)
 
     buf = io.StringIO()
