@@ -1097,8 +1097,7 @@ def _dir_listing_cmd_type(argv: list[str]) -> str | None:
     if not argv:
         return None
     base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].strip("\"'").lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
+    base = base.removesuffix(".exe")
     if base == "find":
         return "find"
     if base in ("fd", "fdfind"):
@@ -1136,8 +1135,7 @@ def _sleep_cmd_type(argv: list[str]) -> str | None:
     if not argv:
         return None
     base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].strip("\"'").lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
+    base = base.removesuffix(".exe")
     if base != "sleep":
         return None
     rest = [a.strip("\"'") for a in argv[1:] if a.strip()]
@@ -1162,8 +1160,7 @@ def _watch_cmd_info(argv: list[str]) -> str | None:
     if not argv:
         return None
     base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].strip("\"'").lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
+    base = base.removesuffix(".exe")
     if base != "watch":
         return None
     # Flags that consume the following token as a value.
@@ -1266,8 +1263,7 @@ def _is_git_log_cmd(argv: list[str]) -> bool:
     if len(argv) < 2:
         return False
     base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
+    base = base.removesuffix(".exe")
     if base != "git":
         return False
     # Scan argv[1:] for the subcommand, skipping global git flags (--no-pager,
@@ -1294,8 +1290,7 @@ def _is_pkg_install_cmd(argv: list[str]) -> bool:
     if len(argv) < 2:
         return False
     base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
+    base = base.removesuffix(".exe")
 
     # pip / pip3 ---------------------------------------------------------
     if base in {"pip", "pip3"}:
@@ -1345,8 +1340,7 @@ def _is_env_list_cmd(argv: list[str]) -> bool:
     if not argv:
         return False
     base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
+    base = base.removesuffix(".exe")
 
     # env --------------------------------------------------------------------
     if base == "env":
@@ -1402,8 +1396,7 @@ def _is_container_log_cmd(argv: list[str]) -> bool:
     if len(argv) < 2:
         return False
     base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
+    base = base.removesuffix(".exe")
 
     # docker-compose ---------------------------------------------------------
     if base == "docker-compose":
@@ -1810,7 +1803,7 @@ class Filter(BaseFilter):
         """
         if stderr and stdout:
             return f"{stdout.rstrip()}\n---\n{stderr.rstrip()}"
-        return stdout if stdout else stderr
+        return stdout or stderr
 
     def apply(
         self,
@@ -3066,8 +3059,7 @@ def _is_cargo_compile_cmd(argv: list[str]) -> bool:
     if not argv:
         return False
     base = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if base.endswith(".exe"):
-        base = base[:-4]
+    base = base.removesuffix(".exe")
     if base != "cargo":
         return False
     _CARGO_COMPILE_SUBS: frozenset[str] = frozenset({"build", "check", "clippy", "fix", "rustc"})
@@ -4270,10 +4262,10 @@ class DockerComposeFilter(Filter):
         stem = p.stem.lower()
         name = p.name.lower()
         # docker-compose binary
-        if stem in {"docker-compose"} or name in {"docker-compose"}:
+        if stem == "docker-compose" or name == "docker-compose":
             return True
         # `docker compose` (subcommand form)
-        if stem in {"docker"} or name in {"docker"}:
+        if stem == "docker" or name == "docker":
             positionals = _positional_args(argv[1:])
             return bool(positionals) and positionals[0] == "compose"
         return False
@@ -5025,7 +5017,7 @@ class GhRunLogFilter(Filter):
         p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
-        if stem not in {"gh"} and name not in {"gh"}:
+        if stem != "gh" and name != "gh":
             return False
         positionals = _positional_args(argv[1:])
         # Must be ``gh run view`` with ``--log`` flag.
@@ -5952,7 +5944,7 @@ class ESLintFilter(Filter):
                 (ln for ln in lines if _ESLINT_SUMMARY_RE.match(ln.strip())),
                 None,
             )
-            return summary if summary else "ESLint: no errors"
+            return summary or "ESLint: no errors"
 
         lines = merged.split("\n")
         out: list[str] = []
@@ -6298,7 +6290,7 @@ class GitFilter(Filter):
         positionals = _positional_args(argv[1:])
         subcommand = positionals[0] if positionals else ""
         # Git writes "counting objects" etc. to stderr, useful only when something fails.
-        if subcommand in ("status",):
+        if subcommand == "status":
             return _compress_git_status(stdout, stderr)
         if subcommand == "log":
             return _compress_git_log(stdout, stderr)
@@ -8142,7 +8134,7 @@ class GoFilter(Filter):
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
 
-        if subcommand in ("get",) or (
+        if subcommand == "get" or (
             subcommand == "mod" and len(positionals) > 1 and positionals[1] == "download"
         ):
             return self._compress_go_get(lines)
@@ -8784,10 +8776,10 @@ class TerraformFilter(Filter):
             # ``terraform output`` / ``terraform outputs`` emit key = value pairs.
             # Usually short; pass through.
             pass
-        elif subcommand in ("workspace",):
+        elif subcommand == "workspace":
             # ``terraform workspace list/new/select/show/delete`` — short.
             pass
-        elif subcommand in ("import",):
+        elif subcommand == "import":
             # ``terraform import`` — short resource lines, keep all.
             pass
         else:
@@ -8801,7 +8793,7 @@ class TerraformFilter(Filter):
             elif len(filtered) < len(lines):
                 text = "\n".join(filtered)
 
-        if stderr.strip() and subcommand not in ("apply",):
+        if stderr.strip() and subcommand != "apply":
             # For non-apply commands, append stderr if not already included.
             text = (text.rstrip() + "\n---\n" + stderr.rstrip()) if text.strip() else stderr
         return text
@@ -9954,8 +9946,7 @@ def _is_grep_cmd(argv: list[str]) -> bool:
     if not argv:
         return False
     stem = argv[0].lower().split("/")[-1].split("\\")[-1]
-    if stem.endswith(".exe"):
-        stem = stem[:-4]
+    stem = stem.removesuffix(".exe")
     if _GREP_BIN_RE.match(stem):
         if stem == "git":
             return len(argv) >= 2 and argv[1] == "grep"
@@ -9999,8 +9990,7 @@ class GrepFilter(Filter):
             return False
         stem = argv[0].lower().split("/")[-1].split("\\")[-1]
         # Strip .exe on Windows
-        if stem.endswith(".exe"):
-            stem = stem[:-4]
+        stem = stem.removesuffix(".exe")
         # Standalone grep-family binary
         if stem in self.binaries:
             return True
@@ -12459,7 +12449,7 @@ class DotnetFilter(Filter):
 
         if subcommand == "test":
             return self._compress_test(lines)
-        if subcommand in ("restore",):
+        if subcommand == "restore":
             return self._compress_restore(lines)
         if subcommand in ("build", "publish", "pack"):
             return self._compress_build(lines)
@@ -15066,8 +15056,7 @@ class PhpStanFilter(Filter):
     ) -> str:
         binary = Path(argv[0]).stem.lower() if argv else "phpstan"
         # psalm.phar → "psalm", phpstan.phar → "phpstan"
-        if binary.endswith(".phar"):
-            binary = binary[:-5]
+        binary = binary.removesuffix(".phar")
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
 
@@ -18175,9 +18164,9 @@ class BunFilter(Filter):
 
         if subcmd in ("install", "add", "remove", "i"):
             return self._compress_install(merged)
-        if subcmd in ("test",):
+        if subcmd == "test":
             return self._compress_test(merged)
-        if subcmd in ("build",):
+        if subcmd == "build":
             return self._compress_build(merged)
 
         # Generic pass-through for bun run, bun x, etc.
@@ -20225,7 +20214,7 @@ class VaultFilter(Filter):
         # Detect kv-list mode: vault kv list / vault list
         is_list_cmd = bool(
             len(argv) >= 2
-            and argv[0].lower() in ("vault",)
+            and argv[0].lower() == "vault"
             and (
                 (argv[1].lower() == "list")
                 or (len(argv) >= 3 and argv[1].lower() == "kv" and argv[2].lower() == "list")
@@ -22387,7 +22376,7 @@ class AiderFilter(Filter):
         if not argv:
             return False
         p = Path(argv[0])
-        return p.stem.lower() in {"aider"}
+        return p.stem.lower() == "aider"
 
     def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -22506,7 +22495,7 @@ class GhCopilotFilter(Filter):
         p = Path(argv[0].replace("\\", "/"))
         stem = p.stem.lower()
         name = p.name.lower()
-        if stem not in {"gh"} and name not in {"gh"}:
+        if stem != "gh" and name != "gh":
             return False
         positionals = _positional_args(argv[1:])
         # Must be ``gh copilot explain`` or ``gh copilot suggest``.
@@ -22710,7 +22699,7 @@ class GeminiCliFilter(Filter):
         if not argv:
             return False
         p = Path(argv[0])
-        return p.stem.lower() in {"gemini"}
+        return p.stem.lower() == "gemini"
 
     def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -22958,7 +22947,7 @@ class CursorFilter(Filter):
         if not argv:
             return False
         p = Path(argv[0])
-        return p.stem.lower() in {"cursor"}
+        return p.stem.lower() == "cursor"
 
     def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -23095,7 +23084,7 @@ class WindsurfFilter(Filter):
         if not argv:
             return False
         p = Path(argv[0])
-        return p.stem.lower() in {"windsurf"}
+        return p.stem.lower() == "windsurf"
 
     def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -23231,7 +23220,7 @@ class OpenCodeFilter(Filter):
         if not argv:
             return False
         p = Path(argv[0])
-        return p.stem.lower() in {"opencode"}
+        return p.stem.lower() == "opencode"
 
     def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],
@@ -23355,7 +23344,7 @@ class ContinueFilter(Filter):
         if not argv:
             return False
         p = Path(argv[0])
-        return p.stem.lower() in {"continue"}
+        return p.stem.lower() == "continue"
 
     def _compress_body(
         self, stdout: str, stderr: str, exit_code: int, argv: list[str],

@@ -396,7 +396,7 @@ def _parse_symbol_from_hunk_context(context: str) -> str | None:
             break
     # Strip trailing colon (Python class/def) and surrounding whitespace.
     name_part = name_part.strip().rstrip(":")
-    return name_part if name_part else None
+    return name_part or None
 
 
 def get_changed_symbols(

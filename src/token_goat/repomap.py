@@ -1007,7 +1007,7 @@ def _build_compact_file_summary(
     ext_counts: Counter[str] = Counter()
     for rel, _ in ranked:
         suffix = _Path(rel).suffix.lower()
-        ext_counts[suffix if suffix else "(no ext)"] += 1
+        ext_counts[suffix or "(no ext)"] += 1
     _MAX_EXT_COLS = 4
     ext_ranked = ext_counts.most_common()
     if len(ext_ranked) <= _MAX_EXT_COLS:

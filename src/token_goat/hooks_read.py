@@ -5387,8 +5387,7 @@ def _is_git_diff_target(argv: list[str]) -> bool:
         return False
     # Extract basename, normalise slashes, strip .exe suffix.
     cmd_base = argv[0].lower().replace("\\", "/").rsplit("/", 1)[-1]
-    if cmd_base.endswith(".exe"):
-        cmd_base = cmd_base[:-4]
+    cmd_base = cmd_base.removesuffix(".exe")
     if cmd_base != "git":
         return False
     if argv[1] != "diff":

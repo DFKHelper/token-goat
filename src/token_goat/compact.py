@@ -1715,7 +1715,7 @@ def _get_current_branch(repo_root: str | None) -> str | None:
     if not out:
         return None
     branch = out.strip()
-    return branch if branch else None
+    return branch or None
 
 
 def _get_recent_commits_for_orchestrator(repo_root: str | None, n: int = 10) -> list[str]:
@@ -1864,8 +1864,7 @@ def _short_path(p: str, max_len: int = 70, project_root: str | None = None) -> s
         proj_name = Path(project_root.rstrip("/\\")).name
         if proj_name:
             prefix_check = proj_name + "/"
-            if p.startswith(prefix_check):
-                p = p[len(prefix_check):]
+            p = p.removeprefix(prefix_check)
     if len(p) > max_len:
         return "…" + p[-(max_len - 1):]
     return p

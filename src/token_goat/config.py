@@ -1525,7 +1525,7 @@ def _validated_triggers(val: object, default: list[str]) -> list[str]:
             unknown.append(t)
     if unknown:
         _LOG.warning("config: unknown trigger values ignored: %s", unknown)
-    return valid if valid else list(default)
+    return valid or list(default)
 
 
 # ---------------------------------------------------------------------------

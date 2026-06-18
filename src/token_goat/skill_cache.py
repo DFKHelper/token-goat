@@ -323,7 +323,7 @@ def extract_compact_from_marker(body: str) -> str | None:
             continue
         if stripped == COMPACT_END_MARKER:
             pre_marker = "\n".join(lines[:i]).strip()
-            return pre_marker if pre_marker else None
+            return pre_marker or None
     return None
 
 
@@ -592,7 +592,7 @@ def extract_named_section(body: str, heading: str) -> str | None:
         body_lines.append(lines[j])
 
     text = "\n".join(body_lines).strip()
-    return text if text else None
+    return text or None
 
 
 def _sweep_skill_orphans() -> None:

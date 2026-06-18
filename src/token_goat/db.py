@@ -2082,8 +2082,7 @@ def get_file_importers(
     # ``src/token_goat/db.py`` → ``"db"``
     # ``db.py`` → ``"db"``
     raw_stem = file_rel.rsplit("/", 1)[-1]
-    if raw_stem.endswith(".py"):
-        raw_stem = raw_stem[:-3]
+    raw_stem = raw_stem.removesuffix(".py")
     if not raw_stem:
         return []
     stem = raw_stem

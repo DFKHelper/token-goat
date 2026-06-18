@@ -1991,7 +1991,7 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
             cwd=project_root,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=log_file if log_file else subprocess.DEVNULL,
+            stderr=log_file or subprocess.DEVNULL,
             close_fds=True,
             creationflags=creationflags,
             start_new_session=(sys.platform != "win32"),

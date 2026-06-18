@@ -616,7 +616,7 @@ def split_compound(cmd: str) -> list[str]:
     if seg and not skip_segment:
         segments.append(seg)
 
-    return segments if segments else [cmd.strip()]
+    return segments or [cmd.strip()]
 
 
 def parse(command: str) -> BashIntent:

@@ -113,6 +113,6 @@ def render_panel(
 
     return Panel(
         content,
-        title=title if title else None,
+        title=title or None,
         border_style=style,
     )
