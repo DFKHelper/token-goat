@@ -28,7 +28,7 @@ def test_load_patterns_empty_file(tmp_path: Path) -> None:
 
 
 def test_load_patterns_comments_and_blanks(tmp_path: Path) -> None:
-    """Strips comments and blank lines."""
+    """Strips comments and blank lines, preserves literal '#' in patterns."""
     ignore_file = tmp_path / ".tokengoatignore"
     ignore_file.write_text(
         "# This is a comment\n"
@@ -38,9 +38,10 @@ def test_load_patterns_comments_and_blanks(tmp_path: Path) -> None:
         "dist/**\n"
         "  \n"
         "src/generated/*.ts  # inline comment\n"
+        "path/to/file#name\n"  # '#' without preceding whitespace — not a comment
     )
     patterns = load_project_ignore_patterns(tmp_path)
-    assert patterns == ["*.log", "dist/**", "src/generated/*.ts  # inline comment"]
+    assert patterns == ["*.log", "dist/**", "src/generated/*.ts", "path/to/file#name"]
 
 
 def test_load_patterns_unreadable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,6 +1,7 @@
 """Project-wide architecture analysis using the import graph."""
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 
 
@@ -42,7 +43,7 @@ def build_arch(project_hash: str, *, top_hubs: int = 10, max_cycles: int = 10) -
             import_rows = conn.execute(
                 "SELECT file_rel, target FROM imports_exports WHERE kind = 'import'"
             ).fetchall()
-    except FileNotFoundError:
+    except (FileNotFoundError, sqlite3.OperationalError):
         indexed = set()
         import_rows = []
 
