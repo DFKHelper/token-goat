@@ -493,7 +493,7 @@ def _version_callback(value: bool) -> None:
         from . import __version__
 
         typer.echo(f"token-goat {__version__}")
-        raise typer.Exit()
+        raise typer.Exit
 
 
 @app.callback()

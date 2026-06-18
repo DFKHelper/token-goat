@@ -710,9 +710,10 @@ def _check_vec_available(conn: sqlite3.Connection) -> bool:
     """Return True if the sqlite-vec extension is loaded and the vec_version() function responds."""
     try:
         conn.execute("SELECT vec_version()").fetchone()
-        return True
     except sqlite3.OperationalError:
         return False
+    else:
+        return True
 
 
 def _load_existing_chunk_hashes(
