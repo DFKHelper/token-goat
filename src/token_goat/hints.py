@@ -1605,12 +1605,9 @@ def _resolve_ts_candidates(target: str, importing_rel: str) -> list[str]:
             parts.append(part)
     base = "/".join(parts)
 
-    candidates: list[str] = []
-    for ext in _TS_EXTENSIONS:
-        candidates.append(f"{base}{ext}")
+    candidates = [f"{base}{ext}" for ext in _TS_EXTENSIONS]
     # index file variants
-    for ext in _TS_EXTENSIONS:
-        candidates.append(f"{base}/index{ext}")
+    candidates.extend(f"{base}/index{ext}" for ext in _TS_EXTENSIONS)
     return candidates
 
 
@@ -1632,8 +1629,7 @@ def _get_unread_coread_files_py(
         parts = target.split(".")
         module_name = parts[-1]
         candidates = [f"{module_name}.py"]
-        for i in range(len(parts) - 1, 0, -1):
-            candidates.append("/".join(parts[:i]) + f"/{parts[i]}.py")
+        candidates.extend("/".join(parts[:i]) + f"/{parts[i]}.py" for i in range(len(parts) - 1, 0, -1))
         for candidate in candidates:
             row = conn.execute(
                 "SELECT rel_path FROM files WHERE rel_path LIKE ? AND rel_path LIKE '%.py' LIMIT 1",
@@ -4675,9 +4671,7 @@ def _format_section_map(headings: list[str], max_items: int = 8) -> str:
     """Format a list of headings as a compact inline string."""
     if not headings:
         return ""
-    preview = []
-    for h in headings[:max_items]:
-        preview.append(h if h.startswith("#") else f"## {h}")
+    preview = [h if h.startswith("#") else f"## {h}" for h in headings[:max_items]]
     overflow = len(headings) - len(preview)
     result = " · ".join(preview)
     if overflow > 0:

@@ -2629,9 +2629,7 @@ def _try_get_inline_skeleton(file_path: str) -> str:
         if not rows:
             return ""
 
-        lines: list[str] = []
-        for row in rows:
-            lines.append(f"  {row['line']:4d}  {row['kind']:<12}  {row['name']}")
+        lines = [f"  {row['line']:4d}  {row['kind']:<12}  {row['name']}" for row in rows]
 
         text = "\n".join(lines)
         if len(text) <= _INLINE_SKELETON_MAX_CHARS:

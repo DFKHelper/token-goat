@@ -2612,8 +2612,7 @@ def _collapse_class_methods(symbols: list[str]) -> list[str]:
             result.append(f"{class_name}.* ({len(methods)} methods)")
         else:
             # 1-2 methods: keep them individually
-            for method in methods:
-                result.append(f"{class_name}.{method}")
+            result.extend(f"{class_name}.{method}" for method in methods)
 
     # Add non-methods
     result.extend(non_methods)
@@ -5636,8 +5635,7 @@ def _render(
     pinned_lines: list[str] = []
     if pinned_symbols_list:
         pinned_lines.append("## Pinned")
-        for _ps in pinned_symbols_list:
-            pinned_lines.append(f"- {_ps}")
+        pinned_lines.extend(f"- {_ps}" for _ps in pinned_symbols_list)
 
     # Session stats: edited count, bash count, hints suppressed — 1 compact line.
     _session_stats = _format_session_stats(cache)
@@ -5675,8 +5673,7 @@ def _render(
     decision_entries = _select_top_decision_entries(raw_decisions)
     if decision_entries:
         decision_lines: list[str] = ["**Decisions:**"]
-        for _de in decision_entries:
-            decision_lines.append(_format_decision_entry(_de))
+        decision_lines.extend(_format_decision_entry(_de) for _de in decision_entries)
         # Overflow note when older decisions exist beyond the surfaced slice.
         if isinstance(raw_decisions, list) and len(raw_decisions) > len(decision_entries):
             overflow_n = len(raw_decisions) - len(decision_entries)
@@ -5791,8 +5788,7 @@ def _render(
                 # Indent the compact as a continuation of the skills line
                 skill_lines.append("")
                 skill_lines.append(f"**{_skill_name} key-rules:**")
-                for line in compact_text.splitlines():
-                    skill_lines.append(f"  {line}")
+                skill_lines.extend(f"  {line}" for line in compact_text.splitlines())
                 # Track that this compact was served: increments compact_served_count
                 # in the SkillEntry so skill-list can report hit vs miss stats.
                 try:
@@ -5812,8 +5808,7 @@ def _render(
     test_failure_lines: list[str] = []
     if _test_failure_names:
         test_failure_lines.append("### Recent Test Failures")
-        for _tf in _test_failure_names:
-            test_failure_lines.append(f"- {_tf}")
+        test_failure_lines.extend(f"- {_tf}" for _tf in _test_failure_names)
 
     # ── 0d. Dependency Changes — pip/uv/npm install output ──────────────────
     # Captures packages added/updated this session so the compaction LLM knows
@@ -5823,8 +5818,7 @@ def _render(
     dep_change_lines: list[str] = []
     if _dep_changes:
         dep_change_lines.append("### Dependency Changes")
-        for _dc in _dep_changes:
-            dep_change_lines.append(f"- {_dc}")
+        dep_change_lines.extend(f"- {_dc}" for _dc in _dep_changes)
 
     # ── 0b. Uncommitted Changes — git diff --stat + status --short ───────────
     # Ground-truth picture of what's on disk regardless of which tool made the
@@ -5836,8 +5830,7 @@ def _render(
     uncommitted_lines: list[str] = []
     if uncommitted_changes:
         uncommitted_lines.append("**Uncommitted:**")
-        for line in uncommitted_changes.splitlines():
-            uncommitted_lines.append(f"  {line.rstrip()}")
+        uncommitted_lines.extend(f"  {line.rstrip()}" for line in uncommitted_changes.splitlines())
 
     # ── 1. Edited files — highest priority (no cap) ───────────────────────────
     # Build the entire edited-files block first so we can measure its token cost
@@ -5932,8 +5925,7 @@ def _render(
             _whole_diff = _get_whole_repo_diff(cwd)
             if _whole_diff:
                 edited_lines.append(f"#### {_short_path(_only_path, project_root=cwd)} (inline diff)")
-                for _dl in _whole_diff.splitlines():
-                    edited_lines.append(f"  {_dl}")
+                edited_lines.extend(f"  {_dl}" for _dl in _whole_diff.splitlines())
                 _single_file_diff_used = True
                 _inline_diffs_were_emitted = True
 
@@ -5954,8 +5946,7 @@ def _render(
                         edited_lines.append(
                             f"#### {_short_path(_ip, project_root=cwd)}{_count_suffix(_ic)} (inline diff)"
                         )
-                        for _dl in _idiff.splitlines():
-                            edited_lines.append(f"  {_dl}")
+                        edited_lines.extend(f"  {_dl}" for _dl in _idiff.splitlines())
                         _inlined_paths.add(_ip)
                         _inline_budget -= len(_idiff)
                         _inline_diffs_were_emitted = True
@@ -5995,8 +5986,7 @@ def _render(
         )
         if pending_diff_stat and not _skip_pending:
             edited_lines.append("**Pending:**")
-            for line in pending_diff_stat.splitlines():
-                edited_lines.append(f"  {line}")
+            edited_lines.extend(f"  {line}" for line in pending_diff_stat.splitlines())
 
         # ── 1b. Diff summary + Commits this session ───────────────────────────
         # Both helpers are fail-soft and skip immediately when cwd is not a git
@@ -6018,8 +6008,7 @@ def _render(
 
         if diff_stat:
             edited_lines.append("### Diff Summary")
-            for line in diff_stat.splitlines():
-                edited_lines.append(f"- {line}")
+            edited_lines.extend(f"- {line}" for line in diff_stat.splitlines())
 
         if session_commits:
             edited_lines.append("### Commits This Session")
@@ -6624,8 +6613,7 @@ def _render(
         questions = _find_open_questions(list(edited_clean.keys()), max_questions=5)
         if questions:
             open_questions_lines.append("### Open Questions")
-            for q in questions:
-                open_questions_lines.append(f"- {q}")
+            open_questions_lines.extend(f"- {q}" for q in questions)
 
     # ── 6d. Active Errors — unresolved bash errors from cache ──────────────────
     # Surfaces recent bash outputs with error indicators (non-zero exit codes or
