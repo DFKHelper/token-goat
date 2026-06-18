@@ -327,9 +327,7 @@ def compact_mcp_result(result_text: str, *, inline_threshold: int = 2048) -> str
         if best_key is not None and best_len > 0:
             list_key = best_key
             items = data[best_key]
-            for k, v in data.items():
-                if k != best_key and isinstance(v, (str, int, float, bool)):
-                    extra_scalars[k] = v
+            extra_scalars = {k: v for k, v in data.items() if k != best_key and isinstance(v, (str, int, float, bool))}
 
     if not items or not isinstance(items[0], dict):
         return None

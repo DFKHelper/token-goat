@@ -84,9 +84,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
             class_val = match.group(1)
             if any(not _is_noise(cls) for cls in class_val.split()):
                 line = common.offset_to_line(line_index, match.start())
-                for cls in class_val.split():
-                    if not _is_noise(cls):
-                        symbols.append(Symbol(name=cls, kind="html_class", line=line))
+                symbols.extend(Symbol(name=cls, kind="html_class", line=line) for cls in class_val.split() if not _is_noise(cls))
 
         # --- Extract link href ---
         for match in _LINK_RE.finditer(text):

@@ -494,9 +494,7 @@ def add_imports(
         except AttributeError as exc:
             _LOG.debug("add_imports: skipping malformed import node: %s", exc)
             continue
-        for target in targets:
-            if target:
-                imp_exp.append(ImpExp(kind="import", target=target, line=line))
+        imp_exp.extend(ImpExp(kind="import", target=target, line=line) for target in targets if target)
 
 
 def add_symbol_info(
