@@ -6391,8 +6391,7 @@ def cmd_worker(
                     f"differs from current ({current})"
                 )
                 raise typer.Exit(1)
-            else:
-                typer.echo("Match: YES (worker interpreter matches current)")
+            typer.echo("Match: YES (worker interpreter matches current)")
         else:
             typer.echo("Interpreter: unknown (legacy pid file format)")
         raise typer.Exit(0)

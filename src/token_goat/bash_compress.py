@@ -852,8 +852,7 @@ def normalise(text: str, *, skip_progress: bool = False) -> str:
     if not skip_progress:
         text = strip_progress(text)
     text = strip_ansi(text)
-    text = sanitize_control_chars(text)
-    return text
+    return sanitize_control_chars(text)
 
 
 def _head_tail_compress(
@@ -7221,36 +7220,34 @@ def _compress_git_blame_porcelain(lines: list[str], stderr: str) -> str:
                     i += 1
                 i += 1  # skip the content line
                 continue
-            else:
-                # New commit — flush previous run.
-                if block_lines:
-                    out.extend(block_lines)
-                    if run_count > 1:
-                        out.append(
-                            f"[token-goat: {run_count - 1} more lines by "
-                            f"{current_author} ({current_hash[:8] if current_hash else '?'})]"
-                        )
-                # Start new block.
-                current_hash = commit_hash
-                current_author = None
-                run_count = 1
-                block_lines = [line]
-                i += 1
-                # Collect metadata lines until the content line.
-                while i < len(lines) and not lines[i].startswith("\t"):
-                    meta = lines[i]
-                    am = _GIT_BLAME_AUTHOR_LINE_RE.match(meta)
-                    if am:
-                        current_author = am.group(1).strip()
-                    block_lines.append(meta)
-                    i += 1
-                if i < len(lines):
-                    block_lines.append(lines[i])  # content line
-                    i += 1
-                continue
-        else:
-            out.append(line)
+            # New commit — flush previous run.
+            if block_lines:
+                out.extend(block_lines)
+                if run_count > 1:
+                    out.append(
+                        f"[token-goat: {run_count - 1} more lines by "
+                        f"{current_author} ({current_hash[:8] if current_hash else '?'})]"
+                    )
+            # Start new block.
+            current_hash = commit_hash
+            current_author = None
+            run_count = 1
+            block_lines = [line]
             i += 1
+            # Collect metadata lines until the content line.
+            while i < len(lines) and not lines[i].startswith("\t"):
+                meta = lines[i]
+                am = _GIT_BLAME_AUTHOR_LINE_RE.match(meta)
+                if am:
+                    current_author = am.group(1).strip()
+                block_lines.append(meta)
+                i += 1
+            if i < len(lines):
+                block_lines.append(lines[i])  # content line
+                i += 1
+            continue
+        out.append(line)
+        i += 1
 
     # Flush final block.
     if block_lines:
@@ -7880,8 +7877,7 @@ class GoTestFilter(Filter):
         # compact and machine-readable; compressing them would corrupt the JSON
         # stream and break any downstream parser (e.g. gotestsum).  Pass through.
         if "-json" in argv:
-            merged = self._combine_output(stdout, stderr)
-            return merged
+            return self._combine_output(stdout, stderr)
 
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
@@ -7928,15 +7924,14 @@ class GoTestFilter(Filter):
                         else:
                             goroutine_frames_dropped += 1
                         continue
-                    else:
-                        # Leaving goroutine section.
-                        if goroutine_frames_dropped:
-                            kept.append(
-                                f"    [token-goat: +{goroutine_frames_dropped} goroutine frames omitted]"
-                            )
-                        in_goroutine = False
-                        goroutine_frame_count = 0
-                        goroutine_frames_dropped = 0
+                    # Leaving goroutine section.
+                    if goroutine_frames_dropped:
+                        kept.append(
+                            f"    [token-goat: +{goroutine_frames_dropped} goroutine frames omitted]"
+                        )
+                    in_goroutine = False
+                    goroutine_frame_count = 0
+                    goroutine_frames_dropped = 0
                 kept.append(rline)
             # Final flush.
             if goroutine_frames_dropped:
@@ -9231,18 +9226,17 @@ class AwsCliFilter(Filter):
                     # Consecutive IN_PROGRESS for the same resource — collapse.
                     in_progress_run[resource_id] = in_progress_run.get(resource_id, 0) + 1
                     continue
-                else:
-                    # First IN_PROGRESS for this resource in this run — keep.
-                    # Flush any previous collapse count for this resource.
-                    prev_count = in_progress_run.pop(resource_id, 0)
-                    if prev_count:
-                        kept_events.append({
-                            "__token_goat__": (
-                                f"{prev_count} repeated {prev_status} event(s) "
-                                f"for {resource_id} collapsed"
-                            )
-                        })
-                    kept_events.append(event)
+                # First IN_PROGRESS for this resource in this run — keep.
+                # Flush any previous collapse count for this resource.
+                prev_count = in_progress_run.pop(resource_id, 0)
+                if prev_count:
+                    kept_events.append({
+                        "__token_goat__": (
+                            f"{prev_count} repeated {prev_status} event(s) "
+                            f"for {resource_id} collapsed"
+                        )
+                    })
+                kept_events.append(event)
             else:
                 # Terminal or other status — flush any pending collapse.
                 prev_count = in_progress_run.pop(resource_id, 0)
@@ -12943,11 +12937,10 @@ class AntFilter(Filter):
                 if task_type in _ANT_COLLAPSIBLE_TASKS:
                     task_counts[task_type] = task_counts.get(task_type, 0) + 1
                     continue
-                else:
-                    # Non-collapsible task: flush pending counts, then keep.
-                    flush_task_counts()
-                    kept.append(line)
-                    continue
+                # Non-collapsible task: flush pending counts, then keep.
+                flush_task_counts()
+                kept.append(line)
+                continue
             # Non-task line (timestamps, blank lines, etc.).
             flush_task_counts()
             kept.append(line)

@@ -475,9 +475,8 @@ def _is_quiet_hours(quiet_hours: str) -> bool:
     if window_start <= window_end:
         # Normal range (same day): e.g. 09:00-17:00
         return window_start <= current_minutes < window_end
-    else:
-        # Midnight-crossing range: e.g. 22:00-07:00
-        return current_minutes >= window_start or current_minutes < window_end
+    # Midnight-crossing range: e.g. 22:00-07:00
+    return current_minutes >= window_start or current_minutes < window_end
 
 
 def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:

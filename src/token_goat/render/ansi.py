@@ -107,9 +107,8 @@ def strip_ansi(s: str) -> str:
     # Strip Unicode Private Use Area characters which some terminal emulators
     # use for custom icons/symbols. Ranges: U+E000–U+F8FF (BMP) and
     # U+F0000–U+FFFDD (Supplementary PUA).
-    text = _PUA_RE.sub("", text)
+    return _PUA_RE.sub("", text)
 
-    return text
 
 
 def fmt_bytes(n: int) -> str:
