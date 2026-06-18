@@ -4,6 +4,16 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **Path traversal bypass in bash command guard.** `_is_system_path()` in `bash_parser.py` previously appended `..` components to the resolved path list even when the path was already at root, allowing inputs like `/../../etc/passwd` to slip past the system-path block. The fix tracks whether the input path is absolute and discards `..` at root, so all variants that traverse above `/` and re-enter a blocked directory are correctly rejected. Four regression test cases added (`/../etc/passwd`, `/../../etc/passwd`, `/etc/./../../etc/passwd`, `/sys/../../../sys/kernel`).
+
+- **SQL identifier quoting in `db._count()`.** Table names passed to `_count()` are now wrapped in `[bracket]` quoting as defense-in-depth behind the existing allowlist guard.
+
+### Changed
+
+- **Hook dispatcher uses `asyncio.wait_for` instead of `Thread.join` + `is_alive()`.** `dispatch()` now wraps the synchronous handler in a daemon thread and awaits an `asyncio.Future` set via `loop.call_soon_threadsafe`. `asyncio.TimeoutError` (aliased to builtin `TimeoutError` in Python 3.11+) replaces the `is_alive()` race check. `threading.Lock` and the shared `handler_result` dict are eliminated. All handlers remain synchronous; only the dispatcher changes. The watchdog trip path, slow/moderate logging, `_tg_watchdog_tripped`/`_tg_elapsed_ms` diagnostic fields, and `_hook_context` ContextVar lifecycle are preserved.
+
 ## [1.9.2] - 2026-06-18
 
 ### Changed
