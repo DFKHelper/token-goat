@@ -8916,9 +8916,7 @@ class TerraformFilter(Filter):
             tail_lines = [ln for ln in kept if not _TF_REFRESH_RE.match(ln)]
             final_kept: list[str] = [summary_line]
             tail_start = max(0, len(tail_lines) - 20)
-            for ln in tail_lines[tail_start:]:
-                if ln != summary_line:
-                    final_kept.append(ln)
+            final_kept.extend(ln for ln in tail_lines[tail_start:] if ln != summary_line)
             kept = final_kept
 
         notes: list[str] = []
@@ -10558,10 +10556,7 @@ class PythonFilter(Filter):
 
         # Extract frame lines (those matching _PYTHON_FRAME_RE) between
         # Traceback and error line.
-        frame_indices = []
-        for i in range(traceback_start, error_line_idx):
-            if _PYTHON_FRAME_RE.search(lines[i]):
-                frame_indices.append(i)
+        frame_indices = [i for i in range(traceback_start, error_line_idx) if _PYTHON_FRAME_RE.search(lines[i])]
 
         # If there are too many frames (>10), keep first 2 and last 3 with marker.
         if len(frame_indices) > 10:
@@ -10643,10 +10638,7 @@ class PythonFilter(Filter):
         for indices in warning_groups.values():
             keep_indices.update(indices[:3])
 
-        result = []
-        for i, line in enumerate(lines):
-            if i in keep_indices or not _PYTHON_WARNING_RE.search(line):
-                result.append(line)
+        result = [line for i, line in enumerate(lines) if i in keep_indices or not _PYTHON_WARNING_RE.search(line)]
 
         # Add summary for dropped warnings.
         total_warnings = len([i for grp in warning_groups.values() for i in grp])
@@ -14290,16 +14282,8 @@ class DartFilter(Filter):
         # dart analyze output is already compact; mostly pass through.
         merged = self._combine_output(stdout, stderr)
         lines = merged.split("\n")
-        kept: list[str] = []
-        for line in lines:
-            # Keep all analyze output — it's already compact and high-signal.
-            if (
-                _DART_ANALYZING_RE.match(line)
-                or _DART_ANALYZE_RESULT_RE.match(line)
-                or _ERROR_SIGNAL_RE.search(line)
-                or line.strip()
-            ):
-                kept.append(line)
+        # Keep all analyze output — it's already compact and high-signal.
+        kept: list[str] = [line for line in lines if _DART_ANALYZING_RE.match(line) or _DART_ANALYZE_RESULT_RE.match(line) or _ERROR_SIGNAL_RE.search(line) or line.strip()]
         return self._finalize(kept)
 
     def _compress_test(self, stdout: str, stderr: str) -> str:
