@@ -174,10 +174,11 @@ def _env_int(env_key: str, default: int, lo: int, hi: int, config_path: str) -> 
         v = _validated_int(env_val, default, lo, hi, config_path + "(env)")
         if v != default:
             _LOG.info("%s overridden by environment: %d", config_path, v)
-        return v
     except (TypeError, ValueError):
         _LOG.warning("%s env override invalid (not an int): %s; using default %d", config_path, env_val, default)
         return default
+    else:
+        return v
 
 
 def _env_bool(env_key: str, default: bool) -> bool:
@@ -1352,10 +1353,11 @@ def _validated_numeric(
                 name, val, lo, hi, default,
             )
             return default
-        return v
     except (TypeError, ValueError):
         _LOG.warning("config: %s=%r is not an %s; using default %s", name, val, type_name, default)
         return default
+    else:
+        return v
 
 
 def _validated_int(val: object, default: int, lo: int, hi: int, name: str) -> int:

@@ -327,11 +327,12 @@ def _passthrough(
             timeout=timeout,
             check=False,
         )
-        return proc.returncode
     except subprocess.TimeoutExpired:
         return 124
     except FileNotFoundError:
         return 127
+    else:
+        return proc.returncode
 
 
 def _wrap_and_compress(

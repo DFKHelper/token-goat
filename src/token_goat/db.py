@@ -401,10 +401,11 @@ def _rebuild(db_path: Path) -> bool:
         # Invalidate per-path caches so the rebuilt DB gets fresh checks.
         _INTEGRITY_CHECKED.pop(db_path, None)
         _SCHEMA_MIGRATED.pop(db_path, None)
-        return True
     except OSError as e:
         _LOG.error("failed to quarantine %s: %s (continuing with existing DB)", db_path, e)
         return False
+    else:
+        return True
 
 
 # ---------------------------------------------------------------------------

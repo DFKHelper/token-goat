@@ -870,9 +870,10 @@ def doctor(
                     return (0,)
             if _vtup(latest) > _vtup(cc_ver):
                 raise ValueError(f"{cc_ver} installed, {latest} available — run `uv tool install --reinstall token-goat`")
-            return f"{cc_ver} (PyPI has {latest})"
         except OSError:
             return "PyPI unreachable (offline?)"
+        else:
+            return f"{cc_ver} (PyPI has {latest})"
 
     _check_step("token-goat (PyPI)", _check_pypi_version, warn=True)
 
@@ -1093,9 +1094,10 @@ def doctor(
         try:
             wal_conn = sqlite3.connect(tmp_db_path, isolation_level=None)
             actual_mode: str = wal_conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
-            return actual_mode == "wal"
         except (sqlite3.Error, OSError):
             return False
+        else:
+            return actual_mode == "wal"
         finally:
             with contextlib.suppress(Exception):
                 if wal_conn is not None:

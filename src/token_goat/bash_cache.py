@@ -605,10 +605,11 @@ def store_glob_result(
             return None
         evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
         _LOG.debug("bash_cache: stored glob result id=%s pattern=%s", out_id, sanitize_log_str(pattern))
-        return out_id
     except OSError as exc:
         _LOG.debug("bash_cache: glob store failed: %s", exc)
         return None
+    else:
+        return out_id
 
 
 def load_glob_result(
@@ -694,10 +695,11 @@ def store_grep_result(
             return None
         evict_old_entries(max_total_bytes=max_total_bytes, max_file_count=max_file_count)
         _LOG.debug("bash_cache: stored grep result id=%s pattern=%s", out_id, sanitize_log_str(pattern))
-        return out_id
     except OSError as exc:
         _LOG.debug("bash_cache: grep store failed: %s", exc)
         return None
+    else:
+        return out_id
 
 
 def load_grep_result(

@@ -7623,9 +7623,10 @@ def cmd_prune_cache(
                 if f.is_file() and not f.is_symlink()
             )
             count = len([f for f in cache_dir.iterdir() if f.is_file() and not f.is_symlink()])
-            return {"exists": True, "size_bytes": size, "file_count": count}
         except OSError:
             return {"exists": True, "size_bytes": 0, "file_count": 0}
+        else:
+            return {"exists": True, "size_bytes": size, "file_count": count}
 
     # Prune bash_outputs
     try:

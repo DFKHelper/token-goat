@@ -849,9 +849,10 @@ def _read_manifest_sidecar(
                 counts = {str(k): int(v) for k, v in counts_raw.items()}
             except (TypeError, ValueError):
                 counts = None
-        return sha, fp, ts, counts
     except Exception:
         return None
+    else:
+        return sha, fp, ts, counts
 
 
 def _write_manifest_sidecar(
@@ -1479,9 +1480,10 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
             output = output[:200].rsplit("\n", 1)[0]
         result = output if output.strip() else None
         _put_bounded(_uncommitted_changes_cache, project_root, (result, now))
-        return result
     except Exception:
         return None
+    else:
+        return result
 
 
 def _get_git_diff_stat_summary(root: object) -> str:
@@ -1543,9 +1545,10 @@ def _get_git_diff_stat_summary(root: object) -> str:
             _put_bounded(_diff_stat_summary_cache, root_str, ("", now))
             return ""
         _put_bounded(_diff_stat_summary_cache, root_str, (output, now))
-        return output
     except Exception:
         return ""
+    else:
+        return output
 
 
 def _get_stash_count(cwd: str | None) -> int:
@@ -1630,10 +1633,11 @@ def _get_committed_files(session_cache: object, cwd: str | None) -> set[str]:
                 # Normalize the path key: same operation as _norm_key()
                 normalized = _norm_key(line)
                 committed.add(normalized)
-        return committed
     except (ValueError, TypeError):
         # In case created_ts cannot be coerced to float
         return set()
+    else:
+        return committed
 
 
 def _detect_orchestrator_mode(
@@ -1671,9 +1675,10 @@ def _detect_orchestrator_mode(
         if not out:
             return False
         commit_count = sum(1 for line in out.splitlines() if line.strip())
-        return commit_count >= threshold
     except Exception:
         return False
+    else:
+        return commit_count >= threshold
 
 
 def _get_current_branch(repo_root: str | None) -> str | None:
@@ -2368,9 +2373,10 @@ def find_latest_session_id() -> str | None:
             return None
         # Most recently modified file — safe on all platforms.
         latest = max(candidates, key=lambda p: p.stat().st_mtime)
-        return latest.stem
     except Exception:
         return None
+    else:
+        return latest.stem
 
 
 # Cache for blocker error previews keyed by output_id.  A render of the manifest
