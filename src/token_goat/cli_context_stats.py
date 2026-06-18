@@ -65,8 +65,9 @@ def _find_memory_md(project_root: Path) -> Path | None:
             mem = proj_dir / "memory" / "MEMORY.md"
             if mem.is_file() and proj_dir.name == expected_slug:
                 return mem
-        return None
     except Exception:
+        return None
+    else:
         return None
 
 
