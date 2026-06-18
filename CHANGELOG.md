@@ -6,9 +6,13 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Added
 
-- **`token-goat callers <symbol>` — show which functions call a given symbol.** Groups results by caller: for each function that references the symbol, shows the file, caller name, and every line where it invokes the symbol. Complements `refs` by surfacing the call hierarchy rather than raw usage lines.
+- **`token-goat callers <symbol>` — show which functions call a given symbol.** Groups results by caller: for each function that references the symbol, shows the file, caller name, and every line where it invokes the symbol. Complements `refs` by showing the call chain rather than raw usage lines.
 
-- **`.tokengoatignore` — per-project exclusion file at project root.** Add gitignore-style glob patterns (one per line, `#` comments supported) to skip files and directories from indexing, on top of built-in skip lists. Use `token-goat ignores` to list active patterns (built-in and custom).
+- **`.tokengoatignore` — per-project exclusion file at project root.** Add gitignore-style glob patterns (one per line, `#` comments supported) to skip files and directories from indexing, on top of built-in skip lists. Run `token-goat ignores` to see what's active.
+
+- **`token-goat semantic --mode keyword|hybrid` — two new search modes.** `--mode keyword` runs BM25 keyword search over indexed chunk text — no embedding model needed. `--mode hybrid` combines BM25 and vector rankings via reciprocal rank fusion, which helps when a query has distinctive terms that pure semantic matching would drift past. The default (`--mode vector`) is unchanged.
+
+- **`token-goat arch` — project-wide import graph summary.** Shows hub modules (sorted by how many files import them), entry-point files that nothing imports, and circular import chains — all derived from the existing `imports_exports` index with no extra indexing step. For per-file depth, use `token-goat deps <file>`.
 
 
 ### Fixed
