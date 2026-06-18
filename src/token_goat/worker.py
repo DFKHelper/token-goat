@@ -786,12 +786,11 @@ def _dirty_queue_lock(lock_path: Path) -> Iterator[bool]:
     finally:
         if lock_acquired and fd is not None:
             try:
-                if sys.platform == "win32":
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
+                with contextlib.suppress(OSError):
+                    if sys.platform == "win32":
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
                 with contextlib.suppress(OSError):
                     os.close(fd)
