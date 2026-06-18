@@ -5332,3 +5332,33 @@ class TestMinSessionHintSavingsBytes:
 
         cfg = _config.load()
         assert cfg.hints.min_session_hint_savings_bytes == 1024
+
+
+class TestHighFrequencyHintResolvedSymbol:
+    """build_high_frequency_hint substitutes resolved_symbol for the <symbol> placeholder."""
+
+    def _make_cache(self, file_path: str, count: int):
+        from unittest.mock import MagicMock
+        cache = MagicMock()
+        cache.get_file_access_count.return_value = count
+        return cache
+
+    def test_placeholder_used_when_no_symbol(self):
+        from token_goat.hints import build_high_frequency_hint
+        cache = self._make_cache("src/foo.py", 5)
+        item = build_high_frequency_hint(cache, "src/foo.py", threshold=3)
+        assert item is not None
+        assert "<symbol>" in item.text
+
+    def test_resolved_symbol_replaces_placeholder(self):
+        from token_goat.hints import build_high_frequency_hint
+        cache = self._make_cache("src/foo.py", 5)
+        item = build_high_frequency_hint(cache, "src/foo.py", threshold=3, resolved_symbol="my_func")
+        assert item is not None
+        assert "<symbol>" not in item.text
+        assert "my_func" in item.text
+
+    def test_below_threshold_returns_none(self):
+        from token_goat.hints import build_high_frequency_hint
+        cache = self._make_cache("src/foo.py", 2)
+        assert build_high_frequency_hint(cache, "src/foo.py", threshold=3) is None

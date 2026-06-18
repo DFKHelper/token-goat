@@ -4386,6 +4386,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # Skip the hint if the Read tool was called directly with both offset and limit ≤ 80 lines.
         # (Don't suppress for bash-converted reads, which always benefit from the hint.)
         _is_from_bash = payload.get("_tg_from_bash_parser", False)
+        _surg_hint: str | None = None
         if _raw_offset is not None and not (not _is_from_bash and _raw_limit is not None and int(_raw_limit) <= 80):
             try:
                 _limit_is_sentinel = _raw_limit is None
@@ -4434,7 +4435,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # as count increases past the threshold).
         from .hints import _hint_fingerprint as _hfp2
         from .hints import build_high_frequency_hint
-        _freq_item = build_high_frequency_hint(cache, file_path)
+        _sym_from_surg: str | None = None
+        if _surg_hint:
+            import re as _re
+            _sym_m = _re.search(r'token-goat read "[^"]+::([^"<]+)"', _surg_hint)
+            if _sym_m:
+                _sym_from_surg = _sym_m.group(1)
+        _freq_item = build_high_frequency_hint(cache, file_path, resolved_symbol=_sym_from_surg)
         if _freq_item is not None:
             _freq_fp = _hfp2(_freq_item.text, path=file_path)
             if not cache.has_hint_fingerprint(_freq_fp):

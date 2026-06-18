@@ -1850,6 +1850,7 @@ def build_high_frequency_hint(
     file_path: str,
     *,
     threshold: int = _HIGH_FREQ_THRESHOLD,
+    resolved_symbol: str | None = None,
 ) -> HintItem | None:
     """Return a HintItem nudging toward surgical reads when a file is accessed often.
 
@@ -1857,6 +1858,10 @@ def build_high_frequency_hint(
     *threshold* times in the current session.  The hint text names the access
     count, the file basename, and two surgical-read alternatives so the agent
     has an immediately actionable command.
+
+    When *resolved_symbol* is supplied (resolved by an earlier surgical hint in
+    the same pre-read pass), the generic ``<symbol>`` placeholder is replaced
+    with the concrete name so the agent gets a directly runnable command.
 
     Returns ``None`` when:
     - The access count is below *threshold*.
@@ -1871,10 +1876,11 @@ def build_high_frequency_hint(
             return None
         fname = _sanitize_hint_path(Path(file_path).name)
         safe_path = _sanitize_hint_path(file_path)
+        sym = resolved_symbol if resolved_symbol else "<symbol>"
         text = _apply_terse(
             f"`{fname}` read {count}x this session — consider "
             f"`token-goat outline {safe_path}` or "
-            f"`token-goat read \"{safe_path}::<symbol>\"` for a narrower read."
+            f"`token-goat read \"{safe_path}::{sym}\"` for a narrower read."
         )
         return HintItem(text, HINT_PRIORITY_MEDIUM)
     except Exception:
@@ -4069,7 +4075,8 @@ def _structured_read_or_outline(
     """Build the surgical-command clause for a structured-file hint.
 
     When *top* names a real indexed symbol, suggest a concrete
-    ``token-goat read "<rel>::<symbol>"`` plus an ``outline`` to list the rest.
+    ``token-goat read "<rel>::<symbol>"`` without the outline fallback,
+    since the agent can see the resolved symbol.
     Otherwise fall back to a command that works without an index so the agent
     never receives an un-actionable ``::Placeholder`` token it cannot run.
 
@@ -4083,10 +4090,7 @@ def _structured_read_or_outline(
     """
     if top is not None:
         rel, sym = top
-        return (
-            f"use `token-goat read \"{rel}::{sym}\"` for {one_label} "
-            f"or `token-goat outline \"{safe_path}\"` to list all"
-        )
+        return f"use `token-goat read \"{rel}::{sym}\"` for {one_label}"
     if fallback_cmd == "section":
         return (
             f"use `token-goat section \"{safe_path}::<heading>\"` to read {list_label} by name"

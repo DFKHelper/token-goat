@@ -1541,7 +1541,7 @@ class TestSurgicalReadHint:
         payload = {
             "session_id": "surg-1",
             "tool_name": "Read",
-            "tool_input": {"file_path": "/proj/src/auth.py", "offset": 10, "limit": 21},
+            "tool_input": {"file_path": "/proj/src/auth.py", "offset": 10, "limit": 100},
             "cwd": "/proj",
         }
         result = hooks_cli.pre_read(payload)
