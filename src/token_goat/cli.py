@@ -6147,10 +6147,10 @@ def context_stats(
 
 @app.command("install", rich_help_panel="Install")
 def cmd_install(
-    codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),
-    opencode: bool = typer.Option(False, "--opencode", help="Also install opencode plugin bridge"),
-    openclaw: bool = typer.Option(False, "--openclaw", help="Also install openclaw plugin bridge"),
-    pi: bool = typer.Option(False, "--pi", help="Also install pi extension bridge (global ~/.pi/agent/extensions)"),
+    codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),  # noqa: B008
+    opencode: bool = typer.Option(False, "--opencode", help="Also install opencode plugin bridge"),  # noqa: B008
+    openclaw: bool = typer.Option(False, "--openclaw", help="Also install openclaw plugin bridge"),  # noqa: B008
+    pi: bool = typer.Option(False, "--pi", help="Also install pi extension bridge (global ~/.pi/agent/extensions)"),  # noqa: B008
     target: list[str] = typer.Option(  # noqa: B008
         None,
         "--target",
@@ -6284,12 +6284,12 @@ def cmd_install(
 
 @app.command("uninstall", rich_help_panel="Install")
 def cmd_uninstall(
-    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\dfk-helper\token-goat"),
-    codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),
-    gemini: bool = typer.Option(False, "--gemini", help="Also remove Gemini CLI hook integration"),
-    opencode: bool = typer.Option(False, "--opencode", help="Also remove opencode plugin bridge"),
-    openclaw: bool = typer.Option(False, "--openclaw", help="Also remove openclaw plugin bridge"),
-    pi: bool = typer.Option(False, "--pi", help="Also remove pi extension bridge (global ~/.pi/agent/extensions)"),
+    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\dfk-helper\token-goat"),  # noqa: B008
+    codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),  # noqa: B008
+    gemini: bool = typer.Option(False, "--gemini", help="Also remove Gemini CLI hook integration"),  # noqa: B008
+    opencode: bool = typer.Option(False, "--opencode", help="Also remove opencode plugin bridge"),  # noqa: B008
+    openclaw: bool = typer.Option(False, "--openclaw", help="Also remove openclaw plugin bridge"),  # noqa: B008
+    pi: bool = typer.Option(False, "--pi", help="Also remove pi extension bridge (global ~/.pi/agent/extensions)"),  # noqa: B008
 ) -> None:
     """Cleanly reverse install."""
     from . import install as inst
