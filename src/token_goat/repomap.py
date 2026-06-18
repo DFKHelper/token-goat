@@ -635,7 +635,7 @@ def compute_ranks(graph: _NxGraph, *, alpha: float = 0.85) -> dict[str, float]:
     def _uniform_ranks() -> dict[str, float]:
         node_count = simple_graph.number_of_nodes()
         rank = 1.0 / node_count if node_count else 1.0
-        return {node: rank for node in simple_graph.nodes}
+        return dict.fromkeys(simple_graph.nodes, rank)
 
     # _pagerank_python is a private networkx symbol — guard the import so a
     # future networkx rename does not crash the entire map command.

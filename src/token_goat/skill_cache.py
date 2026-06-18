@@ -316,7 +316,7 @@ def extract_compact_from_marker(body: str) -> str | None:
         # stripped line starts with ``` or ~~~.  We toggle on each fence line
         # rather than matching pairs so a mismatched fence file still terminates
         # correctly at end-of-file.
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             in_code_block = not in_code_block
             continue
         if in_code_block:
@@ -371,7 +371,7 @@ def extract_checklist_section(body: str) -> str | None:
 
     for i, raw_line in enumerate(lines):
         stripped = raw_line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             in_code_block = not in_code_block
             continue
         if in_code_block:
@@ -454,7 +454,7 @@ def extract_all_headings(body: str, max_level: int = 3) -> list[tuple[int, str]]
     in_code_block = False
     for line in body.splitlines():
         stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             in_code_block = not in_code_block
             continue
         if in_code_block:
@@ -538,7 +538,7 @@ def extract_named_section(body: str, heading: str) -> str | None:
         level_matches: list[tuple[int, int]] = []
         for i, raw_line in enumerate(lines):
             stripped = raw_line.strip()
-            if stripped.startswith("```") or stripped.startswith("~~~"):
+            if stripped.startswith(("```", "~~~")):
                 in_code_block = not in_code_block
                 continue
             if in_code_block:
@@ -1547,14 +1547,14 @@ def generate_compact_summary(full_body: str) -> str:
             continue
 
         # Track fenced code block state.
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             in_code_block = not in_code_block
             continue
         if in_code_block:
             continue
 
         # 2. H2/H3 headings as table of contents.
-        if stripped.startswith("## ") or stripped.startswith("### "):
+        if stripped.startswith(("## ", "### ")):
             headings.append(stripped)
             continue
 

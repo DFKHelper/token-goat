@@ -147,10 +147,7 @@ def _looks_like_abi_filename(name: str, parts: list[str]) -> bool:
     - Parent directory named ``abi/`` — conventional ABI bundle directory
     """
     return (
-        name.endswith("abi.ts")
-        or name.endswith("abi.d.ts")
-        or name.endswith(".abi.ts")
-        or (len(parts) >= 2 and parts[-2].lower() == "abi")
+        name.endswith(("abi.ts", "abi.d.ts", ".abi.ts")) or len(parts) >= 2 and parts[-2].lower() == "abi"
     )
 
 

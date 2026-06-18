@@ -240,7 +240,7 @@ def build_extractive_compact(
         stripped = line.strip()
 
         # Track fenced code blocks
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             if not in_code_block:
                 in_code_block = True
                 code_block_lines = 0

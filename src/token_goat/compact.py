@@ -1254,7 +1254,7 @@ def is_noise_path(path: str) -> bool:
     if basename in _NOISE_BASENAMES:
         return True
     # Basename prefix checks: ephemeral state files from automation tools.
-    if basename.startswith(".improve-state-") or basename.startswith("improve_commit_msg_"):
+    if basename.startswith((".improve-state-", "improve_commit_msg_")):
         return True
     dot_idx = basename.rfind(".")
     return dot_idx >= 0 and basename[dot_idx:] in _NOISE_EXTS
@@ -3553,7 +3553,7 @@ def _section_budgets(total_budget: int, edited_tokens: int, section_content_coun
 
     # If no sections have content, return all zeros.
     if not sections_with_content:
-        return {name: 0 for name in base_proportions}
+        return dict.fromkeys(base_proportions, 0)
 
     # Redistribute proportions: renormalize to sum to 1.0 among non-empty sections.
     active_proportions = {

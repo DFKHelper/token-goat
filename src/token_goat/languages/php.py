@@ -106,7 +106,7 @@ def _extract_php_symbols_inner(
             continue
 
         # Skip single-line comments and empty lines
-        if not stripped or stripped.startswith("//") or stripped.startswith("#"):
+        if not stripped or stripped.startswith(("//", "#")):
             continue
 
         # Track brace depth for class context

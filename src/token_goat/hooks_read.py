@@ -489,7 +489,6 @@ def _try_shrink_image(
             # Missing file / permission: fall through to image_shrink.shrink
             # which has its own OSError handling and returns None silently.
             _LOG.debug("image-shrink: pre-check failed for %s: %s", sanitize_log_str(file_path), _exc)
-            pass
         shrunken = image_shrink.shrink(src_path)
         if shrunken is None:
             return None
@@ -5365,7 +5364,7 @@ def _is_log_file_path(norm_path: str) -> bool:
     lower = norm_path.lower()
     if lower.endswith((".log", ".out")):
         return True
-    return "/log/" in lower or "/logs/" in lower or lower.endswith("/log") or lower.endswith("/logs")
+    return "/log/" in lower or "/logs/" in lower or lower.endswith(("/log", "/logs"))
 
 
 _GIT_NOISE_FLAGS: frozenset[str] = frozenset({
@@ -5415,7 +5414,7 @@ def _get_head_sha(cwd: str | None) -> str | None:
     """
     import subprocess as _subp  # noqa: PLC0415
     try:
-        kwargs: dict[str, object] = dict(capture_output=True, text=True, timeout=5, check=False)
+        kwargs: dict[str, object] = {"capture_output": True, "text": True, "timeout": 5, "check": False}
         if cwd:
             kwargs["cwd"] = cwd
         result = _subp.run(["git", "rev-parse", "HEAD"], **kwargs)  # type: ignore[call-overload]
@@ -5656,7 +5655,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             _prev_failed = _session_cache.has_hint_fingerprint(_RECON_FAIL_KEY)
             if _recon_n >= 3 and not _already_injected and not _prev_failed:
                 import subprocess as _subp  # noqa: PLC0415
-                _run_kw: dict[str, object] = dict(capture_output=True, text=True, timeout=10, check=False)
+                _run_kw: dict[str, object] = {"capture_output": True, "text": True, "timeout": 10, "check": False}
                 if cwd:
                     _run_kw["cwd"] = cwd
                 _map_r = _subp.run(["token-goat", "map", "--compact"], **_run_kw)  # type: ignore[call-overload]
@@ -6002,12 +6001,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         continue
                     _pl_lower = _pl_stripped.lower()
                     if (
-                        "error" in _pl_lower
-                        or "failed" in _pl_lower
-                        or "warning:" in _pl_lower
-                        or " err!" in _pl_lower
-                        or _pl_lower.startswith("npm warn")
-                        or _pl_lower.startswith("npm err")
+                        "error" in _pl_lower or "failed" in _pl_lower or "warning:" in _pl_lower or " err!" in _pl_lower or _pl_lower.startswith(("npm warn", "npm err"))
                     ):
                         _pkg_error_lines.append(_pl_stripped)
                     if _pl_stripped.startswith(_PROGRESS_PREFIXES) or (
@@ -6117,17 +6111,14 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             _env_cats["PATH-related"].append(_vn)
                         elif _vnu.startswith("PYTHON"):
                             _env_cats["Python"].append(_vn)
-                        elif _vnu.startswith("NODE") or _vnu.startswith("NPM"):
+                        elif _vnu.startswith(("NODE", "NPM")):
                             _env_cats["Node/npm"].append(_vn)
                         elif _vnu.startswith("AWS_"):
                             _env_cats["AWS"].append(_vn)
                         elif _vnu.startswith("GIT_"):
                             _env_cats["Git"].append(_vn)
                         elif (
-                            _vnu.startswith("CI")
-                            or _vnu.startswith("GITHUB_")
-                            or _vnu.startswith("TRAVIS_")
-                            or _vnu.startswith("CIRCLE_")
+                            _vnu.startswith(("CI", "GITHUB_", "TRAVIS_", "CIRCLE_"))
                         ):
                             _env_cats["CI"].append(_vn)
                         else:
