@@ -1638,8 +1638,7 @@ def _extract_frontmatter_description(body: str) -> str:
     for line in lines[1:end]:
         m = desc_re.match(line.strip())
         if m:
-            value = m.group(1).strip().strip("'\"")
-            return value
+            return m.group(1).strip().strip("'\"")
     return ""
 
 

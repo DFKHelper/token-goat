@@ -41,8 +41,7 @@ _SEP = r"[\s\W]{1,4}"
 def _normalise(text: str) -> str:
     """Return a detection-only copy: NFKC-normalised with invisible chars stripped."""
     norm = unicodedata.normalize("NFKC", text)
-    norm = _INVISIBLE_RE.sub("", norm)
-    return norm
+    return _INVISIBLE_RE.sub("", norm)
 
 
 def _has_tag_block(text: str) -> bool:
@@ -236,8 +235,7 @@ def check_hint_for_injection(hint: str, source: str = "") -> str:
                 label,
             )
             # Redact the matched span, preserving surrounding context.
-            redacted = hint[: m.start()] + "[REDACTED]" + hint[m.end() :]
-            return redacted
+            return hint[: m.start()] + "[REDACTED]" + hint[m.end() :]
 
     # Tag-block smuggling check.
     if _has_tag_block(hint):
@@ -245,7 +243,6 @@ def check_hint_for_injection(hint: str, source: str = "") -> str:
             "injection: flagged hint from %s — Unicode Tag-block characters detected",
             source or "<unknown>",
         )
-        cleaned = _TAG_BLOCK_RE.sub("[REDACTED]", hint)
-        return cleaned
+        return _TAG_BLOCK_RE.sub("[REDACTED]", hint)
 
     return hint

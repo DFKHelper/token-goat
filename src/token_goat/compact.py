@@ -4798,8 +4798,7 @@ def _find_open_questions(edited_file_paths: list[str], max_questions: int = 5) -
                 break
 
     # Format as "filename:line — description"
-    result = [f"{fp}:{ln} — {desc}" for fp, ln, desc in deduped]
-    return result
+    return [f"{fp}:{ln} — {desc}" for fp, ln, desc in deduped]
 
 
 def _render_tasks_section(

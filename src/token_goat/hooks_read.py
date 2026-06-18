@@ -1128,7 +1128,7 @@ def _emit_dedup_budgeted_hint(
                 display_name, sanitize_log_str(file_path),
             )
             return None
-        elif seen_count >= verbose_until:
+        if seen_count >= verbose_until:
             # Threshold reached: emit short stub instead of full hint.
             # Apply the same budget gate as the full-emit path so the cap
             # cannot be bypassed via unlimited stub emissions.
@@ -5671,11 +5671,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             + _map_r.stdout.strip()
                         ),
                     }
-                else:
-                    _LOG.warning(
-                        "post-bash: map --compact exited %d: %s", _map_r.returncode, _map_r.stderr[:200]
-                    )
-                    _session_cache.mark_hint_seen(_RECON_FAIL_KEY)
+                _LOG.warning(
+                    "post-bash: map --compact exited %d: %s", _map_r.returncode, _map_r.stderr[:200]
+                )
+                _session_cache.mark_hint_seen(_RECON_FAIL_KEY)
             elif _already_injected:
                 # Bump count so @recon_map stays competitive against LRU eviction.
                 _session_cache.mark_hint_seen(_RECON_MAP_KEY)
@@ -7435,7 +7434,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                                     "[token-goat] git diff unchanged since last run — output suppressed"
                                 ),
                             }
-                        elif _gd_delta_n < _GIT_DIFF_SMALL_DELTA:
+                        if _gd_delta_n < _GIT_DIFF_SMALL_DELTA:
                             pass  # small delta: full new diff passes through unchanged
                         else:
                             _gd_delta_lines = (
@@ -7521,7 +7520,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                                 f" — {len(_sd_new_lines)} error lines suppressed"
                             ),
                         }
-                    elif _sd_delta_n < _STDERR_DELTA_SMALL:
+                    if _sd_delta_n < _STDERR_DELTA_SMALL:
                         pass  # small delta: full stderr passes through unchanged
                     else:
                         _sd_new_section = "\n".join(_sd_added[:_STDERR_DELTA_MAX_PREVIEW])

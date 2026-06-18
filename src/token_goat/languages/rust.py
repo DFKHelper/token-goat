@@ -43,8 +43,7 @@ def _parse_use_target(source_line: str) -> str:
     line = source_line.strip()
     m = _USE_PATH_RE.match(line)
     if m:
-        path = m.group(1).strip().rstrip(";").strip()
-        return path
+        return m.group(1).strip().rstrip(";").strip()
     return line
 
 

@@ -82,8 +82,7 @@ def strip_cstyle_comments(
         return "\n" * m.group(0).count("\n")
 
     text = block_re.sub(_blank_block, text)
-    text = line_re.sub("", text)
-    return text
+    return line_re.sub("", text)
 
 
 def make_symbol_emitter(

@@ -191,8 +191,7 @@ def _normalize_url(url: str) -> str:
                 userinfo = p.username + (f":{p.password}" if p.password else "")
                 netloc = f"{userinfo}@{netloc}"
 
-    normalized = urlunparse((scheme, netloc, p.path, p.params, p.query, ""))
-    return normalized
+    return urlunparse((scheme, netloc, p.path, p.params, p.query, ""))
 
 
 def url_hash(url: str) -> str:
