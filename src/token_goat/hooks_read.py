@@ -7829,7 +7829,9 @@ def pre_screenshot(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     # Unique path per call — avoids concurrent-call overwrites.
-    tmp_path = tempfile.mktemp(suffix=".png", prefix="tg-screenshot-")
+    # Use TemporaryFile to get a secure path; we won't use the file handle, just the path.
+    with tempfile.NamedTemporaryFile(suffix=".png", prefix="tg-screenshot-", delete=False) as tmp:
+        tmp_path = tmp.name
     reason = "Screenshot result not saved — add the save-to-disk argument first."
     context = (
         "MCP screenshot tools return raw image bytes that bypass image-shrink and consume "
