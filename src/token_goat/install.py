@@ -1791,7 +1791,7 @@ def pregen_skill_compacts() -> str:
     # ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills/<name>/SKILL.md
     plugins_cache = plugins_root / "cache"
     if plugins_cache.is_dir():
-        try:
+        with contextlib.suppress(OSError):
             for mkt in plugins_cache.iterdir():
                 if not mkt.is_dir():
                     continue
@@ -1823,8 +1823,6 @@ def pregen_skill_compacts() -> str:
                                     skill_files.append((namespaced, candidate))
                                     break
                         break  # use newest version only
-        except OSError:
-            pass
 
     generated = 0
     skipped = 0
