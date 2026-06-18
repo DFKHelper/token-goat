@@ -541,7 +541,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from .session import FileEntry, SessionCache
-    from .session import FileEntry as _FileEntry
 
 
 # Wall-clock timeout for build_manifest() to prevent the PreCompact hook from stalling.
@@ -6436,7 +6435,7 @@ def _render(
     files_lines: list[str] = []
     files_core_lines: list[str] = []
     files_used = 0
-    included_top_files: list[_FileEntry] = []
+    included_top_files: list[FileEntry] = []
 
     if top_files:
         header = "**Files:**"

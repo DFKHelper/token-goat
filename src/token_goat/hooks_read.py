@@ -5668,10 +5668,11 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             + _map_r.stdout.strip()
                         ),
                     }
-                _LOG.warning(
-                    "post-bash: map --compact exited %d: %s", _map_r.returncode, _map_r.stderr[:200]
-                )
-                _session_cache.mark_hint_seen(_RECON_FAIL_KEY)
+                else:
+                    _LOG.warning(
+                        "post-bash: map --compact exited %d: %s", _map_r.returncode, _map_r.stderr[:200]
+                    )
+                    _session_cache.mark_hint_seen(_RECON_FAIL_KEY)
             elif _already_injected:
                 # Bump count so @recon_map stays competitive against LRU eviction.
                 _session_cache.mark_hint_seen(_RECON_MAP_KEY)
