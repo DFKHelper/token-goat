@@ -161,6 +161,31 @@ def run_git(
     )
 
 
+def run_git_silent(
+    args: list[str],
+    cwd: str | Path | None = None,
+    *,
+    timeout: float = 10,
+) -> str | None:
+    """Run ``git <args>`` and return stripped stdout, or ``None`` on any failure.
+
+    Returns ``None`` when git is not found, the working directory does not exist,
+    the process times out, the exit code is non-zero, or the output is empty after
+    stripping.  Only ``OSError`` and ``subprocess.SubprocessError`` are swallowed —
+    programming errors are allowed to propagate so they surface in tests rather than
+    being silently masked.
+    """
+    import subprocess as _subprocess  # noqa: PLC0415 — keep lazy for hook cold-start
+
+    try:
+        result = run_git(args, cwd=str(cwd) if cwd is not None else None, timeout=timeout)
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        return result.stdout.strip()
+    except (OSError, _subprocess.SubprocessError):
+        return None
+
+
 def sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate characters (U+DC80–U+DCFF) with U+FFFD.
 
@@ -374,3 +399,25 @@ def strip_bom(text: str) -> str:
     if text.startswith("﻿"):
         return text[1:]
     return text
+
+
+def _norm(p: str) -> str:
+    """Normalize a path for case-insensitive comparison on Windows.
+
+    Replaces backslashes with forward slashes and lowercases the entire path
+    on Windows (where paths are case-insensitive). On other platforms, returns
+    the path unchanged.
+
+    Args:
+        p: Path string to normalize.
+
+    Returns:
+        Normalized path.
+
+    Examples:
+        >>> _norm("C:\\Users\\test")  # On Windows
+        'c:/users/test'
+        >>> _norm("/home/user")  # On Linux
+        '/home/user'
+    """
+    return p.replace("\\", "/").casefold() if sys.platform == "win32" else p

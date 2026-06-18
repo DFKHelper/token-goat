@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from . import paths
-from .util import get_logger
+from .util import _norm, get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -375,9 +375,6 @@ def check_autostart() -> dict[str, str | None]:
         match = "UNKNOWN"
     else:
         # Normalise path separators and case (Windows paths are case-insensitive)
-        def _norm(p: str) -> str:
-            return p.replace("\\", "/").casefold() if sys.platform == "win32" else p
-
         match = "YES" if _norm(registered_interp) == _norm(current_interp) else "NO"
 
     return {

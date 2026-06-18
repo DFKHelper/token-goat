@@ -877,7 +877,7 @@ class TestGetSessionCommitsEdgeCases:
         def _raise_timeout(*args, **kwargs):
             raise subprocess.TimeoutExpired(["git"], 2)
 
-        monkeypatch.setattr("token_goat.compact._util_run_git", _raise_timeout)
+        monkeypatch.setattr("token_goat.util.run_git", _raise_timeout)
         result = compact._get_session_commits("/some/repo", time.time() - 3600)
         assert result == [], f"Expected [] on TimeoutExpired, got {result!r}"
 
@@ -886,7 +886,7 @@ class TestGetSessionCommitsEdgeCases:
         def _raise_oserror(*args, **kwargs):
             raise OSError("git: command not found")
 
-        monkeypatch.setattr("token_goat.compact._util_run_git", _raise_oserror)
+        monkeypatch.setattr("token_goat.util.run_git", _raise_oserror)
         result = compact._get_session_commits("/some/repo", time.time() - 3600)
         assert result == [], f"Expected [] on OSError, got {result!r}"
 

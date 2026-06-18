@@ -26,7 +26,7 @@ import time
 from typing import TYPE_CHECKING
 
 from . import worker as _worker
-from .util import get_logger
+from .util import _norm, get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -646,9 +646,6 @@ def kill_duplicate_daemon() -> str:
 
     if worker_interp is None:
         return "Worker interpreter unknown (legacy pid file format)."
-
-    def _norm(p: str) -> str:
-        return p.replace("\\", "/").casefold() if sys.platform == "win32" else p
 
     if _norm(worker_interp) == _norm(sys.executable):
         return "No duplicate daemon found."

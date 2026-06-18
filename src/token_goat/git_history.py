@@ -54,7 +54,7 @@ import time
 from pathlib import Path
 
 from .util import get_logger
-from .util import run_git as _util_run_git
+from .util import run_git_silent as _run_git
 
 _LOG = get_logger("git_history")
 
@@ -78,22 +78,6 @@ _MIN_SUMMARY_LEN: int = 6
 # Tracks wall-clock time since the last successful index run (stored in
 # git_history_meta), NOT the age of commits in the repo.
 _REINDEX_STALENESS_SECS: int = 3_600  # 1 hour
-
-
-def _run_git(args: list[str], cwd: Path, timeout: int = 10) -> str | None:
-    """Run a git command and return stdout, or None on any failure.
-
-    Delegates to ``util.run_git`` for consistent kwargs (encoding, errors, lock avoidance).
-    """
-    try:
-        result = _util_run_git(args, cwd=str(cwd), timeout=float(timeout))
-        if result.returncode != 0:
-            _LOG.debug("git %s exited %d: %s", args[0], result.returncode, result.stderr[:200])
-            return None
-        return result.stdout
-    except Exception as exc:  # noqa: BLE001
-        _LOG.debug("git %s failed: %s", args[0], exc)
-        return None
 
 
 def _parse_log(raw: str) -> list[dict[str, object]]:
