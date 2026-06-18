@@ -818,7 +818,7 @@ def format_report(report: BaselineReport, *, subagent: bool = False) -> list[str
     inherits and frames the total as its starting fill — the figure that answers
     "how full is a subagent before its first action?".
     """
-    selected = [r for r in report.rows if r.kind == "fixed"] if subagent else list(report.rows)
+    selected = [r for r in report.rows if r.kind == "fixed"] if subagent else report.rows
     short_sid = (report.session_id or "unknown")[:8]
     win = report.window_tokens
 

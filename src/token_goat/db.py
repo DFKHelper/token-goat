@@ -1259,10 +1259,9 @@ def project_has_files(project_hash: str) -> bool:
     """Return True when the project DB already contains at least one file row."""
     try:
         with open_project_readonly(project_hash) as conn:
-            row = conn.execute("SELECT 1 FROM files LIMIT 1").fetchone()
-            return row is not None
+            return conn.execute("SELECT 1 FROM files LIMIT 1").fetchone() is not None
     except FileNotFoundError:
-        return False  # DB does not exist yet — normal for un-indexed projects
+        return False
     except (sqlite3.Error, OSError) as e:
         _LOG.debug("project_is_indexed(%s…) failed: %s", project_hash[:8], e)
         return False

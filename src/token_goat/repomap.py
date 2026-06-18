@@ -1431,21 +1431,12 @@ def lang_breakdown(files: dict[str, _FileInfo]) -> str:
         counts[lang.capitalize()] += 1
     total = sum(counts.values())
     ranked = counts.most_common()
-    # Keep top-4 languages; fold the rest into "Other"
     _MAX_LANG_COLS = 4
-    if len(ranked) <= _MAX_LANG_COLS:
-        buckets = ranked
-        other_count = 0
-    else:
-        buckets = ranked[:_MAX_LANG_COLS]
-        other_count = total - sum(c for _, c in buckets)
-    parts = []
-    for lang, count in buckets:
-        pct = round(count * 100 / total)
-        parts.append(f"{lang}: {pct}%")
+    buckets = ranked if len(ranked) <= _MAX_LANG_COLS else ranked[:_MAX_LANG_COLS]
+    other_count = 0 if len(ranked) <= _MAX_LANG_COLS else total - sum(c for _, c in buckets)
+    parts = [f"{lang}: {round(count * 100 / total)}%" for lang, count in buckets]
     if other_count:
-        pct = round(other_count * 100 / total)
-        parts.append(f"Other: {pct}%")
+        parts.append(f"Other: {round(other_count * 100 / total)}%")
     return "  ".join(parts)
 
 

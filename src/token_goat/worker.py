@@ -456,7 +456,7 @@ def heartbeat_age(hb_path: Path | None = None) -> float | None:
     (``_is_heartbeat_fresh``, ``_heartbeat_age``, ``_nudge_worker_if_down``,
     ``cli_doctor``) had drifted into magic-number duplicates.
     """
-    path = hb_path if hb_path is not None else paths.worker_heartbeat_path()
+    path = hb_path or paths.worker_heartbeat_path()
     try:
         return time.time() - path.stat().st_mtime
     except OSError:
