@@ -1538,8 +1538,7 @@ def _render_routing_table(rows: list[tuple[str, str, str, str]], *, codex: bool)
     """
     col = 3 if codex else 2
     lines = [_ROUTING_TABLE_HEADER.rstrip("\n")]
-    for row in rows:
-        lines.append(f"| {row[0]} | {row[1]} | {row[col]} |")
+    lines.extend(f"| {row[0]} | {row[1]} | {row[col]} |" for row in rows)
     return "\n".join(lines)
 
 
