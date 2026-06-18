@@ -1916,9 +1916,7 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
         if _triggers and isinstance(_raw_prompt, str) and _raw_prompt.strip():
             import re as _re  # noqa: PLC0415
             _prompt_words = set(_re.sub(r"[^a-z0-9]", " ", _raw_prompt.lower()).split())
-            for _trig in _triggers:
-                if any(kw in _prompt_words for kw in _trig.keywords):
-                    _keyword_hints.append(_trig.hint)
+            _keyword_hints.extend(_trig.hint for _trig in _triggers if any(kw in _prompt_words for kw in _trig.keywords))
     except Exception:  # noqa: BLE001
         pass
 

@@ -630,9 +630,7 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     # re-apply the size cap so repeated CAS merges cannot grow these lists
     # beyond their documented maximums.
     remote_grep_keys = {(grep.pattern, grep.path) for grep in remote.greps}
-    for grep in local.greps:
-        if (grep.pattern, grep.path) not in remote_grep_keys:
-            remote.greps.append(grep)
+    remote.greps.extend(grep for grep in local.greps if (grep.pattern, grep.path) not in remote_grep_keys)
     merged.greps = remote.greps[-GREPS_HISTORY_MAX:]
 
     # grep_result_hashes: dict merge — take max count per hash, similar to hints_content_dedup.
@@ -674,17 +672,13 @@ def _merge_session_caches(local: SessionCache, remote: SessionCache) -> SessionC
     merged.pytest_failures = remote.pytest_failures | local.pytest_failures
 
     remote_glob_keys = {(glob.pattern, glob.path) for glob in remote.glob_history}
-    for glob in local.glob_history:
-        if (glob.pattern, glob.path) not in remote_glob_keys:
-            remote.glob_history.append(glob)
+    remote.glob_history.extend(glob for glob in local.glob_history if (glob.pattern, glob.path) not in remote_glob_keys)
     merged.glob_history = remote.glob_history[-GLOB_HISTORY_MAX:]
 
     # decisions: same append-only pattern as greps.  Dedup key is (ts, text) —
     # two entries with the same timestamp and text are the same decision.
     remote_decision_keys = {(d.ts, d.text) for d in remote.decisions}
-    for d in local.decisions:
-        if (d.ts, d.text) not in remote_decision_keys:
-            remote.decisions.append(d)
+    remote.decisions.extend(d for d in local.decisions if (d.ts, d.text) not in remote_decision_keys)
     merged.decisions = remote.decisions[-DECISION_HISTORY_MAX:]
 
     # --- counts: max (conservative; no base-value tracking) ---
@@ -2266,9 +2260,7 @@ class SessionCache:
         pinned_symbols: list[str] = []
         raw_pinned = d.get("pinned_symbols", [])
         if isinstance(raw_pinned, list):
-            for spec in raw_pinned:
-                if isinstance(spec, str) and spec and "::" in spec:
-                    pinned_symbols.append(spec)
+            pinned_symbols.extend(spec for spec in raw_pinned if isinstance(spec, str) and spec and "::" in spec)
             # Defensive trim — manually-edited caches could exceed the cap.
             pinned_symbols = pinned_symbols[:PINNED_SYMBOLS_MAX]
 
