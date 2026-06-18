@@ -24,7 +24,7 @@ never interrupt the agent's work.
 """
 from __future__ import annotations
 
-__all__ = ["pre_skill", "post_skill"]
+__all__ = ["post_skill", "pre_skill"]
 
 import contextlib
 from pathlib import Path
@@ -84,7 +84,7 @@ def _extract_skill_body(payload: HookPayload) -> str:
     Returns ``""`` when nothing decodable is present — the caller treats an
     empty body as "nothing to cache" and degrades silently.
     """
-    from .hooks_common import extract_tool_response_text  # noqa: PLC0415
+    from .hooks_common import extract_tool_response_text
     return extract_tool_response_text(
         payload,
         text_keys=("output", "text", "body", "content", "response"),
@@ -185,7 +185,7 @@ def _record_skill_compact_stat(skill_name: str, bytes_saved: int, tokens_saved: 
     swallowed — a broken stats DB must never abort the hook.
     """
     try:
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
 
         _db.record_stat(
             None,
@@ -194,7 +194,7 @@ def _record_skill_compact_stat(skill_name: str, bytes_saved: int, tokens_saved: 
             tokens_saved=tokens_saved,
             detail=sanitize_log_str(skill_name, max_len=200),
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("post-skill: skill_compact_served stat record failed", exc_info=True)
 
 
@@ -222,10 +222,10 @@ def _estimate_context_fill(session_id: str) -> float:
     Returns 0.0 on any error.
     """
     try:
-        from .compact import get_context_pressure  # noqa: PLC0415
+        from .compact import get_context_pressure
 
         return get_context_pressure(session_id).fill_fraction
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 0.0
 
 
@@ -239,7 +239,7 @@ def _estimate_incoming_skill_tokens(skill_name: str) -> int:
         source = _resolve_skill_body_path(skill_name)
         if source:
             return Path(source).stat().st_size // 4
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return 0
 
@@ -257,21 +257,21 @@ def _generate_and_store_compact(
     generation produces no output.  Failures inside budget / store steps are
     logged and propagated; callers should wrap in try/except.
     """
-    from . import skill_cache  # noqa: PLC0415
+    from . import skill_cache
 
     compact_text = skill_cache.generate_compact_summary(body)
     if not compact_text:
         return None
     try:
-        from .config import load as _load_cfg  # noqa: PLC0415
+        from .config import load as _load_cfg
 
         _cfg_budget = _load_cfg().skill_preservation.truncation_budget_tokens
-    except Exception:  # noqa: BLE001
+    except Exception:
         _cfg_budget = 800
     if _cfg_budget > 0:
         _budget_chars = _cfg_budget * 4
         if len(compact_text) > _budget_chars:
-            from .cache_common import find_markdown_boundary as _fmb  # noqa: PLC0415
+            from .cache_common import find_markdown_boundary as _fmb
 
             _cut = _fmb(compact_text, _budget_chars)
             if _cut <= 0:
@@ -303,13 +303,13 @@ def _compaction_occurred_after(session_id: str, skill_ts: float) -> bool:
     a broken path lookup never accidentally blocks a reload.
     """
     try:
-        from . import paths  # noqa: PLC0415
+        from . import paths
 
         sidecar = paths.manifest_sha_sidecar_path(session_id)
         if not sidecar.exists():
             return False
         return sidecar.stat().st_mtime > skill_ts
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -334,7 +334,7 @@ def _read_first_load_compact(skill_name: str) -> str | None:
     except OSError:
         return None
 
-    from . import skill_cache  # noqa: PLC0415
+    from . import skill_cache
 
     return skill_cache.extract_compact_from_marker(body)
 
@@ -369,7 +369,7 @@ def pre_skill(payload: HookPayload) -> HookResponse:
     if tool_name != "Skill":
         return CONTINUE()
 
-    from . import config as config_mod  # noqa: PLC0415
+    from . import config as config_mod
 
     cfg = config_mod.load().skill_preservation
     if not cfg.enabled or not cfg.pre_skill_enabled:
@@ -392,7 +392,7 @@ def pre_skill(payload: HookPayload) -> HookResponse:
     if not skill_name:
         return CONTINUE()
 
-    from . import session, skill_cache  # noqa: PLC0415
+    from . import session, skill_cache
 
     prior_entry = session.lookup_skill_entry(session_id, skill_name)
 
@@ -500,7 +500,7 @@ def pre_skill(payload: HookPayload) -> HookResponse:
     # incoming skill body is large.  Uses pre_tool_use_with_context so the Skill
     # tool is NOT blocked; the warning appears only in additionalContext.
     try:
-        from . import config as _cfg_mod  # noqa: PLC0415
+        from . import config as _cfg_mod
 
         _hints_cfg = _cfg_mod.load().hints
         if _hints_cfg.pre_skill_advisory:
@@ -508,8 +508,8 @@ def pre_skill(payload: HookPayload) -> HookResponse:
             if _ctx_pct > _PRE_SKILL_ADVISORY_FILL_FLOOR:
                 _skill_tokens = _estimate_incoming_skill_tokens(skill_name)
                 if _skill_tokens > _PRE_SKILL_ADVISORY_MIN_SKILL_TOKENS:
-                    from .compact import CONTEXT_AUTOCOMPACT_TOKENS  # noqa: PLC0415
-                    from .hooks_common import pre_tool_use_with_context  # noqa: PLC0415
+                    from .compact import CONTEXT_AUTOCOMPACT_TOKENS
+                    from .hooks_common import pre_tool_use_with_context
 
                     _new_pct = min(1.0, _ctx_pct + _skill_tokens / CONTEXT_AUTOCOMPACT_TOKENS)
                     _advisory = (
@@ -519,7 +519,7 @@ def pre_skill(payload: HookPayload) -> HookResponse:
                         f"Consider /compact first to preserve headroom.]"
                     )
                     return pre_tool_use_with_context(_advisory)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     return CONTINUE()
@@ -539,7 +539,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
     if tool_name != "Skill":
         return CONTINUE()
 
-    from . import config as config_mod  # noqa: PLC0415
+    from . import config as config_mod
 
     cfg = config_mod.load().skill_preservation
     if not cfg.enabled:
@@ -592,7 +592,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
 
     source_path = _resolve_skill_body_path(skill_name)
 
-    from . import session, skill_cache  # noqa: PLC0415
+    from . import session, skill_cache
 
     # Compute body SHA before the duplicate-load check so we can compare
     # against the stored content_sha.  skill_cache.content_hash is a thin
@@ -685,10 +685,10 @@ def post_skill(payload: HookPayload) -> HookResponse:
                 # truncation_budget_tokens so skill authors know the COMPACT_END
                 # marker is placed too late in the file.
                 try:
-                    from .config import load as _load_cfg  # noqa: PLC0415
+                    from .config import load as _load_cfg
                     _budget = _load_cfg().skill_preservation.truncation_budget_tokens
                     if _budget > 0 and compact_tokens > _budget:
-                        import sys as _sys  # noqa: PLC0415
+                        import sys as _sys
                         _sys.stderr.write(
                             f"token-goat warning: skill '{sanitize_log_str(skill_name, max_len=80)}'"
                             f" compact slice is {compact_tokens} tokens"
@@ -701,7 +701,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
                             compact_tokens,
                             _budget,
                         )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
                 # Record tokens saved = full body − compact (serving compact saves
                 # this many tokens per manifest emission vs re-reading the full body).
@@ -749,7 +749,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
                     # No valid pre-gen compact; warn on large bodies missing a marker.
                     _LARGE_BODY_WARN_BYTES: int = 32_768
                     if body_size >= _LARGE_BODY_WARN_BYTES:
-                        import sys as _sys  # noqa: PLC0415
+                        import sys as _sys
 
                         _sys.stderr.write(
                             f"token-goat warning: skill '{sanitize_log_str(skill_name, max_len=80)}'"
@@ -782,12 +782,12 @@ def post_skill(payload: HookPayload) -> HookResponse:
                                 )
                     else:
                         # Paths 3 + 4: large body (≥ 10 K tokens) — async or info-only.
-                        from . import worker as _worker_mod  # noqa: PLC0415
+                        from . import worker as _worker_mod
 
                         if _worker_mod.is_worker_alive():
                             # Path 3: dispatch compact generation to a daemon thread.
-                            import contextlib as _contextlib  # noqa: PLC0415
-                            import threading as _threading  # noqa: PLC0415
+                            import contextlib as _contextlib
+                            import threading as _threading
 
                             def _gen_compact_bg(
                                 _b: str = body,
@@ -817,7 +817,7 @@ def post_skill(payload: HookPayload) -> HookResponse:
                                     f"No compact cached. Run `token-goat install` or "
                                     f"`token-goat skill-compact --all` to pre-generate compacts.]"
                                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _LOG.debug("post-skill: compact failed: %s", exc)
 
     try:

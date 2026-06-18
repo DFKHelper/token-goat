@@ -48,8 +48,8 @@ def _read_pid_from_file() -> int:
     JSON format written by :func:`token_goat.worker._write_pid`:
     ``{"pid": N, "started_at": "...", "interpreter": "...", "version": "..."}``.
     """
-    from . import paths  # noqa: PLC0415
-    from . import worker as _w  # noqa: PLC0415
+    from . import paths
+    from . import worker as _w
 
     try:
         pid, _interp = _w._read_pid_info(paths.worker_pid_path().read_text(encoding="utf-8"))
@@ -67,7 +67,7 @@ def _pid_is_alive(pid: int) -> bool:
     inspect it — treat as alive.
     """
     try:
-        import psutil  # noqa: PLC0415
+        import psutil
 
         return psutil.pid_exists(pid)
     except ImportError:
@@ -207,7 +207,7 @@ class WatchdogThread(threading.Thread):
                 )
                 try:
                     new_pid = self._launch_fn()
-                except Exception:  # noqa: BLE001
+                except Exception:
                     _LOG.exception("watchdog: launch_fn raised during restart attempt")
                     new_pid = None
 
@@ -222,7 +222,7 @@ class WatchdogThread(threading.Thread):
 
                 self._restart_times.append(time.monotonic())
 
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.exception("watchdog thread crashed — watchdog disabled for this session")
         finally:
             _LOG.debug("watchdog thread exiting")
@@ -275,7 +275,7 @@ def _graceful_shutdown(signum: int, frame: object) -> None:
     be cleaned up on the *next* worker startup via ``cleanup_on_startup()``.
     """
     _LOG.debug("received signal %d; requesting clean shutdown", signum)
-    global _daemon_stop_event  # noqa: PLW0603
+    global _daemon_stop_event
     if _daemon_stop_event is not None:
         _daemon_stop_event.set()
     else:
@@ -304,7 +304,7 @@ def _install_signal_handlers(stop_event: threading.Event | None = None) -> None:
     None the handler falls back to ``sys.exit`` (backward-compatible for callers
     that do not supply a stop event, e.g. tests).
     """
-    global _daemon_stop_event  # noqa: PLW0603
+    global _daemon_stop_event
     _daemon_stop_event = stop_event
     for sig in (signal.SIGTERM, signal.SIGINT):
         if hasattr(signal, sig.name):
@@ -357,7 +357,7 @@ def _install_windows_console_handler(stop_event=None) -> None:
             _LOG.debug(
                 "SetConsoleCtrlHandler returned 0 (no console attached or permission denied); skipping"
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("Windows console-control handler registration failed; falling back to no-op")
 
 
@@ -372,7 +372,7 @@ def _timed_cycle(label: str, fn: Callable[[], None]) -> None:
     t0 = time.time()
     try:
         fn()
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.exception("%s failed after %.2fs", label, time.time() - t0)
     else:
         _LOG.info("%s completed in %.2fs", label, time.time() - t0)
@@ -384,7 +384,7 @@ def _run_maintenance_cycle() -> None:
     t0 = time.time()
     try:
         s = cleanup_on_startup()
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.exception("periodic maintenance failed after %.2fs", time.time() - t0)
     else:
         elapsed = time.time() - t0
@@ -448,7 +448,7 @@ def run_daemon(stop_event=None) -> None:
         # the PID + interpreter of the winner lets the user immediately identify
         # the duplicate via `token-goat doctor` or the log file.
         try:
-            from . import paths as _paths  # noqa: PLC0415
+            from . import paths as _paths
             _pid_text = _paths.worker_pid_path().read_text(encoding="utf-8")
             _pid, _exe = _worker._read_pid_info(_pid_text)
             if _exe:
@@ -482,7 +482,7 @@ def run_daemon(stop_event=None) -> None:
         # so this case should be theoretically impossible, but the verification
         # costs one file-read and makes the invariant explicit and testable.
         try:
-            from . import paths as _paths  # noqa: PLC0415
+            from . import paths as _paths
             _written_text = _paths.worker_pid_path().read_text(encoding="utf-8")
             _written_pid, _written_exe = _worker._read_pid_info(_written_text)
             if _written_pid != os.getpid():
@@ -504,9 +504,9 @@ def run_daemon(stop_event=None) -> None:
         # it cannot block process exit; the finally block always calls watchdog.stop()
         # to distinguish graceful shutdown from an unexpected exit.
         try:
-            from . import config as _cfg  # noqa: PLC0415
+            from . import config as _cfg
             _watchdog_enabled = _cfg.load().worker.watchdog_enabled
-        except Exception:  # noqa: BLE001
+        except Exception:
             _watchdog_enabled = True  # fail-open: default to enabled
 
         if _watchdog_enabled:
@@ -626,8 +626,8 @@ def kill_duplicate_daemon() -> str:
     via ctypes on Windows.  The function never raises; all errors are returned
     as descriptive strings so the CLI can print them without crashing.
     """
-    from . import paths  # noqa: PLC0415
-    from . import worker as _w  # noqa: PLC0415
+    from . import paths
+    from . import worker as _w
 
     pid_path = paths.worker_pid_path()
     if not pid_path.exists():
@@ -661,7 +661,7 @@ def kill_duplicate_daemon() -> str:
             else:
                 return f"Could not open process PID {pid} for termination (OpenProcess returned NULL)."
         else:
-            import signal as _signal  # noqa: PLC0415
+            import signal as _signal
             os.kill(pid, _signal.SIGTERM)
     except OSError as exc:
         return f"Failed to kill PID {pid}: {exc}."
@@ -690,7 +690,7 @@ def query_worker_status() -> dict[str, object]:
         pool_size (int): Configured max_pool_workers from config (default 4).
         last_log_line (str | None): Last non-empty line from today's log file.
     """
-    from . import paths  # noqa: PLC0415
+    from . import paths
 
     pid: int | None = None
     interpreter: str | None = None
@@ -700,9 +700,9 @@ def query_worker_status() -> dict[str, object]:
     pid_path = paths.worker_pid_path()
     if pid_path.exists():
         try:
-            import json as _json  # noqa: PLC0415
+            import json as _json
 
-            from . import worker as _w  # noqa: PLC0415
+            from . import worker as _w
             pid_text = pid_path.read_text(encoding="utf-8")
             pid_raw, interp = _w._read_pid_info(pid_text)
             if pid_raw != _PID_UNKNOWN:
@@ -728,9 +728,9 @@ def query_worker_status() -> dict[str, object]:
     # Pool size from config (fail-soft: return the default if config unavailable).
     pool_size: int = 4
     try:
-        from . import config as _cfg  # noqa: PLC0415
+        from . import config as _cfg
         pool_size = _cfg.load().worker.max_pool_workers
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     autostart: str | None = None
@@ -741,7 +741,7 @@ def query_worker_status() -> dict[str, object]:
         try:
             import winreg  # type: ignore[import]
 
-            from . import install  # noqa: PLC0415
+            from . import install
             with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
                 install._HKCU_RUN_PATH,
@@ -753,24 +753,24 @@ def query_worker_status() -> dict[str, object]:
                     autostart_active = True
                 except FileNotFoundError:
                     autostart_active = False
-        except Exception:  # noqa: BLE001
+        except Exception:
             autostart_active = None
     elif sys.platform.startswith("linux") or sys.platform == "darwin":
-        from . import install  # noqa: PLC0415
+        from . import install
         if install._systemd_service_path().exists():
             autostart = "systemd"
             try:
-                import subprocess  # noqa: PLC0415
+                import subprocess
                 result = subprocess.run(
                     ["systemctl", "--user", "is-active", f"{install.SYSTEMD_SERVICE_NAME}.service"],
                     capture_output=True,
                     timeout=5,
                 )
                 autostart_active = result.returncode == 0
-            except Exception:  # noqa: BLE001
+            except Exception:
                 autostart_active = None
         else:
-            from . import install as _inst  # noqa: PLC0415
+            from . import install as _inst
             xdg_path = _inst._xdg_desktop_path() if hasattr(_inst, "_xdg_desktop_path") else None
             if xdg_path and xdg_path.exists():
                 autostart = "xdg"
@@ -781,7 +781,7 @@ def query_worker_status() -> dict[str, object]:
 
     last_log_line: str | None = None
     try:
-        import datetime  # noqa: PLC0415
+        import datetime
         today = datetime.date.today().strftime("%Y-%m-%d")
         log_file = paths.logs_dir() / f"{today}.log"
         if log_file.exists():
@@ -789,7 +789,7 @@ def query_worker_status() -> dict[str, object]:
             lines = [ln for ln in text.splitlines() if ln.strip()]
             if lines:
                 last_log_line = lines[-1]
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     return {

@@ -18,7 +18,7 @@ CONTINUE so a broken index pipeline cannot interrupt the agent.
 """
 from __future__ import annotations
 
-__all__ = ["post_edit", "_edit_succeeded"]
+__all__ = ["_edit_succeeded", "post_edit"]
 
 import threading
 import time as _time
@@ -93,7 +93,7 @@ def _edit_succeeded(payload: HookPayload, file_path: str) -> bool:
 
     # Check 2: mtime freshness — the file must exist and have been written recently.
     try:
-        from pathlib import Path as _Path  # noqa: PLC0415
+        from pathlib import Path as _Path
 
         p = _Path(file_path)
         if not p.exists():
@@ -140,7 +140,7 @@ def _nudge_worker_if_down() -> None:
     Failures are logged but not raised (fail-soft hook pattern).
     """
     try:
-        from . import paths, worker  # noqa: PLC0415
+        from . import paths, worker
 
         if not worker.is_heartbeat_stale_for_nudge():
             return
@@ -149,7 +149,7 @@ def _nudge_worker_if_down() -> None:
         sentinel = paths.sentinels_dir() / "last_worker_restart"
         throttle_secs = getattr(worker, "WORKER_RESTART_THROTTLE_SECS", 30.0)
         try:
-            import time  # noqa: PLC0415
+            import time
             if sentinel.exists():
                 age = time.time() - sentinel.stat().st_mtime
                 if age < throttle_secs:
@@ -174,7 +174,7 @@ def _nudge_worker_if_down() -> None:
                 pass  # Sentinel update is best-effort.
         else:
             _LOG.warning("worker nudge: ensure_running returned no pid (already running or failed)")
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.exception("worker nudge failed")
 
 
@@ -190,10 +190,10 @@ def _enqueue_for_reindex(file_path: str, cwd: str | None) -> None:
         file_path: Absolute or relative path to the edited file.
         cwd: Current working directory (used to resolve relative paths).
     """
-    from pathlib import Path  # noqa: PLC0415
+    from pathlib import Path
 
-    from . import worker  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
+    from . import worker
+    from .project import find_project
 
     abs_path = Path(file_path)
     if abs_path.is_absolute():
@@ -252,8 +252,8 @@ def _parse_local_imports(source: str, file_path: str, cwd: str | None) -> list[s
     Only ``.py`` files are considered; third-party/stdlib imports are silently
     skipped when no matching file is found.  Errors are swallowed (best-effort).
     """
-    import re  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
+    import re
+    from pathlib import Path
 
     results: list[str] = []
     seen: set[str] = set()
@@ -367,7 +367,7 @@ def _parse_local_imports(source: str, file_path: str, cwd: str | None) -> list[s
                         if len(results) >= _PREDICTIVE_SNAPSHOT_CAP:
                             return results[:_PREDICTIVE_SNAPSHOT_CAP]
 
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug(
             "_resolve_import_candidates: unexpected error parsing %s (fail-soft)",
             file_path,
@@ -389,12 +389,12 @@ def _pre_snapshot_imports(
     Returns the started daemon thread so callers that need synchronous
     completion (e.g. tests) can call ``t.join()`` on the returned value.
     """
-    from pathlib import Path  # noqa: PLC0415
+    from pathlib import Path
 
     def _worker() -> None:
         try:
-            from . import session as _session  # noqa: PLC0415
-            from . import snapshots  # noqa: PLC0415
+            from . import session as _session
+            from . import snapshots
 
             fp = Path(file_path) if Path(file_path).is_absolute() else (
                 Path(cwd) / file_path if cwd else Path(file_path)
@@ -428,14 +428,14 @@ def _pre_snapshot_imports(
                             _session.set_snapshot_sha(
                                 session_id, target_path, result.content_sha,
                             )
-                        except Exception:  # noqa: BLE001
+                        except Exception:
                             _LOG.debug(
                                 "predictive-snapshot: sha persist failed for %s",
                                 sanitize_log_str(target_path), exc_info=True,
                             )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     _LOG.debug("predictive-snapshot: failed for %s", sanitize_log_str(target_path), exc_info=True)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("predictive-snapshot: outer failure", exc_info=True)
 
     t = threading.Thread(target=_worker, daemon=True, name="tg-predictive-snapshot")
@@ -493,7 +493,7 @@ def post_edit(payload: HookPayload) -> HookResponse:
     The worker then re-indexes only the changed files, avoiding full-project reindexing.
     Always returns CONTINUE() per fail-soft hook pattern; failures are logged but never raised.
     """
-    from . import session  # noqa: PLC0415
+    from . import session
 
     session_id, cwd = get_hook_context(payload)
     tool_input = get_tool_input(payload)
@@ -506,7 +506,7 @@ def post_edit(payload: HookPayload) -> HookResponse:
     for file_path in file_paths:
         if session_id:
             if _edit_succeeded(payload, file_path):
-                def _record_edit(cache, _fp=file_path):  # noqa: ARG001
+                def _record_edit(cache, _fp=file_path):
                     session.mark_file_edited(session_id, _fp, cache=cache)
                 update_session(session_id, _record_edit)
             else:

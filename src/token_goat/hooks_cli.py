@@ -90,7 +90,7 @@ def _setup_logging() -> None:
     recomputed when the calendar date actually changes, avoiding a
     ``datetime.now()`` call on every hook dispatch.
     """
-    global _log_date_cached  # noqa: PLW0603
+    global _log_date_cached
     today = datetime.now().strftime("%Y-%m-%d")
     if _LOG.handlers and today == _log_date_cached:
         return
@@ -396,9 +396,9 @@ def _resolved_watchdog_ms() -> int:
     if not raw:
         # Layer 2: per-project config baseline before the compile-time constant.
         try:
-            from .config import load as _load_cfg  # noqa: PLC0415
+            from .config import load as _load_cfg
             return _load_cfg().hooks.watchdog_ms
-        except Exception:  # noqa: BLE001
+        except Exception:
             return _HOOK_WATCHDOG_MS
     try:
         parsed = int(raw)
@@ -507,7 +507,7 @@ def emit(result: dict[str, object]) -> None:
         with contextlib.suppress(Exception):
             sys.stdout.buffer.flush()
         return
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _LOG.debug("emit: binary write failed, trying text fallback: %s", e)
     # Fallback: text-mode write.
     with contextlib.suppress(Exception):
@@ -535,7 +535,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
         # Process-control signals must propagate so the harness can terminate
         # cleanly (e.g. Ctrl+C, or sys.exit() from an internal subprocess).
         raise
-    except BaseException as exc:  # noqa: BLE001 — bulletproof
+    except BaseException as exc:
         msg = f"token-goat hook {event} failed: {type(exc).__name__}: {exc}"
         # Sanitize surrogates at the message boundary so that every downstream
         # consumer (stderr print, logger, crash-sink write) receives valid UTF-8.
@@ -572,7 +572,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
             )
             with sink.open("a", encoding="utf-8") as fh:
                 fh.write(header + "\n" + safe_msg + "\n" + safe_tb + "\n")
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         emit(result)
         return
@@ -584,7 +584,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
         # unexpected keys and ignores them — still better than bare CONTINUE.
         try:
             result = dict(denormalize_response(dispatched, harness, event))
-        except Exception as _denorm_exc:  # noqa: BLE001
+        except Exception as _denorm_exc:
             _LOG.warning(
                 "denormalize_response failed for %s (%s): %s — emitting raw dispatch output",
                 event,
@@ -599,7 +599,7 @@ def safe_run(event: str, input_file: Path | None = None, harness: Harness = "cla
     with contextlib.suppress(Exception):
         _elapsed_ms = result.get("_tg_elapsed_ms")
         if isinstance(_elapsed_ms, (int, float)):
-            from . import db as _db  # noqa: PLC0415
+            from . import db as _db
             _db.record_stat(
                 None,
                 f"hook:{sanitize_log_str(event, max_len=48)}",
@@ -657,7 +657,7 @@ def fail_soft(handler: _HookHandler) -> _HookHandler:
             # User Ctrl+C and explicit sys.exit() respect Python convention —
             # let those propagate so the subprocess can terminate cleanly.
             raise
-        except BaseException as exc:  # noqa: BLE001 — fail-soft is the entire point
+        except BaseException as exc:
             # Broaden from Exception → BaseException so MemoryError,
             # GeneratorExit, and other rare BaseException subclasses also
             # honour the fail-soft contract (matches safe_run above).
@@ -717,7 +717,7 @@ def _resolve_handler(event: str) -> Callable[[HookPayload], HookResponse] | None
     if lookup is None:
         return None
     submodule_name, attr_name = lookup
-    import importlib  # noqa: PLC0415
+    import importlib
 
     try:
         submodule = importlib.import_module(f".{submodule_name}", package=__package__)
@@ -776,12 +776,12 @@ def _compact_skip_ttl_secs() -> float:
     transient TOML parse error.
     """
     try:
-        from . import config as config_mod  # noqa: PLC0415
+        from . import config as config_mod
 
         ttl = float(config_mod.load().compact_assist.compact_skip_ttl_secs)
         if 0.0 < ttl <= 3600.0:  # mirror validator clamp; reject NaN/inf via comparison
             return ttl
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return _COMPACT_SKIP_TTL_SECS
 
@@ -802,7 +802,7 @@ class _SkipResult:
         age_secs:     Age of the sentinel file in seconds (0.0 when no sentinel).
     """
 
-    __slots__ = ("should_skip", "reason", "age_secs")
+    __slots__ = ("age_secs", "reason", "should_skip")
 
     def __init__(self, should_skip: bool, reason: str, age_secs: float) -> None:
         self.should_skip = should_skip
@@ -826,7 +826,7 @@ def _read_sentinel_counts(sentinel_path: object) -> tuple[int | None, int | None
     Returns ``(edited_count, bash_count)`` as integers, or ``(None, None)``
     on any parse error.
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json
     try:
         raw = sentinel_path.read_text(encoding="utf-8").strip()  # type: ignore[union-attr,attr-defined]  # sentinel_path typed as Path | None; caller guarantees it exists here
         if not raw:
@@ -836,7 +836,7 @@ def _read_sentinel_counts(sentinel_path: object) -> tuple[int | None, int | None
         bash = data.get("bash_count")
         if isinstance(edited, int) and isinstance(bash, int):
             return edited, bash
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return None, None
 
@@ -852,7 +852,7 @@ def _current_session_counts(session_id: str) -> tuple[int, int]:
     and does minimal work — no DB, no tree-sitter, no embeddings.
     """
     try:
-        import json as _json  # noqa: PLC0415
+        import json as _json
 
         session_file = paths.session_cache_path(session_id)
         raw = session_file.read_text(encoding="utf-8")
@@ -862,7 +862,7 @@ def _current_session_counts(session_id: str) -> tuple[int, int]:
         edited_count = len(edited) if isinstance(edited, dict) else 0
         bash_count = len(bash) if isinstance(bash, dict) else 0
         return edited_count, bash_count
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 0, 0
 
 
@@ -993,7 +993,7 @@ def _write_compact_skip_sentinel(
     the full import cost instead of taking the fast path; the hook still
     returns ``{"continue": true}`` correctly.
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json
     try:
         sentinel = paths.compact_skip_sentinel_path(session_id)
         paths.ensure_dir(sentinel.parent)
@@ -1002,7 +1002,7 @@ def _write_compact_skip_sentinel(
             separators=(",", ":"),
         )
         paths.atomic_write_text(sentinel, payload)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -1022,8 +1022,8 @@ def _write_precompact_estimate(session_id: str, cache: object) -> None:
 
     Errors are silently swallowed — this is advisory telemetry only.
     """
-    import json as _json  # noqa: PLC0415
-    import time as _time  # noqa: PLC0415
+    import json as _json
+    import time as _time
 
     try:
         bash_hist: dict = getattr(cache, "bash_history", None) or {}
@@ -1050,7 +1050,7 @@ def _write_precompact_estimate(session_id: str, cache: object) -> None:
             "pre-compact: wrote estimate sentinel session=%s bytes=%d bash=%d web=%d",
             session_id[:16], max(0, bytes_estimate), len(bash_hist), len(web_hist),
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-compact: estimate sentinel write failed", exc_info=True)
 
 
@@ -1104,8 +1104,8 @@ def pre_compact(payload: HookPayload) -> HookResponse:
             )
             return CONTINUE()
 
-    from . import compact as compact_mod  # noqa: PLC0415
-    from . import config as config_mod  # noqa: PLC0415
+    from . import compact as compact_mod
+    from . import config as config_mod
 
     cfg = config_mod.load().compact_assist
     if not cfg.enabled:
@@ -1124,7 +1124,7 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     if not session_id:
         return CONTINUE()
 
-    from . import session as session_mod  # noqa: PLC0415
+    from . import session as session_mod
 
     session_cache = session_mod.safe_load(session_id, caller="pre-compact")
     if session_cache is None:
@@ -1138,11 +1138,11 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     cwd = payload.get("cwd")
     if cwd:
         try:
-            from pathlib import Path as _Path  # noqa: PLC0415
+            from pathlib import Path as _Path
 
-            from .project import canonicalize as _canon  # noqa: PLC0415
-            from .project import project_hash as _ph  # noqa: PLC0415
-            from .session import FileEntry as _FileEntry  # noqa: PLC0415
+            from .project import canonicalize as _canon
+            from .project import project_hash as _ph
+            from .session import FileEntry as _FileEntry
             _proj_hash = _ph(_canon(_Path(str(cwd))))
             _session_files = [
                 {"rel_path": e.rel_or_abs, "hit_count": e.read_count, "last_read_ts": e.last_read_ts}
@@ -1168,7 +1168,7 @@ def pre_compact(payload: HookPayload) -> HookResponse:
                         symbols_read=[],
                     )
             session_cache.files = _current_files  # type: ignore[assignment]
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("pre-compact: cross-session dedup failed", exc_info=True)
 
     # --- Noop session fast-path ---
@@ -1273,7 +1273,7 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     # guessed.  Best-effort — a stat-write failure never blocks the manifest
     # injection.
     try:
-        from . import db  # noqa: PLC0415
+        from . import db
 
         actual_tokens = compact_mod.estimate_tokens(manifest)
         detail = (
@@ -1283,7 +1283,7 @@ def pre_compact(payload: HookPayload) -> HookResponse:
         db.record_stat(
             None, "compact_manifest", tokens_saved=0, bytes_saved=0, detail=detail
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-compact: telemetry record failed", exc_info=True)
 
     # Reset context-growth tracking so threshold advisories restart cleanly in
@@ -1295,13 +1295,13 @@ def pre_compact(payload: HookPayload) -> HookResponse:
         # point get_context_pressure subtracts it, so the fill fraction measures
         # only incremental load since this compaction — preventing the session
         # from being permanently pinned to "critical" for its entire remaining life.
-        from .compact import _pressure_raw_total as _prt  # noqa: PLC0415
+        from .compact import _pressure_raw_total as _prt
         session_cache.pressure_baseline_tokens = _prt(session_cache)
         session_mod.save(session_cache)
         # Stamp last_compact_ts via the canonical helper so pre_read can suppress
         # "already in context" hints for files whose content is gone post-compact.
         session_mod.record_compact(session_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-compact: context tracking reset failed", exc_info=True)
 
     return {"continue": True, "systemMessage": manifest}
@@ -1386,7 +1386,7 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
                     handler_result.update(handler_result_local)
             finally:
                 _hook_context.set(None)
-        except BaseException:  # noqa: BLE001
+        except BaseException:
             # Top-level safety net: catch exceptions from handlers whose
             # fail_soft decorator is missing or ineffective (e.g. test injection).
             # Leave handler_result empty so the setdefault below adds continue:true.

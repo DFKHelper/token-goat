@@ -38,12 +38,12 @@ Schema (per-project DB)::
 from __future__ import annotations
 
 __all__ = [
-    "index_project_history",
-    "find_commits_for_file",
+    "blame_symbol",
     "build_hint",
+    "find_commits_for_file",
     "get_changed_symbols",
     "get_changed_symbols_db",
-    "blame_symbol",
+    "index_project_history",
 ]
 
 import contextlib
@@ -150,7 +150,7 @@ def _needs_reindex(conn: sqlite3.Connection) -> bool:
             return True
         age = time.time() - float(row[0])
         return age > _REINDEX_STALENESS_SECS
-    except Exception:  # noqa: BLE001
+    except Exception:
         return True
 
 
@@ -162,13 +162,13 @@ def index_project_history(project_root: Path, project_hash: str) -> int:
     """
     try:
         return _index_history_inner(project_root, project_hash)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("git_history: index_project_history failed", exc_info=True)
         return 0
 
 
 def _index_history_inner(project_root: Path, project_hash: str) -> int:
-    from . import db, paths  # noqa: PLC0415
+    from . import db, paths
 
     db_path = paths.project_db_path(project_hash)
     if not db_path.exists():
@@ -227,7 +227,7 @@ def _index_history_inner(project_root: Path, project_hash: str) -> int:
                         ),
                     )
                     stored += cur.rowcount  # 1 for new insert, 0 for ignored duplicate
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     n_errors += 1
                     _LOG.debug(
                         "git_history: failed to store commit %s: %s",
@@ -273,7 +273,7 @@ def find_commits_for_file(
     except FileNotFoundError:
         # Project DB not yet created — silently return empty.
         return []
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("git_history: find_commits_for_file failed", exc_info=True)
         return []
 
@@ -284,7 +284,7 @@ def _find_commits_inner(
     *,
     limit: int,
 ) -> list[dict[str, object]]:
-    from . import db  # noqa: PLC0415
+    from . import db
 
     with db.open_project_readonly(project_hash) as conn:
         try:
@@ -301,7 +301,7 @@ def _find_commits_inner(
                 """,
                 (rel_path, limit),
             ).fetchall()
-        except Exception:  # noqa: BLE001
+        except Exception:
             return []
 
     return [
@@ -415,7 +415,7 @@ def get_changed_symbols(
     """
     try:
         return _get_changed_symbols_inner(str(repo_root), since_ref, limit)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("get_changed_symbols failed", exc_info=True)
         return []
 
@@ -511,7 +511,7 @@ def get_changed_symbols_db(
     """
     try:
         return _get_changed_symbols_db_inner(str(repo_root), since_ref, limit)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("get_changed_symbols_db failed", exc_info=True)
         return []
 
@@ -522,8 +522,8 @@ def _get_changed_symbols_db_inner(
     limit: int,
 ) -> list[dict[str, object]]:
     """Inner implementation — may raise; caller catches."""
-    from . import db as _db  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
+    from . import db as _db
+    from .project import find_project
 
     raw = _run_git(
         ["diff", "--unified=0", f"{since_ref}..HEAD"],
@@ -586,7 +586,7 @@ def _get_changed_symbols_db_inner(
 
                 where_clause = " OR ".join(where_parts)
                 rows = conn.execute(
-                    f"SELECT DISTINCT name FROM symbols "  # noqa: S608
+                    f"SELECT DISTINCT name FROM symbols "
                     f"WHERE file_rel = ? AND end_line IS NOT NULL AND ({where_clause}) "
                     f"ORDER BY line",
                     params,
@@ -601,7 +601,7 @@ def _get_changed_symbols_db_inner(
                     "symbols": symbol_names,
                     "symbol_count": len(symbol_names),
                 })
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("get_changed_symbols_db: DB query failed", exc_info=True)
         return []
 
@@ -640,7 +640,7 @@ def blame_symbol(
     """
     try:
         return _blame_symbol_inner(str(repo_root), file_path, start_line, end_line)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("blame_symbol failed", exc_info=True)
         return []
 
@@ -715,7 +715,7 @@ def _parse_blame_porcelain(raw: str, start_line: int) -> list[dict[str, object]]
         if line.startswith("author-time "):
             try:
                 ts = int(line[12:].strip())
-                import datetime as _dt  # noqa: PLC0415
+                import datetime as _dt
                 current_meta["date"] = _dt.datetime.fromtimestamp(
                     ts, tz=_dt.UTC
                 ).strftime("%Y-%m-%d")

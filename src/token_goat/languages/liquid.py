@@ -104,6 +104,6 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         common.extract_and_finalize_html_sections(text, sections, lines)
 
         return symbols, [], imports, sections
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("parse failed for liquid source: %s: %s", rel_path, exc, exc_info=True)
         return [], [], [], []

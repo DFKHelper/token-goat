@@ -206,7 +206,7 @@ def _run_step(result: dict[str, str], key: str, fn: Callable[[], object]) -> Non
         detail = fn()
         result[key] = f"ok — {detail}"
         _LOG.info("install step ok: %s — %s", key, str(detail)[:200])
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         result[key] = f"FAIL — {e}"
         _LOG.warning("install step failed: %s — %s", key, e)
 
@@ -330,7 +330,7 @@ def _read_mac_autostart_command() -> str | None:
     try:
         content = plist.read_text(encoding="utf-8")
         # Extract all <string> entries following <key>ProgramArguments</key><array>
-        import re as _re  # noqa: PLC0415
+        import re as _re
         m = _re.search(
             r"<key>ProgramArguments</key>\s*<array>(.*?)</array>",
             content,
@@ -572,7 +572,7 @@ def install_linux_autostart() -> tuple[bool, str]:
     if sys.platform == "win32":
         return True, "Windows: skipped"
 
-    import shlex  # noqa: PLC0415
+    import shlex
 
     # Dedup check: warn when replacing an entry that pointed at a different interpreter.
     existing_cmd = _read_linux_autostart_command()
@@ -818,7 +818,7 @@ def _xml_escape(s: str) -> str:
     the mandatory set, then normalises Python's ``&#x27;`` back to the
     XML-standard ``&apos;`` so output is attribute-safe and XML-spec-clean.
     """
-    import html  # noqa: PLC0415
+    import html
     return html.escape(s, quote=True).replace("&#x27;", "&apos;")
 
 
@@ -1046,7 +1046,7 @@ def _build_hooks_block(
             ``--harness codex`` flag to every command.  When False, build the
             Claude ``settings.json`` shape with no extra flags.
     """
-    from . import hook_registry  # noqa: PLC0415
+    from . import hook_registry
 
     block: dict[str, list[_HookMatcherEntry]] = {}
     events = hook_registry.codex_events() if codex else hook_registry.claude_events()
@@ -1762,7 +1762,7 @@ def pregen_skill_compacts() -> str:
 
     Returns a human-readable summary string for the install result dict.
     """
-    from . import skill_cache  # noqa: PLC0415
+    from . import skill_cache
 
     skills_root = paths.claude_skills_dir()
     plugins_root = paths.claude_plugins_dir()
@@ -1844,7 +1844,7 @@ def pregen_skill_compacts() -> str:
             compact = skill_cache.generate_compact_summary(body)
             skill_cache.store_compact(session_id, skill_name, compact, source_sha=body_sha)
             generated += 1
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _LOG.warning("pregen_skill_compacts: failed for %s: %s", skill_name, exc)
             failed += 1
 
@@ -1858,7 +1858,7 @@ def pregen_skill_compacts() -> str:
             "compact_count": generated + skipped,
         })
         paths.atomic_write_text(sentinel_path, sentinel_data)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.warning("pregen_skill_compacts: sentinel write failed: %s", exc)
 
     parts = [f"{generated} generated"]
@@ -1911,9 +1911,9 @@ def _codex_hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcher
 
 def patch_codex_config(binary: str) -> str:
     """Merge token-goat hooks into ~/.codex/config.toml idempotently."""
-    import tomllib  # noqa: PLC0415
+    import tomllib
 
-    import tomli_w  # noqa: PLC0415
+    import tomli_w
 
     cfg_path = codex_config_path()
     paths.ensure_dir(cfg_path.parent)
@@ -1932,9 +1932,9 @@ def patch_codex_config(binary: str) -> str:
 
 def unpatch_codex_config() -> str:
     """Remove token-goat entries from ~/.codex/config.toml."""
-    import tomllib  # noqa: PLC0415
+    import tomllib
 
-    import tomli_w  # noqa: PLC0415
+    import tomli_w
 
     cfg_path = codex_config_path()
     if not cfg_path.exists():
@@ -2279,7 +2279,7 @@ def _check_update_task() -> str:
 
 def _check_codex_config() -> str:
     """Return 'installed' if ~/.codex/config.toml has token-goat hooks."""
-    import tomllib  # noqa: PLC0415
+    import tomllib
 
     cfg_path = codex_config_path()
     if not cfg_path.exists():
@@ -2299,10 +2299,10 @@ def detect_aider() -> bool:
     if shutil.which("aider"):
         return True
     try:
-        import importlib.util  # noqa: PLC0415
+        import importlib.util
 
         return importlib.util.find_spec("aider") is not None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -2311,10 +2311,10 @@ def detect_cline() -> bool:
     if shutil.which("cline") or shutil.which("claude-dev"):
         return True
     try:
-        import importlib.util  # noqa: PLC0415
+        import importlib.util
 
         return importlib.util.find_spec("cline") is not None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -2374,12 +2374,12 @@ def detect_installed_harnesses() -> dict[str, bool]:
 
     # opencode and openclaw: check with error handling
     try:
-        from . import bridges as _br  # noqa: PLC0415
+        from . import bridges as _br
 
         result["opencode"] = _br.opencode_plugins_dir().parent.exists()
         result["openclaw"] = (Path.home() / ".openclaw").exists()
         result["pi"] = (Path.home() / ".pi").exists()
-    except Exception:  # noqa: BLE001
+    except Exception:
         result["opencode"] = False
         result["openclaw"] = False
         result["pi"] = False
@@ -2429,7 +2429,7 @@ def check_status() -> dict[str, str]:
         status["update cron"] = _check_linux_update_cron()
     status["Codex hooks (config.toml)"] = _check_codex_config()
     status["Gemini CLI hooks (settings.json)"] = _check_gemini_settings()
-    from . import bridges  # noqa: PLC0415
+    from . import bridges
     status["opencode plugin"] = bridges._check_opencode_plugin()
     status["openclaw plugin"] = bridges._check_openclaw_plugin()
     status["pi plugin"] = bridges._check_pi_plugin()
@@ -2565,7 +2565,7 @@ def _codex_config_token_goat_count() -> int:
     double the entry count.  Returns 0 when the config is absent or malformed
     so tests can compare counts without special-casing those branches.
     """
-    import tomllib  # noqa: PLC0415
+    import tomllib
 
     cfg_path = codex_config_path()
     if not cfg_path.exists():
@@ -2774,8 +2774,8 @@ def plan_install(
     # 7. optional opencode / openclaw / pi
     if install_opencode or install_openclaw or install_pi:
         try:
-            from . import bridges  # noqa: PLC0415
-        except Exception as e:  # noqa: BLE001
+            from . import bridges
+        except Exception as e:
             plan.append(_PlanEntry(
                 component="bridges",
                 target="(import failed)",
@@ -3000,7 +3000,7 @@ def install_all(
     try:
         wrapper_path = _write_hook_wrapper()
         result["hook wrapper"] = _ok_fail(True, str(wrapper_path))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         result["hook wrapper"] = f"FAIL — {e}"
         _LOG.warning("install step: hook wrapper — FAIL: %s", e)
 
@@ -3023,7 +3023,7 @@ def install_all(
         pregen_result = pregen_skill_compacts()
         result["skill compact pre-gen"] = _ok_fail(True, pregen_result)
         _LOG.info("install step: skill compact pre-gen — %s", pregen_result)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         result["skill compact pre-gen"] = f"FAIL — {e}"
         _LOG.warning("install step: skill compact pre-gen — FAIL: %s", e)
 
@@ -3031,13 +3031,13 @@ def install_all(
 
     # Spawn the worker right now (fail-soft)
     try:
-        from . import worker  # noqa: PLC0415
+        from . import worker
 
         pid = worker.ensure_running()
         worker_status = f"spawned, pid={pid}" if pid else "spawn failed"
         result["worker"] = worker_status
         _LOG.info("install step: worker — %s", worker_status)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         result["worker"] = f"FAIL — {e}"
         _LOG.warning("install step: worker — FAIL: %s", e)
 
@@ -3055,7 +3055,7 @@ def install_all(
         _run_step(result, "gemini: hooks", patch_gemini_settings)
 
     if install_opencode or install_openclaw or install_pi:
-        from . import bridges  # noqa: PLC0415
+        from . import bridges
 
     if install_opencode:
         _run_step(result, "opencode: plugin", bridges.install_opencode_plugin)
@@ -3105,7 +3105,7 @@ def probe_image_codecs() -> _ImageCodecReport:
     """
     report: _ImageCodecReport = {"ok": False, "summary": "", "missing": [], "hint": ""}
     try:
-        from PIL import Image, features  # noqa: PLC0415
+        from PIL import Image, features
 
         parts: list[str] = []
         missing: list[str] = []
@@ -3116,12 +3116,12 @@ def probe_image_codecs() -> _ImageCodecReport:
                 parts.append(f"{label}=MISSING")
                 missing.append(label)
         try:
-            import io  # noqa: PLC0415
+            import io
 
             buf = io.BytesIO()
             Image.new("RGB", (4, 4), (200, 100, 50)).save(buf, "WEBP", quality=80)
             parts.append("WebP-encode=ok")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             parts.append(f"WebP-encode=FAIL ({type(exc).__name__})")
             if "WebP" not in missing:
                 missing.append("WebP")
@@ -3165,7 +3165,7 @@ def _stop_worker() -> str:
     pid_path = paths.worker_pid_path()
     if not pid_path.exists():
         return "stopped"
-    import psutil  # noqa: PLC0415
+    import psutil
     try:
         pid = int(pid_path.read_text(encoding="utf-8").strip())
         if psutil.pid_exists(pid):
@@ -3200,7 +3200,7 @@ def uninstall_all(
 
     try:
         result["worker"] = _stop_worker()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         result["worker"] = f"stop failed: {e}"
 
     _uninstall_platform_autostart(result)
@@ -3229,7 +3229,7 @@ def uninstall_all(
         result["gemini: hooks"] = _ok_fail(True, f"unpatched — {unpatch_gemini_settings()}")
 
     if opencode or openclaw or pi:
-        from . import bridges  # noqa: PLC0415
+        from . import bridges
 
     if opencode:
         result["opencode: plugin"] = bridges.uninstall_opencode_plugin()

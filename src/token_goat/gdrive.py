@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 __all__ = [
-    "GDriveCredsUnavailable",
     "TEXT_EXTENSIONS",
+    "GDriveCredsUnavailable",
     "extract_section_index",
     "fetch_file",
     "get_credentials",
@@ -72,8 +72,8 @@ def _write_creds_secure(path: Path, content: str) -> None:
     predictable-name symlink attack on systems where multiple users share a
     ``/tmp``-style parent directory.
     """
-    import threading  # noqa: PLC0415
-    import time  # noqa: PLC0415
+    import threading
+    import time
 
     paths.ensure_dir(path.parent)
     if sys.platform != "win32":
@@ -111,11 +111,11 @@ class GDriveCredsUnavailable(Exception):
 def _try_adc() -> _GoogleCredentials | None:
     """Try Google Application Default Credentials (gcloud auth application-default login)."""
     try:
-        import google.auth  # noqa: PLC0415
+        import google.auth
 
         creds, _project = google.auth.default(scopes=_DRIVE_SCOPES)
         return creds  # type: ignore[return-value]  # google.auth returns untyped object
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _LOG.info("ADC unavailable: %s", e)
         return None
 
@@ -131,15 +131,15 @@ def _try_stored_oauth() -> _GoogleCredentials | None:
     if not creds_path.exists():
         return None
     try:
-        from google.auth.transport.requests import Request  # noqa: PLC0415
-        from google.oauth2.credentials import Credentials  # noqa: PLC0415
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
 
         creds: _GoogleCredentials = Credentials.from_authorized_user_file(str(creds_path), scopes=_DRIVE_SCOPES)  # type: ignore[assignment]  # google-auth stubs declare classmethod return type as Self; our alias _GoogleCredentials is the same class
         if creds.expired and creds.refresh_token:
             t_refresh = time.monotonic()
             try:
                 creds.refresh(Request())
-            except Exception as refresh_err:  # noqa: BLE001
+            except Exception as refresh_err:
                 # Distinguish permanent failures (revoked/invalid grant) from
                 # transient network errors so we only delete stale creds when
                 # the server definitively rejects them.
@@ -164,7 +164,7 @@ def _try_stored_oauth() -> _GoogleCredentials | None:
             _write_creds_secure(creds_path, creds.to_json())
             _LOG.info("OAuth credentials refreshed in %.3fs", time.monotonic() - t_refresh)
         return creds
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Do NOT log exc directly — the message may contain credential material.
         # Log the exception type so the failure mode is diagnosable without leaking secrets.
         _LOG.warning("stored OAuth invalid or refresh failed (%s)", type(exc).__name__)
@@ -315,7 +315,7 @@ def _download_to_cache(
                 )
     except RuntimeError:
         raise
-    except Exception as e:  # noqa: BLE001 — Google API can raise many undocumented exceptions
+    except Exception as e:
         raise RuntimeError(f"Download failed for {file_id}: {e}") from e
 
     downloaded_bytes = buf.tell()
@@ -356,8 +356,8 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     _LOG.debug("gdrive fetch_file: file_id=%s shrink=%s max_bytes=%d", file_id, shrink_if_image, max_size_bytes)
     creds = get_credentials()
 
-    from googleapiclient.discovery import build  # noqa: PLC0415
-    from googleapiclient.http import MediaIoBaseDownload  # noqa: PLC0415
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaIoBaseDownload
 
     cache_dir = image_shrink.ensure_cache_dir(paths.gdrive_cache_dir())
     service = build("drive", "v3", credentials=creds, cache_discovery=False)
@@ -365,7 +365,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
     t_meta_start = time.monotonic()
     try:
         meta = service.files().get(fileId=file_id, fields="id, name, mimeType, size").execute()
-    except Exception as e:  # noqa: BLE001 — Google API can raise many undocumented exceptions
+    except Exception as e:
         raise RuntimeError(f"Failed to fetch Drive file metadata for {file_id}: {e}") from e
     _LOG.debug("gdrive metadata fetched: file_id=%s name=%r mime=%s elapsed=%.3fs",
                file_id,
@@ -432,7 +432,7 @@ def list_drive_files(folder_id: str | None = None, max_results: int = 20) -> lis
         return []
 
     try:
-        from googleapiclient.discovery import build  # noqa: PLC0415
+        from googleapiclient.discovery import build
 
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
@@ -471,7 +471,7 @@ def list_drive_files(folder_id: str | None = None, max_results: int = 20) -> lis
         ]
         return output
 
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _LOG.debug("list_drive_files failed: %s", e)
         return []
 
@@ -493,7 +493,7 @@ def run_oauth_oob_flow(client_secrets_path: Path) -> Path:
             "Download it from Google Cloud Console → APIs & Services → Credentials."
         )
 
-    from google_auth_oauthlib.flow import InstalledAppFlow  # noqa: PLC0415
+    from google_auth_oauthlib.flow import InstalledAppFlow
 
     try:
         flow = InstalledAppFlow.from_client_secrets_file(
@@ -508,7 +508,7 @@ def run_oauth_oob_flow(client_secrets_path: Path) -> Path:
     # Try local server first (loopback), fall back to console
     try:
         creds = flow.run_local_server(port=0, open_browser=True)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _LOG.debug("OAuth local-server flow failed (%s: %s); falling back to console", type(e).__name__, e)
         creds = flow.run_console()
 
@@ -630,14 +630,14 @@ def extract_section_index(local_path: Path) -> dict[str, object]:
 
     # Import lazily so the extractor cost is only paid when actually invoked.
     try:
-        from .languages.markdown import extract as md_extract  # noqa: PLC0415
+        from .languages.markdown import extract as md_extract
     except ImportError as exc:
         _LOG.debug("extract_section_index: markdown extractor unavailable: %s", exc)
         return result
 
     try:
         _symbols, _refs, _imps, sections = md_extract(raw, local_path.name)
-    except Exception as exc:  # noqa: BLE001 — parser must never break the hook flow
+    except Exception as exc:
         _LOG.debug("extract_section_index: parse failed for %s: %s", local_path, exc)
         return result
 

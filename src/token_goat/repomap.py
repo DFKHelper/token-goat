@@ -13,8 +13,8 @@ from __future__ import annotations
 
 __all__ = [
     "KIND_PRIORITY",
-    "FileSummary",
     "FileMapItem",
+    "FileSummary",
     "build_map",
     "build_map_json",
     "build_map_mermaid",
@@ -255,7 +255,7 @@ def _get_excluded_prefixes() -> tuple[str, ...]:
     cached inside the caller's ``lru_cache`` via the ``_is_excluded_path`` key.
     The ``TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS=0`` env var overrides the config.
     """
-    import os  # noqa: PLC0415
+    import os
     env_val = os.environ.get("TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS", "").strip().lower()
     if env_val in ("0", "false", "no", "off"):
         exclude_tests = False
@@ -263,11 +263,11 @@ def _get_excluded_prefixes() -> tuple[str, ...]:
         exclude_tests = True
     else:
         try:
-            from . import config as _cfg  # noqa: PLC0415
+            from . import config as _cfg
             exclude_tests = _cfg.load().repomap.exclude_tests
         except (OSError, ValueError, AttributeError):
             exclude_tests = True
-        except Exception:  # noqa: BLE001
+        except Exception:
             exclude_tests = True
 
     if exclude_tests:
@@ -541,7 +541,7 @@ def _build_graph(
     Nodes are all indexed files; edges represent cross-file symbol references (calls, attribute access, etc.).
     May have multiple edges between same pair (A references multiple symbols from B).
     """
-    import networkx as nx  # noqa: PLC0415
+    import networkx as nx
 
     graph = nx.MultiDiGraph()
 
@@ -592,7 +592,7 @@ def _multigraph_to_weighted_digraph(multigraph: _NxGraph) -> _NxGraph:
     A depends more heavily on B — the more symbols A imports from B, the more
     PageRank "votes" B receives, reflecting its true structural importance.
     """
-    import networkx as nx  # noqa: PLC0415
+    import networkx as nx
 
     simple_graph = nx.DiGraph()
 
@@ -626,7 +626,7 @@ def compute_ranks(graph: _NxGraph, *, alpha: float = 0.85) -> dict[str, float]:
     then falls back to uniform ranks if the private API is unavailable (e.g.
     future networkx versions that rename/remove ``_pagerank_python``).
     """
-    import networkx as nx  # noqa: PLC0415
+    import networkx as nx
 
     if graph.number_of_nodes() == 0:
         return {}
@@ -641,7 +641,7 @@ def compute_ranks(graph: _NxGraph, *, alpha: float = 0.85) -> dict[str, float]:
     # _pagerank_python is a private networkx symbol — guard the import so a
     # future networkx rename does not crash the entire map command.
     try:
-        from networkx.algorithms.link_analysis.pagerank_alg import (  # noqa: PLC0415
+        from networkx.algorithms.link_analysis.pagerank_alg import (
             _pagerank_python,
         )
     except ImportError:
@@ -651,7 +651,7 @@ def compute_ranks(graph: _NxGraph, *, alpha: float = 0.85) -> dict[str, float]:
         )
         try:
             return nx.pagerank(simple_graph, alpha=alpha, weight="weight")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _LOG.warning("nx.pagerank also failed (%s); using uniform ranks", exc)
             return _uniform_ranks()
 
@@ -675,7 +675,7 @@ def compute_ranks(graph: _NxGraph, *, alpha: float = 0.85) -> dict[str, float]:
                 _PAGERANK_MAX_ITER_FALLBACK, _PAGERANK_TOL_FALLBACK,
             )
             return _uniform_ranks()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.warning("PageRank raised unexpected error (%s); using uniform ranks", exc)
         return _uniform_ranks()
 
@@ -833,7 +833,7 @@ def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict[str, _FileI
     try:
         ph = ",".join("?" for _ in current_files)
         conn.execute(
-            f"DELETE FROM repomap_cache WHERE rel_path NOT IN ({ph})",  # noqa: S608
+            f"DELETE FROM repomap_cache WHERE rel_path NOT IN ({ph})",
             list(current_files.keys()),
         )
     except sqlite3.OperationalError as exc:
@@ -867,7 +867,7 @@ def _load_and_rank(project: Project) -> _RankedProjectData | None:
             graph = _build_graph(conn, map_worthy_files, name_to_files)
             summary_cache = _load_summary_cache(conn)
             _evict_stale_cache(conn, map_worthy_files)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.error(
             "_load_and_rank: failed to load project data for %s: %s",
             project.root.name, exc, exc_info=True,
@@ -991,7 +991,7 @@ def _build_compact_file_summary(
     much as knowing the top module names.  At most 4 extension types are shown
     before collapsing the rest into ``"+N more types"``.
     """
-    from pathlib import Path as _Path  # noqa: PLC0415
+    from pathlib import Path as _Path
 
     if top_n < 1:
         top_n = 1
@@ -1092,7 +1092,7 @@ def build_map(
 
     # Resolve the compact-file-list threshold.
     if compact_file_threshold is None:
-        from . import config as _cfg  # noqa: PLC0415
+        from . import config as _cfg
         compact_file_threshold = _cfg.load().repomap.compact_file_threshold
 
     lang_set = sorted({info["language"] for info in data.files.values()})
@@ -1235,7 +1235,7 @@ def build_map(
             with db.open_project(project.hash) as conn:
                 _write_summary_cache(conn, cache_writes)
             _LOG.debug("repomap_cache: wrote %d new entries", len(cache_writes))
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("repomap_cache write failed (non-fatal)", exc_info=True)
 
     elapsed = time.monotonic() - t0
@@ -1262,7 +1262,7 @@ def changed_files_since(project: Project, ref: str) -> frozenset[str]:
     git error (invalid ref, no git repo) returns an empty frozenset so the
     caller can still render a normal map.
     """
-    from .util import run_git  # noqa: PLC0415
+    from .util import run_git
 
     try:
         result = run_git(
@@ -1282,7 +1282,7 @@ def changed_files_since(project: Project, ref: str) -> frozenset[str]:
             if p:
                 paths.add(p)
         return frozenset(paths)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("changed_files_since: unexpected error for ref=%r", ref, exc_info=True)
         return frozenset()
 
@@ -1458,7 +1458,7 @@ def build_map_mermaid(
     if data is None:
         return "graph TD\n    empty[\"No files indexed — run `token-goat index --full`\"]\n"
 
-    from pathlib import Path as _Path  # noqa: PLC0415
+    from pathlib import Path as _Path
 
     top_files = {rel for rel, _ in data.ranked[:top_n]}
 
@@ -1478,9 +1478,9 @@ def build_map_mermaid(
         with db.open_project(project.hash) as conn:
             try:
                 ref_rows = conn.execute("SELECT symbol_name, file_rel FROM refs").fetchall()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 ref_rows = []
-    except Exception:  # noqa: BLE001
+    except Exception:
         ref_rows = []
 
     # name_to_files maps symbol_name → set of files that define it

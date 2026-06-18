@@ -48,7 +48,7 @@ def stats(
     """Show cumulative token savings."""
     summary = stats_mod.summarize(window_days=window)
     if json_output:
-        from . import __version__  # noqa: PLC0415
+        from . import __version__
         typer.echo(
             json.dumps(
                 {
@@ -90,8 +90,8 @@ def _render_top_session_files(top_n: int = 5) -> str:
     command never fails due to session-file issues.
     """
     try:
-        from . import paths as _paths  # noqa: PLC0415
-        from . import session as session_mod  # noqa: PLC0415
+        from . import paths as _paths
+        from . import session as session_mod
 
         sessions_dir = _paths.sessions_dir()
         if not sessions_dir.is_dir():
@@ -115,7 +115,7 @@ def _render_top_session_files(top_n: int = 5) -> str:
                 cache = session_mod.safe_load(session_id)
                 if cache is not None and not cache.unavailable:
                     break
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
 
         if cache is None or cache.unavailable:
@@ -136,5 +136,5 @@ def _render_top_session_files(top_n: int = 5) -> str:
             basename = Path(filepath).name
             lines.append(f"  {count:>3}x  {basename}  ({filepath})")
         return "\n".join(lines)
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         return ""

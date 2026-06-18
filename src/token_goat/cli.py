@@ -94,7 +94,7 @@ def _require_project(
     All callers that import ``find_project`` at module scope can use this
     instead; it performs the import lazily so startup time is unaffected.
     """
-    from .project import find_project  # noqa: PLC0415
+    from .project import find_project
 
     proj = find_project(Path.cwd())
     if proj is None:
@@ -137,7 +137,7 @@ def _lazy_import(name: str) -> Any:
     The single ``# noqa: PLC0415`` lives here rather than at every call site,
     eliminating the per-import suppression comment on each lazy-load line.
     """
-    from importlib import import_module  # noqa: PLC0415
+    from importlib import import_module
     return import_module(f"token_goat.{name}")
 
 
@@ -152,16 +152,16 @@ def _lazy_import(name: str) -> Any:
 # ---------------------------------------------------------------------------
 
 #: ``--json`` flag shared by every command that can emit structured output.
-_OPT_JSON: bool = typer.Option(False, "--json", help="Output structured JSON instead of human-readable text.")  # noqa: B008
+_OPT_JSON: bool = typer.Option(False, "--json", help="Output structured JSON instead of human-readable text.")
 #: ``--limit`` / ``-n`` option shared by web-history, bash-history, mcp-history, skill-history.
-_OPT_LIMIT_HISTORY: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)")  # noqa: B008
+_OPT_LIMIT_HISTORY: int = typer.Option(20, "--limit", "-n", help="Maximum entries to show (newest first)")
 
 #: ``--context`` / ``-c`` lines option shared by bash-output and web-output commands.
-_OPT_CONTEXT_LINES: int = typer.Option(0, "--context", "-c", help="Extra lines before/after")  # noqa: B008
+_OPT_CONTEXT_LINES: int = typer.Option(0, "--context", "-c", help="Extra lines before/after")
 
 #: Optional ``--session-id`` / ``-s`` flag.  When omitted the command uses the
 #: current or most-recent session automatically.
-_OPT_SESSION_ID: str | None = typer.Option(None, "--session-id", "-s")  # noqa: B008
+_OPT_SESSION_ID: str | None = typer.Option(None, "--session-id", "-s")
 
 
 def _format_path_output(path: Path, json_mode: bool = False) -> str:
@@ -251,7 +251,7 @@ def _auto_redirect_target(name: str, candidate_pool: list[str]) -> str | None:
     Returns ``None`` when the redirect should NOT fire so callers can fall
     through to the standard "Did you mean …?" suggestion path.
     """
-    from difflib import get_close_matches  # noqa: PLC0415
+    from difflib import get_close_matches
 
     if not candidate_pool or not name:
         return None
@@ -305,7 +305,7 @@ def _project_close_symbol_matches(proj_hash: str, name: str) -> list[str]:
     Returns an empty list on any DB error so the miss path still emits its
     headline message.
     """
-    from difflib import get_close_matches  # noqa: PLC0415
+    from difflib import get_close_matches
 
     names = _project_symbol_pool(proj_hash)
     return get_close_matches(
@@ -340,7 +340,7 @@ def _global_close_symbol_matches(name: str) -> list[str]:
     so ``token-goat symbol foo --all-projects`` can suggest names from any
     indexed project (skills, plugins, sibling repos).
     """
-    from difflib import get_close_matches  # noqa: PLC0415
+    from difflib import get_close_matches
 
     names = _global_symbol_pool()
     return get_close_matches(
@@ -401,7 +401,7 @@ def _sum_file_sizes(project_hash: str, file_rels: list[str]) -> int:
         with _db_mod.open_project_readonly(project_hash) as conn:
             row = conn.execute(sql, unique_rels).fetchone()
         return int(row["total"]) if row else 0
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("_sum_file_sizes failed project=%s: %s", project_hash[:8] if project_hash else "", exc)
         return 0
 
@@ -423,7 +423,7 @@ def _total_project_bytes(project_hash: str) -> int:
         with _db_mod.open_project_readonly(project_hash) as conn:
             row = conn.execute(sql).fetchone()
         return int(row["total"]) if row else 0
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("_total_project_bytes failed project=%s: %s", project_hash[:8] if project_hash else "", exc)
         return 0
 
@@ -472,7 +472,7 @@ def _record_lookup_stat(
             tokens_saved=tokens_saved,
             detail=detail,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("record lookup stat failed kind=%s: %s", kind, exc)
 
 
@@ -490,7 +490,7 @@ app.add_typer(config_app, rich_help_panel="Config")
 
 def _version_callback(value: bool) -> None:
     if value:
-        from . import __version__  # noqa: PLC0415
+        from . import __version__
 
         typer.echo(f"token-goat {__version__}")
         raise typer.Exit()
@@ -498,7 +498,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def _root(
-    version: bool = typer.Option(  # noqa: B008
+    version: bool = typer.Option(
         False,
         "--version",
         "-V",
@@ -537,7 +537,7 @@ def main() -> None:
         try:
             sys.stdout.write('{"continue": true}')
             sys.stdout.flush()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             _LOG.exception("failed to emit hook response: %s", e)
         raise SystemExit(0) from None
 
@@ -570,10 +570,10 @@ def _inline_symbol_search(
 
     Returns an empty list on any error so the caller falls through normally.
     """
-    import fnmatch  # noqa: PLC0415
+    import fnmatch
 
     try:
-        from . import parser as parser_mod  # noqa: PLC0415
+        from . import parser as parser_mod
 
         is_glob = _is_glob_pattern(name)
         cutoff = time.time() - _INLINE_INDEX_RECENCY_SECS
@@ -611,7 +611,7 @@ def _inline_symbol_search(
                     "not_indexed": True,
                 })
         return _rank_symbol_results(results, name)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("_inline_symbol_search failed for %r", name, exc_info=True)
         return []
 
@@ -726,7 +726,7 @@ def _symbol_json_snippet(
     trailing whitespace stripped and blank-only lines omitted.  Returns None
     if the source file cannot be read.
     """
-    import pathlib  # noqa: PLC0415
+    import pathlib
     try:
         abs_path = pathlib.Path(proj_root) / file_rel
         src_lines = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -762,7 +762,7 @@ def _enrich_symbols_with_snippets(
 @app.command(rich_help_panel="Core")
 def symbol(
     name: str,
-    file: str | None = typer.Argument(  # noqa: B008
+    file: str | None = typer.Argument(
         None,
         help=(
             "Optional file path to scope the search (case-insensitive partial "
@@ -796,7 +796,7 @@ def symbol(
             "Repeat to allow multiple kinds: --type fn --type method"
         ),
     ),
-    full: bool = typer.Option(  # noqa: B008
+    full: bool = typer.Option(
         False,
         "--full",
         "-f",
@@ -806,13 +806,13 @@ def symbol(
             "(symbol lists file locations, not bodies)."
         ),
     ),
-    quiet: bool = typer.Option(  # noqa: B008
+    quiet: bool = typer.Option(
         False,
         "--quiet",
         "-q",
         help="Suppress non-essential output (count lines, hints). Results only.",
     ),
-    context_lines: int = typer.Option(  # noqa: B008
+    context_lines: int = typer.Option(
         0,
         "--context",
         "-C",
@@ -885,7 +885,7 @@ def symbol(
         included; context lines outside the symbol are prefixed with ``>`` in TTY
         mode to distinguish them visually from the symbol body.
         """
-        import pathlib  # noqa: PLC0415
+        import pathlib
 
         # Determine the project root for this result.
         # Single-project branch: proj is available in the outer scope.
@@ -894,7 +894,7 @@ def symbol(
             proj_root = pathlib.Path(row["project"])
         else:
             try:
-                proj_root = proj.root  # type: ignore[name-defined]  # noqa: F821
+                proj_root = proj.root  # type: ignore[name-defined]
             except NameError:
                 return None
 
@@ -1026,7 +1026,7 @@ def symbol(
                 else:
                     typer.echo(not_found_extra or f"No matches for {name!r}")
                     if close_matches and not not_found_extra:
-                        from .render.common import render_list  # noqa: PLC0415
+                        from .render.common import render_list
                         typer.echo("Did you mean:")
                         typer.echo(render_list(close_matches, bullet="-"))
 
@@ -1087,7 +1087,7 @@ def symbol(
         close: list[str] = []
         redirected: str | None = None
         if not results and not is_glob:
-            from difflib import get_close_matches  # noqa: PLC0415
+            from difflib import get_close_matches
 
             pool = _global_symbol_pool()
             if not strict:
@@ -1136,7 +1136,7 @@ def symbol(
                     if ph_row:
                         proj_hash_val = ph_row["hash"]
                         _sym_file_total += _sum_file_sizes(proj_hash_val, file_rels)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
             _sym_output_bytes = max(80 * len(results), len(json.dumps(results, separators=(",", ":")).encode()))
             _sym_bytes_saved = max(0, _sym_file_total - _sym_output_bytes)
@@ -1180,7 +1180,7 @@ def symbol(
             {
                 "file": r["file_rel"],
                 "line": r["line"],
-                "end_line": r["end_line"] if "end_line" in r else None,  # noqa: SIM401 – sqlite3.Row has no .get()
+                "end_line": r["end_line"] if "end_line" in r else None,  # noqa: SIM401
                 "kind": r["kind"],
                 "name": r["name"],
                 "signature": r["signature"],
@@ -1191,7 +1191,7 @@ def symbol(
 
     results = _project_query(name)
 
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     if show_refs and results:
         try:
@@ -1202,7 +1202,7 @@ def symbol(
                     (name,),
                 ).fetchone()
             ref_count_val: int | None = int(count_row["cnt"]) if count_row else None
-        except Exception:  # noqa: BLE001
+        except Exception:
             ref_count_val = None
         if ref_count_val is not None:
             for r in results:
@@ -1225,7 +1225,7 @@ def symbol(
             )
 
     if not results and not hint and not inline_hit and not is_glob:
-        from difflib import get_close_matches  # noqa: PLC0415
+        from difflib import get_close_matches
 
         pool = _project_symbol_pool(proj.hash)
         if not strict:
@@ -1334,7 +1334,7 @@ def ref(
                 ctx = f"\033[2m{ctx}\033[0m"
             typer.echo(f"{row['file']}:{row['line']}: ref {name!r}{ctx}")
     else:
-        from . import read_commands  # noqa: PLC0415
+        from . import read_commands
 
         hint = read_commands._not_indexed_hint(proj.hash)
         if hint:
@@ -1349,7 +1349,7 @@ def refs(
     file: str | None = typer.Option(None, "--file", "-f", help="Only show refs in this file (partial path match)"),
     limit: int = typer.Option(50, "--limit", "-n", help="Cap results (default 50)"),
     as_json: bool = _OPT_JSON,
-    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress count/summary lines. Results only."),  # noqa: B008
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress count/summary lines. Results only."),
     show_callers: bool = typer.Option(
         False,
         "--callers",
@@ -1391,7 +1391,7 @@ def refs(
     """
     # <file>::<symbol> format: delegate to targeted refs lookup.
     if "::" in symbol:
-        from . import read_commands  # noqa: PLC0415
+        from . import read_commands
 
         read_commands.refs(symbol, limit=limit, json_output=as_json, callers=show_callers)
         return
@@ -1443,7 +1443,7 @@ def refs(
         return
 
     if not results:
-        from . import read_commands  # noqa: PLC0415
+        from . import read_commands
 
         hint = read_commands._not_indexed_hint(proj.hash)
         if hint:
@@ -1489,9 +1489,9 @@ def _keyword_fallback_hits(
     subprocess) so it works on all platforms and requires no extra deps.
     The caller is responsible for printing the ``(keyword fallback …)`` note.
     """
-    import re as _re  # noqa: PLC0415
+    import re as _re
 
-    from . import db as _db  # noqa: PLC0415
+    from . import db as _db
 
     tokens = [w.lower() for w in _re.findall(r"\w+", query) if len(w) >= 3]
     if not tokens:
@@ -1510,7 +1510,7 @@ def _keyword_fallback_hits(
             file_rows = conn.execute(
                 "SELECT rel_path FROM files ORDER BY rel_path"
             ).fetchall()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
     for frow in file_rows:
@@ -1577,7 +1577,7 @@ def semantic(
     ),
 ) -> None:
     """Semantic search using local embeddings (fastembed + sqlite-vec)."""
-    from . import embeddings  # noqa: PLC0415
+    from . import embeddings
 
     # Negative sentinel means "use library default".  Anything >= 0 is treated
     # as an explicit threshold; pass a large value to effectively disable.
@@ -1591,8 +1591,8 @@ def semantic(
         # Results are re-sorted globally by effective distance so the top-k
         # across all projects are returned.  Each hit's file_rel is prefixed with
         # the project root so the user can tell which project it came from.
-        from . import db as _db_mod  # noqa: PLC0415
-        from .project import make_project_at  # noqa: PLC0415
+        from . import db as _db_mod
+        from .project import make_project_at
 
         project_hashes = _db_mod.list_all_project_hashes()
         if not project_hashes:
@@ -1622,7 +1622,7 @@ def semantic(
                     boost_verbatim=not no_rerank,
                     demote_generated=not no_rerank,
                 )
-            except (embeddings.EmbeddingsUnavailable, Exception):  # noqa: BLE001
+            except (embeddings.EmbeddingsUnavailable, Exception):
                 # Skip projects without embeddings or unavailable DBs.
                 continue
             for h in proj_hits:
@@ -1656,7 +1656,7 @@ def semantic(
                     if ph_row:
                         proj_hash_val = ph_row["hash"]
                         _sem_file_total += _sum_file_sizes(proj_hash_val, file_rels)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
             _sem_output_bytes = sum(len(h.text.encode()) for _, h in all_hits)
             _sem_bytes_saved = max(0, _sem_file_total - _sem_output_bytes)
@@ -1799,7 +1799,7 @@ def semantic(
 def cmd_map(
     budget: int = typer.Option(4000, "--budget", "-b", help="Approximate token budget"),
     json_output: bool = _OPT_JSON,
-    fmt: str = typer.Option(  # noqa: B008
+    fmt: str = typer.Option(
         "text",
         "--format",
         "-f",
@@ -1818,18 +1818,18 @@ def cmd_map(
              "project exceeds the compact_file_threshold. Overrides the 1-line "
              "summary that compact mode emits for large projects.",
     ),
-    top: int | None = typer.Option(  # noqa: B008
+    top: int | None = typer.Option(
         None,
         "--top",
         help="Limit output to the top N most important files by PageRank score. "
              "Outputs in compact format: filename (rank: score). Overrides budget.",
     ),
-    top_n: int = typer.Option(  # noqa: B008
+    top_n: int = typer.Option(
         20,
         "--top-n",
         help="Number of top files to include in the mermaid diagram.",
     ),
-    since: str | None = typer.Option(  # noqa: B008
+    since: str | None = typer.Option(
         None,
         "--since",
         help=(
@@ -1837,7 +1837,7 @@ def cmd_map(
             "Example: --since HEAD~1, --since main, --since v1.0.0"
         ),
     ),
-    filter_glob: str | None = typer.Option(  # noqa: B008
+    filter_glob: str | None = typer.Option(
         None,
         "--filter",
         help=(
@@ -1846,7 +1846,7 @@ def cmd_map(
             "Applied after all other filtering."
         ),
     ),
-    since_minutes: int | None = typer.Option(  # noqa: B008
+    since_minutes: int | None = typer.Option(
         None,
         "--since-minutes",
         help=(
@@ -1866,7 +1866,7 @@ def cmd_map(
     Use --filter GLOB to limit output to files matching a glob pattern.
     Use --since-minutes N to show only files modified in the last N minutes.
     """
-    from . import repomap  # noqa: PLC0415
+    from . import repomap
 
     proj = _require_project(
         "no project detected (no .git, package.json, etc. found). "
@@ -1945,7 +1945,7 @@ def cmd_map(
             if since_minutes <= 0:
                 _error("--since-minutes must be a positive integer")
                 raise typer.Exit(1)
-            import fnmatch  # noqa: PLC0415
+            import fnmatch
             cutoff = time.time() - since_minutes * 60
             recent_files: list[str] = []
             with contextlib.suppress(Exception):
@@ -2028,7 +2028,7 @@ def cmd_map(
         # (headers, blank lines, footers) are kept verbatim so the output
         # retains its structure.
         if filter_glob is not None:
-            import fnmatch  # noqa: PLC0415
+            import fnmatch
             filtered_lines = []
             for ln in text.splitlines(keepends=True):
                 stripped = ln.strip()
@@ -2067,7 +2067,7 @@ def cmd_map(
         _map_skills_footer = _build_map_skills_footer()
         if _map_skills_footer:
             typer.echo(_map_skills_footer)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _error(f"failed to build repo map: {exc}. Try `token-goat index --full` to rebuild the index.")
         raise typer.Exit(1) from None
 
@@ -2085,9 +2085,9 @@ def _build_map_skills_footer() -> str:
     requiring an explicit ``--session-id`` argument on the map command.
     """
     try:
-        from . import compact as _compact_mod  # noqa: PLC0415
-        from . import session as _session_mod  # noqa: PLC0415
-        from . import skill_cache as _sc  # noqa: PLC0415
+        from . import compact as _compact_mod
+        from . import session as _session_mod
+        from . import skill_cache as _sc
 
         # Find the most recent session that has skill entries.
         outputs = _sc.list_outputs()
@@ -2106,10 +2106,10 @@ def _build_map_skills_footer() -> str:
         try:
             _cache = _session_mod.safe_load(sid)
             _session_started_ts = float(getattr(_cache, "started_ts", 0.0) or 0.0)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("skill-sections: failed to load session timestamp for %s (using 0.0)", sid, exc_info=True)
 
-        entries = _compact_mod._select_top_skill_entries(  # noqa: SLF001
+        entries = _compact_mod._select_top_skill_entries(
             skill_history,
             session_started_ts=_session_started_ts,
         )
@@ -2130,14 +2130,14 @@ def _build_map_skills_footer() -> str:
             try:
                 ct = _sc.get_compact(sid, sname)
                 if ct:
-                    from .compact import estimate_tokens as _est  # noqa: PLC0415
+                    from .compact import estimate_tokens as _est
                     compact_note = f" (compact: ~{_est(ct)} tok)"
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOG.debug("skill-sections: failed to get compact info for %r (skip)", sname, exc_info=True)
             run_note = f" ×{run_count}" if run_count > 1 else ""
             lines.append(f"- {sname}{run_note}{compact_note} — `token-goat skill-body {sname}`")
         return "\n".join(lines)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ""
 
 
@@ -2152,7 +2152,7 @@ def deps(
     Lists all modules and symbols that the given file imports, depends on, or
     references. Use ``--depth`` to control transitive depth (1=direct imports,
     0=unlimited recursion)."""
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.deps(file, json_output=json_output, depth=depth)
 
@@ -2163,14 +2163,14 @@ def read(
     session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = _OPT_JSON,
     context_lines: int = _OPT_CONTEXT_LINES,
-    full: bool = typer.Option(False, "--full", "-f", help="Return the complete symbol body without smart truncation (bypasses the 60-line threshold)."),  # noqa: B008
+    full: bool = typer.Option(False, "--full", "-f", help="Return the complete symbol body without smart truncation (bypasses the 60-line threshold)."),
 ) -> None:
     """Read just <symbol> from <file>, not the whole file.
 
     Long symbol bodies (> 60 lines) are smart-truncated by default.  Pass
     ``--full`` (``-f``) to bypass truncation and return the complete body.
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     if session_id:
         _validate_session_id(session_id)
@@ -2192,7 +2192,7 @@ def section(
     context_lines: int = _OPT_CONTEXT_LINES,
 ) -> None:
     """Extract just <heading> section from <file>, not the whole file."""
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     if session_id:
         _validate_session_id(session_id)
@@ -2225,7 +2225,7 @@ def cmd_skill_section(
         token-goat skill-section ralph "Definition of Done"
         token-goat skill-section plugin:improve "Step 4"
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     if session_id:
         _validate_session_id(session_id)
@@ -2246,7 +2246,7 @@ def skeleton(
     include_private: bool = typer.Option(False, "--private", "-p", help="Include _private names"),
 ) -> None:
     """Show all signatures in <file> without bodies — typically 70-90% fewer tokens."""
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.stub_view(file, json_output=json_output, include_private=include_private)
 
@@ -2262,8 +2262,8 @@ def outline(
         help="Maximum nesting depth to include (0 = top-level only; 1 = also methods/nested classes, etc.).",
         min=0,
     ),
-    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress the '# Outline:' header line. Results only."),  # noqa: B008
-    min_lines: int = typer.Option(  # noqa: B008
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress the '# Outline:' header line. Results only."),
+    min_lines: int = typer.Option(
         0,
         "--min-lines",
         help="Only show symbols whose body spans at least N lines. Useful for finding large functions. Default 0 (no filter).",
@@ -2280,7 +2280,7 @@ def outline(
     Use --min-lines N to show only symbols with at least N lines (find large functions).
     Use ``token-goat read <file>::<symbol>`` to retrieve any symbol body.
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.outline(file, json_output=json_output, max_depth=max_depth, quiet=quiet, min_lines=min_lines)
 
@@ -2297,7 +2297,7 @@ def cmd_exports(
 
     Use ``token-goat read <file>::<symbol>`` to retrieve any symbol body.
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.exports(file, json_output=json_output)
 
@@ -2317,18 +2317,18 @@ def scope(
     Useful for understanding what names are visible at a specific line without
     reading the whole file.
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.scope(target, json_output=json_output)
 
 
 @app.command("changed", rich_help_panel="Core")
 def cmd_changed(
-    since: str = typer.Option("HEAD~5", "--since", help="Git ref to compare against (commit, branch, tag). Default: HEAD~5."),  # noqa: B008
+    since: str = typer.Option("HEAD~5", "--since", help="Git ref to compare against (commit, branch, tag). Default: HEAD~5."),
     json_output: bool = _OPT_JSON,
-    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress count/summary lines. Results only."),  # noqa: B008
-    limit: int = typer.Option(50, "--limit", help="Maximum number of symbol entries to return."),  # noqa: B008
-    symbol_mode: bool = typer.Option(False, "--symbol", help="Use the DB index to find symbols that overlap changed line ranges (more reliable than git hunk context). Output grouped by file."),  # noqa: B008
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress count/summary lines. Results only."),
+    limit: int = typer.Option(50, "--limit", help="Maximum number of symbol entries to return."),
+    symbol_mode: bool = typer.Option(False, "--symbol", help="Use the DB index to find symbols that overlap changed line ranges (more reliable than git hunk context). Output grouped by file."),
 ) -> None:
     """List symbols that changed since a git ref — replaces full diff reads.
 
@@ -2349,7 +2349,7 @@ def cmd_changed(
         token-goat changed --symbol
         token-goat changed --symbol --since HEAD~3 --json
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.changed(since_ref=since, json_output=json_output, limit=limit, symbol_mode=symbol_mode, quiet=quiet)
 
@@ -2380,14 +2380,14 @@ def cmd_blame(
         token-goat blame src/token_goat/hints.py::build_hint
         token-goat blame git_history.py::blame_symbol --json
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.blame(target, json_output=json_output)
 
 
 @app.command("recent", rich_help_panel="Core")
 def cmd_recent(
-    n: int = typer.Option(10, "--n", help="Number of files to show."),  # noqa: B008
+    n: int = typer.Option(10, "--n", help="Number of files to show."),
     session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = _OPT_JSON,
 ) -> None:
@@ -2404,7 +2404,7 @@ def cmd_recent(
         token-goat recent --n 5
         token-goat recent --session-id <id> --json
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.recent(n=n, session_id=session_id, json_output=json_output)
 
@@ -2426,7 +2426,7 @@ def cmd_find(
         token-goat find "rate limit retry"
         token-goat find build_manifest --json
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.find(query=query, json_output=json_output)
 
@@ -2452,7 +2452,7 @@ def cmd_similar(
         token-goat similar src/auth.py::login -k 3
         token-goat similar src/token_goat/hints.py::build_hint --json
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.similar(target, json_output=json_output, top_k=k)
 
@@ -2473,14 +2473,14 @@ def cmd_test_for(
         token-goat test-for src/token_goat/read_commands.py
         token-goat test-for hints.py --json
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.test_for(file, json_output=json_output)
 
 
 @app.command("types", rich_help_panel="Core")
 def cmd_types(
-    file: str | None = typer.Argument(None, help="File to inspect — e.g., 'src/token_goat/db.py'. Omit for project-wide search."),  # noqa: B008
+    file: str | None = typer.Argument(None, help="File to inspect — e.g., 'src/token_goat/db.py'. Omit for project-wide search."),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """List type definitions (TypedDict, Protocol, dataclass, namedtuple, Pydantic) in a file or project.
@@ -2494,7 +2494,7 @@ def cmd_types(
         token-goat types
         token-goat types src/token_goat/read_commands.py --json
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.types(file, json_output=json_output)
 
@@ -2519,7 +2519,7 @@ def cmd_imports(
         token-goat imports src/token_goat/db.py
         token-goat imports read_commands.py --json
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.imports(file, json_output=json_output)
 
@@ -2548,7 +2548,7 @@ def cmd_grep(
         token-goat grep "TODO" . --session-id abc123
         token-goat grep "pattern" --json
     """
-    from . import read_commands  # noqa: PLC0415
+    from . import read_commands
 
     read_commands.grep(pattern, path, session_id=session_id, json_output=json_output)
 
@@ -2561,11 +2561,11 @@ def memory_cmd(
     project_dir: str | None = typer.Option(None, "--project", "-p", help="Project root (default: cwd)"),
 ) -> None:
     """Manage persistent per-project memory facts injected at session start."""
-    import os  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
+    import os
+    from pathlib import Path
 
-    from . import project_memory  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
+    from . import project_memory
+    from .project import find_project
 
     root = Path(project_dir) if project_dir else Path(os.getcwd())
     proj = find_project(root)
@@ -2606,12 +2606,12 @@ def git_history_cmd(
     limit: int = typer.Option(5, "--limit", "-n", help="Number of commits to show"),
 ) -> None:
     """Show recent git commits that touched <file> (from the indexed git history)."""
-    import os  # noqa: PLC0415
-    import time  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
+    import os
+    import time
+    from pathlib import Path
 
-    from . import git_history  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
+    from . import git_history
+    from .project import find_project
 
     cwd = Path(os.getcwd())
     proj = find_project(cwd)
@@ -2642,7 +2642,7 @@ def git_history_cmd(
 @app.command("cache-audit", rich_help_panel="Advanced")
 def cache_audit() -> None:
     """Audit Claude Code config for patterns that bust the prompt cache."""
-    from . import install  # noqa: PLC0415
+    from . import install
 
     issues: list[str] = []
 
@@ -2662,7 +2662,7 @@ def cache_audit() -> None:
                 matchers = h.get("matcher", "")
                 if "Bash" in matchers or "WebFetch" in matchers:
                     issues.append(f"PostToolUse hook on {matchers!r}: may add dynamic content that busts cache")
-        except Exception:  # noqa: BLE001
+        except Exception:
             issues.append(f"Could not parse {settings_path}")
     else:
         issues.append(f"settings.json not found at {settings_path}")
@@ -2677,7 +2677,7 @@ def cache_audit() -> None:
         issues.extend(f"CLAUDE.md contains dynamic pattern {pat!r} — changes every session, busting cache" for pat in ("{{date}}", "{{time}}", "Date:", "Time:", "today is") if pat.lower() in content.lower())
 
     if issues:
-        from .render.common import render_list  # noqa: PLC0415
+        from .render.common import render_list
         typer.echo("Cache-busting issues found:")
         typer.echo(render_list(issues, bullet="-"))
     else:
@@ -2690,7 +2690,7 @@ def session_touched(
     json_output: bool = _OPT_JSON,
 ) -> None:
     """List files already read in the given Claude session."""
-    from . import session as session_mod  # noqa: PLC0415
+    from . import session as session_mod
 
     _validate_session_id(session_id)
 
@@ -2734,10 +2734,10 @@ def cmd_session_summary(
         token-goat session-summary --json
         token-goat session-summary --session-id abc123
     """
-    from . import paths as _paths  # noqa: PLC0415
-    from . import session as session_mod  # noqa: PLC0415
-    from . import stats as _stats  # noqa: PLC0415
-    from .util import run_git  # noqa: PLC0415
+    from . import paths as _paths
+    from . import session as session_mod
+    from . import stats as _stats
+    from .util import run_git
 
     # Detect session ID
     if session_id is None:
@@ -2769,7 +2769,7 @@ def cmd_session_summary(
     # Load session cache
     try:
         sess = session_mod.load(session_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         msg = {"session_id": session_id, "files_read": 0, "files_edited": 0, "commits_this_session": 0, "tokens_saved_estimate": 0, "message": "Session not found or corrupted"}
         _emit_json(msg) if json_output else typer.echo("No active session")
         raise typer.Exit(0) from None
@@ -2791,7 +2791,7 @@ def cmd_session_summary(
         if result.returncode == 0:
             # Count non-empty lines
             commits_count = len([line for line in result.stdout.strip().split("\n") if line.strip()])
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("session brief: git log failed (commits_count=0)", exc_info=True)
 
     # Estimate token savings from stats or formula
@@ -2801,7 +2801,7 @@ def cmd_session_summary(
         summary = _stats.summarize(window_days=30)
         total_tokens = summary.total_tokens_saved
         tokens_saved_estimate = max(0, total_tokens)
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Fallback: rough estimate = (files_read * 1000) + (files_edited * 200)
         tokens_saved_estimate = (files_read * 1000) + (files_edited * 200)
 
@@ -2831,7 +2831,7 @@ def session_mark(
     limit: int = typer.Option(0, "--limit", help="0 means unlimited"),
 ) -> None:
     """Manually mark a file/range as read for the given session. (Mostly used by hooks.)"""
-    from . import session as session_mod  # noqa: PLC0415
+    from . import session as session_mod
 
     _validate_session_id(session_id)
 
@@ -2845,14 +2845,14 @@ def cmd_gdrive_fetch(
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Fetch a Google Drive file (image gets auto-shrunk). Returns the local path."""
-    from . import gdrive  # noqa: PLC0415
+    from . import gdrive
 
     try:
         path = gdrive.fetch_file(file_id)
     except gdrive.GDriveCredsUnavailable as e:
         _warn(str(e))
         raise typer.Exit(0) from None  # fail-soft: don't break Claude's session
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _warn(f"Drive fetch failed: {e}")
         raise typer.Exit(0) from None
     _emit_path_result(path, json_output)
@@ -2876,7 +2876,7 @@ def cmd_gdrive_sections(
     Always exits 0 (fail-soft) so a Drive outage or auth issue never derails the
     agent — the worst case is the agent falls back to ``gdrive-fetch``.
     """
-    from . import gdrive  # noqa: PLC0415
+    from . import gdrive
 
     try:
         # Image-shrink is disabled because if the agent asked for sections, it
@@ -2886,7 +2886,7 @@ def cmd_gdrive_sections(
     except gdrive.GDriveCredsUnavailable as e:
         _warn(str(e))
         raise typer.Exit(0) from None
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _warn(f"Drive fetch failed: {e}")
         raise typer.Exit(0) from None
 
@@ -2933,12 +2933,12 @@ def cmd_gdrive_sections(
 
 @app.command("gdrive-list")
 def cmd_gdrive_list(
-    folder: str | None = typer.Option(None, "--folder", help="Filter to files in a specific folder (by folder ID)"),  # noqa: B008
-    max_results: int = typer.Option(20, "--max", help="Maximum files to list"),  # noqa: B008
+    folder: str | None = typer.Option(None, "--folder", help="Filter to files in a specific folder (by folder ID)"),
+    max_results: int = typer.Option(20, "--max", help="Maximum files to list"),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """List accessible Google Drive files."""
-    from . import gdrive  # noqa: PLC0415
+    from . import gdrive
 
     files = gdrive.list_drive_files(folder_id=folder, max_results=max_results)
 
@@ -2988,7 +2988,7 @@ def cmd_gdrive_auth(
     client_secrets: Path | None = typer.Option(None, "--client-secrets", help="Path to OAuth client_secrets.json"),  # noqa: B008
 ) -> None:
     """One-time Google Drive auth setup. Tries ADC first, then OAuth flow."""
-    from . import gdrive  # noqa: PLC0415
+    from . import gdrive
 
     # Check ADC
     creds = gdrive._try_adc()
@@ -3026,7 +3026,7 @@ def cmd_gdrive_auth(
     try:
         out_path = gdrive.run_oauth_oob_flow(client_secrets)
         typer.echo(f"Credentials saved to {out_path}. token-goat gdrive-fetch will work.")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _error(f"OAuth flow failed: {e}")
         raise typer.Exit(1) from None
 
@@ -3037,7 +3037,7 @@ def cmd_fetch_image(
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Fetch an image URL (auto-shrunk). Returns the local cached path."""
-    from . import webfetch  # noqa: PLC0415
+    from . import webfetch
 
     try:
         path = webfetch.fetch_url(url)
@@ -3062,8 +3062,8 @@ def _watch_project(proj: Project) -> None:
     Runs until interrupted by Ctrl+C.  Falls back to polling (no watchdog
     required) by scanning file mtimes every ``_WATCH_POLL_INTERVAL`` seconds.
     """
-    from . import db  # noqa: PLC0415
-    from .parser import (  # noqa: PLC0415
+    from . import db
+    from .parser import (
         SKIP_DIRS,
         _is_generated_filename,
         index_file,
@@ -3109,7 +3109,7 @@ def _watch_project(proj: Project) -> None:
                 try:
                     with db.project_writer_lock(proj.hash, timeout_sec=10.0), db.open_project(proj.hash) as conn:
                         write_file_index(conn, fi)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     _LOG.warning("watch: failed to write index for %s: %s", rel, exc)
                     continue
                 n_sym = len(fi.symbols)
@@ -3135,9 +3135,9 @@ def index(
     ext: list[str] | None = typer.Option(None, "--ext", help="Only (re-)index files with this extension. May be repeated: --ext py --ext ts. Useful after adding a new indexer."),  # noqa: B008
 ) -> None:
     """Rebuild project/global indices."""
-    from . import paths as _paths  # noqa: PLC0415
-    from .parser import index_project  # noqa: PLC0415
-    from .project import find_project, make_project_at  # noqa: PLC0415
+    from . import paths as _paths
+    from .parser import index_project
+    from .project import find_project, make_project_at
 
     # Handle --check flag: read dirty queue and report pending files without indexing.
     if check:
@@ -3195,7 +3195,7 @@ def index(
 
     assert proj is not None  # guaranteed: all branches either set proj or return/exit early
 
-    import sys as _sys  # noqa: PLC0415
+    import sys as _sys
 
     _tty = _sys.stderr.isatty()
 
@@ -3217,7 +3217,7 @@ def index(
     _LOG.info("index start: project=%s mode=%s", proj.root.name, "full" if full else "incremental")
     try:
         summary = index_project(proj, full=full, progress=_progress, verbose=verbose, ext_filter=_ext_filter)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _error(f"indexing failed: {exc}")
         raise typer.Exit(1) from None
 
@@ -3276,7 +3276,7 @@ def index(
                 typer.echo(f"  {lf.reason:<12} {size_str:>10}  {lf.rel_path}")
 
     if embeddings:
-        from . import embeddings as emb  # noqa: PLC0415
+        from . import embeddings as emb
         try:
             result = emb.index_project_embeddings(proj)
             typer.echo(
@@ -3298,7 +3298,7 @@ def stats(
     by_project: bool = typer.Option(False, "--by-project", help="Show per-project breakdown table"),
     by_command: bool = typer.Option(False, "--by-command", help="Show per-CLI-command breakdown table"),
     top: int = typer.Option(10, "--top", help="Number of projects to show with --by-project"),
-    since: int | None = typer.Option(  # noqa: B008
+    since: int | None = typer.Option(
         None,
         "--since",
         help=(
@@ -3307,7 +3307,7 @@ def stats(
         ),
     ),
     session_id: str | None = _OPT_SESSION_ID,
-    global_: bool = typer.Option(False, "--global", help="Show all-time compression metrics instead of session-scoped view"),  # noqa: B008
+    global_: bool = typer.Option(False, "--global", help="Show all-time compression metrics instead of session-scoped view"),
 ) -> None:
     """Show cumulative token savings.
 
@@ -3315,11 +3315,11 @@ def stats(
     (bash outputs compressed, tokens saved, reread denies, images shrunk) instead
     of the full rich table.  Use ``--json`` with either flag for machine-readable output.
     """
-    from . import cli_stats  # noqa: PLC0415
+    from . import cli_stats
 
     # --session-id / --global trigger the focused compression metrics view.
     if session_id is not None or global_:
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
         sid = None if global_ else session_id
         label = "all-time" if global_ else f"session {session_id[:8] if session_id else ''}"
         data = _db.get_compression_stats(session_id=sid)
@@ -3360,9 +3360,9 @@ def cost(
     ),
 ) -> None:
     """Show estimated tokens saved (session or all-time)."""
-    from . import paths as _paths  # noqa: PLC0415
-    from . import session as session_mod  # noqa: PLC0415
-    from . import stats as stats_mod  # noqa: PLC0415
+    from . import paths as _paths
+    from . import session as session_mod
+    from . import stats as stats_mod
 
     sessions_dir = _paths.sessions_dir()
 
@@ -3449,14 +3449,14 @@ _GREP_MAX_DEFAULT = 20
 # web-output, and skill-body.  Defined once so help text and defaults stay in
 # sync across all three commands.  Typer treats these as immutable descriptors —
 # it reads the default at registration time and does not mutate the objects.
-_OPT_HEAD: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)")  # noqa: B008
-_OPT_TAIL: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)")  # noqa: B008
-_OPT_GREP: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching a regex pattern (case-insensitive by default; see --case-sensitive; falls back to literal match if the pattern is not valid regex)")  # noqa: B008
-_OPT_GREP_MAX: int = typer.Option(_GREP_MAX_DEFAULT, "--grep-max", help="Max matching lines to show with --grep (0 = no cap)")  # noqa: B008
-_OPT_CASE_SENSITIVE: bool = typer.Option(False, "--case-sensitive", help="Make --grep matching case-sensitive")  # noqa: B008
-_OPT_FULL: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)")  # noqa: B008
-_OPT_HEAD_TAIL: bool = typer.Option(False, "--head-tail", help="Emit first+last 20 lines with an omission marker instead of full body")  # noqa: B008
-_OPT_SECTION: str | None = typer.Option(None, "--section", "-s", help="Extract a specific markdown/HTML section by heading text (case-insensitive; use Heading#2 for the second occurrence)")  # noqa: B008
+_OPT_HEAD: int = typer.Option(0, "--head", help="Show first N lines (0 = no head limit)")
+_OPT_TAIL: int = typer.Option(0, "--tail", help="Show last N lines (0 = no tail limit)")
+_OPT_GREP: str | None = typer.Option(None, "--grep", "-g", help="Show only lines matching a regex pattern (case-insensitive by default; see --case-sensitive; falls back to literal match if the pattern is not valid regex)")
+_OPT_GREP_MAX: int = typer.Option(_GREP_MAX_DEFAULT, "--grep-max", help="Max matching lines to show with --grep (0 = no cap)")
+_OPT_CASE_SENSITIVE: bool = typer.Option(False, "--case-sensitive", help="Make --grep matching case-sensitive")
+_OPT_FULL: bool = typer.Option(False, "--full", help="Return the entire cached output (disables smart-default head+tail)")
+_OPT_HEAD_TAIL: bool = typer.Option(False, "--head-tail", help="Emit first+last 20 lines with an omission marker instead of full body")
+_OPT_SECTION: str | None = typer.Option(None, "--section", "-s", help="Extract a specific markdown/HTML section by heading text (case-insensitive; use Heading#2 for the second occurrence)")
 
 
 # ---------------------------------------------------------------------------
@@ -3691,7 +3691,7 @@ def _run_output_recall_command(
             suffixes (``Heading#2``).  Emits an error and exits with code 1
             when the heading is not found.
     """
-    from . import db as _db  # noqa: PLC0415
+    from . import db as _db
 
     load_output = cache_module.load_output  # type: ignore[attr-defined]  # cache_module typed as object to accept both bash_cache and web_cache modules at call sites
     load_output_meta = cache_module.load_output_meta  # type: ignore[attr-defined]  # same — both modules expose this function
@@ -3707,7 +3707,7 @@ def _run_output_recall_command(
         # (``bash_output_recall_miss`` / ``web_output_recall_miss``); both
         # are registered in ``stats._KIND_TO_SOURCE``.  Telemetry must never
         # block the error path, hence the broad suppress.
-        import contextlib  # noqa: PLC0415
+        import contextlib
         with contextlib.suppress(Exception):
             _db.record_stat(
                 None,
@@ -3851,7 +3851,7 @@ def _run_output_recall_command(
         typer.echo("# " + "  ".join(_header_parts))
 
     # Safety net: even with smart-default slicing, `--full` recall can dump an unbounded cached body. Cap it so one recall can't overflow context.
-    from . import overflow_guard  # noqa: PLC0415
+    from . import overflow_guard
 
     _cmd_label = stat_kind.replace("_output_recall", "-output")
     typer.echo(overflow_guard.guard(sliced, command=_cmd_label))
@@ -3869,7 +3869,7 @@ def cmd_bash_output(
     head_tail: bool = _OPT_HEAD_TAIL,
     section: str | None = _OPT_SECTION,
     json_output: bool = _OPT_JSON,
-    diff: bool = typer.Option(False, "--diff", help="Show unified diff of what was elided by the smart-default trimming (compressed vs full)."),  # noqa: B008
+    diff: bool = typer.Option(False, "--diff", help="Show unified diff of what was elided by the smart-default trimming (compressed vs full)."),
 ) -> None:
     """Retrieve a sliced view of a cached Bash output.
 
@@ -3894,14 +3894,14 @@ def cmd_bash_output(
     lines returned (default 20; 0 = no cap).  JSON mode includes the full
     path and stored byte size.
     """
-    from . import bash_cache  # noqa: PLC0415
+    from . import bash_cache
 
     if full and diff:
         _error("Use --full or --diff, not both.")
         raise typer.Exit(1)
 
     if diff:
-        import difflib  # noqa: PLC0415
+        import difflib
         body = bash_cache.load_output(output_id)
         if body is None:
             _error(f"no cached output for id: {output_id}")
@@ -3950,7 +3950,7 @@ def cmd_web_output(
     head_tail: bool = _OPT_HEAD_TAIL,
     section: str | None = _OPT_SECTION,
     json_output: bool = _OPT_JSON,
-    from_session: str | None = typer.Option(  # noqa: B008
+    from_session: str | None = typer.Option(
         None,
         "--from-session",
         help=(
@@ -3958,7 +3958,7 @@ def cmd_web_output(
             "When set, the output_id argument is not required."
         ),
     ),
-    list_all: bool = typer.Option(  # noqa: B008
+    list_all: bool = typer.Option(
         False,
         "--list",
         help=(
@@ -3994,8 +3994,8 @@ def cmd_web_output(
 
     Use ``--list`` to list all cached web outputs (URL, age, size).
     """
-    from . import web_cache  # noqa: PLC0415
-    from .cache_common import safe_session_fragment  # noqa: PLC0415
+    from . import web_cache
+    from .cache_common import safe_session_fragment
 
     if list_all:
         # Global listing mode: show all cached web outputs regardless of session.
@@ -4144,7 +4144,7 @@ def cmd_web_history(
     and a sanitised URL preview.  Use the ID with ``token-goat web-output
     <id>`` to retrieve the body.
     """
-    from . import web_cache  # noqa: PLC0415
+    from . import web_cache
 
     def _json_fields(s: object) -> dict[str, object]:
         return {"url_preview": s.url_preview, "status_code": s.status_code, "truncated": s.truncated, "content_type": s.content_type}  # type: ignore[attr-defined]  # s typed as object; web_cache sidecar dataclass at runtime
@@ -4193,7 +4193,7 @@ def cmd_mcp_output(
     section.  JSON mode includes the full path, stored byte size, and sidecar
     metadata (tool name, input preview).
     """
-    from . import mcp_cache  # noqa: PLC0415
+    from . import mcp_cache
 
     _run_output_recall_command(
         output_id=output_id,
@@ -4223,7 +4223,7 @@ def cmd_mcp_history(
     and an input preview.  Use the ID with ``token-goat mcp-output <id>`` to
     retrieve the body.
     """
-    from . import mcp_cache  # noqa: PLC0415
+    from . import mcp_cache
 
     def _json_fields(s: object) -> dict[str, object]:
         return {  # s typed as object; McpOutputMeta dataclass at runtime
@@ -4285,7 +4285,7 @@ def _parse_since_duration(since: str) -> float | None:
 def cmd_bash_history(
     json_output: bool = _OPT_JSON,
     limit: int = _OPT_LIMIT_HISTORY,
-    since: str | None = typer.Option(  # noqa: B008
+    since: str | None = typer.Option(
         None,
         "--since",
         help=(
@@ -4303,7 +4303,7 @@ def cmd_bash_history(
 
     Use ``--since 30m`` to show only entries from the last 30 minutes.
     """
-    from . import bash_cache  # noqa: PLC0415
+    from . import bash_cache
 
     since_secs: float | None = None
     if since is not None:
@@ -4359,10 +4359,10 @@ def cmd_history(
 
     Use ``--limit`` to control how many entries appear per section.
     """
-    import json as json_lib  # noqa: PLC0415
-    import time as time_lib  # noqa: PLC0415
+    import json as json_lib
+    import time as time_lib
 
-    from . import session as session_module  # noqa: PLC0415
+    from . import session as session_module
 
     # Validate and resolve session ID
     if session_id:
@@ -4540,9 +4540,9 @@ def cmd_skill_body(
     When ``--section`` is absent and the body has H2 headings, the command
     appends a ``**Sections available:** ...`` line listing them.
     """
-    from . import compact as _compact  # noqa: PLC0415
-    from . import db as _db  # noqa: PLC0415
-    from . import hooks_skill, skill_cache  # noqa: PLC0415
+    from . import compact as _compact
+    from . import db as _db
+    from . import hooks_skill, skill_cache
 
     # Walk every cached entry for this skill, newest first.  An older entry's
     # body may still be on disk even when the most-recent entry's body has
@@ -4561,7 +4561,7 @@ def cmd_skill_body(
         # Body evicted; try the source path the hook recorded at capture.
         if candidate.source_path:
             try:
-                from pathlib import Path  # noqa: PLC0415
+                from pathlib import Path
 
                 body = Path(candidate.source_path).read_text(encoding="utf-8", errors="replace")
                 source_label = f"source:{candidate.source_path}"
@@ -4578,7 +4578,7 @@ def cmd_skill_body(
         resolved = hooks_skill._resolve_skill_body_path(name)
         if resolved:
             try:
-                from pathlib import Path  # noqa: PLC0415
+                from pathlib import Path
 
                 body = Path(resolved).read_text(encoding="utf-8", errors="replace")
                 source_label = f"source:{resolved}"
@@ -4773,7 +4773,7 @@ def _resolve_skill_body_for_compact(
     Returns ``(body, meta, source_label)``; *body* is ``None`` when the skill
     cannot be located.  *meta* is a :class:`skill_cache.SkillMeta` or ``None``.
     """
-    from . import hooks_skill  # noqa: PLC0415
+    from . import hooks_skill
     from . import skill_cache as skill_cache_mod
 
     meta_candidates = skill_cache_mod.lookup_all_by_name(name)
@@ -4787,7 +4787,7 @@ def _resolve_skill_body_for_compact(
             break
         if candidate.source_path:
             try:
-                from pathlib import Path  # noqa: PLC0415
+                from pathlib import Path
 
                 body = Path(candidate.source_path).read_text(encoding="utf-8", errors="replace")
                 source_label = f"source:{candidate.source_path}"
@@ -4799,7 +4799,7 @@ def _resolve_skill_body_for_compact(
         resolved = hooks_skill._resolve_skill_body_path(name)
         if resolved:
             try:
-                from pathlib import Path  # noqa: PLC0415
+                from pathlib import Path
 
                 body = Path(resolved).read_text(encoding="utf-8", errors="replace")
                 source_label = f"source:{resolved}"
@@ -4819,8 +4819,8 @@ def _generate_compact_for_body(
     Returns ``(compact_display, compact_source, body_sha_or_empty)``.
     *compact_display* is the full display text including the header line.
     """
-    from . import compact as _compact  # noqa: PLC0415
-    from . import skill_cache as skill_cache_mod  # noqa: PLC0415
+    from . import compact as _compact
+    from . import skill_cache as skill_cache_mod
 
     marker_compact = skill_cache_mod.extract_compact_from_marker(body)
     compact_text = (
@@ -4871,9 +4871,9 @@ def cmd_skill_compact(
     disk between loads — the staleness check compares the SHA embedded in the
     stored compact header against the body's current content SHA.
     """
-    from . import compact as _compact  # noqa: PLC0415
-    from . import db as _db  # noqa: PLC0415
-    from . import skill_cache  # noqa: PLC0415
+    from . import compact as _compact
+    from . import db as _db
+    from . import skill_cache
 
     _compact_session_id = os.environ.get("CLAUDE_SESSION_ID", "")
 
@@ -4885,12 +4885,12 @@ def cmd_skill_compact(
 
         # First pass: pre-generate compacts for all skill files on disk.
         # This covers skills that have never been loaded in any session.
-        from . import install as _install_mod  # noqa: PLC0415
+        from . import install as _install_mod
         try:
             pregen_summary = _install_mod.pregen_skill_compacts()
             if not json_output:
                 typer.echo(f"  [pre-gen: {pregen_summary}]")
-        except Exception as _pregen_exc:  # noqa: BLE001
+        except Exception as _pregen_exc:
             _LOG.warning("skill-compact --all: pregen pass failed: %s", _pregen_exc)
             if not json_output:
                 typer.echo(f"  [pre-gen: FAILED — {_pregen_exc}]")
@@ -4898,7 +4898,7 @@ def cmd_skill_compact(
         # Enumerate unique skill names visible in the current session (or, when
         # no session is set, all entries in the cache directory).
         if _compact_session_id:
-            from . import session as _session_mod  # noqa: PLC0415
+            from . import session as _session_mod
             session_cache = _session_mod.load(_compact_session_id)
             skill_names_raw: list[str] = list(
                 {entry.skill_name for entry in skill_cache.list_by_session(_compact_session_id)}
@@ -4986,7 +4986,7 @@ def cmd_skill_compact(
                 else:
                     typer.echo(f"  {sname}: regenerated ({compact_source}, saved {_tokens_saved} tokens)")
                 processed += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if json_output:
                     results.append({"skill_name": sname, "status": "error", "error": str(exc)})
                 else:
@@ -5064,14 +5064,14 @@ def cmd_skill_compact(
 @app.command("compact-doc", rich_help_panel="Core")
 def cmd_compact_doc(
     path: Path = typer.Argument(..., help="Path to the reference document to compact (must be .md or .markdown)."),  # noqa: B008
-    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing compact even if it is already fresh."),  # noqa: B008
-    sentences: int = typer.Option(  # noqa: B008
+    force: bool = typer.Option(False, "--force", "-f", help="Overwrite an existing compact even if it is already fresh."),
+    sentences: int = typer.Option(
         2,
         "--sentences",
         "-s",
         help="Number of content lines to extract per section heading (default 2).",
     ),
-    show: bool = typer.Option(False, "--show", help="Print the compact body to stdout after writing."),  # noqa: B008
+    show: bool = typer.Option(False, "--show", help="Print the compact body to stdout after writing."),
 ) -> None:
     """Create an extractive compact sidecar for a large reference document.
 
@@ -5089,8 +5089,8 @@ def cmd_compact_doc(
         token-goat compact-doc docs/api-reference.md --force
         token-goat compact-doc docs/api-reference.md --sentences 3 --show
     """
-    from . import doc_compact as _dc  # noqa: PLC0415
-    from .project import find_project  # noqa: PLC0415
+    from . import doc_compact as _dc
+    from .project import find_project
 
     abs_path = Path(path).resolve()
     if not abs_path.exists():
@@ -5159,7 +5159,7 @@ def cmd_skill_history(
     present) the truncation flag and source path.  Use the name with
     ``token-goat skill-body <name>`` to retrieve the body.
     """
-    from . import skill_cache  # noqa: PLC0415
+    from . import skill_cache
 
     def _json_fields(s: object) -> dict[str, object]:
         return {"skill_name": s.skill_name, "body_bytes": s.body_bytes, "truncated": s.truncated, "source_path": s.source_path}  # type: ignore[attr-defined]  # s typed as object; skill_cache sidecar dataclass at runtime
@@ -5194,10 +5194,10 @@ def cmd_skill_diff(
     Colour is applied when the terminal supports it: ``-`` lines are red,
     ``+`` lines are green, header lines are bold.
     """
-    import difflib  # noqa: PLC0415
-    import sys  # noqa: PLC0415
+    import difflib
+    import sys
 
-    from . import skill_cache  # noqa: PLC0415
+    from . import skill_cache
 
     # Collect all cached versions for this skill name, newest first.
     all_entries = skill_cache.list_outputs()
@@ -5293,7 +5293,7 @@ def cmd_skill_size(
     Results are sorted by overhead descending (highest overhead first).
     Total line shows cumulative overhead across all skills.
     """
-    from . import skill_cache  # noqa: PLC0415
+    from . import skill_cache
 
     skills = skill_cache.get_all_cached_skills(session_id)
 
@@ -5388,17 +5388,17 @@ def cmd_skill_size(
 def cmd_baseline(
     session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = _OPT_JSON,
-    subagent: bool = typer.Option(  # noqa: B008
+    subagent: bool = typer.Option(
         False,
         "--subagent",
         help="Show only the fixed sources a freshly spawned subagent inherits, framed as its starting context fill.",
     ),
-    window: int = typer.Option(  # noqa: B008
+    window: int = typer.Option(
         baseline_mod.DEFAULT_WINDOW_TOKENS,
         "--window",
         help="Context-window size (tokens) used as the pct-of-window denominator. Default 200,000 (the model window).",
     ),
-    usage: bool = typer.Option(  # noqa: B008
+    usage: bool = typer.Option(
         False,
         "--usage",
         help="Annotate rows with historical call counts from project transcripts; flags zero-use skills and MCP servers as removal candidates.",
@@ -5455,11 +5455,11 @@ def cmd_skill_list(
     Useful after a compaction event to confirm which skills are recoverable
     via ``token-goat skill-body <name>``.
     """
-    import time as _time  # noqa: PLC0415
+    import time as _time
 
-    from . import compact as _compact  # noqa: PLC0415
-    from . import session as _session_mod  # noqa: PLC0415
-    from . import skill_cache  # noqa: PLC0415
+    from . import compact as _compact
+    from . import session as _session_mod
+    from . import skill_cache
 
     # Resolve session_id: use the provided one or fall back to most-recent session.
     resolved_session = session_id
@@ -5504,7 +5504,7 @@ def cmd_skill_list(
         _skill_entries = _session_mod.get_skill_history(resolved_session)
         for _sk_name, _sk_entry in (_skill_entries or {}).items():
             _compact_hit_by_name[_sk_name] = getattr(_sk_entry, "compact_served_count", 0)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("skill list: failed to load compact-hit counts for session %s", resolved_session, exc_info=True)
 
     for meta in entries:
@@ -5741,9 +5741,9 @@ def cmd_decision(
     A ``decision_log`` stats event is recorded on append so ``token-goat stats``
     can track adoption alongside the other compact-assist mechanisms.
     """
-    from . import db as _db  # noqa: PLC0415
-    from . import paths as _paths  # noqa: PLC0415
-    from . import session as session_mod  # noqa: PLC0415
+    from . import db as _db
+    from . import paths as _paths
+    from . import session as session_mod
 
     sessions_dir = _paths.sessions_dir()
 
@@ -5856,8 +5856,8 @@ def cmd_pinned(
     surfaced in the manifest under ``## Pinned`` before all other sections so
     they survive aggressive compaction.
     """
-    from . import paths as _paths  # noqa: PLC0415
-    from . import session as session_mod  # noqa: PLC0415
+    from . import paths as _paths
+    from . import session as session_mod
 
     sessions_dir = _paths.sessions_dir()
 
@@ -5967,8 +5967,8 @@ def cmd_resume(
     The session ID is the full UUID from the session JSON filename, or the
     8-char prefix shown in the post-compact recovery hint.
     """
-    from . import db as _db  # noqa: PLC0415
-    from . import resume as _resume  # noqa: PLC0415
+    from . import db as _db
+    from . import resume as _resume
 
     # Resolve partial (short) session IDs by scanning the sessions directory.
     resolved_id: str | None = None
@@ -5978,14 +5978,14 @@ def cmd_resume(
     else:
         # Short prefix — find the first session file matching it.
         try:
-            from . import paths as _paths  # noqa: PLC0415
+            from . import paths as _paths
 
             sessions_dir = _paths.sessions_dir()
             for f in sessions_dir.glob(f"{session_id}*.json"):
                 candidate = f.stem  # strip .json
                 resolved_id = candidate
                 break
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("resume: failed to resolve short session id %r", session_id, exc_info=True)
         if resolved_id is None:
             _error(f"no session found for short id: {session_id!r}")
@@ -6017,7 +6017,7 @@ def cmd_recovery(
             "Same form as `token-goat resume` accepts."
         ),
     ),
-    pending: bool = typer.Option(  # noqa: B008
+    pending: bool = typer.Option(
         False,
         "--pending",
         help=(
@@ -6043,8 +6043,8 @@ def cmd_recovery(
     3. A human peeking at "what would the agent see if it resumed here?"
        without actually triggering a compact event.
     """
-    from . import hooks_session as _hs  # noqa: PLC0415
-    from . import paths as _paths  # noqa: PLC0415
+    from . import hooks_session as _hs
+    from . import paths as _paths
 
     # Resolve short session IDs the same way `resume` does.
     resolved_id: str | None = None
@@ -6056,7 +6056,7 @@ def cmd_recovery(
             for f in sessions_dir.glob(f"{session_id}*.json"):
                 resolved_id = f.stem
                 break
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("recovery-sidecar: failed to resolve short session id %r", session_id, exc_info=True)
         if resolved_id is None:
             _error(f"no session found for short id: {session_id!r}")
@@ -6089,11 +6089,11 @@ def cmd_recovery(
 
 
 @app.command(rich_help_panel="Install")
-def doctor(  # noqa: C901
-    fix: bool = typer.Option(  # noqa: B008
+def doctor(
+    fix: bool = typer.Option(
         False, "--fix", help="Clear stale index-spawn markers that doctor flags."
     ),
-    context: bool = typer.Option(  # noqa: B008
+    context: bool = typer.Option(
         False,
         "--context",
         help="Always show the Context footprint section (auto-shown when context > 40% or an uncompacted loaded skill exists).",
@@ -6105,7 +6105,7 @@ def doctor(  # noqa: C901
     worker status, and project indices. Use ``--fix`` to clear stale ``.indexing``
     spawn markers (same reaping the background worker does on startup).
     """
-    from . import cli_doctor  # noqa: PLC0415
+    from . import cli_doctor
 
     cli_doctor.doctor(fix=fix, crashes=False, context=context)
 
@@ -6115,14 +6115,14 @@ _VALID_TARGETS = {"claude", "codex", "gemini", "opencode", "openclaw", "pi", "al
 
 @app.command("context-stats", rich_help_panel="Install")
 def context_stats(
-    fix: bool = typer.Option(  # noqa: B008
+    fix: bool = typer.Option(
         False,
         "--fix",
         help="Apply safe structural pruning: remove dead links and exact-duplicate "
              "entries from the project's MEMORY.md index. Never edits memory bodies "
              "or CLAUDE.md files.",
     ),
-    json_output: bool = typer.Option(False, "--json", help="Machine-readable output."),  # noqa: B008
+    json_output: bool = typer.Option(False, "--json", help="Machine-readable output."),
     project: Path | None = typer.Option(  # noqa: B008
         None,
         "--project",
@@ -6137,17 +6137,17 @@ def context_stats(
     skill/agent listings).  With ``--fix``, safely removes dead links and
     exact-duplicate index entries from MEMORY.md.
     """
-    from . import cli_context_stats  # noqa: PLC0415
+    from . import cli_context_stats
 
     cli_context_stats.run(fix=fix, json_out=json_output, project=project)
 
 
 @app.command("install", rich_help_panel="Install")
 def cmd_install(
-    codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),  # noqa: B008
-    opencode: bool = typer.Option(False, "--opencode", help="Also install opencode plugin bridge"),  # noqa: B008
-    openclaw: bool = typer.Option(False, "--openclaw", help="Also install openclaw plugin bridge"),  # noqa: B008
-    pi: bool = typer.Option(False, "--pi", help="Also install pi extension bridge (global ~/.pi/agent/extensions)"),  # noqa: B008
+    codex: bool = typer.Option(False, "--codex", help="Also install Codex CLI integration"),
+    opencode: bool = typer.Option(False, "--opencode", help="Also install opencode plugin bridge"),
+    openclaw: bool = typer.Option(False, "--openclaw", help="Also install openclaw plugin bridge"),
+    pi: bool = typer.Option(False, "--pi", help="Also install pi extension bridge (global ~/.pi/agent/extensions)"),
     target: list[str] = typer.Option(  # noqa: B008
         None,
         "--target",
@@ -6157,9 +6157,9 @@ def cmd_install(
             "Overrides --codex/--opencode/--openclaw/--pi when provided."
         ),
     ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would change; make no changes"),  # noqa: B008
-    verify: bool = typer.Option(False, "--verify", help="After install, run a structured self-check"),  # noqa: B008
-    check: bool = typer.Option(False, "--check", help="Print current autostart registration and interpreter match; no side effects"),  # noqa: B008
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would change; make no changes"),
+    verify: bool = typer.Option(False, "--verify", help="After install, run a structured self-check"),
+    check: bool = typer.Option(False, "--check", help="Print current autostart registration and interpreter match; no side effects"),
 ) -> None:
     """One-time setup: scheduled tasks, settings.json, CLAUDE.md, skill, watchdog.
 
@@ -6174,7 +6174,7 @@ def cmd_install(
 
         token-goat install --check
     """
-    from . import install as inst  # noqa: PLC0415
+    from . import install as inst
 
     if check:
         info = inst.check_autostart()
@@ -6281,15 +6281,15 @@ def cmd_install(
 
 @app.command("uninstall", rich_help_panel="Install")
 def cmd_uninstall(
-    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\dfk-helper\token-goat"),  # noqa: B008
-    codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),  # noqa: B008
-    gemini: bool = typer.Option(False, "--gemini", help="Also remove Gemini CLI hook integration"),  # noqa: B008
-    opencode: bool = typer.Option(False, "--opencode", help="Also remove opencode plugin bridge"),  # noqa: B008
-    openclaw: bool = typer.Option(False, "--openclaw", help="Also remove openclaw plugin bridge"),  # noqa: B008
-    pi: bool = typer.Option(False, "--pi", help="Also remove pi extension bridge (global ~/.pi/agent/extensions)"),  # noqa: B008
+    purge: bool = typer.Option(False, "--purge", help=r"Also delete %LOCALAPPDATA%\dfk-helper\token-goat"),
+    codex: bool = typer.Option(False, "--codex", help="Also remove Codex CLI integration"),
+    gemini: bool = typer.Option(False, "--gemini", help="Also remove Gemini CLI hook integration"),
+    opencode: bool = typer.Option(False, "--opencode", help="Also remove opencode plugin bridge"),
+    openclaw: bool = typer.Option(False, "--openclaw", help="Also remove openclaw plugin bridge"),
+    pi: bool = typer.Option(False, "--pi", help="Also remove pi extension bridge (global ~/.pi/agent/extensions)"),
 ) -> None:
     """Cleanly reverse install."""
-    from . import install as inst  # noqa: PLC0415
+    from . import install as inst
 
     result = inst.uninstall_all(purge=purge, codex=codex, gemini=gemini, opencode=opencode, openclaw=openclaw, pi=pi)
     typer.echo("token-goat uninstall:")
@@ -6303,7 +6303,7 @@ def cmd_image_shrink(
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Manually shrink an image (also used by hooks)."""
-    from . import image_shrink  # noqa: PLC0415
+    from . import image_shrink
 
     abs_src = src.resolve()
     if not abs_src.exists():
@@ -6330,8 +6330,8 @@ def cmd_image_shrink(
 def cmd_worker(
     daemon: bool = typer.Option(False, "--daemon", help="Run as background daemon (otherwise interactive)"),
     status: bool = typer.Option(False, "--status", help="Show worker status and exit"),
-    check: bool = typer.Option(False, "--check", help="Check for a running worker and report its interpreter; exit 1 if a duplicate (different interpreter) is detected"),  # noqa: B008
-    kill_duplicate: bool = typer.Option(False, "--kill-duplicate", help="Kill a running worker whose interpreter differs from the current Python executable"),  # noqa: B008
+    check: bool = typer.Option(False, "--check", help="Check for a running worker and report its interpreter; exit 1 if a duplicate (different interpreter) is detected"),
+    kill_duplicate: bool = typer.Option(False, "--kill-duplicate", help="Kill a running worker whose interpreter differs from the current Python executable"),
 ) -> None:
     """Internal: background worker daemon. Should be invoked by the SessionStart watchdog, not directly.
 
@@ -6345,15 +6345,15 @@ def cmd_worker(
     do not go through this entry point, so they remain unaffected.
     """
     if kill_duplicate:
-        from . import worker_daemon as _wd  # noqa: PLC0415
+        from . import worker_daemon as _wd
 
         result = _wd.kill_duplicate_daemon()
         typer.echo(result)
         return
 
     if check:
-        from . import paths as _paths  # noqa: PLC0415
-        from . import worker as _worker_mod  # noqa: PLC0415
+        from . import paths as _paths
+        from . import worker as _worker_mod
 
         pid_path = _paths.worker_pid_path()
         if not pid_path.exists():
@@ -6366,7 +6366,7 @@ def cmd_worker(
             typer.echo(f"Worker: pid file unreadable ({e})")
             raise typer.Exit(0) from e
 
-        from . import worker_daemon as _wd  # noqa: PLC0415
+        from . import worker_daemon as _wd
         running = _wd._pid_is_alive(pid)
         if not running:
             typer.echo(f"Worker: stale pid file (pid {pid} not alive)")
@@ -6392,7 +6392,7 @@ def cmd_worker(
         raise typer.Exit(0)
 
     if status:
-        from . import worker_daemon  # noqa: PLC0415
+        from . import worker_daemon
 
         info = worker_daemon.query_worker_status()
         pid_str = f" (pid {info['pid']})" if info["pid"] is not None else ""
@@ -6403,7 +6403,7 @@ def cmd_worker(
         if info.get("started_at") and info["running"]:
             # Compute uptime from started_at ISO timestamp.
             try:
-                import datetime as _dt  # noqa: PLC0415
+                import datetime as _dt
                 started = _dt.datetime.fromisoformat(str(info["started_at"]))
                 if started.tzinfo is None:
                     started = started.replace(tzinfo=_dt.UTC)
@@ -6413,7 +6413,7 @@ def cmd_worker(
                 mins, secs = divmod(rem, 60)
                 uptime_str = f"{hours}h {mins}m {secs}s" if hours else f"{mins}m {secs}s"
                 typer.echo(f"Uptime: {uptime_str}")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         typer.echo(f"Pool size: {info.get('pool_size', 4)}")
         if info["autostart"] is not None:
@@ -6430,7 +6430,7 @@ def cmd_worker(
     ):
         return
 
-    from . import worker_daemon  # noqa: PLC0415
+    from . import worker_daemon
 
     worker_daemon.run_daemon()
 
@@ -6491,13 +6491,13 @@ def cmd_compress(
     compression layer at the hook level (this CLI still works when invoked
     directly because it is the layer being bypassed).
     """
-    from . import bash_runner  # noqa: PLC0415
+    from . import bash_runner
 
     if no_compress:
         # Stream straight through; useful for debugging.
-        import subprocess as _sp  # noqa: PLC0415
+        import subprocess as _sp
 
-        proc = _sp.run(cmd, shell=True, check=False)  # noqa: S602
+        proc = _sp.run(cmd, shell=True, check=False)
         raise typer.Exit(proc.returncode)
 
     effective_timeout = timeout if timeout > 0 else bash_runner.DEFAULT_TIMEOUT_SECONDS
@@ -6675,12 +6675,12 @@ def _compact_hint_watch(
     with mocked sleep and manifest generation without spinning up the full Typer
     command tree.
     """
-    import difflib  # noqa: PLC0415
-    import time  # noqa: PLC0415
-    from datetime import datetime  # noqa: PLC0415
+    import difflib
+    import time
+    from datetime import datetime
 
-    from . import compact as compact_mod  # noqa: PLC0415
-    from . import config as config_mod  # noqa: PLC0415
+    from . import compact as compact_mod
+    from . import config as config_mod
 
     def _resolve_session() -> str:
         sid = session_id.strip()
@@ -6877,12 +6877,12 @@ def compact_hint(
     ``+``/``-`` diff showing lines added or removed (with 1 line of context).
     Press Ctrl+C to stop.  ``--watch-interval N`` overrides the 60-second default.
     """
-    import difflib  # noqa: PLC0415
+    import difflib
 
-    from . import compact as compact_mod  # noqa: PLC0415
-    from . import config as config_mod  # noqa: PLC0415
-    from . import hooks_cli as hooks_cli_mod  # noqa: PLC0415
-    from . import paths as paths_mod  # noqa: PLC0415
+    from . import compact as compact_mod
+    from . import config as config_mod
+    from . import hooks_cli as hooks_cli_mod
+    from . import paths as paths_mod
 
     # --- --watch: continuous poll loop ----------------------------------------
     # Dispatched early (before expensive setup) so --watch can control the loop
@@ -6939,7 +6939,7 @@ def compact_hint(
         sentinel_fast_path = bool(skip_detail)
         sentinel_reason = skip_detail.reason
         sentinel_age = skip_detail.age_secs
-    except Exception:  # noqa: BLE001
+    except Exception:
         sentinel_fast_path = False
         sentinel_reason = ""
         sentinel_age = 0.0
@@ -6947,12 +6947,12 @@ def compact_hint(
     # Noop-session gate: mirror the pre_compact guard.
     _is_noop = False
     try:
-        from . import session as _session_mod  # noqa: PLC0415
+        from . import session as _session_mod
 
         _sc = _session_mod.safe_load(resolved_session_id, caller="compact-hint")
         if _sc is not None:
             _is_noop = hooks_cli_mod._is_noop_session(_sc)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("compact-hint: failed to load noop-session flag for %s", resolved_session_id, exc_info=True)
 
     n_events = compact_mod.event_count(resolved_session_id)
@@ -6967,7 +6967,7 @@ def compact_hint(
             text_sidecar = paths_mod.manifest_text_sidecar_path(resolved_session_id)
             if text_sidecar.exists():
                 _prior_manifest_text = text_sidecar.read_text(encoding="utf-8")
-        except Exception:  # noqa: BLE001
+        except Exception:
             _prior_manifest_text = None
 
     # Render the manifest with the *effective* budget (matching the hook).
@@ -7113,7 +7113,7 @@ def compact_hint(
                     typer.echo(
                         f"  current counts     : edited={_c_edited}, bash={_c_bash}"
                     )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOG.debug("compact-hint: failed to read sentinel/current counts for debug output", exc_info=True)
         typer.echo(f"  noop_session       : {_is_noop}")
         typer.echo("")
@@ -7253,7 +7253,7 @@ def config_list(
     # Flatten a dataclass to dotted-key -> value pairs
     def _flatten(obj: object, prefix: str = "") -> list[tuple[str, object]]:
         """Recursively expand a dataclass into ``(dotted_key, value)`` pairs."""
-        from dataclasses import fields as _fields  # noqa: PLC0415
+        from dataclasses import fields as _fields
         pairs: list[tuple[str, object]] = []
         if not is_dataclass(obj) or isinstance(obj, type):
             return pairs
@@ -7306,11 +7306,11 @@ def config_validate(
     so a typo (``compac_assist``) produces a helpful ``did you mean: compact_assist``
     suggestion.
     """
-    import difflib  # noqa: PLC0415
-    import tomllib  # noqa: PLC0415
-    from dataclasses import fields as _dc_fields  # noqa: PLC0415
+    import difflib
+    import tomllib
+    from dataclasses import fields as _dc_fields
 
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     def _section_keys(cls: type) -> frozenset[str]:
         return frozenset(f.name for f in _dc_fields(cls))
@@ -7404,7 +7404,7 @@ def config_validate(
 
 @config_app.command()
 def get(
-    key: str | None = typer.Argument(None, help="Dotted key to retrieve (e.g. compact_assist.enabled). Omit to show all config in TOML format."),  # noqa: B008
+    key: str | None = typer.Argument(None, help="Dotted key to retrieve (e.g. compact_assist.enabled). Omit to show all config in TOML format."),
 ) -> None:
     """Show current config value(s).
 
@@ -7412,7 +7412,7 @@ def get(
     just that value (supports dot notation: ``compact_assist.max_manifest_tokens``).
     Sections are accepted as keys and return a JSON object.
     """
-    import tomli_w  # noqa: PLC0415
+    import tomli_w
 
     cfg = config_mod.load()
 
@@ -7463,8 +7463,8 @@ def set(key: str, value: str) -> None:
 
 @config_app.command()
 def reset(
-    key: str | None = typer.Argument(None, help="Dotted key to reset (e.g. compact_assist.enabled). Omit to reset ALL settings."),  # noqa: B008
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),  # noqa: B008
+    key: str | None = typer.Argument(None, help="Dotted key to reset (e.g. compact_assist.enabled). Omit to reset ALL settings."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt."),
 ) -> None:
     """Reset config to defaults — one key or everything.
 
@@ -7472,7 +7472,7 @@ def reset(
     KEY, removes that specific key from the file so it falls back to its default.
     Prompts for confirmation when deleting the whole file unless ``--yes`` is given.
     """
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     cfg_path = _paths.config_path()
 
@@ -7516,14 +7516,14 @@ def reset(
 @config_app.command()
 def path() -> None:
     """Print the path to token-goat's config.toml."""
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     typer.echo(str(_paths.config_path()))
 
 
 @app.command("clean-cache", rich_help_panel="Advanced")
 def cmd_clean_cache(
-    images: bool = typer.Option(False, "--images", help="Prune the image shrink cache to its configured floor."),  # noqa: B008
+    images: bool = typer.Option(False, "--images", help="Prune the image shrink cache to its configured floor."),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Prune on-disk caches to their configured floor.
@@ -7544,8 +7544,8 @@ def cmd_clean_cache(
 
     if images:
         try:
-            from . import paths as _paths  # noqa: PLC0415
-            from . import worker as _worker  # noqa: PLC0415
+            from . import paths as _paths
+            from . import worker as _worker
 
             cache_dir = _paths.image_cache_dir()
             if not cache_dir.exists():
@@ -7566,7 +7566,7 @@ def cmd_clean_cache(
                     "after_bytes": after_bytes,
                     "freed_bytes": bytes_freed,
                 }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             results["images"] = {"status": "error", "error": str(exc)}
 
     if json_output:
@@ -7591,7 +7591,7 @@ def cmd_clean_cache(
 
 @app.command("prune-cache", rich_help_panel="Advanced")
 def cmd_prune_cache(
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed without deleting."),  # noqa: B008
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed without deleting."),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Manually trigger cache eviction across all cache directories.
@@ -7601,11 +7601,11 @@ def cmd_prune_cache(
 
     With ``--dry-run``: show what would be removed without actually deleting.
     """
-    from . import bash_cache as _bash_cache  # noqa: PLC0415
-    from . import cache_common as _cache_common  # noqa: PLC0415
-    from . import paths as _paths  # noqa: PLC0415
-    from . import skill_cache as _skill_cache  # noqa: PLC0415
-    from . import web_cache as _web_cache  # noqa: PLC0415
+    from . import bash_cache as _bash_cache
+    from . import cache_common as _cache_common
+    from . import paths as _paths
+    from . import skill_cache as _skill_cache
+    from . import web_cache as _web_cache
 
     results: dict[str, object] = {}
     total_freed_bytes = 0
@@ -7632,7 +7632,7 @@ def cmd_prune_cache(
         cache_dir = _cache_common.get_cache_dir("bash_outputs")
         before = get_cache_stats(cache_dir)
         if before["exists"]:
-            removed = 0 if dry_run else _bash_cache.evict_old_entries()  # noqa: SIM108
+            removed = 0 if dry_run else _bash_cache.evict_old_entries()
             after = get_cache_stats(cache_dir) if not dry_run else before
             freed = before["size_bytes"] - after["size_bytes"]
             results["bash_outputs"] = {
@@ -7644,7 +7644,7 @@ def cmd_prune_cache(
             total_files += removed
         else:
             results["bash_outputs"] = {"status": "skipped", "reason": "cache dir does not exist"}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         results["bash_outputs"] = {"status": "error", "error": str(exc)}
 
     # Prune web_outputs
@@ -7652,7 +7652,7 @@ def cmd_prune_cache(
         cache_dir = _cache_common.get_cache_dir("web_outputs")
         before = get_cache_stats(cache_dir)
         if before["exists"]:
-            removed = 0 if dry_run else _web_cache.evict_old_entries()  # noqa: SIM108
+            removed = 0 if dry_run else _web_cache.evict_old_entries()
             after = get_cache_stats(cache_dir) if not dry_run else before
             freed = before["size_bytes"] - after["size_bytes"]
             results["web_outputs"] = {
@@ -7664,16 +7664,16 @@ def cmd_prune_cache(
             total_files += removed
         else:
             results["web_outputs"] = {"status": "skipped", "reason": "cache dir does not exist"}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         results["web_outputs"] = {"status": "error", "error": str(exc)}
 
     # Prune mcp_outputs
     try:
-        from . import mcp_cache as _mcp_cache  # noqa: PLC0415
+        from . import mcp_cache as _mcp_cache
         cache_dir = _cache_common.get_cache_dir("mcp_outputs")
         before = get_cache_stats(cache_dir)
         if before["exists"]:
-            removed = 0 if dry_run else _mcp_cache.evict_old_entries()  # noqa: SIM108
+            removed = 0 if dry_run else _mcp_cache.evict_old_entries()
             after = get_cache_stats(cache_dir) if not dry_run else before
             freed = before["size_bytes"] - after["size_bytes"]
             results["mcp_outputs"] = {
@@ -7685,7 +7685,7 @@ def cmd_prune_cache(
             total_files += removed
         else:
             results["mcp_outputs"] = {"status": "skipped", "reason": "cache dir does not exist"}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         results["mcp_outputs"] = {"status": "error", "error": str(exc)}
 
     # Prune skills
@@ -7693,7 +7693,7 @@ def cmd_prune_cache(
         cache_dir = _cache_common.get_cache_dir("skills")
         before = get_cache_stats(cache_dir)
         if before["exists"]:
-            removed = 0 if dry_run else _skill_cache.evict_old_entries()  # noqa: SIM108
+            removed = 0 if dry_run else _skill_cache.evict_old_entries()
             after = get_cache_stats(cache_dir) if not dry_run else before
             freed = before["size_bytes"] - after["size_bytes"]
             results["skills"] = {
@@ -7705,12 +7705,12 @@ def cmd_prune_cache(
             total_files += removed
         else:
             results["skills"] = {"status": "skipped", "reason": "cache dir does not exist"}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         results["skills"] = {"status": "error", "error": str(exc)}
 
     # Prune images
     try:
-        from . import worker as _worker  # noqa: PLC0415
+        from . import worker as _worker
         cache_dir = _paths.image_cache_dir()
         before = get_cache_stats(cache_dir)
         if before["exists"]:
@@ -7728,7 +7728,7 @@ def cmd_prune_cache(
             total_files += removed
         else:
             results["images"] = {"status": "skipped", "reason": "cache dir does not exist"}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         results["images"] = {"status": "error", "error": str(exc)}
 
     # Clean old session files (>7 days)
@@ -7763,7 +7763,7 @@ def cmd_prune_cache(
                 results["sessions"] = {"status": "ok", "files_removed": 0, "bytes_freed": 0}
         else:
             results["sessions"] = {"status": "skipped", "reason": "sessions dir does not exist"}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         results["sessions"] = {"status": "error", "error": str(exc)}
 
     if json_output:
@@ -7803,9 +7803,9 @@ def cmd_prune_cache(
 
 @app.command("diff", rich_help_panel="Core")
 def cmd_diff(
-    since: str = typer.Option("HEAD~1", "--since", help="Git ref to diff against (commit, branch, tag). Default: HEAD~1."),  # noqa: B008
-    session_id: str | None = typer.Option(None, "--session", "-s", help="Show files edited in this session instead of running git diff."),  # noqa: B008
-    symbols: bool = typer.Option(False, "--symbols", help="List changed symbols (functions/classes) for each file."),  # noqa: B008
+    since: str = typer.Option("HEAD~1", "--since", help="Git ref to diff against (commit, branch, tag). Default: HEAD~1."),
+    session_id: str | None = typer.Option(None, "--session", "-s", help="Show files edited in this session instead of running git diff."),
+    symbols: bool = typer.Option(False, "--symbols", help="List changed symbols (functions/classes) for each file."),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Show files changed since a git ref, with optional symbol-level context.
@@ -7826,17 +7826,17 @@ def cmd_diff(
         token-goat diff --since HEAD~5 --symbols
         token-goat diff --session abc123 --symbols
     """
-    import os as _os  # noqa: PLC0415
-    import sys as _sys  # noqa: PLC0415
+    import os as _os
+    import sys as _sys
 
-    from .util import run_git  # noqa: PLC0415
+    from .util import run_git
 
     cwd = _os.getcwd()
 
     # ---- session mode -------------------------------------------------------
     if session_id is not None:
         _validate_session_id(session_id)
-        from . import session as session_mod  # noqa: PLC0415
+        from . import session as session_mod
 
         edited = session_mod.list_edited(session_id)
         if not edited:
@@ -7949,9 +7949,9 @@ def _extract_diff_symbols(since: str, cwd: str) -> dict[str, list[str]]:
 
     Returns a dict mapping relative file path → list of changed symbol names.
     """
-    import re as _re  # noqa: PLC0415
+    import re as _re
 
-    from .util import run_git  # noqa: PLC0415
+    from .util import run_git
 
     result = run_git(["diff", "--unified=0", f"{since}..HEAD"], cwd=cwd, timeout=30)
     if result.returncode != 0:
@@ -8025,9 +8025,9 @@ def _load_session_summaries(
     project_filter: str | None,
 ) -> list[dict[str, object]]:
     """Scan the sessions directory and return summary dicts sorted by last_activity_ts desc."""
-    import contextlib  # noqa: PLC0415
+    import contextlib
 
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     sessions_dir = _paths.sessions_dir()
     if not sessions_dir.exists():
@@ -8080,8 +8080,8 @@ def _load_session_summaries(
 
 @app.command("sessions", rich_help_panel="Core")
 def cmd_sessions(
-    limit: int = typer.Option(20, "--limit", "-n", help="Maximum sessions to show (newest first)"),  # noqa: B008
-    project: str | None = typer.Option(  # noqa: B008
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum sessions to show (newest first)"),
+    project: str | None = typer.Option(
         None,
         "--project",
         help="Filter to sessions for this project root path (defaults to all projects).",
@@ -8130,9 +8130,9 @@ def cmd_sessions_show(
     Accepts a full session ID or a unique prefix.  Use ``token-goat sessions``
     to list IDs.
     """
-    import contextlib  # noqa: PLC0415
+    import contextlib
 
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     sessions_dir = _paths.sessions_dir()
     if not sessions_dir.exists():
@@ -8251,9 +8251,9 @@ def cmd_sessions_show(
 
 @app.command("export", rich_help_panel="Core")
 def cmd_export(
-    fmt: str = typer.Option("json", "--format", "-f", help="Output format: json, csv, or ctags."),  # noqa: B008
-    output: str | None = typer.Option(None, "--output", "-o", help="Write output to FILE instead of stdout."),  # noqa: B008
-    project: str | None = typer.Option(None, "--project", "-p", help="Project root (default: current directory)."),  # noqa: B008
+    fmt: str = typer.Option("json", "--format", "-f", help="Output format: json, csv, or ctags."),
+    output: str | None = typer.Option(None, "--output", "-o", help="Write output to FILE instead of stdout."),
+    project: str | None = typer.Option(None, "--project", "-p", help="Project root (default: current directory)."),
 ) -> None:
     """Export the indexed symbol database for a project.
 
@@ -8274,13 +8274,13 @@ def cmd_export(
         token-goat export --format ctags --output tags
         token-goat export --format json --project /path/to/project
     """
-    import csv as _csv  # noqa: PLC0415
-    import io  # noqa: PLC0415
-    from pathlib import Path as _Path  # noqa: PLC0415
+    import csv as _csv
+    import io
+    from pathlib import Path as _Path
 
     _db = _lazy_import("db")
 
-    from .project import find_project  # noqa: PLC0415
+    from .project import find_project
 
     root = _Path(project) if project else _Path(os.getcwd())
     proj = find_project(root)
@@ -8306,7 +8306,7 @@ def cmd_export(
             ).fetchall()
     except FileNotFoundError:
         rows = []
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _error(f"could not read project index: {exc}")
         raise typer.Exit(1) from exc
 
@@ -8365,13 +8365,13 @@ def cmd_export(
 
 @app.command("clean", rich_help_panel="Advanced")
 def cmd_clean(
-    images: bool = typer.Option(False, "--images", help="Clear the image shrink cache."),  # noqa: B008
-    bash: bool = typer.Option(False, "--bash", help="Clear the bash output cache."),  # noqa: B008
-    web: bool = typer.Option(False, "--web", help="Clear the web output cache."),  # noqa: B008
-    sessions: bool = typer.Option(False, "--sessions", help="Remove session files older than --older-than days."),  # noqa: B008
-    all_caches: bool = typer.Option(False, "--all", help="Clear all caches (equivalent to --images --bash --web --sessions)."),  # noqa: B008
-    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would be deleted without deleting."),  # noqa: B008
-    older_than: int = typer.Option(7, "--older-than", help="Only delete files older than N days (applies to all categories)."),  # noqa: B008
+    images: bool = typer.Option(False, "--images", help="Clear the image shrink cache."),
+    bash: bool = typer.Option(False, "--bash", help="Clear the bash output cache."),
+    web: bool = typer.Option(False, "--web", help="Clear the web output cache."),
+    sessions: bool = typer.Option(False, "--sessions", help="Remove session files older than --older-than days."),
+    all_caches: bool = typer.Option(False, "--all", help="Clear all caches (equivalent to --images --bash --web --sessions)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would be deleted without deleting."),
+    older_than: int = typer.Option(7, "--older-than", help="Only delete files older than N days (applies to all categories)."),
 ) -> None:
     """Clear caches to free disk space.
 
@@ -8385,10 +8385,10 @@ def cmd_clean(
         token-goat clean --bash --web --dry-run
         token-goat clean --sessions --older-than 30
     """
-    import contextlib  # noqa: PLC0415
-    import time as _time  # noqa: PLC0415
+    import contextlib
+    import time as _time
 
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     if all_caches:
         images = bash = web = sessions = True
@@ -8449,8 +8449,8 @@ def cmd_clean(
 
 @app.command("config-get", rich_help_panel="Core")
 def cmd_config_get(
-    file: str = typer.Argument(..., help="Path to a TOML, YAML, JSON, or INI file (e.g. pyproject.toml)."),  # noqa: B008
-    key: str = typer.Argument(..., help="Dot-notation key to extract (e.g. project.version, tool.ruff.line-length)."),  # noqa: B008
+    file: str = typer.Argument(..., help="Path to a TOML, YAML, JSON, or INI file (e.g. pyproject.toml)."),
+    key: str = typer.Argument(..., help="Dot-notation key to extract (e.g. project.version, tool.ruff.line-length)."),
     json_output: bool = _OPT_JSON,
 ) -> None:
     """Extract a single value from a TOML, YAML, JSON, or INI config file.
@@ -8471,8 +8471,8 @@ def cmd_config_get(
     JSON object.  Scalars are printed bare (no surrounding quotes) unless
     *--json* is passed, in which case scalars are also JSON-encoded.
     """
-    import configparser  # noqa: PLC0415
-    import tomllib  # noqa: PLC0415
+    import configparser
+    import tomllib
 
     path = Path(file)
     if not path.exists():
@@ -8490,7 +8490,7 @@ def cmd_config_get(
             data = tomllib.loads(path.read_text(encoding="utf-8"))
         elif suffix in {".yaml", ".yml"}:
             try:
-                import yaml  # type: ignore[import-untyped]  # noqa: PLC0415
+                import yaml  # type: ignore[import-untyped]
             except ImportError:
                 _error("PyYAML is not installed; install it with: pip install pyyaml")
                 raise typer.Exit(2) from None
@@ -8511,7 +8511,7 @@ def cmd_config_get(
     except (OSError, UnicodeDecodeError) as exc:
         _error(f"could not read {file}: {exc}")
         raise typer.Exit(2) from None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _error(f"parse error in {file}: {exc}")
         raise typer.Exit(2) from None
 
@@ -8567,7 +8567,7 @@ def cmd_version(
         token-goat version
         token-goat version --json
     """
-    from . import __version__  # noqa: PLC0415
+    from . import __version__
 
     if json_output:
         typer.echo(json.dumps({"version": __version__}, ensure_ascii=False))
@@ -8591,9 +8591,9 @@ def _assert_hook_registry_aligned() -> None:
     shadows the built-in ``set`` name — without the explicit lookup this
     function would resolve ``set()`` to the typer command.
     """
-    import builtins  # noqa: PLC0415
+    import builtins
 
-    from . import hook_registry  # noqa: PLC0415
+    from . import hook_registry
 
     registered: builtins.set[str] = builtins.set()
     for info in hook_app.registered_commands:

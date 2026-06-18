@@ -25,10 +25,10 @@ swallowed so a hook never aborts because the cache is full or read-only.
 from __future__ import annotations
 
 __all__ = [
-    "DEFAULT_MAX_TOTAL_BYTES",
-    "DEFAULT_MAX_FILE_COUNT",
-    "DEFAULT_MIN_CACHE_BYTES",
     "DEFAULT_MAX_CACHE_BYTES",
+    "DEFAULT_MAX_FILE_COUNT",
+    "DEFAULT_MAX_TOTAL_BYTES",
+    "DEFAULT_MIN_CACHE_BYTES",
     "OUTPUT_FILENAME_RE",
     "BashOutputMeta",
     "command_hash",
@@ -43,7 +43,7 @@ __all__ = [
     "is_env_probe_command",
     "is_git_immutable_command",
     "is_git_mutable_command",
-    "store_grep_result",
+    "load_glob_result",
     "load_grep_result",
     "load_output",
     "load_output_meta",
@@ -52,7 +52,7 @@ __all__ = [
     "read_sidecar",
     "sidecar_meta_path",
     "store_glob_result",
-    "load_glob_result",
+    "store_grep_result",
     "store_output",
     "write_sidecar",
 ]
@@ -262,7 +262,7 @@ def git_state_fingerprint(cwd: str) -> str | None:
         if index_file.is_file():
             index_mtime = str(index_file.stat().st_mtime_ns)
         return short_content_hash(f"{head_content}\x00{index_mtime}")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -376,7 +376,7 @@ def dir_state_fingerprint(path: str) -> str | None:
         if not target.is_dir():
             return None
         return short_content_hash(str(target.stat().st_mtime_ns))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -625,7 +625,7 @@ def load_glob_result(
         g_hash = glob_hash(pattern, path)
         out_id = build_keyed_output_id(_GLOB_RESULT_PREFIX, session_id, g_hash)
         return load_output_text(out_id, _bash_outputs_dir, "bash_cache")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -717,7 +717,7 @@ def load_grep_result(
         g_hash = grep_hash(pattern, path, glob_filter, type_filter, output_mode)
         out_id = build_keyed_output_id(_GREP_RESULT_PREFIX, session_id, g_hash)
         return load_output_text(out_id, _bash_outputs_dir, "bash_cache")
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -1045,7 +1045,7 @@ def get_recent_error_outputs(session_id: str, max_entries: int = 5) -> list[dict
                                     error_summary = sanitize_log_str(stripped, max_len=120)
                                     has_error = True
                                     break
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
 
                 # If no pattern match, check for non-zero exit code
@@ -1058,7 +1058,7 @@ def get_recent_error_outputs(session_id: str, max_entries: int = 5) -> list[dict
                         error_summary = f"exit {meta.exit_code}" if meta.exit_code else "unknown error"
                     result.append({"command": cmd, "error_summary": error_summary})
 
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     return result

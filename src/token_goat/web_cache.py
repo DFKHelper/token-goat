@@ -254,7 +254,7 @@ def _compress_json_body(body: str, max_string_chars: int = JSON_STRING_TRUNCATE_
     On any parse error the original body is returned unchanged so callers are
     unaffected by malformed JSON.
     """
-    import json  # noqa: PLC0415
+    import json
 
     try:
         data = json.loads(body)

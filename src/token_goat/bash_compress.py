@@ -62,16 +62,214 @@ __all__ = [
     "DEFAULT_MAX_BYTES",
     "DEFAULT_MAX_INPUT_BYTES",
     "DEFAULT_MAX_LINES",
-    "CompressedOutput",
-    "BaseFilter",
-    "Filter",
     "FILTERS",
-    "_safe_decode",
+    "ActFilter",
+    # AI coding assistant CLI output filters
+    "AiderFilter",
+    "AnsibleFilter",
+    "AntFilter",
+    # Cloud CLI filters
+    "AwsCliFilter",
+    "AwsFilter",
+    "AzureCliFilter",
+    # Security scanners
+    "BanditFilter",
+    "BaseFilter",
+    "BatFilter",
+    "BazelFilter",
+    "BinaryInspectFilter",
+    # Biome JS/TS linter/formatter
+    "BiomeFilter",
+    # Code formatter filters
+    "BlackIsortFilter",
+    # Bun JS runtime
+    "BunFilter",
+    "BundlerFilter",
+    # Filters in FILTERS registry but not previously exported
+    "CargoFilter",
+    # clang-tidy C/C++ linter
+    "ClangTidyFilter",
+    "ClaudeCliFilter",
+    # Cline (formerly Claude Dev) AI coding assistant VS Code extension / CLI
+    "ClineFilter",
+    "CmakeFilter",
+    # Codex (OpenAI Codex CLI) AI coding assistant
+    "CodexExecFilter",
+    "ComposerFilter",
+    "CompressedOutput",
+    # Conan C/C++ package manager
+    "ConanFilter",
+    "CondaFilter",
+    "ContinueFilter",
+    "CopilotFilter",
+    # cppcheck C/C++ static analysis
+    "CppcheckFilter",
+    # Crystal language spec runner / shards dependency manager
+    "CrystalFilter",
+    "CurlFilter",
+    "CursorFilter",
+    "DartFilter",
+    "DeltaFilter",
+    # Deno JS/TS runtime
+    "DenoFilter",
+    "DepListFilter",
+    "DiffFilter",
+    # Docker Compose / Helm / kubectl-logs
+    "DockerComposeFilter",
+    "DockerFilter",
+    "DotenvFilter",
+    "DotnetFilter",
+    "ESLintFilter",
+    # Elm compiler
+    "ElmFilter",
+    # Erlang/OTP rebar3 build + test runner
+    "ErlangFilter",
+    "EzaFilter",
+    "FdFilter",
+    # ffmpeg / ffprobe / ffplay media-processing CLI
+    "FfmpegFilter",
+    "FileTypeFilter",
+    "Filter",
+    "FlutterFilter",
+    # Fly.io deployment CLI
+    "FlyFilter",
+    # Foundry/Forge Solidity compile + test
+    "ForgeFilter",
+    "FzfFilter",
+    "GcloudFilter",
+    "GemFilter",
+    "GeminiCliFilter",
+    "GenericCIFilter",
+    "GenericFilter",
+    "GhCopilotFilter",
+    "GhFilter",
+    # CI log filters
+    "GhRunLogFilter",
+    "GitBlameFilter",
+    "GitCommitFilter",
+    "GitDiffFilter",
+    "GitFilter",
+    # Dedicated git sub-filters (higher-fidelity compression than GitFilter)
+    "GitLogFilter",
+    "GitPushFilter",
+    "GitStatusVerboseFilter",
+    "GoFilter",
+    "GoTestFilter",
+    # golangci-lint multi-linter Go aggregator
+    "GolangciLintFilter",
+    "GradleFilter",
+    "GrepFilter",
+    # Hardhat Ethereum development framework
+    "HardhatFilter",
+    # Haskell cabal / stack build tool
+    "HaskellFilter",
+    "HelmFilter",
+    "JavacFilter",
+    "JestFilter",
+    "JqFilter",
+    # JSON array deduplication / truncation
+    "JsonArrayFilter",
+    # Julia package manager / test runner
+    "JuliaFilter",
+    "KubectlFilter",
+    "KubectlLogsFilter",
+    "LazyGitFilter",
+    "LernaFilter",
+    "LinterFilter",
+    "MSBuildFilter",
+    "MakeFilter",
+    "MavenFilter",
+    "MesonFilter",
+    "MixFilter",
+    "MySQLFilter",
+    "MypyFilter",
+    # Angular CLI (ng build / test / serve)
+    "NgFilter",
+    # Nix package manager / build tool
+    "NixFilter",
+    "NodeFilter",
+    "NodePackageFilter",
+    # Python nox task automation / test runner
+    "NoxFilter",
+    "NpmInstallFilter",
+    "NuGetFilter",
+    # Monorepo build orchestrators
+    "NxFilter",
+    "OpenCodeFilter",
+    # oxlint JS/TS linter
+    "OxlintFilter",
+    # HashiCorp Packer image builder
+    "PackerFilter",
+    # PHP static analysis
+    "PhpStanFilter",
+    "PipFilter",
+    # Playwright E2E test runner
+    "PlaywrightFilter",
+    "PnpmFilter",
+    "PowerShellFilter",
+    "PreCommitFilter",
+    "PrettierFilter",
+    # Protobuf compiler filter
+    "ProtocFilter",
+    # Process listing compressor (ps/top/tasklist)
+    "PsFilter",
+    # Database CLI filters
+    "PsqlFilter",
+    "PubFilter",
+    # pylint dedicated filter (higher-fidelity than LinterFilter)
+    "PylintFilter",
+    "PytestFilter",
+    "PythonFilter",
+    # R CMD check / R package build tool
+    "RCmdFilter",
+    "RedisCLIFilter",
+    "RgFilter",
+    "RsyncFilter",
+    "RubyFilter",
+    "RuffFilter",
+    "SbtFilter",
+    "SemgrepFilter",
+    # Serverless Framework deploy/invoke
+    "ServerlessFilter",
+    # Severity-scored log stream compressor
+    "SeverityLogFilter",
+    "SnykFilter",
+    "Sqlite3Filter",
+    "SwiftFilter",
+    # Swift linter
+    "SwiftLintFilter",
+    # System package manager filters
+    "SysPackageFilter",
+    "TailTruncFilter",
+    "TerraformFilter",
+    # Python tox multi-environment test runner
+    "ToxFilter",
+    "TreeFilter",
+    "TrivyFilter",
+    # TypeScript compiler (tsc --watch, --build, --noEmit)
+    "TscFilter",
+    # Turborepo monorepo task runner
+    "TurboFilter",
+    "UvFilter",
+    # HashiCorp Vault CLI
+    "VaultFilter",
+    # vcpkg C++ package manager
+    "VcpkgFilter",
+    "VitestFilter",
+    "WcFilter",
+    "WebpackFilter",
+    "WindsurfFilter",
+    # Cloudflare Wrangler CLI
+    "WranglerFilter",
+    "XcodeFilter",
+    "YarnFilter",
+    "YqFilter",
     "_collapse_to_count",
     "_dedup_lines",
     "_is_diff_add",
     "_is_diff_remove",
     "_keep_errors_verbatim",
+    "_safe_decode",
     "_strip_timestamps",
     "bytes_to_tokens",
     "cap_bytes",
@@ -84,204 +282,6 @@ __all__ = [
     "strip_ansi",
     "strip_progress",
     "truncate_middle",
-    "AntFilter",
-    "BatFilter",
-    "BazelFilter",
-    "BinaryInspectFilter",
-    "BundlerFilter",
-    "CmakeFilter",
-    "ComposerFilter",
-    "CurlFilter",
-    "DartFilter",
-    "DeltaFilter",
-    "DepListFilter",
-    "DiffFilter",
-    "DotnetFilter",
-    "EzaFilter",
-    "FdFilter",
-    "FileTypeFilter",
-    "WcFilter",
-    "FlutterFilter",
-    "GoFilter",
-    "GradleFilter",
-    "JavacFilter",
-    "JqFilter",
-    "MavenFilter",
-    "MesonFilter",
-    "MixFilter",
-    "MSBuildFilter",
-    "NuGetFilter",
-    "PowerShellFilter",
-    "PubFilter",
-    "PythonFilter",
-    "RsyncFilter",
-    "RubyFilter",
-    "SbtFilter",
-    "SwiftFilter",
-    "TailTruncFilter",
-    "TreeFilter",
-    "UvFilter",
-    "CondaFilter",
-    "PnpmFilter",
-    "YarnFilter",
-    "XcodeFilter",
-    "YqFilter",
-    # Security scanners
-    "BanditFilter",
-    "TrivyFilter",
-    "SnykFilter",
-    "SemgrepFilter",
-    # Cloud CLI filters
-    "AwsCliFilter",
-    "GcloudFilter",
-    "AzureCliFilter",
-    # Database CLI filters
-    "PsqlFilter",
-    "MySQLFilter",
-    "Sqlite3Filter",
-    "RedisCLIFilter",
-    # Code formatter filters
-    "BlackIsortFilter",
-    "PrettierFilter",
-    # Monorepo build orchestrators
-    "NxFilter",
-    "LernaFilter",
-    # System package manager filters
-    "SysPackageFilter",
-    # Dedicated git sub-filters (higher-fidelity compression than GitFilter)
-    "GitLogFilter",
-    "GitDiffFilter",
-    "GitStatusVerboseFilter",
-    "GitBlameFilter",
-    "GitCommitFilter",
-    "GitPushFilter",
-    # Docker Compose / Helm / kubectl-logs
-    "DockerComposeFilter",
-    "HelmFilter",
-    "KubectlLogsFilter",
-    # CI log filters
-    "GhRunLogFilter",
-    "ActFilter",
-    "GenericCIFilter",
-    # Filters in FILTERS registry but not previously exported
-    "CargoFilter",
-    "MakeFilter",
-    "MypyFilter",
-    "PipFilter",
-    "GemFilter",
-    "DotenvFilter",
-    "TerraformFilter",
-    "AnsibleFilter",
-    "PytestFilter",
-    "JestFilter",
-    "VitestFilter",
-    "WebpackFilter",
-    "NodePackageFilter",
-    "NpmInstallFilter",
-    "NodeFilter",
-    "DockerFilter",
-    "KubectlFilter",
-    "AwsFilter",
-    "GhFilter",
-    "RuffFilter",
-    "ESLintFilter",
-    "LinterFilter",
-    "GrepFilter",
-    "RgFilter",
-    "GitFilter",
-    "GoTestFilter",
-    "PreCommitFilter",
-    "FzfFilter",
-    "LazyGitFilter",
-    "GenericFilter",
-    # Protobuf compiler filter
-    "ProtocFilter",
-    # Turborepo monorepo task runner
-    "TurboFilter",
-    # oxlint JS/TS linter
-    "OxlintFilter",
-    # pylint dedicated filter (higher-fidelity than LinterFilter)
-    "PylintFilter",
-    # PHP static analysis
-    "PhpStanFilter",
-    # Swift linter
-    "SwiftLintFilter",
-    # Bun JS runtime
-    "BunFilter",
-    # Deno JS/TS runtime
-    "DenoFilter",
-    # Biome JS/TS linter/formatter
-    "BiomeFilter",
-    # Elm compiler
-    "ElmFilter",
-    # Julia package manager / test runner
-    "JuliaFilter",
-    # Python tox multi-environment test runner
-    "ToxFilter",
-    # Python nox task automation / test runner
-    "NoxFilter",
-    # Crystal language spec runner / shards dependency manager
-    "CrystalFilter",
-    # HashiCorp Vault CLI
-    "VaultFilter",
-    # HashiCorp Packer image builder
-    "PackerFilter",
-    # Nix package manager / build tool
-    "NixFilter",
-    # Haskell cabal / stack build tool
-    "HaskellFilter",
-    # R CMD check / R package build tool
-    "RCmdFilter",
-    # Conan C/C++ package manager
-    "ConanFilter",
-    # vcpkg C++ package manager
-    "VcpkgFilter",
-    # cppcheck C/C++ static analysis
-    "CppcheckFilter",
-    # clang-tidy C/C++ linter
-    "ClangTidyFilter",
-    # Cloudflare Wrangler CLI
-    "WranglerFilter",
-    # Hardhat Ethereum development framework
-    "HardhatFilter",
-    # Serverless Framework deploy/invoke
-    "ServerlessFilter",
-    # Erlang/OTP rebar3 build + test runner
-    "ErlangFilter",
-    # Fly.io deployment CLI
-    "FlyFilter",
-    # Foundry/Forge Solidity compile + test
-    "ForgeFilter",
-    # golangci-lint multi-linter Go aggregator
-    "GolangciLintFilter",
-    # AI coding assistant CLI output filters
-    "AiderFilter",
-    "GhCopilotFilter",
-    "CopilotFilter",
-    "GeminiCliFilter",
-    "ClaudeCliFilter",
-    "CursorFilter",
-    "WindsurfFilter",
-    "OpenCodeFilter",
-    "ContinueFilter",
-    # Cline (formerly Claude Dev) AI coding assistant VS Code extension / CLI
-    "ClineFilter",
-    # Codex (OpenAI Codex CLI) AI coding assistant
-    "CodexExecFilter",
-    # Playwright E2E test runner
-    "PlaywrightFilter",
-    # ffmpeg / ffprobe / ffplay media-processing CLI
-    "FfmpegFilter",
-    # Angular CLI (ng build / test / serve)
-    "NgFilter",
-    # TypeScript compiler (tsc --watch, --build, --noEmit)
-    "TscFilter",
-    # JSON array deduplication / truncation
-    "JsonArrayFilter",
-    # Severity-scored log stream compressor
-    "SeverityLogFilter",
-    # Process listing compressor (ps/top/tasklist)
-    "PsFilter",
 ]
 
 import base64 as _base64
@@ -1446,9 +1446,9 @@ def _is_poll_loop_cmd(cmd: str) -> bool:
     if not re.search(r"\b(?:while|until)\b", cmd):
         return False
     try:
-        from .bash_parser import split_compound  # noqa: PLC0415
+        from .bash_parser import split_compound
         segments = split_compound(cmd)
-    except Exception:  # noqa: BLE001
+    except Exception:
         segments = [cmd]
     # Shell control words that may prefix a real command within a compound segment.
     _SHELL_KEYWORDS = {"do", "then", "else", "elif", "fi", "done", "while", "until", "if"}
@@ -1622,7 +1622,7 @@ class BaseFilter(abc.ABC):
         """
         try:
             return self.detect_from_command(cmd)
-        except Exception:  # noqa: BLE001, fail-soft is the contract
+        except Exception:
             return False
 
     @property
@@ -1647,7 +1647,7 @@ class BaseFilter(abc.ABC):
                 return 0.0
             saved = 1.0 - (len(compressed) / orig_len)
             return max(0.0, min(1.0, saved))  # Clamp to [0.0, 1.0]
-        except Exception:  # noqa: BLE001, fail-soft
+        except Exception:
             return 0.0
 
 
@@ -1700,7 +1700,7 @@ class Filter(BaseFilter):
             if not resolved:
                 return False
             return self.matches(resolved)
-        except Exception:  # noqa: BLE001, fail-soft
+        except Exception:
             return False
 
     def matches(self, argv: list[str]) -> bool:
@@ -1938,7 +1938,7 @@ class Filter(BaseFilter):
                 body = _fallback_truncate(norm_out, norm_err, max_lines)
             else:
                 body = self.compress(norm_out, norm_err, exit_code, argv)
-        except Exception as exc:  # noqa: BLE001, fail-soft is the contract
+        except Exception as exc:
             _LOG.exception("filter %s raised; falling back to truncation", self.name)
             notes.append(f"{self.name} filter raised {type(exc).__name__}; truncated raw")
             fb_out = normalise(stdout, skip_progress=skip_progress)
@@ -2873,7 +2873,7 @@ class WebpackFilter(Filter):
     name = "webpack"
     binaries = frozenset(["webpack", "webpack-cli", "vite", "esbuild"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
 
@@ -3605,7 +3605,7 @@ def _compress_npm_audit_json(text: str) -> str:
     critical/high severity entries and replace the rest with a count sentinel.
     The ``metadata`` block (totals) is always preserved.
     """
-    import json as _json  # noqa: PLC0415 — lazy import, json is stdlib
+    import json as _json
 
     try:
         data = _json.loads(text)
@@ -3779,7 +3779,7 @@ class NodeFilter(Filter):
 
     _EVAL_FLAGS: frozenset[str] = frozenset(["-e", "--eval", "-p", "--print"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -4735,7 +4735,7 @@ def _collapse_json_blobs(lines: list[str], max_json_lines: int = 5) -> list[str]
 
 def _json_blob_summary(blob_lines: list[str]) -> str:
     """Extract a short summary from a JSON blob (first key-value pair)."""
-    import json as _json  # noqa: PLC0415 — lazy import inside helper
+    import json as _json
     try:
         obj = _json.loads("\n".join(blob_lines))
         if isinstance(obj, dict):
@@ -4796,7 +4796,7 @@ def _redact_gh_base64_content(stdout: str) -> str:
             return obj
         try:
             n_bytes = len(_base64.b64decode(raw, validate=False))  # type: ignore[arg-type]
-        except Exception:  # noqa: BLE001
+        except Exception:
             n_bytes = 0
         return {**obj, "content": f"<base64 content: {n_bytes} bytes decoded>"}
 
@@ -5013,7 +5013,7 @@ class GhRunLogFilter(Filter):
     name = "gh-run-log"
     binaries = frozenset(["gh"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0].replace("\\", "/"))
@@ -5267,7 +5267,7 @@ class GenericCIFilter(Filter):
     name = "generic-ci"
     binaries = frozenset()  # Matched via custom matches() only.
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         cmd_str = " ".join(argv).lower()
@@ -5358,7 +5358,7 @@ def _try_compress_json_list(text: str) -> str | None:
     are detected: top-level array, or top-level object whose first list-valued
     key has > 20 entries.
     """
-    import json  # noqa: PLC0415
+    import json
 
     stripped = text.strip()
     if not stripped or stripped[0] not in "{[":
@@ -5669,7 +5669,7 @@ class TscFilter(Filter):
     #: Maximum error stanzas per TS diagnostic code to keep verbatim.
     _MAX_PER_CODE: int = 3
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         return _is_tsc_cmd(argv)
 
     def compress(
@@ -7863,7 +7863,7 @@ class GoTestFilter(Filter):
         r"^(?:Goroutine \d+|Previous|Current)\s"
     )
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -8110,7 +8110,7 @@ class GoFilter(Filter):
         "vet", "env", "fix",
     ])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -8289,7 +8289,7 @@ class GolangciLintFilter(Filter):
     _MAX_ISSUES_PER_FILE_LINTER: int = 10
     _KEEP_FIRST_N: int = 3
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -8441,7 +8441,7 @@ class MakeFilter(Filter):
     #: Additional configure script stems handled by this filter.
     _CONFIGURE_STEMS: frozenset[str] = frozenset(["configure", "config"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -9141,7 +9141,7 @@ class AwsCliFilter(Filter):
         Returns the compressed JSON string or ``None`` when no compression was
         applied (not JSON, or array is short enough).
         """
-        import json  # noqa: PLC0415
+        import json
 
         stripped = text.strip()
         if not stripped or stripped[0] not in "{[":
@@ -9190,7 +9190,7 @@ class AwsCliFilter(Filter):
           run with the count and the resource id.
         * Returns the compressed JSON string, or ``None`` on parse failure.
         """
-        import json  # noqa: PLC0415
+        import json
 
         stripped = text.strip()
         if not stripped or stripped[0] != "{":
@@ -9483,7 +9483,7 @@ class AzureCliFilter(Filter):
 
     def _compress_json_array(self, text: str) -> str | None:
         """Collapse top-level or nested JSON arrays > _JSON_ARRAY_THRESHOLD items."""
-        import json  # noqa: PLC0415
+        import json
 
         stripped = text.strip()
         if not stripped or stripped[0] not in "{[":
@@ -9979,7 +9979,7 @@ class GrepFilter(Filter):
     #: Standalone grep-family binaries.
     binaries = frozenset(["grep", "egrep", "fgrep", "rg", "ag", "ack", "ack-grep"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = argv[0].lower().split("/")[-1].split("\\")[-1]
@@ -10194,7 +10194,7 @@ class DepListFilter(Filter):
     # subcommands (list / ls / etc.), so we check them explicitly here.
     _PKG_MGR_STEMS = frozenset(["npm", "pnpm", "yarn", "cargo"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if argv and Path(argv[0]).stem.lower() in self._PKG_MGR_STEMS:
             return any(tok in self.subcommands for tok in _positional_args(argv[1:])[:3])
         return super().matches(argv)
@@ -10499,7 +10499,7 @@ class PythonFilter(Filter):
     name = "python"
     binaries = frozenset(["python", "python3", "python3.11", "python3.12", "python3.13"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -10691,7 +10691,7 @@ class UvFilter(Filter):
     name = "uv"
     binaries = frozenset(["uv"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -10823,7 +10823,7 @@ class CondaFilter(Filter):
     name = "conda"
     binaries = frozenset(["conda", "mamba", "micromamba"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -11058,7 +11058,7 @@ class NpmInstallFilter(Filter):
     _YARN_SUBCMDS = frozenset(["install", "add", ""])
     _PNPM_SUBCMDS = frozenset(["install", "add", "i"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
 
@@ -11250,7 +11250,7 @@ class PnpmFilter(Filter):
     name = "pnpm"
     binaries = frozenset(["pnpm"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -11366,7 +11366,7 @@ class YarnFilter(Filter):
     name = "yarn"
     binaries = frozenset(["yarn"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -11619,7 +11619,7 @@ class EzaFilter(Filter):
     name = "eza"
     binaries = frozenset(["eza", "exa", "ls"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -11792,7 +11792,7 @@ class FdFilter(Filter):
     name = "fd"
     binaries = frozenset(["fd", "fdfind", "find"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -11860,7 +11860,7 @@ class BatFilter(Filter):
     name = "bat"
     binaries = frozenset(["bat", "batcat"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -11921,7 +11921,7 @@ class DeltaFilter(Filter):
     name = "delta"
     binaries = frozenset(["delta"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -12054,7 +12054,7 @@ class JqFilter(Filter):
     name = "jq"
     binaries = frozenset(["jq"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -12094,7 +12094,7 @@ class YqFilter(Filter):
     name = "yq"
     binaries = frozenset(["yq"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -12412,7 +12412,7 @@ class DotnetFilter(Filter):
     name = "dotnet"
     binaries = frozenset(["dotnet"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -12638,7 +12638,7 @@ class GradleFilter(Filter):
         "dependencies", "deps", "tasks",
     })
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         """Match Gradle/Gradlew commands with case-insensitive subcommand check.
 
         Gradle task names are camelCase (e.g. bootJar, bootRun); the
@@ -12687,7 +12687,7 @@ class GradleFilter(Filter):
             return last_lines
         return _head_tail_compress(lines, head=10, tail=10, label="lines")
 
-    def _compress_build(self, lines: list[str]) -> str:  # noqa: PLR0912
+    def _compress_build(self, lines: list[str]) -> str:
         """Compress build/test output via a state machine.
 
         Always-keeps: ``BUILD SUCCESSFUL/FAILED``, ``FAILURE:`` blocks,
@@ -13387,7 +13387,7 @@ class SbtFilter(Filter):
     name = "sbt"
     binaries = frozenset(["sbt"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0].replace("\\", "/"))
@@ -13512,7 +13512,7 @@ class RubyFilter(Filter):
     name = "ruby"
     binaries = frozenset(["ruby", "rspec", "minitest", "rake", "rspec2"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0].replace("\\", "/"))
@@ -15312,7 +15312,7 @@ class MSBuildFilter(Filter):
     name = "msbuild"
     binaries = frozenset(["msbuild", "msbuild.exe"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -15439,7 +15439,7 @@ class NuGetFilter(Filter):
     name = "nuget"
     binaries = frozenset(["nuget", "nuget.exe"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -15551,7 +15551,7 @@ class PowerShellFilter(Filter):
     name = "powershell"
     binaries = frozenset(["pwsh", "powershell", "powershell.exe"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -18119,7 +18119,7 @@ class BunFilter(Filter):
     name = "bun"
     binaries = frozenset(["bun", "bunx"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -18507,7 +18507,7 @@ class BiomeFilter(Filter):
     name = "biome"
     binaries = frozenset(["biome", "@biomejs/biome"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -22343,7 +22343,7 @@ class AiderFilter(Filter):
     binaries = frozenset(["aider"])
     subcommands: frozenset[str] = frozenset()  # aider has no subcommands
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0])
@@ -22460,7 +22460,7 @@ class GhCopilotFilter(Filter):
     name = "gh-copilot"
     binaries = frozenset(["gh"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0].replace("\\", "/"))
@@ -22555,7 +22555,7 @@ class CopilotFilter(Filter):
     name = "copilot"
     binaries = frozenset(["copilot"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         stem = Path(argv[0]).stem.lower()
@@ -22666,7 +22666,7 @@ class GeminiCliFilter(Filter):
     binaries = frozenset(["gemini"])
     subcommands: frozenset[str] = frozenset()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0])
@@ -22794,7 +22794,7 @@ class ClaudeCliFilter(Filter):
     binaries = frozenset(["claude"])
     subcommands: frozenset[str] = frozenset()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0])
@@ -22914,7 +22914,7 @@ class CursorFilter(Filter):
     binaries = frozenset(["cursor"])
     subcommands: frozenset[str] = frozenset()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0])
@@ -23051,7 +23051,7 @@ class WindsurfFilter(Filter):
     binaries = frozenset(["windsurf"])
     subcommands: frozenset[str] = frozenset()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0])
@@ -23187,7 +23187,7 @@ class OpenCodeFilter(Filter):
     binaries = frozenset(["opencode"])
     subcommands: frozenset[str] = frozenset()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0])
@@ -23311,7 +23311,7 @@ class ContinueFilter(Filter):
     binaries = frozenset(["continue"])
     subcommands: frozenset[str] = frozenset()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0])
@@ -23452,7 +23452,7 @@ class ClineFilter(Filter):
     binaries = frozenset(["cline", "claude-dev"])
     subcommands: frozenset[str] = frozenset()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0])
@@ -23586,7 +23586,7 @@ class CodexExecFilter(Filter):
     binaries = frozenset(["codex"])
     subcommands: frozenset[str] = frozenset()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         p = Path(argv[0])
@@ -23740,7 +23740,7 @@ class MesonFilter(Filter):
     name = "meson"
     binaries = frozenset(["meson"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         def _base(s: str) -> str:
             return Path(s.replace("\\", "/")).stem.lower()
 
@@ -23831,7 +23831,7 @@ class PlaywrightFilter(Filter):
         ["test", "show-trace", "codegen", "screenshot", "pdf", "install"]
     )
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         def _base(s: str) -> str:
             return Path(s.replace("\\", "/")).stem.lower()
 
@@ -23926,7 +23926,7 @@ class CypressFilter(Filter):
 
     _SUBCMDS: frozenset[str] = frozenset(["run", "open"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         def _base(s: str) -> str:
             return Path(s.replace("\\", "/")).stem.lower()
 
@@ -24708,12 +24708,12 @@ class JsonArrayFilter(Filter):
     # content-based detection (stdout starts with '[') is the primary path.
     binaries: frozenset[str] = frozenset(["json"])
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         if not argv:
             return False
         return Path(argv[0]).stem.lower() in self.binaries
 
-    def detect_from_command(self, cmd: str) -> bool:  # noqa: D102
+    def detect_from_command(self, cmd: str) -> bool:
         return False  # content-based only; the hook layer routes via detect()
 
     def compress(
@@ -24990,10 +24990,10 @@ class SeverityLogFilter(Filter):
         keyword_count = sum(1 for ln in lines if _LOG_ANY_RE.search(ln))
         return keyword_count / len(lines) >= 0.30
 
-    def detect_from_command(self, cmd: str) -> bool:  # noqa: D102
+    def detect_from_command(self, cmd: str) -> bool:
         return False  # content-based only; hook layer routes via detect()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         return False  # content-based only; never claimed via binary dispatch
 
     def compress(
@@ -25002,7 +25002,7 @@ class SeverityLogFilter(Filter):
         combined = self._combine_output(stdout, stderr)
         if not self.detect(combined):
             return combined
-        from . import config as _cfg_mod  # noqa: PLC0415
+        from . import config as _cfg_mod
         cfg = _cfg_mod.load().bash_severity_log
         return _compress_severity_log(combined, cfg.context_lines, cfg.score_threshold)
 
@@ -25019,7 +25019,7 @@ class TailTruncFilter(Filter):
     name = "tail-trunc"
     binaries: frozenset[str] = frozenset()
 
-    def matches(self, argv: list[str]) -> bool:  # noqa: D102
+    def matches(self, argv: list[str]) -> bool:
         return True  # catch-all: always claim as last-resort fallback
 
     def compress(
@@ -25623,7 +25623,7 @@ def select_filter(argv: list[str]) -> Filter | None:
         try:
             if f.matches(resolved):
                 return f
-        except Exception:  # noqa: BLE001, never let a custom filter break dispatch
+        except Exception:
             _LOG.exception("filter %s raised during matches()", f.name)
     return None
 

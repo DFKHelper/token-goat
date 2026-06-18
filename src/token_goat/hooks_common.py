@@ -36,12 +36,13 @@ from .util import get_logger
 
 __all__ = [
     "CONTINUE",
+    "LOG",
     "HookPayload",
     "HookResponse",
     "HookSpecificOutputContext",
     "HookSpecificOutputDeny",
     "HookSpecificOutputUpdate",
-    "LOG",
+    "_is_quiet_hours",
     "bytes_to_tokens",
     "deny_redirect",
     "emit_if_new_hint",
@@ -58,10 +59,9 @@ __all__ = [
     "record_hint_stat_pair",
     "record_watchdog_timeout",
     "run_dedup_hint",
-    "update_session",
-    "_is_quiet_hours",
     "sanitize_log_str",
     "sanitize_opt",
+    "update_session",
     "validate_cwd",
 ]
 
@@ -192,14 +192,14 @@ def get_effective_watchdog_ms() -> int:
     On subsequent invocations within the same process, returns the adapted value
     (which may have been doubled due to timeouts).
     """
-    global _effective_watchdog_ms, _timeout_configured  # noqa: PLW0603
+    global _effective_watchdog_ms, _timeout_configured
 
     if not _timeout_configured:
         try:
-            from . import config  # noqa: PLC0415
+            from . import config
             _effective_watchdog_ms = config.load().hooks.watchdog_ms
             LOG.debug("hook watchdog initialized: %d ms", _effective_watchdog_ms)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _effective_watchdog_ms = 5000
             LOG.debug("hook watchdog config load failed, using default 5000 ms")
         _timeout_configured = True
@@ -217,7 +217,7 @@ def record_watchdog_timeout() -> None:
     The adaptive state is in-process memory — each fresh Python process starts
     fresh with the configured baseline.
     """
-    global _effective_watchdog_ms, _consecutive_timeouts  # noqa: PLW0603
+    global _effective_watchdog_ms, _consecutive_timeouts
 
     _consecutive_timeouts += 1
     old_ms = _effective_watchdog_ms
@@ -234,7 +234,7 @@ def record_watchdog_timeout() -> None:
 # The most common hook response: let the harness proceed unchanged.
 # Using a function (not a bare dict) keeps each call site independent — callers
 # that mutate the return value won't corrupt subsequent callers.
-def CONTINUE() -> HookResponse:  # noqa: N802 — intentional SCREAMING_SNAKE alias
+def CONTINUE() -> HookResponse:
     """Return a fresh ``{"continue": True}`` dict.
 
     Named in UPPER_CASE to read like a constant at call sites::
@@ -435,7 +435,7 @@ def bytes_to_tokens(byte_count: int) -> int:
     record at least one token of overhead — consistent with the inline formula
     it replaces.
     """
-    from .hints import CHARS_PER_TOKEN  # noqa: PLC0415
+    from .hints import CHARS_PER_TOKEN
 
     return max(1, int(byte_count / CHARS_PER_TOKEN))
 
@@ -448,8 +448,8 @@ def _is_quiet_hours(quiet_hours: str) -> bool:
     to 7 am (crossing midnight).  Returns False for empty / malformed strings so
     the feature is a no-op when not configured.
     """
-    import datetime  # noqa: PLC0415
-    import re as _re  # noqa: PLC0415
+    import datetime
+    import re as _re
 
     if not quiet_hours:
         return False
@@ -506,7 +506,7 @@ def record_hint_stat_pair(kind: str, hint: object, detail: str) -> None:
                 URL, or command preview).  Callers are responsible for
                 sanitising it before passing — use :func:`sanitize_log_str`.
     """
-    from . import config, db  # noqa: PLC0415
+    from . import config, db
 
     cfg = config.load()
 
@@ -588,10 +588,10 @@ def record_cached_stat(kind: str, detail: str, bytes_saved: int = 0) -> None:
     _bs = max(0, bytes_saved)
     tokens = max(1, _bs // 3 + 1) if _bs > 0 else 0
     try:
-        from . import db  # noqa: PLC0415
+        from . import db
 
         db.record_stat(None, kind, bytes_saved=max(0, bytes_saved), tokens_saved=tokens, detail=detail)
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOG.debug("record_cached_stat(%s): stat record failed", kind, exc_info=True)
 
 
@@ -728,13 +728,13 @@ def load_session_safe(session_id: str) -> SessionCache | None:
         The loaded :class:`session.SessionCache` on success, or ``None`` if the
         session cannot be loaded for any reason.
     """
-    from . import session  # noqa: PLC0415
+    from . import session
 
     try:
         return session.load(session_id)
     except (OSError, ValueError):
         return None
-    except Exception:  # noqa: BLE001 — catch JSON corruption and unexpected errors
+    except Exception:
         return None
 
 
@@ -766,7 +766,7 @@ def update_session(session_id: str, fn: Callable[[SessionCache], None]) -> bool:
         ``True`` if the cache was loaded, mutated, and saved successfully.
         ``False`` if the load failed or *fn* raised an exception.
     """
-    from . import session  # noqa: PLC0415
+    from . import session
 
     cache = load_session_safe(session_id)
     if cache is None:
@@ -774,14 +774,14 @@ def update_session(session_id: str, fn: Callable[[SessionCache], None]) -> bool:
 
     try:
         fn(cache)
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOG.debug("update_session: mutation function failed", exc_info=True)
         return False
 
     try:
         session.save(cache)
         return True
-    except Exception:  # noqa: BLE001
+    except Exception:
         LOG.debug("update_session: save failed", exc_info=True)
         return False
 
@@ -954,7 +954,7 @@ def run_dedup_hint(
         A ``HookResponse`` with ``additionalContext`` set to the hint text, or
         ``None`` when the session cannot be loaded or the builder returns ``None``.
     """
-    from . import session  # noqa: PLC0415
+    from . import session
 
     session_id, _cwd = get_session_context(payload)
     if not session_id:

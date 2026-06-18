@@ -31,7 +31,7 @@ CONTINUE; never modifies tool output.
 """
 from __future__ import annotations
 
-__all__ = ["post_bash", "post_read", "pre_read", "_safe_split_argv"]
+__all__ = ["_safe_split_argv", "post_bash", "post_read", "pre_read"]
 
 import contextlib
 import hashlib
@@ -45,7 +45,6 @@ if TYPE_CHECKING:
     import types
     from collections.abc import Callable
 
-    from . import session as _session_module_type  # noqa: F401 — used in annotation only
 
 from .hooks_common import (
     CONTINUE,
@@ -216,7 +215,7 @@ def _fingerprint_already_seen(cache: object, fingerprint: str) -> bool:
     """Check if a hint fingerprint has already been emitted (dedup gate)."""
     try:
         return cache.has_hint_fingerprint(fingerprint)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -227,7 +226,7 @@ def _bash_compress_enabled() -> bool:
     immediately, and an opt-out path is available for users who want the
     raw output (e.g. debugging a filter that strips too much).
     """
-    import os  # noqa: PLC0415 — lazy: only the Bash hook path reads this env var
+    import os
 
     val = os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower()
     return val not in ("0", "false", "no", "off")
@@ -290,7 +289,7 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     if not _bash_compress_enabled():
         return None
 
-    from . import config as config_mod  # noqa: PLC0415
+    from . import config as config_mod
 
     cfg_obj = config_mod.load()
     cfg = cfg_obj.bash_compress
@@ -312,13 +311,13 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     # committing to the full bash_compress import (~75 ms, 737 regex compiles).
     # Compound commands (&&) may have a matching filter in a later segment, so
     # they bypass the pre-check and always proceed to the full detection.
-    from . import bash_detect  # noqa: PLC0415
+    from . import bash_detect
     _first_word = cmd.split()[0] if cmd.split() else ""
     if "&&" not in cmd and not bash_detect.detect([_first_word]):
         return None
 
-    from . import bash_compress  # noqa: PLC0415 — deferred: only reached when a filter may apply
-    from . import paths as paths_mod  # noqa: PLC0415
+    from . import bash_compress
+    from . import paths as paths_mod
 
     harness = str(payload.get("_tg_harness", "claude"))
     effective_profile = _resolve_compression_profile(harness, cfg_obj.compression.profile)
@@ -328,9 +327,9 @@ def _handle_bash_compress(payload: HookPayload) -> HookResponse | None:
     _bash_session_id, _ = get_session_context(payload)
     if _bash_session_id:
         try:
-            from .compact import get_context_pressure as _gcp_bash  # noqa: PLC0415
+            from .compact import get_context_pressure as _gcp_bash
             _bash_tier = _gcp_bash(_bash_session_id).tier
-        except Exception:  # noqa: BLE001 — fail-soft; never block compress wrapping
+        except Exception:
             pass
     _bash_max_tokens = _pressure_scaled_bash_cap(_BASH_COMPRESS_BASE_TOKENS, _bash_tier)
 
@@ -407,7 +406,7 @@ def _handle_bash_read_equivalent(payload: HookPayload) -> HookPayload | None:
         A new payload dict with tool_name='Read' and adjusted tool_input (file_path, offset, limit),
         or None if the command is not recognized as a read-equivalent or parsing fails.
     """
-    from . import bash_parser  # noqa: PLC0415
+    from . import bash_parser
 
     tool_input = get_tool_input(payload)
     cmd = tool_input.get("command", "")
@@ -457,7 +456,7 @@ def _try_shrink_image(
         - shrinking returns None (already optimal, no temp space, etc.)
         - shrinking or stats recording raises an exception (logged but not re-raised)
     """
-    from . import db, image_shrink  # noqa: PLC0415
+    from . import db, image_shrink
 
     if not image_shrink.is_image_path(file_path):
         return None
@@ -499,7 +498,7 @@ def _try_shrink_image(
         # on PIL/IO error so the redirect still fires.
         img_summary = ""
         try:
-            from PIL import Image as _PILImage  # noqa: PLC0415
+            from PIL import Image as _PILImage
 
             with _PILImage.open(shrunken) as _img:
                 img_summary = image_shrink.extract_image_summary(src_path, _img)
@@ -572,7 +571,7 @@ def _try_shrink_image(
         # AttributeError: API changes or missing methods on shrink result
         _LOG.exception("image-shrink failed during pre-read: %s", type(exc).__name__)
         return None
-    except Exception:  # noqa: BLE001 — truly unknown failures
+    except Exception:
         _LOG.warning("image-shrink: unexpected exception type during pre-read", exc_info=True)
         return None
 
@@ -591,7 +590,7 @@ def _try_snapshot(
     pre-read hook can skip the disk roundtrip when no change has occurred.
     """
     session = _get_session()
-    from . import snapshots  # noqa: PLC0415
+    from . import snapshots
 
     try:
         with Path(file_path).open("rb") as fh:
@@ -655,9 +654,9 @@ def _try_surgical_read_hint(
     req_start = offset + 1   # 0-indexed Read offset → 1-indexed DB line number
     req_end = offset + limit  # inclusive upper bound in 1-indexed space
     try:
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
         from . import read_replacement as _rr
-        from .project import find_project  # noqa: PLC0415
+        from .project import find_project
 
         cwd_path = validate_cwd(cwd, caller="surgical-read-hint")
         if cwd_path is None:
@@ -697,7 +696,7 @@ def _try_surgical_read_hint(
         # ValueError: path resolution failures, invalid line ranges
         # AttributeError: missing DB column, project attributes
         return None
-    except Exception:  # noqa: BLE001 — catch truly unknown errors
+    except Exception:
         _LOG.warning("surgical-read-hint: unexpected exception", exc_info=True)
         return None
 
@@ -716,9 +715,9 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
     disable the cap and always wait.
     """
     try:
-        from . import config as _cfg_mod  # noqa: PLC0415
-        from . import git_history  # noqa: PLC0415
-        from .project import find_project  # noqa: PLC0415
+        from . import config as _cfg_mod
+        from . import git_history
+        from .project import find_project
 
         _max_ms: int = _cfg_mod.load().hints.git_hint_max_ms
 
@@ -757,7 +756,7 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
         # ValueError: path validation or conversion failures
         # AttributeError: missing git module or project attributes
         return None
-    except Exception:  # noqa: BLE001 — truly unexpected errors
+    except Exception:
         _LOG.warning("git-history hint: unexpected exception", exc_info=True)
         return None
 
@@ -818,7 +817,7 @@ def _detect_skill_name_from_path(file_path: str) -> str | None:
             if name.lower().endswith(".md"):
                 name = name[:-3]
             return name.lower() if name else None
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return None
 
@@ -930,7 +929,7 @@ def _handle_skill_file_read(
         cache_ts = -1.0
     if cached_sha and source_path and cache_ts >= 0.0:
         try:
-            from pathlib import Path as _Path  # noqa: PLC0415
+            from pathlib import Path as _Path
 
             src_path_obj = _Path(source_path)
             file_mtime = src_path_obj.stat().st_mtime
@@ -972,7 +971,7 @@ def _handle_skill_file_read(
             # File not found or unreadable — can't verify staleness; emit hint.
             pass
 
-    from .hints import _hint_fingerprint  # noqa: PLC0415
+    from .hints import _hint_fingerprint
 
     hint_text = (
         f"Skill '{skill_name}' in context (loaded via Skill tool). "
@@ -1020,8 +1019,8 @@ def _emit_stale_compact_hint(
     if not skill_name or not session_id:
         return
     try:
-        from . import skill_cache as _sc  # noqa: PLC0415
-        from .hints import _hint_fingerprint  # noqa: PLC0415
+        from . import skill_cache as _sc
+        from .hints import _hint_fingerprint
 
         compact_text = _sc.get_compact(session_id, skill_name)
         if compact_text is None:
@@ -1062,7 +1061,7 @@ def _emit_stale_compact_hint(
         # Advisory only — we intentionally do NOT return the hint response here.
         # The caller (_handle_skill_file_read) already returns None to let the
         # read proceed; the advisory is recorded in stats for session awareness.
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("_emit_stale_compact_hint: unexpected error (fail-soft)", exc_info=True)
 
 
@@ -1098,7 +1097,7 @@ def _emit_dedup_budgeted_hint(
     if hint is None:
         return None
 
-    from .hints import _hint_budget_check, _hint_fingerprint, _make_short_stub_hint  # noqa: PLC0415
+    from .hints import _hint_budget_check, _hint_fingerprint, _make_short_stub_hint
 
     # Dedup: check if identical hint already seen this session for this path.
     fingerprint = _hint_fingerprint(str(hint), path=file_path)
@@ -1109,7 +1108,7 @@ def _emit_dedup_budgeted_hint(
         # Hint has been emitted before in this session.
         # Check if we should emit a short stub instead of suppressing entirely.
         try:
-            from . import config as _config  # noqa: PLC0415
+            from . import config as _config
             cfg = _config.load().hints
             verbose_until = cfg.verbose_until_seen_count
         except (OSError, ValueError, AttributeError):
@@ -1117,7 +1116,7 @@ def _emit_dedup_budgeted_hint(
             # ValueError: invalid TOML/config format
             # AttributeError: missing config sections
             verbose_until = 2  # default
-        except Exception:  # noqa: BLE001 — very unexpected config errors
+        except Exception:
             _LOG.debug("dedup budget check: config load failed unexpectedly", exc_info=True)
             verbose_until = 2  # default
 
@@ -1194,7 +1193,7 @@ def _handle_index_only_file(
     Returns ``None`` when the file is small, not an index-only type, or the
     caller already scoped the read with offset AND limit (surgical intent).
     """
-    from .hints import (  # noqa: PLC0415
+    from .hints import (
         _HINT_KIND_INDEX_ONLY,
         _record_index_only_hint_emitted,
         build_index_only_file_hint,
@@ -1228,7 +1227,7 @@ def _handle_doc_compact(
     indexed sections, returns a section-map hint.  Returns None for non-markdown
     files, small files, and when stable_doc_compacts is disabled.
     """
-    from .hints import DOC_COMPACT_SERVE_SENTINEL, build_doc_compact_hint  # noqa: PLC0415
+    from .hints import DOC_COMPACT_SERVE_SENTINEL, build_doc_compact_hint
 
     hint = build_doc_compact_hint(file_path, cwd, cache=cache)  # type: ignore[arg-type]
     if hint is None:
@@ -1238,10 +1237,10 @@ def _handle_doc_compact(
     if hint_text.startswith(DOC_COMPACT_SERVE_SENTINEL):
         # Compact serve: deny the full read, inject compact body as context.
         content = hint_text[len(DOC_COMPACT_SERVE_SENTINEL):]
-        from .db import record_stat  # noqa: PLC0415
+        from .db import record_stat
         if hint.tokens_saved > 0:
             try:
-                from .project import find_project  # noqa: PLC0415
+                from .project import find_project
                 _proj = find_project(validate_cwd(cwd) or Path())
                 record_stat(
                     _proj.hash if _proj else None,
@@ -1249,7 +1248,7 @@ def _handle_doc_compact(
                     tokens_saved=hint.tokens_saved,
                     detail=file_path,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         return deny_redirect("doc-compact: serving compact instead of full file", content)
 
@@ -1260,8 +1259,8 @@ def _handle_doc_compact(
         with contextlib.suppress(Exception):
             if not cache.has_hint_fingerprint(_fp_key):  # type: ignore[attr-defined]
                 cache.mark_hint_seen(_fp_key)  # type: ignore[attr-defined]
-                import shutil as _shutil  # noqa: PLC0415
-                import subprocess as _subprocess  # noqa: PLC0415
+                import shutil as _shutil
+                import subprocess as _subprocess
                 _exe = _shutil.which("token-goat")
                 if _exe:
                     _subprocess.Popen(
@@ -1288,7 +1287,7 @@ def _handle_structured_file(
     Returns ``None`` when the file is small, not a structured type, or the caller
     already scoped the read with offset AND limit (surgical intent).
     """
-    from .hints import (  # noqa: PLC0415
+    from .hints import (
         _HINT_KIND_STRUCTURED,
         _record_structured_hint_emitted,
         build_structured_file_hint,
@@ -1346,7 +1345,7 @@ def _try_unchanged_file_hint(
     * the snapshot is older than the staleness cap
     * the file is too small to be worth a hint
     """
-    from .hints import build_unchanged_file_hint  # noqa: PLC0415
+    from .hints import build_unchanged_file_hint
 
     # Only short-circuit full reads.  offset OR limit present → let through.
     offset = tool_input.get("offset")
@@ -1404,7 +1403,7 @@ def _try_diff_hint(
         and entry_line_ranges
         and entry_line_ranges != [(0, 0)]  # collapsed sentinel = full file
     ):
-        from .hints import _PROXIMITY_SLOP_LINES, _line_ranges_global_bounds  # noqa: PLC0415
+        from .hints import _PROXIMITY_SLOP_LINES, _line_ranges_global_bounds
 
         global_min, global_max = _line_ranges_global_bounds(entry_line_ranges)
         if req_start > global_max + _PROXIMITY_SLOP_LINES or req_end < global_min - _PROXIMITY_SLOP_LINES:
@@ -1419,8 +1418,8 @@ def _try_diff_hint(
             )
             return None
 
-    from . import snapshots  # noqa: PLC0415
-    from .hints import build_diff_hint  # noqa: PLC0415
+    from . import snapshots
+    from .hints import build_diff_hint
 
     try:
         with Path(file_path).open("rb") as fh:
@@ -1455,11 +1454,11 @@ def _try_diff_hint(
         # KeyError: session entry missing from snapshot index
         # AttributeError: missing snapshot attributes
         snapshot_kind = None
-    except Exception:  # noqa: BLE001 — unexpected snapshot errors
+    except Exception:
         _LOG.debug("diff-hint: snapshot kind lookup failed", exc_info=True)
         snapshot_kind = None
     if snapshot_kind == "predictive":
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
 
         try:
             _db.record_stat(
@@ -1473,7 +1472,7 @@ def _try_diff_hint(
             # OSError: database write failure (disk full, permission denied)
             # ValueError: invalid stat kind or detail format
             _LOG.debug("predictive-snapshot: stat record failed", exc_info=True)
-        except Exception:  # noqa: BLE001 — catch very unexpected DB errors
+        except Exception:
             _LOG.warning("predictive-snapshot: unexpected error during stat record", exc_info=True)
         _LOG.info(
             "pre-read: predictive-snapshot hit for %s (tokens_saved=%d)",
@@ -1483,8 +1482,8 @@ def _try_diff_hint(
         "pre-read: diff-hint injected for %s (tokens_saved=%d)",
         sanitize_log_str(file_path), hint.tokens_saved,
     )
-    from . import config as _cfg_inj  # noqa: PLC0415
-    from .injection import check_hint_for_injection  # noqa: PLC0415
+    from . import config as _cfg_inj
+    from .injection import check_hint_for_injection
     if _cfg_inj.load().injection.enabled:
         hint_str = check_hint_for_injection(str(hint), source=file_path)
     else:
@@ -1525,7 +1524,7 @@ def _try_diff_serve(
     caller before invoking this function — the function itself does not re-read
     the config so it can be called from a hot path without an extra config load.
     """
-    import difflib  # noqa: PLC0415 — stdlib, deferred to avoid startup cost
+    import difflib
 
     # Range-overlap guard: same logic as _try_diff_hint.
     if (
@@ -1534,7 +1533,7 @@ def _try_diff_serve(
         and entry_line_ranges
         and entry_line_ranges != [(0, 0)]
     ):
-        from .hints import _PROXIMITY_SLOP_LINES, _line_ranges_global_bounds  # noqa: PLC0415
+        from .hints import _PROXIMITY_SLOP_LINES, _line_ranges_global_bounds
 
         global_min, global_max = _line_ranges_global_bounds(entry_line_ranges)
         if req_start > global_max + _PROXIMITY_SLOP_LINES or req_end < global_min - _PROXIMITY_SLOP_LINES:
@@ -1549,7 +1548,7 @@ def _try_diff_serve(
             )
             return None
 
-    from . import snapshots  # noqa: PLC0415
+    from . import snapshots
 
     # Load the snapshot (what the model last saw for this file).
     snapshot_bytes = snapshots.load(session_id, file_path)
@@ -1575,7 +1574,7 @@ def _try_diff_serve(
     current_text = current_bytes.decode("utf-8", errors="replace")
 
     # Generate a unified diff.
-    import os.path as _osp  # noqa: PLC0415
+    import os.path as _osp
 
     fname = _osp.basename(file_path)
     # NOTE: splitlines() WITHOUT keepends pairs with lineterm="" and "\n".join
@@ -1611,7 +1610,7 @@ def _try_diff_serve(
     bytes_saved = max(0, file_size - diff_bytes)
 
     # Record the stat.
-    from . import db as _db  # noqa: PLC0415
+    from . import db as _db
 
     try:
         _db.record_stat(
@@ -1621,7 +1620,7 @@ def _try_diff_serve(
             tokens_saved=max(1, bytes_saved // 3 + 1) if bytes_saved > 0 else 0,
             detail=sanitize_log_str(file_path, max_len=512),
         )
-    except Exception:  # noqa: BLE001 — fail-soft; never block the agent
+    except Exception:
         _LOG.debug("diff-serve: stat record failed for %s", sanitize_log_str(file_path), exc_info=True)
 
     _LOG.info(
@@ -1677,7 +1676,7 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
     result without the Grep tool running again.  Falls back to the advisory
     hint when no cached result is available.
     """
-    from .hints import (  # noqa: PLC0415
+    from .hints import (
         STALE_READ_AGE_SECONDS,
         build_grep_dedup_hint,
         compute_stale_threshold,
@@ -1698,10 +1697,10 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
         return None
 
     try:
-        import time as _time  # noqa: PLC0415
+        import time as _time
 
-        from . import bash_cache as _bc  # noqa: PLC0415
-        from . import session as _sess_mod2  # noqa: PLC0415
+        from . import bash_cache as _bc
+        from . import session as _sess_mod2
         _sess = _get_session()
         cache = _sess.load(session_id)
         grep_entry = _sess_mod2.lookup_grep_entry(session_id, pattern, path, cache=cache)
@@ -1734,7 +1733,7 @@ def _handle_grep_dedup(payload: HookPayload) -> HookResponse | None:
                         sanitize_log_str(pattern, max_len=100), int(age),
                     )
                     return pre_tool_use_with_context(hint_text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-read: grep result cache check failed", exc_info=True)
 
     return run_dedup_hint(
@@ -1861,8 +1860,8 @@ def _try_grep_symbol_hint(pattern: str, cwd: str | None) -> str | None:
     if not _IDENTIFIER_RE.match(pattern):
         return None
     try:
-        from . import db as _db  # noqa: PLC0415
-        from .project import find_project  # noqa: PLC0415
+        from . import db as _db
+        from .project import find_project
 
         cwd_path = validate_cwd(cwd, caller="grep-symbol-hint")
         if cwd_path is None:
@@ -1904,7 +1903,7 @@ def _try_grep_symbol_hint(pattern: str, cwd: str | None) -> str | None:
             f"to jump directly to its definition(s) ({loc_str}) "
             f"instead of scanning files with grep (~95% fewer tok)."
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -1922,8 +1921,8 @@ def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
         return None
     qualifier, method = m.group(1), m.group(2)
     try:
-        from . import db as _db  # noqa: PLC0415
-        from .project import find_project  # noqa: PLC0415
+        from . import db as _db
+        from .project import find_project
 
         cwd_path = validate_cwd(cwd, caller="grep-dotted-hint")
         if cwd_path is None:
@@ -1976,7 +1975,7 @@ def _try_grep_dotted_hint(pattern: str, cwd: str | None) -> str | None:
             f"`token-goat symbol {method}` to jump to its definition(s) "
             f"({loc_str}) instead of scanning files with grep (~95% fewer tok)."
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -1997,7 +1996,7 @@ def _try_grep_advisory_for_path(path: str | None, session_id: str, cwd: str | No
     if not path or not session_id:
         return None
     try:
-        from .hints import maybe_grep_advisory  # noqa: PLC0415
+        from .hints import maybe_grep_advisory
         sess = _get_session()
         cache = sess.safe_load(session_id, caller="grep_advisory")
         if cache is None:
@@ -2008,7 +2007,7 @@ def _try_grep_advisory_for_path(path: str | None, session_id: str, cwd: str | No
         with contextlib.suppress(Exception):
             sess.save(cache)
         return hint
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("_try_grep_advisory_for_path: error for path=%s", sanitize_log_str(path), exc_info=True)
         return None
 
@@ -2042,7 +2041,7 @@ def _handle_bash_grep_advisory(payload: HookPayload) -> str | None:
     command = _get_bash_command_from_payload(payload)
     if command is None:
         return None
-    from . import bash_parser  # noqa: PLC0415
+    from . import bash_parser
     intent = bash_parser.parse(command)
     if intent.kind != "grep" or not intent.pattern:
         return None
@@ -2065,8 +2064,8 @@ def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
     Returns None when the pattern is not identifier-shaped, the symbol is not
     indexed, or the hint was already seen this session (fingerprint dedup).
     """
-    from . import session as _sess  # noqa: PLC0415
-    from .hints import _hint_fingerprint  # noqa: PLC0415
+    from . import session as _sess
+    from .hints import _hint_fingerprint
 
     session_id, cwd = get_hook_context(payload)
     if session_id is None:
@@ -2093,7 +2092,7 @@ def _handle_grep_symbol_redirect(payload: HookPayload) -> HookResponse | None:
 
     try:
         cache = _sess.load(session_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
     fp = _hint_fingerprint(hint_text, path=pattern)
@@ -2126,10 +2125,10 @@ def _human_bytes(n: int) -> str:
 
 def _large_read_threshold() -> int:
     """Return the configured large-read redirect threshold in bytes (0 = disabled)."""
-    from . import config as _config_mod  # noqa: PLC0415
+    from . import config as _config_mod
     try:
         return _config_mod.load().hints.large_read_redirect_bytes
-    except Exception:  # noqa: BLE001 — fail-soft: a config error must not break reads.
+    except Exception:
         return 0
 
 
@@ -2187,8 +2186,8 @@ def _handle_notebook_read(file_path: str, tool_input: dict[str, object]) -> Hook
     if _read_is_windowed(tool_input):
         return None
     try:
-        from . import notebook_compact as _nb  # noqa: PLC0415
-        from . import paths as _paths  # noqa: PLC0415
+        from . import notebook_compact as _nb
+        from . import paths as _paths
 
         path = Path(file_path)
         if not path.exists():
@@ -2208,7 +2207,7 @@ def _handle_notebook_read(file_path: str, tool_input: dict[str, object]) -> Hook
             f"To read the original with outputs: add `offset: 0` to bypass this redirect."
         )
         return deny_redirect(reason, context)
-    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+    except Exception:
         return None
 
 
@@ -2281,7 +2280,7 @@ def _handle_large_read_redirect(
         context += f"\n\nIndexed symbols in this file:\n{skeleton_text}"
 
     with contextlib.suppress(Exception):
-        from . import db  # noqa: PLC0415
+        from . import db
         db.record_stat(None, "large_read_redirect", detail=f"{sanitize_log_str(file_path)} size={size}")
     return deny_redirect(reason, context)
 
@@ -2318,7 +2317,7 @@ def _handle_indexed_cat_deny(
         f"Indexed symbols in this file:\n{skeleton_text}"
     )
     with contextlib.suppress(Exception):
-        from . import db  # noqa: PLC0415
+        from . import db
         db.record_stat(None, "indexed_cat_deny", detail=sanitize_log_str(file_path))
     return deny_redirect(reason, context)
 
@@ -2354,13 +2353,13 @@ def _handle_indexed_cat_advisory(
         f'  `token-goat skeleton "{file_path}"` — symbol list\n'
         f"Indexed symbols in this file:\n{skeleton_text}"
     )
-    from .hints import _hint_fingerprint  # noqa: PLC0415
+    from .hints import _hint_fingerprint
     fp = _hint_fingerprint(hint, path=file_path)
     parts: list[str] = []
     if not emit_if_new_hint(cache, fp, hint, "indexed_cat_advisory", parts):
         return None
     with contextlib.suppress(Exception):
-        from . import db  # noqa: PLC0415
+        from . import db
         db.record_stat(None, "indexed_cat_advisory", detail=sanitize_log_str(file_path))
     return pre_tool_use_with_context(parts[0])
 
@@ -2376,7 +2375,7 @@ def _handle_bash_range_read_hint(payload: HookPayload) -> HookResponse | None:
     Always advisory (never a deny) — the windowed read is already targeted and
     small; we just surface the surgical form for future reference.
     """
-    from . import bash_parser  # noqa: PLC0415
+    from . import bash_parser
 
     tool_input = get_tool_input(payload)
     cmd = tool_input.get("command", "")
@@ -2406,7 +2405,7 @@ def _handle_bash_range_read_hint(payload: HookPayload) -> HookResponse | None:
         f"Indexed symbols:\n{skeleton_text}"
     )
     with contextlib.suppress(Exception):
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
         _db.record_stat(None, "bash_range_read_hint", detail=sanitize_log_str(intent.target_path))
     return pre_tool_use_with_context(hint)
 
@@ -2423,8 +2422,8 @@ def _handle_compound_cmd_hint(payload: HookPayload) -> HookResponse | None:
     Always advisory — always returns ``{"continue": True, ...}`` or ``None``.
     Never blocks or rewrites the command.
     """
-    from . import bash_cache as _bc  # noqa: PLC0415
-    from . import bash_parser  # noqa: PLC0415
+    from . import bash_cache as _bc
+    from . import bash_parser
 
     tool_input = get_tool_input(payload)
     cmd = tool_input.get("command", "")
@@ -2457,10 +2456,10 @@ def _handle_compound_cmd_hint(payload: HookPayload) -> HookResponse | None:
         for seg in read_type_segments:
             meta = _bc.find_cached_for_command(seg, cwd)
             if meta is not None:
-                from . import cache_common as _cc  # noqa: PLC0415
+                from . import cache_common as _cc
                 short_id = _cc.short_output_id(meta.output_id)
                 cached_hits.append((seg, short_id))
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         _LOG.debug("compound_cmd_hint: cache lookup failed", exc_info=True)
         return None
 
@@ -2474,7 +2473,7 @@ def _handle_compound_cmd_hint(payload: HookPayload) -> HookResponse | None:
         + "\nRun them separately to use the cache."
     )
     with contextlib.suppress(Exception):
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
         _db.record_stat(None, "compound_cmd_hint", detail=sanitize_log_str(cmd, max_len=200))
     _LOG.debug("compound_cmd_hint: %d/%d segments cached", len(cached_hits), len(read_type_segments))
     return pre_tool_use_with_context(hint)
@@ -2482,9 +2481,9 @@ def _handle_compound_cmd_hint(payload: HookPayload) -> HookResponse | None:
 
 def _handle_bash_streak_hint(payload: HookPayload) -> HookResponse | None:
     """Advisory hint when the same file is Bash-read 3+ times in a session."""
-    import shlex  # noqa: PLC0415
+    import shlex
 
-    from . import bash_parser  # noqa: PLC0415
+    from . import bash_parser
     tool_input = get_tool_input(payload)
     cmd = tool_input.get("command", "")
     if not isinstance(cmd, str):
@@ -2499,7 +2498,7 @@ def _handle_bash_streak_hint(payload: HookPayload) -> HookResponse | None:
     cache = sess.safe_load(sid, caller="bash_streak_hint")
     if not _cache_is_available(cache):
         return None
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
     key = _paths.normalize_key(intent.target_path)
     entry = cache.files.get(key)
     if entry is None or entry.read_count < 2:
@@ -2527,7 +2526,7 @@ def _handle_bash_streak_hint(payload: HookPayload) -> HookResponse | None:
             f"  `token-goat read {read_arg}`   (read one symbol)"
         )
     with contextlib.suppress(Exception):
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
         _db.record_stat(sid, "bash_streak_hint", detail=sanitize_log_str(rel))
     return pre_tool_use_with_context(hint)
 
@@ -2545,9 +2544,9 @@ _POLL_MIN_RUNS: int = 2  # run_count >= 2 means this would be the 3rd+ run
 
 def _handle_bash_poll_hint(payload: HookPayload) -> HookResponse | None:
     """Advisory hint when a status-checking command is run rapidly 3+ times."""
-    import time as _time  # noqa: PLC0415
+    import time as _time
 
-    from . import bash_cache as _bc  # noqa: PLC0415
+    from . import bash_cache as _bc
     tool_input = get_tool_input(payload)
     cmd = tool_input.get("command", "")
     if not isinstance(cmd, str) or not _POLL_CMDS_RE.search(cmd):
@@ -2570,7 +2569,7 @@ def _handle_bash_poll_hint(payload: HookPayload) -> HookResponse | None:
         f"Or retrieve the cached output: `token-goat bash-output {entry.output_id}`"
     )
     with contextlib.suppress(Exception):
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
         _db.record_stat(sid, "bash_poll_hint", detail=sanitize_log_str(cmd[:80]))
     return pre_tool_use_with_context(hint)
 
@@ -2604,9 +2603,9 @@ def _try_get_inline_skeleton(file_path: str) -> str:
     note is appended when symbols were truncated.
     """
     try:
-        from . import db as _db  # noqa: PLC0415
-        from . import read_replacement as _rr  # noqa: PLC0415
-        from .project import find_project  # noqa: PLC0415
+        from . import db as _db
+        from . import read_replacement as _rr
+        from .project import find_project
 
         abs_path = Path(file_path) if Path(file_path).is_absolute() else Path.cwd() / file_path
         cwd_path = abs_path.parent
@@ -2640,7 +2639,7 @@ def _try_get_inline_skeleton(file_path: str) -> str:
         if remaining > 0:
             return truncated + f"\n  (+{remaining} more symbols)"
         return truncated
-    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+    except Exception:
         return ""
 
 
@@ -2661,7 +2660,7 @@ def _check_content_dedup(
         if size == 0 or size > _CONTENT_DEDUP_MAX_BYTES:
             return None
         raw = p.read_bytes()
-        sha16 = hashlib.sha1(raw, usedforsecurity=False).hexdigest()[:16]  # noqa: S324
+        sha16 = hashlib.sha1(raw, usedforsecurity=False).hexdigest()[:16]
         norm = str(p.resolve()).replace("\\", "/")
         existing = cache.get_file_content_path(sha16)  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this method at runtime
         if existing is None or existing == norm:
@@ -2671,7 +2670,7 @@ def _check_content_dedup(
             f"This file has identical content to `{existing}`, which was already read this session.\n"
             f"Use `{existing}` instead to avoid loading identical bytes twice.",
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -2682,7 +2681,7 @@ def _rollup_glob_paths(paths_text: str) -> str:
     in the compaction-recovery case) followed by a directory count table for structural
     orientation. Used when the cached result exceeds _GLOB_ROLLUP_THRESHOLD paths.
     """
-    from collections import Counter  # noqa: PLC0415
+    from collections import Counter
     lines = [ln for ln in paths_text.splitlines() if ln.strip()]
     total = len(lines)
     if total <= _GLOB_ROLLUP_THRESHOLD:
@@ -2758,7 +2757,7 @@ def _handle_large_grep_redirect(payload: HookPayload) -> HookResponse | None:
         f"  - or Read with `offset`/`limit` to window the file directly."
     )
     with contextlib.suppress(Exception):
-        from . import db  # noqa: PLC0415
+        from . import db
         db.record_stat(None, "large_grep_redirect", detail=f"{sanitize_log_str(path)} size={size}")
     return deny_redirect(reason, context)
 
@@ -2775,7 +2774,7 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     Falls back to the standard advisory dedup hint when no cached result exists.
     Returns ``None`` when no dedup applies (first run, or cache evicted).
     """
-    from .hints import (  # noqa: PLC0415,E501
+    from .hints import (
         STALE_READ_AGE_SECONDS,
         build_glob_dedup_hint,
         compute_stale_threshold,
@@ -2794,14 +2793,14 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
     # Only serve the cached result when the glob entry is in the session history
     # AND is recent enough (within STALE_READ_AGE_SECONDS).
     try:
-        from . import bash_cache as _bc  # noqa: PLC0415
+        from . import bash_cache as _bc
         _sess = _get_session()
 
         cache = _sess.load(session_id)
         # Find the most recent GlobEntry for this (pattern, path).
         glob_entry = _sess.lookup_glob_entry(session_id, pattern, path, cache=cache)
         if glob_entry is not None:
-            import time as _time  # noqa: PLC0415
+            import time as _time
             _now = _time.time()
             age = _now - glob_entry.ts
             _glob_created_ts = getattr(cache, "created_ts", None)
@@ -2829,7 +2828,7 @@ def _handle_glob_dedup(payload: HookPayload) -> HookResponse | None:
                         sanitize_log_str(pattern, max_len=100), int(age),
                     )
                     return pre_tool_use_with_context(hint_text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-read: glob result cache check failed", exc_info=True)
 
     return run_dedup_hint(
@@ -2869,7 +2868,7 @@ def _try_bash_dedup_serve(payload: HookPayload) -> HookResponse | None:
     embed the cached text directly so the agent gets the result without re-running.
     Returns None to fall through to the advisory hint path otherwise.
     """
-    from .hints import STALE_READ_AGE_SECONDS, compute_stale_threshold  # noqa: PLC0415
+    from .hints import STALE_READ_AGE_SECONDS, compute_stale_threshold
 
     command = _get_bash_command_from_payload(payload)
     if command is None:
@@ -2880,10 +2879,10 @@ def _try_bash_dedup_serve(payload: HookPayload) -> HookResponse | None:
         return None
 
     try:
-        import time as _time  # noqa: PLC0415
+        import time as _time
 
-        from . import bash_cache as _bc  # noqa: PLC0415
-        from . import session as _sess_mod  # noqa: PLC0415
+        from . import bash_cache as _bc
+        from . import session as _sess_mod
 
         cmd_sha = _bc.command_hash(command, cwd)
         _sess = _get_session()
@@ -2935,7 +2934,7 @@ def _try_bash_dedup_serve(payload: HookPayload) -> HookResponse | None:
             sanitize_log_str(command, max_len=80), int(age), actual_bytes,
         )
         return pre_tool_use_with_context(hint_text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-read: bash direct serve failed", exc_info=True)
         return None
 
@@ -2948,7 +2947,7 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
     rather than re-running.  Returns ``None`` to let the hook fall through to
     the normal bash-as-read handling when no dedup hit is available.
     """
-    from .hints import build_bash_dedup_hint  # noqa: PLC0415
+    from .hints import build_bash_dedup_hint
 
     command = _get_bash_command_from_payload(payload)
     if command is None:
@@ -2972,7 +2971,7 @@ def _handle_bash_dedup(payload: HookPayload) -> HookResponse | None:
 
 def _handle_env_probe_serve(payload: HookPayload) -> HookResponse | None:
     """Serve advisory context for env probe commands from the cross-session disk cache. Env probes (node -v, python --version, which node, ...) are advisory-only so the agent can re-run if the toolchain changed between sessions."""
-    from . import bash_cache as _bc  # noqa: PLC0415
+    from . import bash_cache as _bc
 
     command = _get_bash_command_from_payload(payload)
     if command is None:
@@ -2993,13 +2992,13 @@ def _handle_env_probe_serve(payload: HookPayload) -> HookResponse | None:
         record_cached_stat("env_probe_cache_hit", sanitize_log_str(command, max_len=200))
         _LOG.info("pre-read: env-probe serve command=%s bytes=%d", sanitize_log_str(command, max_len=80), len(text))
         return pre_tool_use_with_context(hint_text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-read: env-probe serve failed", exc_info=True)
         return None
 
 
 def _handle_bash_already_read(payload: HookPayload) -> HookResponse | None:
-    from . import bash_parser  # noqa: PLC0415
+    from . import bash_parser
 
     tool_name = payload.get("tool_name")
     if tool_name != "Bash":
@@ -3019,7 +3018,7 @@ def _handle_bash_already_read(payload: HookPayload) -> HookResponse | None:
         cache = sess.safe_load(sid, caller="bash_already_read")
         if cache is None:
             return None
-        from . import paths as _paths  # noqa: PLC0415
+        from . import paths as _paths
         path_key = _paths.normalize_path_key(intent.target_path, cwd)
         entry = cache.files.get(path_key)
         if entry is None or entry.read_count != 1:  # streak_hint handles read_count >= 2
@@ -3034,7 +3033,7 @@ def _handle_bash_already_read(payload: HookPayload) -> HookResponse | None:
         record_cached_stat("bash_read_equiv_already_read", sanitize_log_str(intent.target_path, max_len=200))
         _LOG.info("pre-read: bash-already-read path=%s read_count=%d", sanitize_log_str(intent.target_path, max_len=80), entry.read_count)
         return pre_tool_use_with_context(hint_text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-read: bash-already-read failed", exc_info=True)
         return None
 
@@ -3047,7 +3046,7 @@ def _handle_dep_list_serve(payload: HookPayload) -> HookResponse | None:
     guarantees the output matches the current dependency state.  The agent can
     still re-run the command if it prefers a live result.
     """
-    from . import bash_cache as _bc  # noqa: PLC0415
+    from . import bash_cache as _bc
 
     command = _get_bash_command_from_payload(payload)
     if command is None:
@@ -3068,7 +3067,7 @@ def _handle_dep_list_serve(payload: HookPayload) -> HookResponse | None:
         record_cached_stat("dep_list_cache_hit", sanitize_log_str(command, max_len=200))
         _LOG.info("pre-read: dep-list serve command=%s bytes=%d", sanitize_log_str(command, max_len=80), len(text))
         return pre_tool_use_with_context(hint_text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-read: dep-list serve failed", exc_info=True)
         return None
 
@@ -3082,7 +3081,7 @@ def _handle_bash_cache_hit(payload: HookPayload) -> HookResponse | None:
     cached entry exists or the session has already seen this command (the dedup
     path handles that case).
     """
-    from .hints import build_bash_cache_hit_hint  # noqa: PLC0415
+    from .hints import build_bash_cache_hit_hint
 
     command = _get_bash_command_from_payload(payload)
     if command is None:
@@ -3118,13 +3117,13 @@ def _handle_bash_grep_dedup(payload: HookPayload) -> HookResponse | None:
     * the prior result falls below the minimum-match dedup threshold
     * the prior result is older than the stale-age threshold
     """
-    from .hints import build_grep_dedup_hint  # noqa: PLC0415
+    from .hints import build_grep_dedup_hint
 
     command = _get_bash_command_from_payload(payload)
     if command is None:
         return None
 
-    from . import bash_parser  # noqa: PLC0415
+    from . import bash_parser
 
     intent = bash_parser.parse(command)
     if intent.kind != "grep" or not intent.pattern:
@@ -3136,11 +3135,11 @@ def _handle_bash_grep_dedup(payload: HookPayload) -> HookResponse | None:
     sid, _ = get_session_context(payload)
     if sid:
         try:
-            import time as _time  # noqa: PLC0415
+            import time as _time
 
-            from .bash_cache import _normalize_grep_path as _ngp  # noqa: PLC0415, PLC2701
+            from .bash_cache import _normalize_grep_path as _ngp
             from .bash_cache import load_grep_result as _lgr
-            from .hints import STALE_READ_AGE_SECONDS, compute_stale_threshold  # noqa: PLC0415
+            from .hints import STALE_READ_AGE_SECONDS, compute_stale_threshold
             _sess = _get_session()
             cache = _sess.load(sid)
             # Normalize the bash-side path for comparison; grep_hash() uses the same normalization,
@@ -3176,7 +3175,7 @@ def _handle_bash_grep_dedup(payload: HookPayload) -> HookResponse | None:
                         record_cached_stat("bash_grep_result_cache_hit", sanitize_log_str(pattern, max_len=200))
                         _LOG.info("pre-read: bash-grep cache hit pattern=%s (age=%ds)", sanitize_log_str(pattern, max_len=100), int(age))
                         return pre_tool_use_with_context(hint_text)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("pre-read: bash-grep cache check failed", exc_info=True)
 
     return run_dedup_hint(
@@ -3211,7 +3210,7 @@ def _estimate_recovery_context_bytes(cache: object) -> int:
         for we in web_hist.values():
             total += getattr(we, "body_bytes", 0)
         return max(0, total)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 0
 
 
@@ -3232,7 +3231,7 @@ def _parse_recovery_sidecar(raw: str) -> tuple[str, int]:
     Returns ``(hint, bytes_estimate)``.  Errors in JSON parsing fall back to
     treating the whole content as plain-text hint with 0 estimate.
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json
 
     raw_stripped = raw.strip()
     if raw_stripped.startswith("{"):
@@ -3272,7 +3271,7 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
     if getattr(cache, "recovery_injected", False):
         return None
     try:
-        from . import paths as _paths  # noqa: PLC0415
+        from . import paths as _paths
 
         sidecar = _paths.recovery_pending_path(session_id)
         if not sidecar.exists():
@@ -3296,7 +3295,7 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
         # rather than re-computing from the current (possibly empty) session cache.
         # Fall back to live estimation only when the sidecar was in legacy plain-text format.
         try:
-            from . import db as _db  # noqa: PLC0415
+            from . import db as _db
 
             _BYTES_PER_TOKEN = 4  # conservative estimate matching hints.CHARS_PER_TOKEN
             context_bytes = (
@@ -3321,10 +3320,10 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
                 tokens_saved=-overhead_tokens,
                 detail=f"session={session_id[:8]}",
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("pre-read: recovery stat record failed", exc_info=True)
         return hint
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("pre-read: recovery sidecar check failed", exc_info=True)
         return None
 
@@ -3416,7 +3415,7 @@ def _handle_partial_overlap_hint(
     window is NOT fully covered (deny handles that), and at least one line in the
     requested range is already cached.
     """
-    from .hooks_common import record_cached_stat  # noqa: PLC0415
+    from .hooks_common import record_cached_stat
 
     line_ranges: list[tuple[int, int]] = getattr(entry, "line_ranges", [])
     if not line_ranges:
@@ -3489,13 +3488,13 @@ def _handle_reread_deny(
     is never hard-blocked.
     """
     try:
-        from . import config as _cfg_mod  # noqa: PLC0415
+        from . import config as _cfg_mod
 
         hints_cfg = _cfg_mod.load().hints
         if not hints_cfg.reread_deny:
             return None
         min_bytes = hints_cfg.reread_deny_min_bytes
-    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+    except Exception:
         return None
 
     if not _cache_is_available(cache):
@@ -3505,7 +3504,7 @@ def _handle_reread_deny(
         _sess = _get_session()
         key = _sess._normalize_path(file_path)  # type: ignore[attr-defined]
         entry = cache.files.get(key)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
     if entry is None:
@@ -3559,13 +3558,13 @@ def _handle_reread_deny(
     # means the file was modified outside the edit hooks (external tool, manual save).
     # Falls through to deny when no snapshot exists (timestamp guard above is sufficient).
     try:
-        from . import session as _sess_mod  # noqa: PLC0415
+        from . import session as _sess_mod
         stored_sha = _sess_mod.get_snapshot_sha(session_id, file_path, cache=cache)
         if stored_sha:
             current_sha = hashlib.sha256(Path(file_path).read_bytes()).hexdigest()
             if current_sha != stored_sha:
                 return None  # changed externally — let the read through
-    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+    except Exception:
         pass
 
     # Anti-loop guard: allow the read through on the second identical attempt.
@@ -3576,7 +3575,7 @@ def _handle_reread_deny(
         return None
     try:
         cache.mark_hint_seen(deny_fp)  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+    except Exception:
         return None
 
     name = Path(file_path).name
@@ -3586,9 +3585,9 @@ def _handle_reread_deny(
     # Build the symbol-read hint line using real indexed symbols when available.
     _symbol_read_line = f'  `token-goat read "{file_path}::SymbolName"` — extract one symbol'
     try:
-        from . import db as _db  # noqa: PLC0415
-        from . import read_replacement as _rr  # noqa: PLC0415
-        from .project import find_project  # noqa: PLC0415
+        from . import db as _db
+        from . import read_replacement as _rr
+        from .project import find_project
 
         _proj = find_project(Path(file_path).parent)
         if _proj is not None:
@@ -3608,7 +3607,7 @@ def _handle_reread_deny(
                         f'  `token-goat read "{_file_rel}::{_names[0]}"`{_rest}'
                         f" — extract one symbol"
                     )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     context = (
         f"`{name}` {window_str} is already in context (prior reads this session: {prior}). "
@@ -3641,7 +3640,7 @@ def _handle_task_output_read(
     Returns None to pass through when the path does not match, session_id is missing,
     or any I/O error occurs (fail-soft: never blocks a read due to an internal error).
     """
-    from .bash_compress import _task_output_id  # noqa: PLC0415
+    from .bash_compress import _task_output_id
 
     task_id = _task_output_id(str(file_path))
     if task_id is None:
@@ -3689,7 +3688,7 @@ def _handle_task_output_read(
         return None
 
     try:
-        from . import bash_cache as _bc  # noqa: PLC0415
+        from . import bash_cache as _bc
 
         meta = _bc.store_output(
             session_id,
@@ -3698,7 +3697,7 @@ def _handle_task_output_read(
             stderr="",
             exit_code=0,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("task-output: store_output failed for task_id=%s", task_id, exc_info=True)
         return None
 
@@ -3746,7 +3745,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
     global _call_index
     _call_index += 1
 
-    from .hints import build_read_hint  # noqa: PLC0415
+    from .hints import build_read_hint
 
     tool_name = payload.get("tool_name")
 
@@ -3762,8 +3761,8 @@ def pre_read(payload: HookPayload) -> HookResponse:
         if _fp_cmd and "&&" not in _fp_cmd:
             _fp_first = (_fp_cmd.split()[0] if _fp_cmd.split() else "").lower()
             if _fp_first and not _fp_first.startswith(("token-goat", "token_goat")):
-                from . import bash_detect as _bdet  # noqa: PLC0415
-                from . import bash_parser as _bpar  # noqa: PLC0415
+                from . import bash_detect as _bdet
+                from . import bash_parser as _bpar
                 if (
                     not _bdet.detect([_fp_first])
                     and _fp_first not in _bpar.READ_BINS
@@ -3942,7 +3941,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _ctx_fill = 0.0
         _eff_threshold = 500  # lines — default LARGE_FILE_LINE_THRESHOLD
         try:
-            from .compact import get_context_pressure as _gcp  # noqa: PLC0415
+            from .compact import get_context_pressure as _gcp
             _cp = _gcp(session_id, cache=cache)
             _ctx_tier = _cp.tier
             _ctx_fill = _cp.fill_fraction
@@ -3952,7 +3951,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 _eff_threshold = 200
             elif _ctx_tier == "warm":
                 _eff_threshold = 350
-        except Exception:  # noqa: BLE001 — fail-soft; never block a Read
+        except Exception:
             pass
 
         # Deny whole-file bash cat/bat on indexed files at warm+; flag set by _handle_bash_read_equivalent only for no-limit reads.
@@ -4019,7 +4018,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # Priority constants: CRITICAL=1 (edited-file), HIGH=2 (diff), MEDIUM=3 (re-read),
         # LOW=4 (grep/bash/glob dedup). At the end, hints are sorted by priority and
         # capped at HINT_MAX_PER_TOOL_CALL with a suppression footer when over the cap.
-        from .hints import (  # noqa: PLC0415
+        from .hints import (
             HINT_PRIORITY_CRITICAL,
             HINT_PRIORITY_HIGH,
             HINT_PRIORITY_LOW,
@@ -4077,7 +4076,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _predictive_unlock = False
         if entry is None or entry.last_edit_ts <= entry.last_read_ts:
             try:
-                from . import snapshots as _snap_mod  # noqa: PLC0415
+                from . import snapshots as _snap_mod
 
                 if _snap_mod.load_kind(session_id, file_path) == "predictive":
                     _predictive_unlock = True
@@ -4086,7 +4085,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 # KeyError: session entry missing from snapshot index
                 # AttributeError: missing snapshot module or attributes
                 _predictive_unlock = False
-            except Exception:  # noqa: BLE001 — unexpected snapshot errors
+            except Exception:
                 _LOG.debug("pre-read: predictive unlock check failed", exc_info=True)
                 _predictive_unlock = False
         if (entry is not None and entry.last_edit_ts > entry.last_read_ts) or _predictive_unlock:
@@ -4097,7 +4096,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
             _req_start: int | None = None
             _req_end: int | None = None
             try:
-                from .hints import DEFAULT_READ_LIMIT  # noqa: PLC0415
+                from .hints import DEFAULT_READ_LIMIT
 
                 _safe_offset = max(0, int(_raw_offset)) if _raw_offset is not None else 0
                 _safe_limit = max(0, int(_raw_limit)) if _raw_limit is not None else 0
@@ -4111,10 +4110,10 @@ def pre_read(payload: HookPayload) -> HookResponse:
             # before the normal diff-hint path — if it returns a response we
             # short-circuit the entire hint pipeline.
             try:
-                from . import config as _cfg_mod  # noqa: PLC0415
+                from . import config as _cfg_mod
 
                 _hints_cfg = _cfg_mod.load().hints
-            except Exception:  # noqa: BLE001 — fail-soft
+            except Exception:
                 _hints_cfg = None
             if _hints_cfg is not None and getattr(_hints_cfg, "serve_diff_on_reread", False):
                 _diff_serve_response = _try_diff_serve(
@@ -4143,7 +4142,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
                     # since the last emission (i.e., same edit, same diff, repeated re-read).
                     # The fingerprint includes the diff text so a new edit produces new
                     # content → new fingerprint → emits again.
-                    from .hints import _hint_fingerprint as _dhfp  # noqa: PLC0415
+                    from .hints import _hint_fingerprint as _dhfp
 
                     _diff_fp = _dhfp(diff_text, path=file_path)
                     if cache.has_hint_fingerprint(_diff_fp):
@@ -4207,9 +4206,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 if entry is not None:
                     _entry_read_count = entry.read_count
                     try:
-                        from . import config as _cfg_mod_bo  # noqa: PLC0415
+                        from . import config as _cfg_mod_bo
                         _bo_thresholds = _cfg_mod_bo.load().hints.backoff_thresholds
-                    except Exception:  # noqa: BLE001 — fail-soft
+                    except Exception:
                         _bo_thresholds = [1, 3, 10, 30]
                     if _bo_thresholds and _entry_read_count not in _bo_thresholds:
                         _backoff_active = True
@@ -4231,9 +4230,9 @@ def pre_read(payload: HookPayload) -> HookResponse:
                     _recent_suppress = False
                     if entry is not None and entry.last_read_call_index > 0:
                         try:
-                            from . import config as _cfg_mod_rr  # noqa: PLC0415
+                            from . import config as _cfg_mod_rr
                             _protect = _cfg_mod_rr.load().hints.protect_recent_reads
-                        except Exception:  # noqa: BLE001 — fail-soft
+                        except Exception:
                             _protect = 4
                         if _protect > 0 and (_call_index - entry.last_read_call_index) <= _protect:
                             _recent_suppress = True
@@ -4277,7 +4276,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
                             large_file_line_threshold=_eff_threshold,
                         )
             if hint:
-                from .hints import _hint_fingerprint  # noqa: PLC0415
+                from .hints import _hint_fingerprint
 
                 hint_text = str(hint)
                 fingerprint = _hint_fingerprint(hint_text, path=file_path)
@@ -4305,7 +4304,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
                         _record_session_hint_impact(file_path, hint)
                         # Curator: record emission keyed by path — only after confirming the
                         # hint passes fingerprint dedup and will actually enter context.
-                        from .hints import _record_hint_emitted as _rhe  # noqa: PLC0415
+                        from .hints import _record_hint_emitted as _rhe
                         _rhe(cache, session._normalize_path(file_path))  # type: ignore[attr-defined]  # private function on lazy-loaded session module
                         # Per-file cooldown: mark this file as already hinted so
                         # subsequent reads (without an intervening edit) are suppressed.
@@ -4330,7 +4329,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
             # already present from the diff or session hint paths above.
             if not hint_items and entry is not None and entry.last_edit_ts > entry.last_read_ts:
                 _fname = sanitize_log_str(file_path, max_len=256)
-                from .hints import _hint_fingerprint as _hfp  # noqa: PLC0415
+                from .hints import _hint_fingerprint as _hfp
                 _changed_note = (
                     f"Note: `{sanitize_log_str(file_path, max_len=200)}` was edited since you last read it. "
                     f"The version you may remember from context may be stale."
@@ -4393,7 +4392,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
             except (TypeError, ValueError):
                 _surg_hint = None
             if _surg_hint:
-                from .hints import _hint_fingerprint  # noqa: PLC0415
+                from .hints import _hint_fingerprint
                 _surg_fp = _hint_fingerprint(_surg_hint, path=file_path)
                 # Surgical hints are LOW priority: informational, not urgent.
                 _surg_parts: list[str] = []
@@ -4415,7 +4414,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         if not _is_edited and not _is_new_session:
             git_ctx = _build_git_hint(cwd, file_path)
             if git_ctx:
-                from .hints import _hint_fingerprint  # noqa: PLC0415
+                from .hints import _hint_fingerprint
                 _git_fp = _hint_fingerprint(git_ctx, path=file_path)
                 # Git history hints are LOW priority: supplemental context.
                 _git_parts: list[str] = []
@@ -4429,7 +4428,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # is intentionally omitted from the fingerprint to keep the dedup stable
         # as count increases past the threshold).
         from .hints import _hint_fingerprint as _hfp2
-        from .hints import build_high_frequency_hint  # noqa: PLC0415
+        from .hints import build_high_frequency_hint
         _freq_item = build_high_frequency_hint(cache, file_path)
         if _freq_item is not None:
             _freq_fp = _hfp2(_freq_item.text, path=file_path)
@@ -4446,8 +4445,8 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # Test-file hint: when reading a test file, check if the corresponding
         # implementation file has been read this session. If not, suggest reading it first.
         try:
-            from .hints import build_test_file_hint  # noqa: PLC0415
-            from .project import find_project as _find_project_for_test  # noqa: PLC0415
+            from .hints import build_test_file_hint
+            from .project import find_project as _find_project_for_test
 
             _cwd_path = validate_cwd(cwd, caller="test-file-hint")
             if _cwd_path is not None:
@@ -4468,7 +4467,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
             # AttributeError: missing project attributes
             # ValueError: path resolution failed
             pass
-        except Exception:  # noqa: BLE001 — fail-soft
+        except Exception:
             _LOG.debug("test-file-hint: unexpected exception", exc_info=True)
 
         # Context-pressure urgency note: emit once per session per tier transition
@@ -4479,7 +4478,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         # many files are subsequently read.
         if _ctx_tier in ("warm", "hot", "critical") and cache is not None:
             try:
-                from .hints import _hint_fingerprint as _cpfp  # noqa: PLC0415
+                from .hints import _hint_fingerprint as _cpfp
                 _pct = int(_ctx_fill * 100)
                 if _ctx_tier == "critical":
                     _cp_text = (
@@ -4509,7 +4508,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
                         "pre-read: context-pressure urgency note (tier=%s, fill=%.2f)",
                         _ctx_tier, _ctx_fill,
                     )
-            except Exception:  # noqa: BLE001 — fail-soft
+            except Exception:
                 pass
 
         if not hint_items:
@@ -4517,7 +4516,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
             return CONTINUE()
 
         # Compress duplicate hints by content hash: replace repeats with short stubs.
-        from .hints import dedup_hints  # noqa: PLC0415
+        from .hints import dedup_hints
         deduped_items = dedup_hints(hint_items, cache)
 
         # Apply priority ordering and cap: sort by priority, emit at most
@@ -4559,7 +4558,7 @@ def _check_ignored_hint_by_key(cache: object, key: str, label: str) -> None:
                     label, cache.hints_ignored,  # type: ignore[union-attr, attr-defined]  # same
                 )
                 break
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         pass
 
 
@@ -4581,7 +4580,7 @@ def _check_ignored_hint(cache: object, file_path: str) -> None:
     try:
         _sess = _get_session()
         norm = _sess._normalize_path(file_path)  # type: ignore[attr-defined]  # private function on lazy-loaded session module
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         return
     _check_ignored_hint_by_key(cache, norm, sanitize_log_str(file_path))
 
@@ -4604,9 +4603,9 @@ def _check_ignored_bash_hint(cache: object, command: str, cwd: str | None = None
     curator bookkeeping.
     """
     try:
-        from . import bash_cache as _bc  # noqa: PLC0415
+        from . import bash_cache as _bc
         cmd_sha = _bc.command_hash(command, cwd)
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         return
     _check_ignored_hint_by_key(cache, cmd_sha, f"bash cmd {sanitize_log_str(command, max_len=60)}")
 
@@ -4727,7 +4726,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                     _p = Path(file_path)
                     if _p.is_file() and 0 < _p.stat().st_size <= _CONTENT_DEDUP_MAX_BYTES:
                         _raw = _p.read_bytes()
-                        _sha16 = hashlib.sha1(_raw, usedforsecurity=False).hexdigest()[:16]  # noqa: S324
+                        _sha16 = hashlib.sha1(_raw, usedforsecurity=False).hexdigest()[:16]
                         _norm = str(_p.resolve()).replace("\\", "/")
                         cache.register_file_content(_sha16, _norm)
                         # SHA256 for cross-tool dedup with `cat FILE`.
@@ -4735,7 +4734,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                         # is stable across Windows text-mode / Unix LF variations.
                         _sha256 = hashlib.sha256(_raw.replace(b"\r\n", b"\n")).hexdigest()
                         cache.record_read_hash(_norm, _sha256)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
             # Persist curator mutations (hints_ignored, recent_hints) unconditionally.
             # _try_snapshot only saves when it stores a snapshot, so for files that
@@ -4753,12 +4752,12 @@ def post_read(payload: HookPayload) -> HookResponse:
                 if _partial is not None:
                     _pr_start, _pr_end, _pr_total = _partial
                     _pr_ext = Path(file_path).suffix.lower()
-                    import os as _os  # noqa: PLC0415
+                    import os as _os
                     _pr_disabled = _os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in {"0", "false", "no", "off"}
                     try:
-                        from . import config as _cfg_trunc  # noqa: PLC0415
+                        from . import config as _cfg_trunc
                         _pr_min = _cfg_trunc.load().hints.truncated_read_min_lines
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         _pr_min = 200
                     _pr_skip = (
                         (_pr_start == 1 and _pr_end >= _pr_total)
@@ -4783,21 +4782,21 @@ def post_read(payload: HookPayload) -> HookResponse:
                     _note = f"[token-goat] memory file: {_n_stripped} frontmatter lines stripped\n"
                     return {"continue": True, "systemMessage": _note + _mem_body}
             # Structural code compression: for large source files replace verbatim content with a skeleton that keeps only signatures and imports.
-            import os as _os_cc  # noqa: PLC0415
+            import os as _os_cc
             _cc_disabled = _os_cc.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in {"0", "false", "no", "off"}
             if not _cc_disabled and _resp_text:
                 _cc_ext = Path(file_path).suffix.lower()
                 _cc_line_count = _resp_text.count("\n") + 1
                 try:
-                    from . import config as _cc_cfg_mod  # noqa: PLC0415
+                    from . import config as _cc_cfg_mod
                     _cc_raw_min = _cc_cfg_mod.load().post_read_code_compress.min_lines
                     _cc_min: int = _cc_raw_min if is_real_int(_cc_raw_min) else 200
-                except Exception:  # noqa: BLE001
+                except Exception:
                     _cc_min = 200
                 if _cc_line_count >= _cc_min:
                     try:
                         from .code_compress import (
-                            compress_to_skeleton as _compress_skel,  # noqa: PLC0415
+                            compress_to_skeleton as _compress_skel,
                         )
                         _skeleton = _compress_skel(_resp_text, _cc_ext)
                         if _skeleton is not None:
@@ -4807,7 +4806,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                                 f' use `token-goat read "{file_path}::SymbolName"` for full body]'
                             )
                             return {"continue": True, "systemMessage": _skeleton + _cc_footer}
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
     elif tool_name == "Grep":
         pattern = tool_input.get("pattern")
@@ -4834,7 +4833,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                 if _grep_text:
                     normalized = _grep_text.strip()
                     if normalized:
-                        from .hints import _sha256_hex  # noqa: PLC0415
+                        from .hints import _sha256_hex
                         result_hash = _sha256_hex(normalized, 8)
                         if cache is not None:
                             cache.record_grep_result_hash(result_hash, pattern)
@@ -4842,13 +4841,13 @@ def post_read(payload: HookPayload) -> HookResponse:
                                 "post-read: recorded grep result hash=%s for pattern=%s",
                                 result_hash, sanitize_opt(pattern),
                             )
-            except Exception:  # noqa: BLE001 — fail-soft
+            except Exception:
                 _LOG.debug("post-read: grep result hash computation failed", exc_info=True)
             # Cache the result text for dedup serving on the next identical Grep call.
             with contextlib.suppress(Exception):
                 if _grep_text and len(_grep_text) <= _GREP_RESULT_CACHE_MAX_BYTES:
-                    from . import bash_cache as _bc2  # noqa: PLC0415
-                    from . import config as _cfg_mod2  # noqa: PLC0415
+                    from . import bash_cache as _bc2
+                    from . import config as _cfg_mod2
                     _glob_filter = tool_input.get("glob") if isinstance(tool_input.get("glob"), str) else None
                     _type_filter = tool_input.get("type") if isinstance(tool_input.get("type"), str) else None
                     _output_mode = tool_input.get("output_mode") if isinstance(tool_input.get("output_mode"), str) else None
@@ -4873,7 +4872,7 @@ def post_read(payload: HookPayload) -> HookResponse:
             # Item 19: persist glob result to bash_cache for dedup serving.
             if output_text:
                 try:
-                    from . import bash_cache as _bc  # noqa: PLC0415
+                    from . import bash_cache as _bc
                     from . import config as _cfg_mod
                     _bc_cfg = _cfg_mod.load().bash_compress
                     _bc.store_glob_result(
@@ -4881,7 +4880,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                         max_total_bytes=_bc_cfg.cache_max_bytes,
                         max_file_count=_bc_cfg.cache_max_file_count,
                     )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
             _LOG.debug(
                 "post-read: recorded Glob pattern=%s path=%s result_count=%s",
@@ -5001,7 +5000,7 @@ _session_module = None  # cached on first access for lazy-load
 def _get_session() -> types.ModuleType:
     global _session_module
     if _session_module is None:
-        from . import session as _s  # noqa: PLC0415
+        from . import session as _s
         _session_module = _s
     return _session_module  # type: ignore[return-value]  # _session_module starts as None but is set above before returning
 
@@ -5072,7 +5071,7 @@ def _unwrap_compress_command(cmd: str) -> str:
         # Cheap rejection: avoid shlex.split on the (overwhelming) common case
         # where the command is not a wrapper at all.
         return cmd
-    import shlex  # noqa: PLC0415
+    import shlex
 
     try:
         argv = shlex.split(cmd, posix=True)
@@ -5167,7 +5166,7 @@ def _extract_bash_response(payload: HookPayload) -> tuple[str, str, int | None]:
         # are harness-version-specific extras), but the runtime payload may
         # carry them; ``dict.get`` on a TypedDict instance is type-erased so
         # we route through a ``cast`` to keep mypy strict elsewhere.
-        from typing import cast as _cast  # noqa: PLC0415
+        from typing import cast as _cast
 
         plain: dict[str, object] = _cast("dict[str, object]", payload)
         if "exit_code" in plain:
@@ -5269,7 +5268,7 @@ def _is_binary_output(stdout: str, stderr: str) -> bool:
 
 def _is_recon_command(cmd: str) -> bool:
     """True when *cmd* is a directory-listing/exploration command (ls, eza, tree, fd)."""
-    import shlex as _shlex  # noqa: PLC0415
+    import shlex as _shlex
     try:
         tokens = _shlex.split(cmd.strip(), posix=True)
     except ValueError:
@@ -5411,7 +5410,7 @@ def _get_head_sha(cwd: str | None) -> str | None:
     is not a git repository, the repo has no commits yet, or the subprocess
     call fails for any reason.  Never raises.
     """
-    import subprocess as _subp  # noqa: PLC0415
+    import subprocess as _subp
     try:
         kwargs: dict[str, object] = {"capture_output": True, "text": True, "timeout": 5, "check": False}
         if cwd:
@@ -5421,7 +5420,7 @@ def _get_head_sha(cwd: str | None) -> str | None:
             sha = result.stdout.strip()
             if sha:
                 return sha
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return None
 
@@ -5516,7 +5515,7 @@ def _summarize_junit_xml(stdout: str) -> str | None:
     multiple ``<testsuite>`` children.  Aggregates counts across all suites and lists up
     to 10 failure/error test cases with their messages (truncated at 160 chars).
     """
-    import xml.etree.ElementTree as ET  # noqa: PLC0415
+    import xml.etree.ElementTree as ET
     try:
         root = ET.fromstring(stdout.strip())
     except ET.ParseError:
@@ -5653,7 +5652,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             _already_injected = _session_cache.has_hint_fingerprint(_RECON_MAP_KEY)
             _prev_failed = _session_cache.has_hint_fingerprint(_RECON_FAIL_KEY)
             if _recon_n >= 3 and not _already_injected and not _prev_failed:
-                import subprocess as _subp  # noqa: PLC0415
+                import subprocess as _subp
                 _run_kw: dict[str, object] = {"capture_output": True, "text": True, "timeout": 10, "check": False}
                 if cwd:
                     _run_kw["cwd"] = cwd
@@ -5678,7 +5677,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 _session_cache.mark_hint_seen(_RECON_MAP_KEY)
             with contextlib.suppress(Exception):
                 _sess_mod.save(_session_cache)  # persist @recon_seen count and any gate updates
-        except Exception:  # noqa: BLE001 — fail-soft; timeout lands here too → @recon_map_fail set above
+        except Exception:
             _session_cache.mark_hint_seen(_RECON_FAIL_KEY)  # prevent retry on timeout
             with contextlib.suppress(Exception):
                 _sess_mod.save(_session_cache)
@@ -5691,7 +5690,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # the harness only delivers raw text, not a structured match count.
     if _sess_mod is not None and _session_cache is not None:
         try:
-            from . import bash_parser as _bp  # noqa: PLC0415
+            from . import bash_parser as _bp
             _grep_intent = _bp.parse(display_cmd)
             if _grep_intent.kind == "grep" and _grep_intent.pattern:
                 _grep_result_count = sum(1 for _ln in stdout.splitlines() if _ln.strip()) if stdout else 0
@@ -5706,7 +5705,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     "post-bash: recorded grep pattern=%r path=%r result_count=%d",
                     _grep_intent.pattern, _grep_intent.target_path, _grep_result_count,
                 )
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: grep session record failed", exc_info=True)
 
     # Read-equivalent session tracking: when the Bash command is a read-like
@@ -5722,7 +5721,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # permission denied) should not be recorded as a successful read.
     if _sess_mod is not None and _session_cache is not None and exit_code in (None, 0):
         try:
-            from . import bash_parser as _bp  # noqa: PLC0415
+            from . import bash_parser as _bp
             _read_intent = _bp.parse(display_cmd)
             if (
                 _read_intent.kind == "read"
@@ -5745,7 +5744,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     "post-bash: recorded read-equivalent paths=%r offset=%s limit=%s",
                     _all_paths, _norm_offset, _read_intent.limit,
                 )
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: read-equivalent session record failed", exc_info=True)
 
     # Cross-tool content dedup: when the Bash command is a whole-file `cat FILE`
@@ -5754,9 +5753,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Only matches plain `cat FILE` — head/tail/sed are skipped (offset/limit set).
     if _sess_mod is not None and _session_cache is not None and exit_code in (None, 0) and stdout:
         try:
-            import shlex as _shlex  # noqa: PLC0415
+            import shlex as _shlex
 
-            from . import bash_parser as _bp  # noqa: PLC0415
+            from . import bash_parser as _bp
             _ct_intent = _bp.parse(display_cmd)
             if (
                 _ct_intent.kind == "read"
@@ -5800,7 +5799,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             " — suppressed duplicate (use Read tool directly)"
                         ),
                     }
-        except Exception:  # noqa: BLE001 — fail-soft
+        except Exception:
             _LOG.debug("post-bash: cross-tool content dedup check failed", exc_info=True)
 
     # Log-file content cache: suppress repeated reads of unchanged log files.
@@ -5813,9 +5812,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # to preserve Windows backslashes that posix=True shlex would strip (C:\foo → C:foo).
     if _sess_mod is not None and _session_cache is not None and exit_code in (None, 0) and stdout:
         try:
-            import shlex as _shlex_lf  # noqa: PLC0415
+            import shlex as _shlex_lf
 
-            from . import bash_parser as _bp  # noqa: PLC0415
+            from . import bash_parser as _bp
 
             _lf_intent = _bp.parse(display_cmd)
             if (
@@ -5872,7 +5871,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             _session_cache.record_log_read(_lf_norm, _lf_size, _lf_mtime, _lf_hash)
                             with contextlib.suppress(Exception):
                                 _sess_mod.save(_session_cache)
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: log-file cache check failed", exc_info=True)
 
     # Sleep / watch / poll-loop suppression (Iter 16):
@@ -5883,9 +5882,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Only fires when exit_code is 0 or None (failures pass through unchanged).
     if exit_code in (None, 0):
         try:
-            import shlex as _shlex_sp  # noqa: PLC0415
+            import shlex as _shlex_sp
 
-            from . import bash_compress as _bc_sp  # noqa: PLC0415
+            from . import bash_compress as _bc_sp
             try:
                 _sp_argv = _shlex_sp.split(display_cmd.split("|")[0].strip(), posix=False)
             except ValueError:
@@ -5900,7 +5899,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 # Non-empty stdout: store output so bash-output recall works, emit one-liner.
                 _sp_out_id: str | None = None
                 if session_id:
-                    from . import bash_cache as _bc_sp_cache  # noqa: PLC0415
+                    from . import bash_cache as _bc_sp_cache
                     with contextlib.suppress(Exception):
                         _sp_meta = _bc_sp_cache.store_output(
                             session_id, display_cmd, stdout, stderr, exit_code, cwd=cwd, min_cache_bytes=0,
@@ -5920,7 +5919,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             if _sp_watch_cmd is not None:
                 _sp_out_id = None
                 if session_id:
-                    from . import bash_cache as _bc_sp_cache  # noqa: PLC0415
+                    from . import bash_cache as _bc_sp_cache
                     with contextlib.suppress(Exception):
                         _sp_meta = _bc_sp_cache.store_output(
                             session_id, display_cmd, stdout, stderr, exit_code, cwd=cwd, min_cache_bytes=0,
@@ -5941,7 +5940,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             if _bc_sp._is_poll_loop_cmd(display_cmd):
                 _sp_out_id = None
                 if session_id:
-                    from . import bash_cache as _bc_sp_cache  # noqa: PLC0415
+                    from . import bash_cache as _bc_sp_cache
                     with contextlib.suppress(Exception):
                         _sp_meta = _bc_sp_cache.store_output(
                             session_id, display_cmd, stdout, stderr, exit_code, cwd=cwd, min_cache_bytes=0,
@@ -5959,7 +5958,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         f" ({_sp_exit_info})"
                     ),
                 }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: sleep/watch/poll suppress failed", exc_info=True)
 
     # Package manager install output compression:
@@ -5971,9 +5970,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Fires for exit_code in (None, 0, 1) — 1 covers partial-install failures.
     if exit_code in (None, 0, 1) and stdout and len(stdout.splitlines()) >= _PKG_INSTALL_MIN_LINES:
         try:
-            import shlex as _shlex_pkg  # noqa: PLC0415
+            import shlex as _shlex_pkg
 
-            from . import bash_compress as _bc_pkg  # noqa: PLC0415
+            from . import bash_compress as _bc_pkg
 
             try:
                 _pkg_argv = _shlex_pkg.split(display_cmd.split("|")[0].strip(), posix=False)
@@ -6017,7 +6016,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
 
                 _pkg_out_id: str | None = None
                 if session_id:
-                    from . import bash_cache as _bc_pkg_cache  # noqa: PLC0415
+                    from . import bash_cache as _bc_pkg_cache
                     with contextlib.suppress(Exception):
                         _pkg_meta = _bc_pkg_cache.store_output(
                             session_id, display_cmd, stdout, stderr, exit_code,
@@ -6052,7 +6051,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     "continue": True,
                     "systemMessage": "\n".join(_pkg_parts),
                 }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: pkg install compression failed", exc_info=True)
 
     # Environment variable listing compression:
@@ -6062,10 +6061,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Fires when output reaches _ENV_LIST_MIN_LINES (10) lines on a successful run.
     if exit_code in (None, 0) and stdout and len(stdout.splitlines()) >= _ENV_LIST_MIN_LINES:
         try:
-            import re as _re_env  # noqa: PLC0415
-            import shlex as _shlex_env  # noqa: PLC0415
+            import re as _re_env
+            import shlex as _shlex_env
 
-            from . import bash_compress as _bc_env  # noqa: PLC0415
+            from . import bash_compress as _bc_env
 
             try:
                 _env_argv = _shlex_env.split(display_cmd.split("|")[0].strip(), posix=False)
@@ -6125,7 +6124,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
 
                     _env_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_env_cache  # noqa: PLC0415
+                        from . import bash_cache as _bc_env_cache
                         with contextlib.suppress(Exception):
                             _env_meta = _bc_env_cache.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -6161,7 +6160,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         "continue": True,
                         "systemMessage": "\n".join(_env_msg_parts),
                     }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: env list compression failed", exc_info=True)
 
     # Container log compression:
@@ -6171,9 +6170,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # successful run (exit_code in (None, 0)).
     if exit_code in (None, 0) and stdout and len(stdout.splitlines()) >= _CONTAINER_LOG_MIN_LINES:
         try:
-            import shlex as _shlex_cl  # noqa: PLC0415
+            import shlex as _shlex_cl
 
-            from . import bash_compress as _bc_cl  # noqa: PLC0415
+            from . import bash_compress as _bc_cl
 
             try:
                 _cl_argv = _shlex_cl.split(display_cmd.split("|")[0].strip(), posix=False)
@@ -6223,7 +6222,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
 
                     _cl_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_cl_cache  # noqa: PLC0415
+                        from . import bash_cache as _bc_cl_cache
                         with contextlib.suppress(Exception):
                             _cl_meta = _bc_cl_cache.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -6261,7 +6260,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         "continue": True,
                         "systemMessage": "\n".join(_cl_msg_parts),
                     }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: container log compression failed", exc_info=True)
 
     # Git log output compression (Iter 21):
@@ -6271,10 +6270,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Only fires on successful commands (exit_code in (None, 0)).
     if exit_code in (None, 0) and stdout and display_cmd.lstrip().startswith("git"):
         try:
-            import re as _re_gl  # noqa: PLC0415
-            import shlex as _shlex_gl  # noqa: PLC0415
+            import re as _re_gl
+            import shlex as _shlex_gl
 
-            from . import bash_compress as _bc_gl  # noqa: PLC0415
+            from . import bash_compress as _bc_gl
 
             try:
                 _gl_argv = _shlex_gl.split(display_cmd.split("|")[0].strip(), posix=False)
@@ -6297,7 +6296,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     else:
                         _gl_out_id: str | None = None
                         if session_id:
-                            from . import bash_cache as _bc_gl_cache  # noqa: PLC0415
+                            from . import bash_cache as _bc_gl_cache
                             with contextlib.suppress(Exception):
                                 _gl_meta = _bc_gl_cache.store_output(
                                     session_id, display_cmd, stdout, stderr, exit_code,
@@ -6326,7 +6325,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             "continue": True,
                             "systemMessage": "\n".join(_gl_msg_parts),
                         }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: git log compression failed", exc_info=True)
 
     # Verbose pytest PASSED-line suppression:
@@ -6339,10 +6338,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # compressed here (the iter-18 block only fires when "FAILED" is present).
     if exit_code in (None, 0, 1) and stdout and len(stdout.splitlines()) >= _VERBOSE_TEST_MIN_LINES:
         try:
-            import shlex as _shlex_vt  # noqa: PLC0415
+            import shlex as _shlex_vt
 
-            from .bash_compress import _VT_PASSED_LINE_RE as _vt_passed_re  # noqa: PLC0415
-            from .bash_compress import _is_verbose_test_cmd as _vt_check  # noqa: PLC0415
+            from .bash_compress import _VT_PASSED_LINE_RE as _vt_passed_re
+            from .bash_compress import _is_verbose_test_cmd as _vt_check
 
             _vt_argv = _shlex_vt.split(display_cmd, posix=True)
             if _vt_argv and _vt_check(_vt_argv):
@@ -6357,7 +6356,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 if _vt_suppressed > 0:
                     _vt_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_vt  # noqa: PLC0415
+                        from . import bash_cache as _bc_vt
                         with contextlib.suppress(Exception):
                             _vt_meta = _bc_vt.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -6385,7 +6384,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
                     return {"continue": True, "systemMessage": _vt_msg}
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: verbose pytest suppress failed", exc_info=True)
 
     # Cargo compilation output compression:
@@ -6397,11 +6396,11 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # because the outer guard limits to (None, 0, 1).
     if exit_code in (None, 0, 1) and stdout and len(stdout.splitlines()) >= _CARGO_COMPILE_MIN_LINES:
         try:
-            import re as _re_cg  # noqa: PLC0415
-            import shlex as _shlex_cg  # noqa: PLC0415
-            import sys as _sys_cg  # noqa: PLC0415
+            import re as _re_cg
+            import shlex as _shlex_cg
+            import sys as _sys_cg
 
-            from .bash_compress import _is_cargo_compile_cmd as _cg_check  # noqa: PLC0415
+            from .bash_compress import _is_cargo_compile_cmd as _cg_check
 
             _cg_argv = _shlex_cg.split(display_cmd, posix=(_sys_cg.platform != "win32"))
             if _cg_argv and _cg_check(_cg_argv):
@@ -6473,7 +6472,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 if _cg_should_compress:
                     _cg_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_cg  # noqa: PLC0415
+                        from . import bash_cache as _bc_cg
                         with contextlib.suppress(Exception):
                             _cg_meta = _bc_cg.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -6522,17 +6521,17 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
                     return {"continue": True, "systemMessage": _cg_msg}
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: cargo compile compression failed", exc_info=True)
 
     # make/cmake/ninja compression: suppress progress lines, keep errors/warnings; fires at >= _MAKE_MIN_LINES lines.
     if stdout and len(stdout.splitlines()) >= _MAKE_MIN_LINES and exit_code in (None, 0, 1, 2):
         try:
-            import re as _re_mk  # noqa: PLC0415
-            import shlex as _shlex_mk  # noqa: PLC0415
-            import sys as _sys_mk  # noqa: PLC0415
+            import re as _re_mk
+            import shlex as _shlex_mk
+            import sys as _sys_mk
 
-            from .bash_compress import _is_make_cmd as _mk_check  # noqa: PLC0415
+            from .bash_compress import _is_make_cmd as _mk_check
 
             _mk_argv = _shlex_mk.split(display_cmd, posix=(_sys_mk.platform != "win32"))
             if _mk_argv and _mk_check(_mk_argv):
@@ -6552,7 +6551,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 if _mk_suppressed > 0:
                     _mk_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_mk  # noqa: PLC0415
+                        from . import bash_cache as _bc_mk
                         with contextlib.suppress(Exception):
                             _mk_meta = _bc_mk.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -6580,16 +6579,16 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
                     return {"continue": True, "systemMessage": _mk_msg}
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: make compression failed", exc_info=True)
 
     # go test -v compression: suppress clean-pass RUN/PASS pairs, keep tests with logs or failures.
     if stdout and len(stdout.splitlines()) >= _GO_TEST_V_MIN_LINES and exit_code in (None, 0, 1):
         try:
-            import shlex as _shlex_go  # noqa: PLC0415
-            import sys as _sys_go  # noqa: PLC0415
+            import shlex as _shlex_go
+            import sys as _sys_go
 
-            from .bash_compress import _is_go_test_verbose_cmd as _go_check  # noqa: PLC0415
+            from .bash_compress import _is_go_test_verbose_cmd as _go_check
 
             _go_argv = _shlex_go.split(display_cmd, posix=(_sys_go.platform != "win32"))
             if _go_argv and _go_check(_go_argv):
@@ -6670,7 +6669,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 if _go_hidden > 0:
                     _go_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_go  # noqa: PLC0415
+                        from . import bash_cache as _bc_go
                         with contextlib.suppress(Exception):
                             _go_meta = _bc_go.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -6697,17 +6696,17 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
                     return {"continue": True, "systemMessage": _go_msg}
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: go test -v compression failed", exc_info=True)
 
     # tsc compression: strip timestamp/watch noise, keep diagnostics + summary; fires at >= _TSC_MIN_LINES lines.
     if stdout and len(stdout.splitlines()) >= _TSC_MIN_LINES:
         try:
-            import re as _re_tsc  # noqa: PLC0415
-            import shlex as _shlex_tsc  # noqa: PLC0415
-            import sys as _sys_tsc  # noqa: PLC0415
+            import re as _re_tsc
+            import shlex as _shlex_tsc
+            import sys as _sys_tsc
 
-            from .bash_compress import _is_tsc_cmd as _tsc_check  # noqa: PLC0415
+            from .bash_compress import _is_tsc_cmd as _tsc_check
 
             _tsc_argv = _shlex_tsc.split(display_cmd, posix=(_sys_tsc.platform != "win32"))
             if _tsc_argv and _tsc_check(_tsc_argv):
@@ -6731,7 +6730,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 else:
                     _tsc_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_tsc  # noqa: PLC0415
+                        from . import bash_cache as _bc_tsc
                         with contextlib.suppress(Exception):
                             _tsc_meta = _bc_tsc.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -6791,7 +6790,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
                     return {"continue": True, "systemMessage": _tsc_msg}
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: tsc compression failed", exc_info=True)
 
     # Pytest failure traceback suppression (Iter 18):
@@ -6809,7 +6808,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
         try:
             _pt_out_id: str | None = None
             if session_id:
-                from . import bash_cache as _bc_pt  # noqa: PLC0415
+                from . import bash_cache as _bc_pt
                 with contextlib.suppress(Exception):
                     _pt_meta = _bc_pt.store_output(
                         session_id, display_cmd, stdout, stderr, exit_code,
@@ -6832,7 +6831,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     "continue": True,
                     "systemMessage": _pt_compressed,
                 }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: pytest compression failed", exc_info=True)
 
     # Large JSON/XML output summarization (Iter 17):
@@ -6841,13 +6840,13 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Only fires on successful commands (exit_code in (None, 0)) with non-empty stdout.
     if exit_code in (None, 0) and stdout and _JSON_SUMMARY_MIN_BYTES <= len(stdout) <= _JSON_SUMMARY_MAX_BYTES:
         try:
-            import json as _json  # noqa: PLC0415
+            import json as _json
 
             _jx_data: object = _json.loads(stdout)
             if isinstance(_jx_data, (dict, list)):
                 _jx_out_id: str | None = None
                 if session_id:
-                    from . import bash_cache as _bc_jx  # noqa: PLC0415
+                    from . import bash_cache as _bc_jx
                     with contextlib.suppress(Exception):
                         _jx_meta = _bc_jx.store_output(
                             session_id, display_cmd, stdout, stderr, exit_code,
@@ -6878,11 +6877,11 @@ def post_bash(payload: HookPayload) -> HookResponse:
             _jx_is_xml = _jx_stripped[:5] == "<?xml" or (
                 _jx_stripped[:1] == "<" and len(_jx_stripped) > 1 and _jx_stripped[1:2].isalpha()
             )
-            from . import bash_compress as _bc_jx_junit  # noqa: PLC0415
+            from . import bash_compress as _bc_jx_junit
             if _jx_is_xml and not _bc_jx_junit._is_junit_xml_output(stdout):
                 _jx_out_id = None
                 if session_id:
-                    from . import bash_cache as _bc_jx  # noqa: PLC0415
+                    from . import bash_cache as _bc_jx
                     with contextlib.suppress(Exception):
                         _jx_meta = _bc_jx.store_output(
                             session_id, display_cmd, stdout, stderr, exit_code,
@@ -6901,7 +6900,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         f" — stored{_jx_recall}"
                     ),
                 }
-        except Exception:  # noqa: BLE001 — fail-soft
+        except Exception:
             _LOG.debug("post-bash: XML detection failed", exc_info=True)
 
     # Python script traceback compression (Iter 31):
@@ -6917,10 +6916,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
         and not _is_pytest_command(display_cmd)
     ):
         try:
-            import shlex as _shlex_py  # noqa: PLC0415
-            import sys as _sys_py  # noqa: PLC0415
+            import shlex as _shlex_py
+            import sys as _sys_py
 
-            from .bash_compress import _is_python_script_cmd as _py_check  # noqa: PLC0415
+            from .bash_compress import _is_python_script_cmd as _py_check
 
             _py_argv = _shlex_py.split(display_cmd, posix=(_sys_py.platform != "win32"))
             if _py_argv and _py_check(_py_argv):
@@ -6934,7 +6933,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 )
                 _py_out_id: str | None = None
                 if session_id:
-                    from . import bash_cache as _bc_py  # noqa: PLC0415
+                    from . import bash_cache as _bc_py
                     with contextlib.suppress(Exception):
                         _py_meta = _bc_py.store_output(
                             session_id, display_cmd, stdout, stderr, exit_code,
@@ -6960,7 +6959,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     with contextlib.suppress(Exception):
                         _sess_mod.save(_session_cache)
                 return {"continue": True, "systemMessage": _py_msg}
-        except Exception:  # noqa: BLE001 -- fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: python traceback compression failed", exc_info=True)
 
     # Minified-file grep elision (Iter 32): when rg/grep/git-grep hits a minified
@@ -6968,10 +6967,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # and store the full output as a bash-output blob for recall.
     if stdout:
         try:
-            import shlex as _shlex_min  # noqa: PLC0415
-            import sys as _sys_min  # noqa: PLC0415
+            import shlex as _shlex_min
+            import sys as _sys_min
 
-            from .bash_compress import (  # noqa: PLC0415
+            from .bash_compress import (
                 _has_minified_grep_hit as _min_grep_hit,
             )
             from .bash_compress import (
@@ -6984,7 +6983,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             if _min_argv and _min_is_grep(_min_argv) and _min_grep_hit(stdout):
                 _min_out_id: str | None = None
                 if session_id:
-                    from . import bash_cache as _bc_min  # noqa: PLC0415
+                    from . import bash_cache as _bc_min
                     with contextlib.suppress(Exception):
                         _min_meta = _bc_min.store_output(
                             session_id, display_cmd, stdout, stderr, exit_code,
@@ -7029,7 +7028,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         "continue": True,
                         "systemMessage": _min_header + "\n".join(_min_kept) + _min_recall,
                     }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: minified grep elision failed", exc_info=True)
 
     # JUnit XML summary (Iter 35):
@@ -7039,14 +7038,14 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Fires before the large-stdout fallback so verbose stacktrace XML is caught here.
     if stdout:
         try:
-            from . import bash_compress as _bc_junit  # noqa: PLC0415
+            from . import bash_compress as _bc_junit
             if (_bc_junit._is_junit_xml_output(stdout)
                     and (len(stdout.splitlines()) >= 10 or len(stdout) >= 4096)):
                 _junit_summary = _summarize_junit_xml(stdout)
                 if _junit_summary is not None:
                     _junit_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_junit_cache  # noqa: PLC0415
+                        from . import bash_cache as _bc_junit_cache
                         with contextlib.suppress(Exception):
                             _junit_meta = _bc_junit_cache.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -7061,7 +7060,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         "continue": True,
                         "systemMessage": _junit_summary + _junit_recall,
                     }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: JUnit XML summary failed", exc_info=True)
 
     # Jest / Vitest verbose output (Iter 36):
@@ -7072,9 +7071,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # pre-bash JestFilter / VitestFilter (which only fires on direct binary names).
     if stdout and len(stdout.splitlines()) >= 5:
         try:
-            import shlex as _shlex_jest  # noqa: PLC0415
+            import shlex as _shlex_jest
 
-            from . import bash_compress as _bc_jest  # noqa: PLC0415
+            from . import bash_compress as _bc_jest
             try:
                 _jest_argv = _shlex_jest.split(display_cmd, posix=False)
             except ValueError:
@@ -7092,7 +7091,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     _jest_saved = _jest_lines_orig - _jest_lines_new
                     _jest_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_jest_cache  # noqa: PLC0415
+                        from . import bash_cache as _bc_jest_cache
                         with contextlib.suppress(Exception):
                             _jest_meta = _bc_jest_cache.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -7118,7 +7117,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         "continue": True,
                         "systemMessage": _jest_header + "\n\n" + _jest_compressed,
                     }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: jest compress failed", exc_info=True)
 
     # curl -v verbose output compressor (Iter 37):
@@ -7129,9 +7128,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # the full error context.
     if stdout and exit_code in (None, 0) and len(stdout.splitlines()) >= 10:
         try:
-            import shlex as _shlex_curl  # noqa: PLC0415
+            import shlex as _shlex_curl
 
-            from . import bash_compress as _bc_curl  # noqa: PLC0415
+            from . import bash_compress as _bc_curl
             try:
                 _curl_argv = _shlex_curl.split(display_cmd, posix=False)
             except ValueError:
@@ -7145,7 +7144,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 if _curl_lines_removed > 0 and _curl_compressed.strip():
                     _curl_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_curl_cache  # noqa: PLC0415
+                        from . import bash_cache as _bc_curl_cache
                         with contextlib.suppress(Exception):
                             _curl_meta = _bc_curl_cache.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -7157,7 +7156,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     # Extract HTTP status code for the message (e.g. "200")
                     _curl_status_code = ""
                     for _cln in stdout.splitlines():
-                        import re as _re_curl  # noqa: PLC0415
+                        import re as _re_curl
                         _sm = _re_curl.match(r"^< HTTP/[12](?:\.\d)? (\d{3})", _cln)
                         if _sm:
                             _curl_status_code = _sm.group(1)
@@ -7180,7 +7179,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         "continue": True,
                         "systemMessage": _curl_header + "\n\n" + _curl_compressed,
                     }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: curl verbose compress failed", exc_info=True)
 
     # docker build output compressor (Iter 38):
@@ -7189,9 +7188,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Fires on successful docker build / buildx build commands with >= 10 lines.
     if stdout and exit_code in (None, 0) and len(stdout.splitlines()) >= 10:
         try:
-            import shlex as _shlex_docker  # noqa: PLC0415
+            import shlex as _shlex_docker
 
-            from . import bash_compress as _bc_docker  # noqa: PLC0415
+            from . import bash_compress as _bc_docker
             try:
                 _docker_argv = _shlex_docker.split(display_cmd, posix=False)
             except ValueError:
@@ -7205,7 +7204,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 if _docker_lines_removed > 0 and _docker_compressed.strip():
                     _docker_out_id: str | None = None
                     if session_id:
-                        from . import bash_cache as _bc_docker_cache  # noqa: PLC0415
+                        from . import bash_cache as _bc_docker_cache
                         with contextlib.suppress(Exception):
                             _docker_meta = _bc_docker_cache.store_output(
                                 session_id, display_cmd, stdout, stderr, exit_code,
@@ -7231,7 +7230,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         "continue": True,
                         "systemMessage": _docker_header + "\n\n" + _docker_compressed,
                     }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: docker build compress failed", exc_info=True)
 
     # Large plain-text stdout fallback compressor (Iter 19):
@@ -7249,7 +7248,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             _lc_total = len(_lc_lines)
             _lc_out_id: str | None = None
             if session_id:
-                from . import bash_cache as _bc_lc  # noqa: PLC0415
+                from . import bash_cache as _bc_lc
                 with contextlib.suppress(Exception):
                     _lc_meta = _bc_lc.store_output(
                         session_id, display_cmd, stdout, stderr, exit_code,
@@ -7273,7 +7272,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     f"```\n{_lc_tail}\n```"
                 ),
             }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: large stdout compression failed", exc_info=True)
 
     # Dir-listing fingerprint cache: suppress repeated find/fd/ls-R/eza-tree listings
@@ -7284,9 +7283,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # Only fires on successful listings (exit 0) with non-empty stdout.
     if _sess_mod is not None and _session_cache is not None and exit_code in (None, 0) and stdout:
         try:
-            import shlex as _shlex_dl  # noqa: PLC0415
+            import shlex as _shlex_dl
 
-            from . import bash_compress as _bc_dl  # noqa: PLC0415
+            from . import bash_compress as _bc_dl
             try:
                 _dl_argv = _shlex_dl.split(display_cmd.split("|")[0].strip(), posix=False)
             except ValueError:
@@ -7351,7 +7350,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         _session_cache.record_dir_listing(_dl_key, _dl_out_hash)
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: dir-listing cache check failed", exc_info=True)
 
     # Git diff delta cache: when the same git diff command (same normalised args +
@@ -7366,7 +7365,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # command is git diff (excluding --stat/--shortstat/--numstat variants).
     if exit_code in (None, 0) and len(stdout) >= _GIT_DIFF_MIN_BYTES and session_id:
         try:
-            import shlex as _shlex_gd  # noqa: PLC0415
+            import shlex as _shlex_gd
             try:
                 _gd_argv = _shlex_gd.split(display_cmd.split("|")[0].strip(), posix=False)
             except ValueError:
@@ -7379,7 +7378,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 if _gd_head_sha is not None:
                     _gd_key = f"{session_id}:{_gd_norm_args}:{_gd_head_sha}"
                     _gd_marker_cmd = f"__git_diff_cache__:{_gd_key}"
-                    from . import bash_cache as _bc_gd  # noqa: PLC0415
+                    from . import bash_cache as _bc_gd
                     _gd_prior_meta = _bc_gd.find_cached_for_command(_gd_marker_cmd, cwd=cwd)
                     _gd_prior_text: str | None = None
                     if _gd_prior_meta is not None:
@@ -7396,7 +7395,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         if _gd_stored is not None:
                             _bc_gd.write_sidecar(_gd_stored)
                     if _gd_prior_text is not None:
-                        from collections import Counter as _Counter  # noqa: PLC0415
+                        from collections import Counter as _Counter
                         _gd_new_lines = stdout.splitlines()
                         _gd_old_lines = _gd_prior_text.splitlines()
                         _gd_old_cnt = _Counter(_gd_old_lines)
@@ -7443,7 +7442,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                                     f" {len(_gd_removed)} lines removed vs prior run\n{_gd_preview}"
                                 ),
                             }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: git diff delta cache check failed", exc_info=True)
 
     # Stderr delta: when the same failing command is re-run and produces near-identical
@@ -7455,7 +7454,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # same command was previously run with a non-zero exit code (prior stderr available).
     if exit_code not in (None, 0) and len(stderr) >= _STDERR_DELTA_MIN_BYTES and session_id:
         try:
-            from . import bash_cache as _bc_sd  # noqa: PLC0415
+            from . import bash_cache as _bc_sd
             _sd_prior_meta = _bc_sd.find_cached_for_command(display_cmd, cwd=cwd)
             if (
                 _sd_prior_meta is not None
@@ -7472,7 +7471,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         _sd_prior_stderr = _sd_prior_body.split(_SD_SEP, 1)[1]
                     else:
                         _sd_prior_stderr = _sd_prior_body
-                    from collections import Counter as _Counter_sd  # noqa: PLC0415
+                    from collections import Counter as _Counter_sd
                     _sd_old_lines = _sd_prior_stderr.splitlines()
                     _sd_new_lines = stderr.splitlines()
                     _sd_old_cnt = _Counter_sd(_sd_old_lines)
@@ -7529,7 +7528,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             "continue": True,
                             "systemMessage": _sd_msg,
                         }
-        except Exception:  # noqa: BLE001 — fail-soft; never block the hook
+        except Exception:
             _LOG.debug("post-bash: stderr delta check failed", exc_info=True)
 
     # Binary output detection: if the output contains a high proportion of null
@@ -7572,7 +7571,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 _LOG.info("post-bash: cmd-output dedup suppressed cmd=%.60s", display_cmd)
                 _dedup_recall = ""
                 try:
-                    from . import bash_cache as _bc_dedup  # noqa: PLC0415
+                    from . import bash_cache as _bc_dedup
                     _dedup_cmd_sha = _bc_dedup.command_hash(display_cmd, cwd)
                     _dedup_hist = _session_cache.bash_history.get(_dedup_cmd_sha)
                     if _dedup_hist and _dedup_hist.output_id:
@@ -7590,7 +7589,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             output_sha=_dedup_hist.output_sha or "",
                             cache=_session_cache,
                         )
-                except Exception:  # noqa: BLE001 — fail-soft inner
+                except Exception:
                     _LOG.debug("post-bash: dedup mark_bash_run failed", exc_info=True)
                 with contextlib.suppress(Exception):
                     _sess_mod.save(_session_cache)
@@ -7605,7 +7604,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             _coh[display_cmd] = _new_hash
             with contextlib.suppress(Exception):
                 _sess_mod.save(_session_cache)
-        except Exception:  # noqa: BLE001 — fail-soft
+        except Exception:
             _LOG.debug("post-bash: cmd-output dedup check failed", exc_info=True)
 
     total_bytes = len(_utf8_bytes(stdout)) + len(_utf8_bytes(stderr))
@@ -7620,12 +7619,12 @@ def post_bash(payload: HookPayload) -> HookResponse:
         # output that is forgotten causes the agent to re-run the command
         # unnecessarily on the next turn.
         if exit_code not in (None, 0) and session_id and _sess_mod is not None:
-            from . import bash_cache as _bc  # noqa: PLC0415
+            from . import bash_cache as _bc
             _cmd_sha = _bc.command_hash(display_cmd, cwd)
             # Inline snippet capped at 200 chars so the manifest line stays short.
             _snippet = (stdout + stderr)[:200].strip()
             _output_id = f"small:{_cmd_sha[:8]}:{int(exit_code)}"
-            from . import cache_common as _cc  # noqa: PLC0415
+            from . import cache_common as _cc
             _output_sha = _cc.short_content_hash(stdout + stderr)
             try:
                 _sess_mod.mark_bash_run(
@@ -7651,7 +7650,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
         _LOG.debug("post-bash: no session_id; output not cached")
         return CONTINUE()
 
-    from . import bash_cache  # noqa: PLC0415
+    from . import bash_cache
     from . import config as _config
     assert _sess_mod is not None  # guaranteed: session_id truthy above implies _get_session() returned a module
     session = _sess_mod
@@ -7675,7 +7674,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
     bash_cache.write_sidecar(meta)
 
     # Compute content hash of post-compression output for content-aware dedup.
-    from . import cache_common as _cc  # noqa: PLC0415
+    from . import cache_common as _cc
     output_sha = _cc.short_content_hash(stdout + stderr)
 
     try:
@@ -7706,8 +7705,8 @@ def post_bash(payload: HookPayload) -> HookResponse:
     # has a small number of edited files, suggest the scoped form to cut token cost.
     if _session_cache is not None:
         try:
-            from .bash_cache import is_unscoped_git_diff as _is_unscoped_git_diff  # noqa: PLC0415
-            from .hints import build_scoped_diff_hint as _build_scoped_diff_hint  # noqa: PLC0415
+            from .bash_cache import is_unscoped_git_diff as _is_unscoped_git_diff
+            from .hints import build_scoped_diff_hint as _build_scoped_diff_hint
             if _is_unscoped_git_diff(display_cmd):
                 _diff_output_len = len(_utf8_bytes(stdout)) + len(_utf8_bytes(stderr))
                 if _diff_output_len >= 4096:
@@ -7717,7 +7716,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         record_cached_stat("git_diff_scope_hint", sanitize_log_str(display_cmd, max_len=200))
                         _LOG.info("post-bash: git diff scope hint injected, output=%d bytes, edited=%d files", _diff_output_len, len(_diff_edited))
                         return {"continue": True, "systemMessage": _diff_hint}
-        except Exception:  # noqa: BLE001 — fail-soft
+        except Exception:
             _LOG.debug("post-bash: git diff scope hint failed", exc_info=True)
 
     # pytest failure delta: compare current failures to prior run of the same command.
@@ -7744,7 +7743,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     _parts.append(f"{len(_fixed)} fixed: {_shown_f}{_more_f}")
                 _delta_msg = "pytest delta — " + "; ".join(_parts)
                 return {"continue": True, "systemMessage": _delta_msg}
-        except Exception:  # noqa: BLE001 — fail-soft
+        except Exception:
             _LOG.debug("post-bash: pytest delta failed", exc_info=True)
 
     # Auto-promote oversized unfiltered bash output: when the command has no
@@ -7763,9 +7762,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
     _was_filtered = display_cmd != command
     if _bc_cfg.enabled and not _was_filtered and total_bytes > _AUTO_PROMOTE_BYTES:
         try:
-            import shlex as _shlex  # noqa: PLC0415
+            import shlex as _shlex
 
-            from . import bash_detect as _bd  # noqa: PLC0415
+            from . import bash_detect as _bd
             try:
                 _argv = _shlex.split(display_cmd, posix=True)
             except ValueError:
@@ -7806,7 +7805,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     meta.output_id, total_bytes, display_cmd,
                 )
                 return {"continue": True, "systemMessage": _promote_msg}
-        except Exception:  # noqa: BLE001 — fail-soft
+        except Exception:
             _LOG.debug("post-bash: auto-promote failed", exc_info=True)
 
     return CONTINUE()
@@ -7815,9 +7814,9 @@ def post_bash(payload: HookPayload) -> HookResponse:
 
 def pre_screenshot(payload: HookPayload) -> HookResponse:
     """Deny MCP screenshot calls without a save-to-disk arg; force save so image-shrink applies."""
-    import tempfile  # noqa: PLC0415
+    import tempfile
 
-    from . import config as _cfg_mod  # noqa: PLC0415
+    from . import config as _cfg_mod
 
     cfg = _cfg_mod.load().image_shrink
     if not cfg.screenshot_redirect:
@@ -7829,7 +7828,7 @@ def pre_screenshot(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     # Unique path per call — avoids concurrent-call overwrites.
-    tmp_path = tempfile.mktemp(suffix=".png", prefix="tg-screenshot-")  # noqa: S306
+    tmp_path = tempfile.mktemp(suffix=".png", prefix="tg-screenshot-")
     reason = "Screenshot result not saved — add the save-to-disk argument first."
     context = (
         "MCP screenshot tools return raw image bytes that bypass image-shrink and consume "

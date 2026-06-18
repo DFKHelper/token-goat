@@ -93,7 +93,7 @@ def prune_index(memory_dir: Path, *, dry_run: bool = False) -> PruneResult:
     Returns ``PruneResult(changed=False)`` when the file is absent, unreadable,
     or already clean.  Never raises — caller decides on logging.
     """
-    from .compact import estimate_tokens  # noqa: PLC0415
+    from .compact import estimate_tokens
 
     result = PruneResult()
     memory_md = memory_dir / "MEMORY.md"
@@ -143,10 +143,10 @@ def prune_index(memory_dir: Path, *, dry_run: bool = False) -> PruneResult:
         reconstructed += "\n"
 
     try:
-        from . import paths  # noqa: PLC0415
+        from . import paths
 
         paths.atomic_write_text(memory_md, reconstructed)
-    except Exception:  # noqa: BLE001
+    except Exception:
         result.changed = False  # write failed; report as no-op
 
     return result
@@ -209,7 +209,7 @@ def find_content_duplicates(
     Uses embedding cosine similarity when fastembed is available; falls back to
     Jaccard >= 0.60 (cruder, flag-only).  Pure: never mutates any file.
     """
-    from .compact import estimate_tokens  # noqa: PLC0415
+    from .compact import estimate_tokens
 
     siblings = sorted(
         p for p in memory_dir.glob("*.md") if p.name.lower() != "memory.md"
@@ -221,11 +221,11 @@ def find_content_duplicates(
 
     # --- Embedding path ---
     try:
-        from . import embeddings  # noqa: PLC0415
+        from . import embeddings
 
         if embeddings.is_available():
             vecs = embeddings.embed_texts(snippets)
-            import math  # noqa: PLC0415
+            import math
 
             def _cosine(a: list[float], b: list[float]) -> float:
                 dot = sum(x * y for x, y in zip(a, b, strict=False))
@@ -265,7 +265,7 @@ def find_content_duplicates(
                     )
                     used.update(group)
             return clusters
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     # --- Jaccard fallback ---
@@ -323,7 +323,7 @@ def audit_claude_md(files: list[Path]) -> list[ClaudeMdReport]:
 
     Report-only: never edits any file.
     """
-    from .compact import estimate_tokens  # noqa: PLC0415
+    from .compact import estimate_tokens
 
     reports: list[ClaudeMdReport] = []
     all_lines: list[tuple[Path, int, str]] = []  # (path, lineno, stripped)
@@ -374,7 +374,7 @@ def audit_claude_md(files: list[Path]) -> list[ClaudeMdReport]:
                 all_lines.append((path, i, stripped))
 
     # Cross-file overlaps: non-blank lines that appear verbatim in >1 file.
-    from collections import defaultdict  # noqa: PLC0415
+    from collections import defaultdict
 
     line_to_files: dict[str, set[Path]] = defaultdict(set)
     for path, _i, stripped in all_lines:

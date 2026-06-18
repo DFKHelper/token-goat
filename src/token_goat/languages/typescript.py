@@ -147,7 +147,7 @@ def _looks_like_abi_filename(name: str, parts: list[str]) -> bool:
     - Parent directory named ``abi/`` — conventional ABI bundle directory
     """
     return (
-        name.endswith(("abi.ts", "abi.d.ts", ".abi.ts")) or len(parts) >= 2 and parts[-2].lower() == "abi"
+        name.endswith(("abi.ts", "abi.d.ts", ".abi.ts")) or (len(parts) >= 2 and parts[-2].lower() == "abi")
     )
 
 
@@ -410,7 +410,7 @@ def extract(
         return [], [], [], []
     try:
         result = tlp.process(text, cfg)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.warning(
             "tree-sitter parse failed for %s (typescript): %s — file will be indexed without symbols",
             rel_path, exc,

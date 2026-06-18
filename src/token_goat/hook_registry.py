@@ -32,12 +32,12 @@ __all__ = [
     "HOOK_EVENTS",
     "HookEvent",
     "all_events",
+    "assert_typer_subcommands_aligned",
     "claude_events",
     "codex_events",
     "handler_lookup",
     "lazy_attr_map",
     "lookup",
-    "assert_typer_subcommands_aligned",
 ]
 
 from dataclasses import dataclass

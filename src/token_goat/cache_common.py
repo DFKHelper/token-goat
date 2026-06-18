@@ -72,7 +72,7 @@ def get_cache_dir(name: str) -> Path:
     equivalent ``mkdir`` — this centralises the one-liner so a future storage
     layout change lands here once.
     """
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
     return _paths.ensure_dir(_paths.data_dir() / name)
 
 
@@ -465,12 +465,12 @@ def write_sidecar_metadata(
     (``"bash_cache"`` or ``"web_cache"``) so the merged log stream still tells
     you which cache failed.
     """
-    from dataclasses import asdict  # noqa: PLC0415
+    from dataclasses import asdict
 
     if sidecar_path is None:
         return
     try:
-        from . import paths as _paths  # noqa: PLC0415
+        from . import paths as _paths
         _paths.atomic_write_text(
             sidecar_path,
             json.dumps(asdict(meta), ensure_ascii=False),
@@ -715,7 +715,7 @@ def store_blob(
     caller so the surrounding ``try/except OSError`` block in each store
     function still handles it uniformly.
     """
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     path = safe_join_output_id(output_id, cache_dir_fn, log_name)
     if path is None:
@@ -900,7 +900,7 @@ def store_blob_gz(
     This is the shared implementation used by both :mod:`web_cache` and
     :mod:`skill_cache`; callers differ only in which directory function they pass.
     """
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     _log = get_logger(log_name)
     with safe_cache_op("store_blob_gz", log=_log):

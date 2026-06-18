@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 __all__ = [
-    "Project",
     "PROJECT_MARKERS",
+    "Project",
     "canonicalize",
     "find_project",
     "make_project_at",

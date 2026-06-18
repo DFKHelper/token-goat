@@ -12,9 +12,9 @@ from typing import Any
 __all__ = ["__version__"]
 
 
-def __getattr__(name: str) -> Any:  # noqa: ANN401  -- PEP 562 signature
+def __getattr__(name: str) -> Any:
     if name == "__version__":
-        from importlib.metadata import PackageNotFoundError, version  # noqa: PLC0415
+        from importlib.metadata import PackageNotFoundError, version
 
         try:
             value = version("token-goat")

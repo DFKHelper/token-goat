@@ -25,63 +25,35 @@ from __future__ import annotations
 __all__ = [
     "BASH_DEDUP_IDS_MAX",
     "BASH_HISTORY_MAX",
-    "BashEntry",
     "DECISION_HISTORY_MAX",
-    "DecisionEntry",
     "EDITED_FILES_MAX",
     "FILES_MAX",
-    "FileEntry",
     "GLOB_HISTORY_MAX",
-    "GlobEntry",
-    "GrepEntry",
     "GREPS_HISTORY_MAX",
     "HINTS_CONTENT_DEDUP_MAX",
     "HINTS_SEEN_MAX",
     "IMAGE_SHRINK_COUNT_MAX",
     "PINNED_SYMBOLS_MAX",
     "RESULT_CACHE_MAX",
+    "SESSION_SCHEMA_VERSION",
     "SKILL_HISTORY_MAX",
     "SNAPSHOT_SHAS_MAX",
+    "WEB_HISTORY_MAX",
+    # Size-cap helpers exposed for testing
+    "_SESSION_MAX_BYTES",
+    "BashEntry",
+    "DecisionEntry",
+    "FileEntry",
+    "GlobEntry",
+    "GrepEntry",
     "ResultCacheEntry",
-    "SESSION_SCHEMA_VERSION",
     "SessionCache",
     "SkillEntry",
-    "WEB_HISTORY_MAX",
     "WebEntry",
-    "cleanup_stale",
-    "get_file_entry",
-    "get_result_cache",
-    "get_snapshot_sha",
-    "list_edited",
-    "list_touched",
-    "load",
-    "lookup_bash_entry",
-    "lookup_glob_entry",
-    "lookup_grep_entry",
-    "lookup_skill_entry",
-    "lookup_web_entry",
-    "mark_bash_run",
-    "mark_decision",
-    "mark_file_edited",
-    "mark_file_read",
-    "mark_glob_run",
-    "mark_grep",
-    "get_skill_history",
-    "mark_skill_loaded",
-    "record_skill_compact_hit",
-    "mark_web_fetch",
-    "put_result_cache",
-    "record_hint_category",
-    "reset_session",
-    "save",
-    "set_snapshot_sha",
-    "safe_load",
-    "validate_session_id",
-    # File-level lock context manager (exposed for testing)
-    "_session_file_lock",
     # Internal helpers exposed for testing
     "_coerce_nonneg_int",
     "_coerce_ts",
+    "_get_session_max_bytes",
     "_hint_category_should_suppress",
     "_lookup_in_cache",
     "_merge_session_caches",
@@ -100,10 +72,38 @@ __all__ = [
     "_serialize_result_cache_entry",
     "_serialize_skill_entry",
     "_serialize_web_entry",
-    # Size-cap helpers exposed for testing
-    "_SESSION_MAX_BYTES",
-    "_get_session_max_bytes",
+    # File-level lock context manager (exposed for testing)
+    "_session_file_lock",
     "_trim_session_for_size",
+    "cleanup_stale",
+    "get_file_entry",
+    "get_result_cache",
+    "get_skill_history",
+    "get_snapshot_sha",
+    "list_edited",
+    "list_touched",
+    "load",
+    "lookup_bash_entry",
+    "lookup_glob_entry",
+    "lookup_grep_entry",
+    "lookup_skill_entry",
+    "lookup_web_entry",
+    "mark_bash_run",
+    "mark_decision",
+    "mark_file_edited",
+    "mark_file_read",
+    "mark_glob_run",
+    "mark_grep",
+    "mark_skill_loaded",
+    "mark_web_fetch",
+    "put_result_cache",
+    "record_hint_category",
+    "record_skill_compact_hit",
+    "reset_session",
+    "safe_load",
+    "save",
+    "set_snapshot_sha",
+    "validate_session_id",
 ]
 
 import contextlib
@@ -248,7 +248,7 @@ _proc_load_cache: dict[str, tuple[SessionCache, float]] = {}
 
 def _contention_mark_path(session_id: str, phase: str) -> Path:
     """Return the touch-file path for a (session_id, phase) contention record."""
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     # Sanitize both components: keep only alphanumeric, underscore, and hyphen;
     # truncate to 32 chars each so combined filenames stay well under FS limits.
@@ -286,7 +286,7 @@ def _os_advisory_lock(fd: int) -> bool:
     process death), so there is no PID file to orphan and no staleness window.
     """
     if _IS_WINDOWS:
-        import msvcrt  # noqa: PLC0415
+        import msvcrt
 
         try:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
@@ -294,7 +294,7 @@ def _os_advisory_lock(fd: int) -> bool:
             return False
         return True
     try:
-        import fcntl  # noqa: PLC0415
+        import fcntl
     except ImportError:
         _LOG.warning("fcntl unavailable; session lock degraded to in-process only")
         return True  # fail open: in-process _FILE_LOCK still serialises threads
@@ -308,13 +308,13 @@ def _os_advisory_lock(fd: int) -> bool:
 def _os_advisory_unlock(fd: int) -> None:
     """Release the advisory lock taken by :func:`_os_advisory_lock` on *fd*."""
     if _IS_WINDOWS:
-        import msvcrt  # noqa: PLC0415
+        import msvcrt
 
         with contextlib.suppress(OSError):
             msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
         return
     try:
-        import fcntl  # noqa: PLC0415
+        import fcntl
     except ImportError:
         return
     with contextlib.suppress(OSError):
@@ -414,7 +414,7 @@ def _session_file_lock_posix(path: Path) -> Generator[None, None, None]:
     acquired = False
     try:
         try:
-            import fcntl  # noqa: PLC0415
+            import fcntl
         except ImportError:
             # fcntl is not available (e.g. running under a non-POSIX interpreter).
             # Proceed without lock — fail-soft contract.
@@ -457,9 +457,9 @@ def _session_file_lock_posix(path: Path) -> Generator[None, None, None]:
     finally:
         if acquired and lock_fd is not None:
             try:
-                import fcntl as _fcntl  # noqa: PLC0415
+                import fcntl as _fcntl
                 _fcntl.flock(lock_fd, _fcntl.LOCK_UN)  # type: ignore[attr-defined]  # fcntl is POSIX-only; not in typeshed on Windows
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         if lock_fd is not None:
             with contextlib.suppress(OSError):
@@ -3155,14 +3155,14 @@ def _record_cache_contention(session_id: str, phase: str, exc: OSError) -> None:
         # acceptable in edge cases.
         pass
     try:
-        from . import db  # noqa: PLC0415
+        from . import db
 
         db.record_stat(
             None,
             "session_cache_unavailable",
             detail=f"{phase}:{session_id[:16]}:{type(exc).__name__}",
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("failed to record session cache contention", exc_info=True)
 
 
@@ -3370,7 +3370,7 @@ def safe_load(session_id: str, *, caller: str = "safe_load") -> SessionCache | N
     except ValueError as exc:
         _LOG.warning("%s: invalid session_id rejected: %s", caller, exc)
         return None
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         sid_short = session_id[:8] if session_id else "<empty>"
         _LOG.debug("%s(%s) failed: %s", caller, sid_short, exc, exc_info=True)
         return None
@@ -3544,7 +3544,7 @@ def save(cache: SessionCache) -> None:
                     attempt + 1, cache.session_id[:16],
                 )
                 with contextlib.suppress(Exception):
-                    from . import db as _db_lock  # noqa: PLC0415
+                    from . import db as _db_lock
                     _db_lock.record_stat(
                         None,
                         "session_cache_lock_timeout",
@@ -3753,7 +3753,7 @@ def record_compact(session_id: str) -> None:
     Pre-read hooks use this timestamp to suppress re-read hints for files
     whose content no longer exists in the context window post-compact.
     """
-    import time as _time  # noqa: PLC0415
+    import time as _time
 
     cache = safe_load(session_id, caller="record_compact")
     if cache is None:
@@ -3965,7 +3965,7 @@ def _grep_pattern_hash(pattern: str) -> str:
     per project); storing a hash avoids using the raw pattern (up to
     ``_MAX_GREP_PATTERN_LEN`` = 200 chars) as the primary key.
     """
-    return hashlib.sha1(pattern.encode("utf-8", errors="replace")).hexdigest()  # noqa: S324
+    return hashlib.sha1(pattern.encode("utf-8", errors="replace")).hexdigest()
 
 
 def mark_grep(
@@ -4006,7 +4006,7 @@ def mark_grep(
     # pattern) inside db.update_global_grep_pattern.  Use a lazy import to
     # avoid the circular dependency (hints → session → hints at module level).
     if result_count is not None and result_count >= _GREP_GLOBAL_MIN_RESULT_COUNT:
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
         _db.update_global_grep_pattern(_grep_pattern_hash(safe_pattern), safe_pattern, now)
     return _commit_mutation(cache, now)
 
@@ -4165,10 +4165,10 @@ def reset_session(session_id: str) -> None:
     # Snapshot directory cleanup is best-effort and isolated; failures must
     # not propagate up because they are inconsequential to session correctness.
     try:
-        from . import snapshots  # noqa: PLC0415
+        from . import snapshots
 
         snapshots.cleanup_session(session_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("reset_session: snapshot cleanup failed", exc_info=True)
 
 
@@ -4596,7 +4596,7 @@ def get_skill_history(
         if resolved.unavailable:
             return None
         return resolved.skill_history or None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -4641,7 +4641,7 @@ def record_skill_compact_hit(
         )
         resolved.skill_history[safe_name] = updated
         return _commit_mutation(resolved, now)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("record_skill_compact_hit: failed for skill %s", sanitize_log_str(skill_name, max_len=80))
         return cache or _fresh_cache(session_id)
 

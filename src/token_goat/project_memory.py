@@ -67,10 +67,10 @@ def _load_raw(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
     try:
-        import tomllib  # noqa: PLC0415 — lazy: only TOML memory paths import this
+        import tomllib
         data = tomllib.loads(path.read_text(encoding="utf-8"))
         return {k: str(v) for k, v in data.items() if isinstance(v, (str, int, float, bool))}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("project_memory: failed to load %s: %s", path, exc)
         return {}
 
@@ -125,7 +125,7 @@ def build_injection(project_hash: str) -> str | None:
     """
     try:
         entries = load_entries(project_hash)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     if not entries:
         return None

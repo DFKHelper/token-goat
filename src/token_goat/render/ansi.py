@@ -12,7 +12,7 @@ Exports:
 """
 from __future__ import annotations
 
-__all__ = ["C", "RGB", "RESET", "USE_COLOR", "bg", "color_stderr", "color_stdout", "fg", "fmt_bytes", "lerp_rgb", "pad_l", "pad_r", "strip_ansi", "vlen"]
+__all__ = ["RESET", "RGB", "USE_COLOR", "C", "bg", "color_stderr", "color_stdout", "fg", "fmt_bytes", "lerp_rgb", "pad_l", "pad_r", "strip_ansi", "vlen"]
 
 import os
 import re
