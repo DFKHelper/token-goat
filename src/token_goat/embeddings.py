@@ -416,7 +416,6 @@ def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
         elapsed = time.monotonic() - t0
         _LOG.info("fastembed model loaded: %s in %.2fs", model_name, elapsed)
         _MODEL_CACHE[model_name] = model
-        return model
     except ImportError as e:
         raise EmbeddingsUnavailable(f"fastembed not installed: {e}") from e
     except (OSError, RuntimeError, ValueError) as e:
@@ -425,6 +424,8 @@ def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
     except Exception as e:
         _LOG.debug("fastembed unexpected error for %r: %s", model_name, e, exc_info=True)
         raise EmbeddingsUnavailable(f"fastembed unavailable: {e}") from e
+    else:
+        return model
 
 
 def is_available() -> bool:
