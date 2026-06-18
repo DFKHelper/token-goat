@@ -4,6 +4,18 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-06-18
+
+### Changed
+
+- **Default hook watchdog timeout reduced from 5000 ms to 700 ms.** `HooksConfig.watchdog_ms` and all fallback constants now default to 700 ms. The adaptive doubling-on-timeout mechanism (capped at 30 000 ms) is unchanged — slow CI machines or cold-cache environments will still recover automatically. A new `HOOKS_WATCHDOG_DEFAULT_MS` constant in `config.py` is the single source of truth used by `HooksConfig`, the TOML fallback path, and `hooks_common.py`, so the value only needs to change in one place.
+
+### Performance
+
+- **Surgical-read hint memoized by file path and mtime.** `_try_surgical_read_hint` now caches its DB query result keyed by `(abs_path, mtime_ns, req_start, req_end, limit_is_sentinel)`. Repeated reads of the same file range within a session skip the SQLite lookup entirely. The cache is invalidated automatically when the file changes (mtime differs). The per-session cache is also cleared between tests via the `tmp_data_dir` fixture to prevent cross-test contamination.
+
+- **Symbol-not-found retry command.** When `token-goat read file::symbol` finds no exact match but exactly one close suggestion exists, the output now includes a ready-to-run `token-goat read "file::ClosestSymbol"` command rather than a plain name list, so the next attempt requires no manual editing.
+
 ## [1.9.1] - 2026-06-17
 
 ### Added

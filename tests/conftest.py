@@ -241,6 +241,8 @@ def tmp_data_dir(tmp_path):
         _compact_mod._whole_diff_cache.clear()
         _compact_mod._blocker_preview_cache.clear()
         _config_mod._config_mtime_cache = None
+        from token_goat import hooks_read as _hr_mod
+        _hr_mod._surg_hint_cache.clear()
 
     _clear_caches()
     with patch.object(paths, 'data_dir', return_value=tmp_path):

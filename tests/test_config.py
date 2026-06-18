@@ -942,13 +942,14 @@ class TestConfigTypeValidationEndToEnd:
         assert cfg.compact_assist.max_manifest_tokens == 400
 
     def test_watchdog_ms_string_falls_back_to_default(self, tmp_path, monkeypatch):
-        """``watchdog_ms = "fast"`` must use default 5000."""
+        """``watchdog_ms = "fast"`` must use HOOKS_WATCHDOG_DEFAULT_MS."""
+        from token_goat.config import HOOKS_WATCHDOG_DEFAULT_MS
         cfg = self._load_from_toml(
             '[hooks]\nwatchdog_ms = "fast"\n',
             tmp_path,
             monkeypatch,
         )
-        assert cfg.hooks.watchdog_ms == 5000
+        assert cfg.hooks.watchdog_ms == HOOKS_WATCHDOG_DEFAULT_MS
 
     def test_enabled_int_coerced_to_bool(self, tmp_path, monkeypatch):
         """``enabled = 0`` (TOML integer) must coerce to False without a warning."""

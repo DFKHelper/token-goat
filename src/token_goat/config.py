@@ -1057,6 +1057,8 @@ class HintsConfig:
     prompt_triggers: list[PromptTrigger] = field(default_factory=list)
 
 
+HOOKS_WATCHDOG_DEFAULT_MS: int = 700
+
 @dataclass
 class HooksConfig:
     """Configuration for hook subprocess timeout and adaptive timeouts.
@@ -1068,7 +1070,7 @@ class HooksConfig:
     The effective timeout is determined by three layers (in precedence):
     1. Environment variable ``TOKEN_GOAT_HOOK_WATCHDOG_MS`` (per-invocation override)
     2. Configuration value from [hooks].watchdog_ms (per-project baseline)
-    3. Default hardcoded value (currently 5000 ms)
+    3. Default hardcoded value (currently 700 ms)
 
     When a hook subprocess hits the timeout, an adaptive mechanism doubles the
     timeout for the remainder of the session (capped at 30000 ms) to allow
@@ -1076,10 +1078,10 @@ class HooksConfig:
 
     Attributes:
         watchdog_ms: Hook subprocess wall-clock timeout in milliseconds.
-            Default 5000. Clamped to [100, 30000].
+            Default 700. Clamped to [100, 30000].
     """
 
-    watchdog_ms: int = 5000
+    watchdog_ms: int = HOOKS_WATCHDOG_DEFAULT_MS
 
 
 @dataclass
@@ -1970,7 +1972,7 @@ def load() -> Config:
     hk_raw: _HooksToml = cast("_HooksToml", raw.get("hooks", {}))
     hk = HooksConfig(
         watchdog_ms=_validated_int(
-            hk_raw.get("watchdog_ms", 5000), 5000, 100, 30_000, "hooks.watchdog_ms"
+            hk_raw.get("watchdog_ms", HOOKS_WATCHDOG_DEFAULT_MS), HOOKS_WATCHDOG_DEFAULT_MS, 100, 30_000, "hooks.watchdog_ms"
         ),
     )
     # Apply env override for hook watchdog (if set, takes precedence)

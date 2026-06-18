@@ -37,6 +37,7 @@ import contextlib
 import hashlib
 import re as _re
 import shlex as _shlex
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -622,6 +623,8 @@ def _try_snapshot(
         )
 
 
+_surg_hint_cache: dict[tuple[str, int, int, int, bool], str | None] = {}
+
 def _try_surgical_read_hint(
     file_path: str,
     offset: int,
@@ -668,8 +671,19 @@ def _try_surgical_read_hint(
             return None
 
         abs_path = Path(file_path) if Path(file_path).is_absolute() else (cwd_path / file_path)
+
+        try:
+            _mtime_ns = abs_path.stat().st_mtime_ns
+        except OSError:
+            _mtime_ns = 0
+        _abs_str = str(abs_path).lower() if sys.platform == "win32" else str(abs_path)
+        _cache_key = (_abs_str, _mtime_ns, req_start, req_end, limit_is_sentinel)
+        if _cache_key in _surg_hint_cache:
+            return _surg_hint_cache[_cache_key]
+
         file_rel = _rr.resolve_file_rel(proj, str(abs_path))
         if not file_rel:
+            _surg_hint_cache[_cache_key] = None
             return None
 
         with _db.open_project_readonly(proj.hash) as conn:
@@ -681,6 +695,7 @@ def _try_surgical_read_hint(
             ).fetchall()
 
         if not rows or len(rows) > 3:
+            _surg_hint_cache[_cache_key] = None
             return None
 
         fname = Path(file_rel).name
@@ -689,10 +704,12 @@ def _try_surgical_read_hint(
         primary = sym_names[0]
         cmd = f'token-goat read "{file_rel}::{primary}"'
         range_str = f"Lines {req_start}–EOF" if limit_is_sentinel else f"Lines {req_start}–{req_end}"
-        return (
+        _result = (
             f"{range_str} of `{fname}` span {sym_list}. "
             f"Use `{cmd}` for a surgical read (~90% fewer tok on repeat access)."
         )
+        _surg_hint_cache[_cache_key] = _result
+        return _result
     except (OSError, ValueError, AttributeError):
         # OSError: DB/file access errors (transient locks, permission)
         # ValueError: path resolution failures, invalid line ranges

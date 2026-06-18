@@ -143,6 +143,9 @@ class TestLockedSessionCacheDispatch:
         """post-read Read should continue even if the session cache cannot be replaced."""
         from token_goat import db
 
+        # 700ms default is too tight for the error-handling path under lock contention; give the background thread enough time.
+        monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "5000")
+
         session_id = "dispatch_lock_read"
         session.mark_file_read(session_id, "seed.py")
 
