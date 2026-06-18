@@ -753,12 +753,13 @@ def _ensure_project_schema(conn: sqlite3.Connection, *, db_path: Path | None = N
             )
     try:
         conn.executescript(_CHUNKS_FTS_DDL)
-        # Populate FTS index on schema upgrade: a freshly created external-content
-        # table has no rows even if chunks already exist; rebuild is idempotent
-        # because subsequent opens find fts_count > 0 and skip this branch.
-        fts_count = conn.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0]
-        if fts_count == 0:
+        # COUNT(*) on an FTS5 external-content table reads the content table rows,
+        # not FTS index entries, so it cannot detect whether the index was populated.
+        # Use a meta marker set after the first successful rebuild instead.
+        fts_init = conn.execute("SELECT 1 FROM meta WHERE key='fts_initialized'").fetchone()
+        if fts_init is None:
             conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')")
+            conn.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('fts_initialized', '1')")
     except sqlite3.OperationalError as e:
         _LOG.warning("chunks_fts table unavailable: %s", e)
         with contextlib.suppress(sqlite3.OperationalError):

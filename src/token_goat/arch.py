@@ -40,10 +40,14 @@ def build_arch(project_hash: str, *, top_hubs: int = 10, max_cycles: int = 10) -
                 row[0]
                 for row in conn.execute("SELECT rel_path FROM files").fetchall()
             }
-            import_rows = conn.execute(
-                "SELECT file_rel, target FROM imports_exports WHERE kind = 'import'"
-            ).fetchall()
-    except (FileNotFoundError, sqlite3.OperationalError):
+            try:
+                import_rows = conn.execute(
+                    "SELECT file_rel, target FROM imports_exports WHERE kind = 'import'"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                # imports_exports may not exist in DBs created before this table was added
+                import_rows = []
+    except FileNotFoundError:
         indexed = set()
         import_rows = []
 
