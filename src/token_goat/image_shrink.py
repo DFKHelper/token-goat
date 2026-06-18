@@ -595,7 +595,6 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
         except Exception as exc:  # noqa: BLE001
             # Any error in session tracking (load, mutation) is benign and logged.
             _LOG.debug("image_shrink: per-session tracking failed: %s", exc)
-            pass
 
     t0 = time.time()
     # Validate input path for safety

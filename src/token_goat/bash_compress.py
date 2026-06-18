@@ -6314,7 +6314,7 @@ def _compress_git_status(stdout: str, stderr: str) -> str:
         if _GIT_STATUS_HEADER_RE.match(line) or not line.strip() or line.startswith("\t("):
             out.append(line)
             continue
-        if line.startswith("\t") or line.startswith("        "):
+        if line.startswith(("\t", "        ")):
             kept_files += 1
             if kept_files <= 30:
                 out.append(line)
@@ -6512,7 +6512,7 @@ def _compress_git_log_enhanced(stdout: str, stderr: str, argv: list[str]) -> str
         "--oneline" in flags
         or "--format=oneline" in flags
         or "--pretty=oneline" in flags
-        or any(a.startswith("--format=%h") or a.startswith("--pretty=%h") for a in argv)
+        or any(a.startswith(("--format=%h", "--pretty=%h")) for a in argv)
     )
     # Heuristic: if every non-empty line matches the short-hash pattern it's oneline.
     non_empty = [ln for ln in stdout.split("\n") if ln.strip()]
@@ -6839,7 +6839,7 @@ def _trim_hunk_trailing_context(hunk_lines: list[str], max_trail: int = 2) -> tu
     # Find the last changed line (+ or -), then drop context lines beyond max_trail after it.
     last_changed = -1
     for i, ln in enumerate(hunk_lines):
-        if ln.startswith("+") or ln.startswith("-"):
+        if ln.startswith(("+", "-")):
             last_changed = i
     if last_changed == -1:
         return hunk_lines, 0
@@ -6901,7 +6901,7 @@ def _compress_git_diff_body(stdout: str, stderr: str) -> str:
             # Keep all --- +++ header lines (they are in the non-hunk first block).
             changed = [
                 ln for ln in hunk_lines
-                if ln.startswith("+") or ln.startswith("-")
+                if ln.startswith(("+", "-"))
             ]
             if len(changed) > _MAX_HUNK_LINES:
                 if _is_repetitive_json_hunk(hunk_lines):
@@ -10307,23 +10307,16 @@ class PipFilter(Filter):
                 verbose_dropped += 1
                 continue
             # Download progress (pip < 22 uses 2-space indent, newer uses no indent).
-            if line.startswith("  Downloading ") or line.startswith("Downloading "):
+            if line.startswith(("  Downloading ", "Downloading ")):
                 downloads += 1
                 continue
             # Wheel cache hits — zero value for the model.
-            if line.startswith("  Using cached ") or line.startswith("Using cached "):
+            if line.startswith(("  Using cached ", "Using cached ")):
                 downloads += 1  # count alongside downloads (all are "fetch noise")
                 continue
             # Build-wheel lifecycle noise.
             if (
-                line.startswith("  Building wheel") or line.startswith("Building wheel")
-                or line.startswith("  Created wheel") or line.startswith("Created wheel")
-                or line.startswith("  Stored in directory") or line.startswith("Stored in directory")
-                or line.startswith("  Installing build dep") or line.startswith("Installing build dep")
-                or line.startswith("  Preparing metadata") or line.startswith("Preparing metadata")
-                or line.startswith("  Getting requirements") or line.startswith("Getting requirements")
-                or line.startswith("  Obtaining file://") or line.startswith("Obtaining file://")
-                or line.startswith("Installing collected packages") or line.startswith("  Installing collected packages")
+                line.startswith(("  Building wheel", "Building wheel", "  Created wheel", "Created wheel", "  Stored in directory", "Stored in directory", "  Installing build dep", "Installing build dep", "  Preparing metadata", "Preparing metadata", "  Getting requirements", "Getting requirements", "  Obtaining file://", "Obtaining file://", "Installing collected packages", "  Installing collected packages"))
             ):
                 build_noise += 1
                 continue
@@ -10332,7 +10325,7 @@ class PipFilter(Filter):
             if "━" in line and not _ERROR_SIGNAL_RE.search(line):
                 downloads += 1
                 continue
-            if line.startswith("Collecting ") or line.startswith("  Collecting "):
+            if line.startswith(("Collecting ", "  Collecting ")):
                 collects += 1
                 if collects <= 5:
                     kept.append(line)
@@ -13176,7 +13169,7 @@ class MavenFilter(Filter):
 
         for line in lines:
             # Always keep [WARN] and [ERROR] lines.
-            if line.startswith("[WARNING]") or line.startswith("[WARN]") or line.startswith("[ERROR]"):
+            if line.startswith(("[WARNING]", "[WARN]", "[ERROR]")):
                 kept.append(line)
                 continue
             # Always keep test summary lines and BUILD result lines.
@@ -14036,7 +14029,7 @@ def _score_and_cap_hunks(hunk_lines: list[str], max_hunks: int) -> list[str]:
         total = len(content)
         if total == 0:
             return 0.0
-        changed = sum(1 for ln in content if ln.startswith("+") or ln.startswith("-"))
+        changed = sum(1 for ln in content if ln.startswith(("+", "-")))
         return changed / total
 
     scored = [(i, _density(h)) for i, h in enumerate(actual)]
@@ -15971,7 +15964,7 @@ class TrivyFilter(Filter):
                     )
                 continue
             # Target/library section header.
-            if _TRIVY_TARGET_RE.match(line) or line.startswith("=") or line.startswith("-"):
+            if _TRIVY_TARGET_RE.match(line) or line.startswith(("=", "-")):
                 _flush_low_med()
                 in_table = False
                 sev_col_idx = -1

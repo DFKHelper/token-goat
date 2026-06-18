@@ -480,7 +480,7 @@ def is_safe_rel_path(rel_path: str) -> bool:
         return False
 
     normalized = candidate.replace("\\", "/")
-    if normalized.startswith("/") or normalized.startswith("//"):
+    if normalized.startswith(("/", "//")):
         return False
     if len(normalized) >= 2 and normalized[1] == ":" and normalized[0].isalpha():
         return False

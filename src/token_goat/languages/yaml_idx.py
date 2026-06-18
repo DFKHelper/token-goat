@@ -138,7 +138,7 @@ def extract(
         if not candidate or candidate.startswith("#"):
             continue
         # Multi-document marker resets the parser state for the next doc.
-        if candidate.startswith("---") or candidate.startswith("..."):
+        if candidate.startswith(("---", "...")):
             current_top = None
             continue
 

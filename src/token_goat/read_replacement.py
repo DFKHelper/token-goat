@@ -449,7 +449,7 @@ def _is_absolute(file_part: str) -> bool:
     UNC (//host/share) forms so the traversal guards in resolve_file_rel
     and _resolve_file_rel_db never reject legitimate absolute-path inputs.
     """
-    if file_part.startswith("/") or file_part.startswith("\\"):
+    if file_part.startswith(("/", "\\")):
         return True
     # Windows drive-letter form: X: or X:/ or X:\
     return len(file_part) >= 2 and file_part[1] == ":" and file_part[0].isalpha()
@@ -769,7 +769,7 @@ def _is_docstring_delimiter(line: str) -> bool:
     while prefix_end < len(stripped) and stripped[prefix_end] in "rRuUbB":
         prefix_end += 1
     rest = stripped[prefix_end:]
-    return rest.startswith('"""') or rest.startswith("'''")
+    return rest.startswith(('"""', "'''"))
 
 
 def _find_docstring_end(lines: list[str], start_idx: int) -> int:
@@ -841,7 +841,7 @@ def truncate_symbol_body(text: str, *, full: bool = False) -> str:
     sig_end_idx = 0  # index of the last signature line (0-based)
     for i, line in enumerate(lines):
         stripped = line.rstrip()
-        if stripped.endswith(":") or stripped.endswith("{"):
+        if stripped.endswith((":", "{")):
             sig_end_idx = i
             break
         # If first line doesn't look like a header, treat it as the sole sig line.

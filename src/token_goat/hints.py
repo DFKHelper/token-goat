@@ -947,9 +947,7 @@ def _build_read_hint_inner(
             # source files on first read (when cache entry is None).
             _fp_lower = file_path.lower()
             _coread_eligible = (
-                _fp_lower.endswith(_PY_SUFFIX)
-                or any(_fp_lower.endswith(s) for s in _TS_JS_SUFFIXES)
-                or _fp_lower.endswith(_GO_SUFFIX)
+                _fp_lower.endswith((_PY_SUFFIX, _GO_SUFFIX)) or any(_fp_lower.endswith(s) for s in _TS_JS_SUFFIXES)
             )
             if _coread_eligible:
                 _cwd_path = validate_cwd(cwd, caller="_build_read_hint_inner (coread)")
@@ -1674,7 +1672,7 @@ def _get_unread_coread_files_ts(
     all_targets = [row[0] for row in cursor.fetchall()]
 
     # Only local relative imports
-    local_targets = [t for t in all_targets if t.startswith("./") or t.startswith("../")]
+    local_targets = [t for t in all_targets if t.startswith(("./", "../"))]
     if not local_targets:
         return []
 
@@ -4565,7 +4563,7 @@ def _build_doc_compact_hint_inner(
 
     # Only handle markdown files
     fp_lower = file_path.lower()
-    if not (fp_lower.endswith(".md") or fp_lower.endswith(".markdown")):
+    if not (fp_lower.endswith((".md", ".markdown"))):
         return None
 
     # Resolve to absolute path

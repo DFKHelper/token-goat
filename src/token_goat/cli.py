@@ -2033,7 +2033,7 @@ def cmd_map(
             for ln in text.splitlines(keepends=True):
                 stripped = ln.strip()
                 # Keep non-file lines (headers start with #, blank lines, etc.)
-                if not stripped or stripped.startswith("#") or stripped.startswith("[token-goat"):
+                if not stripped or stripped.startswith(("#", "[token-goat")):
                     filtered_lines.append(ln)
                     continue
                 # Extract relative path: first whitespace-delimited token on
@@ -5266,7 +5266,7 @@ def cmd_skill_diff(
     use_colour = sys.stdout.isatty()
     for line in diff:
         if use_colour:
-            if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+            if line.startswith(("+++", "---", "@@")):
                 typer.echo(typer.style(line, bold=True))
             elif line.startswith("+"):
                 typer.echo(typer.style(line, fg=typer.colors.GREEN))
