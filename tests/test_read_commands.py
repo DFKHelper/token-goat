@@ -527,3 +527,141 @@ def test_callers_footer_not_called_for_section(capsys: pytest.CaptureFixture[str
     mock_footer.assert_not_called()
     out = capsys.readouterr().out
     assert "Refs:" not in out
+
+
+# ---------------------------------------------------------------------------
+# callers command tests
+# ---------------------------------------------------------------------------
+
+
+def test_callers_no_project(capsys: pytest.CaptureFixture[str]) -> None:
+    """callers exits with error when no project is found."""
+    from click.exceptions import Exit
+
+    from token_goat.read_commands import callers
+
+    with patch("token_goat.read_commands.find_project", return_value=None):
+        with pytest.raises(Exit) as exc_info:
+            callers("nonexistent_symbol")
+        assert exc_info.value.exit_code == 1
+
+    out = capsys.readouterr()
+    assert "No project detected" in out.err
+
+
+def test_callers_empty_project(capsys: pytest.CaptureFixture[str]) -> None:
+    """callers returns empty message when project DB has no data."""
+    from token_goat.read_commands import callers
+
+    mock_project = MagicMock()
+    mock_project.hash = "test123"
+
+    with (
+        patch("token_goat.read_commands.find_project", return_value=mock_project),
+        patch("token_goat.read_commands.db.open_project_readonly") as mock_db,
+        patch("token_goat.read_commands.db.record_stat"),
+    ):
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = []
+        mock_db.return_value.__enter__.return_value = mock_conn
+
+        with patch.object(sys.stdout, "isatty", return_value=False):
+            callers("some_symbol")
+
+    out = capsys.readouterr().out
+    assert "No callers found for 'some_symbol'" in out
+
+
+def test_callers_text_output(capsys: pytest.CaptureFixture[str]) -> None:
+    """callers groups results by file and caller in text output."""
+    from token_goat.read_commands import callers
+
+    mock_project = MagicMock()
+    mock_project.hash = "test123"
+
+    rows = [
+        MagicMock(file_rel="src/cli.py", line=142, context="install(codex=True)", caller_name="main", caller_kind="function"),
+        MagicMock(file_rel="src/cli.py", line=156, context="install(opencode=True)", caller_name="main", caller_kind="function"),
+        MagicMock(file_rel="src/hooks.py", line=44, context="install()", caller_name=None, caller_kind=None),
+    ]
+
+    with (
+        patch("token_goat.read_commands.find_project", return_value=mock_project),
+        patch("token_goat.read_commands.db.open_project_readonly") as mock_db,
+        patch("token_goat.read_commands.db.record_stat"),
+    ):
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = rows
+        mock_db.return_value.__enter__.return_value = mock_conn
+
+        with patch.object(sys.stdout, "isatty", return_value=False):
+            callers("install")
+
+    out = capsys.readouterr().out
+    assert "src/cli.py" in out
+    assert "main()" in out
+    assert "2 calls" in out
+    assert "src/hooks.py" in out
+    assert "<module level>" in out
+    assert "line 142" in out
+    assert "line 44" in out
+
+
+def test_callers_json_output(capsys: pytest.CaptureFixture[str]) -> None:
+    """callers returns properly structured JSON."""
+    from token_goat.read_commands import callers
+
+    mock_project = MagicMock()
+    mock_project.hash = "test123"
+
+    rows = [
+        MagicMock(file_rel="src/cli.py", line=142, context="install(codex=True)", caller_name="main", caller_kind="function"),
+        MagicMock(file_rel="src/cli.py", line=156, context="install(opencode=True)", caller_name="main", caller_kind="function"),
+    ]
+
+    with (
+        patch("token_goat.read_commands.find_project", return_value=mock_project),
+        patch("token_goat.read_commands.db.open_project_readonly") as mock_db,
+        patch("token_goat.read_commands.db.record_stat"),
+    ):
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = rows
+        mock_db.return_value.__enter__.return_value = mock_conn
+
+        with patch.object(sys.stdout, "isatty", return_value=False):
+            callers("install", json_output=True)
+
+    out = capsys.readouterr().out
+    result = json.loads(out)
+    assert result["query"] == "install"
+    assert len(result["callers"]) == 1
+    assert result["callers"][0]["file"] == "src/cli.py"
+    assert result["callers"][0]["caller_name"] == "main"
+    assert result["callers"][0]["caller_kind"] == "function"
+    assert len(result["callers"][0]["calls"]) == 2
+    assert result["callers"][0]["calls"][0]["line"] == 142
+
+
+def test_callers_limit_respected(capsys: pytest.CaptureFixture[str]) -> None:
+    """callers respects the limit parameter."""
+    from token_goat.read_commands import callers
+
+    mock_project = MagicMock()
+    mock_project.hash = "test123"
+
+    rows = [MagicMock(file_rel="src/cli.py", line=i, context=f"call_{i}", caller_name="func", caller_kind="function") for i in range(1, 4)]
+
+    with (
+        patch("token_goat.read_commands.find_project", return_value=mock_project),
+        patch("token_goat.read_commands.db.open_project_readonly") as mock_db,
+        patch("token_goat.read_commands.db.record_stat"),
+    ):
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchall.return_value = rows
+        mock_db.return_value.__enter__.return_value = mock_conn
+
+        with patch.object(sys.stdout, "isatty", return_value=False):
+            callers("symbol", limit=3)
+
+        call_args = mock_conn.execute.call_args
+        assert call_args[0][1][-1] == 3  # Last parameter is the limit

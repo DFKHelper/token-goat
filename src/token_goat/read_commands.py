@@ -2682,6 +2682,180 @@ def _render_refs_with_callers(rows: list[dict[str, object]]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# callers — show which functions call a given symbol
+# ---------------------------------------------------------------------------
+
+
+def callers(
+    symbol_name: str,
+    *,
+    json_output: bool = False,
+    limit: int = 100,
+) -> None:
+    """Show which functions and methods call a given symbol.
+
+    Groups results by (file, caller) — for each function that references the
+    symbol, shows the file, caller name, and every reference line.
+
+    Output format (text)::
+
+        src/token_goat/cli.py  install() — 3 calls
+          line 142: install(codex=True)
+          line 156: install(opencode=True)
+          line 201: install()
+        src/token_goat/hooks_edit.py  setup()
+          line 44: install()
+
+    Output format (JSON)::
+
+        [
+          {
+            "file": "src/token_goat/cli.py",
+            "caller_name": "install",
+            "caller_kind": "function",
+            "calls": [
+              {"line": 142, "context": "install(codex=True)"},
+              ...
+            ]
+          },
+          ...
+        ]
+    """
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("No project detected — run from a project directory", err=True)
+        raise typer.Exit(1)
+
+    symbol_name = symbol_name.strip()
+    if not symbol_name:
+        typer.echo("Symbol name cannot be empty", err=True)
+        raise typer.Exit(1)
+
+    try:
+        with db.open_project_readonly(proj.hash) as conn:
+            _FUNCTION_KINDS = ("function", "async_function", "method", "constructor")
+            kinds_placeholders = ",".join("?" * len(_FUNCTION_KINDS))
+
+            rows = conn.execute(
+                f"""
+                SELECT
+                    r.file_rel,
+                    r.line,
+                    r.context,
+                    (
+                        SELECT s.name
+                        FROM symbols s
+                        WHERE s.file_rel = r.file_rel
+                          AND s.kind IN ({kinds_placeholders})
+                          AND s.line <= r.line
+                          AND (s.end_line IS NULL OR s.end_line >= r.line)
+                        ORDER BY s.line DESC, s.id DESC
+                        LIMIT 1
+                    ) AS caller_name,
+                    (
+                        SELECT s.kind
+                        FROM symbols s
+                        WHERE s.file_rel = r.file_rel
+                          AND s.kind IN ({kinds_placeholders})
+                          AND s.line <= r.line
+                          AND (s.end_line IS NULL OR s.end_line >= r.line)
+                        ORDER BY s.line DESC, s.id DESC
+                        LIMIT 1
+                    ) AS caller_kind
+                FROM refs r
+                WHERE r.symbol_name = ?
+                ORDER BY r.file_rel, r.line
+                LIMIT ?
+                """,
+                (*_FUNCTION_KINDS, *_FUNCTION_KINDS, symbol_name, limit),
+            ).fetchall()
+    except FileNotFoundError:
+        typer.echo(f"No callers found for {symbol_name!r}")
+        if json_output:
+            typer.echo(json.dumps({"query": symbol_name, "callers": []}))
+        return
+    except Exception as exc:
+        typer.echo(f"Database error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    if not rows:
+        typer.echo(f"No callers found for {symbol_name!r}")
+        if json_output:
+            typer.echo(json.dumps({"query": symbol_name, "callers": []}))
+        return
+
+    with contextlib.suppress(Exception):
+        db.record_stat(
+            proj.hash,
+            "symbol_read",
+            bytes_saved=len(rows) * 80,
+            tokens_saved=max(1, len(rows) * 80 // 3 + 1),
+            detail=f"callers:{symbol_name}",
+        )
+
+    if json_output:
+        _render_callers_json(rows, symbol_name)
+    else:
+        _render_callers_text(rows, symbol_name)
+
+
+def _render_callers_text(rows: list[sqlite3.Row], symbol_name: str) -> None:
+    """Render callers output as grouped text."""
+    grouped: dict[tuple[str, str | None], list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        file_rel = str(row.file_rel)  # type: ignore[attr-defined]
+        caller_name = row.caller_name  # type: ignore[attr-defined]
+        grouped[(file_rel, caller_name)].append({
+            "line": int(row.line),  # type: ignore[attr-defined]
+            "context": str(row.context or "").strip(),  # type: ignore[attr-defined]
+        })
+
+    use_tty_color = sys.stdout.isatty()
+    for (file_rel, caller_name), calls in grouped.items():
+        caller_label = f"{caller_name}()" if caller_name else "<module level>"
+        num_calls = len(calls)
+        if use_tty_color:
+            typer.echo(f"\033[1m{file_rel}\033[0m  {caller_label} — {num_calls} call{'s' if num_calls != 1 else ''}")
+        else:
+            typer.echo(f"{file_rel}  {caller_label} — {num_calls} call{'s' if num_calls != 1 else ''}")
+
+        for call in calls:
+            line_num = call["line"]
+            ctx = call["context"]
+            if ctx:
+                if use_tty_color:
+                    typer.echo(f"  line {line_num}: \033[2m{ctx}\033[0m")
+                else:
+                    typer.echo(f"  line {line_num}: {ctx}")
+            else:
+                typer.echo(f"  line {line_num}")
+
+
+def _render_callers_json(rows: list[sqlite3.Row], symbol_name: str) -> None:
+    """Render callers output as JSON."""
+    grouped: dict[tuple[str, str | None, str | None], list[dict[str, object]]] = defaultdict(list)
+    for row in rows:
+        file_rel = str(row.file_rel)  # type: ignore[attr-defined]
+        caller_name = row.caller_name  # type: ignore[attr-defined]
+        caller_kind = row.caller_kind  # type: ignore[attr-defined]
+        grouped[(file_rel, caller_name, caller_kind)].append({
+            "line": int(row.line),  # type: ignore[attr-defined]
+            "context": str(row.context or "").strip(),  # type: ignore[attr-defined]
+        })
+
+    result = []
+    for (file_rel, caller_name, caller_kind), calls in grouped.items():
+        result.append({
+            "file": file_rel,
+            "caller_name": caller_name if caller_name is None else str(caller_name),
+            "caller_kind": caller_kind if caller_kind is None else str(caller_kind),
+            "calls": calls,
+        })
+
+    typer.echo(json.dumps({"query": symbol_name, "callers": result}, separators=(",", ":")))
+
+
+# ---------------------------------------------------------------------------
 # changed — list symbols that changed since a git ref
 # ---------------------------------------------------------------------------
 

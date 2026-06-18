@@ -6,6 +6,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Added
 
+- **`token-goat callers <symbol>` — show which functions call a given symbol.** Groups results by caller: for each function that references the symbol, shows the file, caller name, and every line where it invokes the symbol. Complements `refs` by surfacing the call hierarchy rather than raw usage lines.
+
 - **`.tokengoatignore` — per-project exclusion file at project root.** Add gitignore-style glob patterns (one per line, `#` comments supported) to skip files and directories from indexing, on top of built-in skip lists. Use `token-goat ignores` to list active patterns (built-in and custom).
 
 
