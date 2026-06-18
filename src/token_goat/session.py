@@ -451,9 +451,6 @@ def _session_file_lock_posix(path: Path) -> Generator[None, None, None]:
             )
 
         yield
-
-    except BaseException:
-        raise
     finally:
         if acquired and lock_fd is not None:
             try:
@@ -511,9 +508,6 @@ def _session_file_lock_windows(path: Path) -> Generator[None, None, None]:
             )
 
         yield
-
-    except BaseException:
-        raise
     finally:
         if acquired:
             with contextlib.suppress(OSError):
@@ -4595,9 +4589,10 @@ def get_skill_history(
         resolved = _resolve_cache(session_id, cache)
         if resolved.unavailable:
             return None
-        return resolved.skill_history or None
     except Exception:
         return None
+    else:
+        return resolved.skill_history or None
 
 
 def record_skill_compact_hit(

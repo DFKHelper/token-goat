@@ -376,7 +376,7 @@ def fetch_file(file_id: str, *, shrink_if_image: bool = True, max_size_bytes: in
                time.monotonic() - t_meta_start)
 
     if not isinstance(meta, dict):
-        raise RuntimeError(f"Expected dict metadata from Drive API, got {type(meta).__name__}")
+        raise TypeError(f"Expected dict metadata from Drive API, got {type(meta).__name__}")
     name: str = meta.get("name", file_id)
     mime: str = meta.get("mimeType", "")
 
