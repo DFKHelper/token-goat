@@ -263,7 +263,7 @@ def get_context_pressure(  # type: ignore[name-defined]  # SessionCache imported
 
 #: Known harness identifiers returned by :func:`detect_harness`.
 _KNOWN_HARNESSES: Final[frozenset[str]] = frozenset(
-    ["claudecode", "codex", "opencode", "generic"]
+    ["claudecode", "codex", "opencode", "gemini", "generic"]
 )
 
 #: Per-harness default multipliers for auto_trigger_multiplier.
@@ -276,6 +276,7 @@ _HARNESS_MULTIPLIER_DEFAULTS: Final[dict[str, float]] = {
     "claudecode": 2.0,
     "codex": 1.5,
     "opencode": 2.5,
+    "gemini": 3.0,
     "generic": 1.0,
 }
 
@@ -332,6 +333,12 @@ def detect_harness(config_override: str = "auto") -> str:
     # OpenAI key without Anthropic key → most likely Codex
     if os.environ.get("OPENAI_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
         return "codex"
+
+    # Gemini CLI: explicit session flag or Google API key without Anthropic key
+    if os.environ.get("GEMINI_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+        return "gemini"
+    if os.environ.get("GOOGLE_API_KEY") and not os.environ.get("ANTHROPIC_API_KEY"):
+        return "gemini"
 
     return "generic"
 
@@ -6831,6 +6838,16 @@ def _render(
             for name, lines, prot in _section_groups
         ]
         _LOG.debug("_render: opencode harness — injected harness tag into header")
+    elif harness == "gemini":
+        # Gemini CLI has a 1 M token context window; keep the full manifest but
+        # insert a harness tag so Gemini-side tooling can route it correctly.
+        _new_header = list(header_lines)
+        _new_header.insert(1, "### harness: gemini")
+        _section_groups = [
+            (name, _new_header if name == "header" else lines, prot)
+            for name, lines, prot in _section_groups
+        ]
+        _LOG.debug("_render: gemini harness — injected harness tag into header")
     elif harness == "generic":
         _GENERIC_KEEP: frozenset[str] = frozenset(
             ["sealed", "header", "uncommitted", "edited", "syms"]

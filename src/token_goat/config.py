@@ -1484,7 +1484,7 @@ def _parse_prompt_triggers(val: object) -> list[PromptTrigger]:
 
 
 _VALID_HARNESS_VALUES: Final[frozenset[str]] = frozenset(
-    ["auto", "claudecode", "codex", "opencode", "generic"]
+    ["auto", "claudecode", "codex", "opencode", "gemini", "generic"]
 )
 
 
