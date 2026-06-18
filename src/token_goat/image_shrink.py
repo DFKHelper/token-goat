@@ -1040,16 +1040,10 @@ def stats_for(src_path: Path, shrunken_path: Path, src_size_bytes: int | None = 
             from PIL import Image  # noqa: PLC0415
             if _MAX_PIXELS > 0:
                 Image.MAX_IMAGE_PIXELS = _MAX_PIXELS
-            try:
-                with Image.open(src_path) as img:
-                    orig_w, orig_h = img.size
-            except (OSError, MemoryError, ValueError):
-                pass  # Best effort; dimension reads are optional.
-            try:
-                with Image.open(shrunken_path) as img:
-                    out_w, out_h = img.size
-            except (OSError, MemoryError, ValueError):
-                pass  # Best effort; dimension reads are optional.
+            with contextlib.suppress(OSError, MemoryError, ValueError), Image.open(src_path) as img:
+                orig_w, orig_h = img.size
+            with contextlib.suppress(OSError, MemoryError, ValueError), Image.open(shrunken_path) as img:
+                out_w, out_h = img.size
         except ImportError:
             # PIL not installed; skip dimension reads.
             _LOG.debug("gather_stats: PIL not available; skipping dimension reads")

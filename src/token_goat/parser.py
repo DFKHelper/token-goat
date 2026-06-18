@@ -955,7 +955,7 @@ def index_project(
     # the extension-filter, symlink-guard, and generated-file logic.
     _skipped_large: list[LargeFileInfo] = []
     if _skip_threshold < MAX_FILE_SIZE * 100:  # only scan when threshold is meaningful
-        try:
+        with contextlib.suppress(Exception):
             for _lp in iter_source_files(project, skip_threshold=MAX_FILE_SIZE * 100, extra_skip_dirs=_extra_skip_dirs):
                 try:
                     _lp_size = _lp.stat().st_size
@@ -975,8 +975,6 @@ def index_project(
                         "index_project: skipping large file %s (%d bytes > %d skip threshold)",
                         _lp_rel, _lp_size, _skip_threshold,
                     )
-        except Exception:  # noqa: BLE001
-            pass  # fail-soft: large-file scanning must never abort indexing
 
     files = list(iter_source_files(project, skip_threshold=_skip_threshold, ext_filter=ext_filter, extra_skip_dirs=_extra_skip_dirs))
     n_total = len(files)
