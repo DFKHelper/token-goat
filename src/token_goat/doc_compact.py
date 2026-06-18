@@ -142,10 +142,11 @@ def mark_compact_stale(compact_path: Path) -> bool:
         from . import paths
         paths.atomic_write_text(compact_path, "".join(lines))
         _LOG.debug("doc_compact.mark_compact_stale: marked stale %s", compact_path.name)
-        return True
     except OSError as exc:
         _LOG.debug("doc_compact.mark_compact_stale: write failed for %s: %s", compact_path.name, exc)
         return False
+    else:
+        return True
 
 
 # ---------------------------------------------------------------------------

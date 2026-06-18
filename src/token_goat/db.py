@@ -967,7 +967,6 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
         _apply_connection_pragmas(conn)
         # Force SQLite to actually open the DB file and its WAL sidecars.
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
-        return conn
     except Exception as exc:
         # Catch all exceptions from the WAL path to ensure we close the connection
         # and attempt fallback. This includes OperationalError, DatabaseError, and
@@ -986,7 +985,6 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
             _apply_connection_pragmas(conn, suppress=True)
             # Verify the immutable open actually works (same lazy-open reason).
             conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
-            return conn
         except (sqlite3.DatabaseError, Exception) as exc2:
             # Catch both DatabaseError and any other exception to avoid leaking the connection.
             _close_conn(conn)
@@ -995,6 +993,10 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
                     f"read-only connection failed for {db_path.name}: {exc2}"
                 ) from exc2
             raise
+        else:
+            return conn
+    else:
+        return conn
 
 
 @contextlib.contextmanager
@@ -1067,7 +1069,6 @@ def _pid_alive(pid: int) -> bool:
     # Fallback: use os.kill(pid, 0) to check if PID is alive.
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
@@ -1075,6 +1076,8 @@ def _pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+    else:
+        return True
 
 
 @contextlib.contextmanager
