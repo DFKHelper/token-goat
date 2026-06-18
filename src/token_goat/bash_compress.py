@@ -290,6 +290,7 @@ import math
 import os
 import re
 import shlex
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final
@@ -580,20 +581,20 @@ def dedupe_by_key(
     every occurrence, which is the difference between a 5 KB and a 500 KB
     eslint dump on a brownfield codebase.
     """
-    seen: dict[str, int] = {}
+    seen: Counter[str] = Counter()
     out: list[str] = []
-    summaries: dict[str, int] = {}
+    summaries: Counter[str] = Counter()
     for line in lines:
         m = key.search(line)
         if m is None:
             out.append(line)
             continue
         bucket = m.group(1) if m.groups() else m.group(0)
-        seen[bucket] = seen.get(bucket, 0) + 1
+        seen[bucket] += 1
         if seen[bucket] <= keep_first_n:
             out.append(line)
         else:
-            summaries[bucket] = summaries.get(bucket, 0) + 1
+            summaries[bucket] += 1
     for bucket, count in sorted(summaries.items()):
         out.append(fmt.format(count=count, key_value=bucket))
     return out
@@ -8972,8 +8973,7 @@ class TerraformFilter(Filter):
                 kept.append(line)
 
         # Flush any remaining "Still..." lines that didn't get a completion event.
-        for last_still in still_last.values():
-            kept.append(last_still)
+        kept.extend(still_last.values())
 
         notes: list[str] = []
         _maybe_note(notes, dropped_refresh, f"dropped {dropped_refresh} terraform refresh/read lines")
@@ -11490,7 +11490,6 @@ def _ls_ext_from_line(line: str) -> str | None:
 def _ls_ext_summary(entries: list[str], top_n: int = 4) -> str:
     """Build a 'by type' extension summary from a list of ls entry lines.
     Returns a string like '.py×18 .js×12 .ts×8 other×9', or '' when there are no data."""
-    from collections import Counter
     ext_counts: Counter[str] = Counter()
     other_count = 0
     for ln in entries:
