@@ -1027,8 +1027,11 @@ def symbol(
                     typer.echo(not_found_extra or f"No matches for {name!r}")
                     if close_matches and not not_found_extra:
                         from .render.common import render_list
-                        typer.echo("Did you mean:")
-                        typer.echo(render_list(close_matches, bullet="-"))
+                        if len(close_matches) == 1:
+                            typer.echo(f"Did you mean: `token-goat symbol {close_matches[0]}`")
+                        else:
+                            typer.echo("Did you mean:")
+                            typer.echo(render_list(close_matches, bullet="-"))
 
     def _global_query(target: str) -> list[dict]:
         """Run the symbols_global query for *target* and shape the rows.
