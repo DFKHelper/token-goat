@@ -1598,3 +1598,17 @@ def test_get_hook_timing_stats_excludes_non_hook_rows(tmp_data_dir):
     from token_goat.db import get_hook_timing_stats
     db.record_stat(None, "bash_compress:pytest", bytes_saved=999)
     assert get_hook_timing_stats() == {}
+
+
+def test_index_health_file_count_with_identifier_quoting(tmp_data_dir):
+    """index_health file_count exercises the bracketed _count() path."""
+    h = "deadbeef0302"
+    with db.open_project(h) as conn:
+        for i in range(3):
+            conn.execute(
+                "INSERT INTO files (rel_path, language, size, mtime, content_sha256, indexed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (f"src/f{i}.py", "python", 50, 0.0, "b" * 64, int(time.time())),
+            )
+    result = db.index_health(h)
+    assert result["file_count"] == 3
