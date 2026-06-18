@@ -2190,7 +2190,7 @@ def _hooks_contain_token_goat(hooks: dict[str, object]) -> bool:
     to eliminate the identical nested-loop scan duplicated in
     ``_check_settings_json`` and ``_check_codex_config``.
     """
-    for _event, entries in hooks.items():
+    for entries in hooks.values():
         entry_list = entries if isinstance(entries, list) else []
         for entry in entry_list:
             if not isinstance(entry, dict):

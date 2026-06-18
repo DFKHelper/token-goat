@@ -1245,9 +1245,8 @@ def is_noise_path(path: str) -> bool:
     p = _norm_key(path)
     # Path-segment check first: catches whole noise directories regardless of
     # the file's own extension (e.g. ``project/.venv/lib/foo.py``).
-    for segment in _NOISE_SEGMENTS:
-        if segment in p:
-            return True
+    if any(segment in p for segment in _NOISE_SEGMENTS):
+        return True
     # Basename and extension checks — slice once and reuse.
     slash_idx = p.rfind("/")
     basename = p[slash_idx + 1:] if slash_idx >= 0 else p
@@ -2113,9 +2112,8 @@ def _is_noop_bash_command(entry: object) -> bool:
 
     # Check prefix match for common no-ops
     cmd_lower = cmd_preview.lower()
-    for pattern in ("git status", "git diff --stat", "git log"):
-        if cmd_lower.startswith(pattern):
-            return True
+    if any(cmd_lower.startswith(pattern) for pattern in ("git status", "git diff --stat", "git log")):
+        return True
 
     # Commands that are inherently silent (cd, echo)
     if first_word_lower in ("cd", "echo"):

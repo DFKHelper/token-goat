@@ -698,9 +698,8 @@ def _is_test_path(file_path: str) -> bool:
     parts = normed.split("/")
     # Check any path component against known test-directory names.
     test_dirs = {"tests", "test", "spec", "__tests__"}
-    for part in parts[:-1]:  # all but the filename
-        if part.lower() in test_dirs:
-            return True
+    if any(part.lower() in test_dirs for part in parts[:-1]):  # all but the filename
+        return True
     basename = parts[-1].lower() if parts else ""
     # Filename-level patterns.
     if basename.startswith("test_"):

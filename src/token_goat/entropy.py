@@ -50,9 +50,7 @@ def has_high_entropy_token(
     has both high entropy AND contains at least one digit, hyphen, underscore, or other
     special character — this filters out normal English words.
     """
-    for token in _TOKEN_SPLIT_RE.split(line):
-        if (len(token) >= min_length
-                and score_entropy(token) >= min_entropy
-                and _HAS_NONALPHA_RE.search(token) is not None):
-            return True
-    return False
+    return any(
+        len(token) >= min_length and score_entropy(token) >= min_entropy and _HAS_NONALPHA_RE.search(token) is not None
+        for token in _TOKEN_SPLIT_RE.split(line)
+    )

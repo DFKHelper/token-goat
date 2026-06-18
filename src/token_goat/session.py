@@ -2039,30 +2039,18 @@ class SessionCache:
 
         # grep_result_hashes: dict[str, str] — content_hash → pattern.
         # Missing in older sessions → empty dict (backward compat). Malformed entries are skipped.
-        grep_result_hashes: dict[str, str] = {}
         raw_grep_hashes = d.get("grep_result_hashes", {})
-        if isinstance(raw_grep_hashes, dict):
-            for hash_key, pattern in raw_grep_hashes.items():
-                if isinstance(hash_key, str) and isinstance(pattern, str) and hash_key and pattern:
-                    grep_result_hashes[hash_key] = pattern
+        grep_result_hashes: dict[str, str] = {k: v for k, v in raw_grep_hashes.items() if isinstance(k, str) and isinstance(v, str) and k and v} if isinstance(raw_grep_hashes, dict) else {}
 
         # mcp_result_hashes: dict[str, str] — tool_input_hash → output_id.
         # Missing in older sessions → empty dict (backward compat). Malformed entries are skipped.
-        mcp_result_hashes: dict[str, str] = {}
         raw_mcp_hashes = d.get("mcp_result_hashes", {})
-        if isinstance(raw_mcp_hashes, dict):
-            for hash_key, output_id in raw_mcp_hashes.items():
-                if isinstance(hash_key, str) and isinstance(output_id, str) and hash_key and output_id:
-                    mcp_result_hashes[hash_key] = output_id
+        mcp_result_hashes: dict[str, str] = {k: v for k, v in raw_mcp_hashes.items() if isinstance(k, str) and isinstance(v, str) and k and v} if isinstance(raw_mcp_hashes, dict) else {}
 
         # file_content_seen: dict[str, str] — sha16 → first path seen with that content.
         # Missing in older sessions → empty dict (backward compat).
-        file_content_seen: dict[str, str] = {}
         raw_fcs = d.get("file_content_seen", {})
-        if isinstance(raw_fcs, dict):
-            for sha16, fpath in raw_fcs.items():
-                if isinstance(sha16, str) and isinstance(fpath, str) and sha16 and fpath:
-                    file_content_seen[sha16] = fpath
+        file_content_seen: dict[str, str] = {k: v for k, v in raw_fcs.items() if isinstance(k, str) and isinstance(v, str) and k and v} if isinstance(raw_fcs, dict) else {}
 
         edited_files: dict[str, int] = {}
         for k, v in d.get("edited_files", {}).items():
@@ -2130,12 +2118,8 @@ class SessionCache:
         # snapshot_shas: dict[str, str] — coerce values defensively so a
         # malformed entry written by a future version (e.g. structured object)
         # is dropped silently rather than poisoning the lookup path.
-        snapshot_shas: dict[str, str] = {}
         raw_snaps = d.get("snapshot_shas", {})
-        if isinstance(raw_snaps, dict):
-            for k, v in raw_snaps.items():
-                if isinstance(k, str) and isinstance(v, str):
-                    snapshot_shas[k] = v
+        snapshot_shas: dict[str, str] = {k: v for k, v in raw_snaps.items() if isinstance(k, str) and isinstance(v, str)} if isinstance(raw_snaps, dict) else {}
 
         # hints_seen: dict[str, int] (persisted) → dict[str, int] (in-memory).
         # New format after verbose-suppression feature; backwards-compat with
@@ -3246,7 +3230,7 @@ def _migrate_session(data: dict[str, Any]) -> dict[str, Any]:
         data["version"] = 0
 
     # Per-file-entry defaults for nested objects
-    for _file_key, file_entry in data.get("files", {}).items():
+    for file_entry in data.get("files", {}).values():
         if not isinstance(file_entry, dict):
             continue
         if "symbols_ts" not in file_entry:
