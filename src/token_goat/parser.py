@@ -213,7 +213,14 @@ def load_project_ignore_patterns(project_root: Path) -> list[str]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        patterns.append(line)
+        # Strip inline comment: '#' is a comment delimiter only when preceded by whitespace
+        for _delim in (" #", "\t#"):
+            _pos = line.find(_delim)
+            if _pos != -1:
+                line = line[:_pos].rstrip()
+                break
+        if line:
+            patterns.append(line)
     return patterns
 
 
