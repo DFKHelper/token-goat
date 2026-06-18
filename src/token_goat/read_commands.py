@@ -3615,7 +3615,7 @@ def recent(
 
     session_read_entries: list[tuple[str, str, float]] = []  # (rel_path, label, last_read_ts)
     if sess is not None and hasattr(sess, "files"):
-        for _key, file_entry in sess.files.items():
+        for file_entry in sess.files.values():
             raw_path = file_entry.rel_or_abs
             # Skip files that were also edited — they are already in Source 1.
             if Path(raw_path).as_posix().lower() in edited_paths_normalized:
