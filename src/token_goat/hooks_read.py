@@ -6755,7 +6755,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     else:
                         _tsc_noise_lines.append(_tsc_line)
 
-                if len(_tsc_noise_lines) == 0:
+                if not _tsc_noise_lines:
                     pass  # nothing to suppress — fall through
                 else:
                     _tsc_out_id: str | None = None
