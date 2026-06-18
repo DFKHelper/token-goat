@@ -1365,11 +1365,8 @@ def build_map_since(
         out.append(f"+{omitted} more changed files (budget exhausted)\n")
 
     if cache_writes:
-        try:
-            with db.open_project(project.hash) as conn:
-                _write_summary_cache(conn, cache_writes)
-        except Exception:  # noqa: BLE001
-            pass
+        with contextlib.suppress(Exception), db.open_project(project.hash) as conn:
+            _write_summary_cache(conn, cache_writes)
 
     return "".join(out)
 

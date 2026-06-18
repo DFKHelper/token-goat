@@ -30,6 +30,7 @@ is returned so a broken hint layer never interrupts the agent's work.
 """
 from __future__ import annotations
 
+import contextlib
 import difflib
 import functools
 import hashlib
@@ -4558,11 +4559,9 @@ def _build_doc_compact_hint_inner(
     cache: session.SessionCache | None = None,
 ) -> ReadHint | None:
     # Config gate
-    try:
+    with contextlib.suppress(Exception):
         if not config.load().hints.stable_doc_compacts:
             return None
-    except Exception:  # noqa: BLE001
-        pass
 
     # Only handle markdown files
     fp_lower = file_path.lower()

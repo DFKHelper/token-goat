@@ -1948,7 +1948,7 @@ def cmd_map(
             import fnmatch  # noqa: PLC0415
             cutoff = time.time() - since_minutes * 60
             recent_files: list[str] = []
-            try:
+            with contextlib.suppress(Exception):
                 for rel_path_str, _info in (repomap._load_and_rank(proj) or type("_empty", (), {"ranked": []})()).ranked:  # type: ignore[attr-defined]
                     abs_path = proj.root / rel_path_str
                     try:
@@ -1957,8 +1957,6 @@ def cmd_map(
                         continue
                     if mtime >= cutoff and (filter_glob is None or fnmatch.fnmatch(rel_path_str, filter_glob)):
                         recent_files.append(rel_path_str)
-            except Exception:  # noqa: BLE001
-                pass
             elapsed = time.monotonic() - t0
             _LOG.info(
                 "map complete: project=%s since_minutes=%d files=%d dur=%.3fs",

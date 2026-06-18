@@ -2272,11 +2272,9 @@ def _indexed_dir_listing(file_part: str, target: _FileTarget) -> list[str] | Non
         return sorted(set(matches))
 
     # No indexed files beneath the prefix — is it a real filesystem directory?
-    try:
+    with contextlib.suppress(OSError):
         if Path(file_part).is_dir():
             return []
-    except OSError:
-        pass
     return None
 
 
@@ -3739,33 +3737,30 @@ def find(
 
     exact_rows = []
     fuzzy_rows: list[dict] = []
-    try:
-        with db.open_project(proj.hash) as conn:
-            exact_rows = conn.execute(sym_sql, (query, _SECTION_LIMIT * 2)).fetchall()
+    with contextlib.suppress(db.DBError), db.open_project(proj.hash) as conn:
+        exact_rows = conn.execute(sym_sql, (query, _SECTION_LIMIT * 2)).fetchall()
 
-            if len(exact_rows) < _SECTION_LIMIT:
-                # Also grab fuzzy (LIKE) matches — e.g. partial name
-                like_sql = (
-                    "SELECT name, kind, file_rel, line, signature "
-                    "FROM symbols WHERE name LIKE ? AND name != ? LIMIT ?"
-                )
-                like_param = f"%{query}%"
-                fuzzy_rows_raw = conn.execute(
-                    like_sql, (like_param, query, _SECTION_LIMIT * 2)
-                ).fetchall()
-                # Convert to dicts
-                fuzzy_rows = [
-                    {
-                        "file": r["file_rel"],
-                        "line": r["line"],
-                        "kind": r["kind"],
-                        "name": r["name"],
-                        "signature": r["signature"],
-                    }
-                    for r in fuzzy_rows_raw
-                ]
-    except db.DBError:
-        pass
+        if len(exact_rows) < _SECTION_LIMIT:
+            # Also grab fuzzy (LIKE) matches — e.g. partial name
+            like_sql = (
+                "SELECT name, kind, file_rel, line, signature "
+                "FROM symbols WHERE name LIKE ? AND name != ? LIMIT ?"
+            )
+            like_param = f"%{query}%"
+            fuzzy_rows_raw = conn.execute(
+                like_sql, (like_param, query, _SECTION_LIMIT * 2)
+            ).fetchall()
+            # Convert to dicts
+            fuzzy_rows = [
+                {
+                    "file": r["file_rel"],
+                    "line": r["line"],
+                    "kind": r["kind"],
+                    "name": r["name"],
+                    "signature": r["signature"],
+                }
+                for r in fuzzy_rows_raw
+            ]
 
     # Combine: exact first, then fuzzy, deduplicate by (file_rel, name), limit to 5
     sym_results: list[dict] = []
@@ -3924,15 +3919,12 @@ def similar(target: str, *, json_output: bool = False, top_k: int = 5) -> None:
     # Look up symbol existence — give a helpful message if not indexed
     # ------------------------------------------------------------------
     symbol_found = False
-    try:
-        with db.open_project(proj.hash) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM symbols WHERE file_rel = ? AND name = ? LIMIT 1",
-                (rel_path, symbol_part),
-            ).fetchone()
-            symbol_found = row is not None
-    except db.DBError:
-        pass
+    with contextlib.suppress(db.DBError), db.open_project(proj.hash) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM symbols WHERE file_rel = ? AND name = ? LIMIT 1",
+            (rel_path, symbol_part),
+        ).fetchone()
+        symbol_found = row is not None
 
     if not symbol_found:
         msg = (

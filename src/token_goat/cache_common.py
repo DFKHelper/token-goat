@@ -32,6 +32,7 @@ __all__ = [
     "write_sidecar_metadata",
 ]
 
+import contextlib
 import gzip
 import hashlib
 import json
@@ -327,7 +328,7 @@ def evict_cache_dir(
     # next eviction pass.  The cache directory belongs to token-goat but the
     # token-goat philosophy is "fail-soft, never own more than you wrote": we
     # touch only files whose names we would have generated.
-    try:
+    with contextlib.suppress(OSError):
         for sp in d.iterdir():
             # Reap orphaned companions of both kinds: a ``.json`` sidecar or a
             # ``.gz`` compressed body whose owning ``.txt`` stub was deleted
@@ -357,8 +358,6 @@ def evict_cache_dir(
                 sp.unlink(missing_ok=True)
             except OSError as exc:
                 _log.debug("%s: orphan %s removal failed: %s: %s", log_name, companion_kind, sp.name, exc)
-    except OSError:
-        pass
 
     if total <= max_total_bytes and len(entries) <= max_file_count:
         _log.debug(

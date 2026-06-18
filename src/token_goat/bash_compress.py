@@ -25110,11 +25110,9 @@ def _ps_keep_line(
         return True
     # Check CPU/MEM resource thresholds when available
     if cpu_col is not None and mem_col is not None and len(cols) > max(cpu_col, mem_col):
-        try:
+        with contextlib.suppress(ValueError):
             if float(cols[cpu_col]) > 5.0 or float(cols[mem_col]) > 2.0:
                 return True
-        except ValueError:
-            pass
     return False
 
 
