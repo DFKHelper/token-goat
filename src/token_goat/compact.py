@@ -63,7 +63,7 @@ from .config import Config as _Config
 from .config import load as _load_config
 from .hooks_common import sanitize_log_str
 from .util import _humanize_bytes, ellipsize, get_logger
-from .util import run_git as _util_run_git
+from .util import run_git_silent as _run_git
 
 
 def __getattr__(name: str) -> object:
@@ -542,32 +542,6 @@ if TYPE_CHECKING:
 
     from .session import FileEntry, SessionCache
     from .session import FileEntry as _FileEntry
-
-
-def _run_git(args: list[str], cwd: str, timeout: float = 5) -> str | None:
-    """Run ``git <args>`` in *cwd* and return stripped stdout, or ``None`` on failure.
-
-    Returns ``None`` when git is not found, the working directory does not exist,
-    the process times out, the exit code is non-zero, or the output is empty.
-
-    Item #31: only ``OSError`` (covers ``FileNotFoundError`` / ``PermissionError``)
-    and ``subprocess.SubprocessError`` (covers ``CalledProcessError`` /
-    ``TimeoutExpired``) are swallowed — programming errors like
-    ``AttributeError`` or assertion failures are allowed to propagate so they
-    surface in tests instead of being silently masked.  Aligns with the
-    ``util.run_git`` convention.
-
-    Delegates to ``util.run_git`` for consistent kwargs (encoding, errors, lock avoidance).
-    """
-    import subprocess  # noqa: PLC0415  — keep import lazy for hook cold-start
-
-    try:
-        result = _util_run_git(args, cwd=cwd, timeout=timeout)
-        if result.returncode != 0 or not result.stdout.strip():
-            return None
-        return result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
 
 
 # Wall-clock timeout for build_manifest() to prevent the PreCompact hook from stalling.
