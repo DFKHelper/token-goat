@@ -16,8 +16,8 @@ __all__ = [
     "read_section",
     "read_symbol",
     "resolve_file_rel",
-    "truncate_symbol_body",
     "token_estimate_header",
+    "truncate_symbol_body",
 ]
 
 import operator
@@ -592,7 +592,7 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
     "superman/SKILL.md::Heading"`` works from any working directory once the
     skills dir has been indexed.
     """
-    from . import db as _db  # noqa: PLC0415
+    from . import db as _db
 
     try:
         with _db.open_global_readonly() as gconn:
@@ -606,7 +606,7 @@ def find_in_all_projects(file_part: str) -> tuple[Project, str] | None:
         raise ProjectIndexUnavailable(
             "Project index database is unavailable. Run `token-goat index --full` again."
         ) from exc
-    except Exception as exc:  # noqa: BLE001 — unexpected error; fail-soft for cross-project lookup
+    except Exception as exc:
         _LOG.warning(
             "find_in_all_projects: unexpected error opening global DB (%s: %s); skipping cross-project lookup",
             type(exc).__name__,

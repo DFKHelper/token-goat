@@ -6,10 +6,10 @@ import re
 from collections import Counter
 
 __all__ = [
-    "score_entropy",
-    "has_high_entropy_token",
-    "_ENTROPY_THRESHOLD",
     "_ENTROPY_MIN_LEN",
+    "_ENTROPY_THRESHOLD",
+    "has_high_entropy_token",
+    "score_entropy",
 ]
 
 _ENTROPY_THRESHOLD: float = 0.85

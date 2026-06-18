@@ -46,14 +46,14 @@ def _find_claude_md_files(project_root: Path) -> list[Path]:
 def _find_memory_md(project_root: Path) -> Path | None:
     """Return the MEMORY.md for *project_root* by scanning Claude's projects dir."""
     try:
-        from . import paths  # noqa: PLC0415
+        from . import paths
 
         projects_dir = paths.claude_projects_dir()
         if not projects_dir.is_dir():
             return None
         root_str = str(project_root.resolve())
         # Claude slugifies the path (non-alphanumerics → "-").
-        import re  # noqa: PLC0415
+        import re
         expected_slug = re.sub(r"[^A-Za-z0-9]", "-", root_str).strip("-")
         candidate = projects_dir / expected_slug / "memory" / "MEMORY.md"
         if candidate.is_file():
@@ -66,7 +66,7 @@ def _find_memory_md(project_root: Path) -> Path | None:
             if mem.is_file() and proj_dir.name == expected_slug:
                 return mem
         return None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -84,9 +84,9 @@ def _pct(tokens: int) -> str:
 
 def run(*, fix: bool, json_out: bool, project: Path | None) -> None:
     """Entry point for ``token-goat context-stats``."""
-    import typer  # noqa: PLC0415
+    import typer
 
-    from . import memory_prune  # noqa: PLC0415
+    from . import memory_prune
 
     project_root = (project or Path(os.getcwd())).resolve()
 
@@ -126,7 +126,7 @@ def run(*, fix: bool, json_out: bool, project: Path | None) -> None:
         dry_result = memory_prune.prune_index(memory_dir, dry_run=True)
 
     # --- Content duplicate detection ---
-    import contextlib as _cl  # noqa: PLC0415
+    import contextlib as _cl
     dup_clusters: list[memory_prune.DupCluster] = []
     if memory_dir:
         with _cl.suppress(Exception):

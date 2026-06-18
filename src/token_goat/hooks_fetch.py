@@ -104,9 +104,9 @@ def _intercept_drive_download(file_id: str, *, hint_filename: str | None = None)
     if hint_filename:
         # Local import to avoid pulling google client deps when the hook fires
         # for a tool call that has no filename (the common case).
-        from pathlib import Path  # noqa: PLC0415
+        from pathlib import Path
 
-        from . import gdrive  # noqa: PLC0415
+        from . import gdrive
 
         if gdrive.is_text_path(Path(hint_filename)):
             sections_hint = (
@@ -156,8 +156,8 @@ def _handle_web_dedup(payload: HookPayload, url: str) -> HookResponse | None:
     Returns ``None`` to let the hook continue to its existing image-redirect
     path or pass through unchanged.
     """
-    from .hints import build_web_dedup_hint  # noqa: PLC0415
-    from .hooks_common import run_dedup_hint  # noqa: PLC0415
+    from .hints import build_web_dedup_hint
+    from .hooks_common import run_dedup_hint
 
     return run_dedup_hint(
         payload,
@@ -179,8 +179,8 @@ def _handle_web_cache_hit(payload: HookPayload, url: str) -> HookResponse | None
     Returns ``None`` when no prior cached entry exists or the session has
     already seen this URL (the dedup path handles that case).
     """
-    from .hints import build_web_cache_hit_hint  # noqa: PLC0415
-    from .hooks_common import run_dedup_hint  # noqa: PLC0415
+    from .hints import build_web_cache_hit_hint
+    from .hooks_common import run_dedup_hint
 
     return run_dedup_hint(
         payload,
@@ -201,13 +201,13 @@ def _handle_web_dedup_deny(session_id: str, url: str) -> HookResponse | None:
     error so a transient failure never blocks the tool.
     """
     try:
-        import time  # noqa: PLC0415
+        import time
 
-        from . import cache_common as _cc  # noqa: PLC0415
-        from . import config as _config  # noqa: PLC0415
-        from . import session as _sess  # noqa: PLC0415
-        from . import web_cache as _wc  # noqa: PLC0415
-        from .hints import STALE_READ_AGE_SECONDS  # noqa: PLC0415
+        from . import cache_common as _cc
+        from . import config as _config
+        from . import session as _sess
+        from . import web_cache as _wc
+        from .hints import STALE_READ_AGE_SECONDS
 
         url_sha = _wc.url_hash(url)
         entry = _sess.lookup_web_entry(session_id, url_sha)
@@ -238,7 +238,7 @@ def _handle_web_dedup_deny(session_id: str, url: str) -> HookResponse | None:
                 "Include 'refresh', 'latest', 'reload', 'updated', or 'retry' in the WebFetch prompt to bypass this block."
             ),
         )
-    except Exception:  # noqa: BLE001 — fail-soft; never block the tool
+    except Exception:
         _LOG.debug("pre-fetch: web dedup deny check failed", exc_info=True)
         return None
 
@@ -256,9 +256,9 @@ def _check_url_allowdeny(url: str) -> HookResponse | None:
 
     Patterns are matched via :func:`fnmatch.fnmatch` against the full URL string.
     """
-    import fnmatch  # noqa: PLC0415
+    import fnmatch
 
-    from . import config as _config  # noqa: PLC0415
+    from . import config as _config
 
     cfg = _config.load().webfetch
     url_str = url
@@ -305,8 +305,8 @@ def _handle_mcp_dedup(
     model doesn't need a follow-up command.  Larger results point at
     ``token-goat mcp-output <output_id>``.
     """
-    from . import session  # noqa: PLC0415
-    from .mcp_cache import compact_mcp_result, load_mcp_result, mcp_hash  # noqa: PLC0415
+    from . import session
+    from .mcp_cache import compact_mcp_result, load_mcp_result, mcp_hash
 
     cache = session.safe_load(session_id, caller="mcp_dedup")
     if cache is None:
@@ -358,8 +358,8 @@ def _handle_mcp_hint(
     is told a cached copy exists and given the retrieval command, but the live
     call is still allowed to proceed.
     """
-    from . import session  # noqa: PLC0415
-    from .mcp_cache import compact_mcp_result, load_mcp_result, mcp_hash  # noqa: PLC0415
+    from . import session
+    from .mcp_cache import compact_mcp_result, load_mcp_result, mcp_hash
 
     cache = session.safe_load(session_id, caller="mcp_hint")
     if cache is None:
@@ -402,9 +402,9 @@ def _handle_mcp_hint(
 
 def _invalidate_mcp_cache(session_id: str, tool_name: str) -> None:
     """Clear all cached MCP read hashes after a mutation tool call. Best-effort."""
-    import contextlib as _cl  # noqa: PLC0415
+    import contextlib as _cl
 
-    from . import session  # noqa: PLC0415
+    from . import session
 
     with _cl.suppress(Exception):
         cache = session.safe_load(session_id, caller="mcp_cache_invalidate")
@@ -415,7 +415,7 @@ def _invalidate_mcp_cache(session_id: str, tool_name: str) -> None:
             session.save(cache)
             _LOG.debug("post-fetch: invalidated %d MCP cache entries after mutation %s", cleared, tool_name)
             with _cl.suppress(Exception):
-                from . import db as _db  # noqa: PLC0415
+                from . import db as _db
                 _db.record_stat(session_id, "mcp_cache_invalidated", detail=tool_name)
 
 
@@ -425,9 +425,9 @@ def _capture_mcp_result(payload: HookPayload, tool_name: str) -> None:
     Called by post_fetch for every mcp__* PostToolUse event.  Silently skips
     non-read-only tools, empty or oversized results, and any storage failure.
     """
-    from . import session  # noqa: PLC0415
-    from .hooks_common import extract_tool_response_text  # noqa: PLC0415
-    from .mcp_cache import (  # noqa: PLC0415
+    from . import session
+    from .hooks_common import extract_tool_response_text
+    from .mcp_cache import (
         MCP_MAX_CACHE_BYTES,
         is_mcp_read_only,
         mcp_hash,
@@ -482,7 +482,7 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
         if not file_id:
             return CONTINUE()
 
-        from . import gdrive  # noqa: PLC0415
+        from . import gdrive
 
         # Validate file_id before embedding in hook message to prevent injection.
         # Malicious IDs with shell metacharacters could be acted on by Claude.
@@ -510,7 +510,7 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
         if allowdeny is not None:
             return allowdeny
 
-        from . import webfetch  # noqa: PLC0415
+        from . import webfetch
 
         if webfetch.is_image_url(url):
             return _intercept_webfetch_image(url)
@@ -520,9 +520,9 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
         _wf_session_id, _ = get_session_context(payload)
         if _wf_session_id:
             try:
-                from .compact import get_context_pressure as _gcp_wf  # noqa: PLC0415
+                from .compact import get_context_pressure as _gcp_wf
                 _wf_tier = _gcp_wf(_wf_session_id).tier
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
         # Escape hatch: if the WebFetch prompt contains "refresh" / "latest" /
@@ -561,15 +561,15 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
     # The snake_case assumption is documented: all real MCP tool names in the
     # Claude Code / Codex CLI registries use lowercase_snake_case method names.
     if tool_name.startswith("mcp__"):
-        from .mcp_cache import is_mcp_read_only  # noqa: PLC0415
+        from .mcp_cache import is_mcp_read_only
         if is_mcp_read_only(tool_name):
             _mcp_sid, _ = get_hook_context(payload)
             if _mcp_sid:
                 _mcp_tier = "cool"
                 try:
-                    from .compact import get_context_pressure as _gcp_mcp  # noqa: PLC0415
+                    from .compact import get_context_pressure as _gcp_mcp
                     _mcp_tier = _gcp_mcp(_mcp_sid).tier
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
                 _mcp_input = get_tool_input(payload)
                 if _mcp_tier in ("warm", "hot", "critical"):
@@ -612,7 +612,7 @@ def _maybe_emit_web_size_hint(meta: object, log_or_none: object) -> None:
     logged for observability. The real size hint will be emitted by the pre-fetch
     hook on subsequent requests for the same URL (via the dedup/cache-hit hints).
     """
-    from . import util  # noqa: PLC0415
+    from . import util
 
     # Get a proper logger instance from the util module
     log = util.get_logger("hooks_fetch")
@@ -643,7 +643,7 @@ def _extract_web_response(payload: HookPayload) -> tuple[str, int | None, str | 
     them as ``"200"``.  Content-type is read from response headers or metadata
     when available, normalized to the base MIME type (e.g. "text/html").
     """
-    from .hooks_common import extract_tool_response_text  # noqa: PLC0415
+    from .hooks_common import extract_tool_response_text
 
     body = extract_tool_response_text(
         payload,
@@ -706,7 +706,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
 
     # Capture read-only MCP results; invalidate the cache for mutation tools.
     if tool_name.startswith("mcp__"):
-        from .mcp_cache import is_mcp_read_only  # noqa: PLC0415
+        from .mcp_cache import is_mcp_read_only
         if is_mcp_read_only(tool_name):
             _capture_mcp_result(payload, tool_name)
         else:
@@ -727,7 +727,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
     if not isinstance(url, str) or not url:
         return CONTINUE()
 
-    from . import webfetch  # noqa: PLC0415
+    from . import webfetch
 
     if webfetch.is_image_url(url):
         # Image responses go through the existing image cache pipeline; we
@@ -750,14 +750,14 @@ def post_fetch(payload: HookPayload) -> HookResponse:
                 "post-fetch: HTML stripped %d→%d bytes for %s",
                 len(_body_bytes), len(_stripped), sanitize_log_str(url, max_len=100),
             )
-    except Exception:  # noqa: BLE001 — fail-soft: stripping must never break caching
+    except Exception:
         pass
 
     # Injection protection: scan head+tail windows, then wrap all fetched content
     # in an untrusted-content fence so the model always knows its provenance.
     # Stored in cache so every future recall inherits the markers without a re-scan.
-    from . import config as _cfg_inj  # noqa: PLC0415
-    from .injection import flag_external_content, wrap_external_content  # noqa: PLC0415
+    from . import config as _cfg_inj
+    from .injection import flag_external_content, wrap_external_content
     if _cfg_inj.load().injection.enabled:
         _warn_prefix, _inj_label = flag_external_content(body)
         if _warn_prefix:
@@ -771,7 +771,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
 
     body_size = len(body.encode("utf-8", errors="replace"))
 
-    from . import config, session, web_cache  # noqa: PLC0415
+    from . import config, session, web_cache
 
     # Accumulate observed token count regardless of cache threshold: response was already returned to the model.
     _fetch_cache = session.safe_load(session_id, caller="post_fetch")

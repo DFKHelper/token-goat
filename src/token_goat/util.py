@@ -15,24 +15,24 @@ from logging import Logger
 from subprocess import CompletedProcess
 from typing import TYPE_CHECKING
 
-from .render.ansi import strip_ansi as strip_ansi  # noqa: PLC0414  re-export
+from .render.ansi import strip_ansi as strip_ansi
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = [
-    "strip_ansi",
+    "configure_stdout_encoding",
+    "ellipsize",
+    "env_float",
+    "env_int",
     "get_logger",
     "normalize_path",
     "run_git",
-    "sanitize_surrogates",
     "sanitize_control_chars",
-    "ellipsize",
-    "utf8_bytes",
-    "env_float",
-    "env_int",
-    "configure_stdout_encoding",
+    "sanitize_surrogates",
+    "strip_ansi",
     "strip_bom",
+    "utf8_bytes",
 ]
 
 
@@ -175,7 +175,7 @@ def run_git_silent(
     programming errors are allowed to propagate so they surface in tests rather than
     being silently masked.
     """
-    import subprocess as _subprocess  # noqa: PLC0415 — keep lazy for hook cold-start
+    import subprocess as _subprocess
 
     try:
         result = run_git(args, cwd=str(cwd) if cwd is not None else None, timeout=timeout)

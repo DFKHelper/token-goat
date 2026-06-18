@@ -6,6 +6,7 @@ __all__ = [
     "LOG_FILE_MAX_BYTES",
     "atomic_write_bytes",
     "atomic_write_text",
+    "baseline_advisory_sent_path",
     "claude_config_dir",
     "claude_plugins_dir",
     "claude_projects_dir",
@@ -22,30 +23,29 @@ __all__ = [
     "hook_wrapper_content",
     "hook_wrapper_path",
     "hooks_stderr_log_path",
-    "set_hooks_stderr_log_override",
     "image_cache_dir",
     "is_safe_rel_path",
     "is_wsl",
     "locks_dir",
     "logs_dir",
+    "manifest_sha_sidecar_path",
+    "manifest_text_sidecar_path",
     "models_dir",
     "normalize_key",
     "normalize_path_key",
+    "open_log_file",
+    "precompact_estimate_path",
     "project_db_path",
     "python_runner_argv",
     "python_runner_command",
-    "open_log_file",
-    "roll_log_if_oversized",
-    "manifest_sha_sidecar_path",
-    "manifest_text_sidecar_path",
-    "precompact_estimate_path",
-    "baseline_advisory_sent_path",
     "recovery_pending_path",
-    "skill_pregen_sentinel_path",
-    "sentinels_dir",
+    "roll_log_if_oversized",
     "safe_join",
+    "sentinels_dir",
     "session_cache_path",
     "sessions_dir",
+    "set_hooks_stderr_log_override",
+    "skill_pregen_sentinel_path",
     "web_cache_dir",
     "worker_heartbeat_path",
     "worker_pid_path",
@@ -91,7 +91,7 @@ def set_hooks_stderr_log_override(path: Path | None) -> None:
     This is the only supported test-isolation mechanism for hooks-stderr.log;
     use the ``isolate_hooks_stderr_log`` autouse fixture in conftest.py.
     """
-    global _hooks_stderr_log_override  # noqa: PLW0603
+    global _hooks_stderr_log_override
     _hooks_stderr_log_override = path
 
 
@@ -399,7 +399,7 @@ def normalize_key(p: str) -> str:
       converted via the backslash-to-slash rule only.
     * **Trailing whitespace and trailing separators** are preserved.
     """
-    from .util import normalize_path  # noqa: PLC0415
+    from .util import normalize_path
 
     return normalize_path(p)
 
@@ -440,7 +440,7 @@ def normalize_path_key(path: str, cwd: str | None = None) -> str:
         on Windows, suitable for use as a dict key or SQLite lookup value.
     """
     try:
-        from pathlib import Path as _P  # noqa: PLC0415
+        from pathlib import Path as _P
         # Detect whether the path is "rooted" using string analysis first so that
         # POSIX-rooted paths on Windows (e.g. /proj/src/foo.py, which
         # Path.is_absolute() rejects because there is no drive letter) are handled
@@ -461,7 +461,7 @@ def normalize_path_key(path: str, cwd: str | None = None) -> str:
         # Relative path: resolve against cwd when available.
         if cwd:
             return normalize_key(str((_P(cwd) / _P(path)).resolve()))
-    except Exception:  # noqa: BLE001 — fail-soft; must never interrupt callers
+    except Exception:
         pass
     return normalize_key(path)
 
@@ -572,14 +572,14 @@ def hook_wrapper_content() -> str:
     # correct for editable (src/) and regular (site-packages/) installs alike.
     sentinel: Path | None = None
     try:
-        import importlib.util as _ilu  # noqa: PLC0415
+        import importlib.util as _ilu
 
         _spec = _ilu.find_spec("token_goat")
         if _spec is not None and _spec.origin:
             _cand = Path(_spec.origin)
             if _cand.exists():
                 sentinel = _cand
-    except Exception:  # noqa: BLE001 — fall through to path-based probing
+    except Exception:
         sentinel = None
 
     if sentinel is None:
@@ -1135,7 +1135,7 @@ def _atomic_write_core(path: Path, content: str | bytes, mode: Literal["w", "wb"
                 encoded = content.encode("utf-8", "replace")
                 with os.fdopen(fd, "wb") as fh:
                     fh.write(encoded)
-        except Exception as _write_err:  # noqa: BLE001 — any write error: clean up tmp then re-raise
+        except Exception as _write_err:
             tmp.unlink(missing_ok=True)
             _LOG.warning("atomic write failed for %s: %s", path.name, _write_err)
             raise

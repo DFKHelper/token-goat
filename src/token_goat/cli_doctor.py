@@ -133,7 +133,7 @@ def _compute_context_growth_trend(
         "↘ shrinking −8,200 tok/session avg (last 3 sessions)"
         "→ stable ±3,000 tok/session avg (last 3 sessions)"
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json
 
     if not sentinels_dir.is_dir():
         return None
@@ -169,7 +169,7 @@ def _compute_context_growth_trend(
         direction = "growing"
         sign = "+"
         # Project sessions until URGENT threshold (85%) at current growth rate
-        from .compact import CONTEXT_AUTOCOMPACT_TOKENS  # noqa: PLC0415
+        from .compact import CONTEXT_AUTOCOMPACT_TOKENS
 
         _effective_cap = context_cap if context_cap is not None else CONTEXT_AUTOCOMPACT_TOKENS
         urgent_threshold = int(_effective_cap * 0.85)
@@ -206,7 +206,7 @@ def _build_context_section() -> tuple[list[str], bool]:
     estimated context fill > 40 % or any loaded skill > 2 K tokens lacks a compact.
     The caller emits the lines when ``--context`` is passed or should_auto_show is True.
     """
-    import json  # noqa: PLC0415
+    import json
 
     lines: list[str] = []
     should_auto_show = False
@@ -279,7 +279,7 @@ def _build_context_section() -> tuple[list[str], bool]:
     # check each discovered skill name against it (O(n) vs. O(n * glob)).
     compact_names: set[str] = set()
     try:
-        from . import skill_cache as _sc  # noqa: PLC0415
+        from . import skill_cache as _sc
 
         out_dir = _sc._skill_outputs_dir()  # type: ignore[attr-defined]
         if out_dir.is_dir():
@@ -290,12 +290,12 @@ def _build_context_section() -> tuple[list[str], bool]:
                     # so we cannot split on the first dash.  Store the full stem and
                     # check with endswith() in _has_compact() instead.
                     compact_names.add(p.name[:-8])  # strip "-compact", keep full stem
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     def _has_compact(skill_name: str) -> bool:
         try:
-            from . import skill_cache as _sc2  # noqa: PLC0415
+            from . import skill_cache as _sc2
 
             safe = _sc2._safe_skill_name(skill_name)  # type: ignore[attr-defined]
             if safe is None:
@@ -306,7 +306,7 @@ def _build_context_section() -> tuple[list[str], bool]:
             # Each stem is "{session_fragment}-{safe_name}"; match by suffix.
             suffix = f"-{safe_n}"
             return any(s.endswith(suffix) for s in compact_names)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return False
 
     # ------------------------------------------------------------------ #
@@ -319,7 +319,7 @@ def _build_context_section() -> tuple[list[str], bool]:
             pregen_data = json.loads(pregen_sentinel.read_text(encoding="utf-8"))
             pregen_count = int(pregen_data.get("skill_count", 0))
             new_since_pregen = max(0, catalog_count - pregen_count)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     # ------------------------------------------------------------------ #
@@ -342,7 +342,7 @@ def _build_context_section() -> tuple[list[str], bool]:
                 except OSError:
                     continue
             if best_file is not None:
-                from . import session as _ses  # noqa: PLC0415
+                from . import session as _ses
 
                 cache = _ses.load(best_file.stem)
                 session_turns = getattr(cache, "turns_since_last_compact", 0)
@@ -353,7 +353,7 @@ def _build_context_section() -> tuple[list[str], bool]:
                     loaded_skill_entries.append((skill_name, body_tokens, hc))
                     if body_tokens > 2000 and not hc:
                         should_auto_show = True
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     loaded_skill_tokens = sum(bt for _, bt, _ in loaded_skill_entries)
@@ -406,7 +406,7 @@ def _build_context_section() -> tuple[list[str], bool]:
             web_hist = getattr(cache, "web_history", {})
             for we in web_hist.values():
                 tool_output_bytes += min(getattr(we, "body_bytes", 0), _TOOL_OUTPUT_CAP)
-    except Exception:  # noqa: BLE001
+    except Exception:
         tool_output_bytes = 0
 
     tool_output_tokens = tool_output_bytes // 4
@@ -457,13 +457,13 @@ def _build_context_section() -> tuple[list[str], bool]:
                         precompact_tokens = raw_bytes // 4
                         has_precompact = True
                         precompact_age_seconds = int(now - best_mtime)
-    except Exception:  # noqa: BLE001
+    except Exception:
         sentinel_error = "unexpected error reading sentinels"
 
     # ------------------------------------------------------------------ #
     # 8. Totals, fill %, ETA                                               #
     # ------------------------------------------------------------------ #
-    from .compact import CONTEXT_AUTOCOMPACT_TOKENS as CONTEXT_CAP  # noqa: PLC0415
+    from .compact import CONTEXT_AUTOCOMPACT_TOKENS as CONTEXT_CAP
 
     additional_tokens = catalog_tokens + loaded_skill_tokens + meta_tokens + conversation_tokens
     current_estimate = (precompact_tokens + additional_tokens) if has_precompact else additional_tokens
@@ -502,9 +502,9 @@ def _build_context_section() -> tuple[list[str], bool]:
         for skill_name, body_tokens, hc in loaded_skill_entries:
             if hc:
                 try:
-                    from . import skill_cache as _sc3  # noqa: PLC0415
+                    from . import skill_cache as _sc3
                     compact_text = _sc3.get_compact_any_session(skill_name) or ""
-                except Exception:  # noqa: BLE001
+                except Exception:
                     compact_text = ""
                 compact_tok = len(compact_text) // 4
                 saves = max(0, body_tokens - compact_tok)
@@ -628,7 +628,7 @@ def _build_context_section() -> tuple[list[str], bool]:
         )
         if trend_line is not None:
             lines.append(trend_line)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     # ------------------------------------------------------------------ #
@@ -740,14 +740,14 @@ def _iter_skill_names(skills_root: Path, plugins_cache: Path) -> list[str]:
     return names
 
 
-def doctor(  # noqa: C901
-    fix: bool = typer.Option(  # noqa: B008
+def doctor(
+    fix: bool = typer.Option(
         False, "--fix", help="Clear stale index-spawn markers that doctor flags."
     ),
-    crashes: bool = typer.Option(  # noqa: B008
+    crashes: bool = typer.Option(
         False, "--crashes", help="Show the last 5 hook crash entries from hooks-stderr.log."
     ),
-    context: bool = typer.Option(  # noqa: B008
+    context: bool = typer.Option(
         False, "--context", help="Always show the Context footprint section (shown automatically when context > 40% or an uncompacted loaded skill exists)."
     ),
 ) -> None:
@@ -816,7 +816,7 @@ def doctor(  # noqa: C901
                 ok(label, f"{base} ({elapsed_ms:.0f} ms)" if base else f"{elapsed_ms:.0f} ms")
             else:
                 ok(label, str(result) if result is not None else "")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             flag(label, str(e), warn=warn)
 
     typer.echo("\ntoken-goat doctor\n")
@@ -838,10 +838,7 @@ def doctor(  # noqa: C901
     # ------------------------------------------------------------------
     typer.echo("\nVersions")
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
-    if sys.version_info < (3, 11):  # noqa: UP036
-        flag("Python", f"{py_ver} — minimum supported is 3.11; upgrade to avoid compatibility issues")
-    else:
-        ok("Python", py_ver)
+    ok("Python", py_ver)
     try:
         import importlib.metadata
 
@@ -852,8 +849,8 @@ def doctor(  # noqa: C901
 
     # PyPI version check — non-blocking, 2 s timeout, skip gracefully if offline.
     def _check_pypi_version() -> str:
-        import json as _json  # noqa: PLC0415
-        import urllib.request  # noqa: PLC0415
+        import json as _json
+        import urllib.request
 
         if cc_ver == "unknown":
             return "installed version unknown — skipping"
@@ -891,7 +888,7 @@ def doctor(  # noqa: C901
     # 1b. Detected harnesses
     # ------------------------------------------------------------------
     def _check_harnesses() -> str:
-        from . import install as _install  # noqa: PLC0415
+        from . import install as _install
 
         harnesses_dict = _install.detect_installed_harnesses()
         found = [name for name, installed in harnesses_dict.items() if installed]
@@ -951,7 +948,7 @@ def doctor(  # noqa: C901
     # hitting an OS-level write error inside a hook.
     typer.echo("\nDisk space")
     try:
-        import shutil as _shutil  # noqa: PLC0415
+        import shutil as _shutil
 
         _data = paths.data_dir()
         # Use the parent if data_dir doesn't exist yet — shutil.disk_usage
@@ -976,7 +973,7 @@ def doctor(  # noqa: C901
             )
         else:
             ok("data dir partition", _free_str)
-    except Exception as _e_disk:  # noqa: BLE001
+    except Exception as _e_disk:
         flag("data dir partition", f"disk_usage failed — {_e_disk}", warn=True)
 
     # ------------------------------------------------------------------
@@ -988,7 +985,7 @@ def doctor(  # noqa: C901
     # ------------------------------------------------------------------
     typer.echo("\nInstallation")
     try:
-        from . import install as _install  # noqa: PLC0415
+        from . import install as _install
 
         # Always check the Claude side (settings.json + CLAUDE.md + skill).
         # Codex side only when the harness is detected, so users without Codex
@@ -1000,7 +997,7 @@ def doctor(  # noqa: C901
         ]
         try:
             harnesses_dict = _install.detect_installed_harnesses()
-        except Exception:  # noqa: BLE001 — detect_installed_harnesses is best-effort
+        except Exception:
             harnesses_dict = {}
         if harnesses_dict.get("codex", False):
             installation_checks.append(("codex config.toml", _install._check_codex_config()))
@@ -1013,7 +1010,7 @@ def doctor(  # noqa: C901
                 flag(label, status + " — run `token-goat install`", warn=True)
             else:
                 flag(label, status, warn=True)
-    except Exception as _e:  # noqa: BLE001 — installation check must never abort doctor
+    except Exception as _e:
         flag("installation", f"check failed — {_e}", warn=True)
 
     # ------------------------------------------------------------------
@@ -1021,7 +1018,7 @@ def doctor(  # noqa: C901
     # ------------------------------------------------------------------
     typer.echo("\nThird-party AI tools")
     try:
-        from . import install as _install  # noqa: PLC0415
+        from . import install as _install
 
         if _install.detect_aider():
             flag(
@@ -1035,8 +1032,8 @@ def doctor(  # noqa: C901
 
         gemini_dir = Path.home() / ".gemini"
         if gemini_dir.exists():
-            from . import install as _inst  # noqa: PLC0415
-            gemini_status = _inst._check_gemini_settings()  # noqa: SLF001
+            from . import install as _inst
+            gemini_status = _inst._check_gemini_settings()
             if "installed" in gemini_status:
                 ok("gemini", f"detected, hooks {gemini_status}")
             else:
@@ -1062,7 +1059,7 @@ def doctor(  # noqa: C901
             ok("copilot-cli", "detected — bash output compression active for `copilot` commands")
         else:
             ok("copilot-cli", "not detected")
-    except Exception as _e_tools:  # noqa: BLE001
+    except Exception as _e_tools:
         flag("third-party tools", f"check failed — {_e_tools}", warn=True)
 
     # ------------------------------------------------------------------
@@ -1072,7 +1069,7 @@ def doctor(  # noqa: C901
     ok("version", sqlite3.sqlite_version)
 
     # WAL check requires a real file — :memory: always returns "memory" mode.
-    import tempfile  # noqa: PLC0415
+    import tempfile
 
     def _wal_supported() -> bool:
         """Test whether SQLite WAL journal mode is available on this filesystem.
@@ -1088,7 +1085,7 @@ def doctor(  # noqa: C901
         # file.  Wrapping everything in try/finally guarantees the temp file is
         # deleted even if the PRAGMA or conn.close() raises, closing the window
         # where an exception would leave a permanent temp file behind.
-        import os  # noqa: PLC0415
+        import os
 
         fd, tmp_db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
@@ -1124,7 +1121,7 @@ def doctor(  # noqa: C901
     # 4. sqlite-vec
     # ------------------------------------------------------------------
     def _check_sqlite_vec() -> object:
-        import sqlite_vec  # noqa: PLC0415
+        import sqlite_vec
 
         conn2 = sqlite3.connect(":memory:", isolation_level=None)
         conn2.enable_load_extension(True)
@@ -1160,8 +1157,8 @@ def doctor(  # noqa: C901
     # WebP encoding (~39% smaller than JPEG on screenshots), so missing
     # libwebp on Linux source builds silently breaks the shrink pipeline.
     try:
-        import PIL  # noqa: PLC0415
-        from PIL import Image, features  # noqa: PLC0415
+        import PIL
+        from PIL import Image, features
 
         ok("Pillow", PIL.__version__)
         codec_status = []
@@ -1173,12 +1170,12 @@ def doctor(  # noqa: C901
         # Smoke-test actual encode for the default lossy format so a half-broken
         # libwebp (loadable but encode-broken) surfaces here.
         try:
-            import io  # noqa: PLC0415
+            import io
 
             buf = io.BytesIO()
             Image.new("RGB", (4, 4), (200, 100, 50)).save(buf, "WEBP", quality=80)
             codec_status.append("WebP-encode=ok")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             codec_status.append(f"WebP-encode=FAIL ({type(exc).__name__})")
         joined = ", ".join(codec_status)
         if "MISSING" in joined or "FAIL" in joined:
@@ -1196,7 +1193,7 @@ def doctor(  # noqa: C901
     # 7. tree-sitter
     # ------------------------------------------------------------------
     try:
-        import tree_sitter  # noqa: PLC0415
+        import tree_sitter
 
         ts_ver = getattr(tree_sitter, "__version__", "installed")
         try:
@@ -1230,7 +1227,7 @@ def doctor(  # noqa: C901
                 fc = fc_row[0] if fc_row else 0
             ok("schema_version", sv)
             ok("file_count", f"{fc} (not yet indexed)" if fc == 0 else str(fc))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             flag("project db", str(e))
     else:
         flag("detected", "no project marker found in cwd or parents", warn=True)
@@ -1264,7 +1261,7 @@ def doctor(  # noqa: C901
                         _pfc = _pc.execute("SELECT COUNT(*) FROM files").fetchone()[0]
                     _total_files_all += _pfc
                     _proj_rows_out.append(f"{_pr_root} ({_pfc} files)")
-                except Exception as _pe:  # noqa: BLE001
+                except Exception as _pe:
                     _inaccessible.append(f"{_pr_root} ({_pe})")
             ok("total projects", str(len(_all_projs)))
             ok("total indexed files", str(_total_files_all))
@@ -1277,7 +1274,7 @@ def doctor(  # noqa: C901
                 flag("inaccessible", _bad, warn=True)
     except FileNotFoundError:
         ok("(none)", "no global.db yet — nothing indexed")
-    except Exception as _e_idx:  # noqa: BLE001
+    except Exception as _e_idx:
         flag("index health", str(_e_idx), warn=True)
 
     # ------------------------------------------------------------------
@@ -1288,7 +1285,7 @@ def doctor(  # noqa: C901
     # something and to spot unexpectedly large files that might need attention.
     typer.echo("\nLarge files (current thresholds)")
     try:
-        from . import config as _config_lf  # noqa: PLC0415
+        from . import config as _config_lf
 
         _lf_cfg = _config_lf.load().indexing
         _lf_skip_bytes = _lf_cfg.large_file_skip_kb * 1024
@@ -1318,7 +1315,7 @@ def doctor(  # noqa: C901
                         ).fetchone()
                         _lf_total_symbol_only += int(_so[0] if _so else 0)
                     _lf_project_count += 1
-                except Exception:  # noqa: BLE001
+                except Exception:
                     continue
         except FileNotFoundError:
             pass  # no global.db yet
@@ -1339,7 +1336,7 @@ def doctor(  # noqa: C901
                 )
             else:
                 ok("oversized files in index", "0 (none exceed the skip threshold)")
-    except Exception as _e_lf:  # noqa: BLE001
+    except Exception as _e_lf:
         flag("large files", f"check failed — {_e_lf}", warn=True)
 
     # ------------------------------------------------------------------
@@ -1369,7 +1366,7 @@ def doctor(  # noqa: C901
                     "differs from expected — run `token-goat install` to refresh",
                     warn=True,
                 )
-        except Exception as _e:  # noqa: BLE001
+        except Exception as _e:
             flag("content", f"could not read — {_e}", warn=True)
 
         # Functional check: invoke the wrapper with --version and verify a response.
@@ -1392,7 +1389,7 @@ def doctor(  # noqa: C901
             flag("invoke", "wrapper not executable or not found by shell", warn=True)
         except subprocess.TimeoutExpired:
             flag("invoke", "timed out after 10s", warn=True)
-        except Exception as _e:  # noqa: BLE001
+        except Exception as _e:
             flag("invoke", f"error — {_e}", warn=True)
 
     # ------------------------------------------------------------------
@@ -1403,7 +1400,7 @@ def doctor(  # noqa: C901
     hb_path = paths.worker_heartbeat_path()
     if pid_path.exists():
         try:
-            from . import worker as _worker_pid  # noqa: PLC0415
+            from . import worker as _worker_pid
             pid_val, pid_interpreter = _worker_pid._read_pid_info(
                 pid_path.read_text(encoding="utf-8")
             )
@@ -1419,7 +1416,7 @@ def doctor(  # noqa: C901
                     # and `_nudge_worker_if_down` if HEARTBEAT_INTERVAL is ever
                     # tuned.  Doctor is a snapshot rather than a watchdog, so
                     # any age above the stale threshold is reported verbatim.
-                    from . import worker as _worker_hb  # noqa: PLC0415
+                    from . import worker as _worker_hb
 
                     hb_age = time.time() - hb_path.stat().st_mtime
                     stale_after = _worker_hb.heartbeat_stale_threshold()
@@ -1457,7 +1454,7 @@ def doctor(  # noqa: C901
                             ok("heartbeat", f"{int(hb_age)}s ago — process recently exited")
                     except OSError:
                         pass  # heartbeat file disappeared between exists() and stat()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             flag("pid file", f"unreadable — {e}", warn=True)
     else:
         ok("pid file", "not present")
@@ -1466,7 +1463,7 @@ def doctor(  # noqa: C901
     # Worker claim file — the authoritative single-worker lock. A stale claim
     # left by a crashed worker is auto-reclaimed on the next spawn, but it is
     # worth surfacing so an unexpected one is visible.
-    from . import worker as _worker  # noqa: PLC0415
+    from . import worker as _worker
 
     claim_path = _worker._worker_claim_path()
     if not claim_path.exists():
@@ -1483,14 +1480,14 @@ def doctor(  # noqa: C901
     # Worker pool size — show configured max_pool_workers and ceiling so the user
     # can verify the thread-pool cap is active and tune it if desired.
     try:
-        from . import config as _cfg_doc  # noqa: PLC0415
+        from . import config as _cfg_doc
         _wk_cfg = _cfg_doc.load().worker
         _ceil = _cfg_doc.WORKER_MAX_POOL_CEILING
         ok(
             "pool workers",
             f"max_pool_workers={_wk_cfg.max_pool_workers} (ceiling={_ceil})",
         )
-    except Exception as _e_pool:  # noqa: BLE001
+    except Exception as _e_pool:
         flag("pool workers", f"config unavailable — {_e_pool}", warn=True)
 
     # Index-spawn markers (locks/{hash}.indexing). A stale marker is harmless
@@ -1555,10 +1552,10 @@ def doctor(  # noqa: C901
             ok("token-goat-worker", f"Run key: {_val}")
         except FileNotFoundError:
             flag("token-goat-worker", "NOT INSTALLED (run `token-goat install`)", warn=True)
-        except Exception as _e:  # noqa: BLE001
+        except Exception as _e:
             flag("token-goat-worker", f"registry error: {_e}", warn=True)
     elif _sys.platform == "darwin":
-        from . import install as _install  # noqa: PLC0415
+        from . import install as _install
 
         _plist = _install._launchd_plist_path()
         if _plist.exists():
@@ -1566,7 +1563,7 @@ def doctor(  # noqa: C901
         else:
             flag("token-goat-worker", "LaunchAgent NOT INSTALLED (run `token-goat install`)", warn=True)
     else:
-        from . import install as _install  # noqa: PLC0415
+        from . import install as _install
 
         _systemd = _install._systemd_service_path()
         _xdg = _install._xdg_autostart_path()
@@ -1588,7 +1585,7 @@ def doctor(  # noqa: C901
             lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
             for line in lines[-5:]:
                 typer.echo(f"  {line}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             flag("log", str(e), warn=True)
     else:
         ok("(none)", "no log for today")
@@ -1633,7 +1630,7 @@ def doctor(  # noqa: C901
                     else:
                         ok("oldest session", f"{oldest_age_sec // 3600}h ago")
                 ok("sessions/ size", _humanize_bytes_doctor(total_size))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         flag("session health", str(e), warn=True)
 
     # ------------------------------------------------------------------
@@ -1676,9 +1673,9 @@ def doctor(  # noqa: C901
     # stale (the source file on disk was modified after the body was cached).
     typer.echo("\nSkill cache health")
     try:
-        import pathlib as _pathlib  # noqa: PLC0415
+        import pathlib as _pathlib
 
-        from . import skill_cache as _skill_cache  # noqa: PLC0415
+        from . import skill_cache as _skill_cache
 
         all_outputs = _skill_cache.list_outputs()
         # Filter to non-compact body files only (compact entries end with "-compact").
@@ -1730,7 +1727,7 @@ def doctor(  # noqa: C901
                             src_mtime = src_path.stat().st_mtime
                             if src_mtime > meta.ts:
                                 stale_count += 1
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
 
             ok("distinct skills", str(len(skill_names)))
@@ -1872,7 +1869,7 @@ def doctor(  # noqa: C901
                                 f"{label_c} (compact sha={embedded_sha[:8]} ≠ body sha={body_sha[:8]};"
                                 f" run `token-goat skill-compact {label_c}` to refresh)"
                             )
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
 
                 if sha_stale_skills:
@@ -1884,10 +1881,10 @@ def doctor(  # noqa: C901
                     )
                 else:
                     ok("sha-stale compacts", "0 (all compacts match their body SHA, or no SHA recorded)")
-            except Exception:  # noqa: BLE001 — compact ratio check is best-effort
+            except Exception:
                 pass
 
-    except Exception as _e_skill_health:  # noqa: BLE001
+    except Exception as _e_skill_health:
         flag("skill cache health", str(_e_skill_health), warn=True)
 
     # ------------------------------------------------------------------
@@ -1940,7 +1937,7 @@ def doctor(  # noqa: C901
                         f"project {proj_root[:40]}",
                         f"{file_count} files, {symbol_count} symbols, last indexed {timestamp_str}",
                     )
-                except Exception as pe:  # noqa: BLE001
+                except Exception as pe:
                     flag(
                         f"project {proj_root[:40]}",
                         str(pe),
@@ -1948,7 +1945,7 @@ def doctor(  # noqa: C901
                     )
     except FileNotFoundError:
         ok("(none)", "no global.db yet")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         flag("index health per project", str(e), warn=True)
 
     # ------------------------------------------------------------------
@@ -1992,10 +1989,10 @@ def doctor(  # noqa: C901
         _cache_cutoff = int(time.time()) - 30 * 86400
         _miss_telemetry_on = False
         try:
-            from . import config as _config_for_rate  # noqa: PLC0415
+            from . import config as _config_for_rate
 
             _miss_telemetry_on = _config_for_rate.load().stats.record_zero_savings
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         with _db.open_global_readonly() as conn:
             for cache_label, hit_kind, miss_kind in (
@@ -2050,7 +2047,7 @@ def doctor(  # noqa: C901
                     )
     except FileNotFoundError:
         ok("(none)", "no global.db yet")
-    except Exception as _e_cache_rate:  # noqa: BLE001
+    except Exception as _e_cache_rate:
         flag("cache hit rates", str(_e_cache_rate), warn=True)
 
     # ------------------------------------------------------------------
@@ -2063,7 +2060,7 @@ def doctor(  # noqa: C901
     # applies them before returning the Config object.
     typer.echo("\nConfiguration")
     try:
-        from . import config as _config  # noqa: PLC0415
+        from . import config as _config
 
         cfg = _config.load()
         # Show the config file path so users know where to put their config.toml.
@@ -2180,12 +2177,12 @@ def doctor(  # noqa: C901
         # decision log: always-on opt-in CLI feature; surface the per-session
         # cap so the user knows the implicit ceiling.
         try:
-            from . import session as _session  # noqa: PLC0415
+            from . import session as _session
 
             ok("decision_log.max_per_session", str(_session.DECISION_HISTORY_MAX))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             flag("decision_log.max_per_session", str(exc), warn=True)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         flag("config load", str(e), warn=True)
 
     # ------------------------------------------------------------------
@@ -2300,7 +2297,7 @@ def doctor(  # noqa: C901
                 )
     except FileNotFoundError:
         ok("(none)", "no global.db yet")
-    except Exception as _e_compact:  # noqa: BLE001
+    except Exception as _e_compact:
         flag("compaction utilization", str(_e_compact), warn=True)
 
     # ------------------------------------------------------------------
@@ -2355,7 +2352,7 @@ def doctor(  # noqa: C901
                     "SELECT DISTINCT kind FROM stats"
                 ).fetchall()
             ]
-            from . import stats as _stats_mod  # noqa: PLC0415
+            from . import stats as _stats_mod
             _unknown_kind_names = [
                 k for k in _all_kinds
                 if _stats_mod.kind_to_source(k) == _stats_mod.SOURCE_OTHER
@@ -2375,7 +2372,7 @@ def doctor(  # noqa: C901
                 ]
     except FileNotFoundError:
         ok("(none)", "no recorded savings yet")
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         flag("stats", str(e), warn=True)
 
     if _row and _row[0]:
@@ -2470,7 +2467,7 @@ def doctor(  # noqa: C901
         if not _worker_stderr.exists():
             ok("slow sessions (24 h)", "0 (no worker-stderr.log)")
         else:
-            import re as _re_dc  # noqa: PLC0415
+            import re as _re_dc
             _SLOW_RE = _re_dc.compile(r"session slow: ([\d.]+)ms", _re_dc.IGNORECASE)
             _cutoff_dc = time.time() - 86400
             _slow_count = 0
@@ -2479,7 +2476,7 @@ def doctor(  # noqa: C901
             # Worker log lines are formatted by Python's logging module:
             # "2026-05-25 12:34:56,789 WARNING … session slow: 2345.6ms …"
             _TS_RE = _re_dc.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
-            import datetime  # noqa: PLC0415
+            import datetime
             for _line in _worker_stderr.read_text(encoding="utf-8", errors="replace").splitlines():
                 _m_slow = _SLOW_RE.search(_line)
                 if not _m_slow:
@@ -2521,7 +2518,7 @@ def doctor(  # noqa: C901
                     f"{_slow_count} (max {_slow_max_ms:.0f}ms) — HIGH; hooks may stall during reindex",
                     warn=True,
                 )
-    except Exception as _e_dc:  # noqa: BLE001
+    except Exception as _e_dc:
         flag("slow sessions (24 h)", f"unreadable — {_e_dc}", warn=True)
 
     # ------------------------------------------------------------------
@@ -2553,7 +2550,7 @@ def doctor(  # noqa: C901
                         for line in block.splitlines()[:6]:
                             typer.echo(f"  {line}")
                         typer.echo("  ---")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             flag("crashes", str(e), warn=True)
 
     # ------------------------------------------------------------------
@@ -2564,7 +2561,7 @@ def doctor(  # noqa: C901
         if context or ctx_auto_show:
             for line in ctx_lines:
                 typer.echo(line)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         if context:
             flag("context footprint", str(e), warn=True)
 

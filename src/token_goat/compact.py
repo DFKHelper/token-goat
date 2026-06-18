@@ -6,39 +6,39 @@ compaction LLM knows what to preserve without reading the full conversation.
 from __future__ import annotations
 
 __all__ = [
-    "build_manifest",
-    "build_manifest_with_count",
-    "build_manifest_adaptive",
-    "compute_adaptive_budget",
-    "_compute_budget_multiplier",
-    "event_count",
-    "is_noise_path",
-    "_dedup_grep_entries",
-    "CONTEXT_AUTOCOMPACT_TOKENS",
     "CATALOG_TOKENS",
-    "CONTEXT_TIER_WARM",
-    "CONTEXT_TIER_HOT",
+    "CONTEXT_AUTOCOMPACT_TOKENS",
     "CONTEXT_TIER_CRITICAL",
-    "tier_for_fraction",
-    "ContextPressure",
-    "get_context_pressure",
-    "_build_sealed_block",
-    "_format_hint_telemetry",
-    "_get_inline_diff_for_file",
-    "_get_whole_repo_diff",
-    "_extract_test_failures",
-    "_extract_dep_changes",
-    "_format_session_stats",
-    "_score_manifest",
-    "_score_manifest_breakdown",
-    "_parse_manifest_sections",
+    "CONTEXT_TIER_HOT",
+    "CONTEXT_TIER_WARM",
     "_MANIFEST_THIN_THRESHOLD",
     "_TOP_FILES_GUARANTEED_MIN",
-    "find_latest_session_id",
-    "infer_session_goal",
+    "ContextPressure",
+    "_build_sealed_block",
+    "_compute_budget_multiplier",
+    "_dedup_grep_entries",
     "_enforce_char_budget",
+    "_extract_dep_changes",
+    "_extract_test_failures",
+    "_format_hint_telemetry",
+    "_format_session_stats",
+    "_get_inline_diff_for_file",
+    "_get_whole_repo_diff",
+    "_parse_manifest_sections",
+    "_score_manifest",
+    "_score_manifest_breakdown",
+    "build_manifest",
+    "build_manifest_adaptive",
+    "build_manifest_with_count",
+    "compute_adaptive_budget",
     "detect_harness",
+    "event_count",
+    "find_latest_session_id",
     "get_auto_trigger_multiplier",
+    "get_context_pressure",
+    "infer_session_goal",
+    "is_noise_path",
+    "tier_for_fraction",
 ]
 
 import hashlib
@@ -81,7 +81,7 @@ def __getattr__(name: str) -> object:
     every time — no stale reference is cached in the module namespace.
     """
     if name == "session_mod":
-        from . import session as _session  # noqa: PLC0415
+        from . import session as _session
         return _session
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -238,7 +238,7 @@ def get_context_pressure(  # type: ignore[name-defined]  # SessionCache imported
     inline calculation in ``hooks_session``) delegate here.
     """
     try:
-        from . import session as _ses  # noqa: PLC0415
+        from . import session as _ses
 
         if cache is None:
             cache = _ses.safe_load(session_id, caller="get-context-pressure") if session_id else None
@@ -252,7 +252,7 @@ def get_context_pressure(  # type: ignore[name-defined]  # SessionCache imported
         fill = total / window
 
         return ContextPressure(fill_fraction=fill, tier=tier_for_fraction(fill))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ContextPressure(fill_fraction=0.0, tier="cool")
 
 
@@ -407,8 +407,8 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
           "Fixing authentication tests in tests/auth, improving login and session handling."
     """
     try:
-        import re as _re  # noqa: PLC0415
-        from pathlib import Path as _Path  # noqa: PLC0415
+        import re as _re
+        from pathlib import Path as _Path
 
         # Extract data from cache with defensive getattr.
         edited_files_raw = getattr(cache, "edited_files", None) or {}
@@ -430,7 +430,7 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
                     parent = parent[2:].lstrip("/\\") or "root"
                 if parent:
                     dir_counts[parent] = dir_counts.get(parent, 0) + 1
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOG.debug("_build_session_topic: failed to parse path %r (skip)", fpath, exc_info=True)
 
         # Pick the top directory (most edits there = likely focus area)
@@ -534,7 +534,7 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
 
         return goal.strip()
 
-    except Exception:  # noqa: BLE001 — fail-soft: always return a safe default
+    except Exception:
         return ""
 
 if TYPE_CHECKING:
@@ -822,7 +822,7 @@ def _read_manifest_sidecar(
     section, or ``None`` for v1 sidecars / when the field is absent / malformed.
     All other parse errors return ``None`` for the whole tuple.
     """
-    from . import paths  # noqa: PLC0415
+    from . import paths
 
     try:
         sidecar = paths.manifest_sha_sidecar_path(session_id)
@@ -836,7 +836,7 @@ def _read_manifest_sidecar(
         # Treat the whole sidecar as unreadable to keep the contract simple
         # (returns None → caller rebuilds).  Empty sha/fp likewise indicate a
         # corrupted write — refuse to surface them as a cache key.
-        import math  # noqa: PLC0415
+        import math
         if not math.isfinite(ts) or not sha or not fp:
             return None
         # Best-effort extraction of v2 counts.  A v1 sidecar (no "counts" key)
@@ -850,7 +850,7 @@ def _read_manifest_sidecar(
             except (TypeError, ValueError):
                 counts = None
         return sha, fp, ts, counts
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -867,7 +867,7 @@ def _write_manifest_sidecar(
     manifest, persisted so the next compact can compute a "Δ since last compact"
     line.  Omitted (or empty) → no counts written, treated as v1-compatible.
     """
-    from . import paths  # noqa: PLC0415
+    from . import paths
 
     try:
         sidecar = paths.manifest_sha_sidecar_path(session_id)
@@ -882,7 +882,7 @@ def _write_manifest_sidecar(
             payload_dict["counts"] = {k: int(v) for k, v in counts.items()}
         payload = json.dumps(payload_dict, separators=(",", ":"), sort_keys=True)
         paths.atomic_write_text(sidecar, payload)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -1480,7 +1480,7 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
         result = output if output.strip() else None
         _put_bounded(_uncommitted_changes_cache, project_root, (result, now))
         return result
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -1544,7 +1544,7 @@ def _get_git_diff_stat_summary(root: object) -> str:
             return ""
         _put_bounded(_diff_stat_summary_cache, root_str, (output, now))
         return output
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ""
 
 
@@ -1672,7 +1672,7 @@ def _detect_orchestrator_mode(
             return False
         commit_count = sum(1 for line in out.splitlines() if line.strip())
         return commit_count >= threshold
-    except Exception:  # noqa: BLE001 — fail-soft per hook contract
+    except Exception:
         return False
 
 
@@ -2369,7 +2369,7 @@ def find_latest_session_id() -> str | None:
         # Most recently modified file — safe on all platforms.
         latest = max(candidates, key=lambda p: p.stat().st_mtime)
         return latest.stem
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -2407,9 +2407,9 @@ def _extract_blocker_error_preview(entry: object, *, max_chars: int = 70) -> str
     if cached is not None:
         return cached
     try:
-        from . import bash_cache  # noqa: PLC0415  — deferred to keep cold-start cheap
+        from . import bash_cache
         raw_output = bash_cache.load_output(output_id)
-    except Exception:  # noqa: BLE001 — fail-soft per manifest contract
+    except Exception:
         _blocker_preview_cache[output_id] = ""
         return ""
     if not raw_output:
@@ -2748,9 +2748,9 @@ def _render_active_errors_section(session_id: str, max_errors: int = 3) -> list[
         return []
 
     try:
-        from . import bash_cache as _bash_cache_mod  # noqa: PLC0415
+        from . import bash_cache as _bash_cache_mod
         error_outputs = _bash_cache_mod.get_recent_error_outputs(session_id, max_entries=max_errors)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
     if not error_outputs:
@@ -2839,8 +2839,8 @@ def _extract_test_failures(bash_history: object) -> list[str]:
         return []
 
     try:
-        from . import bash_cache as _bash_cache_mod  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from . import bash_cache as _bash_cache_mod
+    except Exception:
         return []
 
     seen: set[str] = set()
@@ -2854,7 +2854,7 @@ def _extract_test_failures(bash_history: object) -> list[str]:
             continue
         try:
             raw = _bash_cache_mod.load_output(output_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         if not raw:
             continue
@@ -2919,8 +2919,8 @@ def _extract_dep_changes(bash_history: object) -> list[str]:
         return []
 
     try:
-        from . import bash_cache as _bash_cache_mod  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
+        from . import bash_cache as _bash_cache_mod
+    except Exception:
         return []
 
     # Patterns that indicate a package was added/updated/installed.
@@ -2939,7 +2939,7 @@ def _extract_dep_changes(bash_history: object) -> list[str]:
             continue
         try:
             raw = _bash_cache_mod.load_output(output_id)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         if not raw:
             continue
@@ -3107,7 +3107,7 @@ def _format_bash_entry(entry: object, inline_snippet: bool = True, *, is_blocker
             if raw and raw.strip():
                 snippet_max_lines = 20 if is_blocker else 12
                 snippet = _middle_truncate(raw.strip(), max_lines=snippet_max_lines)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     if snippet:
@@ -3193,7 +3193,7 @@ def _group_web_entries_by_domain(entries: list[object]) -> list[str]:
         try:
             parsed = urlparse(url_preview)
             netloc = parsed.netloc or "unknown"
-        except Exception:  # noqa: BLE001
+        except Exception:
             netloc = "unknown"
         domain_groups[netloc].append(entry)
 
@@ -3216,7 +3216,7 @@ def _group_web_entries_by_domain(entries: list[object]) -> list[str]:
                     if parsed.params or parsed.query:
                         path += f"{parsed.params}{('?' + parsed.query) if parsed.query else ''}"
                     paths.append(path)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     paths.append("?")
 
             # Format as compact line: "→ domain (N): path1, path2, ..."
@@ -3820,7 +3820,7 @@ def _compute_stale_compact_fraction(session_id: str, skill_history: dict) -> flo
     if not skill_history:
         return 0.0
 
-    from . import skill_cache as _sc  # noqa: PLC0415
+    from . import skill_cache as _sc
 
     total = 0
     stale_count = 0
@@ -4504,7 +4504,7 @@ def build_manifest(session_id: str, *, max_tokens: int = 400) -> str:
         text_sidecar = paths.manifest_text_sidecar_path(session_id)
         paths.ensure_dir(text_sidecar.parent)
         paths.atomic_write_text(text_sidecar, full_manifest)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     return full_manifest
@@ -4590,7 +4590,7 @@ def read_all_session_manifests(project_hash: str, max_age_seconds: int = 3600) -
             data = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(data, dict) and "files" in data:
                 results.append(data)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     return results
 
@@ -4652,7 +4652,7 @@ def _load_task_list(session_id: str) -> list[dict[str, str]]:
     Returns an empty list on any error (missing directory, permission denied,
     malformed JSON) so callers never need to handle exceptions.
     """
-    from . import paths as paths_mod  # noqa: PLC0415
+    from . import paths as paths_mod
 
     try:
         tasks_dir = paths_mod.safe_join(paths_mod.claude_config_dir() / "tasks", session_id)
@@ -4674,9 +4674,9 @@ def _load_task_list(session_id: str) -> list[dict[str, str]]:
                 status = str(data.get("status", "")).strip().lower()
                 if subject and status:
                     results.append({"id": task_id, "subject": subject, "status": status})
-            except Exception:  # noqa: BLE001
+            except Exception:
                 _LOG.debug("_load_task_list: skipping malformed task file %s", p)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("_load_task_list: error reading tasks dir %s", tasks_dir)
     return results
 
@@ -4721,7 +4721,7 @@ def _find_open_questions(edited_file_paths: list[str], max_questions: int = 5) -
             # Try to read as text
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
 
             # Scan first 500 lines for markers
@@ -4755,7 +4755,7 @@ def _find_open_questions(edited_file_paths: list[str], max_questions: int = 5) -
                     rel_path = path.name
                     questions.append((rel_path, line_num, comment))
 
-        except Exception:  # noqa: BLE001
+        except Exception:
             # Fail-soft: skip any file that causes issues
             continue
 
@@ -5684,7 +5684,7 @@ def _render(
             f"**Skills:** {_skills_summary} — recall via `token-goat skill-body <name>`"
         ]
 
-        from . import skill_cache  # noqa: PLC0415
+        from . import skill_cache
 
         if lazy_skill_injection:
             # Lazy injection: list each skill as a one-line recall pointer.
@@ -5766,9 +5766,9 @@ def _render(
                 # Track that this compact was served: increments compact_served_count
                 # in the SkillEntry so skill-list can report hit vs miss stats.
                 try:
-                    from . import session as _session_mod  # noqa: PLC0415
+                    from . import session as _session_mod
                     _session_mod.record_skill_compact_hit(session_id, _skill_name)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     pass
     else:
         skill_lines = []
@@ -6445,13 +6445,13 @@ def _render(
         _score_map: dict[str, float] = {}
         if cwd is not None:
             try:
-                from pathlib import Path as _Path  # noqa: PLC0415
+                from pathlib import Path as _Path
 
-                from . import db as _db_mod  # noqa: PLC0415
-                from .project import canonicalize as _canonicalize  # noqa: PLC0415
+                from . import db as _db_mod
+                from .project import canonicalize as _canonicalize
                 from .project import project_hash as _project_hash_fn
                 _score_map = _db_mod.get_entry_scores(_project_hash_fn(_canonicalize(_Path(cwd))))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         _normal_candidates = [e for e in top_files if e.read_count < _HOT_FILE_READ_THRESHOLD]
         if _score_map:

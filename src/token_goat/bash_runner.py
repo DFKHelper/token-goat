@@ -39,7 +39,7 @@ untrusted source.
 """
 from __future__ import annotations
 
-__all__ = ["run", "run_compressed", "DEFAULT_TIMEOUT_SECONDS", "MAX_CAPTURE_BYTES"]
+__all__ = ["DEFAULT_TIMEOUT_SECONDS", "MAX_CAPTURE_BYTES", "run", "run_compressed"]
 
 import os
 import shlex
@@ -147,7 +147,7 @@ def _spawn(
     else:
         # On Windows, CREATE_NEW_PROCESS_GROUP lets us send CTRL_BREAK_EVENT.
         extra["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]  # CREATE_NEW_PROCESS_GROUP is Windows-only; not in typeshed for POSIX targets
-    return subprocess.Popen(  # type: ignore[call-overload]  # noqa: S602, shell=True is intentional; **extra confuses mypy overload resolution
+    return subprocess.Popen(  # type: ignore[call-overload]
         cmd,
         shell=True,
         stdout=subprocess.PIPE,
@@ -269,10 +269,10 @@ def run(
     effective_profile = compression_profile
     if effective_profile is None:
         try:
-            from . import config as _cfg_mod  # noqa: PLC0415
+            from . import config as _cfg_mod
             _cfg_profile = _cfg_mod.load().compression.profile
             effective_profile = _cfg_profile if _cfg_profile != "auto" else "balanced"
-        except Exception:  # noqa: BLE001
+        except Exception:
             effective_profile = "balanced"
 
     return _wrap_and_compress(
@@ -319,7 +319,7 @@ def _passthrough(
     would lose the timeout safeguard.
     """
     try:
-        proc = subprocess.run(  # noqa: S602, shell=True is intentional
+        proc = subprocess.run(
             command,
             shell=True,
             cwd=cwd,
@@ -421,13 +421,13 @@ def _wrap_and_compress(
     return exit_code
 
 
-class _suppress_close:  # noqa: N801, context-manager naming
+class _suppress_close:
     """Context manager that swallows close-time exceptions on pipe handles."""
 
     def __enter__(self) -> _suppress_close:
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:  # noqa: ANN001
+    def __exit__(self, exc_type, exc, tb) -> bool:
         return exc_type in (OSError, ValueError, AttributeError)
 
 
@@ -442,10 +442,10 @@ def _record_savings(
     if result.bytes_saved < MIN_RECORD_STAT_BYTES:
         return
     try:
-        from . import db  # noqa: PLC0415
+        from . import db
 
         # Use a bounded, sanitized form of the command for the detail field.
-        from .hooks_common import sanitize_log_str  # noqa: PLC0415
+        from .hooks_common import sanitize_log_str
 
         detail = sanitize_log_str(command, max_len=256)
         db.record_stat(
@@ -462,5 +462,5 @@ def _record_savings(
             result.tokens_saved,
             elapsed_ms,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("record_savings failed: %s", exc)

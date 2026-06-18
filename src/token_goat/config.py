@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 __all__ = [
+    "CONFIG_SCHEMA_VERSION",
+    "WORKER_MAX_POOL_CEILING",
     "BashCompressConfig",
     "CodeCompressConfig",
     "CompactAssistConfig",
@@ -13,8 +15,8 @@ __all__ = [
     "HintsConfig",
     "HooksConfig",
     "ImageShrinkConfig",
-    "InjectionConfig",
     "IndexingConfig",
+    "InjectionConfig",
     "OverflowGuardConfig",
     "RepomapConfig",
     "SessionBriefConfig",
@@ -22,8 +24,6 @@ __all__ = [
     "StatsConfig",
     "WebFetchConfig",
     "WorkerConfig",
-    "WORKER_MAX_POOL_CEILING",
-    "CONFIG_SCHEMA_VERSION",
     "load",
     "save",
 ]
@@ -1538,7 +1538,7 @@ def load() -> Config:
     The cache is invalidated when the config file's mtime changes, so edits
     take effect on the next hook subprocess invocation.
     """
-    global _config_mtime_cache  # noqa: PLW0603
+    global _config_mtime_cache
     p = paths.config_path()
     # Fast path: check (mtime, env_fingerprint) against cached values.
     try:
@@ -2124,8 +2124,8 @@ def load() -> Config:
 
 def save(config: Config) -> None:
     """Persist config to TOML atomically, creating parent dirs as needed."""
-    global _config_mtime_cache  # noqa: PLW0603
-    import tomli_w  # noqa: PLC0415
+    global _config_mtime_cache
+    import tomli_w
 
     p = paths.config_path()
     paths.ensure_dir(p.parent)

@@ -18,12 +18,12 @@ __all__ = [
     "CLAUDE_MAX_VISION_EDGE_PX",
     "CLAUDE_VISION_PIXELS_PER_TOKEN",
     "IMAGE_EXTENSIONS",
-    "ImageStats",
     "JPEG_QUALITY",
     "MAX_LONG_EDGE",
     "SIZE_THRESHOLD_BYTES",
     "WEBP_METHOD",
     "WEBP_QUALITY",
+    "ImageStats",
     "avif_supported",
     "ensure_cache_dir",
     "extract_image_summary",
@@ -156,10 +156,10 @@ def avif_supported() -> bool:
     can treat this as a capability probe without try/except at every call site.
     """
     try:
-        from PIL import Image  # noqa: PLC0415
+        from PIL import Image
         Image.init()
         return "AVIF" in Image.SAVE
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -411,7 +411,7 @@ def _is_safe_path(path: Path) -> bool:
         return False
 
 
-def _ensure_rgb(img: _PilImage.Image, Image_module: types.ModuleType) -> _PilImage.Image:  # noqa: N803
+def _ensure_rgb(img: _PilImage.Image, Image_module: types.ModuleType) -> _PilImage.Image:
     """Flatten any non-RGB image to an RGB canvas (white background).
 
     Handles alpha channels by compositing over white before discarding the
@@ -448,19 +448,19 @@ def _sweep_orphans() -> None:
     mtime has 2-second resolution, we verify with exists() after a small delay
     to handle filesystem race conditions.
     """
-    global _sweep_done  # noqa: PLW0603
+    global _sweep_done
     if _sweep_done:
         return
     _sweep_done = True
 
     try:
-        from .config import load as _load_config  # noqa: PLC0415
+        from .config import load as _load_config
         _cfg = _load_config()
         if not _cfg.image_shrink.orphan_sweep_enabled:
             _LOG.debug("_sweep_orphans: disabled by config")
             return
         age_secs = _cfg.image_shrink.orphan_age_secs
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("_sweep_orphans: config load failed, skipping: %s", exc)
         return
 
@@ -562,7 +562,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
     # cache is unavailable, the tracking is skipped (fail-soft).
     if _session_id:
         try:
-            from . import session as _session_module  # noqa: PLC0415
+            from . import session as _session_module
             _sess = _session_module.safe_load(_session_id)
             if _sess and not _sess.unavailable:
                 # Use str(src_path.resolve()) as the per-image key — absolute,
@@ -575,7 +575,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
                 # IMAGE_SHRINK_COUNT_MAX.  Drop _IMAGE_SHRINK_COUNT_EVICT at once
                 # to amortise dict-rewrite cost.
                 _img_cap = _session_module.IMAGE_SHRINK_COUNT_MAX
-                _img_evict = _session_module._IMAGE_SHRINK_COUNT_EVICT  # noqa: SLF001
+                _img_evict = _session_module._IMAGE_SHRINK_COUNT_EVICT
                 if len(_sess.image_shrink_count) > _img_cap:
                     _sorted_img = sorted(
                         _sess.image_shrink_count.items(), key=lambda x: x[1]
@@ -592,7 +592,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
                 # Mutate the session cache in-memory; the hook's post-read handler
                 # will persist it to disk. Fail-soft: if the save later fails, we
                 # still return the shrunken image (never block the agent).
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # Any error in session tracking (load, mutation) is benign and logged.
             _LOG.debug("image_shrink: per-session tracking failed: %s", exc)
 
@@ -623,7 +623,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
     _animated_suffixes = frozenset({".gif", ".webp", ".png"})
     if src_path.suffix.lower() in _animated_suffixes:
         try:
-            from PIL import Image as _AnimCheck  # noqa: PLC0415
+            from PIL import Image as _AnimCheck
             with _AnimCheck.open(src_path) as _ac_img:
                 _is_anim = getattr(_ac_img, "is_animated", None)
                 if _is_anim is None:
@@ -634,7 +634,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
                         src_path.name, getattr(_ac_img, "n_frames", "?"),
                     )
                     return None
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass  # Unreadable or exotic format; fall through to normal pipeline
 
     # Disk-space guard: check free space on the cache volume before attempting
@@ -697,7 +697,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
             # log a warning, and fall through to re-shrink from the original source.
             # This ensures that transient cache corruption doesn't block the agent.
             try:
-                from PIL import Image as _ValidateImage  # noqa: PLC0415
+                from PIL import Image as _ValidateImage
                 with _ValidateImage.open(candidate) as _:
                     pass  # File is readable; proceed to use it.
             except (OSError, EOFError) as exc:
@@ -713,7 +713,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
                 except OSError as _unlink_exc:
                     _LOG.debug("failed to unlink corrupt cache file %s: %s", candidate.name, _unlink_exc)
                 continue  # Try next suffix or fall through to re-shrink.
-            except Exception as exc:  # noqa: BLE001 — Pillow raises many exception types
+            except Exception as exc:
                 # UnidentifiedImageError, DecompressionBombError, MemoryError, etc.
                 # Any unexpected error during validation: delete the corrupt entry
                 # and re-shrink. This prevents a partially-written or corrupted
@@ -750,7 +750,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
             return candidate
 
     try:
-        from PIL import Image, ImageOps  # noqa: PLC0415
+        from PIL import Image, ImageOps
 
         # Apply the pixel cap each time PIL is imported in this process.
         # Setting MAX_IMAGE_PIXELS to None disables Pillow's bomb guard entirely,
@@ -820,7 +820,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
                 # Import here (not module-level) to avoid circular import:
                 # config.py does not import image_shrink, but image_shrink importing
                 # config at module level would tie initialisation order tightly.
-                from .config import load as _load_config  # noqa: PLC0415
+                from .config import load as _load_config
                 _cfg = _load_config()
                 # TOKEN_GOAT_IMAGE_FORMAT=jpeg is an explicit override that forces JPEG
                 # output and therefore disables AVIF — the env var expresses a downstream
@@ -905,7 +905,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
                 src_path, type(e).__name__, e, elapsed, exc_info=True,
             )
         return None
-    except Exception as e:  # noqa: BLE001 — PIL raises many undocumented exception subclasses
+    except Exception as e:
         elapsed = time.time() - t0
         _LOG.warning(
             "shrink failed for %s (%s): %s (%.3fs)",
@@ -949,7 +949,7 @@ def extract_image_summary(src_path: Path, img: _PilImage.Image) -> str:
             description = exif.get(270)
             if description and isinstance(description, str) and description.strip():
                 summary = f"{description.strip()}. {summary}"
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     return summary
@@ -1036,7 +1036,7 @@ def stats_for(src_path: Path, shrunken_path: Path, src_size_bytes: int | None = 
         try:
             # Import PIL once and reuse it for both image opens; avoids the
             # per-call import overhead in the next-exception path.
-            from PIL import Image  # noqa: PLC0415
+            from PIL import Image
             if _MAX_PIXELS > 0:
                 Image.MAX_IMAGE_PIXELS = _MAX_PIXELS
             with contextlib.suppress(OSError, MemoryError, ValueError), Image.open(src_path) as img:
@@ -1046,7 +1046,7 @@ def stats_for(src_path: Path, shrunken_path: Path, src_size_bytes: int | None = 
         except ImportError:
             # PIL not installed; skip dimension reads.
             _LOG.debug("gather_stats: PIL not available; skipping dimension reads")
-        except Exception as exc:  # noqa: BLE001 — PIL raises many undocumented exception subclasses
+        except Exception as exc:
             _LOG.debug("gather_stats: unexpected error reading dimensions for %s (%s): %s", src_path.name, type(exc).__name__, exc)
 
         return ImageStats(

@@ -312,7 +312,7 @@ def detect(argv: list[str], *, stdout: str = "") -> str | None:
         return "json_array"
     # Content-based fallback: structured log stream detection.
     if stdout:
-        from .bash_compress import SeverityLogFilter as _SLF  # noqa: PLC0415
+        from .bash_compress import SeverityLogFilter as _SLF
         if _SLF.detect(stdout):
             return "severity_log"
     return None

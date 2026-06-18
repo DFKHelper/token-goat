@@ -29,30 +29,30 @@ __all__ = [
     "COMPACT_END_MARKER",
     "DEFAULT_MAX_TOTAL_BYTES",
     "MAX_COMPACT_FILE_COUNT",
-    "SIDECAR_SCHEMA_VERSION",
     "OUTPUT_FILENAME_RE",
+    "SIDECAR_SCHEMA_VERSION",
+    "_DIR_LISTING_CACHE_TTL_SECS",
+    "_MIN_COMPACT_CONTENT_CHARS",
     "SkillMeta",
+    "_get_skills_dir_listing",
+    "_is_valid_compact",
+    "_parse_section_ordinal",
     "content_hash",
     "evict_old_entries",
-    "find_cross_session_entry",
-    "invalidate_for_path",
+    "extract_all_headings",
     "extract_checklist_section",
     "extract_compact_from_marker",
-    "extract_all_headings",
+    "extract_compact_source_sha",
     "extract_h2_headings",
     "extract_named_section",
-    "_parse_section_ordinal",
-    "extract_compact_source_sha",
+    "find_cross_session_entry",
     "generate_compact_summary",
     "get_all_cached_skills",
     "get_compact",
     "get_compact_any_session",
     "get_compact_mtime",
-    "_get_skills_dir_listing",
-    "_DIR_LISTING_CACHE_TTL_SECS",
-    "_is_valid_compact",
-    "_MIN_COMPACT_CONTENT_CHARS",
     "get_skill_file_path",
+    "invalidate_for_path",
     "list_by_session",
     "list_outputs",
     "load_output",
@@ -121,7 +121,7 @@ def _get_skills_dir_listing(out_dir: Path) -> list[Path]:
     reuse the same directory scan rather than each running a separate
     ``Path.glob()`` syscall.  Fail-soft: returns an empty list on I/O error.
     """
-    global _dir_listing_cache  # noqa: PLW0603
+    global _dir_listing_cache
     now = time.time()
     if _dir_listing_cache is not None:
         cached_ts, cached_list = _dir_listing_cache
@@ -611,19 +611,19 @@ def _sweep_skill_orphans() -> None:
     ``store_output()`` call. Fail-soft: any I/O error is logged and skipped.
     Never raises.
     """
-    global _sweep_done  # noqa: PLW0603
+    global _sweep_done
     if _sweep_done:
         return
     _sweep_done = True
 
     try:
-        from .config import load as _load_config  # noqa: PLC0415
+        from .config import load as _load_config
         _cfg = _load_config()
         if not _cfg.skill_preservation.orphan_sweep_enabled:
             _LOG.debug("_sweep_skill_orphans: disabled by config")
             return
         age_secs = _cfg.skill_preservation.orphan_age_secs
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("_sweep_skill_orphans: config load failed, skipping: %s", exc)
         return
 
@@ -718,7 +718,7 @@ def find_cross_session_entry(skill_name: str, content_sha: str) -> SkillMeta | N
                     name, content_sha[:8], oid,
                 )
                 return meta
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("find_cross_session_entry: scan error: %s", exc)
 
     return None
@@ -798,13 +798,13 @@ def store_output(
         # Determine whether to compress this body.
         compress = False
         try:
-            from .config import load as _load_config  # noqa: PLC0415
+            from .config import load as _load_config
             _sp = _load_config().skill_preservation
             compress = (
                 _sp.compress_bodies
                 and len(stored.encode("utf-8", errors="replace")) >= _sp.compress_min_bytes
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         stored_path: Path | None
@@ -943,7 +943,7 @@ def _evict_compact_files(*, max_compact_files: int = MAX_COMPACT_FILE_COUNT) -> 
                 "skill_cache._evict_compact_files: evicted %d compact file(s) (cap=%d)",
                 evicted, max_compact_files,
             )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("skill_cache._evict_compact_files: unexpected error: %s", exc)
 
 
@@ -1039,17 +1039,17 @@ def invalidate_for_path(file_path: str) -> int:
 
     # Mark any doc compact sidecar stale so pre_read stops serving it.
     try:
-        from pathlib import Path as _Path  # noqa: PLC0415
+        from pathlib import Path as _Path
 
-        from . import doc_compact as _dc  # noqa: PLC0415
-        from .project import find_project  # noqa: PLC0415
+        from . import doc_compact as _dc
+        from .project import find_project
         _abs = _Path(norm_path)
         _proj = find_project(_abs.parent)
         if _proj is not None:
             _cpath = _dc.find_compact_for_path(_abs, _proj.hash)
             if _cpath is not None:
                 _dc.mark_compact_stale(_cpath)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("skill_cache.invalidate_for_path: doc_compact stale failed: %s", exc)
 
     if removed > 0:
@@ -1110,7 +1110,7 @@ def get_skill_file_path(skill_name: str) -> Path | None:
                 continue
 
     # Strategy 2: probe the filesystem using the same logic as the hook.
-    from . import hooks_skill  # noqa: PLC0415
+    from . import hooks_skill
     resolved = hooks_skill._resolve_skill_body_path(skill_name)
     if resolved:
         try:
@@ -1220,14 +1220,14 @@ def write_sidecar(meta: SkillMeta) -> None:
     :func:`read_sidecar` can detect entries created by older versions and
     apply appropriate migration or ignore-and-continue logic.
     """
-    import json as _json  # noqa: PLC0415
-    from dataclasses import asdict as _asdict  # noqa: PLC0415
+    import json as _json
+    from dataclasses import asdict as _asdict
 
     sidecar_path = sidecar_meta_path(meta.output_id)
     if sidecar_path is None:
         return
     try:
-        from . import paths as _paths  # noqa: PLC0415
+        from . import paths as _paths
         payload = _asdict(meta)
         payload["schema_v"] = SIDECAR_SCHEMA_VERSION
         _paths.atomic_write_text(
@@ -1690,7 +1690,7 @@ def store_compact(
         return
 
     with safe_cache_op("store_compact", log=_LOG):
-        from . import paths as _paths  # noqa: PLC0415
+        from . import paths as _paths
 
         file_id = _compact_file_id(session_id, name)
         out_dir = _skill_outputs_dir()
@@ -1716,7 +1716,7 @@ def store_compact(
         # Invalidate the directory listing cache so subsequent calls to
         # get_compact_any_session within the same process pick up the newly
         # written compact without waiting for the TTL to expire.
-        global _dir_listing_cache  # noqa: PLW0603
+        global _dir_listing_cache
         _dir_listing_cache = None
         _LOG.debug("skill_cache.store_compact: stored id=%s (%d tokens)", file_id, compact_tokens)
 

@@ -26,7 +26,7 @@ _LOG = get_logger("read_commands")
 #: ``cli.py``.  Defined here to avoid a circular import (``cli`` lazily imports
 #: ``read_commands``; a top-level ``from .cli import _OPT_SESSION_ID`` would
 #: form a cycle at load time).
-_OPT_SESSION_ID: str | None = typer.Option(None, "--session-id", "-s")  # noqa: B008
+_OPT_SESSION_ID: str | None = typer.Option(None, "--session-id", "-s")
 
 # Module-level key functions avoid allocating a new lambda object on every sort call.
 # Sorting dep maps is on the hot path when rendering large dependency graphs.
@@ -74,7 +74,7 @@ def _not_indexed_hint(project_hash: str) -> str | None:
     try:
         if not db.project_has_files(project_hash):
             # Check if an index spawn is currently active.
-            from . import paths, worker  # noqa: PLC0415
+            from . import paths, worker
 
             marker = paths.locks_dir() / f"{project_hash}.indexing"
             if worker._index_spawn_active(marker):
@@ -171,7 +171,7 @@ def _close_db_matches(
     try:
         with db.open_project_readonly(project.hash) as conn:
             rows = conn.execute(
-                f"SELECT DISTINCT {column} FROM {table}"  # noqa: S608
+                f"SELECT DISTINCT {column} FROM {table}"
                 f" WHERE file_rel = ? AND {column} IS NOT NULL",
                 (rel_path,),
             ).fetchall()
@@ -295,7 +295,7 @@ def over_cap_file_hint(file_part: str, project: Project | None) -> str | None:
     for entry in entries:
         rel = str(entry.get("rel_path", ""))
         if rel and _path_part_matches(file_part, rel):
-            from .parser import MAX_FILE_SIZE  # noqa: PLC0415
+            from .parser import MAX_FILE_SIZE
             limit_mb = MAX_FILE_SIZE / 1024 / 1024
             return (
                 f"File '{rel}' exists but was not indexed "
@@ -1483,7 +1483,7 @@ def read(
     signature, optional docstring, first 15 body lines, an ellipsis comment,
     and last 5 lines are shown.  Pass ``--full`` (``-f``) to bypass truncation.
     """
-    _no_header = no_header or not header and not sys.stdout.isatty()
+    _no_header = no_header or (not header and not sys.stdout.isatty())
 
     # Route line-range syntax ``file::N-M`` to a dedicated handler that skips
     # the symbol DB entirely and slices the file directly by line numbers.
@@ -1538,7 +1538,7 @@ def section(
         missing_label="Section",
         stat_kind="section_replacement",
         reader=read_replacement.read_section,
-        no_header=no_header or not header and not sys.stdout.isatty(),
+        no_header=no_header or (not header and not sys.stdout.isatty()),
         no_color=no_color,
     )
 
@@ -1571,11 +1571,11 @@ def skill_section(
     error and exits with code 1, including a hint to index via
     ``token-goat index --root ~/.claude/skills/``.
     """
-    import typer  # noqa: PLC0415
+    import typer
 
-    from . import compact as _compact  # noqa: PLC0415
-    from . import db as _db  # noqa: PLC0415
-    from . import skill_cache  # noqa: PLC0415
+    from . import compact as _compact
+    from . import db as _db
+    from . import skill_cache
 
     body: str | None = None
     source_label: str = f"skills/{skill_name}"
@@ -1651,7 +1651,7 @@ def skill_section(
     )
 
     if json_output:
-        import json as _json  # noqa: PLC0415
+        import json as _json
 
         payload: dict[str, object] = {
             "ok": True,
@@ -1980,7 +1980,7 @@ def outline(
         outline_bytes = sum(len(line.encode()) for line in rendered_outline)
         saved = max(0, src_bytes - outline_bytes)
         db.record_stat(None, "outline", bytes_saved=saved, tokens_saved=max(1, saved // 3 + 1) if saved > 0 else 0, detail=file_rel)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -2201,7 +2201,7 @@ def _all_indexed_projects() -> list[Project]:
             rows = gconn.execute("SELECT hash, root, marker FROM projects").fetchall()
     except (FileNotFoundError, OSError, sqlite3.Error):
         return []
-    except Exception:  # noqa: BLE001 — never let a cross-project lookup crash the command
+    except Exception:
         return []
     projects: list[Project] = []
     for row in rows:
@@ -2367,7 +2367,7 @@ def stub_view(
         stub_bytes = sum(len(line.encode()) for line in rendered_lines)
         saved = max(0, src_bytes - stub_bytes)
         db.record_stat(None, "stub_view", bytes_saved=saved, tokens_saved=max(1, saved // 3 + 1) if saved > 0 else 0, detail=file_rel)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -2447,7 +2447,7 @@ def exports(
             export_bytes += len(_format_outline_line(str(r["name"]), str(r["kind"]), sl, el, None).encode())
         saved = max(0, src_bytes - export_bytes)
         db.record_stat(None, "exports", bytes_saved=saved, tokens_saved=max(1, saved // 3 + 1) if saved > 0 else 0, detail=file_rel)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
 
@@ -2648,7 +2648,7 @@ def _render_refs_with_callers(rows: list[dict[str, object]]) -> None:
     scope), the entry reads ``<module level> at line N``.
     """
     # Group rows by path, preserving insertion order.
-    from collections import OrderedDict  # noqa: PLC0415
+    from collections import OrderedDict
 
     groups: dict[str, list[dict[str, object]]] = OrderedDict()
     for row in rows:
@@ -2719,12 +2719,12 @@ def changed(
 
         {"since": "HEAD~1", "count": 2, "files": [...]}
     """
-    import os as _os  # noqa: PLC0415
+    import os as _os
 
     cwd = _os.getcwd()
 
     if symbol_mode:
-        from .git_history import get_changed_symbols_db  # noqa: PLC0415
+        from .git_history import get_changed_symbols_db
 
         file_entries = get_changed_symbols_db(cwd, since_ref=since_ref, limit=limit)
 
@@ -2775,7 +2775,7 @@ def changed(
             typer.echo(f"  {entry['file']}: {sym_display} — {sym_count} {sym_noun}")
         return
 
-    from .git_history import get_changed_symbols  # noqa: PLC0415
+    from .git_history import get_changed_symbols
 
     entries = get_changed_symbols(cwd, since_ref=since_ref, limit=limit)
 
@@ -2855,9 +2855,9 @@ def blame(
 
     JSON line-dict keys: ``line_no``, ``commit_hash``, ``author``, ``date``, ``content``.
     """
-    import os as _os  # noqa: PLC0415
+    import os as _os
 
-    from .git_history import blame_symbol  # noqa: PLC0415
+    from .git_history import blame_symbol
 
     if "::" not in target:
         _emit_read_error(
@@ -2912,7 +2912,7 @@ def blame(
                 "ORDER BY line LIMIT 1",
                 (file_rel, symbol_name),
             ).fetchone()
-    except Exception:  # noqa: BLE001
+    except Exception:
         row = None
 
     if row is None:
@@ -2999,7 +2999,7 @@ def _get_test_functions(project_hash: str, test_rel: str) -> list[str]:
                 (test_rel,),
             ).fetchall()
         return [str(r["name"]) for r in rows]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -3022,7 +3022,7 @@ def _find_test_files_for(
 
     Returns an empty list when no test files are found.
     """
-    import sqlite3 as _sqlite3  # noqa: PLC0415
+    import sqlite3 as _sqlite3
 
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -3362,8 +3362,8 @@ def grep(
 
     # Run rg.
     try:
-        proc = subprocess.run(  # noqa: S603
-            ["rg", pattern, path],  # noqa: S607
+        proc = subprocess.run(
+            ["rg", pattern, path],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -3455,9 +3455,9 @@ def _get_recent_git_files(project_hash: str, limit: int) -> list[tuple[str, str]
 
     Each file is returned at most once (first commit wins, i.e. most recent).
     """
-    import sqlite3 as _sqlite3  # noqa: PLC0415
+    import sqlite3 as _sqlite3
 
-    from . import db as _db  # noqa: PLC0415
+    from . import db as _db
 
     try:
         with _db.open_project_readonly(project_hash) as conn:
@@ -3515,7 +3515,7 @@ def _symbols_for_file(project_hash: str, file_rel: str, session_cache: session.S
 
     # Fallback: list indexed symbols for the file (structural kinds only).
 
-    from . import db as _db  # noqa: PLC0415
+    from . import db as _db
 
     _STRUCT_KINDS = frozenset({
         "function", "async_function", "method", "class", "interface",
@@ -3532,7 +3532,7 @@ def _symbols_for_file(project_hash: str, file_rel: str, session_cache: session.S
                 (file_rel, *_STRUCT_KINDS),
             ).fetchall()
         return [str(r["name"]) for r in rows]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -3575,9 +3575,9 @@ def recent(
           ...
         ]}
     """
-    import os as _os  # noqa: PLC0415
+    import os as _os
 
-    from . import project as _project  # noqa: PLC0415
+    from . import project as _project
 
     cwd = _os.getcwd()
     proj = _project.find_project(Path(cwd))
@@ -3713,9 +3713,9 @@ def find(
           ]
         }
     """
-    import os as _os  # noqa: PLC0415
+    import os as _os
 
-    from . import project as _project  # noqa: PLC0415
+    from . import project as _project
 
     cwd = _os.getcwd()
     proj = _project.find_project(Path(cwd))
@@ -3787,7 +3787,7 @@ def find(
     # ------------------------------------------------------------------
     sem_results: list[dict] = []
     try:
-        from . import embeddings as _embeddings  # noqa: PLC0415
+        from . import embeddings as _embeddings
 
         hits = _embeddings.semantic_search(
             proj,
@@ -3813,7 +3813,7 @@ def find(
                 "distance": h.distance,
                 "preview": h.text[:200],
             })
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass  # Embeddings not available — semantic section stays empty
 
     # ------------------------------------------------------------------
@@ -3863,7 +3863,7 @@ def similar(target: str, *, json_output: bool = False, top_k: int = 5) -> None:
         json_output: When True, emit JSON instead of plain text.
         top_k: Number of results to return (default 5).
     """
-    from . import embeddings  # noqa: PLC0415
+    from . import embeddings
 
     # ------------------------------------------------------------------
     # Parse target
@@ -3890,7 +3890,7 @@ def similar(target: str, *, json_output: bool = False, top_k: int = 5) -> None:
     # ------------------------------------------------------------------
     # Resolve project
     # ------------------------------------------------------------------
-    import os as _os  # noqa: PLC0415
+    import os as _os
 
     cwd = _os.getcwd()
     proj = find_project(Path(cwd))

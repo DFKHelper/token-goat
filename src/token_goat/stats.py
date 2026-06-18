@@ -781,7 +781,7 @@ def _short_project(root: str) -> str:
 
 def _to_stats_data(summary: StatsSummary, top_projects: int = 5) -> StatsData:
     """Convert StatsSummary to the render layer's StatsData."""
-    from . import __version__  # noqa: PLC0415
+    from . import __version__
     from .render.types import (
         CommandStat,
         DayStat,
@@ -907,7 +907,7 @@ def _make_stats_table(label_col: str) -> RichTable:
     ``rich`` is imported lazily inside this function so it is not required at
     module import time (environments without rich skip the renderer entirely).
     """
-    from rich.table import Table  # noqa: PLC0415
+    from rich.table import Table
 
     tbl = Table(
         show_header=True,
@@ -989,7 +989,7 @@ def render_text(
     try:
         from .render.stats_renderer import render_stats
         return render_stats(_to_stats_data(summary, top_projects=top_projects))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.warning("new renderer failed (%s: %s), falling back to rich", type(exc).__name__, exc, exc_info=True)
 
     try:
@@ -1015,7 +1015,7 @@ def render_text(
     window_desc = (
         "all time" if summary.window_days == 0 else f"last {summary.window_days} days"
     )
-    from . import __version__  # noqa: PLC0415
+    from . import __version__
 
     # ---- Headline panel ----
     # Keep label+value pairs as single styled segments so substring matches
@@ -1234,7 +1234,7 @@ def render_by_project(summary: StatsSummary, top: int = 10) -> str:
     Falls back gracefully to a plain-text table when rich is unavailable.
     """
     try:
-        from .render.stats_renderer import (  # noqa: PLC0415
+        from .render.stats_renderer import (
             _render_by_project_section,
             _render_header,
             _render_kpi_section,
@@ -1247,7 +1247,7 @@ def render_by_project(summary: StatsSummary, top: int = 10) -> str:
             [""],
         ]
         return "\n".join(line for section in sections for line in section)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.warning("new renderer failed for by-project (%s: %s), falling back", type(exc).__name__, exc)
 
     try:
@@ -1319,7 +1319,7 @@ def render_by_command(summary: StatsSummary) -> str:
     Falls back gracefully to a plain-text table when rich is unavailable.
     """
     try:
-        from .render.stats_renderer import (  # noqa: PLC0415
+        from .render.stats_renderer import (
             _render_by_command_section,
             _render_header,
             _render_kpi_section,
@@ -1332,14 +1332,14 @@ def render_by_command(summary: StatsSummary) -> str:
             [""],
         ]
         return "\n".join(line for section in sections for line in section)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.warning("new renderer failed for by-command (%s: %s), falling back", type(exc).__name__, exc)
 
     try:
-        import io  # noqa: PLC0415
+        import io
 
-        from rich.console import Console  # noqa: PLC0415
-        from rich.text import Text as RichText  # noqa: PLC0415
+        from rich.console import Console
+        from rich.text import Text as RichText
     except ImportError:
         lines = ["By command:"]
         if not summary.by_command:

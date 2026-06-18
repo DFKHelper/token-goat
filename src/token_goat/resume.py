@@ -60,9 +60,9 @@ def _head_tail(lines: list[str], head: int, tail: int) -> str:
 def _load_bash_output(output_id: str) -> str | None:
     """Load cached bash output text by output_id. Fail-soft."""
     try:
-        from . import bash_cache  # noqa: PLC0415
+        from . import bash_cache
         return bash_cache.load_output(output_id)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -71,9 +71,9 @@ def _inline_diff(path: str, cwd: str | None) -> str | None:
     if not cwd:
         return None
     try:
-        from .compact import _get_inline_diff_for_file  # noqa: PLC0415
+        from .compact import _get_inline_diff_for_file
         return _get_inline_diff_for_file(path, cwd)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -82,9 +82,9 @@ def _git_diff_stat(cwd: str | None) -> str:
     if not cwd:
         return ""
     try:
-        from .compact import _get_git_diff_stat_summary  # noqa: PLC0415
+        from .compact import _get_git_diff_stat_summary
         return _get_git_diff_stat_summary(cwd)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ""
 
 
@@ -104,7 +104,7 @@ def build_resume_packet(session_id: str) -> str:
     Returns an empty string when the session cache is unavailable or empty.
     """
     try:
-        from . import session as _session  # noqa: PLC0415
+        from . import session as _session
         cache = _session.load(session_id)
     except (OSError, ValueError):
         return ""
@@ -122,7 +122,7 @@ def build_resume_packet(session_id: str) -> str:
     if skill_hist:
         try:
 
-            from . import skill_cache as _skill_cache  # noqa: PLC0415
+            from . import skill_cache as _skill_cache
 
             skill_entries = sorted(
                 skill_hist.values(),
@@ -156,7 +156,7 @@ def build_resume_packet(session_id: str) -> str:
             if len(skill_block) <= char_budget:
                 parts.append(skill_block)
                 char_budget -= len(skill_block)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     # -----------------------------------------------------------------------
@@ -204,7 +204,7 @@ def build_resume_packet(session_id: str) -> str:
                 trimmed = bash_block[: char_budget - 400]
                 parts.append(trimmed + "\n--- bash section truncated ---")
                 char_budget = 400
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     # -----------------------------------------------------------------------
@@ -232,7 +232,7 @@ def build_resume_packet(session_id: str) -> str:
                         shown += 1
             if len(diff_lines) > 1:  # more than just the header
                 parts.append("\n".join(diff_lines))
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     # -----------------------------------------------------------------------
@@ -245,7 +245,7 @@ def build_resume_packet(session_id: str) -> str:
                 stat_block = f"### Git stat (as of {now_str})\n{stat}"
                 if len(stat_block) <= char_budget:
                     parts.append(stat_block)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     if len(parts) <= 1:

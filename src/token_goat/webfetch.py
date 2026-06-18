@@ -39,7 +39,7 @@ from . import image_shrink, paths
 from .hooks_common import sanitize_log_str
 from .util import get_logger
 
-__all__ = ["is_image_url", "is_image_content_type", "cleanup_stale_downloads", "fetch_url"]
+__all__ = ["cleanup_stale_downloads", "fetch_url", "is_image_content_type", "is_image_url"]
 
 _LOG = get_logger("webfetch")
 
@@ -313,7 +313,7 @@ def _read_cache_meta(cache_path: Path) -> dict[str, str]:
             cap = _MAX_SHRUNK_PATH_LEN if k == "shrunk_path" else _MAX_META_VALUE_LEN
             result[k] = _sanitize_header_value(v, cap)
         return result
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _LOG.debug("corrupt cache metadata at %s; discarding: %s", sidecar.name, e)
         return {}
 
@@ -515,7 +515,7 @@ def _stream_to_file(response: httpx.Response, dest: Path, max_size_bytes: int) -
         # raised by the caller — don't double-log it, just clean up and re-raise.
         tmp.unlink(missing_ok=True)
         raise
-    except Exception as e:  # noqa: BLE001 — log the partial-write detail then re-raise
+    except Exception as e:
         _LOG.warning("webfetch: stream write failed after %d bytes: %s", written, e)
         tmp.unlink(missing_ok=True)
         raise
@@ -569,7 +569,7 @@ def _strip_html_to_text(body: bytes) -> bytes:
     try:
         try:
             text = body.decode("utf-8", errors="replace")
-        except Exception:  # noqa: BLE001
+        except Exception:
             return body
 
         lower = text[:2000].lower()  # check only the preamble for speed
@@ -625,7 +625,7 @@ def _strip_html_to_text(body: bytes) -> bytes:
         marker = f"[token-goat: HTML→text, {original_len}B→{stripped_len}B]\n"
         return (marker + stripped).encode("utf-8")
 
-    except Exception:  # noqa: BLE001 — fail-soft, never break caching
+    except Exception:
         return body
 
 
@@ -647,7 +647,7 @@ def _apply_html_strip(cache_path: Path) -> None:
                 len(stripped),
                 cache_path.name,
             )
-    except Exception as exc:  # noqa: BLE001 — fail-soft, never break caching
+    except Exception as exc:
         _LOG.debug("webfetch: HTML strip failed for %s: %s", cache_path.name, exc)
 
 
@@ -706,7 +706,7 @@ def _make_pinned_transport(pinned_ip: str) -> httpx.HTTPTransport:
     internally; redirecting that call to our stub closes the rebinding window
     without requiring httpx internals knowledge.
     """
-    import httpx  # noqa: PLC0415
+    import httpx
 
     original_getaddrinfo = socket.getaddrinfo
 
@@ -714,7 +714,7 @@ def _make_pinned_transport(pinned_ip: str) -> httpx.HTTPTransport:
         host: str | bytes | None,
         port: str | int | None,
         family: int = 0,
-        type: int = 0,  # noqa: A002
+        type: int = 0,
         proto: int = 0,
         flags: int = 0,
     ) -> list[tuple]:
@@ -776,7 +776,7 @@ def fetch_url(
             is absent.  Pass an explicit value to override the env var for a
             single call (useful in tests).
     """
-    import httpx  # noqa: PLC0415 — deferred to avoid startup cost on every hook fire
+    import httpx
 
     # Resolve effective timeout: explicit argument wins over env var.
     _timeout = timeout_sec if timeout_sec is not None else _webfetch_timeout()

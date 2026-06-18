@@ -76,10 +76,10 @@ def _prune_memory_index(session_id: str | None, cwd: str | None) -> None:
     Runs at most once per project per ``_MEMORY_PRUNE_THROTTLE_H`` hours via a
     sentinel file.  Atomic rewrite via :func:`paths.atomic_write_text`.
     """
-    import time  # noqa: PLC0415
+    import time
 
     try:
-        from . import paths  # noqa: PLC0415
+        from . import paths
 
         # Resolve the project slug dir from the session transcript.
         proj_dir: Path | None = None
@@ -88,7 +88,7 @@ def _prune_memory_index(session_id: str | None, cwd: str | None) -> None:
 
         if proj_dir is None and cwd:
             # Fallback: scan projects dir for the slug matching cwd.
-            from pathlib import Path  # noqa: PLC0415
+            from pathlib import Path
 
             cwd_path = Path(cwd).resolve()
             slug = re.sub(r"[^A-Za-z0-9]", "-", str(cwd_path)).strip("-")
@@ -111,7 +111,7 @@ def _prune_memory_index(session_id: str | None, cwd: str | None) -> None:
             if sentinel.exists() and (now - sentinel.stat().st_mtime) < _MEMORY_PRUNE_THROTTLE_H * 3600:
                 return
 
-        from . import memory_prune  # noqa: PLC0415
+        from . import memory_prune
 
         result = memory_prune.prune_index(memory_dir)
         if result.changed:
@@ -123,11 +123,11 @@ def _prune_memory_index(session_id: str | None, cwd: str | None) -> None:
                 result.tokens_saved,
             )
 
-        import contextlib as _cl  # noqa: PLC0415
+        import contextlib as _cl
         with _cl.suppress(Exception):  # Update sentinel to suppress reruns; ignore write failures.
             paths.atomic_write_text(sentinel, str(now))
 
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("memory-prune: failed (non-fatal)", exc_info=True)
 
 
@@ -181,7 +181,7 @@ def _reset_session_cache(session_id: str | None) -> None:
     """
     if not session_id:
         return
-    from . import session  # noqa: PLC0415
+    from . import session
 
     session.reset_session(session_id)
 
@@ -272,7 +272,7 @@ def _allocate_recovery_slots(
 
 
 def _resume_anchor_for_recovery(
-    raw_edited: dict[str, int], cache: object,  # noqa: ARG001 — symmetry with sealed-block helper
+    raw_edited: dict[str, int], cache: object,
 ) -> str:
     """Return the RESUME anchor string for the recovery hint header.
 
@@ -287,9 +287,9 @@ def _resume_anchor_for_recovery(
     symmetry with compact.py::_build_sealed_block so future signal
     sources (e.g. WIP commit titles) can join without a signature change.
     """
-    from pathlib import Path as _Path  # noqa: PLC0415
+    from pathlib import Path as _Path
 
-    from .util import sanitize_surrogates as _san  # noqa: PLC0415
+    from .util import sanitize_surrogates as _san
 
     if not raw_edited:
         return ""
@@ -300,7 +300,7 @@ def _resume_anchor_for_recovery(
         basename = _Path(top[0]).name or top[0]
         if basename:
             return _san(basename)[:40]
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         pass
     return ""
 
@@ -319,9 +319,9 @@ def _build_blocker_section(cache: object) -> tuple[str, str]:
     — preview).  Fail-soft: any error returns ``("", "")``.
     """
     try:
-        import time as _time  # noqa: PLC0415
+        import time as _time
 
-        from . import compact as _compact_mod  # noqa: PLC0415
+        from . import compact as _compact_mod
 
         bash_hist = getattr(cache, "bash_history", None)
         if not isinstance(bash_hist, dict) or not bash_hist:
@@ -341,7 +341,7 @@ def _build_blocker_section(cache: object) -> tuple[str, str]:
                 if "=" not in tok and not tok.startswith("-"):
                     anchor = tok[:30]
                     break
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         # Surface the recall command so the agent knows where to fetch the
         # full failing output (the inline preview is one line; the full body
@@ -350,7 +350,7 @@ def _build_blocker_section(cache: object) -> tuple[str, str]:
             "- _retrieve full output via `token-goat bash-output <id>`_"
         )
         return "\n".join(lines), anchor
-    except Exception:  # noqa: BLE001 — never break the hint on a blocker render
+    except Exception:
         return "", ""
 
 
@@ -377,7 +377,7 @@ def _build_pending_work_section(
     Returns at most 3 bullet points.  Returns an empty string when nothing
     actionable is found (fail-soft on any exception).
     """
-    import time as _time  # noqa: PLC0415
+    import time as _time
 
     try:
         bash_hist = getattr(cache, "bash_history", None) or {}
@@ -410,17 +410,17 @@ def _build_pending_work_section(
             cmd_preview = getattr(latest_fail, "cmd_preview", "")
             # Attempt to read the cached output and parse "N failed" from it.
             try:
-                from . import bash_cache as _bc  # noqa: PLC0415
+                from . import bash_cache as _bc
                 output_id = getattr(latest_fail, "output_id", "")
                 if output_id:
                     text = _bc.load_output(output_id)
                     if text:
-                        import re as _re  # noqa: PLC0415
+                        import re as _re
                         m = _re.search(r"(\d+)\s+failed", text)
                         if m:
                             n = int(m.group(1))
                             fail_count_str = f": {n} failure{'s' if n != 1 else ''}"
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             items.append(f"pytest failed{fail_count_str} (last run {age_str})")
 
@@ -438,7 +438,7 @@ def _build_pending_work_section(
                     let = getattr(fe, "last_edit_ts", 0.0)
                     if let > latest_edit_ts:
                         latest_edit_ts = let
-            except Exception:  # noqa: BLE001
+            except Exception:
                 # Fall back: use current time so any commit is "before"
                 latest_edit_ts = now
 
@@ -455,8 +455,8 @@ def _build_pending_work_section(
             # If there are edits and no successful commit after the last edit,
             # surface the uncommitted files.
             if latest_edit_ts == 0.0 or last_commit_ts < latest_edit_ts:
-                import contextlib as _ctx_pw  # noqa: PLC0415
-                import os as _os_pw  # noqa: PLC0415
+                import contextlib as _ctx_pw
+                import os as _os_pw
                 edited_names: list[str] = []
                 for _ep in sorted(raw_edited, key=lambda k: raw_edited[k], reverse=True)[:4]:
                     with _ctx_pw.suppress(Exception):
@@ -499,7 +499,7 @@ def _build_pending_work_section(
         lines = ["### Pending Work"]
         lines.extend(f"- {item}" for item in items[:3])
         return "\n".join(lines)
-    except Exception:  # noqa: BLE001 — never break the hint
+    except Exception:
         return ""
 
 
@@ -546,10 +546,10 @@ def _diff_stats_for_file(session_id: str, file_path: str) -> tuple[int, int] | N
     upper-cased so that hook-stored snapshots are reachable from the normalized
     dict key without platform-specific coupling in the caller.
     """
-    import difflib as _difflib  # noqa: PLC0415
+    import difflib as _difflib
 
     try:
-        from . import snapshots as _snap  # noqa: PLC0415
+        from . import snapshots as _snap
 
         snap_bytes = _snap.load(session_id, file_path)
         if snap_bytes is None:
@@ -558,7 +558,7 @@ def _diff_stats_for_file(session_id: str, file_path: str) -> tuple[int, int] | N
             # but edited_files keys are normalized ("c:/path/file.py").  Try several
             # common variants so the lookup succeeds regardless of which form was
             # used at store time.
-            import re as _re_dp  # noqa: PLC0415
+            import re as _re_dp
             _candidates: list[str] = []
             # 1. Forward slashes → backslashes (Windows snapshot stored with backslashes)
             _bs = file_path.replace("/", "\\")
@@ -578,13 +578,13 @@ def _diff_stats_for_file(session_id: str, file_path: str) -> tuple[int, int] | N
             return None
         try:
             snap_text = snap_bytes.decode("utf-8", errors="replace")
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         # Resolve the disk path to read the current file.
         disk_path = file_path
         # Read current file bytes.
         try:
-            import pathlib as _pathlib  # noqa: PLC0415
+            import pathlib as _pathlib
             current_bytes = _pathlib.Path(disk_path).read_bytes()
             current_text = current_bytes.decode("utf-8", errors="replace")
         except (OSError, UnicodeDecodeError):
@@ -595,7 +595,7 @@ def _diff_stats_for_file(session_id: str, file_path: str) -> tuple[int, int] | N
         added = sum(1 for ln in probe if ln[:1] == "+" and not ln.startswith("+++"))
         removed = sum(1 for ln in probe if ln[:1] == "-" and not ln.startswith("---"))
         return added, removed
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         return None
 
 
@@ -633,7 +633,7 @@ def _truncate_recovery_hint(text: str, max_tokens: int = 400) -> str:
         """Return *body* with the first section beginning ``heading_prefix``
         removed.  A section extends from its heading line to (but not including)
         the next blank-line-then-heading sequence or end of string."""
-        import re as _re  # noqa: PLC0415
+        import re as _re
         # Match the heading and everything up to the next \n\n#-level heading or EOS.
         pat = _re.compile(
             r"(?:^|\n\n)" + _re.escape(heading_prefix) + r"[^\n]*\n(?:[^\n].*\n?)*",
@@ -670,11 +670,11 @@ def _build_recovery_hint(session_id: str) -> str | None:
     counterpart that fires *after* the compaction LLM has processed the
     manifest.
     """
-    from .cache_common import short_output_id as _short_id  # noqa: PLC0415
-    from .compact import _humanize_bytes  # noqa: PLC0415
+    from .cache_common import short_output_id as _short_id
+    from .compact import _humanize_bytes
 
     try:
-        from . import session as session_mod  # noqa: PLC0415
+        from . import session as session_mod
 
         cache = session_mod.load(session_id)
     except (OSError, ValueError) as exc:
@@ -686,7 +686,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
     # Build full candidate lists first (sorted, floor-filtered) so the
     # allocator sees the true per-section item counts and can reclaim unused
     # budget from empty sections instead of silently dropping high-signal data.
-    from operator import attrgetter  # noqa: PLC0415
+    from operator import attrgetter
 
     files_all = (
         sorted(cache.files.values(), key=attrgetter("last_read_ts"), reverse=True)
@@ -722,15 +722,15 @@ def _build_recovery_hint(session_id: str) -> str | None:
     # files-dict uses, so we can annotate file entries with their edit count.
     # Falling back to a basename match handles the case where the read path and
     # edit path differ only in absolute-vs-relative form.
-    from . import paths as _paths_mod  # noqa: PLC0415
+    from . import paths as _paths_mod
 
     raw_edited = (
         cache.edited_files if isinstance(cache.edited_files, dict) else {}
     )
     edit_count_by_norm: dict[str, int] = {}
     edit_count_by_basename: dict[str, int] = {}
-    import contextlib as _contextlib  # noqa: PLC0415
-    from pathlib import Path as _Path  # noqa: PLC0415
+    import contextlib as _contextlib
+    from pathlib import Path as _Path
     for _ep, _ec in raw_edited.items():
         with _contextlib.suppress(Exception):
             edit_count_by_norm[_paths_mod.normalize_key(_ep).lower()] = _ec
@@ -753,11 +753,11 @@ def _build_recovery_hint(session_id: str) -> str | None:
             # Fallback: basename match catches absolute-vs-relative mismatches.
             rel = getattr(entry, "rel_or_abs", "")
             if rel:
-                from pathlib import Path as _Path  # noqa: PLC0415
+                from pathlib import Path as _Path
                 bn = _Path(rel).name.lower()
                 if bn and bn in edit_count_by_basename:
                     return edit_count_by_basename[bn]
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         return 0
 
@@ -776,8 +776,8 @@ def _build_recovery_hint(session_id: str) -> str | None:
     # Cap at 5 entries so the section stays under ~60 tokens.
     # Diff stats: try to annotate each entry with (+N/-M lines) from snapshots.
     if raw_edited:
-        import contextlib as _contextlib2  # noqa: PLC0415
-        import os as _os2  # noqa: PLC0415
+        import contextlib as _contextlib2
+        import os as _os2
         edited_sorted = sorted(raw_edited.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
         edited_lines = ["**Edited**:"]
         for _ep, _ec in edited_sorted[:5]:
@@ -819,7 +819,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
     # (e.g. ls) with no edits is noise, not signal.
     _has_meaningful_bash = bool(raw_edited) or len(cache.bash_history) >= 2
     if cache.bash_history and _has_meaningful_bash:
-        import datetime as _datetime2  # noqa: PLC0415
+        import datetime as _datetime2
         _bash_entry_ids = {be.output_id for be in bash_entries}
         _small_cmds = sorted(
             (
@@ -840,7 +840,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
     # Deduplicate by skill name to avoid listing the same skill multiple times
     # if it was updated mid-session, and flag stale skills (loaded 6+ hours ago).
     if skill_entries:
-        import time as _time  # noqa: PLC0415
+        import time as _time
         now = _time.time()
         stale_threshold = 6 * 3600  # 6 hours, mirrors compact.py::_SKILL_STALE_FOR_SESSION_SECS
 
@@ -894,7 +894,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
     # Reuses compact.py's ``_load_task_list`` + ``_render_tasks_section`` so
     # the format is identical to the pre-compact manifest's ### TODOs section.
     try:
-        from . import compact as _compact_tasks  # noqa: PLC0415
+        from . import compact as _compact_tasks
         _raw_tasks = _compact_tasks._load_task_list(session_id)
         if _raw_tasks:
             _task_lines = _compact_tasks._render_tasks_section(
@@ -903,7 +903,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
             )
             if _task_lines:
                 sections.append("\n".join(_task_lines))
-    except Exception:  # noqa: BLE001 — never break the hint on task errors
+    except Exception:
         pass
 
     # 0.5. Active blockers — failed bash commands within the blocker window.
@@ -967,7 +967,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
             _symbol_entries.append((_ts, _sym, _rel, 0))
 
     if _symbol_entries:
-        import os as _os_sym  # noqa: PLC0415
+        import os as _os_sym
 
         # Sort by timestamp descending (most-recently-accessed first), then alpha.
         _symbol_entries.sort(key=lambda e: (-e[0], e[1]))
@@ -989,7 +989,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
 
     # 2. Recent Bash output IDs — the most likely "I had this in context" data.
     if bash_entries:
-        import datetime  # noqa: PLC0415
+        import datetime
 
         has_edits = bool(getattr(cache, "edited_files", None))
         lines = ["**Bash**:"]
@@ -1063,11 +1063,11 @@ def _build_recovery_hint(session_id: str) -> str | None:
     # and bash history. This gives the post-compact agent immediate context
     # without requiring them to reconstruct intent from file names alone.
     try:
-        from . import compact as _compact_mod  # noqa: PLC0415
+        from . import compact as _compact_mod
         session_goal = _compact_mod.infer_session_goal(cache)
         if session_goal:
             parts.append(f"**Session goal:** {session_goal}")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass  # fail-soft: missing goal is not critical
 
     # RESUME pointer — same anchor format as compact.py's sealed block, so the
@@ -1113,11 +1113,11 @@ def _read_precompact_estimate() -> int:
 
     Returns 0 when no suitable sentinel is found (fail-soft).
     """
-    import json as _json  # noqa: PLC0415
-    import time as _time  # noqa: PLC0415
+    import json as _json
+    import time as _time
 
     try:
-        from . import paths as _paths  # noqa: PLC0415
+        from . import paths as _paths
 
         sentinels = _paths.sentinels_dir()
         if not sentinels.exists():
@@ -1143,7 +1143,7 @@ def _read_precompact_estimate() -> int:
         except (OSError, ValueError, TypeError):
             estimate = 0
         # Delete the sentinel so it is not consumed again.
-        import contextlib as _contextlib  # noqa: PLC0415
+        import contextlib as _contextlib
         with _contextlib.suppress(OSError):
             best.unlink(missing_ok=True)
         _LOG.debug(
@@ -1151,7 +1151,7 @@ def _read_precompact_estimate() -> int:
             estimate, best.name,
         )
         return max(0, estimate)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 0
 
 
@@ -1180,7 +1180,7 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     prevent the session from continuing — the recovery hint is advisory and
     its loss is benign.
     """
-    import json as _json  # noqa: PLC0415
+    import json as _json
 
     if source != "compact" or not session_id:
         return None
@@ -1196,7 +1196,7 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
 
     # Write the hint + estimate as JSON to the sidecar for deferred injection.
     try:
-        from . import paths  # noqa: PLC0415
+        from . import paths
 
         payload = _json.dumps(
             {"hint": hint, "bytes_estimate": bytes_estimate},
@@ -1210,7 +1210,7 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
             " (%d chars, bytes_estimate=%d)",
             session_id[:16], len(hint), bytes_estimate,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("recovery hint: sidecar write failed", exc_info=True)
 
     return None
@@ -1311,8 +1311,8 @@ def _build_session_brief(cwd: str) -> str | None:
     caller.  This function just builds the string; it has no knowledge of
     session source.
     """
-    import os  # noqa: PLC0415
-    import time  # noqa: PLC0415
+    import os
+    import time
 
     # Feature gate: env var override (checked first, cheapest)
     env_val = os.environ.get("TOKEN_GOAT_SESSION_BRIEF", "").strip().lower()
@@ -1321,27 +1321,27 @@ def _build_session_brief(cwd: str) -> str | None:
 
     # Feature gate: config file
     try:
-        from . import config as cfg_mod  # noqa: PLC0415
+        from . import config as cfg_mod
 
         cfg = cfg_mod.load()
         if not cfg.session_brief.enabled:
             return None
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass  # fail-open: config load errors don't suppress the brief
 
     try:
-        import pathlib  # noqa: PLC0415
+        import pathlib
 
         cwd_path = pathlib.Path(cwd)
         if not cwd_path.is_dir():
             return None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
     # --- Git-state fingerprint (two stat calls, ~0.2 ms total) ---
     # Stat .git/COMMIT_EDITMSG and .git/index to detect new commits or
     # staged changes without running any git subprocess.
-    import contextlib  # noqa: PLC0415
+    import contextlib
     _git_dir = cwd_path / ".git"
     _mtime_editmsg = 0.0
     _mtime_index = 0.0
@@ -1364,7 +1364,7 @@ def _build_session_brief(cwd: str) -> str | None:
             _LOG.debug("session-start: brief cache hit for %s (age=%.1fs)", cwd, _age)
             return _cached_brief
 
-    import subprocess  # noqa: PLC0415 — needed for TimeoutExpired reference
+    import subprocess
     # Whole-brief wall-clock budget: the git calls share one deadline so a slow repo can't stack timeouts into a long session-start pause.
     deadline = time.monotonic() + 2.5
 
@@ -1509,7 +1509,7 @@ def _detect(payload: HookPayload) -> Project | None:
     cwd_path = validate_cwd(payload.get("cwd"), caller="session-start")
     if cwd_path is None:
         return None
-    from .project import find_project  # noqa: PLC0415
+    from .project import find_project
 
     return find_project(cwd_path)
 
@@ -1517,7 +1517,7 @@ def _detect(payload: HookPayload) -> Project | None:
 def _auto_index_if_needed(proj: Project) -> None:
     """Auto-index unindexed projects on first contact."""
     try:
-        from . import db, worker  # noqa: PLC0415
+        from . import db, worker
 
         if not db.project_has_files(proj.hash):
             pid = worker.spawn_index_detached(str(proj.root), proj.hash)
@@ -1539,7 +1539,7 @@ def _auto_index_if_needed(proj: Project) -> None:
                 "session-start: project %s already indexed; skipping auto-index",
                 proj.hash[:8],
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.exception("auto-index spawn failed")
 
 
@@ -1563,8 +1563,8 @@ def _index_stale_hint(proj: Project) -> str | None:
 
     Fail-soft: any error returns ``None`` so a broken DB never blocks startup.
     """
-    import os as _os  # noqa: PLC0415
-    import time as _time  # noqa: PLC0415
+    import os as _os
+    import time as _time
 
     try:
         stale_secs = int(_os.environ.get("TOKEN_GOAT_INDEX_STALE_SECS", _INDEX_STALE_SECS))
@@ -1572,7 +1572,7 @@ def _index_stale_hint(proj: Project) -> str | None:
         stale_secs = _INDEX_STALE_SECS
 
     try:
-        from . import db as _db  # noqa: PLC0415
+        from . import db as _db
 
         last_ts = _db.project_last_indexed_ts(proj.hash)
         if last_ts == 0.0:
@@ -1594,7 +1594,7 @@ def _index_stale_hint(proj: Project) -> str | None:
             f"Index may be stale (last indexed {age_str})"
             " — run `token-goat index` to refresh."
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -1604,10 +1604,10 @@ def _build_startup_context(proj: Project) -> str | None:
     Returns None when the project has no stored memory entries.
     """
     try:
-        from . import project_memory  # noqa: PLC0415
+        from . import project_memory
 
         return project_memory.build_injection(proj.hash)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("session-start: project memory injection failed", exc_info=True)
         return None
 
@@ -1615,12 +1615,12 @@ def _build_startup_context(proj: Project) -> str | None:
 def _ensure_worker_running() -> None:
     """Watchdog: start or verify worker daemon is alive."""
     try:
-        from . import worker  # noqa: PLC0415
+        from . import worker
 
         pid = worker.ensure_running()
         if pid:
             _LOG.info("session-start: worker pid=%s", pid)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.exception("watchdog failed")
 
 
@@ -1661,35 +1661,35 @@ def _maybe_baseline_advisory(session_id: str | None, cwd: str | None) -> str | N
     if not session_id:
         return None
     try:
-        from . import config as _config  # noqa: PLC0415
+        from . import config as _config
 
         budget = _config.load().hints.baseline_budget_tokens
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     if budget <= 0:
         return None
     try:
-        from . import paths as _paths  # noqa: PLC0415
+        from . import paths as _paths
 
         sentinel = _paths.baseline_advisory_sent_path(session_id)
         if sentinel.exists():
             return None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     try:
-        from pathlib import Path  # noqa: PLC0415
+        from pathlib import Path
 
-        from . import baseline as _baseline  # noqa: PLC0415
+        from . import baseline as _baseline
 
         base = Path(cwd) if cwd else Path.cwd()
         fixed = _baseline.collect_baseline(base, session_id).fixed_tokens
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     if fixed <= budget:
         return None
     try:
         _paths.atomic_write_text(sentinel, "1")
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("session-start: baseline advisory sentinel write failed", exc_info=True)
     return (
         f"[token-goat] Environmental baseline is ~{fixed:,} fixed tokens "
@@ -1725,11 +1725,11 @@ def session_start(payload: HookPayload) -> HookResponse:
     # The 7-day cutoff matches _SESSION_RETENTION_DAYS in worker.py.
     # All errors are suppressed — cleanup must never block session startup.
     try:
-        from . import session as _session  # noqa: PLC0415
+        from . import session as _session
         _cleaned = _session.cleanup_stale(max_age_hours=168.0)
         if _cleaned:
             _LOG.info("session-start: cleaned up %d stale session file(s) (>7d)", _cleaned)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("session-start: stale session cleanup failed (non-fatal)", exc_info=True)
 
     _try_recovery_response(session_id, source)
@@ -1739,7 +1739,7 @@ def session_start(payload: HookPayload) -> HookResponse:
     proj = _detect(payload)
     if proj:
         _LOG.info("session-start: detected project %s (%s)", proj.root, proj.hash[:8])
-        from . import db  # noqa: PLC0415
+        from . import db
 
         db.touch_project_last_seen(proj.hash)
         _auto_index_if_needed(proj)
@@ -1765,7 +1765,7 @@ def session_start(payload: HookPayload) -> HookResponse:
     if cwd:
         try:
             brief = _build_session_brief(cwd)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("session-start: brief build failed", exc_info=True)
 
     # Inject project memory facts for the new session (non-compact only —
@@ -1847,19 +1847,19 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
             branch = r.stdout.strip()
             if branch:
                 parts.append(f"branch: {branch}")
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     # Edit count and last bash exit from session cache
     cache = None
     try:
-        from . import session as _session  # noqa: PLC0415
+        from . import session as _session
 
         cache = _session.safe_load(session_id, caller="user-prompt-submit")
         if cache is not None:
             edit_count = len(getattr(cache, "edited_files", {}))
             parts.append(f"edits: {edit_count}")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     # Last Bash exit code from session cache bash history
@@ -1877,13 +1877,13 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
     # turn above 85% (urgency zone).  Gates on config [hints] context_threshold_advisory.
     _ctx_advisory_prefix: str | None = None
     try:
-        from . import config as _cfg_mod  # noqa: PLC0415
+        from . import config as _cfg_mod
 
         _hints_cfg = _cfg_mod.load().hints
         if _hints_cfg.context_threshold_advisory and cache is not None:
             cache.turns_since_last_compact = getattr(cache, "turns_since_last_compact", 0) + 1
 
-            from .compact import get_context_pressure  # noqa: PLC0415
+            from .compact import get_context_pressure
 
             _pressure = get_context_pressure(getattr(cache, "session_id", None), cache=cache)
             _ctx_pct = _pressure.fill_fraction
@@ -1899,23 +1899,23 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
                 cache.last_context_advisory_threshold = 50
                 parts.append(f"ctx: ~{_pct_int}% — context approaching midpoint")
 
-            from . import session as _ses_save  # noqa: PLC0415
+            from . import session as _ses_save
             _ses_save.save(cache)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     # Keyword-triggered hints: check prompt words against configured prompt_triggers.
     # Fires even when parts is empty so keyword hints can stand alone.
     _keyword_hints: list[str] = []
     try:
-        from . import config as _cfg_kw  # noqa: PLC0415
+        from . import config as _cfg_kw
 
         _triggers = _cfg_kw.load().hints.prompt_triggers
         if _triggers and isinstance(_raw_prompt, str) and _raw_prompt.strip():
-            import re as _re  # noqa: PLC0415
+            import re as _re
             _prompt_words = set(_re.sub(r"[^a-z0-9]", " ", _raw_prompt.lower()).split())
             _keyword_hints.extend(_trig.hint for _trig in _triggers if any(kw in _prompt_words for kw in _trig.keywords))
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     if not parts and _ctx_advisory_prefix is None and not _keyword_hints:
@@ -1966,7 +1966,7 @@ def subagent_stop(payload: HookPayload) -> HookResponse:
 
     # Only flag when the session cache records edited files — a subagent that
     # didn't claim edits doesn't need scrutiny.
-    from . import session as _session  # noqa: PLC0415
+    from . import session as _session
 
     cache = _session.safe_load(session_id, caller="subagent-stop")
     if cache is None:
@@ -1990,10 +1990,10 @@ def subagent_stop(payload: HookPayload) -> HookResponse:
         len(edited),
     )
     try:
-        import json as _json  # noqa: PLC0415
-        import time as _time  # noqa: PLC0415
+        import json as _json
+        import time as _time
 
-        from . import paths as _paths  # noqa: PLC0415
+        from . import paths as _paths
 
         sidecar_dir = _paths.ensure_dir(_paths.sessions_dir())
         sidecar_path = sidecar_dir / _SUBAGENT_HALLUCINATION_SIDECAR
@@ -2005,7 +2005,7 @@ def subagent_stop(payload: HookPayload) -> HookResponse:
         })
         with sidecar_path.open("a", encoding="utf-8") as fh:
             fh.write(record + "\n")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     return CONTINUE()

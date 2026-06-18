@@ -41,17 +41,17 @@ __all__ = [
     "DBReadOnlyError",
     "VecExtensionUnavailable",
     "file_count",
-    "list_all_project_hashes",
-    "get_file_exports",
-    "get_file_importers",
     "get_compression_stats",
     "get_entry_scores",
+    "get_file_exports",
+    "get_file_importers",
     "get_file_imports",
     "get_refs_with_callers",
     "get_symbol_callers",
     "get_symbol_refs",
     "get_type_definitions",
     "index_health",
+    "list_all_project_hashes",
     "open_global",
     "open_global_readonly",
     "open_project",
@@ -246,7 +246,7 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
             # Validate the fallback open with a real read; SQLite is otherwise lazy
             # and the failure would surface inside the caller's first query.
             conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             # Catch all exceptions here to avoid leaking the fallback connection.
             _close_conn(conn)
             raise
@@ -255,18 +255,18 @@ def _connect(db_path: Path, *, load_vec: bool = True) -> sqlite3.Connection:
         # can rename/delete the file, then re-raise.
         _close_conn(conn)
         raise
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Catch any other exception (e.g., from _apply_connection_pragmas) to avoid leaking.
         _close_conn(conn)
         raise
     if load_vec:
         try:
-            import sqlite_vec  # noqa: PLC0415
+            import sqlite_vec
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
             _LOG.debug("sqlite-vec loaded for %s", db_path.name)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             _LOG.warning("sqlite-vec unavailable: %s", e)
     _LOG.debug("connection opened: %s", db_path.name)
     return conn
@@ -332,7 +332,7 @@ def with_timeout(fn: Callable[[sqlite3.Connection], None], timeout_s: float = 2.
             _LOG.debug("with_timeout write skipped (transient): %s", exc)
         else:
             _LOG.warning("with_timeout write failed: %s", exc)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.warning("with_timeout failed: %s", exc)
 
 
@@ -352,7 +352,7 @@ def _best_effort_write(fn: Callable[[], None], label: str) -> None:
             _LOG.debug("%s skipped (read-only or transient): %s", label, exc)
         else:
             _LOG.error("%s failed: %s", label, exc)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.error("%s failed: %s", label, exc)
 
 
@@ -967,7 +967,7 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
         # Force SQLite to actually open the DB file and its WAL sidecars.
         conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
         return conn
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Catch all exceptions from the WAL path to ensure we close the connection
         # and attempt fallback. This includes OperationalError, DatabaseError, and
         # any other exceptions (e.g., from _apply_connection_pragmas).
@@ -986,7 +986,7 @@ def _connect_readonly(db_path: Path) -> sqlite3.Connection:
             # Verify the immutable open actually works (same lazy-open reason).
             conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
             return conn
-        except (sqlite3.DatabaseError, Exception) as exc2:  # noqa: BLE001
+        except (sqlite3.DatabaseError, Exception) as exc2:
             # Catch both DatabaseError and any other exception to avoid leaking the connection.
             _close_conn(conn)
             if isinstance(exc2, sqlite3.DatabaseError):
@@ -1058,7 +1058,7 @@ def _pid_alive(pid: int) -> bool:
       - Other OSError: Assume dead to avoid false positives.
     """
     try:
-        import psutil  # noqa: PLC0415
+        import psutil
         return psutil.pid_exists(pid)
     except ImportError:
         pass
@@ -1228,7 +1228,7 @@ def file_count(project_hash: str) -> int:
     except FileNotFoundError:
         # DB does not exist yet — normal for un-indexed projects; not worth logging.
         return 0
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Log at WARNING: returning 0 here is indistinguishable from "never indexed"
         # to callers, so a silent swallow can trigger unnecessary full reindexes.
         _LOG.warning("file_count(%s…) failed, returning 0: %s", project_hash[:8], exc)
@@ -1249,7 +1249,7 @@ def count_symbols_for_file(project_hash: str, file_rel: str) -> int:
             return int(row[0]) if row else 0
     except FileNotFoundError:
         return 0  # DB does not exist yet — normal for un-indexed projects
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.warning(
             "count_symbols_for_file(%s…, %s) failed, returning 0: %s",
             project_hash[:8], file_rel, exc,
@@ -1375,7 +1375,7 @@ def index_health(project_hash: str) -> dict[str, object]:
                 """
                 if table not in _KNOWN_PROJECT_TABLES:
                     raise ValueError(f"_count: unknown table name {table!r}")
-                row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608
+                row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
                 return int(row[0]) if row else 0
 
             result["file_count"] = _count("files")
@@ -1520,7 +1520,7 @@ def get_miss_count(needle: str, file_hint: str = "") -> int:
                 (needle, file_hint),
             ).fetchone()
         return int(row["miss_count"]) if row else 0
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 0
 
 
@@ -1596,7 +1596,7 @@ def get_file_exports(
 
     Returns an empty list on any DB or I/O error (fail-soft).
     """
-    import ast as _ast  # noqa: PLC0415
+    import ast as _ast
 
     # Kinds that count as "top-level structural symbols" — excludes "method"
     # which the Python extractor promotes with parent_id=NULL in some builds.
@@ -1616,7 +1616,7 @@ def get_file_exports(
             ).fetchall()
     except FileNotFoundError:
         return []
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
     # Build lookup of public top-level symbol rows by name.
@@ -1663,7 +1663,7 @@ def get_file_exports(
                         if isinstance(elt, _ast.Constant) and isinstance(elt.value, str)
                     }
                     break
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     if exported_names is not None:
@@ -1919,7 +1919,7 @@ def get_type_definitions(
                 ).fetchall()
     except FileNotFoundError:
         return []
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
     if not rows:
@@ -1933,11 +1933,11 @@ def get_type_definitions(
                 (project_hash,),
             ).fetchone()
         project_root = Path(normalize_path(str(proj_row["root"]))) if proj_row else None
-    except Exception:  # noqa: BLE001
+    except Exception:
         project_root = None
 
     # Group rows by file_rel to minimise file reads.
-    from collections import defaultdict as _defaultdict  # noqa: PLC0415
+    from collections import defaultdict as _defaultdict
 
     rows_by_file: dict[str, list[object]] = _defaultdict(list)
     for row in rows:
@@ -2058,7 +2058,7 @@ def get_file_imports(
         return sorted(resolved)
     except FileNotFoundError:
         return []
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -2120,7 +2120,7 @@ def get_file_importers(
         return [str(r["file_rel"]) for r in rows]
     except FileNotFoundError:
         return []
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
@@ -2140,11 +2140,11 @@ def get_compression_stats(session_id: str | None = None) -> dict:
     since_ts: float | None = None
     if session_id is not None:
         try:
-            from .session import safe_load as _safe_load  # noqa: PLC0415
+            from .session import safe_load as _safe_load
             _cache = _safe_load(session_id, caller="get_compression_stats")
             if _cache is not None:
                 since_ts = _cache.started_ts
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     ts_clause = "AND ts >= ?" if since_ts is not None else ""
@@ -2181,7 +2181,7 @@ def get_compression_stats(session_id: str | None = None) -> dict:
                 base_params,
             ).fetchall()
             top_filters = [{"filter": str(r[0]), "tokens_saved": int(r[1])} for r in _rows]
-    except Exception:  # noqa: BLE001
+    except Exception:
         return {"tokens_saved": 0, "outputs_compressed": 0, "reread_denies": 0, "images_shrunk": 0, "top_filters": []}
 
     return {
@@ -2215,7 +2215,7 @@ def get_hook_timing_stats(window_days: int = 7) -> dict[str, dict[str, int]]:
                 "SELECT kind, bytes_saved FROM stats WHERE kind LIKE 'hook:%' AND ts >= ? ORDER BY kind",
                 (since_ts,),
             ).fetchall()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return result
     by_event: dict[str, list[int]] = {}
     for row in rows:
@@ -2256,6 +2256,6 @@ def get_entry_scores(project_hash: str) -> dict[str, float]:
             last_access = row["last_access"]
             age_days = (now - float(last_access)) / 86400.0 if last_access is not None else _NULL_AGE_DAYS
             result[file_rel] = hit_count * math.exp(-_LAMBDA * age_days)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return result

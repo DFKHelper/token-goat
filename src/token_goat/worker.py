@@ -245,10 +245,10 @@ def _installed_version() -> str | None:
     by ``uv tool install --reinstall`` and hand off to the new code.
     """
     try:
-        from importlib.metadata import version  # noqa: PLC0415
+        from importlib.metadata import version
 
         return version("token-goat")
-    except Exception:  # noqa: BLE001 — PackageNotFoundError or anything else
+    except Exception:
         return None
 
 
@@ -308,7 +308,7 @@ def _get_rss_mb() -> float | None:
         proc = psutil.Process(os.getpid())
         # rss is in bytes on all platforms psutil supports.
         return proc.memory_info().rss / (1024 * 1024)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -594,7 +594,7 @@ def _write_pid() -> None:
     compatible: :func:`_read_pid_info` accepts both the new JSON form and the
     legacy plain-integer format written by older versions.
     """
-    import importlib.metadata as _meta  # noqa: PLC0415
+    import importlib.metadata as _meta
 
     try:
         version = _meta.version("token-goat")
@@ -1070,7 +1070,7 @@ def _prune_stats_table() -> int:
     caller (``cleanup_on_startup``) can record the failure in its summary and
     continue with the remaining tasks.
     """
-    from . import db as _db  # noqa: PLC0415
+    from . import db as _db
     cutoff_ts = int(time.time() - STATS_RETENTION_DAYS * _SECS_PER_DAY)
     try:
         with _db.open_global() as conn:
@@ -1091,7 +1091,7 @@ def _cleanup_stale_snapshots() -> int:
     pile up across long-lived installations even though most are tied to
     sessions that ended hours ago.
     """
-    from . import snapshots  # noqa: PLC0415
+    from . import snapshots
 
     return snapshots.cleanup_stale(max_age_hours=24.0)
 
@@ -1104,7 +1104,7 @@ def _evict_bash_outputs() -> int:
     directory slightly over budget at shutdown time.  Returns the number of
     cache files removed.
     """
-    from . import bash_cache, config  # noqa: PLC0415
+    from . import bash_cache, config
 
     cfg = config.load().bash_compress
     return bash_cache.evict_old_entries(
@@ -1122,7 +1122,7 @@ def _evict_web_outputs() -> int:
     until the next write.  This startup/maintenance pass closes that gap.
     Returns the number of cache files removed.
     """
-    from . import config, web_cache  # noqa: PLC0415
+    from . import config, web_cache
 
     cfg = config.load().webfetch
     return web_cache.evict_old_entries(
@@ -1180,7 +1180,7 @@ def _checkpoint_project_wals() -> int:
         try:
             with db.open_project(project_hash) as conn:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.debug("_checkpoint_project_wals: checkpoint failed for %s", project_hash)
             continue
         after = wal_path.stat().st_size if wal_path.exists() else 0
@@ -1357,7 +1357,7 @@ def _cleanup_old_sentinels() -> int:
     Returns:
         Count of deleted files.
     """
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     sentinels_dir = _paths.sentinels_dir()
     if not sentinels_dir.is_dir():
@@ -1395,7 +1395,7 @@ def _cleanup_old_sessions() -> int:
     describe has been over for a week: no running hook will reference a session
     that old.
     """
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     sessions_dir = _paths.sessions_dir()
     if not sessions_dir.is_dir():
@@ -1488,21 +1488,21 @@ def cleanup_on_startup() -> CleanupStats:
         try:
             result_int = task_fn()
             stats[stat_key] = result_int  # type: ignore[literal-required]  # key is validated at construction
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _LOG.exception("cleanup task %s failed", task_name)
             failures.append(f"{task_name}: {type(exc).__name__}: {exc}")
 
     # Stale index-spawn markers — already has its own error handling
     try:
         stats["stale_index_markers_cleared"] = reap_stale_index_markers()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.exception("cleanup task stale_index_markers failed")
         failures.append(f"stale_index_markers: {type(exc).__name__}: {exc}")
 
     # Clear stale image-cache eviction lock before attempting eviction
     try:
         _clear_stale_eviction_lock()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.exception("cleanup task clear_stale_eviction_lock failed")
         failures.append(f"clear_stale_eviction_lock: {type(exc).__name__}: {exc}")
 
@@ -1511,7 +1511,7 @@ def cleanup_on_startup() -> CleanupStats:
         bytes_evicted, files_evicted = evict_image_cache_if_over_limit()
         stats["image_bytes_evicted"] = bytes_evicted
         stats["image_files_evicted"] = files_evicted
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.exception("cleanup task image_eviction failed")
         failures.append(f"image_eviction: {type(exc).__name__}: {exc}")
 
@@ -1623,7 +1623,7 @@ def _clear_stale_eviction_lock() -> None:
             with contextlib.suppress(OSError):
                 lock_path.unlink()
             _LOG.info("cleared stale image-cache eviction lock at startup: %s", lock_path)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("_clear_stale_eviction_lock failed: %s", exc)
 
 
@@ -1792,7 +1792,7 @@ def spawn_detached() -> int | None:
     launcher .exe so AV/EDR products don't behavior-flag the spawn.
     Returns PID or None on failure.
     """
-    from . import paths  # noqa: PLC0415
+    from . import paths
     cmd = paths.python_runner_argv("worker", "--daemon")
 
     creationflags = _detach_creationflags()
@@ -1923,8 +1923,8 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
     Uses ``pythonw.exe -m token_goat.cli`` rather than the launcher .exe so
     AV/EDR products don't behavior-flag the spawn.
     """
-    from . import db as db_mod  # noqa: PLC0415
-    from . import paths  # noqa: PLC0415
+    from . import db as db_mod
+    from . import paths
 
     # Validate project_hash before using it in the marker path.  Callers like
     # _parse_and_group_entries already validate, but this function is part of
@@ -2167,7 +2167,7 @@ def _register_autostart() -> None:
     imports worker.)
     """
     try:
-        from . import install  # noqa: PLC0415
+        from . import install
 
         if sys.platform == "win32":
             ok, detail = install.install_worker_task()
@@ -2176,13 +2176,13 @@ def _register_autostart() -> None:
         else:
             ok, detail = install.install_linux_autostart()
         _LOG.info("autostart self-register: %s", detail if ok else ("failed — " + detail))
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.exception("autostart self-register failed")
 
 
 def run_daemon(stop_event: threading.Event | None = None) -> None:
     """Compatibility wrapper around :mod:`token_goat.worker_daemon`."""
-    from . import worker_daemon  # noqa: PLC0415
+    from . import worker_daemon
 
     worker_daemon.run_daemon(stop_event=stop_event)
 
@@ -2262,10 +2262,10 @@ def _reindex_active_projects() -> None:
             else:
                 _LOG.debug("periodic reindex: root=%s no changes", row["root"])
             # Refresh git-history hints in the durable worker — the SessionStart hook used to spawn this on a daemon thread that died with the hook process. index_project_history is idempotent and staleness-gated (1 h).
-            from . import git_history  # noqa: PLC0415
+            from . import git_history
 
             git_history.index_project_history(proj.root, proj.hash)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.exception("periodic reindex failed for %s", row["root"])
             _record_index_failure(ph, "<project>")
     if skipped_oversized > 0:
@@ -2290,7 +2290,7 @@ def _parse_and_group_entries(entries: list[DirtyQueueEntry]) -> dict[str, _Proje
     """
     # Hoist the import outside the per-entry loop — repeated import machinery
     # lookups inside a tight loop add measurable overhead with large queues.
-    from .paths import is_safe_rel_path  # noqa: PLC0415
+    from .paths import is_safe_rel_path
 
     by_project: dict[str, _ProjectBucket] = {}
     for entry in entries:
@@ -2339,7 +2339,7 @@ def _lookup_known_projects(hashes: list[str]) -> dict[str, sqlite3.Row]:
             return {
                 row["hash"]: row
                 for row in gconn.execute(
-                    f"SELECT hash, root, marker FROM projects WHERE hash IN ({ph_placeholders})",  # noqa: S608
+                    f"SELECT hash, root, marker FROM projects WHERE hash IN ({ph_placeholders})",
                     hashes,
                 )
             }
@@ -2415,9 +2415,9 @@ def _get_max_pool_workers() -> int:
     error to preserve the pre-feature behaviour.
     """
     try:
-        from . import config as _cfg  # noqa: PLC0415
+        from . import config as _cfg
         return _cfg.load().worker.max_pool_workers
-    except Exception:  # noqa: BLE001
+    except Exception:
         return 1
 
 
@@ -2443,7 +2443,7 @@ def _run_index_with_timeout(
     ``None`` (the default) the configured ``worker.max_pool_workers`` value is
     used.  The value is always clamped to [1, WORKER_MAX_POOL_CEILING].
     """
-    from . import config as _cfg_mod  # noqa: PLC0415
+    from . import config as _cfg_mod
     _pool_size = max_workers if max_workers is not None else _get_max_pool_workers()
     _pool_size = max(1, min(_pool_size, _cfg_mod.WORKER_MAX_POOL_CEILING))
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=_pool_size)
@@ -2459,7 +2459,7 @@ def _run_index_with_timeout(
                 project.root,
             )
             return None
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.exception(
                 "index_project raised for project %s (root=%s)",
                 str(project.hash)[:8],
@@ -2507,7 +2507,7 @@ def _invalidate_skill_cache_entries(entries: list[DirtyQueueEntry]) -> None:
     if not candidate_entries:
         return
 
-    from . import skill_cache  # noqa: PLC0415
+    from . import skill_cache
 
     for entry in candidate_entries:
         rel = entry.get("path") or ""
@@ -2559,7 +2559,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     # an import or I/O error here must never block the index path.
     try:
         _invalidate_skill_cache_entries(entries)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug("skill cache invalidation failed (non-fatal)", exc_info=True)
 
     if _is_under_memory_pressure():
@@ -2610,7 +2610,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
                     "reindexed %d/%d files in project %s after dirty queue drain (dur=%.2fs)",
                     result["indexed"], result["total_files"], ph[:8], elapsed,
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.exception("failed to reindex project %s from dirty queue", ph)
             _record_index_failure(ph, "<project>")
     _batch_elapsed = time.time() - _batch_t0

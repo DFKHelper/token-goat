@@ -407,7 +407,7 @@ def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
         # Point fastembed at our model cache dir
         os.environ.setdefault("FASTEMBED_CACHE_PATH", str(paths.models_dir()))
         paths.ensure_dir(paths.models_dir())
-        from fastembed import TextEmbedding  # noqa: PLC0415
+        from fastembed import TextEmbedding
         _LOG.info(
             "loading fastembed model %s (cache=%s)", model_name, paths.models_dir()
         )
@@ -422,7 +422,7 @@ def _get_model(model_name: str = DEFAULT_MODEL) -> TextEmbedding:
     except (OSError, RuntimeError, ValueError) as e:
         _LOG.debug("fastembed model load failed for %r: %s", model_name, e, exc_info=True)
         raise EmbeddingsUnavailable(f"fastembed model load failed: {e}") from e
-    except Exception as e:  # noqa: BLE001 — fastembed/ONNX can raise many undocumented types
+    except Exception as e:
         _LOG.debug("fastembed unexpected error for %r: %s", model_name, e, exc_info=True)
         raise EmbeddingsUnavailable(f"fastembed unavailable: {e}") from e
 
@@ -437,7 +437,7 @@ def is_available() -> bool:
     top-level imports was occasionally raising — making this gate lie about
     availability — even when the package was correctly installed.
     """
-    import importlib.util  # noqa: PLC0415
+    import importlib.util
 
     return importlib.util.find_spec("fastembed") is not None
 
@@ -753,12 +753,12 @@ def _load_existing_chunk_hashes(
 
     # Incremental path: query only the requested files.
     # SQLITE_MAX_VARIABLE_NUMBER defaults to 999; batch at 500 to stay safe.
-    _SQLITE_BATCH_SIZE = 500  # noqa: N806
+    _SQLITE_BATCH_SIZE = 500
     for batch_start in range(0, len(file_rels), _SQLITE_BATCH_SIZE):
         batch = file_rels[batch_start : batch_start + _SQLITE_BATCH_SIZE]
         placeholders = ",".join("?" for _ in batch)
         for row in conn.execute(
-            f"SELECT file_rel, start_line, end_line, content_sha256 FROM chunks"  # noqa: S608
+            f"SELECT file_rel, start_line, end_line, content_sha256 FROM chunks"
             f" WHERE file_rel IN ({placeholders})",
             batch,
         ):
@@ -812,15 +812,15 @@ def _delete_stale_chunks(
     stale_ids = [
         row["id"]
         for row in conn.execute(
-            f"SELECT id FROM chunks WHERE (file_rel, start_line, end_line) IN ({key_placeholders})",  # noqa: S608
+            f"SELECT id FROM chunks WHERE (file_rel, start_line, end_line) IN ({key_placeholders})",
             [v for key in batch_keys for v in key],
         ).fetchall()
     ]
     if not stale_ids:
         return 0
     id_placeholders = ",".join("?" for _ in stale_ids)
-    conn.execute(f"DELETE FROM embeddings WHERE chunk_id IN ({id_placeholders})", stale_ids)  # noqa: S608
-    conn.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", stale_ids)  # noqa: S608
+    conn.execute(f"DELETE FROM embeddings WHERE chunk_id IN ({id_placeholders})", stale_ids)
+    conn.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", stale_ids)
     _LOG.debug("cleaned %d stale chunks for re-embed", len(stale_ids))
     return len(stale_ids)
 
@@ -874,7 +874,7 @@ def index_project_embeddings(
         else:
             placeholders = ",".join("?" for _ in file_rels)
             file_rows = conn.execute(
-                f"SELECT rel_path, size FROM files WHERE rel_path IN ({placeholders})",  # noqa: S608
+                f"SELECT rel_path, size FROM files WHERE rel_path IN ({placeholders})",
                 file_rels,
             ).fetchall() if file_rels else []
         n_files = len(file_rows)
@@ -884,9 +884,9 @@ def index_project_embeddings(
         # their content is too large to chunk meaningfully and would skew the index.
         # Fail soft: if config is unavailable, embed all files (no threshold).
         try:
-            from . import config as _embed_config  # noqa: PLC0415
+            from . import config as _embed_config
             _embed_symbol_only_threshold = _embed_config.load().indexing.large_file_symbol_only_kb * 1024
-        except Exception:  # noqa: BLE001
+        except Exception:
             _embed_symbol_only_threshold = 0
 
         # Build full list of chunks that need (re)embedding.
@@ -1164,7 +1164,7 @@ def find_similar_symbols(
     """
     try:
         return _find_similar_symbols_impl(project_hash, file_path, symbol_name, top_k)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug(
             "find_similar_symbols failed for %s::%s",
             file_path,

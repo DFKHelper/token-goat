@@ -38,8 +38,8 @@ path) filenames mean two hooks cannot legitimately race on the same key.
 from __future__ import annotations
 
 __all__ = [
-    "MAX_SNAPSHOT_BYTES",
     "MAX_SNAPSHOTS_PER_SESSION",
+    "MAX_SNAPSHOT_BYTES",
     "SNAPSHOT_TRUNCATE_BYTES",
     "SnapshotResult",
     "cleanup_session",
@@ -494,9 +494,9 @@ def symbol_changed_since_read(
     # snapshot from driving a misleading "symbol changed" warning.  Fall back to
     # the unverified load for legacy snapshots that pre-date SHA recording.
     try:
-        from . import session as _session  # noqa: PLC0415 — deferred to avoid circular import
+        from . import session as _session
         expected_sha = _session.get_snapshot_sha(session_id, file_path)
-    except Exception:  # noqa: BLE001 — sha lookup must never block the caller
+    except Exception:
         expected_sha = None
     snapshot_bytes = load(session_id, file_path, expected_sha=expected_sha)
     if snapshot_bytes is None:
@@ -523,7 +523,7 @@ def symbol_changed_since_read(
         # common case of lines inserted/removed *before* the symbol.
         # Return True only when the body is absent from the snapshot — it changed.
         return not (current_stripped and current_stripped in snapshot_text)
-    except Exception:  # noqa: BLE001 — fail-soft; never block the caller
+    except Exception:
         _LOG.debug(
             "symbol_changed_since_read: comparison failed for %s::%s",
             sanitize_log_str(file_path), sanitize_log_str(symbol_name),

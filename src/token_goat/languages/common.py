@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 __all__ = [
-    "AddSymbolFn",
-    "AddFn",
     "CALL_RE",
+    "AddFn",
+    "AddSymbolFn",
     "KindStr",
     "add_imports",
     "add_symbol_info",
@@ -22,8 +22,8 @@ __all__ = [
     "kind_str",
     "make_add_fn",
     "make_add_symbol",
-    "make_symbol_emitter",
     "make_process_config",
+    "make_symbol_emitter",
     "merge_extra_symbols",
     "offset_to_line",
     "parse_source",
@@ -210,7 +210,7 @@ def sym_kind_str(sym_kind: object, language: str = "go") -> str:
 def get_tlp() -> types.ModuleType | None:
     """Return the tree_sitter_language_pack module, or None if not installed."""
     try:
-        import tree_sitter_language_pack as tlp  # noqa: PLC0415
+        import tree_sitter_language_pack as tlp
     except ModuleNotFoundError:
         return None
     return tlp
@@ -266,7 +266,7 @@ def parse_source(
         return None, None
     try:
         result = tlp.process(text, cfg)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.warning(
             "tree-sitter parse failed for %s (%s): %s — file will be indexed without symbols",
             rel_path, language, exc,
@@ -350,7 +350,7 @@ def extract_refs_from_source(
 
     Returns a list of :class:`~token_goat.parser.Ref` objects.
     """
-    from ..parser import Ref  # noqa: PLC0415
+    from ..parser import Ref
 
     refs: list[Ref] = []
     seen: set[tuple[str, int]] = set()
@@ -398,7 +398,7 @@ def make_add_symbol(
         not need it (Go has no methods via structure; TypeScript does but
         tree-sitter already labels them).
     """
-    from ..parser import Symbol  # noqa: PLC0415
+    from ..parser import Symbol
 
     def _add_symbol(item: object, parent_name: str | None = None) -> None:
         """Recursively walk a tree-sitter node and append named symbols to *symbols*.
@@ -483,7 +483,7 @@ def add_imports(
     extract_targets_fn:
         A callable(imp) -> str | list[str] that extracts target(s) from an import object.
     """
-    from ..parser import ImpExp  # noqa: PLC0415
+    from ..parser import ImpExp
 
     for imp in imports:
         try:
@@ -519,7 +519,7 @@ def add_symbol_info(
     language:
         Forwarded to :func:`sym_kind_str` for language-specific kind mappings.
     """
-    from ..parser import Symbol  # noqa: PLC0415
+    from ..parser import Symbol
 
     before = len(symbols)
     for sym in symbol_infos:
@@ -797,7 +797,7 @@ def extract_html_headings(text: str, sections: list[Section]) -> None:
     regardless of which key the caller used.  Inline HTML tags inside the
     heading (``<a>``, ``<span>``, etc.) are stripped before recording.
     """
-    from ..parser import Section as _Section  # noqa: PLC0415
+    from ..parser import Section as _Section
 
     before = len(sections)
     for match in _H_TAG_RE.finditer(text):
@@ -1210,7 +1210,7 @@ def make_add_fn(
     seen_names:
         Deduplication set of ``(name, line)`` pairs; mutated in place.
     """
-    from ..parser import Symbol as _Symbol  # noqa: PLC0415
+    from ..parser import Symbol as _Symbol
 
     def _add(
         name: str,

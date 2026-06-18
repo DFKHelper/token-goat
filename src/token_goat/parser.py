@@ -357,7 +357,7 @@ def _language_importer(module_name: str, attr: str = "extract") -> Callable[[], 
         # Import deferred to first call so tree-sitter grammars (each ~1 MB of C extension)
         # are not loaded at module import time — only the languages actually needed for a
         # given project ever get loaded.
-        import importlib  # noqa: PLC0415
+        import importlib
         # rsplit strips the submodule name ("parser") leaving the package root ("token_goat"),
         # so the relative import ".languages.X" resolves correctly however the module is invoked.
         mod = importlib.import_module(f".languages.{module_name}", package=__name__.rsplit(".", 1)[0])
@@ -509,7 +509,7 @@ def get_extractor(language: str) -> Extractor | None:
             exc,
         )
         return None
-    except Exception as exc:  # noqa: BLE001 — language module __init__ can raise many things
+    except Exception as exc:
         _LOG.error(
             "get_extractor: unexpected error loading %s extractor (%s): %s",
             language,
@@ -702,7 +702,7 @@ def index_file(
             return None
         try:
             symbols, refs, imp_exp, sections = extractor(raw, rel)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOG.exception("extractor crashed on %s", rel)
             return None
         # Only cache successful extracts; failed parses must re-run so a future
@@ -923,12 +923,12 @@ def index_project(
     # back to the hardcoded defaults defined in this module.
     _extra_skip_dirs: frozenset[str] = frozenset()
     try:
-        from . import config as _config  # noqa: PLC0415
+        from . import config as _config
         _idx_cfg = _config.load().indexing
         _skip_threshold = _idx_cfg.large_file_skip_kb * 1024
         _symbol_only_threshold = _idx_cfg.large_file_symbol_only_kb * 1024
         _extra_skip_dirs = frozenset(_idx_cfg.skip_dirs)
-    except Exception:  # noqa: BLE001
+    except Exception:
         _skip_threshold = MAX_FILE_SIZE
         _symbol_only_threshold = 0
 
@@ -1052,7 +1052,7 @@ def index_project(
                         _ext = fp.suffix.lower() or fp.name.lower()
                         ext_counts[_ext] = ext_counts.get(_ext, 0) + 1
                         if verbose:
-                            import typer as _typer  # noqa: PLC0415
+                            import typer as _typer
                             sym_word = "symbol" if len(fi.symbols) == 1 else "symbols"
                             _typer.echo(f"indexed: {fi.rel_path} ({len(fi.symbols)} {sym_word})")
                         if existing_sha is not None:
@@ -1089,7 +1089,7 @@ def index_project(
                 # round-trips vs O(N). FK ON DELETE CASCADE cleans up child rows.
                 stale_list = list(stale)
                 ph = ",".join("?" for _ in stale_list)
-                conn.execute(f"DELETE FROM files WHERE rel_path IN ({ph})", stale_list)  # noqa: S608
+                conn.execute(f"DELETE FROM files WHERE rel_path IN ({ph})", stale_list)
                 _LOG.info(
                     "pruned %d deleted file(s) from index: %s",
                     len(stale),

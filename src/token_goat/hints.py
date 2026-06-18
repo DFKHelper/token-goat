@@ -51,41 +51,41 @@ _RECENT_HINTS_MAX: int = 3
 
 __all__ = [
     "DIFF_HINT_MAX_BYTES",
+    "HINT_MAX_PER_TOOL_CALL",
     "HINT_PRIORITY_CRITICAL",
     "HINT_PRIORITY_HIGH",
-    "HINT_PRIORITY_MEDIUM",
     "HINT_PRIORITY_LOW",
-    "HINT_MAX_PER_TOOL_CALL",
+    "HINT_PRIORITY_MEDIUM",
+    "_HINT_KIND_DEDUP",
+    "_HINT_KIND_INDEX_ONLY",
+    "_HINT_KIND_STRUCTURED",
+    "_MAX_CACHED_RANGES_DISPLAY",
+    "_PROXIMITY_SLOP_LINES",
     "HintItem",
-    "apply_hint_priority_limit",
-    "dedup_hints",
     "ReadHint",
+    "_emit_json_sidecar",
+    "_hint_budget_check",
+    "_json_sidecar_enabled",
+    "_line_ranges_global_bounds",
+    "_record_index_only_hint_emitted",
+    "_record_structured_hint_emitted",
+    "apply_hint_priority_limit",
     "build_bash_dedup_hint",
     "build_diff_hint",
-    "build_high_frequency_hint",
-    "build_pinned_hint",
-    "build_symbol_stale_hint",
     "build_glob_dedup_hint",
     "build_grep_dedup_hint",
+    "build_high_frequency_hint",
     "build_index_only_file_hint",
+    "build_pinned_hint",
     "build_read_hint",
     "build_structured_file_hint",
+    "build_symbol_stale_hint",
     "build_test_file_hint",
     "build_unchanged_file_hint",
     "build_web_cache_hit_hint",
     "build_web_dedup_hint",
     "compute_stale_threshold",
-    "_emit_json_sidecar",
-    "_json_sidecar_enabled",
-    "_hint_budget_check",
-    "_record_structured_hint_emitted",
-    "_record_index_only_hint_emitted",
-    "_HINT_KIND_DEDUP",
-    "_HINT_KIND_STRUCTURED",
-    "_HINT_KIND_INDEX_ONLY",
-    "_PROXIMITY_SLOP_LINES",
-    "_MAX_CACHED_RANGES_DISPLAY",
-    "_line_ranges_global_bounds",
+    "dedup_hints",
     "maybe_grep_advisory",
 ]
 
@@ -336,10 +336,10 @@ def _json_sidecar_enabled() -> bool:
     the safe default since the prose line is fully self-sufficient.
     """
     try:
-        from . import config as _config  # noqa: PLC0415
+        from . import config as _config
 
         return bool(_config.load().hints.json_sidecar)
-    except Exception:  # noqa: BLE001 — fail-soft; sidecar is purely additive
+    except Exception:
         return False
 
 
@@ -660,7 +660,7 @@ def _failsoft_hint(fn: _F) -> _F:
     def _wrapper(*args: object, **kwargs: object) -> ReadHint | None:
         try:
             return fn(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001 — fail-soft for the hot pre-tool hook path
+        except Exception as exc:
             session_id = kwargs.get("session_id", "")
             session_id_str = str(session_id)[:16] if session_id else ""
             _LOG.warning(
@@ -822,7 +822,7 @@ def build_read_hint(
         # hints as emitted.  Both calls live in hooks_read._handle_session_hint
         # inside the else-branch that only runs when the hint enters context.
         return hint
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.warning(
             "build_read_hint: unexpected error for %r (session=%s): %s",
             file_path,
@@ -908,9 +908,9 @@ def _build_read_hint_inner(
             # they fire on large-file / index-miss paths regardless of prior read.
             if hint.tokens_saved > 0:
                 try:
-                    from . import config as _cfg  # noqa: PLC0415
+                    from . import config as _cfg
                     _min_bytes = _cfg.load().hints.min_session_hint_savings_bytes
-                except Exception:  # noqa: BLE001
+                except Exception:
                     _min_bytes = 0
                 if _min_bytes > 0:
                     estimated_bytes_saved = hint.tokens_saved * 3
@@ -1110,7 +1110,7 @@ def _indexed_line_count(file_path: str, cwd: str | None) -> int | None:
                 "SELECT line_count FROM files WHERE rel_path = ?", (rel,)
             ).fetchone()
         return int(row[0]) if row and row[0] is not None else None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -1553,7 +1553,7 @@ def _get_go_module_prefix(project_hash: str) -> str | None:
     tiny.
     """
     try:
-        import re as _re  # noqa: PLC0415
+        import re as _re
 
         with db.open_global_readonly() as conn:
             row = conn.execute("SELECT root FROM projects WHERE hash = ?", (project_hash,)).fetchone()
@@ -1565,7 +1565,7 @@ def _get_go_module_prefix(project_hash: str) -> str | None:
         text = go_mod.read_text(encoding="utf-8", errors="replace")
         m = _re.search(r"^\s*module\s+(\S+)", text, _re.MULTILINE)
         return m.group(1) if m else None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -1657,7 +1657,7 @@ def _get_unread_coread_files_ts(
             "SELECT rel_path FROM files WHERE rel_path LIKE ? LIMIT 1",
             (f"%{Path(file_path).name}",),
         ).fetchone()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
     importing_rel = rel_path[0] if rel_path else Path(file_path).name
 
@@ -1782,7 +1782,7 @@ def _get_unread_coread_files(
             exc_info=True,
         )
         return None
-    except Exception:  # noqa: BLE001
+    except Exception:
         _LOG.debug(
             "_get_unread_coread_files: unexpected error for %s",
             file_path[:64],
@@ -1877,7 +1877,7 @@ def build_high_frequency_hint(
             f"`token-goat read \"{safe_path}::<symbol>\"` for a narrower read."
         )
         return HintItem(text, HINT_PRIORITY_MEDIUM)
-    except Exception:  # noqa: BLE001 — fail-soft; hint errors must never block the agent
+    except Exception:
         return None
 
 
@@ -1951,7 +1951,7 @@ def _build_diff_hint_inner(
     """Inner implementation of :func:`build_diff_hint`; may raise."""
     try:
         _min_tokens_saved = config.load().hints.diff_hint_min_tokens_saved
-    except Exception:  # noqa: BLE001 — config unavailable; fall back to module constant
+    except Exception:
         _min_tokens_saved = _DIFF_HINT_MIN_TOKENS_SAVED
 
     # Integrity-gated load: when the session cache has a recorded sha for this
@@ -1965,7 +1965,7 @@ def _build_diff_hint_inner(
     # legacy diff hints.
     try:
         expected_sha = session.get_snapshot_sha(session_id, file_path)
-    except Exception:  # noqa: BLE001 — sha lookup must never break the hint path
+    except Exception:
         expected_sha = None
     snapshot_bytes = snapshots.load(
         session_id, file_path, expected_sha=expected_sha,
@@ -2012,7 +2012,7 @@ def _build_diff_hint_inner(
         # Parse the first (only) hunk header to extract the line number.
         # Unified diff hunk header format: "@@ -a,b +c,d @@ optional text"
         # We use the destination line number (c) for the "@ L<n>" annotation.
-        import re  # noqa: PLC0415
+        import re
         hunk_match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", hunk_lines[0])
         line_num = int(hunk_match.group(1)) if hunk_match else 0
 
@@ -2151,7 +2151,7 @@ def build_symbol_stale_hint(
             f"⚠ {safe_file}::{safe_sym} was modified since your last read. "
             "The function body may have changed."
         )
-    except Exception:  # noqa: BLE001 — fail-soft; never block the caller
+    except Exception:
         _LOG.debug(
             "build_symbol_stale_hint: unexpected error for %r::%r",
             file_path, symbol_name,
@@ -2202,11 +2202,11 @@ def _get_bash_dedup_min_bytes() -> int:
     is unavailable. Never raises; fail-soft returns the fallback default.
     """
     try:
-        from . import config as _config  # noqa: PLC0415
+        from . import config as _config
 
         cfg = _config.load().hints
         return cfg.bash_dedup_min_bytes
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         return _BASH_DEDUP_MIN_BYTES
 
 
@@ -2218,11 +2218,11 @@ def _get_grep_dedup_min_matches() -> int:
     is unavailable. Never raises; fail-soft returns the fallback default.
     """
     try:
-        from . import config as _config  # noqa: PLC0415
+        from . import config as _config
 
         cfg = _config.load().hints
         return cfg.grep_dedup_min_matches
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         return _GREP_DEDUP_MIN_RESULT_COUNT
 
 
@@ -2242,7 +2242,7 @@ def _curator_should_emit(cache: session.SessionCache) -> bool:
     feature is disabled or the cache is unavailable.  Never raises.
     """
     try:
-        from . import config as _config  # noqa: PLC0415
+        from . import config as _config
 
         cfg = _config.load().curator
         if not cfg.enabled:
@@ -2262,7 +2262,7 @@ def _curator_should_emit(cache: session.SessionCache) -> bool:
             )
             return False
         return True
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         return True
 
 
@@ -2276,7 +2276,7 @@ def _record_hint_emitted(
     Mutates *cache* in place; caller is responsible for persisting via save().
     The ring buffer is capped at _RECENT_HINTS_MAX entries (oldest dropped first).
     """
-    import time as _time  # noqa: PLC0415
+    import time as _time
 
     cache.hints_emitted += 1
     cache.recent_hints.append((norm_path, _time.time()))
@@ -2342,7 +2342,7 @@ def _hint_budget_check(cache: session.SessionCache, hint_kind: str) -> bool:
     or the relevant counter is below the cap.  Never raises.
     """
     try:
-        from . import config as _config  # noqa: PLC0415
+        from . import config as _config
 
         cfg = _config.load().hint_budget
         if not cfg.enabled:
@@ -2365,7 +2365,7 @@ def _hint_budget_check(cache: session.SessionCache, hint_kind: str) -> bool:
             )
             return False
         return True
-    except Exception:  # noqa: BLE001 — fail-soft
+    except Exception:
         return True
 
 
@@ -2455,7 +2455,7 @@ def _record_dedup_stale(kind: str, detail: str) -> None:
     threshold.  Best-effort; any DB error is swallowed because telemetry
     must never break the hint pipeline (cf. fail-soft hooks contract).
     """
-    import contextlib  # noqa: PLC0415
+    import contextlib
     with contextlib.suppress(Exception):
         db.record_stat(
             None,
@@ -2501,6 +2501,21 @@ def _check_dedup_preconditions(
             return False
 
     return True
+
+
+def _fp_already_seen(cache: session.SessionCache | None, fp_key: str, caller: str) -> bool:
+    """Return True (and log) when *fp_key* is already in the session fingerprint set.
+
+    Centralises the four-line guard that appears in every dedup/cache-hit hint builder:
+    check the fingerprint, log a debug line, return None from the caller.  Usage::
+
+        if _fp_already_seen(cache, fp_key, "build_bash_dedup_hint"):
+            return None
+    """
+    if cache is not None and cache.has_hint_fingerprint(fp_key):
+        _LOG.debug("%s: fingerprint key %s already seen; skipping construction", caller, fp_key)
+        return True
+    return False
 
 
 def _check_entry_staleness(
@@ -2611,7 +2626,7 @@ def build_bash_dedup_hint(
     ):
         return None
 
-    from . import bash_cache  # noqa: PLC0415
+    from . import bash_cache
 
     cmd_sha = bash_cache.command_hash(command, cwd)
     entry = session.lookup_bash_entry(session_id, cmd_sha, cache=cache)
@@ -2650,7 +2665,7 @@ def build_bash_dedup_hint(
 
     tokens_avoided = _est_tokens_from_chars(total_bytes)
     run_count = getattr(entry, "run_count", 1)
-    from . import cache_common as _cc  # noqa: PLC0415
+    from . import cache_common as _cc
     short_id = _cc.short_output_id(entry.output_id)
 
     # Two-phase dedup: check the fingerprint key BEFORE constructing expensive hint text.
@@ -2659,14 +2674,7 @@ def build_bash_dedup_hint(
     # dedup in hooks_read.
     key_for_dedup = f"{cmd_sha}|{run_count}"
     fp_key = _hint_fingerprint(key_for_dedup, path="bash")
-    if cache is not None and cache.has_hint_fingerprint(fp_key):
-        # Fingerprint already seen in this session — skip hint construction and return None.
-        # The full content-hash dedup in hooks_read will catch identical hints, but this
-        # early-exit avoids ~50-80 tokens of construction work.
-        _LOG.debug(
-            "build_bash_dedup_hint: fingerprint key %s already seen; skipping construction",
-            fp_key,
-        )
+    if _fp_already_seen(cache, fp_key, "build_bash_dedup_hint"):
         return None
 
     # After the agent has seen the verbose recall pointer twice, drop the
@@ -2860,7 +2868,7 @@ def build_bash_cache_hit_hint(
     ):
         return None
 
-    from . import bash_cache  # noqa: PLC0415
+    from . import bash_cache
 
     cmd_sha = bash_cache.command_hash(command, cwd)
 
@@ -2885,7 +2893,7 @@ def build_bash_cache_hit_hint(
         return None
 
     # Apply staleness guard: a very old cache entry is likely stale.
-    import time as _time  # noqa: PLC0415
+    import time as _time
 
     now = _time.time()
     age = now - meta.ts
@@ -2902,17 +2910,13 @@ def build_bash_cache_hit_hint(
 
     # Fingerprint dedup: emit only once per command per session.
     fp_key = _hint_fingerprint(cmd_sha, path="bash_prior")
-    if cache is not None and cache.has_hint_fingerprint(fp_key):
-        _LOG.debug(
-            "build_bash_cache_hit_hint: fingerprint key %s already seen; skipping",
-            fp_key,
-        )
+    if _fp_already_seen(cache, fp_key, "build_bash_cache_hit_hint"):
         return None
 
     if cache is not None:
         cache.mark_hint_seen(fp_key)
 
-    from . import cache_common as _cc  # noqa: PLC0415
+    from . import cache_common as _cc
 
     tokens_avoided = _est_tokens_from_chars(total_bytes)
     exit_str = "" if meta.exit_code is None else f" x={meta.exit_code}"
@@ -2922,14 +2926,14 @@ def build_bash_cache_hit_hint(
     # Try to load the first line of output for a preview hint
     preview_text = ""
     try:
-        from . import bash_cache as _bc  # noqa: PLC0415
+        from . import bash_cache as _bc
         body = _bc.load_output(meta.output_id)
         if body:
             first_line = _get_first_line_preview(body)
             if first_line:
                 # Escape single quotes for display
                 preview_text = f" ↪'{first_line}'"
-    except Exception:  # noqa: BLE001 — fail-soft: preview must never break the hint
+    except Exception:
         pass
 
     result = ReadHint(
@@ -3050,12 +3054,7 @@ def build_grep_dedup_hint(
         # Key is pattern+path to avoid rebuilding identical hints.
         key_for_dedup = f"{pattern}|{path or ''}"
         fp_key = _hint_fingerprint(key_for_dedup, path="grep")
-        if cache.has_hint_fingerprint(fp_key):
-            # Fingerprint already seen — skip hint construction.
-            _LOG.debug(
-                "build_grep_dedup_hint: fingerprint key %s already seen; skipping construction",
-                fp_key,
-            )
+        if _fp_already_seen(cache, fp_key, "build_grep_dedup_hint"):
             return None
 
         # Estimate the bytes that would land in context if the agent re-runs.
@@ -3091,7 +3090,7 @@ def _build_grep_cross_session_hint(pattern: str, now: float) -> ReadHint | None:
     indexed.  Returns ``None`` on any DB error (fail-soft: never block the grep
     path).
     """
-    pattern_hash = hashlib.sha1(  # noqa: S324
+    pattern_hash = hashlib.sha1(
         pattern.encode("utf-8", errors="replace")
     ).hexdigest()
     try:
@@ -3100,7 +3099,7 @@ def _build_grep_cross_session_hint(pattern: str, now: float) -> ReadHint | None:
                 "SELECT count, last_ts FROM grep_patterns WHERE pattern_hash = ?",
                 (pattern_hash,),
             ).fetchone()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     if row is None:
         return None
@@ -3199,12 +3198,7 @@ def build_glob_dedup_hint(
     # would suppress them anyway in hooks_read.
     key_for_dedup = f"{pattern}|{path or ''}"
     fp_key = _hint_fingerprint(key_for_dedup, path="glob")
-    if cache.has_hint_fingerprint(fp_key):
-        # Fingerprint already seen in this session — skip hint construction.
-        _LOG.debug(
-            "build_glob_dedup_hint: fingerprint key %s already seen; skipping construction",
-            fp_key,
-        )
+    if _fp_already_seen(cache, fp_key, "build_glob_dedup_hint"):
         return None
 
     bytes_avoided = (entry.result_count or 0) * _GLOB_AVG_BYTES_PER_RESULT
@@ -3264,7 +3258,7 @@ def build_web_dedup_hint(
     ):
         return None
 
-    from . import web_cache  # noqa: PLC0415
+    from . import web_cache
 
     url_sha = web_cache.url_hash(url)
     entry = session.lookup_web_entry(session_id, url_sha, cache=cache)
@@ -3290,12 +3284,7 @@ def build_web_dedup_hint(
     # Two-phase dedup: check the fingerprint key BEFORE constructing expensive hint text.
     # Key is url_sha to avoid rebuilding identical hints.
     fp_key = _hint_fingerprint(url_sha, path="web")
-    if cache is not None and cache.has_hint_fingerprint(fp_key):
-        # Fingerprint already seen — skip hint construction.
-        _LOG.debug(
-            "build_web_dedup_hint: fingerprint key %s already seen; skipping construction",
-            fp_key,
-        )
+    if _fp_already_seen(cache, fp_key, "build_web_dedup_hint"):
         return None
 
     tokens_avoided = _est_tokens_from_chars(entry.body_bytes)
@@ -3310,12 +3299,12 @@ def build_web_dedup_hint(
         ct_parts = content_type.split("/")
         content_type_str = f" {ct_parts[1]}" if len(ct_parts) >= 2 else f" {content_type}"
 
-    from . import cache_common as _cc  # noqa: PLC0415
+    from . import cache_common as _cc
 
     # Show the --grep PATTERN recall hint only once per session.  On the first
     # large-body WebFetch dedup the agent learns the pattern; subsequent fetches
     # only show the id so the hint stays short.
-    _WEB_RECALL_HINT_KEY = "web_output_grep_hint_shown"  # noqa: N806
+    _WEB_RECALL_HINT_KEY = "web_output_grep_hint_shown"
     _grep_hint_shown = (
         cache is not None and cache.has_hint_fingerprint(_WEB_RECALL_HINT_KEY)
     )
@@ -3385,7 +3374,7 @@ def build_web_cache_hit_hint(
     ):
         return None
 
-    from . import web_cache  # noqa: PLC0415
+    from . import web_cache
 
     url_sha = web_cache.url_hash(url)
 
@@ -3410,7 +3399,7 @@ def build_web_cache_hit_hint(
         return None
 
     # Apply staleness guard: a very old cache entry is likely stale.
-    import time as _time  # noqa: PLC0415
+    import time as _time
 
     now = _time.time()
     age = now - meta.ts
@@ -3426,17 +3415,13 @@ def build_web_cache_hit_hint(
 
     # Fingerprint dedup: emit only once per URL per session.
     fp_key = _hint_fingerprint(url_sha, path="web_prior")
-    if cache is not None and cache.has_hint_fingerprint(fp_key):
-        _LOG.debug(
-            "build_web_cache_hit_hint: fingerprint key %s already seen; skipping",
-            fp_key,
-        )
+    if _fp_already_seen(cache, fp_key, "build_web_cache_hit_hint"):
         return None
 
     if cache is not None:
         cache.mark_hint_seen(fp_key)
 
-    from . import cache_common as _cc  # noqa: PLC0415
+    from . import cache_common as _cc
 
     tokens_avoided = _est_tokens_from_chars(meta.body_bytes)
     status_str = (
@@ -3519,8 +3504,8 @@ def _build_unchanged_file_hint_inner(
     cache: session.SessionCache | None,
 ) -> ReadHint | None:
     """Inner implementation; may raise."""
-    import hashlib as _hashlib  # noqa: PLC0415 — avoid top-level cost on hot path
-    import time as _time  # noqa: PLC0415
+    import hashlib as _hashlib
+    import time as _time
 
     if not session_id or not file_path:
         return None
@@ -4069,7 +4054,7 @@ def _lookup_top_indexed_symbol(file_path: str) -> tuple[str, str] | None:
         if not symbols:
             return None
         return _sanitize_hint_path(rel), _sanitize_hint_symbol(symbols[0]["name"])
-    except Exception:  # noqa: BLE001 — fail-soft; the hint path must never raise
+    except Exception:
         return None
 
 
@@ -4432,7 +4417,7 @@ def build_test_file_hint(
 
     # Check if the impl file has been read this session
     # Import paths module to use the same normalization as the session cache
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     # Normalize the path the same way the session cache does
     impl_file_str = str(impl_file)
@@ -4486,7 +4471,7 @@ def build_pinned_hint(
     if not pinned:
         return None
 
-    from . import paths as _paths  # noqa: PLC0415
+    from . import paths as _paths
 
     # Normalise the file path so comparisons are drive-letter and separator safe.
     norm_file = _paths.normalize_key(file_path)
@@ -4538,7 +4523,7 @@ def build_doc_compact_hint(
     """
     try:
         return _build_doc_compact_hint_inner(file_path, cwd, cache=cache)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug(
             "build_doc_compact_hint: unexpected error for %r: %s", file_path, exc,
             exc_info=True,
@@ -4588,7 +4573,7 @@ def _build_doc_compact_hint_inner(
     fname = _sanitize_hint_path(abs_path.name)
     recall_path = _sanitize_hint_path(rel)
 
-    from . import doc_compact as _dc  # noqa: PLC0415
+    from . import doc_compact as _dc
 
     compact_p = _dc.find_compact_for_path(abs_path, project.hash)
 
@@ -4735,6 +4720,6 @@ def maybe_grep_advisory(path: str, session_cache: session.SessionCache, cwd: str
             f"Consider reading it once with `token-goat read \"{safe_path}\"` or using "
             f"`token-goat bash-output <id> --grep <pat>` to filter cached output."
         )
-    except Exception:  # noqa: BLE001 — fail-soft; hint errors must never block the agent
+    except Exception:
         return None
 

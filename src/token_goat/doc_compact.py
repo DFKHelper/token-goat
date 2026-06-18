@@ -52,7 +52,7 @@ _HEADER_RE = re.compile(
 
 
 def _doc_compacts_dir(project_hash: str) -> Path:
-    from . import paths  # noqa: PLC0415
+    from . import paths
     return paths.data_dir() / "doc_compacts" / project_hash
 
 
@@ -139,7 +139,7 @@ def mark_compact_stale(compact_path: Path) -> bool:
     old_hash = m.group(1)
     lines[0] = lines[0].replace(f"source-hash:{old_hash}", "source-hash:STALE", 1)
     try:
-        from . import paths  # noqa: PLC0415
+        from . import paths
         paths.atomic_write_text(compact_path, "".join(lines))
         _LOG.debug("doc_compact.mark_compact_stale: marked stale %s", compact_path.name)
         return True
@@ -184,7 +184,7 @@ def write_compact(
         compact_body: Markdown compact text (no header line).
         source_rel:   Optional relative path for display in the header.
     """
-    from . import paths  # noqa: PLC0415
+    from . import paths
 
     src = Path(source_path)
     sha = _source_sha256(src)
@@ -302,13 +302,13 @@ def get_section_headings(rel_path: str, project_hash: str, *, limit: int = 20) -
     Returns heading strings in line order.  Returns [] on any error.
     """
     try:
-        from . import db  # noqa: PLC0415
+        from . import db
         with db.open_project_readonly(project_hash) as conn:
             rows = conn.execute(
                 "SELECT heading FROM sections WHERE file_rel = ? AND end_line IS NOT NULL ORDER BY line LIMIT ?",
                 (rel_path, limit),
             ).fetchall()
         return [r["heading"] for r in rows]
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _LOG.debug("doc_compact.get_section_headings: DB error for %s: %s", rel_path, exc)
         return []
