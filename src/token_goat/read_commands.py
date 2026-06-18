@@ -308,10 +308,7 @@ def over_cap_file_hint(file_part: str, project: Project | None) -> str | None:
 def no_indexed_symbols_note(file_rel: str) -> str:
     """Note shown for an indexed file that has zero symbols, where a skeleton or
     outline hint would mislead (running it would just print an empty list)."""
-    return (
-        f"Note: {file_rel} has no indexed symbols "
-        "— it may be a config file or too small to parse"
-    )
+    return f"Note: {file_rel} has no indexed symbols — it may be a config file or too small to parse"
 
 
 def skeleton_or_empty_hint(project_hash: str, file_rel: str) -> str:

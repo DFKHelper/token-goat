@@ -196,14 +196,12 @@ def get_effective_watchdog_ms() -> int:
     if not _timeout_configured:
         try:
             from . import config  # noqa: PLC0415
-            cfg = config.load()
-            _effective_watchdog_ms = cfg.hooks.watchdog_ms
-            _timeout_configured = True
+            _effective_watchdog_ms = config.load().hooks.watchdog_ms
             LOG.debug("hook watchdog initialized: %d ms", _effective_watchdog_ms)
-        except Exception:  # noqa: BLE001 — fail-soft: use hardcoded default if config load fails
+        except Exception:  # noqa: BLE001
             _effective_watchdog_ms = 5000
-            _timeout_configured = True
             LOG.debug("hook watchdog config load failed, using default 5000 ms")
+        _timeout_configured = True
 
     return _effective_watchdog_ms
 
@@ -409,15 +407,7 @@ def sanitize_opt(value: object) -> str:
     """Sanitize an optional log value: convert to str, strip injections, return "" for falsy.
 
     Eliminates the repeated ``sanitize_log_str(str(x or ""))`` pattern across hook
-    modules.  Calling ``sanitize_opt(x)`` is equivalent to::
-
-        sanitize_log_str(str(x)) if x else ""
-
-    Unlike a bare ``sanitize_log_str(str(x or ""))``, this helper also handles the
-    case where *x* is ``0`` or ``False`` (falsy non-None values) — they are treated
-    the same as ``None`` and return ``""``.  Hook payload fields for session IDs,
-    paths, and tool names are always strings; a numeric or boolean value means the
-    field was absent or malformed, so collapsing it to ``""`` is correct.
+    modules. Handles ``0`` / ``False`` (falsy non-None values) the same as ``None``.
 
     Args:
         value: Any value from a hook payload (session_id, cwd, tool_name, …).
@@ -427,13 +417,13 @@ def sanitize_opt(value: object) -> str:
     """
     if not value:
         return ""
+    str_value = str(value)
     if not isinstance(value, str):
         LOG.debug(
             "sanitize_opt: coercing non-string payload field %s(%r) to str",
-            type(value).__name__,
-            sanitize_log_str(str(value)),
+            type(value).__name__, sanitize_log_str(str_value),
         )
-    return sanitize_log_str(str(value))
+    return sanitize_log_str(str_value)
 
 
 def bytes_to_tokens(byte_count: int) -> int:

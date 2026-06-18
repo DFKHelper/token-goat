@@ -416,28 +416,18 @@ def extract_checklist_section(body: str) -> str | None:
 def extract_h2_headings(body: str) -> list[str]:
     """Return a list of all ``##``-level heading texts found in *body*.
 
-    Used by ``token-goat skill-body --section`` to list available sections when
-    the ``--section`` flag is absent so the agent can discover section names
-    before deciding which to fetch.
-
-    Code-block-aware: headings inside fenced blocks (``` or ~~~) are excluded so
-    the agent does not see false section names from Markdown code examples inside
-    the skill body.
-
+    Code-block-aware: headings inside fenced blocks (``` or ~~~) are excluded.
     Returns an empty list when *body* is empty or contains no ``##`` headings.
     """
     if not body:
         return []
-    headings: list[str] = []
+    headings = []
     in_code_block = False
     for line in body.splitlines():
         stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             in_code_block = not in_code_block
-            continue
-        if in_code_block:
-            continue
-        if stripped.startswith("## ") and len(stripped) > 3:
+        elif not in_code_block and stripped.startswith("## ") and len(stripped) > 3:
             headings.append(stripped[3:].strip())
     return headings
 
