@@ -223,7 +223,7 @@ def _build_context_section() -> tuple[list[str], bool]:
         nonlocal catalog_count, catalog_bytes
         if not root.is_dir():
             return
-        try:
+        with contextlib.suppress(OSError):
             for entry in root.iterdir():
                 if not entry.is_dir():
                     continue
@@ -237,13 +237,11 @@ def _build_context_section() -> tuple[list[str], bool]:
                             catalog_bytes += candidate.stat().st_size
                         catalog_count += 1
                         break
-        except OSError:
-            pass
 
     _scan_skills_dir(skills_root)
 
     if plugins_cache.is_dir():
-        try:
+        with contextlib.suppress(OSError):
             for mkt in plugins_cache.iterdir():
                 if not mkt.is_dir():
                     continue
@@ -260,8 +258,6 @@ def _build_context_section() -> tuple[list[str], bool]:
                     for ver in versions:
                         _scan_skills_dir(ver / "skills", prefix=plugin_dir.name)
                         break
-        except OSError:
-            pass
 
     # catalog_bytes == 0 with catalog_count > 0 means every stat() failed
     # (e.g. permission error) or every skill file is genuinely empty.
@@ -715,14 +711,12 @@ def _iter_skill_names(skills_root: Path, plugins_cache: Path) -> list[str]:
     """Return all skill names discovered on disk (same traversal as pregen)."""
     names: list[str] = []
     if skills_root.is_dir():
-        try:
+        with contextlib.suppress(OSError):
             for entry in skills_root.iterdir():
                 if entry.is_dir():
                     names.append(entry.name)
-        except OSError:
-            pass
     if plugins_cache.is_dir():
-        try:
+        with contextlib.suppress(OSError):
             for mkt in plugins_cache.iterdir():
                 if not mkt.is_dir():
                     continue
@@ -740,15 +734,11 @@ def _iter_skill_names(skills_root: Path, plugins_cache: Path) -> list[str]:
                         ver_skills = ver / "skills"
                         if not ver_skills.is_dir():
                             continue
-                        try:
+                        with contextlib.suppress(OSError):
                             for skill_entry in ver_skills.iterdir():
                                 if skill_entry.is_dir():
                                     names.append(f"{plugin_dir.name}:{skill_entry.name}")
-                        except OSError:
-                            pass
                         break
-        except OSError:
-            pass
     return names
 
 
