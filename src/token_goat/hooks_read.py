@@ -836,14 +836,12 @@ def _build_skill_path_index(skill_history: dict) -> dict[str, str]:
     a ``source_path``.  Always fail-soft.
     """
     index: dict[str, str] = {}
-    try:
+    with contextlib.suppress(Exception):
         for name, entry in skill_history.items():
             sp = getattr(entry, "source_path", "") or ""
             if sp:
                 normalised = sp.replace("\\", "/").lower()
                 index[normalised] = str(name)
-    except Exception:  # noqa: BLE001
-        pass
     return index
 
 
@@ -1259,7 +1257,7 @@ def _handle_doc_compact(
     # Fire-and-forget compact-doc so the sidecar is ready on the next read.
     _fp_key = f"compact_doc_spawned:{file_path}"
     if cache is not None:
-        try:
+        with contextlib.suppress(Exception):
             if not cache.has_hint_fingerprint(_fp_key):  # type: ignore[attr-defined]
                 cache.mark_hint_seen(_fp_key)  # type: ignore[attr-defined]
                 import shutil as _shutil  # noqa: PLC0415
@@ -1272,8 +1270,6 @@ def _handle_doc_compact(
                         stdout=_subprocess.DEVNULL,
                         stderr=_subprocess.DEVNULL,
                     )
-        except Exception:  # noqa: BLE001
-            pass
     return pre_tool_use_with_context(hint_text)
 
 
@@ -3288,10 +3284,8 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
         # Parse sidecar: new JSON format carries bytes_estimate; legacy plain-text falls back to 0.
         hint, stored_bytes_estimate = _parse_recovery_sidecar(raw)
         # Mark in-process so we don't re-check on subsequent calls.
-        try:  # noqa: SIM105
+        with contextlib.suppress(Exception):
             cache.recovery_injected = True  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this attribute at runtime
-        except Exception:  # noqa: BLE001
-            pass
         hint_bytes = len(_utf8_bytes(hint))
         _LOG.info(
             "pre-read: deferred recovery hint injected for session=%s (%d chars, stored_estimate=%d)",
@@ -3347,13 +3341,11 @@ def _flush_pending_hint_save(cache: object) -> None:
     no post-read save follows in the same process.  Fail-soft: any exception
     is swallowed so a flush failure never breaks the hook response.
     """
-    try:
+    with contextlib.suppress(Exception):
         if getattr(cache, "_pending_hint_save", False):
             cache._pending_hint_save = False  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this private attribute at runtime
             _sess = _get_session()
             _sess.save(cache)  # type: ignore[arg-type]  # types.ModuleType; save() accepts SessionCache which cache is at runtime
-    except Exception:  # noqa: BLE001
-        pass
 
 
 # mirrors session.py _UNKNOWN_END_SENTINEL — stored when a Read has no limit
@@ -4855,7 +4847,7 @@ def post_read(payload: HookPayload) -> HookResponse:
             except Exception:  # noqa: BLE001 — fail-soft
                 _LOG.debug("post-read: grep result hash computation failed", exc_info=True)
             # Cache the result text for dedup serving on the next identical Grep call.
-            try:
+            with contextlib.suppress(Exception):
                 if _grep_text and len(_grep_text) <= _GREP_RESULT_CACHE_MAX_BYTES:
                     from . import bash_cache as _bc2  # noqa: PLC0415
                     from . import config as _cfg_mod2  # noqa: PLC0415
@@ -4868,8 +4860,6 @@ def post_read(payload: HookPayload) -> HookResponse:
                         max_total_bytes=_bc2_cfg.cache_max_bytes,
                         max_file_count=_bc2_cfg.cache_max_file_count,
                     )
-            except Exception:  # noqa: BLE001 — fail-soft
-                pass
     elif tool_name == "Glob":
         pattern = tool_input.get("pattern")
         path = tool_input.get("path")
