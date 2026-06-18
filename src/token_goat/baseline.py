@@ -831,12 +831,12 @@ def format_report(report: BaselineReport, *, subagent: bool = False) -> list[str
         lines.append("  (no baseline sources measured — see notes below)")
     else:
         lines.append(f"  {'TOKENS':>8}  {'%WIN':>5}  {'OWNER':<16}{'FIX':<14}SOURCE")
-        for r in selected:
-            lines.append(
-                f"  {r.tokens:>8,}  {_fmt_pct(r.pct_of(win)):>5}  "
-                f"{r.owner:<16}{r.fix:<14}{r.source}"
-                + (f"  [{r.detail}]" if r.detail else "")
-            )
+        lines.extend(
+            f"  {r.tokens:>8,}  {_fmt_pct(r.pct_of(win)):>5}  "
+            f"{r.owner:<16}{r.fix:<14}{r.source}"
+            + (f"  [{r.detail}]" if r.detail else "")
+            for r in selected
+        )
         lines.append("  " + "-" * 6)
 
     if subagent:

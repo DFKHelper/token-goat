@@ -413,11 +413,12 @@ def normalize_command_for_cache_key(cmd: str) -> str:
     # A token is a contiguous run of non-whitespace characters.
     # We split, normalize each token, then rejoin.
     tokens = normalized.split(' ')
-    normalized_tokens = []
-    for token in tokens:
+    normalized_tokens = [
         # Replace backslashes with forward slashes in the token.
         # This catches C:\foo, paths in flags, etc.
-        normalized_tokens.append(token.replace('\\', '/'))
+        token.replace('\\', '/')
+        for token in tokens
+    ]
     normalized = ' '.join(normalized_tokens)
 
     # Step 3.5: Normalize redundant path prefixes / suffixes.

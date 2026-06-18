@@ -460,14 +460,15 @@ def list_drive_files(folder_id: str | None = None, max_results: int = 20) -> lis
         ).execute()
 
         files = results.get("files", [])
-        output = []
-        for f in files:
-            output.append({
+        output = [
+            {
                 "id": f.get("id", ""),
                 "name": f.get("name", ""),
                 "mimeType": f.get("mimeType", ""),
                 "size_bytes": int(f.get("size", 0)) if f.get("size") else 0,
-            })
+            }
+            for f in files
+        ]
         return output
 
     except Exception as e:  # noqa: BLE001

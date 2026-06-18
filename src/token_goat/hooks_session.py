@@ -332,8 +332,7 @@ def _build_blocker_section(cache: object) -> tuple[str, str]:
             return "", ""
         lines = ["**Blockers**:"]
         anchor = ""
-        for entry in blockers:
-            lines.append(_compact_mod._format_blocker_entry(entry))
+        lines.extend(_compact_mod._format_blocker_entry(entry) for entry in blockers)
         # Anchor: first non-flag, non-env token of the most-recent blocker.
         try:
             latest = max(blockers, key=lambda e: getattr(e, "ts", 0.0))
@@ -498,8 +497,7 @@ def _build_pending_work_section(
         if not items:
             return ""
         lines = ["### Pending Work"]
-        for item in items[:3]:
-            lines.append(f"- {item}")
+        lines.extend(f"- {item}" for item in items[:3])
         return "\n".join(lines)
     except Exception:  # noqa: BLE001 — never break the hint
         return ""
@@ -1924,8 +1922,7 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
         return CONTINUE()
 
     _summary_parts = list(parts)
-    for _kh in _keyword_hints:
-        _summary_parts.append(f"hint: {_kh}")
+    _summary_parts.extend(f"hint: {_kh}" for _kh in _keyword_hints)
 
     if _ctx_advisory_prefix is not None:
         summary = "[" + _ctx_advisory_prefix + " | ".join(_summary_parts) + "]"
