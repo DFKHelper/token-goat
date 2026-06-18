@@ -422,11 +422,9 @@ def _handle_bash_read_equivalent(payload: HookPayload) -> HookPayload | None:
     # '10,30p' → offset=10).  The native Read tool uses 0-indexed offset, where
     # offset=0 means "start from line 1".  Subtract 1 here so downstream logic
     # that receives the synthesised payload sees a uniform 0-indexed offset.
-    raw_offset = intent.offset
-    normalised_offset = (raw_offset - 1) if raw_offset is not None else None
     read_payload["tool_input"] = {
         "file_path": intent.target_path,
-        "offset": normalised_offset,
+        "offset": (intent.offset - 1) if intent.offset is not None else None,
         "limit": intent.limit,
     }
     # Mark whole-file bash reads (cat/bat, no limit) so _handle_indexed_cat_deny can intercept at warm+.
@@ -514,18 +512,16 @@ def _try_shrink_image(
         # matches the expected content-hash stem, it was served from cache (zero CPU cost).
         # Fresh shrinks also end up in cache, but we differentiate by checking the
         # timing: if the file already existed before shrink() was called, it's a hit.
-        is_cache_hit = False
         try:
             stem = image_shrink._cache_path_for(src_path)
             # Cache hit means the shrunken path matches the cache stem pattern.
-            if shrunken.parent == stem.parent and shrunken.stem == stem.stem:
-                is_cache_hit = True
+            is_cache_hit = shrunken.parent == stem.parent and shrunken.stem == stem.stem
         except (AttributeError, ValueError, TypeError):
             # AttributeError: private _cache_path_for not found (API change)
             # ValueError/TypeError: src_path validation failed in the function
             # Safe to ignore; we just won't differentiate cache hits from fresh shrinks.
             _LOG.debug("image-shrink: cache-hit detection failed for %s", sanitize_log_str(file_path))
-            pass
+            is_cache_hit = False
 
         img_stats = image_shrink.stats_for(src_path, shrunken)
         tokens_saved = max(0,
@@ -549,12 +545,6 @@ def _try_shrink_image(
         shrink_response["file_path"] = str(shrunken)
         _src_b = img_stats["src_bytes"]
         _out_b = img_stats["out_bytes"]
-        # Always show before→after sizes and the percentage reduction so the
-        # agent understands what happened at a glance without opening the file.
-        # Example: "2.3 MB → 180 KB (saving ~92%)"
-        _savings_pct = (
-            100.0 * img_stats["bytes_saved"] / _src_b if _src_b > 0 else 0.0
-        )
 
         def _fmt_bytes(n: int) -> str:
             """Format bytes as KB or MB with one decimal place."""
@@ -564,7 +554,10 @@ def _try_shrink_image(
                 return f"{n / 1_000:.0f} KB"
             return f"{n} B"
 
-        _size_str = f"{_fmt_bytes(_src_b)} → {_fmt_bytes(_out_b)} (saving ~{_savings_pct:.0f}%)"
+        # Always show before→after sizes and the percentage reduction so the
+        # agent understands what happened at a glance without opening the file.
+        # Example: "2.3 MB → 180 KB (saving ~92%)"
+        _size_str = f"{_fmt_bytes(_src_b)} → {_fmt_bytes(_out_b)} (saving ~{100.0 * img_stats['bytes_saved'] / _src_b if _src_b > 0 else 0.0:.0f}%)"
         note = (
             f"Note: image auto-shrunk by token-goat "
             f"({_size_str}). "
@@ -736,7 +729,8 @@ def _build_git_hint(cwd: str | None, file_path: str) -> str | None:
         if proj is None:
             return None
         try:
-            abs_file = Path(file_path) if Path(file_path).is_absolute() else (cwd_path / file_path)
+            _fp = Path(file_path)
+            abs_file = _fp if _fp.is_absolute() else (cwd_path / file_path)
             rel_path = abs_file.relative_to(proj.root).as_posix()
         except ValueError:
             return None
@@ -5750,8 +5744,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 and not _read_intent.is_interactive_pager
             ):
                 # bash_parser returns 1-indexed offset; mark_file_read expects 0-indexed.
-                _raw_offset = _read_intent.offset
-                _norm_offset = (_raw_offset - 1) if _raw_offset is not None else None
+                _norm_offset = (_read_intent.offset - 1) if _read_intent.offset is not None else None
                 # For multi-file reads (gc f1 f2 …) mark every path.
                 _all_paths = _read_intent.target_paths or [_read_intent.target_path]
                 for _path in _all_paths:
