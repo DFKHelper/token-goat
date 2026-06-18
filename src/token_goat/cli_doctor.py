@@ -1082,14 +1082,9 @@ def doctor(
         Returns ``False`` on any exception (e.g. read-only filesystem, OS
         restrictions on file-locking) so the doctor check degrades gracefully.
         """
-        # Use mkstemp so the OS-allocated fd is closed before sqlite3 opens the
-        # file.  Wrapping everything in try/finally guarantees the temp file is
-        # deleted even if the PRAGMA or conn.close() raises, closing the window
-        # where an exception would leave a permanent temp file behind.
-        import os
-
-        fd, tmp_db_path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
+        # NamedTemporaryFile(delete=False): cleaner resource management than mkstemp+os.close; try/finally guarantees cleanup.
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp_file:
+            tmp_db_path = tmp_file.name
         wal_conn: sqlite3.Connection | None = None
         try:
             wal_conn = sqlite3.connect(tmp_db_path, isolation_level=None)
