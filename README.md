@@ -342,6 +342,7 @@ Manual paths:
 | `token-goat scope "file:line"` | Show symbols in scope at a given line — avoids reading the whole file to understand locals. |
 | `token-goat exports "file"` | List public (exported) symbols with types and docstring hints. |
 | `token-goat refs "<name>"` | Show all files and line numbers where a symbol is referenced. |
+| `token-goat callers <symbol>` | Show which functions call a given symbol, grouped by caller with file, caller name, and every invoking line. Complements `refs`, which shows raw reference sites without grouping by enclosing function. |
 | `token-goat changed [<ref>]` | List symbols that changed since a git ref, without reading the full diff. |
 | `token-goat blame "file::symbol"` | Git blame narrowed to a specific symbol's lines — no whole-file blame needed. |
 | `token-goat types ["file"]` | List type definitions (TypedDict, Protocol, dataclass, Pydantic models) in a file or across the project. |
@@ -351,8 +352,10 @@ Manual paths:
 | `token-goat test-for "file"` | Find test file(s) for an implementation file and list their test functions. |
 | `token-goat recent [N]` | Show the N most recently edited/accessed files with their symbols. |
 | `token-goat grep "<pattern>"` | Session-aware grep: runs `rg` and caches results; repeat patterns get a dedup hint instead of re-running. |
-| `token-goat semantic "<query>"` | Find code by meaning, not by filename. Tune with `--max-distance <float>` or `--no-rerank`. |
+| `token-goat semantic "<query>"` | Find code by meaning, not by filename. Add `--mode keyword` for BM25 term search (no embedding model needed) or `--mode hybrid` to combine both. Tune with `--max-distance <float>` or `--no-rerank`. |
 | `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a 300-token budget. |
+| `token-goat arch` | Project-wide import graph summary: hub modules (most imported), entry points (nothing imports them), and circular chains. Complements `token-goat deps <file>` for per-file depth. |
+| `token-goat ignores` | List active skip patterns for the current project — built-in skip dirs and suffixes, plus any patterns from `.tokengoatignore`. |
 | `token-goat gdrive-sections <file-id>` | List the heading outline of a Google Doc without fetching the body. |
 | `token-goat stats` | See how many tokens you have saved. Shows a per-source breakdown (image / hint / read / compact / bash / web). |
 | `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
