@@ -156,7 +156,7 @@ def _safe_max_ts(a: float, b: float) -> float:
     """
     a_val = a if not math.isnan(a) else -math.inf
     b_val = b if not math.isnan(b) else -math.inf
-    result = a_val if a_val >= b_val else b_val
+    result = max(a_val, b_val)
     # If both were NaN, result is -inf — return 0.0 (epoch) as the least-bad default.
     return result if result != -math.inf else 0.0
 

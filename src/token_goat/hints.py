@@ -1778,7 +1778,7 @@ def _get_unread_coread_files(
                 result = _get_unread_coread_files_ts(file_path, project_hash, cache, conn)
             else:
                 result = _get_unread_coread_files_go(file_path, project_hash, cache, conn)
-        return result if result else None
+        return result or None
 
     except (sqlite3.OperationalError, sqlite3.DatabaseError, AttributeError):
         _LOG.debug(
@@ -3741,13 +3741,13 @@ def _build_index_only_file_hint_inner(
         # Identify the package manager and give a concrete alternative command.
         if basename_lower == "uv.lock":
             alt = f'`uv pip list` or `jq \'.package[] | select(.name=="NAME")\' {fname}`'
-        elif basename_lower in ("package-lock.json",):
+        elif basename_lower == "package-lock.json":
             alt = f'`npm ls` or `jq \'.dependencies.NAME\' {fname}`'
         elif basename_lower in ("yarn.lock", "pnpm-lock.yaml"):
             alt = "`yarn list` / `pnpm list` instead"
         elif basename_lower == "cargo.lock":
             alt = '`cargo tree` or `grep -A5 \'name = "NAME"\' ' + fname + "`"
-        elif basename_lower in ("gemfile.lock",):
+        elif basename_lower == "gemfile.lock":
             alt = "`bundle list` instead"
         elif basename_lower == "poetry.lock":
             alt = '`poetry show` or `grep -A5 \'name = "NAME"\' ' + fname + "`"

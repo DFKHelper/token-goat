@@ -735,7 +735,7 @@ def _symbol_json_snippet(
 
     # line is 1-indexed; cap at end_line if known.
     start_idx = max(0, line - 1)
-    stop_idx = min(len(src_lines), end_line if end_line else start_idx + max_snippet_lines)
+    stop_idx = min(len(src_lines), end_line or start_idx + max_snippet_lines)
     chunk = src_lines[start_idx:stop_idx][:max_snippet_lines]
     # Drop trailing blank lines.
     while chunk and not chunk[-1].strip():
@@ -1024,7 +1024,7 @@ def symbol(
                         if file_scope_hint:
                             typer.echo(file_scope_hint)
                 else:
-                    typer.echo(not_found_extra if not_found_extra else f"No matches for {name!r}")
+                    typer.echo(not_found_extra or f"No matches for {name!r}")
                     if close_matches and not not_found_extra:
                         from .render.common import render_list  # noqa: PLC0415
                         typer.echo("Did you mean:")
@@ -7104,7 +7104,7 @@ def compact_hint(
         typer.echo("--- skip gate breakdown ---")
         typer.echo(f"  sentinel_fast_path : {sentinel_fast_path}")
         if sentinel_fast_path or sentinel_age > 0.0:
-            reason_str = sentinel_reason if sentinel_reason else "(none)"
+            reason_str = sentinel_reason or "(none)"
             typer.echo(f"  sentinel reason    : {reason_str}")
             typer.echo(f"  sentinel age       : {sentinel_age:.0f}s")
             # Surface activity-floor counts when available.

@@ -1780,8 +1780,7 @@ def doctor(  # noqa: C901
                     # Compact IDs end with "-compact"; the preceding segment is
                     # "{session_prefix}-{safe_skill_name}-compact".
                     name_candidate = str(coid)
-                    if name_candidate.endswith("-compact"):
-                        name_candidate = name_candidate[:-len("-compact")]
+                    name_candidate = name_candidate.removesuffix("-compact")
                     # Strip session prefix (first segment, separated by "-").
                     parts = name_candidate.split("-")
                     skill_label = "-".join(parts[1:]) if len(parts) >= 2 else name_candidate
@@ -1854,8 +1853,7 @@ def doctor(  # noqa: C901
 
                         # Derive skill_label from compact ID.
                         name_c = coid2
-                        if name_c.endswith("-compact"):
-                            name_c = name_c[:-len("-compact")]
+                        name_c = name_c.removesuffix("-compact")
                         parts_c = name_c.split("-")
                         label_c = "-".join(parts_c[1:]) if len(parts_c) >= 2 else name_c
 

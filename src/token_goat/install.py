@@ -159,7 +159,7 @@ def _resolve_binary(name: str) -> str:
     binary is used instead.
     """
     binary = shutil.which(name)
-    return binary if binary else token_goat_binary()
+    return binary or token_goat_binary()
 
 
 def token_goat_hook_binary() -> str:

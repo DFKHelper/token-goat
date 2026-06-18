@@ -92,11 +92,11 @@ def guard(
 def _hint_for(command: str) -> str:
     """Tailor the remediation hint to the originating command label."""
     cmd = (command or "").strip().lower()
-    if cmd in {"symbol"}:
+    if cmd == "symbol":
         return "Request a specific method (file.py::Class.method) or use --json for structured access."
     if cmd in {"heading", "section"}:
         return "Request a narrower sub-heading, e.g. 'doc.md::Section#2'."
-    if cmd in {"lines"}:
+    if cmd == "lines":
         return "Request a smaller line range, e.g. 'file.py::100-150'."
     if cmd in {"bash-output", "web-output"}:
         return "Use --grep PATTERN, --section HEADING, or --tail N to narrow the cached output."

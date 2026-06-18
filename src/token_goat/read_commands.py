@@ -354,8 +354,7 @@ def _path_part_matches(file_part: str, rel_path: str) -> bool:
     boundaries (``service.py`` inside ``user_service.py``).
     """
     needle = file_part.replace("\\", "/").lower()
-    if needle.startswith("./"):
-        needle = needle[2:]
+    needle = needle.removeprefix("./")
     if not needle:
         return False
     rel_norm = rel_path.replace("\\", "/").lower()
@@ -464,8 +463,7 @@ def _find_unindexed_file_on_disk(
        its exact project-relative path.
     """
     needle = file_part.replace("\\", "/").strip()
-    if needle.startswith("./"):
-        needle = needle[2:]
+    needle = needle.removeprefix("./")
     if not needle:
         return None
     for proj_hash, root in _disk_fallback_search_roots(current_project):
@@ -498,7 +496,7 @@ def _read_disk_line_range(abs_path: Path, start: int, end: int) -> list[str] | N
                     continue
                 if lineno > end:
                     break
-                collected.append(raw[:-1] if raw.endswith("\n") else raw)
+                collected.append(raw.removesuffix("\n"))
     except OSError as exc:
         _LOG.warning("disk-fallback read failed: %s: %s", abs_path, exc)
         return None
@@ -3238,7 +3236,7 @@ def types(
     type_defs = db.get_type_definitions(proj.hash, file_path=file_rel)
 
     if json_output:
-        scope_label = file_rel if file_rel else str(proj.root)
+        scope_label = file_rel or str(proj.root)
         typer.echo(json.dumps(
             {"project": scope_label, "types": type_defs},
             separators=(",", ":"),
@@ -3254,7 +3252,7 @@ def types(
         return
 
     # Header
-    scope_desc = file_rel if file_rel else "project"
+    scope_desc = file_rel or "project"
     typer.echo(f"# Type definitions: {scope_desc}  ({len(type_defs)} found)\n")
 
     # Compute column widths for alignment
