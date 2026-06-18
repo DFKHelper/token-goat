@@ -321,15 +321,13 @@ def store(
     # subsequent read of a large file, which also keeps the session snapshot
     # directory mtime stable so stale-cleanup does not evict live snapshots.
     if p.exists():
-        try:
+        with contextlib.suppress(OSError):
             if p.read_bytes() == content:
                 _LOG.debug(
                     "snapshots: content unchanged, skipping write for %s",
                     sanitize_log_str(file_path),
                 )
                 return SnapshotResult(path=p, content_sha=sha, size_bytes=len(content))
-        except OSError:
-            pass  # fall through to normal write
 
     with safe_cache_op(f"store:{sanitize_log_str(file_path)}", log=_LOG):
         paths.ensure_dir(p.parent)

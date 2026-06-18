@@ -491,15 +491,13 @@ def _session_file_lock_windows(path: Path) -> Generator[None, None, None]:
                 break
             except (FileExistsError, OSError):
                 # Check for a stale sidecar left by a crashed process before sleeping.
-                try:
+                with contextlib.suppress(OSError):
                     if time.time() - sidecar.stat().st_mtime > stale_threshold_secs:
                         sidecar.unlink(missing_ok=True)
                         _LOG.debug(
                             "_session_file_lock: evicted stale flock for %s", path.name
                         )
                         continue
-                except OSError:
-                    pass
                 time.sleep(_SESSION_FILE_LOCK_POLL_MS / 1000.0)
                 elapsed_ms += _SESSION_FILE_LOCK_POLL_MS
 
