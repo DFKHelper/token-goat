@@ -420,6 +420,23 @@ def _get_meta(conn: sqlite3.Connection, key: str) -> str | None:
     return row[0] if row is not None else None
 
 
+def _get_project_root(project_hash: str) -> Path | None:
+    """Fetch the project root path from global DB, normalized to Path.
+
+    Returns Path to the project root on success, None if the project is not
+    registered or any error occurs (fail-soft).
+    """
+    try:
+        with open_global_readonly() as gconn:
+            proj_row = gconn.execute(
+                "SELECT root FROM projects WHERE hash = ?",
+                (project_hash,),
+            ).fetchone()
+        return Path(normalize_path(str(proj_row["root"]))) if proj_row else None
+    except Exception:
+        return None
+
+
 _GLOBAL_TABLES = """
 -- Cross-session Grep pattern frequency index.  One row per unique pattern hash;
 -- updated (amortized) by session.mark_grep so hints.py can nudge toward semantic
@@ -1676,13 +1693,9 @@ def get_file_exports(
     # Try to find the source file and detect __all__ via AST.
     exported_names: set[str] | None = None
     try:
-        with open_global_readonly() as gconn:
-            proj_row = gconn.execute(
-                "SELECT root FROM projects WHERE hash = ?",
-                (project_hash,),
-            ).fetchone()
-        if proj_row is not None:
-            abs_path = Path(normalize_path(str(proj_row["root"]))) / file_rel
+        project_root = _get_project_root(project_hash)
+        if project_root is not None:
+            abs_path = project_root / file_rel
             source_text = abs_path.read_text(encoding="utf-8", errors="replace")
             tree = _ast.parse(source_text, mode="exec")
             for node in _ast.walk(tree):
@@ -1963,15 +1976,7 @@ def get_type_definitions(
         return []
 
     # Get the project root so we can read source files.
-    try:
-        with open_global_readonly() as gconn:
-            proj_row = gconn.execute(
-                "SELECT root FROM projects WHERE hash = ?",
-                (project_hash,),
-            ).fetchone()
-        project_root = Path(normalize_path(str(proj_row["root"]))) if proj_row else None
-    except Exception:
-        project_root = None
+    project_root = _get_project_root(project_hash)
 
     # Group rows by file_rel to minimise file reads.
     from collections import defaultdict as _defaultdict
