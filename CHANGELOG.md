@@ -20,6 +20,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat todo [--kinds K] [--group file|kind]` — scan indexed files for TODO-family markers.** Reads file paths from the project index and scans each for `TODO`, `FIXME`, `HACK`, `XXX`, and `NOTE` comment markers. Groups by file by default; `--group kind` to group by marker type; `--kinds` to filter to a subset; `--json` for machine output. Markers in string literals and non-comment lines are excluded.
 
+- **`token-goat failures [src]` — extract failing test blocks from test runner output.** Parses pytest, Jest, Go, and Cargo output and returns each failure as a labeled block; passing tests and preamble are dropped. Reads stdin by default; pass a file path for saved output. `--json` emits a structured array.
+
+- **`token-goat trace [src]` — condense Python exception tracebacks to project-owned frames.** Strips library, stdlib, and virtualenv frames, keeping only the frames in your code. Chained exceptions preserve their cause notes; bare exceptions without a message (e.g. `KeyboardInterrupt`) are handled. `--keep N` (default 5) caps the frame count. `--json` for structured output.
+
+- **`token-goat lockdeps [path]` — summarize lock file dependencies as a compact table.** Reads poetry.lock, uv.lock, requirements.txt, Pipfile.lock, package-lock.json, Cargo.lock, and yarn.lock. Returns direct dependencies only — optional packages and nested transitive entries are excluded. `--json` for structured output.
+
+- **`token-goat logfold [src]` — collapse consecutive duplicate log lines.** Consecutive runs of identical or structurally equivalent lines fold to a single `[Nx] line` entry. Normalizes ISO timestamps, UUIDs, IPs, and short hex IDs before comparing so the same event logged with different values folds correctly. `--tail N` keeps the last N lines after folding; `--no-normalize` disables normalization; `--json` for structured output.
+
 
 ### Fixed
 

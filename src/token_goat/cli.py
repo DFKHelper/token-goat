@@ -2453,6 +2453,211 @@ def budget(
 
 
 @app.command(rich_help_panel="Core")
+def failures(
+    src: str = typer.Argument(  # noqa: B008
+        "-",
+        help="File to read. Use '-' (default) to read from stdin.",
+    ),
+    runner: str = typer.Option(
+        "",
+        "--runner",
+        "-r",
+        help="Force a specific runner: pytest, jest, go, cargo. Auto-detected by default.",
+    ),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Extract failing test blocks from test runner output.
+
+    Reads test output from stdin (default) or a file and prints only the
+    failure blocks, stripping passing-test noise.  Auto-detects the test
+    runner (pytest, jest, go test, cargo test).
+
+    Examples::
+
+        uv run pytest 2>&1 | token-goat failures
+        token-goat failures pytest.log
+        token-goat failures --runner jest jest.log --json
+    """
+    import sys
+    from pathlib import Path as _Path
+
+    from . import failures as _failures
+
+    if src == "-":
+        text = sys.stdin.read()
+    else:
+        p = _Path(src)
+        if not p.exists():
+            typer.echo(f"File not found: {src}", err=True)
+            raise typer.Exit(1)
+        text = p.read_text(encoding="utf-8", errors="replace")
+
+    result = _failures.extract_failures(text, runner=runner or None)
+
+    if json_output:
+        typer.echo(_failures.format_failures_json(result))
+    else:
+        typer.echo(_failures.format_failures_text(result))
+
+
+@app.command(rich_help_panel="Core")
+def trace(
+    src: str = typer.Argument(  # noqa: B008
+        "-",
+        help="File to read. Use '-' (default) to read from stdin.",
+    ),
+    keep: int = typer.Option(
+        5,
+        "--keep",
+        "-k",
+        help="Maximum number of project-owned frames to keep per exception block.",
+    ),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Condense an exception traceback to project-owned frames.
+
+    Strips library, stdlib, and virtual-environment frames and keeps only
+    the frames that point into your own code.  Useful for pasting a large
+    traceback into a prompt without spending tokens on unactionable frames.
+
+    Examples::
+
+        cat error.log | token-goat trace
+        token-goat trace --keep 3 error.log
+        python script.py 2>&1 | token-goat trace --json
+    """
+    import sys
+    from pathlib import Path as _Path
+
+    from . import trace as _trace
+
+    if src == "-":
+        text = sys.stdin.read()
+    else:
+        p = _Path(src)
+        if not p.exists():
+            typer.echo(f"File not found: {src}", err=True)
+            raise typer.Exit(1)
+        text = p.read_text(encoding="utf-8", errors="replace")
+
+    result = _trace.condense_trace(text, keep_frames=keep)
+
+    if json_output:
+        typer.echo(_trace.format_trace_json(result))
+    else:
+        typer.echo(_trace.format_trace_text(result))
+
+
+@app.command(rich_help_panel="Core")
+def lockdeps(
+    path: str = typer.Argument(  # noqa: B008
+        "",
+        help=(
+            "Path to a lock file or dependency spec.  Omit to auto-discover "
+            "(poetry.lock, uv.lock, package-lock.json, requirements.txt, Cargo.lock, Pipfile.lock)."
+        ),
+    ),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Summarize a lock file as a compact dependency table.
+
+    Reads poetry.lock, uv.lock, package-lock.json, requirements.txt,
+    Cargo.lock, Pipfile.lock, or yarn.lock and emits a trimmed table of
+    package names and resolved versions — no transitive-dep noise.
+
+    When no path is given, the command looks for a supported lock file in
+    the current directory.
+
+    Examples::
+
+        token-goat lockdeps
+        token-goat lockdeps poetry.lock
+        token-goat lockdeps package-lock.json --json
+    """
+    from pathlib import Path as _Path
+
+    from . import lockdeps as _lockdeps
+
+    _CANDIDATES = [
+        "poetry.lock",
+        "uv.lock",
+        "package-lock.json",
+        "Cargo.lock",
+        "Pipfile.lock",
+        "yarn.lock",
+        "requirements.txt",
+    ]
+
+    if path:
+        lock_path = _Path(path)
+        if not lock_path.exists():
+            typer.echo(f"File not found: {path}", err=True)
+            raise typer.Exit(1)
+    else:
+        cwd = _Path.cwd()
+        _found: _Path | None = next((cwd / c for c in _CANDIDATES if (cwd / c).exists()), None)
+        if _found is None:
+            typer.echo("No supported lock file found in the current directory.", err=True)
+            raise typer.Exit(1)
+        lock_path = _found
+
+    result = _lockdeps.summarize_lockfile(lock_path)
+
+    if json_output:
+        typer.echo(_lockdeps.format_lockdeps_json(result))
+    else:
+        typer.echo(_lockdeps.format_lockdeps_text(result))
+
+
+@app.command(rich_help_panel="Core")
+def logfold(
+    src: str = typer.Argument(  # noqa: B008
+        "-",
+        help="File to read. Use '-' (default) to read from stdin.",
+    ),
+    tail: int = typer.Option(
+        0,
+        "--tail",
+        "-n",
+        help="Keep only the last N output lines after folding. 0 = no limit.",
+    ),
+    no_normalize: bool = typer.Option(
+        False,
+        "--no-normalize",
+        help="Disable timestamp/UUID normalization; collapse only exact duplicates.",
+    ),
+) -> None:
+    """Collapse repeated log lines to reduce noise before pasting into a prompt.
+
+    Consecutive identical lines are folded to ``[Nx] <line>``.  Lines that
+    differ only in timestamps, UUIDs, or numeric values (request durations,
+    byte counts) are treated as duplicates and also folded.
+
+    Examples::
+
+        tail -f app.log | token-goat logfold
+        token-goat logfold --tail 100 app.log
+        token-goat logfold --no-normalize deploy.log
+    """
+    import sys
+    from pathlib import Path as _Path
+
+    from . import logfold as _logfold
+
+    if src == "-":
+        text = sys.stdin.read()
+    else:
+        p = _Path(src)
+        if not p.exists():
+            typer.echo(f"File not found: {src}", err=True)
+            raise typer.Exit(1)
+        text = p.read_text(encoding="utf-8", errors="replace")
+
+    result = _logfold.fold_log(text, normalize=not no_normalize, tail=tail or None)
+    typer.echo(_logfold.format_fold_text(result))
+
+
+@app.command(rich_help_panel="Core")
 def read(
     target: str = typer.Argument(..., help="<file>::<symbol> — e.g., 'parser.py::index_project' or 'auth.py::Session.refresh' for a qualified method."),
     session_id: str | None = _OPT_SESSION_ID,
