@@ -1146,13 +1146,13 @@ def _checkpoint_global_wal() -> int:
     wal_path = wal_path.with_name(wal_path.name + "-wal")
     try:
         before = wal_path.stat().st_size
-    except FileNotFoundError:
+    except OSError:
         before = 0
     with db.open_global() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     try:
         after = wal_path.stat().st_size
-    except FileNotFoundError:
+    except OSError:
         after = 0
     reclaimed = max(0, before - after)
     if reclaimed:
@@ -1182,7 +1182,7 @@ def _checkpoint_project_wals() -> int:
         wal_path = db_path.with_name(db_path.name + "-wal")
         try:
             before = wal_path.stat().st_size
-        except FileNotFoundError:
+        except OSError:
             continue
         try:
             with db.open_project(project_hash) as conn:
@@ -1192,7 +1192,7 @@ def _checkpoint_project_wals() -> int:
             continue
         try:
             after = wal_path.stat().st_size
-        except FileNotFoundError:
+        except OSError:
             after = 0
         reclaimed += max(0, before - after)
     if reclaimed:

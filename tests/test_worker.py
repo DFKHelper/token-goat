@@ -2279,6 +2279,34 @@ class TestCheckpointProjectWals:
         assert isinstance(result, int)
         assert result >= 0
 
+    def test_wal_stat_permission_error_is_handled_gracefully(self, tmp_data_dir, monkeypatch):
+        """stat() returning PermissionError is handled without crashing."""
+        from token_goat import db as _db
+
+        ph = "c" * 40
+        now = int(time.time())
+        with _db.open_global() as gconn:
+            gconn.execute(
+                "INSERT OR REPLACE INTO projects(hash, root, marker, first_seen, last_seen, file_count, languages) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (ph, "/some/proj", ".git", now, now, 1, "python"),
+            )
+
+        db_path = paths.project_db_path(ph)
+        wal_path = db_path.with_name(db_path.name + "-wal")
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        wal_path.write_bytes(b"x" * 512)
+
+        original_stat = Path.stat
+        def mock_stat_permission_error(self, **kwargs):
+            if str(self).endswith("-wal"):
+                raise PermissionError("mock permission denied")
+            return original_stat(self, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", mock_stat_permission_error)
+        result = worker._checkpoint_project_wals()
+        assert result == 0
+
 
 # ---------------------------------------------------------------------------
 # cleanup_on_startup — project_wal_bytes_reclaimed key is present in result
