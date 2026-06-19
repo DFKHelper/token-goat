@@ -776,7 +776,7 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
     edited_files = cache.edited_files if isinstance(cache.edited_files, dict) else {}
     bash_dedup_ids = sorted(getattr(cache, "bash_dedup_emitted_ids", set()) or [])
 
-    hints_emitted = int(getattr(cache, "hints_emitted", 0) or 0)
+    hints_emitted = int(getattr(cache, "hints_emitted", 0))
     _suppressed_raw = getattr(cache, "hints_suppressed_by_type", None) or {}
     hints_suppressed = sum(_suppressed_raw.values()) if isinstance(_suppressed_raw, dict) else 0
 
