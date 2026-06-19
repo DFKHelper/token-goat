@@ -28,6 +28,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat pack --budget N` — fail the pack if it would exceed a token budget.** Exits with code 3 when the estimated token count of the collected files exceeds N, so a shell script or CI step can treat an oversized context as an error rather than silently passing it to the model. `--budget 0` (the default) imposes no limit.
 
+- **`token-goat skeleton` — file line count in the output header.** The skeleton header now shows total line count alongside symbol count: `# Skeleton: src/token_goat/cli.py  (80 symbols, 9,394 lines)`. Gives an immediate size gauge before deciding whether to read a file in chunks or in full.
+
+- **Injection detector — three new patterns.** `forget-instructions` catches "forget [all] [your] previous instructions/directives/guidelines" (requires "previous" to avoid false positives on documentation phrases like "forget to include instructions from step 1"). `pretend-no-restrictions` catches roleplay jailbreak framing ("pretend you have no restrictions/limitations/constraints"; requires "you have no" to skip game-design prose). `exfil-conversation` catches attempts to extract the full conversation or chat history ("print the entire chat history", "dump the message history"); requires "the" before the noun so code comments and variable references do not fire.
+
 ## [1.9.3] - 2026-06-18
 
 ### Added
