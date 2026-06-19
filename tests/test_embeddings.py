@@ -964,3 +964,25 @@ def test_cli_semantic_compact_output_first_line_snippet(ts_project, monkeypatch)
     assert expected_first in result.output, (
         f"expected first chunk line {expected_first!r} in output:\n{result.output}"
     )
+
+
+def test_try_add_chunk_rejects_out_of_bounds_lines():
+    """_try_add_chunk rejects chunks with line numbers beyond file bounds."""
+    from token_goat.embeddings import _try_add_chunk
+    lines = ["x" * 100] * 5
+    chunks = []
+
+    result = _try_add_chunk("f.py", 1, 5, lines, "test", chunks)
+    assert result is True and len(chunks) == 1, "valid range should succeed"
+
+    chunks.clear()
+    result = _try_add_chunk("f.py", 1, 999, lines, "test", chunks)
+    assert result is False and len(chunks) == 0, "end > len(lines) should be rejected"
+
+    chunks.clear()
+    result = _try_add_chunk("f.py", 0, 3, lines, "test", chunks)
+    assert result is False and len(chunks) == 0, "start < 1 should be rejected"
+
+    chunks.clear()
+    result = _try_add_chunk("f.py", 5, 1, lines, "test", chunks)
+    assert result is False and len(chunks) == 0, "start > end should be rejected"
