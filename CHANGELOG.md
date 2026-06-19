@@ -10,7 +10,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat note set/get/unset/list/clear` — persistent per-project notes.** Stores short key-value facts in a per-project TOML file. Token-goat injects them into the context at session start and after compaction so they survive conversation rollover without being repeated in the chat history. Keys are alphanumeric with hyphens and underscores (max 80 chars). `note list --json` for machine-readable output; `note clear` wipes all notes at once.
 
-- **`token-goat pack --strip-comments` — strip comments before packing.** Removes language-appropriate comments from source files before bundling. Covers Python line comments and docstrings, JS/TS/Go/Rust/Java/C/C++ line and block comments, SQL `--` comments, Ruby hash comments, and CSS/SCSS block comments. Cuts token count 15–40% on comment-heavy codebases; language detection is extension-based with no extra install.
+- **`token-goat pack --strip-comments` — strip comments before packing.** Removes language-appropriate comments from source files before bundling. Covers Python `#` line comments, JS/TS/Go/Rust/Java/C/C++ line and block comments, SQL `--` comments, Ruby/shell hash comments, and CSS/SCSS block comments. Shebangs (`#!`) are preserved. Cuts token count on comment-heavy codebases; language detection is extension-based with no extra install.
 
 - **`token-goat pack --scan-secrets` — check for credentials before emit.** Scans packed files for patterns matching AWS access and secret keys, GitHub tokens, private key PEM blocks, Stripe and OpenAI keys, Slack webhook URLs, Google API keys, database connection strings, bearer tokens, and password literals. Exits 2 and prints per-file, per-line warnings when any pattern fires; a clean pack exits normally. Binary and image extensions are skipped automatically.
 
@@ -20,7 +20,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat impact <symbol>` — downstream blast-radius estimate before a refactor.** Walks the reference graph forward from *symbol* and lists every file and function that directly or transitively depends on it, with the hop depth and dependency type (call, type annotation, or import). Run it before changing a function signature to see what breaks without starting a build.
 
-- **`token-goat context-for <file>` — minimal context bundle for focused work.** Gathers the symbols defined in a file, their immediate callers, the matching test file, and the import graph one level out. Produces a scoped bundle covering what an agent needs to work on that file without loading the entire project.
+- **`token-goat context-for <task>` — minimal context bundle for a task.** Takes a natural-language task description, runs semantic search across the indexed codebase, and emits a prioritized list of `token-goat read` commands trimmed to a token budget. Fetches only the slices relevant to the task instead of loading entire files. `--budget N` sets the token ceiling; `--top N` limits the file count; `--json` for structured output.
 
 ## [1.9.3] - 2026-06-18
 

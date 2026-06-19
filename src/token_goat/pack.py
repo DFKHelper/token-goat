@@ -54,12 +54,12 @@ def _matches(rel: str, patterns: list[str]) -> bool:
 # Comment stripping
 # ---------------------------------------------------------------------------
 
-_PY_DOCSTRING_RE = re.compile(r'""".*?"""|\'\'\'.*?\'\'\'', re.DOTALL)
-_PY_LINE_COMMENT_RE = re.compile(r'(?m)[ \t]*#[^\r\n]*')
+# #! is excluded so shebangs survive; # inside string literals is a known limitation.
+_PY_LINE_COMMENT_RE = re.compile(r'(?m)[ \t]*#(?!!)[^\r\n]*')
 _CSTYLE_BLOCK_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
 _CSTYLE_LINE_RE = re.compile(r'(?m)[ \t]*//[^\r\n]*')
 _SQL_LINE_RE = re.compile(r'(?m)[ \t]*--[^\r\n]*')
-_HASH_LINE_RE = re.compile(r'(?m)[ \t]*#[^\r\n]*')
+_HASH_LINE_RE = re.compile(r'(?m)[ \t]*#(?!!)[^\r\n]*')
 
 _CSTYLE_EXTS = frozenset({
     ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".java", ".c", ".cpp",
@@ -73,17 +73,15 @@ def strip_comments(content: str, path: Path) -> str:
 
     Preserves line count (blank lines replace comment lines) so that
     line-number references in the remaining code stay accurate.
-    For Python files, also strips triple-quoted docstrings.
+    Shebangs (``#!``) are preserved. Triple-quoted strings are not stripped
+    because a regex cannot distinguish them from docstrings.
+    ``#`` inside string literals is a known limitation of the regex approach.
 
     Returns *content* unchanged when the extension has no registered handler.
     """
     ext = path.suffix.lower()
 
     if ext == ".py":
-        # Remove docstrings (triple-quoted strings used as standalone expressions)
-        def _blank_block(m: re.Match[str]) -> str:
-            return "\n" * m.group(0).count("\n")
-        content = _PY_DOCSTRING_RE.sub(_blank_block, content)
         content = _PY_LINE_COMMENT_RE.sub("", content)
         return content
 
@@ -124,7 +122,7 @@ class SecretHit:
 _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("AWS access key", re.compile(r'AKIA[0-9A-Z]{16}')),
     ("AWS secret key", re.compile(r'(?i)aws.{0,20}secret.{0,20}["\']([A-Za-z0-9/+]{40})["\']')),
-    ("GitHub token", re.compile(r'gh[pousr]_[A-Za-z0-9]{36,255}')),
+    ("GitHub token", re.compile(r'(?:gh[pousr]_|github_pat_)[A-Za-z0-9]{36,255}')),
     ("Generic API key", re.compile(r'(?i)(?:api[_-]?key|apikey|api_secret)["\s]*[:=]["\s]*([A-Za-z0-9_\-]{20,})')),
     ("Bearer token", re.compile(r'(?i)authorization:\s*bearer\s+([A-Za-z0-9\-._~+/]+=*)')),
     ("Private key block", re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----')),
@@ -132,7 +130,7 @@ _SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("OpenAI key", re.compile(r'sk-[A-Za-z0-9]{32,}')),
     ("Slack webhook", re.compile(r'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+')),
     ("Google API key", re.compile(r'AIza[0-9A-Za-z\-_]{35}')),
-    ("Database URL", re.compile(r'(?i)(?:postgres|mysql|mongodb)://[^:]+:[^@\s]+@[^\s]+')),
+    ("Database URL", re.compile(r'(?i)(?:postgres|mysql|mongodb(?:\+srv)?)://[^:]+:[^@\s]+@[^\s]+')),
     ("Password literal", re.compile(r'(?i)(?:password|passwd|pwd)\s*[:=]\s*["\']([^"\']{6,})["\']')),
 ]
 
