@@ -1510,8 +1510,6 @@ def _hint_from_index(
     preview_names = [_sanitize_hint_path(s["name"]) for s in symbols[:3]]
     sym_list_str = ", ".join(preview_names)
     overflow = n_total - len(preview_names)
-    sym_overflow = " ..." if overflow > 0 else ""
-    sym_clause = f"Symbols: {sym_list_str}{sym_overflow}. "
 
     # A *suggestion*, not a realized saving. tokens_saved=0: if the agent acts
     # on it, `token-goat read` records the real `read_replacement` stat — counting
@@ -1521,6 +1519,21 @@ def _hint_from_index(
     # Kept deliberately terse: the hint text itself costs tokens in the
     # conversation, so it carries one example command rather than enumerating
     # every indexed symbol (`token-goat symbol`/`map` cover that on demand).
+    if overflow > 0:
+        # When there are more symbols than the 3-symbol preview, surface the
+        # total count and offer skeleton as a lightweight browse step before
+        # committing to a full read or a targeted `read "file::symbol"` call.
+        sym_clause = f"Symbols: {sym_list_str} (+{overflow} more, {n_total} total). "
+        return ReadHint(
+            _apply_terse(
+                f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
+                f"{sym_clause}"
+                f"Use `token-goat skeleton \"{rel}\"` to browse all, "
+                f"or `token-goat read \"{rel}::{first_sym_name}\"` for one symbol."
+            ),
+            0,
+        )
+    sym_clause = f"Symbols: {sym_list_str}. "
     return ReadHint(
         _apply_terse(
             f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
