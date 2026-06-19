@@ -746,7 +746,7 @@ def _load_existing_chunk_hashes(
     exceeds 900 the IN-list is split into batches of 500 and results are merged,
     keeping well clear of that boundary.
     """
-    if file_rels is not None and len(file_rels) == 0:
+    if file_rels is not None and not file_rels:
         return {}
 
     existing: dict[tuple[str, int, int], str] = {}

@@ -2337,7 +2337,7 @@ def _parse_manifest_sections(
         text = "\n".join(lines)
         tokens = estimate_tokens(text)
         non_blank = [ln for ln in lines if ln.strip()]
-        empty = len(non_blank) == 0
+        empty = not non_blank
         sections.append((name, tokens, empty))
 
     for line in manifest.splitlines():
