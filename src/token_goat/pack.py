@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -49,12 +50,121 @@ def _matches(rel: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(norm, pat) or fnmatch.fnmatch(base, pat) for pat in patterns)
 
 
+# ---------------------------------------------------------------------------
+# Comment stripping
+# ---------------------------------------------------------------------------
+
+_PY_DOCSTRING_RE = re.compile(r'""".*?"""|\'\'\'.*?\'\'\'', re.DOTALL)
+_PY_LINE_COMMENT_RE = re.compile(r'(?m)[ \t]*#[^\r\n]*')
+_CSTYLE_BLOCK_RE = re.compile(r'/\*.*?\*/', re.DOTALL)
+_CSTYLE_LINE_RE = re.compile(r'(?m)[ \t]*//[^\r\n]*')
+_SQL_LINE_RE = re.compile(r'(?m)[ \t]*--[^\r\n]*')
+_HASH_LINE_RE = re.compile(r'(?m)[ \t]*#[^\r\n]*')
+
+_CSTYLE_EXTS = frozenset({
+    ".ts", ".tsx", ".js", ".jsx", ".rs", ".go", ".java", ".c", ".cpp",
+    ".h", ".hpp", ".cs", ".kt", ".swift", ".dart",
+})
+_HASH_COMMENT_EXTS = frozenset({".rb", ".sh", ".bash", ".zsh", ".fish", ".r", ".lua"})
+
+
+def strip_comments(content: str, path: Path) -> str:
+    """Remove comments from *content* based on the file extension.
+
+    Preserves line count (blank lines replace comment lines) so that
+    line-number references in the remaining code stay accurate.
+    For Python files, also strips triple-quoted docstrings.
+
+    Returns *content* unchanged when the extension has no registered handler.
+    """
+    ext = path.suffix.lower()
+
+    if ext == ".py":
+        # Remove docstrings (triple-quoted strings used as standalone expressions)
+        def _blank_block(m: re.Match[str]) -> str:
+            return "\n" * m.group(0).count("\n")
+        content = _PY_DOCSTRING_RE.sub(_blank_block, content)
+        content = _PY_LINE_COMMENT_RE.sub("", content)
+        return content
+
+    if ext == ".sql":
+        return _SQL_LINE_RE.sub("", content)
+
+    if ext in _CSTYLE_EXTS:
+        def _blank_block2(m: re.Match[str]) -> str:
+            return "\n" * m.group(0).count("\n")
+        content = _CSTYLE_BLOCK_RE.sub(_blank_block2, content)
+        content = _CSTYLE_LINE_RE.sub("", content)
+        return content
+
+    if ext in _HASH_COMMENT_EXTS:
+        return _HASH_LINE_RE.sub("", content)
+
+    # CSS/SCSS: only block comments
+    if ext in (".css", ".scss"):
+        def _blank_block3(m: re.Match[str]) -> str:
+            return "\n" * m.group(0).count("\n")
+        return _CSTYLE_BLOCK_RE.sub(_blank_block3, content)
+
+    return content
+
+
+# ---------------------------------------------------------------------------
+# Secret scanning
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SecretHit:
+    rel_path: str
+    line: int
+    kind: str
+    snippet: str
+
+
+_SECRET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("AWS access key", re.compile(r'AKIA[0-9A-Z]{16}')),
+    ("AWS secret key", re.compile(r'(?i)aws.{0,20}secret.{0,20}["\']([A-Za-z0-9/+]{40})["\']')),
+    ("GitHub token", re.compile(r'gh[pousr]_[A-Za-z0-9]{36,255}')),
+    ("Generic API key", re.compile(r'(?i)(?:api[_-]?key|apikey|api_secret)["\s]*[:=]["\s]*([A-Za-z0-9_\-]{20,})')),
+    ("Bearer token", re.compile(r'(?i)authorization:\s*bearer\s+([A-Za-z0-9\-._~+/]+=*)')),
+    ("Private key block", re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----')),
+    ("Stripe key", re.compile(r'sk_(?:live|test)_[A-Za-z0-9]{24,}')),
+    ("OpenAI key", re.compile(r'sk-[A-Za-z0-9]{32,}')),
+    ("Slack webhook", re.compile(r'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+')),
+    ("Google API key", re.compile(r'AIza[0-9A-Za-z\-_]{35}')),
+    ("Database URL", re.compile(r'(?i)(?:postgres|mysql|mongodb)://[^:]+:[^@\s]+@[^\s]+')),
+    ("Password literal", re.compile(r'(?i)(?:password|passwd|pwd)\s*[:=]\s*["\']([^"\']{6,})["\']')),
+]
+
+_SAFE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf", ".lock"})
+
+
+def scan_secrets(files: list[PackFile]) -> list[SecretHit]:
+    """Scan packed files for patterns that look like credentials or secrets.
+
+    Returns a list of hits — each with file path, line number, kind, and a
+    redacted snippet showing the surrounding context.
+    """
+    hits: list[SecretHit] = []
+    for pf in files:
+        if Path(pf.path).suffix.lower() in _SAFE_EXTS:
+            continue
+        for lineno, line in enumerate(pf.content.splitlines(), 1):
+            for kind, pattern in _SECRET_PATTERNS:
+                if pattern.search(line):
+                    snip = line.strip()[:80]
+                    hits.append(SecretHit(rel_path=pf.rel_path, line=lineno, kind=kind, snippet=snip))
+                    break  # one hit per line is enough
+    return hits
+
+
 def collect_files(
     project_root: Path,
     patterns: list[str],
     *,
     ignore_patterns: list[str] | None = None,
     max_file_bytes: int = 2 * 1024 * 1024,
+    do_strip_comments: bool = False,
 ) -> PackResult:
     """Walk patterns and return PackFile list with per-file token estimates."""
     result = PackResult()
@@ -100,6 +210,9 @@ def collect_files(
                 result.skipped.append(f"{rel} (unreadable: {e})")
                 continue
 
+            if do_strip_comments:
+                content = strip_comments(content, p)
+
             seen.add(p)
             lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
             tokens = _estimate_tokens(content)
@@ -116,10 +229,17 @@ def collect_from_stdin(
     *,
     ignore_patterns: list[str] | None = None,
     max_file_bytes: int = 2 * 1024 * 1024,
+    do_strip_comments: bool = False,
 ) -> PackResult:
     """Read newline-separated file paths from stdin and collect them."""
     paths = [ln.strip() for ln in sys.stdin.read().splitlines() if ln.strip()]
-    return collect_files(project_root, paths, ignore_patterns=ignore_patterns, max_file_bytes=max_file_bytes)
+    return collect_files(
+        project_root,
+        paths,
+        ignore_patterns=ignore_patterns,
+        max_file_bytes=max_file_bytes,
+        do_strip_comments=do_strip_comments,
+    )
 
 
 # ---------------------------------------------------------------------------
