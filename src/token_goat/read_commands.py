@@ -2856,6 +2856,258 @@ def _render_callers_json(rows: list[sqlite3.Row], symbol_name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# call_chain — multi-level caller traversal
+# ---------------------------------------------------------------------------
+
+
+def _callers_of(
+    conn: sqlite3.Connection,
+    symbol_name: str,
+    limit: int,
+) -> list[tuple[str, str | None, int]]:
+    """Return (file_rel, caller_name_or_None, call_count) for each direct caller."""
+    _FK = ("function", "async_function", "method", "constructor")
+    kp = ",".join("?" * len(_FK))
+    rows = conn.execute(
+        f"""
+        SELECT r.file_rel,
+               (SELECT s.name FROM symbols s
+                WHERE s.file_rel = r.file_rel AND s.kind IN ({kp})
+                  AND s.line <= r.line AND (s.end_line IS NULL OR s.end_line >= r.line)
+                ORDER BY s.line DESC, s.id DESC LIMIT 1) AS cname,
+               COUNT(*) AS n
+        FROM refs r
+        WHERE r.symbol_name = ?
+        GROUP BY r.file_rel, cname
+        ORDER BY n DESC
+        LIMIT ?
+        """,
+        (*_FK, symbol_name, limit),
+    ).fetchall()
+    return [(str(r[0]), str(r[1]) if r[1] is not None else None, int(r[2])) for r in rows]
+
+
+def _build_chain(
+    conn: sqlite3.Connection,
+    target: str,
+    depth: int,
+    per_level_limit: int,
+    path: frozenset[str],
+) -> list[dict[str, object]]:
+    if depth <= 0 or not target:
+        return []
+    nodes: list[dict[str, object]] = []
+    for file_rel, cname, count in _callers_of(conn, target, per_level_limit):
+        display = cname if cname else "<module>"
+        node_key = f"{file_rel}::{display}"
+        if node_key in path:
+            continue
+        sub = _build_chain(conn, cname or "", depth - 1, per_level_limit, path | {node_key})
+        nodes.append({"symbol": display, "file": file_rel, "calls": count, "callers": sub})
+    return nodes
+
+
+def _render_chain_text(nodes: list[dict[str, object]], prefix: str) -> None:
+    use_color = sys.stdout.isatty()
+    for node in nodes:
+        sym = str(node["symbol"])
+        file_rel = str(node["file"])
+        n = cast(int, node["calls"])
+        call_word = "call" if n == 1 else "calls"
+        if use_color:
+            typer.echo(f"{prefix}\033[1m{sym}\033[0m  \033[2m{file_rel}\033[0m  {n} {call_word}")
+        else:
+            typer.echo(f"{prefix}{sym}  {file_rel}  {n} {call_word}")
+        sub = cast(list[dict[str, object]], node.get("callers") or [])
+        if sub:
+            _render_chain_text(sub, prefix + "  ")
+
+
+def call_chain(
+    symbol_name: str,
+    *,
+    depth: int = 3,
+    json_output: bool = False,
+    limit: int = 10,
+) -> None:
+    """Show who calls a symbol, and who calls those callers, up to N levels deep.
+
+    Traverses the caller graph starting from <name>, recursing up the call tree
+    until reaching --depth levels or hitting a cycle. Useful for tracing how a
+    low-level helper ripples through the codebase before changing its signature.
+
+    Examples::
+
+        token-goat call-chain dispatch --depth 4
+        token-goat call-chain index_file --json
+    """
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("No project detected — run from a project directory", err=True)
+        raise typer.Exit(1)
+
+    symbol_name = symbol_name.strip()
+    if not symbol_name:
+        typer.echo("Symbol name cannot be empty", err=True)
+        raise typer.Exit(1)
+
+    try:
+        with db.open_project_readonly(proj.hash) as conn:
+            tree = _build_chain(conn, symbol_name, depth, limit, frozenset())
+    except FileNotFoundError:
+        typer.echo("No index found. Run `token-goat index` first.", err=True)
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        typer.echo(f"Database error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    if not tree:
+        typer.echo(f"No callers found for {symbol_name!r}", err=True)
+        if json_output:
+            typer.echo(json.dumps(
+                {"query": symbol_name, "depth": depth, "tree": []},
+                separators=(",", ":"),
+            ))
+        return
+
+    with contextlib.suppress(Exception):
+        db.record_stat(
+            proj.hash,
+            "symbol_read",
+            bytes_saved=len(tree) * 60,
+            tokens_saved=max(1, len(tree) * 20),
+            detail=f"call-chain:{symbol_name}",
+        )
+
+    if json_output:
+        typer.echo(json.dumps(
+            {"query": symbol_name, "depth": depth, "tree": tree},
+            separators=(",", ":"),
+        ))
+        return
+
+    use_color = sys.stdout.isatty()
+    if use_color:
+        typer.echo(f"\033[1mcall-chain:\033[0m {symbol_name}  (depth {depth})")
+    else:
+        typer.echo(f"call-chain: {symbol_name}  (depth {depth})")
+    _render_chain_text(tree, prefix="  ")
+
+
+# ---------------------------------------------------------------------------
+# impact — blast-radius view: callers + refs + test coverage
+# ---------------------------------------------------------------------------
+
+
+def impact(symbol_name: str, *, json_output: bool = False) -> None:
+    """Show the change impact for a symbol: immediate callers, reference count, and test coverage.
+
+    Combines the output of callers, refs, and test-for into one concise report
+    so you can assess risk before touching a symbol's signature or behavior.
+
+    Examples::
+
+        token-goat impact build_read_hint
+        token-goat impact dispatch --json
+    """
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("No project detected — run from a project directory", err=True)
+        raise typer.Exit(1)
+
+    symbol_name = symbol_name.strip()
+    if not symbol_name:
+        typer.echo("Symbol name cannot be empty", err=True)
+        raise typer.Exit(1)
+
+    _FK = ("function", "async_function", "method", "constructor")
+
+    try:
+        with db.open_project_readonly(proj.hash) as conn:
+            kp = ",".join("?" * len(_FK))
+            caller_rows = conn.execute(
+                f"""
+                SELECT DISTINCT r.file_rel,
+                       (SELECT s.name FROM symbols s
+                        WHERE s.file_rel = r.file_rel AND s.kind IN ({kp})
+                          AND s.line <= r.line AND (s.end_line IS NULL OR s.end_line >= r.line)
+                        ORDER BY s.line DESC, s.id DESC LIMIT 1) AS cname
+                FROM refs r
+                WHERE r.symbol_name = ?
+                ORDER BY r.file_rel
+                """,
+                (*_FK, symbol_name),
+            ).fetchall()
+
+            ref_count_row = conn.execute(
+                "SELECT COUNT(*) FROM refs WHERE symbol_name = ?",
+                (symbol_name,),
+            ).fetchone()
+            total_refs = int(ref_count_row[0]) if ref_count_row else 0
+
+            sym_file_row = conn.execute(
+                "SELECT file_rel FROM symbols WHERE name = ? ORDER BY id LIMIT 1",
+                (symbol_name,),
+            ).fetchone()
+    except FileNotFoundError:
+        typer.echo("No index found. Run `token-goat index` first.", err=True)
+        raise typer.Exit(1) from None
+    except Exception as exc:
+        typer.echo(f"Database error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    test_files: list[str] = []
+    if sym_file_row:
+        impl_stem = Path(str(sym_file_row[0])).stem
+        test_files = [rel for rel, _ in _find_test_files_for(proj, impl_stem)]
+
+    caller_list = [
+        {"file": str(r[0]), "caller": str(r[1]) if r[1] is not None else "<module>"}
+        for r in caller_rows
+    ]
+
+    if json_output:
+        typer.echo(json.dumps(
+            {
+                "symbol": symbol_name,
+                "direct_callers": len(caller_list),
+                "ref_count": total_refs,
+                "test_files": test_files,
+                "callers": caller_list,
+            },
+            separators=(",", ":"),
+        ))
+        return
+
+    use_color = sys.stdout.isatty()
+    label = f"\033[1mimpact:\033[0m {symbol_name}" if use_color else f"impact: {symbol_name}"
+    typer.echo(label)
+
+    nc = len(caller_list)
+    typer.echo(
+        f"  {nc} direct caller{'s' if nc != 1 else ''}  •  "
+        f"{total_refs} total reference{'s' if total_refs != 1 else ''}"
+    )
+
+    if caller_list:
+        typer.echo("\nCallers:")
+        for item in caller_list:
+            file_rel = item["file"]
+            cname = item["caller"]
+            if use_color:
+                typer.echo(f"  \033[2m{file_rel}\033[0m  {cname}")
+            else:
+                typer.echo(f"  {file_rel}  {cname}")
+
+    if test_files:
+        typer.echo("\nTest coverage:")
+        for tf in test_files:
+            typer.echo(f"  {tf}")
+    elif sym_file_row:
+        typer.echo("\nNo test files found.")
+
+
+# ---------------------------------------------------------------------------
 # changed — list symbols that changed since a git ref
 # ---------------------------------------------------------------------------
 
@@ -4156,3 +4408,165 @@ def similar(target: str, *, json_output: bool = False, top_k: int = 5) -> None:
     for h in hits:
         pct = int(round(h.similarity_score * 100))
         typer.echo(f"{h.file} — {h.name} ({h.kind}) — {pct}% similar")
+
+
+# ---------------------------------------------------------------------------
+# context_for — task-aware context assembly
+# ---------------------------------------------------------------------------
+
+
+
+def context_for(
+    task: str,
+    *,
+    budget: int = 20_000,
+    top: int = 8,
+    json_output: bool = False,
+) -> None:
+    """Build a prioritized read list for a task description, respecting a token budget.
+
+    Runs semantic search against the indexed codebase and ranks the results by
+    relevance, then emits a ``token-goat read`` command list trimmed to fit
+    within --budget tokens.  Use this before starting a task to pull only the
+    relevant slices rather than reading entire files.
+
+    Examples::
+
+        token-goat context-for "add rate limiting to the API"
+        token-goat context-for "fix the session cache race condition" --budget 40000
+        token-goat context-for "refactor the hook dispatch" --json
+    """
+    proj = find_project(Path.cwd())
+    if proj is None:
+        typer.echo("No project detected — run from a project directory", err=True)
+        raise typer.Exit(1)
+
+    task = task.strip()
+    if not task:
+        typer.echo("Task description cannot be empty", err=True)
+        raise typer.Exit(1)
+
+    ctx_hits: list[dict[str, object]] = []
+    used_embeddings = False
+    try:
+        from . import embeddings as _embeddings
+
+        raw_hits = _embeddings.semantic_search(
+            proj,
+            task,
+            k=top * 3,
+            max_distance=_embeddings.DEFAULT_DISTANCE_THRESHOLD,
+        )
+        seen_files: dict[str, bool] = {}
+        for h in raw_hits:
+            if h.file_rel not in seen_files:
+                seen_files[h.file_rel] = True
+                ctx_hits.append({
+                    "file_rel": h.file_rel,
+                    "text": h.text,
+                    "distance": h.distance,
+                    "start_line": h.start_line,
+                    "end_line": h.end_line,
+                })
+        ctx_hits = ctx_hits[:top]
+        used_embeddings = True
+    except Exception:
+        pass
+
+    if not ctx_hits:
+        try:
+            with db.open_project_readonly(proj.hash) as conn:
+                words = [w for w in task.split() if len(w) >= 4][:6]
+                if words:
+                    like_clauses = " OR ".join("name LIKE ?" for _ in words)
+                    kw_rows = conn.execute(
+                        f"SELECT DISTINCT file_rel FROM symbols WHERE {like_clauses} LIMIT ?",
+                        tuple(f"%{w}%" for w in words) + (top * 2,),
+                    ).fetchall()
+                    ctx_hits = [
+                        {"file_rel": str(r[0]), "text": "", "distance": 0.5, "start_line": 0, "end_line": 0}
+                        for r in kw_rows
+                    ][:top]
+        except Exception:
+            pass
+
+    if not ctx_hits:
+        if json_output:
+            typer.echo(json.dumps(
+                {
+                    "task": task,
+                    "budget_tokens": budget,
+                    "used_tokens": 0,
+                    "used_embeddings": used_embeddings,
+                    "entries": [],
+                },
+                separators=(",", ":"),
+            ))
+        else:
+            typer.echo(
+                "No relevant context found. "
+                "Run `token-goat index --embeddings` to enable semantic search."
+            )
+        return
+
+    entries: list[dict[str, object]] = []
+    tokens_used = 0
+    for ctx_h in ctx_hits:
+        file_rel = cast(str, ctx_h["file_rel"])
+        text = cast(str, ctx_h["text"])
+        distance = cast(float, ctx_h["distance"])
+        start_line = cast(int, ctx_h["start_line"])
+        end_line = cast(int, ctx_h["end_line"])
+
+        est_tokens = max(1, len(text) // 3 + 1)
+        if tokens_used + est_tokens > budget:
+            break
+        tokens_used += est_tokens
+        relevance_pct = max(0, int((1.0 - distance) * 100))
+        entry: dict[str, object] = {
+            "file": file_rel,
+            "start_line": start_line,
+            "end_line": end_line,
+            "est_tokens": est_tokens,
+            "relevance_pct": relevance_pct,
+        }
+        entries.append(entry)
+
+    if json_output:
+        typer.echo(json.dumps(
+            {
+                "task": task,
+                "budget_tokens": budget,
+                "used_tokens": tokens_used,
+                "used_embeddings": used_embeddings,
+                "entries": entries,
+            },
+            separators=(",", ":"),
+        ))
+        return
+
+    use_color = sys.stdout.isatty()
+    header = f"\033[1mcontext-for:\033[0m {task}" if use_color else f"context-for: {task}"
+    typer.echo(header)
+    typer.echo(
+        f"  {len(entries)} file{'s' if len(entries) != 1 else ''}  •  "
+        f"~{tokens_used:,} tokens of {budget:,} budget"
+        + ("  •  semantic" if used_embeddings else "  •  keyword fallback")
+    )
+    typer.echo("")
+
+    for entry in entries:
+        file_rel = str(entry["file"])
+        sl = cast(int, entry["start_line"])
+        el = cast(int, entry["end_line"])
+        pct = cast(int, entry["relevance_pct"])
+        est = cast(int, entry["est_tokens"])
+        loc = f":{sl}-{el}" if sl else ""
+        read_cmd = f'token-goat read "{file_rel}{loc}"'
+        if use_color:
+            typer.echo(
+                f"  \033[36m{read_cmd}\033[0m"
+                f"  \033[2m~{est} tok  {pct}% relevant\033[0m"
+            )
+        else:
+            typer.echo(f"  {read_cmd}  ~{est} tok  {pct}% relevant")
