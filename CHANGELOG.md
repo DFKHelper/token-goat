@@ -54,7 +54,6 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat logfold [src]` — collapse consecutive duplicate log lines.** Consecutive runs of identical or structurally equivalent lines fold to a single `[Nx] line` entry. Normalizes ISO timestamps, UUIDs, IPs, and short hex IDs before comparing so the same event logged with different values folds correctly. `--tail N` keeps the last N lines after folding; `--no-normalize` disables normalization; `--json` for structured output.
 
-
 ### Fixed
 
 - **Path traversal bypass in `_is_system_path()`.** `bash_parser.py` appended `..` even at root of an absolute path, letting `/../../etc/passwd` slip past the system-path block. Now discards `..` at root. Four regression cases: `/../etc/passwd`, `/../../etc/passwd`, `/etc/./../../etc/passwd`, `/sys/../../../sys/kernel`.
@@ -1198,3 +1197,29 @@ First public release.
 - Licensed under PolyForm Noncommercial 1.0.0. See LICENSE for full terms.
 - Windows 10 and 11 only.
 - Python 3.11, 3.12, 3.13, and 3.14 supported.
+
+[Unreleased]: https://github.com/DFKHelper/token-goat/compare/v1.9.3...HEAD
+[1.9.3]: https://github.com/DFKHelper/token-goat/compare/v1.9.2...v1.9.3
+[1.9.2]: https://github.com/DFKHelper/token-goat/compare/v1.9.1...v1.9.2
+[1.9.1]: https://github.com/DFKHelper/token-goat/compare/v1.9.0...v1.9.1
+[1.9.0]: https://github.com/DFKHelper/token-goat/compare/v1.8.0...v1.9.0
+[1.8.0]: https://github.com/DFKHelper/token-goat/compare/v1.7.1...v1.8.0
+[1.7.1]: https://github.com/DFKHelper/token-goat/compare/v1.7.0...v1.7.1
+[1.7.0]: https://github.com/DFKHelper/token-goat/compare/v1.5.2...v1.7.0
+[1.5.2]: https://github.com/DFKHelper/token-goat/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/DFKHelper/token-goat/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/DFKHelper/token-goat/compare/v1.3.0...v1.5.0
+[1.3.0]: https://github.com/DFKHelper/token-goat/compare/v1.2.0...v1.3.0
+[1.2.0]: https://github.com/DFKHelper/token-goat/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/DFKHelper/token-goat/compare/v1.0.1...v1.1.0
+[1.0.1]: https://github.com/DFKHelper/token-goat/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/DFKHelper/token-goat/compare/v0.9.0...v1.0.0
+[0.9.0]: https://github.com/DFKHelper/token-goat/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/DFKHelper/token-goat/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/DFKHelper/token-goat/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/DFKHelper/token-goat/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/DFKHelper/token-goat/compare/v0.5.2...v0.6.0
+[0.5.2]: https://github.com/DFKHelper/token-goat/compare/v0.5.1...v0.5.2
+[0.5.1]: https://github.com/DFKHelper/token-goat/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/DFKHelper/token-goat/compare/v0.4.0...v0.5.0
+[0.3.1]: https://github.com/DFKHelper/token-goat/compare/v0.3.0...v0.3.1
