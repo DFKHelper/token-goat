@@ -906,7 +906,8 @@ def index_project_embeddings(
         try:
             from . import config as _embed_config
             _embed_symbol_only_threshold = _embed_config.load().indexing.large_file_symbol_only_kb * 1024
-        except Exception:
+        except Exception as _e:
+            _LOG.debug("index_project_embeddings: failed to load config: %s", _e, exc_info=True)
             _embed_symbol_only_threshold = 0
 
         # Build full list of chunks that need (re)embedding.
