@@ -32,6 +32,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Injection detector — three new patterns.** `forget-instructions` catches "forget [all] [your] previous instructions/directives/guidelines" (requires "previous" to avoid false positives on documentation phrases like "forget to include instructions from step 1"). `pretend-no-restrictions` catches roleplay jailbreak framing ("pretend you have no restrictions/limitations/constraints"; requires "you have no" to skip game-design prose). `exfil-conversation` catches attempts to extract the full conversation or chat history ("print the entire chat history", "dump the message history"); requires "the" before the noun so code comments and variable references do not fire.
 
+- **Large-file read hints — skeleton suggestion for files with many indexed symbols.** When the read hint fires and more than three symbols are indexed for the file, the hint now shows the total symbol count and suggests `token-goat skeleton "file"` before opening a specific one. Previously the overflow appeared as `...` with no count and no browse path. The skeleton command in the hint is quoted to handle paths with spaces.
+
 ## [1.9.3] - 2026-06-18
 
 ### Added
