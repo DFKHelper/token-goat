@@ -233,7 +233,7 @@ def _matches_ignore_pattern(rel_path: str, patterns: list[str]) -> bool:
     if not patterns:
         return False
     normalized = rel_path.replace("\\", "/")
-    basename = normalized.split("/")[-1]
+    basename = normalized.rsplit("/", 1)[-1]
     for pattern in patterns:
         if fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(basename, pattern):
             return True
@@ -649,10 +649,11 @@ def iter_source_files(
             name_lower = name.lower()
             if name_lower not in _KNOWN_BASENAMES:
                 suffix = path.suffix
-                if suffix not in _KNOWN_EXTENSIONS and suffix.lower() not in _KNOWN_EXTENSIONS:
+                suffix_lower = suffix.lower()
+                if suffix not in _KNOWN_EXTENSIONS and suffix_lower not in _KNOWN_EXTENSIONS:
                     continue
                 # Apply optional extension filter (e.g. --ext py).
-                if ext_filter is not None and suffix.lower() not in ext_filter:
+                if ext_filter is not None and suffix_lower not in ext_filter:
                     continue
             # Reject symlinks whose resolved target escapes the project root.
             # os.walk does not follow symlink *directories* by default, but it
