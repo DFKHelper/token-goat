@@ -630,6 +630,13 @@ class TestSafeChildPath:
         result = paths._safe_child_path(base, "manifest_sha_mysession", "", "session_id")
         assert result.name == "manifest_sha_mysession"
 
+    def test_safe_child_path_rejects_empty_string(self, tmp_path: Path) -> None:
+        """An empty child_name raises ValueError."""
+        base = tmp_path / "subdir"
+        base.mkdir()
+        with pytest.raises(ValueError, match="must not be empty"):
+            paths._safe_child_path(base, "", ".db", "test_label")
+
 
 class TestProjectDbPath:
     """project_db_path now delegates to _safe_child_path."""
@@ -945,6 +952,24 @@ class TestPathHelperConsistency:
     def test_locks_dir_matches_inline(self, tmp_data_dir) -> None:
         """locks_dir() must equal data_dir() / 'locks'."""
         assert paths.locks_dir() == paths.data_dir() / "locks"
+
+
+class TestNormalizePathKey:
+    """Tests for paths.normalize_path_key error handling."""
+
+    def test_normalize_path_key_logs_resolve_error(self, caplog, monkeypatch):
+        """When Path.resolve() raises OSError, debug message is logged."""
+        import logging
+        from pathlib import Path as _P
+        caplog.set_level(logging.DEBUG, logger="token_goat.paths")
+        def failing_resolve(self):  # monkeypatches Path.resolve
+            raise OSError("mock error")
+        monkeypatch.setattr(_P, "resolve", failing_resolve)
+        result = paths.normalize_path_key("some/path", cwd="/some/cwd")
+        # Should fall back to normalize_key
+        assert isinstance(result, str)
+        # Check that debug message was logged
+        assert any("normalize_path_key" in r.message and "mock error" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
