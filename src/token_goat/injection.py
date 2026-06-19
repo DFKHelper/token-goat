@@ -86,6 +86,18 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
             "disregard-training",
             r"disregard" + _SEP + r"(?:your" + _SEP + r")?(?:previous" + _SEP + r")?(?:training|guidelines|alignment)" + _SEP + r"and",
         ),
+        (
+            # "forget [all] [your] previous instructions" — alternative verb to "ignore".
+            # Requires "previous" to avoid FP on "forget to include instructions" in docs.
+            "forget-instructions",
+            r"forget" + _SEP + r"(?:all" + _SEP + r")?(?:your" + _SEP + r")?previous" + _SEP + r"(?:instructions|directives|guidelines)",
+        ),
+        (
+            # "pretend you have no restrictions" — jailbreak via roleplay framing.
+            # Requires "you have no" so "pretend there are no restrictions" in game design does not fire.
+            "pretend-no-restrictions",
+            r"pretend" + _SEP + r"you" + _SEP + r"have" + _SEP + r"no" + _SEP + r"(?:restrictions?|limitations?|constraints?|guidelines?|safety" + _SEP + r"filters?)",
+        ),
     ]
 )
 
@@ -112,6 +124,13 @@ _EXFILTRATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
         (
             "exfil-to-url",
             r"(?:send|post|exfiltrate|upload|forward|transmit)" + _SEP + r"(?:the" + _SEP + r")?(?:conversation|context|session|history|prompt|secrets?|credentials?|key[s]?|tokens?)" + _SEP + r"(?:to" + _SEP + r")?(?:https?://|http://|ftp://|webhook|endpoint)",
+        ),
+        (
+            # Attempts to extract the full conversation or chat history (not just the system prompt).
+            # Requires "the" before the noun so bare uses like "output conversation" in code
+            # comments or "print(conversation)" in web pages do not fire.
+            "exfil-conversation",
+            r"(?:output|print|repeat|dump|exfiltrate)" + _SEP + r"(?:all" + _SEP + r")?the" + _SEP + r"(?:entire" + _SEP + r"|full" + _SEP + r")?(?:conversation|chat" + _SEP + r"history|message" + _SEP + r"history)",
         ),
     ]
 )
