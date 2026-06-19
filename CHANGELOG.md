@@ -4,6 +4,24 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **`token-goat tokens [patterns]` — per-file token footprint table.** Scans matched files and prints each file's token estimate alongside its line count, sorted largest-first by default. `--tree` groups results by directory with per-directory subtotals and percentages of the total. `--top N` limits the view to the N largest files. `--asc` reverses the sort order. `--json` emits a structured object with `total_tokens`, `total_files`, and a `files` array. `--no-ignore` bypasses `.tokengoatignore`. Omit patterns to scan the entire project.
+
+- **`token-goat note set/get/unset/list/clear` — persistent per-project notes.** Stores short key-value facts in a per-project TOML file. Token-goat injects them into the context at session start and after compaction so they survive conversation rollover without being repeated in the chat history. Keys are alphanumeric with hyphens and underscores (max 80 chars). `note list --json` for machine-readable output; `note clear` wipes all notes at once.
+
+- **`token-goat pack --strip-comments` — strip comments before packing.** Removes language-appropriate comments from source files before bundling. Covers Python line comments and docstrings, JS/TS/Go/Rust/Java/C/C++ line and block comments, SQL `--` comments, Ruby hash comments, and CSS/SCSS block comments. Cuts token count 15–40% on comment-heavy codebases; language detection is extension-based with no extra install.
+
+- **`token-goat pack --scan-secrets` — check for credentials before emit.** Scans packed files for patterns matching AWS access and secret keys, GitHub tokens, private key PEM blocks, Stripe and OpenAI keys, Slack webhook URLs, Google API keys, database connection strings, bearer tokens, and password literals. Exits 2 and prints per-file, per-line warnings when any pattern fires; a clean pack exits normally. Binary and image extensions are skipped automatically.
+
+- **`token-goat call-chain <symbol>` — trace the full call path to a symbol.** Walks the call graph upward from *symbol* and prints each transitive caller layer, from immediate callers out to entry points. Pairs with `callers` (one hop) and `impact` (downstream direction).
+
+- **`token-goat hot [--limit N] [--project dir]` — cross-session file frequency ranking.** Tallies read and edit counts from all stored sessions and ranks files by total activity. Useful for identifying which files dominate token spend across your whole history, not just the current conversation. `--json` for structured output; `--project` to filter to a specific project directory.
+
+- **`token-goat impact <symbol>` — downstream blast-radius estimate before a refactor.** Walks the reference graph forward from *symbol* and lists every file and function that directly or transitively depends on it, with the hop depth and dependency type (call, type annotation, or import). Run it before changing a function signature to see what breaks without starting a build.
+
+- **`token-goat context-for <file>` — minimal context bundle for focused work.** Gathers the symbols defined in a file, their immediate callers, the matching test file, and the import graph one level out. Produces a scoped bundle covering what an agent needs to work on that file without loading the entire project.
+
 ## [1.9.3] - 2026-06-18
 
 ### Added
