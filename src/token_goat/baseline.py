@@ -524,7 +524,7 @@ def _read_enabled_plugin_names(settings_path: Path) -> list[str]:
     enabled = data.get("enabledPlugins", {})
     if not isinstance(enabled, dict):
         return []
-    return [str(k) for k, v in enabled.items() if v is True]
+    return [str(k) for k, v in enabled.items() if v]
 
 
 def _enumerate_plugin_skill_dirs(
