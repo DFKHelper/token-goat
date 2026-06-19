@@ -1502,6 +1502,50 @@ def callers(
     read_commands.callers(name, json_output=as_json, limit=limit)
 
 
+@app.command(rich_help_panel="Core")
+def todo(
+    json_output: bool = _OPT_JSON,
+    kinds: str = typer.Option(
+        "TODO,FIXME,HACK,XXX,NOTE",
+        "--kinds",
+        "-k",
+        help="Comma-separated list of marker types to include.",
+    ),
+    group: str = typer.Option(
+        "file",
+        "--group",
+        "-g",
+        help="Group output by 'file' (default) or 'kind'.",
+    ),
+) -> None:
+    """Scan indexed project files for TODO/FIXME/HACK/XXX/NOTE markers.
+
+    Lists every marker with its file path, line number, and comment text,
+    grouped either by file (default) or by marker kind.
+
+    Results come from the symbol index so they are instantaneous — no
+    filesystem walk needed.  Run ``token-goat index`` first if the project
+    has not been indexed yet.
+
+    Examples::
+
+        token-goat todo
+        token-goat todo --kinds TODO,FIXME
+        token-goat todo --group kind
+        token-goat todo --json
+    """
+    from . import todo as _todo
+
+    proj = _require_project()
+    kind_set = frozenset(k.strip().upper() for k in kinds.split(",") if k.strip())
+    items = _todo.find_todos(proj.hash, proj.root, kinds=kind_set)
+
+    if json_output:
+        typer.echo(_todo.format_todos_json(items))
+    else:
+        typer.echo(_todo.format_todos_text(items, group_by=group))
+
+
 def _keyword_fallback_hits(
     proj: Project,
     query: str,
@@ -2217,6 +2261,195 @@ def arch(
         typer.echo(_arch.format_arch_json(result, project_name))
     else:
         typer.echo(_arch.format_arch_text(result, project_name))
+
+
+@app.command(rich_help_panel="Core")
+def pack(
+    patterns: list[str] = typer.Argument(  # noqa: B008
+        None,
+        help=(
+            "File paths or glob patterns to include, e.g. 'src/auth/**' 'tests/*.py'. "
+            "Omit to read newline-separated paths from stdin."
+        ),
+    ),
+    style: str = typer.Option(
+        "markdown",
+        "--style",
+        "-s",
+        help="Output style: markdown (default), xml, or plain.",
+    ),
+    output: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--output",
+        "-o",
+        help="Write output to this file instead of stdout.",
+    ),
+    line_numbers: bool = typer.Option(
+        False,
+        "--line-numbers",
+        "-n",
+        help="Prefix every line with its line number.",
+    ),
+    instruction_file: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--instruction-file",
+        "-i",
+        help="Append this file's contents as an instructions section at the end.",
+    ),
+    no_ignore: bool = typer.Option(
+        False,
+        "--no-ignore",
+        help="Skip .tokengoatignore patterns (include all matched files).",
+    ),
+) -> None:
+    """Bundle files into a single LLM-ready output with token estimates.
+
+    Accepts glob patterns relative to the project root, or reads a
+    newline-separated file list from stdin when no patterns are given
+    (compatible with ``fd``, ``fzf``, ``find``, and similar tools).
+
+    Per-file token estimates are shown in the manifest header.  Use
+    ``token-goat budget`` to check costs before running pack.
+
+    Output styles:
+
+    * ``markdown`` — fenced code blocks with a manifest table (default)
+    * ``xml`` — Anthropic-recommended ``<documents>`` format for long context
+    * ``plain`` — separator lines with no markdown syntax
+
+    Examples::
+
+        token-goat pack "src/auth/**" "src/models.py"
+        token-goat pack "src/**/*.py" --style xml --output context.xml
+        token-goat pack --line-numbers "src/payments.py"
+        fd -e py src/ | token-goat pack
+        token-goat pack "src/**" --instruction-file AGENTS.md
+    """
+    from . import pack as _pack
+    from .parser import load_project_ignore_patterns
+
+    proj = _require_project()
+    project_root = proj.root
+
+    ignore = [] if no_ignore else load_project_ignore_patterns(project_root)
+
+    if not patterns:
+        # No CLI patterns → read from stdin.
+        if sys.stdin.isatty():
+            _error(
+                "No patterns given and stdin is a terminal.\n"
+                "Usage: token-goat pack 'src/**/*.py'\n"
+                "       fd -e py | token-goat pack"
+            )
+            raise typer.Exit(1)
+        result = _pack.collect_from_stdin(project_root, ignore_patterns=ignore or None)
+    else:
+        result = _pack.collect_files(project_root, list(patterns), ignore_patterns=ignore or None)
+
+    if not result.files:
+        msg = "No files matched"
+        if result.skipped:
+            msg += f" ({len(result.skipped)} skipped)"
+        _error(msg + ".")
+        raise typer.Exit(1)
+
+    if style not in ("markdown", "xml", "plain"):
+        _error(f"Unknown style {style!r}. Choose from: markdown, xml, plain.")
+        raise typer.Exit(1)
+
+    instruction: str | None = None
+    if instruction_file:
+        try:
+            instruction = instruction_file.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            _error(f"Cannot read instruction file: {exc}")
+            raise typer.Exit(1) from None
+
+    text = _pack.format_pack(result, style, line_numbers=line_numbers, instruction=instruction)
+
+    if output:
+        try:
+            output.write_text(text, encoding="utf-8")
+            n = len(result.files)
+            noun = "file" if n == 1 else "files"
+            typer.echo(
+                f"Packed {n} {noun} (~{result.total_tokens:,} tokens) → {output}",
+                err=True,
+            )
+        except OSError as exc:
+            _error(f"Cannot write output: {exc}")
+            raise typer.Exit(1) from None
+    else:
+        typer.echo(text, nl=False)
+
+
+@app.command(rich_help_panel="Core")
+def budget(
+    patterns: list[str] = typer.Argument(  # noqa: B008
+        None,
+        help="File paths or glob patterns, e.g. 'src/**' 'tests/*.py'.",
+    ),
+    context_k: int = typer.Option(
+        0,
+        "--context",
+        "-c",
+        help="Context window in thousands of tokens (e.g. 200 for 200K). Shows usage percentage.",
+    ),
+    json_output: bool = _OPT_JSON,
+    no_ignore: bool = typer.Option(
+        False,
+        "--no-ignore",
+        help="Skip .tokengoatignore patterns.",
+    ),
+) -> None:
+    """Estimate token cost of files before reading them.
+
+    Shows a table of each matched file with its line count and approximate
+    token count, sorted by cost (most expensive first).  Use this before
+    ``token-goat pack`` or a batch read to decide whether the payload fits
+    within your context window.
+
+    Token estimates are rough (characters ÷ 4) — accurate to within ~10% for
+    typical source code.
+
+    Examples::
+
+        token-goat budget "src/**"
+        token-goat budget "src/auth.py" "tests/" --context 200
+        token-goat budget "src/**/*.py" --json
+    """
+    from . import pack as _pack
+    from .parser import load_project_ignore_patterns
+
+    proj = _require_project()
+    project_root = proj.root
+
+    ignore = [] if no_ignore else load_project_ignore_patterns(project_root)
+    _patterns = list(patterns) if patterns else ["."]
+
+    result = _pack.estimate_budget(project_root, _patterns, ignore_patterns=ignore or None)
+
+    if json_output:
+        import json as _json
+
+        _json_output = {
+            "total_tokens": result.total_tokens,
+            "total_lines": result.total_lines,
+            "files": [
+                {
+                    "file": e.rel_path,
+                    "lines": e.lines,
+                    "tokens": e.tokens,
+                    "size_bytes": e.size_bytes,
+                }
+                for e in result.entries
+            ],
+            "skipped": result.skipped,
+        }
+        typer.echo(_json.dumps(_json_output, indent=2))
+    else:
+        cw = context_k or None
+        typer.echo(_pack.format_budget_text(result, context_k=cw))
 
 
 @app.command(rich_help_panel="Core")

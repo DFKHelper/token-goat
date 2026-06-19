@@ -14,6 +14,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat arch` — project-wide import graph summary.** Shows hub modules (sorted by how many files import them), entry-point files that nothing imports, and circular import chains — all derived from the existing `imports_exports` index with no extra indexing step. For per-file depth, use `token-goat deps <file>`.
 
+- **`token-goat pack <patterns>` — bundle files into a single LLM-ready output.** Collects files matching glob patterns and writes them as Markdown (default), XML, or plain text, with a manifest table of per-file line and token counts. `--line-numbers` prefixes each line; `--instruction-file` appends a task prompt; `--output` writes to a file instead of stdout; `--no-ignore` bypasses `.tokengoatignore`. Reads file paths from stdin when no patterns are given and stdin is not a tty. Path traversal and symlink escape are both checked.
+
+- **`token-goat budget <patterns>` — token-cost estimate for a file set.** Reads each matching file, calculates a rough token count (~4 chars/token), and prints results sorted by cost descending. `--context <N>` shows what percentage of an N-thousand-token window each file would fill. `--json` for machine-readable output. Run before `pack` to decide what to include.
+
+- **`token-goat todo [--kinds K] [--group file|kind]` — scan indexed files for TODO-family markers.** Reads file paths from the project index and scans each for `TODO`, `FIXME`, `HACK`, `XXX`, and `NOTE` comment markers. Groups by file by default; `--group kind` to group by marker type; `--kinds` to filter to a subset; `--json` for machine output. Markers in string literals and non-comment lines are excluded.
+
 
 ### Fixed
 
