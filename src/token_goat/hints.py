@@ -724,9 +724,10 @@ def _get_indexed_symbols_and_line_count(
     ``size``-only and mark the schema as lacking the column.
     """
     try:
-        with db.open_project(project_hash) as conn:
+        with db.open_project_readonly(project_hash) as conn:
             # Fetch file metadata and symbols in one round-trip.
             # db_has_line_count_column tracks whether the schema supports line_count.
+            # open_project_readonly (not open_project) is used here because this function only runs SELECT queries, avoiding the sqlite-vec extension load, WAL-mode pragma, and schema DDL that open_project applies on every call (~10 ms per pre_read call).
             try:
                 file_row = conn.execute(
                     "SELECT size, line_count FROM files WHERE rel_path = ?",
