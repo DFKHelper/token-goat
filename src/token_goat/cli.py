@@ -476,6 +476,42 @@ def _record_lookup_stat(
         _LOG.debug("record lookup stat failed kind=%s: %s", kind, exc)
 
 
+def _record_body_recall_stat(
+    body: str,
+    result: str,
+    stat_name: str,
+    detail: str,
+) -> tuple[int, int, int, int]:
+    """Record a skill/body recall stat with bytes and tokens saved calculations.
+
+    Computes saved bytes (original size - result size) and saved tokens,
+    then records to the adoption-tracking stats DB.
+
+    Returns (body_bytes, returned_bytes, saved_bytes, tokens_saved). Best-effort:
+    a DB error must never block the user-visible command output, so all exceptions
+    are caught and logged at debug level.
+    """
+    body_bytes = len(body.encode())
+    returned_bytes = len(result.encode())
+    saved_bytes = max(0, body_bytes - returned_bytes)
+    try:
+        _db = _lazy_import("db")
+        from . import compact as _compact
+
+        tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(result))
+        _db.record_stat(
+            None,
+            stat_name,
+            bytes_saved=saved_bytes,
+            tokens_saved=tokens_saved,
+            detail=detail,
+        )
+    except Exception as exc:
+        _LOG.debug("record body recall stat failed stat_name=%s: %s", stat_name, exc)
+        tokens_saved = 0
+    return body_bytes, returned_bytes, saved_bytes, tokens_saved
+
+
 app = typer.Typer(name="token-goat", no_args_is_help=True)
 hook_app = typer.Typer(name="hook", no_args_is_help=True)
 config_app = typer.Typer(
@@ -5618,7 +5654,6 @@ def cmd_skill_body(
     appends a ``**Sections available:** ...`` line listing them.
     """
     from . import compact as _compact
-    from . import db as _db
     from . import hooks_skill, skill_cache
 
     # Walk every cached entry for this skill, newest first.  An older entry's
@@ -5706,16 +5741,11 @@ def cmd_skill_body(
         compact_bare = skill_cache._strip_compact_header(compact_text)
         compact_tokens = max(1, _compact.estimate_tokens(compact_bare))
         compact_display = f"--- compact form ({compact_tokens} tokens) ---\n{compact_bare}"
-        body_bytes = len(body.encode())
-        returned_bytes = len(compact_display.encode())
-        saved_bytes = max(0, body_bytes - returned_bytes)
-        _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(compact_display))
-        _db.record_stat(
-            None,
+        body_bytes, _, _, _ = _record_body_recall_stat(
+            body,
+            compact_display,
             "skill_body_recall",
-            bytes_saved=saved_bytes,
-            tokens_saved=_tokens_saved,
-            detail=f"{name[:48]}:compact",
+            f"{name[:48]}:compact",
         )
         if json_output:
             payload_c: dict[str, object] = {
@@ -5752,16 +5782,11 @@ def cmd_skill_body(
             raise typer.Exit(1)
         sliced = section_text
         # Record stat for the bytes saved vs. full body.
-        body_bytes = len(body.encode())
-        returned_bytes = len(sliced.encode())
-        saved_bytes = max(0, body_bytes - returned_bytes)
-        _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(sliced))
-        _db.record_stat(
-            None,
+        body_bytes, _, _, _ = _record_body_recall_stat(
+            body,
+            sliced,
             "skill_body_recall",
-            bytes_saved=saved_bytes,
-            tokens_saved=_tokens_saved,
-            detail=f"{name[:48]}::{section[:16]}",
+            f"{name[:48]}::{section[:16]}",
         )
         if json_output:
             payload: dict[str, object] = {
@@ -5798,16 +5823,11 @@ def cmd_skill_body(
 
     # Record a recall stat so `token-goat stats` reflects the value of avoiding
     # a re-load (and the side effects + tool-result block that come with it).
-    body_bytes = len(body.encode())
-    returned_bytes = len(sliced.encode())
-    saved_bytes = max(0, body_bytes - returned_bytes)
-    _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(sliced))
-    _db.record_stat(
-        None,
+    body_bytes, returned_bytes, saved_bytes, _tokens_saved = _record_body_recall_stat(
+        body,
+        sliced,
         "skill_body_recall",
-        bytes_saved=saved_bytes,
-        tokens_saved=_tokens_saved,
-        detail=name[:64],
+        name[:64],
     )
 
     if json_output:
@@ -5948,8 +5968,6 @@ def cmd_skill_compact(
     disk between loads — the staleness check compares the SHA embedded in the
     stored compact header against the body's current content SHA.
     """
-    from . import compact as _compact
-    from . import db as _db
     from . import skill_cache
 
     _compact_session_id = os.environ.get("CLAUDE_SESSION_ID", "")
@@ -6040,16 +6058,11 @@ def cmd_skill_compact(
                 compact_display, compact_source, _sha = _generate_compact_for_body(
                     body, sname, meta, _compact_session_id
                 )
-                body_bytes = len(body.encode())
-                returned_bytes = len(compact_display.encode())
-                saved_bytes = max(0, body_bytes - returned_bytes)
-                _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(compact_display))
-                _db.record_stat(
-                    None,
+                body_bytes, _, saved_bytes, _tokens_saved = _record_body_recall_stat(
+                    body,
+                    compact_display,
                     "skill_body_recall",
-                    bytes_saved=saved_bytes,
-                    tokens_saved=_tokens_saved,
-                    detail=f"{sname[:48]}:compact:{compact_source}:all",
+                    f"{sname[:48]}:compact:{compact_source}:all",
                 )
                 if json_output:
                     results.append({
@@ -6103,16 +6116,11 @@ def cmd_skill_compact(
         body, name, meta, _compact_session_id
     )
 
-    body_bytes = len(body.encode())
-    returned_bytes = len(compact_display.encode())
-    saved_bytes = max(0, body_bytes - returned_bytes)
-    _tokens_saved = max(0, _compact.estimate_tokens(body) - _compact.estimate_tokens(compact_display))
-    _db.record_stat(
-        None,
+    body_bytes, returned_bytes, saved_bytes, _tokens_saved = _record_body_recall_stat(
+        body,
+        compact_display,
         "skill_body_recall",
-        bytes_saved=saved_bytes,
-        tokens_saved=_tokens_saved,
-        detail=f"{name[:48]}:compact:{compact_source}",
+        f"{name[:48]}:compact:{compact_source}",
     )
 
     if json_output:
