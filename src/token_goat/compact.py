@@ -1463,12 +1463,7 @@ def _get_uncommitted_changes(project_root: str | None) -> str | None:
         # informative) and supplement with status lines that mention files not
         # already covered by the diff output.  We extract the filename from
         # each status line ("?? foo.py" → "foo.py") to check for overlap.
-        diff_filenames: set[str] = set()
-        for dl in diff_lines:
-            # diff --stat lines look like " src/foo.py | 12 +++---"
-            parts = dl.split("|")
-            if parts:
-                diff_filenames.add(parts[0].strip())
+        diff_filenames: set[str] = {dl.split("|")[0].strip() for dl in diff_lines if "|" in dl}
 
         combined: list[str] = list(diff_lines)
         for sl in status_lines:
@@ -1772,7 +1767,8 @@ def _group_edited_by_dir(
         dir_groups[dirname].append((basename, count))
 
     result: list[str] = []
-    for dirname in sorted(dir_groups.keys(), key=lambda d: -max(c for _, c in dir_groups[d])):
+    dir_max_counts = {d: max(c for _, c in group) for d, group in dir_groups.items()}
+    for dirname in sorted(dir_groups.keys(), key=lambda d: -dir_max_counts[d]):
         group = dir_groups[dirname]
 
         if len(group) < threshold:
@@ -2087,7 +2083,8 @@ def _is_noop_bash_command(entry: object) -> bool:
         return True
 
     # Extract the base command (first word, handling pipes/redirects)
-    first_word = cmd_preview.split()[0] if cmd_preview.split() else ""
+    words = cmd_preview.split()
+    first_word = words[0] if words else ""
     first_word_lower = first_word.lower()
 
     # No-op patterns: common status/navigation commands
