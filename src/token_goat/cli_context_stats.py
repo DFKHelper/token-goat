@@ -6,7 +6,6 @@ optionally runs safe structural pruning on the project's MEMORY.md index.
 from __future__ import annotations
 
 import json as _json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -89,7 +88,7 @@ def run(*, fix: bool, json_out: bool, project: Path | None) -> None:
 
     from . import memory_prune
 
-    project_root = (project or Path(os.getcwd())).resolve()
+    project_root = (project or Path.cwd()).resolve()
 
     # --- Collect CLAUDE.md files ---
     claude_mds = _find_claude_md_files(project_root)
