@@ -1793,18 +1793,15 @@ def session_start(payload: HookPayload) -> HookResponse:
     # Combine brief (systemMessage) and project memory (additionalContext) into
     # a single response.  Either or both may be absent.
     if brief or combined_mem:
+        hso: dict[str, object] = {"hookEventName": "SessionStart"}
+        if combined_mem:
+            hso["additionalContext"] = combined_mem
         resp: HookResponse = {
             "continue": True,
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-            },
+            "hookSpecificOutput": hso,
         }
         if brief:
             resp["systemMessage"] = brief
-        if combined_mem:
-            hso = resp.get("hookSpecificOutput")
-            if isinstance(hso, dict):
-                hso["additionalContext"] = combined_mem
         return resp
 
     return CONTINUE()
@@ -1872,6 +1869,7 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
                     if exit_code is not None:
                         parts.append(f"last_exit: {exit_code}")
 
+
     # Context threshold advisory — fires on first crossing of 50% / 70%, or every
     # turn above 85% (urgency zone).  Gates on config [hints] context_threshold_advisory.
     _ctx_advisory_prefix: str | None = None
@@ -1880,21 +1878,22 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
 
         _hints_cfg = _cfg_mod.load().hints
         if _hints_cfg.context_threshold_advisory and cache is not None:
+            _cache_session_id = getattr(cache, "session_id", None)
+            _cache_last_thr = getattr(cache, "last_context_advisory_threshold", None)
             cache.turns_since_last_compact = getattr(cache, "turns_since_last_compact", 0) + 1
 
             from .compact import get_context_pressure
 
-            _pressure = get_context_pressure(getattr(cache, "session_id", None), cache=cache)
+            _pressure = get_context_pressure(_cache_session_id, cache=cache)
             _ctx_pct = _pressure.fill_fraction
             _pct_int = int(_ctx_pct * 100)
-            _last_thr = getattr(cache, "last_context_advisory_threshold", None)
 
             if _ctx_pct >= 0.85:
                 _ctx_advisory_prefix = f"CONTEXT ~{_pct_int}% full. /compact now. "
-            elif _ctx_pct >= 0.70 and _last_thr != 70:
+            elif _ctx_pct >= 0.70 and _cache_last_thr != 70:
                 cache.last_context_advisory_threshold = 70
                 _ctx_advisory_prefix = f"CONTEXT ~{_pct_int}% full. Consider /compact soon. "
-            elif _ctx_pct >= 0.50 and _last_thr is None:
+            elif _ctx_pct >= 0.50 and _cache_last_thr is None:
                 cache.last_context_advisory_threshold = 50
                 parts.append(f"ctx: ~{_pct_int}% — context approaching midpoint")
 
@@ -1922,6 +1921,7 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
 
     _summary_parts = list(parts)
     _summary_parts.extend(f"hint: {_kh}" for _kh in _keyword_hints)
+
 
     if _ctx_advisory_prefix is not None:
         summary = "[" + _ctx_advisory_prefix + " | ".join(_summary_parts) + "]"
