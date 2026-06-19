@@ -2344,6 +2344,16 @@ def pack(
         "--no-ignore",
         help="Skip .tokengoatignore patterns (include all matched files).",
     ),
+    strip_comments: bool = typer.Option(
+        False,
+        "--strip-comments",
+        help="Remove comments from source files before packing. Reduces token count by 15–40% on heavily commented code.",
+    ),
+    scan_secrets: bool = typer.Option(
+        False,
+        "--scan-secrets",
+        help="Scan for credentials and secrets before emitting. Prints warnings and exits non-zero if any are found.",
+    ),
 ) -> None:
     """Bundle files into a single LLM-ready output with token estimates.
 
@@ -2385,9 +2395,18 @@ def pack(
                 "       fd -e py | token-goat pack"
             )
             raise typer.Exit(1)
-        result = _pack.collect_from_stdin(project_root, ignore_patterns=ignore or None)
+        result = _pack.collect_from_stdin(
+            project_root,
+            ignore_patterns=ignore or None,
+            do_strip_comments=strip_comments,
+        )
     else:
-        result = _pack.collect_files(project_root, list(patterns), ignore_patterns=ignore or None)
+        result = _pack.collect_files(
+            project_root,
+            list(patterns),
+            ignore_patterns=ignore or None,
+            do_strip_comments=strip_comments,
+        )
 
     if not result.files:
         msg = "No files matched"
@@ -2395,6 +2414,18 @@ def pack(
             msg += f" ({len(result.skipped)} skipped)"
         _error(msg + ".")
         raise typer.Exit(1)
+
+    if scan_secrets:
+        hits = _pack.scan_secrets(result.files)
+        if hits:
+            typer.echo("Warning: potential secrets found in pack output:", err=True)
+            for h in hits:
+                typer.echo(f"  {h.rel_path}:{h.line}  [{h.kind}]  {h.snippet}", err=True)
+            typer.echo(
+                f"\n{len(hits)} issue(s) found. Add affected files to .tokengoatignore or remove secrets before packing.",
+                err=True,
+            )
+            raise typer.Exit(2)
 
     if style not in ("markdown", "xml", "plain"):
         _error(f"Unknown style {style!r}. Choose from: markdown, xml, plain.")
@@ -2415,8 +2446,9 @@ def pack(
             output.write_text(text, encoding="utf-8")
             n = len(result.files)
             noun = "file" if n == 1 else "files"
+            note = " (comments stripped)" if strip_comments else ""
             typer.echo(
-                f"Packed {n} {noun} (~{result.total_tokens:,} tokens) → {output}",
+                f"Packed {n} {noun} (~{result.total_tokens:,} tokens){note} → {output}",
                 err=True,
             )
         except OSError as exc:
@@ -2493,6 +2525,255 @@ def budget(
     else:
         cw = context_k or None
         typer.echo(_pack.format_budget_text(result, context_k=cw))
+
+
+@app.command(rich_help_panel="Core")
+def tokens(
+    patterns: list[str] = typer.Argument(  # noqa: B008
+        None,
+        help="File paths or glob patterns. Omit to scan the entire project.",
+    ),
+    top: int = typer.Option(
+        0,
+        "--top",
+        "-n",
+        help="Show only the N largest files. 0 = show all.",
+    ),
+    tree: bool = typer.Option(
+        False,
+        "--tree",
+        "-t",
+        help="Show a directory tree with per-directory token subtotals.",
+    ),
+    asc: bool = typer.Option(
+        False,
+        "--asc",
+        help="Sort ascending (smallest first).",
+    ),
+    json_output: bool = _OPT_JSON,
+    no_ignore: bool = typer.Option(
+        False,
+        "--no-ignore",
+        help="Skip .tokengoatignore patterns.",
+    ),
+) -> None:
+    """Show token footprint by file, sorted by cost.
+
+    Estimates how many tokens each file would consume in a context window
+    (characters ÷ 3 + 1).  Use this to find which files dominate your
+    token budget before deciding what to include or exclude.
+
+    With ``--tree``, rolls up token counts per directory so you can see
+    which subtrees are most expensive at a glance.
+
+    Examples::
+
+        token-goat tokens
+        token-goat tokens "src/**"
+        token-goat tokens --top 20
+        token-goat tokens --tree
+        token-goat tokens "src/**" --top 10 --json
+    """
+    import json as _json
+    from collections import defaultdict
+
+    from . import pack as _pack
+    from .parser import load_project_ignore_patterns
+
+    proj = _require_project()
+    project_root = proj.root
+
+    ignore = [] if no_ignore else load_project_ignore_patterns(project_root)
+    _patterns = list(patterns) if patterns else ["."]
+
+    result = _pack.estimate_budget(
+        project_root,
+        _patterns,
+        ignore_patterns=ignore or None,
+        max_file_bytes=100 * 1024 * 1024,
+    )
+
+    entries = list(result.entries)
+    if not entries and not result.skipped:
+        typer.echo("No files found.", err=True)
+        raise typer.Exit(0)
+
+    if asc:
+        entries.sort(key=lambda e: e.tokens)
+    # estimate_budget already sorts descending — keep that as default
+
+    if top and top > 0:
+        entries = entries[:top] if not asc else entries[:top]
+
+    if json_output:
+        typer.echo(
+            _json.dumps(
+                {
+                    "total_tokens": result.total_tokens,
+                    "total_files": len(result.entries),
+                    "files": [
+                        {"file": e.rel_path, "tokens": e.tokens, "lines": e.lines}
+                        for e in entries
+                    ],
+                    "skipped": result.skipped,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    if tree:
+        # Build directory subtotals from the *full* result (not truncated list)
+        dir_tokens: dict[str, int] = defaultdict(int)
+        dir_files: dict[str, list[_pack.BudgetEntry]] = defaultdict(list)
+        for e in result.entries:
+            parent = str(Path(e.rel_path).parent)
+            dir_tokens[parent] += e.tokens
+            dir_files[parent].append(e)
+
+        dirs_sorted = sorted(dir_tokens.items(), key=lambda x: x[1], reverse=not asc)
+
+        lines: list[str] = []
+        grand = result.total_tokens
+        for dir_name, dtok in dirs_sorted:
+            pct = (dtok / grand * 100) if grand else 0
+            lines.append(f"{dir_name}/  {dtok:>9,} tok  ({pct:.1f}%)")
+            for fe in sorted(dir_files[dir_name], key=lambda e: e.tokens, reverse=not asc):
+                name = Path(fe.rel_path).name
+                lines.append(f"  {name:<48} {fe.tokens:>8,} tok")
+
+        lines.append("")
+        lines.append(f"Total: {grand:,} tokens across {len(result.entries)} files")
+        if result.skipped:
+            lines.append(f"Skipped: {len(result.skipped)} files")
+        typer.echo("\n".join(lines))
+        return
+
+    # Flat list
+    col = max((len(e.rel_path) for e in entries), default=4)
+    col = min(col, 60)
+    header = f"{'File':<{col}}  {'Tokens':>9}  {'Lines':>7}"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for e in entries:
+        name = e.rel_path if len(e.rel_path) <= col else "…" + e.rel_path[-(col - 1):]
+        typer.echo(f"{name:<{col}}  {e.tokens:>9,}  {e.lines:>7,}")
+    typer.echo("-" * len(header))
+    shown = sum(e.tokens for e in entries)
+    typer.echo(f"{'Total shown':<{col}}  {shown:>9,}  {sum(e.lines for e in entries):>7,}")
+    if len(entries) < len(result.entries):
+        typer.echo(
+            f"(showing {len(entries)} of {len(result.entries)} files"
+            f", {result.total_tokens:,} tokens total)"
+        )
+    if result.skipped:
+        typer.echo(f"Skipped: {len(result.skipped)} files")
+
+
+@app.command(rich_help_panel="Core")
+def note(
+    action: str = typer.Argument(  # noqa: B008
+        ...,
+        help="Subcommand: set, get, unset, list, clear.",
+    ),
+    key: str | None = typer.Argument(  # noqa: B008
+        None,
+        help="Note key (alphanumeric, hyphens, underscores; max 80 chars). Required for set/get/unset.",
+    ),
+    value: str | None = typer.Argument(  # noqa: B008
+        None,
+        help="Note value. Required for 'set'.",
+    ),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Manage persistent per-project notes that survive conversation compaction.
+
+    Notes are short text facts that token-goat injects into the context at
+    session start. Use them to pin decisions, reminders, or constraints that
+    must not be forgotten when the conversation window rolls over.
+
+    Subcommands:
+
+      set KEY VALUE   Store a note under KEY.
+      get KEY         Print the value stored at KEY.
+      unset KEY       Remove the note at KEY.
+      list            Show all notes for this project.
+      clear           Delete every note for this project.
+
+    Keys may contain letters, digits, hyphens, and underscores (max 80 chars).
+    Values have no length restriction in storage, but very long values are
+    truncated at session-start injection.
+
+    Examples::
+
+        token-goat note set auth-backend "use Supabase JWT, not sessions"
+        token-goat note list
+        token-goat note unset auth-backend
+    """
+    import json as _json  # noqa: PLC0415
+
+    from . import project_memory as _pm
+
+    proj = _require_project()
+    project_hash = proj.hash
+
+    action = action.lower().strip()
+
+    if action == "set":
+        if not key:
+            _error("'set' requires a KEY argument.")
+            raise typer.Exit(1)
+        if value is None:
+            _error("'set' requires a VALUE argument.")
+            raise typer.Exit(1)
+        try:
+            _pm.set_entry(project_hash, key, value)
+        except ValueError as exc:
+            _error(str(exc))
+            raise typer.Exit(1) from None
+        typer.echo(f"Note set: {key}")
+
+    elif action == "get":
+        if not key:
+            _error("'get' requires a KEY argument.")
+            raise typer.Exit(1)
+        entries = _pm.load_entries(project_hash)
+        if key not in entries:
+            _error(f"No note found for key: {key!r}")
+            raise typer.Exit(1)
+        typer.echo(entries[key])
+
+    elif action == "unset":
+        if not key:
+            _error("'unset' requires a KEY argument.")
+            raise typer.Exit(1)
+        try:
+            _pm.unset_entry(project_hash, key)
+        except ValueError as exc:
+            _error(str(exc))
+            raise typer.Exit(1) from None
+        typer.echo(f"Note removed: {key}")
+
+    elif action == "list":
+        entries = _pm.load_entries(project_hash)
+        if json_output:
+            typer.echo(_json.dumps(entries, indent=2))
+            return
+        if not entries:
+            typer.echo("No notes stored for this project.")
+            return
+        max_k = max(len(k) for k in entries)
+        for k, v in sorted(entries.items()):
+            display = v if len(v) <= 80 else v[:77] + "..."
+            typer.echo(f"  {k:<{max_k}}  {display}")
+
+    elif action == "clear":
+        _pm.clear_all(project_hash)
+        typer.echo("All notes cleared.")
+
+    else:
+        _error(f"Unknown subcommand {action!r}. Choose from: set, get, unset, list, clear.")
+        raise typer.Exit(1)
 
 
 @app.command(rich_help_panel="Core")
