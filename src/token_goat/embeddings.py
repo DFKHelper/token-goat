@@ -1205,18 +1205,18 @@ def _rrf_fuse(
 
     # Sort by RRF score descending; convert to distance (negated) to fit SearchHit semantics.
     fused = sorted(rrf_scores.keys(), key=lambda ky: rrf_scores[ky], reverse=True)
-    result = []
-    for key in fused:
-        hit = hits_by_key[key]
-        result.append(SearchHit(
+    return [
+        SearchHit(
             file_rel=hit.file_rel,
             start_line=hit.start_line,
             end_line=hit.end_line,
             text=hit.text,
             distance=-rrf_scores[key],  # negate so smaller distance = higher RRF score
             kind=hit.kind,
-        ))
-    return result
+        )
+        for key in fused
+        for hit in (hits_by_key[key],)
+    ]
 
 
 def hybrid_search(
