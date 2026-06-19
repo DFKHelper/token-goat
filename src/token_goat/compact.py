@@ -385,8 +385,7 @@ def get_auto_trigger_multiplier(
         harness = detect_harness()
 
     # Look up the per-harness default
-    default_multiplier = _HARNESS_MULTIPLIER_DEFAULTS.get(harness, 1.0)
-    return max(1.0, min(10.0, default_multiplier))
+    return max(1.0, min(10.0, _HARNESS_MULTIPLIER_DEFAULTS.get(harness, 1.0)))
 
 
 def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
