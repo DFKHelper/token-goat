@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-06-18
+
 ### Added
 
 - **`token-goat callers <symbol>` — show which functions call a given symbol.** Groups results by caller: for each function that references the symbol, shows the file, caller name, and every line where it invokes the symbol. Complements `refs` by showing the call chain rather than raw usage lines.
