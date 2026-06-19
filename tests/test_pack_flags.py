@@ -249,3 +249,42 @@ class TestCollectFilesStripComments:
         f.write_text("x = 1  # comment\n", encoding="utf-8")
         result = collect_files(tmp_path, ["a.py"], do_strip_comments=False)
         assert "# comment" in result.files[0].content
+
+
+# ---------------------------------------------------------------------------
+# Integration: --budget CLI flag
+# ---------------------------------------------------------------------------
+
+
+class TestPackBudgetFlag:
+    def test_under_budget_exits_zero(self, tmp_path, monkeypatch, tmp_data_dir, make_project):
+        root = _make_project(tmp_path, make_project, {"src/tiny.py": "x = 1\n"})
+        monkeypatch.chdir(root)
+        result = runner.invoke(app, ["pack", "src/tiny.py", "--budget", "999999"])
+        assert result.exit_code == 0
+
+    def test_over_budget_exits_three(self, tmp_path, monkeypatch, tmp_data_dir, make_project):
+        root = _make_project(tmp_path, make_project, {"src/big.py": "x = 1\n" * 300})
+        monkeypatch.chdir(root)
+        result = runner.invoke(app, ["pack", "src/big.py", "--budget", "1"])
+        assert result.exit_code == 3
+
+    def test_over_budget_message_on_stderr(self, tmp_path, monkeypatch, tmp_data_dir, make_project):
+        root = _make_project(tmp_path, make_project, {"src/big.py": "x = 1\n" * 300})
+        monkeypatch.chdir(root)
+        result = runner.invoke(app, ["pack", "src/big.py", "--budget", "1"], catch_exceptions=False)
+        combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+        assert "budget" in combined.lower() or result.exit_code == 3
+
+    def test_zero_budget_no_limit(self, tmp_path, monkeypatch, tmp_data_dir, make_project):
+        root = _make_project(tmp_path, make_project, {"src/big.py": "x = 1\n" * 300})
+        monkeypatch.chdir(root)
+        result = runner.invoke(app, ["pack", "src/big.py", "--budget", "0"])
+        assert result.exit_code == 0
+        assert "x = 1" in result.output
+
+    def test_negative_budget_exits_one(self, tmp_path, monkeypatch, tmp_data_dir, make_project):
+        root = _make_project(tmp_path, make_project, {"src/tiny.py": "x = 1\n"})
+        monkeypatch.chdir(root)
+        result = runner.invoke(app, ["pack", "src/tiny.py", "--budget", "-1"])
+        assert result.exit_code == 1

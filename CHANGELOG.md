@@ -22,6 +22,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat context-for <task>` — minimal context bundle for a task.** Takes a natural-language task description, runs semantic search across the indexed codebase, and emits a prioritized list of `token-goat read` commands trimmed to a token budget. Fetches only the slices relevant to the task instead of loading entire files. `--budget N` sets the token ceiling; `--top N` limits the file count; `--json` for structured output.
 
+- **`token-goat dead` — surface symbols with no known callers.** Queries the project index for functions, methods, async functions, and classes that have no recorded call-site references. Private symbols (names starting with `_`) and common entry-point names (`main`, `app`, `create_app`, etc.) are excluded from results by default. `--include-private` lifts the underscore filter; `--kind` narrows to specific symbol types; `--top N` caps the list; `--json` for structured output. Results are heuristic leads: dynamic dispatch and external callers are not visible to static indexing.
+
+- **`token-goat coverage-gaps` — find callables not referenced by any test file.** Scans indexed functions and methods in non-test source files for names that never appear in a test file's reference records. Dunder and private names are excluded. `--top N` limits the list; `--json` for structured output. Useful for spotting untested surface area before a refactor or release; results should be read as leads, not verdicts.
+
+- **`token-goat pack --budget N` — fail the pack if it would exceed a token budget.** Exits with code 3 when the estimated token count of the collected files exceeds N, so a shell script or CI step can treat an oversized context as an error rather than silently passing it to the model. `--budget 0` (the default) imposes no limit.
+
 ## [1.9.3] - 2026-06-18
 
 ### Added
