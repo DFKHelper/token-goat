@@ -548,7 +548,10 @@ def _try_add_chunk(
     """Append a Chunk if its text falls within [MIN_CHUNK_CHARS, MAX_CHUNK_CHARS].
 
     Returns True when appended (and extends covered if provided), False when dropped.
+    Silently drops chunks with line numbers outside file bounds.
     """
+    if start < 1 or end > len(lines) or start > end:
+        return False
     chunk_text = "\n".join(lines[start - 1 : end])
     if not (MIN_CHUNK_CHARS <= len(chunk_text) <= MAX_CHUNK_CHARS):
         return False
