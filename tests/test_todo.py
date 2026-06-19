@@ -114,6 +114,16 @@ class TestFindTodos:
     def test_empty_project_returns_empty(self, isolated_project) -> None:
         assert find_todos(isolated_project.hash, isolated_project.root) == []
 
+    def test_db_error_logs_warning_and_returns_empty(self, isolated_project, caplog) -> None:
+        import logging
+        from unittest.mock import patch
+        with patch("token_goat.db.open_project_readonly") as mock_open:
+            mock_open.side_effect = RuntimeError("database locked")
+            caplog.set_level(logging.WARNING, logger="token_goat.todo")
+            result = find_todos(isolated_project.hash, isolated_project.root)
+            assert result == []
+            assert "failed to read indexed files for TODOs" in caplog.text
+
     def test_no_duplicates_on_single_line(self, isolated_project) -> None:
         seed(isolated_project, {"once.py": "# TODO: only once\n"})
         items = find_todos(isolated_project.hash, isolated_project.root)
