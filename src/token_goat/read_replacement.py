@@ -1205,7 +1205,7 @@ def read_section(
                 "WHERE file_rel = ? AND heading = ? AND end_line IS NOT NULL ORDER BY line",
                 (rel_path, base_heading),
             ).fetchall()
-            case_sensitive_match = len(rows) > 0
+            case_sensitive_match = bool(rows)
             if not rows:
                 # Fallback: case-insensitive match
                 rows = conn.execute(

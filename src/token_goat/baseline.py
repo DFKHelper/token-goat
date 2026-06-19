@@ -403,7 +403,7 @@ def _memory_is_already_lazy(memory_md: Path) -> bool:
         ]
     except OSError:
         return False
-    return len(siblings) > 0
+    return bool(siblings)
 
 
 def _scan_memory_md(
