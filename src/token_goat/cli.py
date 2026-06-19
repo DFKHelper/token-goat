@@ -2603,7 +2603,7 @@ def tokens(
     # estimate_budget already sorts descending — keep that as default
 
     if top and top > 0:
-        entries = entries[:top] if not asc else entries[:top]
+        entries = entries[:top]
 
     if json_output:
         typer.echo(

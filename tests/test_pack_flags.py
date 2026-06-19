@@ -35,17 +35,19 @@ class TestStripComments:
         assert "# set x" not in out
         assert "y = 2" in out
 
-    def test_python_docstring_removed(self):
+    def test_python_triple_quoted_string_preserved(self):
+        # Triple-quoted strings are NOT stripped — regex cannot distinguish
+        # a docstring from a string value like sql = """SELECT..."""
         src = '"""This is a docstring."""\ndef foo():\n    pass\n'
         out = strip_comments(src, Path("a.py"))
-        assert "This is a docstring" not in out
+        assert "This is a docstring" in out
         assert "def foo" in out
 
-    def test_python_multiline_docstring_preserves_line_count(self):
-        src = '"""Line one.\nLine two.\n"""\ndef bar():\n    pass\n'
-        original_lines = src.count("\n")
+    def test_python_shebang_preserved(self):
+        src = "#!/usr/bin/env python3\nx = 1  # inline\n"
         out = strip_comments(src, Path("a.py"))
-        assert out.count("\n") == original_lines
+        assert "#!/usr/bin/env python3" in out
+        assert "# inline" not in out
 
     def test_js_line_comment_removed(self):
         src = "const x = 1; // assign x\nconst y = 2;\n"
@@ -140,6 +142,16 @@ class TestScanSecrets:
         assert "a.py" in paths
         assert "b.py" not in paths
         assert "c.py" in paths
+
+    def test_github_fine_grained_pat_detected(self):
+        pf = _make_pf("config.py", 'token = "github_pat_' + "A" * 36 + '"\n')
+        hits = scan_secrets([pf])
+        assert any("GitHub" in h.kind for h in hits)
+
+    def test_mongodb_srv_url_detected(self):
+        pf = _make_pf("db.py", "url = 'mongodb+srv://user:secret@cluster.mongodb.net/db'\n")
+        hits = scan_secrets([pf])
+        assert any("Database" in h.kind for h in hits)
 
 
 # ---------------------------------------------------------------------------

@@ -124,3 +124,19 @@ class TestTokensCommand:
         data = json.loads(result.output.strip())
         assert len(data["files"]) == 3
         assert data["total_files"] == 6
+
+    def test_asc_with_top_shows_smallest(self, tmp_path, monkeypatch, tmp_data_dir, make_project):
+        root = _setup(tmp_path, make_project, {
+            "tiny.py": "x\n",
+            "medium.py": "x\n" * 50,
+            "big.py": "x\n" * 200,
+        })
+        monkeypatch.chdir(root)
+        result = runner.invoke(app, ["tokens", "*.py", "--asc", "--top", "2", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert len(data["files"]) == 2
+        names = [f["file"] for f in data["files"]]
+        # Ascending order + top 2 should give the 2 smallest files, starting from smallest
+        assert any("tiny" in n for n in names)
+        assert not any("big" in n for n in names)
