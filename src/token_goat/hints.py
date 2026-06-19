@@ -131,6 +131,11 @@ class HintItem:
 
 _SLIM_HINT_MAX_CHARS: int = 220
 
+# Reusable token-goat read command templates to reduce f-string duplication.
+_CMD_READ_SYMBOL: str = "Use `token-goat read \"{path}::symbol\"` for more."
+_CMD_READ_SYM_SURGICAL: str = "Use `token-goat read \"{path}::sym\"` for surgical access."
+_CMD_READ_FIRST_SYM_FAST: str = "Use `token-goat read \"{path}::{symbol}\"` (~85% faster)."
+
 
 def slim_hint_text(text: str, tier: str) -> str:
     """Compress a hint to its first paragraph at hot/critical context pressure.
@@ -850,25 +855,14 @@ def _build_read_hint_inner(
     safe_limit = max(0, int(limit)) if limit is not None else 0
     req_start = safe_offset + 1
     req_end = req_start + (safe_limit or DEFAULT_READ_LIMIT) - 1
-    # An explicit limit signals "surgical intent" — the agent picked a narrow
-    # window deliberately, not the implicit DEFAULT_READ_LIMIT fallback. Used
-    # by _hint_from_cache to suppress nag-text on small intentional re-reads.
+    # An explicit limit signals "surgical intent" — the agent picked a narrow window deliberately, not the implicit DEFAULT_READ_LIMIT fallback; used by _hint_from_cache to suppress nag-text on small intentional re-reads.
     has_explicit_limit = safe_limit > 0
 
-    # Compute fname once; it is used in multiple debug log calls below and
-    # forwarded to _hint_from_cache / _hint_from_index which also need it.
-    # Both are sanitized here so every downstream hint f-string is safe: a path
-    # with embedded newlines read from a crafted session JSON would otherwise
-    # split a hint line into fake separate "Note:" entries in the LLM's context.
+    # Compute fname once; used in debug logs and forwarded to _hint_from_cache/_hint_from_index; both are sanitized here so every downstream hint f-string is safe (prevents newlines in crafted session JSON from splitting hint lines into fake "Note:" entries).
     fname = _sanitize_hint_path(Path(file_path).name)
     file_path = _sanitize_hint_path(file_path)
 
-    # Compute a shorter recall_path for use in recall-command examples embedded
-    # in hints.  Using the relative path (when cwd is available) instead of the
-    # full absolute path saves ~25-40 tokens per hint on typical projects where
-    # file_path is an absolute Windows path like C:/Projects/foo/src/bar.py.
-    # When cwd is None or the path is not inside cwd, fall back to file_path so
-    # recall commands remain copy-paste correct.
+    # Compute a shorter recall_path for recall-command examples in hints; using relative path (if cwd available) instead of absolute saves ~25-40 tokens per hint; falls back to file_path if cwd is None or path not inside cwd.
     recall_path: str = file_path
     if cwd:
         try:
@@ -1235,7 +1229,7 @@ def _hint_from_cache(
                 return ReadHint(
                     _apply_terse(
                         f"`{fname}` read via `token-goat read`: {sym_list}{more}. "
-                        f"Use `token-goat read \"{recall_path}::symbol\"` for more."
+                        f"{_CMD_READ_SYMBOL.format(path=recall_path)}"
                     ),
                     0,
                 )
@@ -1254,7 +1248,7 @@ def _hint_from_cache(
         return ReadHint(
             _apply_terse(
                 f"`{fname}` re-read often{sym_suffix}. "
-                f"Use `token-goat read \"{recall_path}::sym\"` for surgical access."
+                f"{_CMD_READ_SYM_SURGICAL.format(path=recall_path)}"
             ),
             0,
         )
@@ -1286,7 +1280,7 @@ def _hint_from_cache(
         return ReadHint(
             _apply_terse(
                 f"`{fname}` read via `token-goat read`: {sym_list}{more}. "
-                f"Use `token-goat read \"{recall_path}::symbol\"` for more."
+                f"{_CMD_READ_SYMBOL.format(path=recall_path)}"
             ),
             0,
         )
@@ -1535,7 +1529,7 @@ def _hint_from_index(
         _apply_terse(
             f"`{fname}`: {n_lines} lines (~{full_tokens} tokens). "
             f"{sym_clause}"
-            f"Use `token-goat read \"{rel}::{first_sym_name}\"` (~85% faster)."
+            f"{_CMD_READ_FIRST_SYM_FAST.format(path=rel, symbol=first_sym_name)}"
         ),
         0,
     )
