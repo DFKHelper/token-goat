@@ -5520,12 +5520,9 @@ def cmd_history(
                     age_secs = int(current_time - entry.ts)
                     exit_str = f" exit={entry.exit_code}" if entry.exit_code is not None else ""
                     cached_str = "cached" if entry.output_id else "not cached"
-                    size_mb = (entry.stdout_bytes + entry.stderr_bytes) / (1024 * 1024)
-                    if size_mb >= 1:
-                        size_str = f"{size_mb:.1f} MB"
-                    else:
-                        size_bytes = entry.stdout_bytes + entry.stderr_bytes
-                        size_str = f"{size_bytes:,} B"
+                    total_bytes = entry.stdout_bytes + entry.stderr_bytes
+                    size_mb = total_bytes / (1024 * 1024)
+                    size_str = f"{size_mb:.1f} MB" if size_mb >= 1 else f"{total_bytes:,} B"
                     typer.echo(
                         f"  {age_secs:6,}s ago {exit_str:>8} [{cached_str:>12}] {size_str:>12}  {entry.cmd_preview}"
                     )
