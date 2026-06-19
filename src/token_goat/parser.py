@@ -683,8 +683,8 @@ def iter_source_files(
                     if _matches_ignore_pattern(rel_path, _ignore_patterns):
                         skipped_ignore += 1
                         continue
-                except ValueError:
-                    pass
+                except ValueError as _e:
+                    _LOG.debug("iter_source_files: relative path failed for %s: %s", path, _e)
             yield path
     if skipped_dirs > 0:
         _LOG.debug("file walk excluded %d skip-listed directories", skipped_dirs)

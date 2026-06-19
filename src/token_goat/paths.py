@@ -269,6 +269,8 @@ def _safe_child_path(base: Path, child_name: str, extension: str, label: str) ->
         label:      Human-readable label used in ``ValueError`` messages
                     (e.g. ``"project_hash"``, ``"session_id"``).
     """
+    if not child_name:
+        raise ValueError(f"{label} must not be empty")
     if "\x00" in child_name:
         raise ValueError(f"{label} contains null byte: {child_name!r}")
     if sys.platform == "win32" and ":" in child_name:
@@ -462,8 +464,8 @@ def normalize_path_key(path: str, cwd: str | None = None) -> str:
         # Relative path: resolve against cwd when available.
         if cwd:
             return normalize_key(str((_P(cwd) / _P(path)).resolve()))
-    except Exception:
-        pass
+    except Exception as _e:
+        _LOG.debug("normalize_path_key: failed to resolve %r with cwd %r: %s", path, cwd, _e)
     return normalize_key(path)
 
 
