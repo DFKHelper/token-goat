@@ -253,7 +253,8 @@ def get_context_pressure(  # type: ignore[name-defined]  # SessionCache imported
         fill = total / window
 
         return ContextPressure(fill_fraction=fill, tier=tier_for_fraction(fill))
-    except Exception:
+    except Exception as _e:
+        _LOG.debug("get_context_pressure: failed to compute: %s", _e, exc_info=True)
         return ContextPressure(fill_fraction=0.0, tier="cool")
 
 
@@ -542,7 +543,8 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
 
         return goal.strip()
 
-    except Exception:
+    except Exception as _e:
+        _LOG.debug("infer_session_goal: failed to infer: %s", _e, exc_info=True)
         return ""
 
 if TYPE_CHECKING:
@@ -890,8 +892,8 @@ def _write_manifest_sidecar(
             payload_dict["counts"] = {k: int(v) for k, v in counts.items()}
         payload = json.dumps(payload_dict, separators=(",", ":"), sort_keys=True)
         paths.atomic_write_text(sidecar, payload)
-    except Exception:
-        pass
+    except Exception as _e:
+        _LOG.debug("write_session_manifest: failed to write %s: %s", sidecar, _e, exc_info=True)
 
 
 def _compute_section_counts(cache: object) -> dict[str, int]:
