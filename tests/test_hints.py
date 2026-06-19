@@ -1224,7 +1224,8 @@ class TestIndexHintSymbolListing:
         assert "validate_token" in hint
         # 4th symbol is overflow — should NOT appear by name
         assert "refresh" not in hint
-        assert "..." in hint  # overflow indicator
+        assert "+1 more" in hint  # overflow indicator with count
+        assert "skeleton" in hint  # skeleton suggestion present in overflow path
 
     def test_index_hint_single_symbol_no_overflow(self, tmp_data_dir, tmp_path):
         """Single indexed symbol: hint shows it, no overflow marker."""
