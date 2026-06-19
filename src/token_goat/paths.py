@@ -59,7 +59,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import IO, Any, Literal
+from typing import IO, Any
 
 from .util import get_logger
 
@@ -1112,11 +1112,10 @@ def open_log_file(path: Path) -> logging.FileHandler:
     return _OwnerOnlyFileHandler(str(path), mode="a", encoding="utf-8")
 
 
-def _atomic_write_core(path: Path, content: str | bytes, mode: Literal["w", "wb"]) -> None:
+def _atomic_write_core(path: Path, content: str | bytes) -> None:
     """Write *content* to *path* atomically via a temp file + rename.
 
     Shared implementation for :func:`atomic_write_text` and :func:`atomic_write_bytes`.
-    *mode* is the ``open()`` mode string — ``"w"`` for text, ``"wb"`` for binary.
 
     Two-component temp name: thread ID prevents collisions when multiple threads
     write the same path concurrently; monotonic_ns prevents collisions across rapid
@@ -1179,7 +1178,7 @@ def atomic_write_text(path: Path, content: str) -> None:
     This is the canonical implementation shared by :mod:`session` and
     :mod:`config` — both previously carried their own private copies.
     """
-    _atomic_write_core(path, content, "w")
+    _atomic_write_core(path, content)
 
 
 def atomic_write_bytes(path: Path, content: bytes) -> None:
@@ -1191,4 +1190,4 @@ def atomic_write_bytes(path: Path, content: bytes) -> None:
     On POSIX the temp file is created with owner-only permissions (0o600) so
     it is never world-readable even during the brief window before the rename.
     """
-    _atomic_write_core(path, content, "wb")
+    _atomic_write_core(path, content)
