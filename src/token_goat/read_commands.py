@@ -3964,11 +3964,9 @@ def _symbols_for_file(project_hash: str, file_rel: str, session_cache: session.S
     try:
         with _db.open_project_readonly(project_hash) as conn:
             rows = conn.execute(
-                "SELECT DISTINCT name FROM symbols "
-                "WHERE file_rel = ? AND kind IN ({}) "
-                "ORDER BY line LIMIT 10".format(
-                    ",".join("?" * len(_STRUCT_KINDS))
-                ),
+                f"SELECT DISTINCT name FROM symbols "
+                f"WHERE file_rel = ? AND kind IN ({','.join('?' * len(_STRUCT_KINDS))}) "
+                f"ORDER BY line LIMIT 10",
                 (file_rel, *_STRUCT_KINDS),
             ).fetchall()
         return [str(r["name"]) for r in rows]
