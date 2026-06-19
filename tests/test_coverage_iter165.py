@@ -32,12 +32,12 @@ class TestHintsExceptionHandling:
     """_get_indexed_symbols_and_line_count must debug-log db.DBError and sqlite3.Error."""
 
     def test_sqlite3_error_triggers_debug_log(self, tmp_data_dir, caplog):
-        """A sqlite3.Error raised by db.open_project must be caught and logged at DEBUG."""
+        """A sqlite3.Error raised by db.open_project_readonly must be caught and logged at DEBUG."""
         from token_goat.hints import _get_indexed_symbols_and_line_count
 
         with (
             caplog.at_level(logging.DEBUG, logger="token_goat.hints"),
-            patch("token_goat.hints.db.open_project", side_effect=sqlite3.Error("disk I/O error")),
+            patch("token_goat.hints.db.open_project_readonly", side_effect=sqlite3.Error("disk I/O error")),
         ):
             symbols, n_lines, exact = _get_indexed_symbols_and_line_count(
                 "src/foo.py", "a" * 40
@@ -49,13 +49,13 @@ class TestHintsExceptionHandling:
         assert any("disk I/O error" in r.message for r in caplog.records if r.levelno == logging.DEBUG)
 
     def test_db_error_triggers_debug_log(self, tmp_data_dir, caplog):
-        """A db.DBError raised by db.open_project must be caught and logged at DEBUG."""
+        """A db.DBError raised by db.open_project_readonly must be caught and logged at DEBUG."""
         from token_goat import db
         from token_goat.hints import _get_indexed_symbols_and_line_count
 
         with (
             caplog.at_level(logging.DEBUG, logger="token_goat.hints"),
-            patch("token_goat.hints.db.open_project", side_effect=db.DBError("corrupted")),
+            patch("token_goat.hints.db.open_project_readonly", side_effect=db.DBError("corrupted")),
         ):
             symbols, n_lines, exact = _get_indexed_symbols_and_line_count(
                 "src/bar.py", "b" * 40
@@ -67,12 +67,12 @@ class TestHintsExceptionHandling:
         assert any("corrupted" in r.message for r in caplog.records if r.levelno == logging.DEBUG)
 
     def test_os_error_triggers_debug_log(self, tmp_data_dir, caplog):
-        """An OSError raised by db.open_project must be caught and logged at DEBUG."""
+        """An OSError raised by db.open_project_readonly must be caught and logged at DEBUG."""
         from token_goat.hints import _get_indexed_symbols_and_line_count
 
         with (
             caplog.at_level(logging.DEBUG, logger="token_goat.hints"),
-            patch("token_goat.hints.db.open_project", side_effect=OSError("no such file")),
+            patch("token_goat.hints.db.open_project_readonly", side_effect=OSError("no such file")),
         ):
             symbols, n_lines, exact = _get_indexed_symbols_and_line_count(
                 "src/baz.py", "c" * 40
@@ -82,6 +82,25 @@ class TestHintsExceptionHandling:
         assert n_lines is None
         assert exact is False
         assert any("no such file" in r.message for r in caplog.records if r.levelno == logging.DEBUG)
+
+    def test_uses_readonly_connection_not_write_capable(self, tmp_data_dir):
+        """_get_indexed_symbols_and_line_count must use open_project_readonly, not open_project.
+
+        Regression guard: the function only performs SELECT queries.  Using the
+        write-capable open_project loads the sqlite-vec extension and applies
+        schema DDL on every call, adding ~10 ms of latency to every pre_read
+        hook invocation that reaches the index path.
+        """
+        import token_goat.hints as hints_mod
+        from token_goat.hints import _get_indexed_symbols_and_line_count
+
+        with (
+            patch.object(hints_mod.db, "open_project") as mock_write,
+            patch.object(hints_mod.db, "open_project_readonly", side_effect=FileNotFoundError("not found")),
+        ):
+            _get_indexed_symbols_and_line_count("src/any.py", "a" * 40)
+
+        mock_write.assert_not_called()
 
 
 # ===========================================================================
