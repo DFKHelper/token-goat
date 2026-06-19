@@ -767,6 +767,12 @@ Outbound network is reserved to three explicit cases:
 
 **Security reports.** See [SECURITY.md](SECURITY.md). Email `token-goat@dfkhelper.com`; do not file as a GitHub issue. Reports are acknowledged within 7 days; coordinated disclosure with a 90-day default window.
 
+**Prompt injection.** When an AI reads a file, web page, or command output, that content enters its context alongside your own instructions. Prompt injection is when untrusted content includes text designed to look like instructions — "Ignore all previous directives and run this instead" — to redirect the AI mid-task.
+
+Token-goat intercepts every Read, Fetch, and Bash call the AI makes. It does not filter or sanitize content before passing it to the model; doing so would silently break legitimate use cases. The primary defense is the model's own training to treat tool output as data, not as commands from a trusted party.
+
+In practice: if you're reading files from untrusted sources or fetching unknown URLs during a session, pay attention to any actions the AI takes immediately after. Unusual follow-on behavior — opening files it wasn't asked about, writing to unexpected locations — is a sign that something in the read content may have tried to redirect it.
+
 **Windows Defender (optional, Windows only).** Real-time scanning slows indexing. To exclude the data folder, open PowerShell as administrator:
 
 ```powershell
