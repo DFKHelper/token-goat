@@ -190,7 +190,7 @@ def _is_generated_filename(name: str) -> bool:
     lower = name.lower()
     if lower in SKIP_FILE_BASENAMES:
         return True
-    return any(lower.endswith(suf) for suf in SKIP_FILE_SUFFIXES)
+    return lower.endswith(SKIP_FILE_SUFFIXES)
 
 
 def load_project_ignore_patterns(project_root: Path) -> list[str]:
