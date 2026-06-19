@@ -2354,6 +2354,14 @@ def pack(
         "--scan-secrets",
         help="Scan for credentials and secrets before emitting. Prints warnings and exits non-zero if any are found.",
     ),
+    budget: int = typer.Option(
+        0,
+        "--budget",
+        help=(
+            "Fail if the total token estimate exceeds N. "
+            "Exit code 3 when over budget. 0 = no limit (default)."
+        ),
+    ),
 ) -> None:
     """Bundle files into a single LLM-ready output with token estimates.
 
@@ -2377,6 +2385,7 @@ def pack(
         token-goat pack --line-numbers "src/payments.py"
         fd -e py src/ | token-goat pack
         token-goat pack "src/**" --instruction-file AGENTS.md
+        token-goat pack "src/**" --budget 50000
     """
     from . import pack as _pack
     from .parser import load_project_ignore_patterns
@@ -2414,6 +2423,17 @@ def pack(
             msg += f" ({len(result.skipped)} skipped)"
         _error(msg + ".")
         raise typer.Exit(1)
+
+    if budget < 0:
+        _error("--budget must be a positive integer.")
+        raise typer.Exit(1)
+    if budget and result.total_tokens > budget:
+        typer.echo(
+            f"Over budget: {result.total_tokens:,} tokens > {budget:,} limit "
+            f"({len(result.files)} files).",
+            err=True,
+        )
+        raise typer.Exit(3)
 
     if scan_secrets:
         hits = _pack.scan_secrets(result.files)
@@ -3300,6 +3320,189 @@ def cmd_test_for(
     from . import read_commands
 
     read_commands.test_for(file, json_output=json_output)
+
+
+@app.command("dead", rich_help_panel="Core")
+def cmd_dead(
+    kinds: list[str] = typer.Option(  # noqa: B008
+        ["function", "method", "async_function", "class"],
+        "--kind",
+        "-k",
+        help="Symbol kinds to check (can be repeated).",
+    ),
+    include_private: bool = typer.Option(
+        False,
+        "--include-private",
+        help="Include symbols whose names start with an underscore.",
+    ),
+    top: int = typer.Option(
+        0,
+        "--top",
+        "-n",
+        help="Show only the first N results. 0 = show all.",
+    ),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """List symbols with no known callers or references in the project.
+
+    Queries the indexed symbol and reference tables for definitions that do not
+    appear in any call-site record.  Results are heuristic: dynamic dispatch,
+    reflection, and external callers are not visible to static indexing.
+    Conventional entry-point names (main, setup, conftest) are excluded.
+
+    Use this to surface dead-code candidates or to find functions that have no
+    tests and may need them before removal is safe.
+
+    Examples::
+
+        token-goat dead
+        token-goat dead --kind function --kind method
+        token-goat dead --include-private
+        token-goat dead --top 20 --json
+    """
+    import json as _json
+
+    SKIP_NAMES: frozenset[str] = frozenset({
+        "main", "__main__", "setup", "teardown", "conftest",
+        "pytest_configure", "pytest_collection_modifyitems",
+        "app", "create_app", "application",
+    })
+
+    proj = _require_project()
+
+    kinds_placeholders = ",".join("?" * len(kinds))
+    private_clause = "" if include_private else "AND s.name NOT GLOB '_*'"
+
+    rows = _query_project(
+        proj.hash,
+        f"""
+        SELECT s.name, s.kind, s.file_rel, s.line
+        FROM symbols s
+        WHERE s.kind IN ({kinds_placeholders})
+          {private_clause}
+          AND NOT EXISTS (SELECT 1 FROM refs r WHERE r.symbol_name = s.name)
+        ORDER BY s.file_rel, s.line
+        """,
+        tuple(kinds),
+    )
+
+    results = [r for r in rows if r["name"] not in SKIP_NAMES]
+    if top > 0:
+        results = results[:top]
+
+    if json_output:
+        typer.echo(
+            _json.dumps(
+                [
+                    {
+                        "name": r["name"],
+                        "kind": r["kind"],
+                        "file": r["file_rel"],
+                        "line": r["line"],
+                    }
+                    for r in results
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    if not results:
+        typer.echo("No unreferenced symbols found.")
+        return
+
+    typer.echo(f"Unreferenced symbols ({len(results)} found):\n")
+    current_file: str | None = None
+    for r in results:
+        if r["file_rel"] != current_file:
+            current_file = r["file_rel"]
+            typer.echo(f"  {current_file}")
+        typer.echo(f"    line {r['line']:>5}  {r['kind']:<18}  {r['name']}")
+    typer.echo("\nNote: dynamic dispatch and external callers are not visible to static indexing.")
+
+
+@app.command("coverage-gaps", rich_help_panel="Core")
+def cmd_coverage_gaps(
+    top: int = typer.Option(
+        0,
+        "--top",
+        "-n",
+        help="Show only the first N results. 0 = show all.",
+    ),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Find functions and methods that no test file references.
+
+    Searches indexed callables in non-test source files for names that do not
+    appear in any test file's reference records.  Results are a starting point:
+    a function may be exercised through integration tests or may be a private
+    helper intentionally without direct coverage.
+
+    Examples::
+
+        token-goat coverage-gaps
+        token-goat coverage-gaps --top 30
+        token-goat coverage-gaps --json
+    """
+    import json as _json
+
+    CALLABLE_KINDS = ("function", "async_function", "method", "constructor")
+    kinds_placeholders = ",".join("?" * len(CALLABLE_KINDS))
+
+    proj = _require_project()
+
+    rows = _query_project(
+        proj.hash,
+        f"""
+        SELECT s.name, s.kind, s.file_rel, s.line
+        FROM symbols s
+        WHERE s.kind IN ({kinds_placeholders})
+          AND s.file_rel NOT GLOB '*/test_*'
+          AND s.file_rel NOT GLOB 'test_*'
+          AND s.name NOT GLOB '_*'
+          AND NOT EXISTS (
+              SELECT 1 FROM refs r
+              WHERE r.symbol_name = s.name
+                AND (r.file_rel GLOB '*/test_*' OR r.file_rel GLOB 'test_*')
+          )
+        ORDER BY s.file_rel, s.line
+        """,
+        CALLABLE_KINDS,
+    )
+
+    results = list(rows)
+    if top > 0:
+        results = results[:top]
+
+    if json_output:
+        typer.echo(
+            _json.dumps(
+                [
+                    {
+                        "name": r["name"],
+                        "kind": r["kind"],
+                        "file": r["file_rel"],
+                        "line": r["line"],
+                    }
+                    for r in results
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    if not results:
+        typer.echo("All indexed callables have test references.")
+        return
+
+    typer.echo(f"Functions with no test references ({len(results)} found):\n")
+    current_file: str | None = None
+    for r in results:
+        if r["file_rel"] != current_file:
+            current_file = r["file_rel"]
+            typer.echo(f"  {current_file}")
+        typer.echo(f"    line {r['line']:>5}  {r['kind']:<18}  {r['name']}")
+    typer.echo("\nNote: indirect coverage through integration tests is not visible to reference scanning.")
 
 
 @app.command("types", rich_help_panel="Core")
