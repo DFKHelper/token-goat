@@ -102,3 +102,22 @@ def test_checkpoint_is_wired_into_the_maintenance_cycle(tmp_data_dir):
     stats = worker.cleanup_on_startup()
 
     assert "wal_bytes_reclaimed" in stats
+
+
+def test_checkpoint_global_wal_handles_permission_error(tmp_data_dir, monkeypatch):
+    """_checkpoint_global_wal handles PermissionError on stat() gracefully."""
+    from pathlib import Path
+
+    with db.open_global() as conn:
+        conn.execute("SELECT 1")
+
+    original_stat = Path.stat
+    def mock_stat_permission_error(self, **kwargs):
+        if str(self).endswith("-wal"):
+            raise PermissionError("mock permission denied")
+        return original_stat(self, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", mock_stat_permission_error)
+    result = worker._checkpoint_global_wal()
+    assert isinstance(result, int)
+    assert result >= 0
