@@ -34,6 +34,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Large-file read hints — skeleton suggestion for files with many indexed symbols.** When the read hint fires and more than three symbols are indexed for the file, the hint now shows the total symbol count and suggests `token-goat skeleton "file"` before opening a specific one. Previously the overflow appeared as `...` with no count and no browse path. The skeleton command in the hint is quoted to handle paths with spaces.
 
+### Performance
+
+- **`pre_read` hook now uses a read-only DB connection for symbol lookup.** `_get_indexed_symbols_and_line_count` was opening a write-capable connection (`db.open_project()`) that loads the sqlite-vec extension, sets WAL mode, and runs schema DDL on every call. Switching to `db.open_project_readonly()` eliminates those steps, cutting the function from ~9.8 ms to ~1.4 ms. Every Read tool call passes through `pre_read`, so the saving applies to every hook invocation. Fail-soft behavior is unchanged.
+
 ## [1.9.3] - 2026-06-18
 
 ### Added
