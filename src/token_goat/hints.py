@@ -129,7 +129,7 @@ class HintItem:
         return f"HintItem(priority={self.hint_priority}, text={self.text!r:.40})"
 
 
-_SLIM_HINT_MAX_CHARS: int = 250
+_SLIM_HINT_MAX_CHARS: int = 220
 
 
 def slim_hint_text(text: str, tier: str) -> str:
@@ -263,10 +263,8 @@ _TERSE: dict[str, str] = {
     "exit=": "x=",
     "ran ": "×",
     "use `offset=": "→offset=",
-    # Keep "tok" consistent with the token_estimate_header format (~N tok).
     " tokens).": " tok).",
     "to read selectively.": "selectively.",
-    # Cache-hit verbs: ~18 chars saved per bash/web cache hint fire.
     "to read without re-running.": "(no re-run).",
     "to read without re-fetching.": "(no re-fetch).",
 }
@@ -283,9 +281,8 @@ def _make_short_stub_hint(seen_count: int) -> ReadHint:
     """Return a short stub hint for when a fingerprint has been seen Nx already.
 
     Used when verbose_until_seen_count has been reached — replaces the full
-    hint text with a terse "(↳ same hint seen Nx, see prior context)" reminder.
-    Carries 0 tokens_saved because suppressing the verbose text is the saving
-    (no duplicate action needed from the agent).
+    hint text with a terse stub. Carries 0 tokens_saved because suppressing the
+    verbose text is the saving (no duplicate action needed from the agent).
     """
     return ReadHint(
         f"(↳ same hint seen {seen_count}×, see prior context)",
@@ -318,7 +315,7 @@ def _make_short_stub_hint(seen_count: int) -> ReadHint:
 # Cap on the size of any single sidecar JSON line to bound worst-case overhead.
 # A pathological file path or symbol list will be tail-truncated rather than
 # bloating ``additionalContext`` past this threshold.
-_JSON_SIDECAR_MAX_BYTES: Final[int] = 400
+_JSON_SIDECAR_MAX_BYTES: Final[int] = 350
 
 # Separator placed between the sidecar JSON line and the existing prose hint.
 # Newline keeps each line independently greppable by downstream agents while
@@ -568,7 +565,7 @@ _MAX_INDEXED_SYMBOLS_FETCHED = 50
 
 # Maximum character budget for the "[symbols: ...]" suffix appended to cache hints.
 # Keeps the suffix from inflating hints beyond their token ceiling.
-_SYMBOLS_SUFFIX_MAX_CHARS = 60
+_SYMBOLS_SUFFIX_MAX_CHARS = 50
 
 # A file read this many times or more is a "working file" — the agent
 # is clearly iterating on it. Stop emitting dedup nags that the agent
