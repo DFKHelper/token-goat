@@ -2706,7 +2706,7 @@ def _is_test_command(entry: object) -> bool:
     cmd = getattr(entry, "cmd_preview", "").strip().lower()
     if not cmd:
         return False
-    return any(cmd.startswith(prefix) for prefix in _TEST_COMMAND_PREFIXES)
+    return cmd.startswith(_TEST_COMMAND_PREFIXES)
 
 
 def _select_what_worked(bash_history: object, blocker_ids: set[object]) -> list[object]:
@@ -2906,7 +2906,7 @@ _DEP_COMMAND_PREFIXES: Final[tuple[str, ...]] = (
 def _is_dep_command(entry: object) -> bool:
     """Return True when *entry*'s cmd_preview looks like a package-install command."""
     cmd = getattr(entry, "cmd_preview", "").strip().lower()
-    return any(cmd.startswith(prefix) for prefix in _DEP_COMMAND_PREFIXES)
+    return cmd.startswith(_DEP_COMMAND_PREFIXES)
 
 
 def _extract_dep_changes(bash_history: object) -> list[str]:

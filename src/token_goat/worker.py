@@ -1144,10 +1144,16 @@ def _checkpoint_global_wal() -> int:
     """
     wal_path = paths.global_db_path()
     wal_path = wal_path.with_name(wal_path.name + "-wal")
-    before = wal_path.stat().st_size if wal_path.exists() else 0
+    try:
+        before = wal_path.stat().st_size
+    except FileNotFoundError:
+        before = 0
     with db.open_global() as conn:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    after = wal_path.stat().st_size if wal_path.exists() else 0
+    try:
+        after = wal_path.stat().st_size
+    except FileNotFoundError:
+        after = 0
     reclaimed = max(0, before - after)
     if reclaimed:
         _LOG.info("WAL checkpoint reclaimed %d bytes from global.db-wal", reclaimed)
@@ -1174,16 +1180,20 @@ def _checkpoint_project_wals() -> int:
     for project_hash in hashes:
         db_path = paths.project_db_path(project_hash)
         wal_path = db_path.with_name(db_path.name + "-wal")
-        if not wal_path.exists():
+        try:
+            before = wal_path.stat().st_size
+        except FileNotFoundError:
             continue
-        before = wal_path.stat().st_size
         try:
             with db.open_project(project_hash) as conn:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:
             _LOG.debug("_checkpoint_project_wals: checkpoint failed for %s", project_hash)
             continue
-        after = wal_path.stat().st_size if wal_path.exists() else 0
+        try:
+            after = wal_path.stat().st_size
+        except FileNotFoundError:
+            after = 0
         reclaimed += max(0, before - after)
     if reclaimed:
         _LOG.info(
@@ -1273,12 +1283,13 @@ def _gc_orphaned_projects() -> int:
             continue
         for suffix in ("", "-wal", "-shm"):
             candidate = Path(str(db_path) + suffix) if suffix else db_path
-            if candidate.exists():
-                try:
-                    candidate.unlink()
-                    _LOG.debug("_gc_orphaned_projects: deleted %s", candidate)
-                except OSError as exc:
-                    _LOG.warning("_gc_orphaned_projects: could not delete %s: %s", candidate, exc)
+            try:
+                candidate.unlink()
+                _LOG.debug("_gc_orphaned_projects: deleted %s", candidate)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                _LOG.warning("_gc_orphaned_projects: could not delete %s: %s", candidate, exc)
         removed += 1
 
     if removed:
