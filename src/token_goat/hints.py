@@ -232,19 +232,18 @@ def dedup_hints(
         normalized = item.text.strip().lower()
         # Compute content hash: first 8 hex chars of SHA256.
         content_hash = _sha256_hex(normalized, 8)
+        # Compute summary once (used in both branches below): first 50 chars without newlines.
+        summary = item.text.replace("\n", " ")[:50]
 
         # Check if this content has been seen before.
         prior_summary = session_cache.get_hint_content_summary(content_hash)
         if prior_summary is not None:
-            # Duplicate content: increment count and replace with short stub.
-            summary = item.text.replace("\n", " ")[:50]
+            # Duplicate content: replace with short stub.
             session_cache.record_hint_content_seen(content_hash, summary)
             stub_text = f"Same as previously shown hint for '{prior_summary}...'"
             result.append(HintItem(stub_text, item.hint_priority))
         else:
             # First occurrence: keep original, record for future dedup.
-            # Summary = first 50 chars of the hint text (without newlines).
-            summary = item.text.replace("\n", " ")[:50]
             session_cache.record_hint_content_seen(content_hash, summary)
             result.append(item)
 
