@@ -7697,8 +7697,10 @@ def _compress_git_push(stdout: str, stderr: str) -> str:
         if _PYTEST_DOT_LINE_RE.match(ln):
             continue
         m = _PYTEST_SUMMARY_RE.search(ln)
-        if m and ("passed" in ln.lower() or "failed" in ln.lower()):
-            pytest_summary = ln.strip()
+        if m:
+            ln_lower = ln.lower()
+            if "passed" in ln_lower or "failed" in ln_lower:
+                pytest_summary = ln.strip()
 
     # Extract push result lines.
     push_lines = [
@@ -8564,7 +8566,8 @@ class MakeFilter(Filter):
                 continue
             # configure: WARNING: is not matched by _ERROR_SIGNAL_RE (which only
             # covers "error:" keywords) — keep it explicitly.
-            if line.lower().startswith("configure:") and "warning" in line.lower():
+            line_lower = line.lower()
+            if line_lower.startswith("configure:") and "warning" in line_lower:
                 kept.append(line)
                 continue
             # configure: creating .../configure: loading ... are benign info.
@@ -11618,6 +11621,8 @@ class EzaFilter(Filter):
 
     name = "eza"
     binaries = frozenset(["eza", "exa", "ls"])
+    _header_keywords: frozenset[str] = frozenset(["permission", "size", "date", "user", "name"])
+    _summary_keywords: frozenset[str] = frozenset(["director", "file", "total"])
 
     def matches(self, argv: list[str]) -> bool:
         if not argv:
@@ -11661,7 +11666,7 @@ class EzaFilter(Filter):
 
         # Identify header line (usually contains column names like "permissions size date")
         header_idx = 0
-        if non_empty and any(kw in non_empty[0].lower() for kw in ["permission", "size", "date", "user", "name"]):
+        if non_empty and any(kw in non_empty[0].lower() for kw in self._header_keywords):
             header_idx = 1
 
         kept: list[str] = []
@@ -11681,7 +11686,7 @@ class EzaFilter(Filter):
         # Preserve summary lines (e.g., "3 directories, 14 files") if present
         summary_lines = [
             ln for ln in non_empty[max(0, len(non_empty) - 3):]
-            if any(kw in ln for kw in ["director", "file", "total"])
+            if any(kw in ln for kw in self._summary_keywords)
         ]
         if summary_lines and summary_lines[0] not in kept:
             kept.extend(summary_lines)
