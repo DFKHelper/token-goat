@@ -279,10 +279,12 @@ def _parse_local_imports(source: str, file_path: str, cwd: str | None) -> list[s
             stripped = line.strip()
             # Handle ``from foo import (`` continuations: keep consuming until
             # the closing ``)``.
-            if "(" in stripped and stripped.count("(") > stripped.count(")") \
+            open_parens = stripped.count("(")
+            close_parens = stripped.count(")")
+            if "(" in stripped and open_parens > close_parens \
                     and stripped.startswith(("from ", "import ")):
                 acc = [stripped]
-                depth = stripped.count("(") - stripped.count(")")
+                depth = open_parens - close_parens
                 i += 1
                 while i < len(raw_lines) and depth > 0:
                     nxt = raw_lines[i].strip()
