@@ -1945,6 +1945,36 @@ def test_parse_and_group_entries_coalesces_distinct_files_independently():
     assert by_project[ph]["rels"] == {"src/a.py", "src/b.py", "src/c.py"}
 
 
+def test_parse_and_group_entries_missing_required_fields_logged_at_warning(caplog):
+    """Entries missing required hash or path fields are logged at WARNING level.
+
+    Missing required fields in a durable queue are operator-actionable errors that
+    should be visible in logs; DEBUG is insufficient. Regression guard: this prevents
+    a silent downgrade of malformed-entry detection to DEBUG level.
+    """
+    import logging
+    caplog.set_level(logging.WARNING, logger="token_goat.worker")
+
+    entries: list[worker.DirtyQueueEntry] = [
+        {"path": "file.py"},  # type: ignore[typeddict-item] missing project_hash
+        {"project_hash": "a" * 40},  # type: ignore[typeddict-item] missing path
+        {  # type: ignore[typeddict-item] complete valid entry
+            "path": "valid.py",
+            "project_hash": "b" * 40,
+            "project_root": "/proj",
+            "project_marker": "manual",
+            "ts": 0.0,
+        },
+    ]
+    by_project = worker._parse_and_group_entries(entries)
+
+    assert "b" * 40 in by_project
+    assert len(by_project) == 1
+    warning_records = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warning_records) == 2
+    assert all("malformed queue entry" in r.message for r in warning_records)
+
+
 # ---------------------------------------------------------------------------
 # Image cache eviction: LRU ordering, target invariant, lock-mutex behavior
 # ---------------------------------------------------------------------------

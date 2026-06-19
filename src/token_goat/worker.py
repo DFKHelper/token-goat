@@ -2308,7 +2308,7 @@ def _parse_and_group_entries(entries: list[DirtyQueueEntry]) -> dict[str, _Proje
         ph = entry.get("project_hash")
         rel = entry.get("path")
         if not ph or not rel:
-            _LOG.debug("skipping malformed queue entry (missing hash or path)")
+            _LOG.warning("dirty queue: skipping malformed queue entry (missing hash or path)")
             continue
         try:
             db._validate_project_hash(ph)
