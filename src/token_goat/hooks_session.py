@@ -558,7 +558,6 @@ def _diff_stats_for_file(session_id: str, file_path: str) -> tuple[int, int] | N
             # but edited_files keys are normalized ("c:/path/file.py").  Try several
             # common variants so the lookup succeeds regardless of which form was
             # used at store time.
-            import re as _re_dp
             _candidates: list[str] = []
             # 1. Forward slashes → backslashes (Windows snapshot stored with backslashes)
             _bs = file_path.replace("/", "\\")
@@ -566,7 +565,7 @@ def _diff_stats_for_file(session_id: str, file_path: str) -> tuple[int, int] | N
                 _candidates.append(_bs)
             # 2. Uppercase drive letter + backslashes (Windows normalised → native)
             for _fp in [file_path, _bs]:
-                _up = _re_dp.sub(r"^([a-z]):[/\\]", lambda m: m.group(1).upper() + ":\\", _fp)
+                _up = re.sub(r"^([a-z]):[/\\]", lambda m: m.group(1).upper() + ":\\", _fp)
                 if _up != _fp:
                     _candidates.append(_up)
             for _alt in _candidates:
