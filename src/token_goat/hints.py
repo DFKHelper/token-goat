@@ -2210,6 +2210,19 @@ def _require_cache(
 # ---------------------------------------------------------------------------
 
 
+def _get_config_threshold(attr: str, fallback: int) -> int:
+    """Load a hints config threshold by attribute name, returning fallback on error.
+
+    Reduces duplication for bash_dedup_min_bytes, grep_dedup_min_matches, etc.
+    Never raises; fail-soft returns the fallback default.
+    """
+    try:
+        from . import config as _config
+        return getattr(_config.load().hints, attr)
+    except Exception:
+        return fallback
+
+
 def _get_bash_dedup_min_bytes() -> int:
     """Return the configured bash dedup minimum bytes threshold.
 
@@ -2217,13 +2230,7 @@ def _get_bash_dedup_min_bytes() -> int:
     env var). Defaults to _BASH_DEDUP_MIN_BYTES (200) on any error or when config
     is unavailable. Never raises; fail-soft returns the fallback default.
     """
-    try:
-        from . import config as _config
-
-        cfg = _config.load().hints
-        return cfg.bash_dedup_min_bytes
-    except Exception:
-        return _BASH_DEDUP_MIN_BYTES
+    return _get_config_threshold("bash_dedup_min_bytes", _BASH_DEDUP_MIN_BYTES)
 
 
 def _get_grep_dedup_min_matches() -> int:
@@ -2233,13 +2240,7 @@ def _get_grep_dedup_min_matches() -> int:
     env var). Defaults to _GREP_DEDUP_MIN_RESULT_COUNT (5) on any error or when config
     is unavailable. Never raises; fail-soft returns the fallback default.
     """
-    try:
-        from . import config as _config
-
-        cfg = _config.load().hints
-        return cfg.grep_dedup_min_matches
-    except Exception:
-        return _GREP_DEDUP_MIN_RESULT_COUNT
+    return _get_config_threshold("grep_dedup_min_matches", _GREP_DEDUP_MIN_RESULT_COUNT)
 
 
 # Curator pass: suppress dedup hints when the agent ignores them
