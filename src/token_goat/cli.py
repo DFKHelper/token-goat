@@ -1503,6 +1503,49 @@ def callers(
 
 
 @app.command(rich_help_panel="Core")
+def call_chain(
+    name: str = typer.Argument(..., help="Symbol name to trace callers for."),  # noqa: B008
+    depth: int = typer.Option(3, "--depth", "-d", help="Levels to traverse up the call tree."),
+    limit: int = typer.Option(10, "--limit", help="Max callers shown per level."),
+    as_json: bool = _OPT_JSON,
+) -> None:
+    """Trace who calls a symbol, then who calls those callers, up to N levels deep.
+
+    Walks the caller graph starting from <name> and recurses until --depth
+    levels are exhausted or a cycle is detected. Useful for understanding the
+    reach of a low-level helper before changing its signature.
+
+    Examples::
+
+        token-goat call-chain dispatch
+        token-goat call-chain index_file --depth 4 --json
+    """
+    from . import read_commands
+
+    read_commands.call_chain(name, depth=depth, limit=limit, json_output=as_json)
+
+
+@app.command(rich_help_panel="Core")
+def impact(
+    name: str = typer.Argument(..., help="Symbol name to assess."),  # noqa: B008
+    as_json: bool = _OPT_JSON,
+) -> None:
+    """Show the change impact for a symbol: callers, reference count, and test coverage.
+
+    Combines callers, refs, and test discovery into one report so you can
+    assess risk before modifying a symbol's signature or behavior.
+
+    Examples::
+
+        token-goat impact build_read_hint
+        token-goat impact dispatch --json
+    """
+    from . import read_commands
+
+    read_commands.impact(name, json_output=as_json)
+
+
+@app.command(rich_help_panel="Core")
 def todo(
     json_output: bool = _OPT_JSON,
     kinds: str = typer.Option(
@@ -8672,6 +8715,125 @@ def cmd_sessions(
             f"{cast('int', r['edit_count']):>5}  {cast('int', r['hints_emitted']):>5}  "
             f"{cast('int', r['bash_count']):>4}  {cast('int', r['web_count']):>4}"
         )
+
+
+@app.command(rich_help_panel="Core")
+def hot(
+    limit: int = typer.Option(20, "--limit", "-n", help="Number of files to show."),
+    project: str | None = typer.Option(
+        None,
+        "--project",
+        help="Filter to sessions from this project root (defaults to current project).",
+    ),
+    json_output: bool = _OPT_JSON,
+) -> None:
+    """Rank files by how often they appear across all recent sessions.
+
+    Aggregates read and edit counts across every session on record and shows
+    which files get touched most.  Useful for finding the most-read files before starting a task.
+
+    Examples::
+
+        token-goat hot
+        token-goat hot --limit 10 --project /path/to/repo
+        token-goat hot --json
+    """
+    import contextlib
+    import os
+
+    from . import paths as _paths
+
+    sessions_dir = _paths.sessions_dir()
+    cwd_str = str(Path.cwd())
+
+    project_filter: str | None = project or cwd_str
+
+    freq: dict[str, int] = {}
+    edit_freq: dict[str, int] = {}
+
+    if sessions_dir.exists():
+        for f in sessions_dir.iterdir():
+            if not f.is_file() or f.suffix != ".json":
+                continue
+            with contextlib.suppress(Exception):
+                import json as _json
+
+                raw = _json.loads(f.read_text(encoding="utf-8", errors="replace"))
+                sess_cwd = str(raw.get("cwd", ""))
+                if project_filter and not (
+                    sess_cwd == project_filter
+                    or sess_cwd.startswith(project_filter + os.sep)
+                    or sess_cwd.startswith(project_filter + "/")
+                ):
+                    continue
+                for path_key in (raw.get("files") or {}):
+                    freq[path_key] = freq.get(path_key, 0) + 1
+                for path_key in (raw.get("edited_files") or {}):
+                    edit_freq[path_key] = edit_freq.get(path_key, 0) + 1
+
+    all_files = sorted(dict.fromkeys(list(freq.keys()) + list(edit_freq.keys())))
+    if not all_files:
+        if json_output:
+            typer.echo("[]")
+        else:
+            typer.echo("No session data found for this project.")
+        return
+
+    rows = sorted(
+        [
+            {
+                "file": fp,
+                "reads": freq.get(fp, 0),
+                "edits": edit_freq.get(fp, 0),
+                "total": freq.get(fp, 0) + edit_freq.get(fp, 0),
+            }
+            for fp in all_files
+        ],
+        key=lambda r: (-cast("int", r["total"]), str(r["file"])),
+    )[:limit]
+
+    if json_output:
+        import json as _json2
+
+        typer.echo(_json2.dumps(rows, ensure_ascii=False, separators=(",", ":")))
+        return
+
+    header = f"{'FILE':<60}  {'READS':>5}  {'EDITS':>5}  {'TOTAL':>5}"
+    typer.echo(header)
+    typer.echo("-" * len(header))
+    for r in rows:
+        fp = str(r["file"])
+        if len(fp) > 60:
+            fp = "…" + fp[-59:]
+        typer.echo(
+            f"{fp:<60}  {cast('int', r['reads']):>5}  "
+            f"{cast('int', r['edits']):>5}  {cast('int', r['total']):>5}"
+        )
+
+
+@app.command("context-for", rich_help_panel="Core")
+def context_for(
+    task: str = typer.Argument(..., help="Natural-language description of the task."),  # noqa: B008
+    budget: int = typer.Option(20_000, "--budget", "-b", help="Approximate token budget."),
+    top: int = typer.Option(8, "--top", "-t", help="Max files to include."),
+    as_json: bool = _OPT_JSON,
+) -> None:
+    """Build a prioritized read list for a task description, within a token budget.
+
+    Runs semantic search across the indexed codebase and emits a list of
+    ``token-goat read`` commands trimmed to --budget tokens.  Use this at the
+    start of a task to fetch only the relevant slices instead of reading
+    entire files.
+
+    Examples::
+
+        token-goat context-for "add rate limiting to the API"
+        token-goat context-for "fix session cache race" --budget 40000
+        token-goat context-for "refactor hook dispatch" --json
+    """
+    from . import read_commands
+
+    read_commands.context_for(task, budget=budget, top=top, json_output=as_json)
 
 
 @app.command("sessions-show", rich_help_panel="Core")
