@@ -1343,7 +1343,7 @@ def _slice_diff_for_file(whole_diff: str, path: str) -> str | None:
     for chunk in chunks:
         header = chunk.split("\n", 1)[0]
         # Case-insensitive search handles Windows case-folding inside git.
-        if needle_a in header or needle_b in header or norm_path in header:
+        if any(needle in header for needle in (needle_a, needle_b, norm_path)):
             # Re-prepend the "diff --git " token we stripped during split.
             if not chunk.startswith("diff --git "):
                 chunk = "diff --git " + chunk

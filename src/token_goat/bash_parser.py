@@ -359,6 +359,14 @@ _AWK_RANGE_RE = re.compile(
 _PATH_LIKE_RE = re.compile(r"[./\\:~]")
 
 
+def _is_heredoc_token(token: str) -> bool:
+    """Return True when *token* is a heredoc or here-string operator.
+
+    Detects ``<<EOF``, ``<<<string``, and ``<<-DELIM`` patterns.
+    """
+    return token.startswith("<<")
+
+
 def _looks_like_path(token: str) -> bool:
     """Return True when *token* contains at least one path-defining glyph.
 
@@ -471,8 +479,8 @@ def _extract_stdin_redirect(tokens: list[str]) -> tuple[list[str], str | None]:
     while i < len(tokens):
         tok = tokens[i]
         # Skip heredoc / here-string operators entirely; leave them in place
-        # so the heredoc guard in _parse_read can spot ``<<`` and bail.
-        if tok in ("<<", "<<<") or tok.startswith("<<"):
+        # so the heredoc guard in _parse_read can spot them and bail.
+        if _is_heredoc_token(tok):
             cleaned.append(tok)
             i += 1
             continue
@@ -685,7 +693,7 @@ def parse(command: str) -> BashIntent:
     # like reads but consume the literal body, not a file on disk.  Reject
     # before extracting paths so we never feed a delimiter word like "EOF" or
     # the literal string after ``<<<`` to image-shrink or session-hint logic.
-    if any(t == "<<" or t == "<<<" or t.startswith("<<") for t in tokens):
+    if any(_is_heredoc_token(t) for t in tokens):
         return BashIntent(kind="unknown", reason="heredoc / here-string is not a file read")
 
     # Pull stdin-redirect file out of the token stream: ``cmd < FILE`` and
