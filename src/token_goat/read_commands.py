@@ -2358,18 +2358,25 @@ def stub_view(
         typer.echo(json.dumps(out, separators=(",", ":")))
         return
 
+    abs_path = proj.root / file_rel
+    try:
+        with abs_path.open("rb") as _lf:
+            _total_lines = sum(1 for _ in _lf)
+        _file_meta = f", {_total_lines:,} lines"
+    except Exception:
+        _file_meta = ""
+
     # Render lines once — reuse for display and savings accounting.
     rendered_lines = [
         _format_stub_line(row["name"], row["kind"], row["line"], row["signature"])
         for row in filtered
     ]
-    typer.echo(f"# Skeleton: {file_rel}  ({len(filtered)} symbols)")
+    typer.echo(f"# Skeleton: {file_rel}  ({len(filtered)} symbols{_file_meta})")
     for line in rendered_lines:
         typer.echo(line)
 
     # Record savings: stub views cost ~5-15% of a full file read.
     try:
-        abs_path = proj.root / file_rel
         src_bytes = abs_path.stat().st_size
         stub_bytes = sum(len(line.encode()) for line in rendered_lines)
         saved = max(0, src_bytes - stub_bytes)
