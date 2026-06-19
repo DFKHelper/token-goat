@@ -1,9 +1,12 @@
 """Scan indexed project files for TODO/FIXME/HACK/XXX/NOTE markers."""
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 # Match markers only after a comment delimiter (#, //, --, or *).
 # This avoids false positives from string literals, regex patterns, and help text
@@ -42,7 +45,8 @@ def find_todos(
     try:
         with db.open_project_readonly(project_hash) as conn:
             rows = conn.execute("SELECT rel_path FROM files ORDER BY rel_path").fetchall()
-    except Exception:
+    except Exception as e:
+        logger.warning("failed to read indexed files for TODOs: %s", e)
         return []
 
     items: list[TodoItem] = []
