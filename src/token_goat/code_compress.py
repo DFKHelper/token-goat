@@ -36,6 +36,10 @@ _JAVA_SIG_RE = re.compile(
 # Import/use/require for non-Python languages
 _IMPORT_RE = re.compile(r"^\s*(?:import\b|from\b|use\b|require\b)")
 
+# JS/TS regex-literal disambiguation: a `/` starts a regex (not division) only when the previous significant token is in expression position.
+_JS_REGEX_PREV_CHARS = frozenset("(,=:[!&|?{};+-*%<>~^")
+_JS_REGEX_PREV_KEYWORDS = frozenset({"return", "typeof", "case", "in", "of", "do", "else", "void", "delete", "instanceof", "new", "yield", "await"})
+
 
 def compress_to_skeleton(source: str, file_ext: str) -> str | None:
     """Return a structural skeleton of source, or None for unsupported extensions.
@@ -128,18 +132,23 @@ def _compress_python(source: str) -> str:
     return "\n".join(out)
 
 
-def _skip_brace_body(lines: list[str], start: int, initial_depth: int) -> tuple[int, int]:
+def _skip_brace_body(lines: list[str], start: int, initial_depth: int, is_jsts: bool = False) -> tuple[int, int]:
     """Advance past a brace-delimited block starting at initial_depth > 0.
 
     Returns (next_line_index, body_line_count) where body_line_count counts
     lines consumed before the depth returned to zero. Correctly ignores braces
-    inside string literals and comments.
+    inside string literals, comments, and (for JS/TS) regex literals.
     """
     depth = initial_depth
     body_count = 0
     i = start
     n = len(lines)
     in_block_comment = False
+    prev = ""  # last significant (non-ws, non-comment) char, for JS/TS regex-vs-division disambiguation
+    prev_word = ""  # last identifier token; prev_word_pre is the char immediately before it
+    prev_word_pre = ""
+    word = ""  # identifier currently being accumulated
+    word_pre = ""  # char immediately before the current identifier began
     while i < n and depth > 0:
         line = lines[i]
         j = 0
@@ -153,55 +162,77 @@ def _skip_brace_body(lines: list[str], start: int, initial_depth: int) -> tuple[
                     continue
                 j += 1
                 continue
-            if ch == "/" and j + 1 < line_len:
-                if line[j + 1] == "/":
-                    break
-                elif line[j + 1] == "*":
-                    in_block_comment = True
-                    j += 2
+            if ch.isalnum() or ch == "_" or ch == "$":
+                if not word:
+                    word_pre = prev
+                word += ch
+                prev = ch
+                j += 1
+                continue
+            if word:
+                prev_word = word
+                prev_word_pre = word_pre
+                word = ""
+            if ch.isspace():
+                j += 1
+                continue
+            if ch == "/" and j + 1 < line_len and line[j + 1] == "/":
+                break
+            if ch == "/" and j + 1 < line_len and line[j + 1] == "*":
+                in_block_comment = True
+                j += 2
+                continue
+            if ch == '"' or ch == "'" or ch == "`":
+                # String / template literal: a `}` or `{` inside it — e.g. `text with } brace` or `${x}` — is content, not a structural brace.
+                quote = ch
+                j += 1
+                while j < line_len:
+                    if line[j] == "\\":
+                        j += 2
+                    elif line[j] == quote:
+                        j += 1
+                        break
+                    else:
+                        j += 1
+                prev = quote
+                prev_word = ""
+                continue
+            if is_jsts and ch == "/" and (prev == "" or prev in _JS_REGEX_PREV_CHARS or (prev_word in _JS_REGEX_PREV_KEYWORDS and prev_word_pre != ".")):
+                # JS/TS regex literal (now handled): scan to the closing unescaped `/`, honoring `\` escapes and `[...]` classes where `/` does not close; only consumed if it closes on this line (regex literals cannot span lines), else treated as division.
+                k = j + 1
+                in_class = False
+                closed = False
+                while k < line_len:
+                    c = line[k]
+                    if c == "\\":
+                        k += 2
+                        continue
+                    if c == "[":
+                        in_class = True
+                    elif c == "]":
+                        in_class = False
+                    elif c == "/" and not in_class:
+                        k += 1
+                        closed = True
+                        break
+                    k += 1
+                if closed:
+                    j = k
+                    prev = "/"
+                    prev_word = ""
                     continue
-            elif ch == '"':
-                j += 1
-                while j < line_len:
-                    if line[j] == "\\":
-                        j += 2
-                    elif line[j] == '"':
-                        j += 1
-                        break
-                    else:
-                        j += 1
-                continue
-            elif ch == "'":
-                j += 1
-                while j < line_len:
-                    if line[j] == "\\":
-                        j += 2
-                    elif line[j] == "'":
-                        j += 1
-                        break
-                    else:
-                        j += 1
-                continue
-            elif ch == "`":
-                # JS/TS backtick template literal: a `}` (or `{`) inside it — e.g. `text with } brace` or `${x}` — is string content, not a structural brace.
-                j += 1
-                while j < line_len:
-                    if line[j] == "\\":
-                        j += 2
-                    elif line[j] == "`":
-                        j += 1
-                        break
-                    else:
-                        j += 1
-                continue
-            # Regex literals (/.../) are not yet handled — hard to disambiguate from division.
-            elif ch == "{":
+            if ch == "{":
                 depth += 1
             elif ch == "}":
                 depth -= 1
                 if depth == 0:
                     break
+            prev = ch
             j += 1
+        if word:
+            prev_word = word
+            prev_word_pre = word_pre
+            word = ""
         if depth > 0:
             body_count += 1
         i += 1
@@ -210,7 +241,8 @@ def _skip_brace_body(lines: list[str], start: int, initial_depth: int) -> tuple[
 
 def _compress_brace_lang(source: str, file_ext: str) -> str:
     """Best-effort skeleton extractor for brace-delimited languages."""
-    if file_ext in {".js", ".jsx", ".ts", ".tsx"}:
+    is_jsts = file_ext in {".js", ".jsx", ".ts", ".tsx"}
+    if is_jsts:
         sig_re = _JS_SIG_RE
     elif file_ext == ".go":
         sig_re = _GO_SIG_RE
@@ -244,7 +276,7 @@ def _compress_brace_lang(source: str, file_ext: str) -> str:
             # Calculate brace depth opened by the signature line itself
             depth = line.count("{") - line.count("}")
             if depth > 0:
-                next_i, body_count = _skip_brace_body(lines, i, depth)
+                next_i, body_count = _skip_brace_body(lines, i, depth, is_jsts)
                 if body_count > 0:
                     out.append(f"// ... {body_count} lines")
                 i = next_i
@@ -252,7 +284,7 @@ def _compress_brace_lang(source: str, file_ext: str) -> str:
                 # Allman-style: opening brace on its own line
                 depth = 1
                 i += 1
-                next_i, body_count = _skip_brace_body(lines, i, depth)
+                next_i, body_count = _skip_brace_body(lines, i, depth, is_jsts)
                 if body_count > 0:
                     out.append(f"// ... {body_count} lines")
                 i = next_i
