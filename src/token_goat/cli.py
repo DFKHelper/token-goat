@@ -9341,6 +9341,46 @@ def context_for(
     read_commands.context_for(task, budget=budget, top=top, json_output=as_json)
 
 
+@app.command("ask", rich_help_panel="Core", hidden=True)
+def cmd_ask(
+    question: str = typer.Argument(..., help="Natural-language question about the codebase."),  # noqa: B008
+    scope: str = typer.Option(None, "--scope", help="Glob/substring to restrict retrieval (e.g. 'src/**' or 'hooks')."),  # noqa: B008
+    budget: int = typer.Option(6_000, "--budget", "-b", help="Approximate token budget for retrieved slices."),
+    model: str = typer.Option(None, "--model", help="Backend model id (overrides TOKEN_GOAT_ASK_MODEL)."),  # noqa: B008
+    as_json: bool = _OPT_JSON,
+    no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the cross-session answer cache."),
+    show_sources: bool = typer.Option(False, "--show-sources", help="Also dump the exact slices used."),
+) -> None:
+    """[experimental] Answer a question about the codebase out-of-band, returning a cited answer.
+
+    Retrieves the relevant slices, synthesizes a short answer in token-goat's own process
+    (via an opt-in backend), and returns only the answer plus pointer-citations — so the
+    primary model never pays for the slice bodies.
+
+    Synthesis is strictly opt-in: with no backend configured it makes no network call and
+    degrades to context-for-style read pointers.  Enable it by setting a backend:
+
+        TOKEN_GOAT_ASK_MODEL=claude-haiku-4-5  (auto-detects the claude/codex CLI)
+        TOKEN_GOAT_ASK_CMD="claude --print"    (explicit command; prompt piped via stdin)
+
+    Examples::
+
+        token-goat ask "how does the worker drain the dirty queue?"
+        token-goat ask "where is image shrinking gated?" --scope "src/**" --json
+    """
+    from . import ask as _ask
+
+    _ask.run_ask(
+        question,
+        scope=scope,
+        budget=budget,
+        model=model,
+        json_output=as_json,
+        no_cache=no_cache,
+        show_sources=show_sources,
+    )
+
+
 @app.command("sessions-show", rich_help_panel="Core")
 def cmd_sessions_show(
     session_id: str = typer.Argument(..., help="Session ID to inspect (prefix match accepted)."),
