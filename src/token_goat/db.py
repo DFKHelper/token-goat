@@ -649,6 +649,23 @@ CREATE TABLE IF NOT EXISTS repomap_cache (
     FOREIGN KEY (rel_path) REFERENCES files(rel_path) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_repomap_cache_file ON repomap_cache(rel_path);
+
+-- Cached answers for the experimental `token-goat ask` out-of-band Q&A command.
+-- cache_key = sha256(normalized question + backend label + retrieved-slice content
+-- hashes), so a stored answer is reused only when the same question resolves to the
+-- same source slices under the same backend.  The slice content hashes are baked into
+-- the key, so the entry invalidates automatically when any cited slice changes — no
+-- explicit cache-bust step is needed.  citations is a JSON array of {file,start_line,end_line}.
+CREATE TABLE IF NOT EXISTS ask_cache (
+    cache_key  TEXT    PRIMARY KEY,
+    question   TEXT    NOT NULL,
+    answer     TEXT    NOT NULL,
+    citations  TEXT    NOT NULL,
+    backend    TEXT    NOT NULL,
+    tokens_in  INTEGER NOT NULL DEFAULT 0,
+    tokens_out INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
 """
 
 _EMBEDDINGS_DDL = f"""
