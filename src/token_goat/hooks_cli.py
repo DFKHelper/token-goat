@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar, cast
 from . import paths
 from .hook_registry import CANONICAL_TOOLS
 from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
-from .util import configure_stdout_encoding, get_logger, sanitize_surrogates
+from .util import configure_stdout_encoding, get_logger, json_dumps_utf8, sanitize_surrogates
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -496,12 +496,12 @@ def emit(result: dict[str, object]) -> None:
     to the harness, which would otherwise see the hook as failed.
     """
     try:
-        payload = json.dumps(result, ensure_ascii=False)
+        payload = json_dumps_utf8(result)
     except (TypeError, ValueError):
         # Non-serializable value in result (e.g. datetime, set, bytes from a
         # handler bug).  Fall back to default=str so the harness always receives
         # valid JSON rather than a silent empty response.
-        payload = json.dumps(result, ensure_ascii=False, default=str)
+        payload = json_dumps_utf8(result, default=str)
     # Preferred: raw bytes through .buffer so UTF-8 is correct on Windows.
     try:
         sys.stdout.buffer.write(payload.encode("utf-8"))

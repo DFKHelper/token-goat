@@ -290,8 +290,7 @@ def _is_readonly_or_transient(error: sqlite3.OperationalError) -> bool:
     log at DEBUG and silently drop the write, because telemetry is best-effort and
     sandbox environments (Codex unelevated) are expected to be read-only.
     """
-    lowered = str(error).lower()
-    return "locked" in lowered or "busy" in lowered or "i/o" in lowered or "readonly" in lowered
+    return _is_transient_db_error(error) or "readonly" in str(error).lower()
 
 
 # Item 20: Timeout wrapper for hook-context DB writes to prevent blocking the harness.

@@ -94,7 +94,7 @@ from .cache_common import (
     truncate_tail_preserve,
 )
 from .hooks_common import sanitize_log_str
-from .util import get_logger
+from .util import get_logger, json_dumps_utf8
 
 _LOG = get_logger("skill_cache")
 
@@ -1220,7 +1220,6 @@ def write_sidecar(meta: SkillMeta) -> None:
     :func:`read_sidecar` can detect entries created by older versions and
     apply appropriate migration or ignore-and-continue logic.
     """
-    import json as _json
     from dataclasses import asdict as _asdict
 
     sidecar_path = sidecar_meta_path(meta.output_id)
@@ -1232,7 +1231,7 @@ def write_sidecar(meta: SkillMeta) -> None:
         payload["schema_v"] = SIDECAR_SCHEMA_VERSION
         _paths.atomic_write_text(
             sidecar_path,
-            _json.dumps(payload, ensure_ascii=False),
+            json_dumps_utf8(payload),
         )
     except OSError as exc:
         _LOG.debug(
