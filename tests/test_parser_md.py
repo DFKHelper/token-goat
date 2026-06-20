@@ -601,3 +601,24 @@ def test_details_with_empty_summary_falls_back_to_synthetic():
     _, _, _, sections = extract(src, "ds-empty-sum.md")
     headings = {s.heading for s in sections}
     assert "__details__" in headings
+
+
+def test_setext_not_created_from_frontmatter_closing():
+    """Closing --- of YAML frontmatter must not be treated as setext H2 underline.
+
+    The closing `---` delimiter of YAML front-matter can appear on its own line,
+    which matches the setext H2 underline regex (^-+$). We must not extract the
+    preceding YAML line (e.g., "title: Test") as a bogus setext heading.
+    """
+    src = b"---\ntitle: Test\n---\n\n# Real Body\n"
+    symbols, _, _, sections = extract(src, "fm.md")
+    # Should have exactly 2 sections: frontmatter and the real heading
+    heading_names = [s.heading for s in sections]
+    assert "__frontmatter__" in heading_names, "frontmatter section missing"
+    assert "Real Body" in heading_names, "real body heading missing"
+    # "title: Test" (or any YAML line) must NOT appear as a section heading
+    assert "title: Test" not in heading_names, (
+        "frontmatter closing --- was misinterpreted as setext underline"
+    )
+    # Verify the count
+    assert len(sections) == 2, f"expected 2 sections, got {len(sections)}: {heading_names}"
