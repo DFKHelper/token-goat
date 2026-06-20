@@ -1209,8 +1209,13 @@ def project_writer_lock(project_hash: str, timeout_sec: float = 5.0) -> Iterator
             # We hold the lock — record owner pid + timestamp + platform, then release the fd.
             try:
                 os.write(fd, f"{pid}\n{time.time()}\n{current_platform}".encode())
-            finally:
-                os.close(fd)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                with contextlib.suppress(OSError):
+                    lock_path.unlink()
+                raise
+            os.close(fd)
             return True
         return False
 
