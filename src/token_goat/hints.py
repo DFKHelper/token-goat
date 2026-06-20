@@ -262,7 +262,7 @@ def dedup_hints(
 # matters: longer/more-specific patterns must precede shorter ones that share
 # a prefix (e.g. "exit=" before "exit" if both were present).
 #
-# Savings per hint: ~4-8 chars saved × ~20-50 hints/session ≈ 150-400 tokens.
+# Savings per hint: ~4-12 chars saved × ~20-50 hints/session ≈ 150-600 tokens.
 _TERSE: dict[str, str] = {
     "cached": "⌘",
     "exit=": "x=",
@@ -272,6 +272,10 @@ _TERSE: dict[str, str] = {
     "to read selectively.": "selectively.",
     "to read without re-running.": "(no re-run).",
     "to read without re-fetching.": "(no re-fetch).",
+    "still in context — for symbols:": "in ctx — symbols:",
+    "not yet read this session": "unread",
+    "for a narrower read.": "(narrower).",
+    "Consider reading": "Read",
 }
 
 
@@ -1883,7 +1887,7 @@ def build_high_frequency_hint(
         sym = resolved_symbol if resolved_symbol else "<symbol>"
         text = _apply_terse(
             f"`{fname}` read {count}x this session — consider "
-            f"`token-goat outline {safe_path}` or "
+            f"`token-goat skeleton {safe_path}` or "
             f"`token-goat read \"{safe_path}::{sym}\"` for a narrower read."
         )
         return HintItem(text, HINT_PRIORITY_MEDIUM)
@@ -4442,9 +4446,9 @@ def build_test_file_hint(
     impl_name = _sanitize_hint_path(impl_file.name)
     impl_rel = _sanitize_hint_path(str(impl_file))
 
-    text = (
-        f"Reading test file `{fname}`. Implementation `{impl_name}` not yet read this session. "
-        f"Consider reading `{impl_rel}` first for context."
+    text = _apply_terse(
+        f"Test `{fname}` — impl `{impl_name}` not yet read this session. "
+        f"Consider reading `{impl_rel}` first."
     )
 
     return HintItem(text, HINT_PRIORITY_LOW)
@@ -4684,10 +4688,9 @@ def build_scoped_diff_hint(output_bytes: int, edited_files: list[str]) -> str:
     file_args = " ".join(shown)
     n = len(edited_files)
     cmd_line = f"  git diff -- {file_args}"
-    overflow_note = f"\n  (and {overflow} more session-edited file(s) not listed)" if overflow > 0 else ""
+    overflow_note = f"\n  (+{overflow} more)" if overflow > 0 else ""
     return (
-        f"[token-goat] Large diff ({kb:.1f} KB). "
-        f"You've edited {n} file(s) this session — scope it next time:\n"
+        f"[tg] Large diff ({kb:.1f} KB, {n} file(s)) — scope:\n"
         f"{cmd_line}{overflow_note}"
     )
 
@@ -4724,9 +4727,9 @@ def maybe_grep_advisory(path: str, session_cache: session.SessionCache, cwd: str
         if not crossed:
             return None
         safe_path = _sanitize_hint_path(str(p))
-        return (
-            f"[token-goat] You've grepped '{safe_path}' 3× this session. "
-            f"Consider reading it once with `token-goat read \"{safe_path}\"` or using "
+        return _apply_terse(
+            f"[tg] Grepped '{safe_path}' 3× this session. "
+            f"Consider `token-goat read \"{safe_path}\"` or "
             f"`token-goat bash-output <id> --grep <pat>` to filter cached output."
         )
     except Exception:
