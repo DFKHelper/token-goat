@@ -553,14 +553,22 @@ def opencode_plugins_dir() -> Path:
     return Path.home() / ".config" / "opencode" / "plugins"
 
 
+def _user_config_path(*parts: str) -> Path:
+    """Return a path relative to the user home directory."""
+    result = Path.home()
+    for part in parts:
+        result = result / part
+    return result
+
+
 def openclaw_plugins_dir() -> Path:
     """Return the openclaw plugins directory (~/.openclaw/plugins)."""
-    return Path.home() / ".openclaw" / "plugins"
+    return _user_config_path(".openclaw", "plugins")
 
 
 def openclaw_config_path() -> Path:
     """Return the openclaw config file path (~/.openclaw/openclaw.json)."""
-    return Path.home() / ".openclaw" / "openclaw.json"
+    return _user_config_path(".openclaw", "openclaw.json")
 
 
 def pi_extensions_dir() -> Path:
@@ -570,7 +578,7 @@ def pi_extensions_dir() -> Path:
     installs target ``<project>/.pi/extensions`` instead — pass that path as the
     ``target_dir`` argument to :func:`install_pi_plugin`.
     """
-    return Path.home() / ".pi" / "agent" / "extensions"
+    return _user_config_path(".pi", "agent", "extensions")
 
 
 def pi_plugin_path(target_dir: Path | None = None) -> Path:
