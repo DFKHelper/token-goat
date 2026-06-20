@@ -325,9 +325,13 @@ hidden content body
     assert "Setext H2 Underlined" in headings, headings
     assert "Click to expand" in headings, headings
 
-    # 1 frontmatter + 2 setext + 4 ATX + 1 details = 8.  Pin the count so a
+    # The closing `---` of the YAML front-matter must NOT be read as a setext
+    # underline for the last front-matter line, or "author: tester" leaks in.
+    assert "author: tester" not in headings, headings
+
+    # 1 frontmatter + 2 setext + 3 ATX + 1 details = 7.  Pin the count so a
     # silent over- or under-emit (e.g. ATX-inside-fence regression) flags here.
-    assert len(sections) == 8, [s.heading for s in sections]
+    assert len(sections) == 7, [s.heading for s in sections]
 
 
 # ---------------------------------------------------------------------------

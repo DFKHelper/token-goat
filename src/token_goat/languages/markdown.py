@@ -150,6 +150,7 @@ def _find_setext_headings(
     lines: list[str],
     fenced_lines: frozenset[int],
     atx_lines: frozenset[int],
+    frontmatter_end_line: int | None = None,
 ) -> list[tuple[int, int, str]]:
     """Scan *lines* for Setext headings, returning ``(line, level, text)`` tuples.
 
@@ -181,6 +182,9 @@ def _find_setext_headings(
             continue
         text_line = lines[i - 1]
         text_lineno = i  # 1-indexed line of the text
+        # Skip setext headings within YAML frontmatter region (closing --- misinterpreted as H2 underline).
+        if frontmatter_end_line is not None and text_lineno <= frontmatter_end_line:
+            continue
         # Skip when text line is blank, inside a fence, an ATX heading, or
         # blockquote/list-prefixed — see CommonMark setext rules.
         if not text_line.strip():
@@ -360,6 +364,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
 
         # --- Extract front-matter title + synthetic section ---
         fm_match = _FRONTMATTER_RE.match(text)
+        fm_end_line: int | None = None
         if fm_match:
             fm_content = fm_match.group(1)
             title_match = _YAML_TITLE_RE.search(fm_content)
@@ -419,7 +424,7 @@ def extract(source: bytes, rel_path: str) -> tuple[list[Symbol], list[Ref], list
         # WHY after ATX: we need atx_lines populated so setext doesn't pick up
         # text that is already an ATX heading on the line above an underline.
         for s_line, s_level, s_text in _find_setext_headings(
-            lines, fenced_lines, frozenset(atx_lines)
+            lines, fenced_lines, frozenset(atx_lines), frontmatter_end_line=fm_end_line
         ):
             sections.append(Section(heading=s_text, level=s_level, line=s_line))
             symbols.append(Symbol(name=s_text, kind="heading", line=s_line))
