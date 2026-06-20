@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.9.4] - 2026-06-20
+
 ### Added
 
 - **`token-goat tokens [patterns]` — per-file token footprint table.** Scans matched files and prints each file's token estimate alongside its line count, sorted largest-first by default. `--tree` groups results by directory with per-directory subtotals and percentages of the total. `--top N` limits the view to the N largest files. `--asc` reverses the sort order. `--json` emits a structured object with `total_tokens`, `total_files`, and a `files` array. `--no-ignore` bypasses `.tokengoatignore`. Omit patterns to scan the entire project.
@@ -37,6 +39,26 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### Performance
 
 - **`pre_read` hook now uses a read-only DB connection for symbol lookup.** `_get_indexed_symbols_and_line_count` was opening a write-capable connection (`db.open_project()`) that loads the sqlite-vec extension, sets WAL mode, and runs schema DDL on every call. Switching to `db.open_project_readonly()` eliminates those steps, cutting the function from ~9.8 ms to ~1.4 ms. Every Read tool call passes through `pre_read`, so the saving applies to every hook invocation. Fail-soft behavior is unchanged.
+
+### Fixed
+
+- **Stale `.jsonl` session sidecars now get cleaned up.** The cleanup pass only matched files ending in `.json`, so `.jsonl` sidecars piled up and were never removed. The suffix filter now covers both extensions.
+
+- **Writer lock no longer leaves an empty lock file behind.** When the `os.write` after an `O_EXCL` create failed, the freshly created lock file was orphaned on disk. The failure path now deletes it.
+
+- **Skeleton brace-skipper counts braces inside literals correctly.** A `}` or `{` inside a string, comment, or backtick template literal was counted as a real brace, which leaked body lines into the skeleton. Those contexts are now skipped, and regex literals are handled, too.
+
+- **Embedding dimension validation runs for custom models.** The check that the model's vector width matches the stored index was skipped for any non-default model. It now runs regardless of which model is configured.
+
+- **A closing `---` in YAML front matter is no longer read as a heading.** The front-matter terminator was parsed as a setext H2 heading, which invented a phantom section. Markdown parsing now recognizes the fence.
+
+- **MCP server name is read consistently in the transcript tool tally.** The tally pulled the server name from two different places, so one server could show up under more than one label. Extraction is now uniform.
+
+- **WSL path normalization drops the doubled slash.** Normalizing a Windows drive path produced a redundant slash after the drive letter, such as `/mnt/c//foo`. The extra slash is gone.
+
+- **Combined `--head` and `--tail` recall returns both ends.** Passing `--head` and `--tail` together returned only the head slice. Recall now returns the head and the tail.
+
+- **`compact-hint --diff` ignores timestamp-only changes.** A manifest whose only difference was a refreshed `# as-of:` timestamp was reported as a real change. The diff now treats a timestamp-only tick as no change.
 
 ## [1.9.3] - 2026-06-18
 
@@ -1208,7 +1230,8 @@ First public release.
 - Windows 10 and 11 only.
 - Python 3.11, 3.12, 3.13, and 3.14 supported.
 
-[Unreleased]: https://github.com/DFKHelper/token-goat/compare/v1.9.3...HEAD
+[Unreleased]: https://github.com/DFKHelper/token-goat/compare/v1.9.4...HEAD
+[1.9.4]: https://github.com/DFKHelper/token-goat/compare/v1.9.3...v1.9.4
 [1.9.3]: https://github.com/DFKHelper/token-goat/compare/v1.9.2...v1.9.3
 [1.9.2]: https://github.com/DFKHelper/token-goat/compare/v1.9.1...v1.9.2
 [1.9.1]: https://github.com/DFKHelper/token-goat/compare/v1.9.0...v1.9.1
