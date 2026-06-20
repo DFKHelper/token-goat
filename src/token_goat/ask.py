@@ -29,6 +29,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import TypedDict
@@ -277,7 +278,9 @@ def resolve_backend(model_override: str | None) -> Backend | None:
     if claude_path:
         # Claude Code's cheapest tier is Haiku; default to it when no model is set so ask works out of the box without spending on a premium model.
         chosen = model or _CLAUDE_CHEAPEST
-        return Backend(label=f"claude:{chosen}", argv=[claude_path, "--print", "--model", chosen])
+        # --bare: skip hooks, LSP, plugins, and CLAUDE.md auto-discovery — the synthesis call only needs the model, not the full IDE harness.
+        # --no-session-persistence: keep the call stateless; ask manages its own cache.
+        return Backend(label=f"claude:{chosen}", argv=[claude_path, "--print", "--model", chosen, "--bare", "--no-session-persistence"])
     codex_path = shutil.which("codex")
     if codex_path:
         # token-goat can't know codex's cheapest model; with no explicit model, let codex use its own configured default (no --model flag).
@@ -317,6 +320,10 @@ def synthesize(prompt: str, backend: Backend, *, timeout: int) -> str:
     One retry on failure is handled by the caller (run_ask); this function makes a
     single attempt and surfaces the error so the caller can retry-then-degrade.
     """
+    # Run from a neutral temp dir so the subprocess doesn't discover and load project CLAUDE.md files.
+    # TOKEN_GOAT_NO_WORKER_SPAWN prevents token-goat's own worker from spinning up inside the synthesis call.
+    _env = os.environ.copy()
+    _env["TOKEN_GOAT_NO_WORKER_SPAWN"] = "1"
     proc = subprocess.run(
         backend.argv,
         input=prompt,
@@ -324,6 +331,8 @@ def synthesize(prompt: str, backend: Backend, *, timeout: int) -> str:
         text=True,
         timeout=timeout,
         check=False,
+        cwd=tempfile.gettempdir(),
+        env=_env,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"backend exit {proc.returncode}: {proc.stderr.strip()[:200]}")
