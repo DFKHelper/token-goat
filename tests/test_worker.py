@@ -2867,6 +2867,24 @@ def test_cleanup_old_sessions_wired_into_cleanup_on_startup(tmp_data_dir, monkey
     assert stats.get("old_sessions_removed") == 3
 
 
+def test_cleanup_old_sessions_removes_stale_sidecar_jsonl(tmp_data_dir):
+    """Old .jsonl sidecar files (e.g. subagent_hallucination_flags.jsonl) are removed."""
+    from token_goat import paths as _paths
+
+    sessions_dir = _paths.data_dir() / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+
+    old_age = (worker._SESSION_RETENTION_DAYS + 1) * 86400
+    stale_jsonl = _make_session_file(sessions_dir, "subagent_hallucination_flags.jsonl", old_age)
+    fresh_json = _make_session_file(sessions_dir, "fresh-session.json", 3600)
+
+    removed = worker._cleanup_old_sessions()
+
+    assert removed == 1, "should count the removed .jsonl file"
+    assert not stale_jsonl.exists(), ".jsonl sidecar should be removed as stale"
+    assert fresh_json.exists(), "fresh .json file should be preserved"
+
+
 # ---------------------------------------------------------------------------
 # Eviction Lock Reliability Tests
 # ---------------------------------------------------------------------------
