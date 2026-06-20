@@ -7811,8 +7811,9 @@ def _compact_hint_watch(
         return compact_mod.build_manifest(sid, max_tokens=effective_tokens) or ""
 
     def _show_diff(previous: str, current: str) -> None:
-        prev_lines = previous.splitlines(keepends=True)
-        curr_lines = current.splitlines(keepends=True)
+        # Strip the volatile trailing "# as-of:" line from both sides so a timestamp-only tick (identical content built a clock-second apart) is not reported as a change.
+        prev_lines = compact_mod.normalize_for_cache(previous).splitlines(keepends=True)
+        curr_lines = compact_mod.normalize_for_cache(current).splitlines(keepends=True)
         diff = list(
             difflib.unified_diff(prev_lines, curr_lines, lineterm="", n=1)
         )
@@ -8153,8 +8154,9 @@ def compact_hint(
             )
             return
 
-        current_text = manifest or ""
-        prior_lines = _prior_manifest_text.splitlines(keepends=True)
+        # Strip the volatile trailing "# as-of:" line from both sides so a timestamp-only tick (identical content built a clock-second apart) is not reported as a change.
+        current_text = compact_mod.normalize_for_cache(manifest or "")
+        prior_lines = compact_mod.normalize_for_cache(_prior_manifest_text).splitlines(keepends=True)
         current_lines = current_text.splitlines(keepends=True)
         diff_lines = list(difflib.unified_diff(
             prior_lines,
