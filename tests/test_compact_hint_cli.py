@@ -277,16 +277,23 @@ class TestCompactHintDiff:
         sid = "diff-unchanged-abc"
         make_session(sid, files_read=2, edits=1)
 
-        # Write the text sidecar manually to simulate a prior emit
+        # Deterministic regression for the volatile-as-of phantom-diff flake:
+        # build the real manifest, then write a prior text sidecar whose body is
+        # byte-identical but whose trailing "# as-of:" line carries a fixed past
+        # timestamp.  The --diff rebuild stamps the current time, so the two
+        # manifests differ ONLY in the as-of line.  A timestamp-only tick must be
+        # reported as "unchanged", not as a phantom change.
         manifest_text = compact.build_manifest(sid)
-        if manifest_text:
-            text_sidecar = paths.manifest_text_sidecar_path(sid)
-            paths.ensure_dir(text_sidecar.parent)
-            paths.atomic_write_text(text_sidecar, manifest_text)
+        assert manifest_text, "expected a non-empty manifest for a populated session"
 
-            result = _invoke(["compact-hint", "--session-id", sid, "--diff"])
-            assert result.exit_code == 0
-            assert "unchanged" in result.output.lower() or "no diff" in result.output.lower()
+        prior_text = compact.normalize_for_cache(manifest_text) + "\n# as-of: 1999-01-01T00:00:00Z"
+        text_sidecar = paths.manifest_text_sidecar_path(sid)
+        paths.ensure_dir(text_sidecar.parent)
+        paths.atomic_write_text(text_sidecar, prior_text)
+
+        result = _invoke(["compact-hint", "--session-id", sid, "--diff"])
+        assert result.exit_code == 0
+        assert "unchanged" in result.output.lower() or "no diff" in result.output.lower()
 
     def test_diff_shows_additions_with_plus_prefix(self, tmp_data_dir, make_session):
         sid = "diff-additions-abc"
