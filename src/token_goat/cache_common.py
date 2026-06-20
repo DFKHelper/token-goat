@@ -44,7 +44,7 @@ import time
 from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, Any, TypedDict
 
-from .util import get_logger
+from .util import get_logger, json_dumps_utf8
 
 if TYPE_CHECKING:
     import logging
@@ -468,7 +468,7 @@ def write_sidecar_metadata(
         from . import paths as _paths
         _paths.atomic_write_text(
             sidecar_path,
-            json.dumps(asdict(meta), ensure_ascii=False),
+            json_dumps_utf8(asdict(meta)),
         )
     except OSError as exc:
         log.debug(

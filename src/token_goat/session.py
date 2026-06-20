@@ -124,7 +124,7 @@ from typing import TYPE_CHECKING, Any, Final, TypedDict, TypeVar, cast
 
 from . import paths
 from .hooks_common import is_real_int, sanitize_log_str
-from .util import env_int, get_logger, utf8_bytes
+from .util import env_int, get_logger, json_dumps_utf8, utf8_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator
@@ -1558,7 +1558,7 @@ class SessionCache:
         each ``save()`` call when a hook loads → mutates once → saves.
         """
         if self._json_cache is None:
-            self._json_cache = json.dumps(self.to_dict(), ensure_ascii=False)
+            self._json_cache = json_dumps_utf8(self.to_dict())
         return self._json_cache
 
     def _invalidate_json_cache(self) -> None:

@@ -6,6 +6,7 @@ in two or more modules with no natural owner belong here.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -13,7 +14,7 @@ import subprocess
 import sys
 from logging import Logger
 from subprocess import CompletedProcess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .render.ansi import strip_ansi as strip_ansi
 
@@ -26,6 +27,7 @@ __all__ = [
     "env_float",
     "env_int",
     "get_logger",
+    "json_dumps_utf8",
     "normalize_path",
     "run_git",
     "sanitize_control_chars",
@@ -48,6 +50,15 @@ def get_logger(name: str) -> Logger:
         _LOG = get_logger("module_name")
     """
     return logging.getLogger(f"token_goat.{name}")
+
+
+def json_dumps_utf8(obj: Any, **kwargs: Any) -> str:
+    """Serialize *obj* to JSON with ensure_ascii=False (preserve Unicode characters).
+
+    Centralises the repeated pattern of ``json.dumps(obj, ensure_ascii=False)``
+    across 13+ call sites. Additional kwargs (e.g. default=str) are passed through.
+    """
+    return json.dumps(obj, ensure_ascii=False, **kwargs)
 
 
 # Compiled once at import time — avoids recompiling on every normalize_path call.
