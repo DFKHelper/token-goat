@@ -3677,8 +3677,8 @@ def _handle_task_output_read(
         output_id = stored[task_id]
         reason = f"Task output {task_id} already stored as bash-output blob {output_id}."
         context = (
-            f"[token-goat] Task output `{task_id}` was already read and stored. "
-            f"Recall it without re-reading the file:\n"
+            f"[tg] Task output `{task_id}` already stored as bash-output `{output_id}`. "
+            f"Recall without re-reading:\n"
             f"  token-goat bash-output {output_id}\n"
             f"  token-goat bash-output {output_id} --grep <pattern>\n"
             f"  token-goat bash-output {output_id} --head 50\n"
@@ -3729,15 +3729,16 @@ def _handle_task_output_read(
         _sess_mod.save(cache)
 
     n_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+    oid = meta.output_id
     hint = (
-        f"[token-goat] Task output `{task_id}` stored ({n_lines:,} lines / "
-        f"{len(content):,} bytes) as bash-output `{meta.output_id}`. "
+        f"[tg] Task output `{task_id}` stored ({n_lines:,} lines / "
+        f"{len(content):,} bytes) as bash-output `{oid}`. "
         f"Use surgical reads instead of re-reading this file:\n"
-        f"  token-goat bash-output {meta.output_id}                     — full output\n"
-        f"  token-goat bash-output {meta.output_id} --head 50           — first 50 lines\n"
-        f"  token-goat bash-output {meta.output_id} --tail 50           — last 50 lines\n"
-        f"  token-goat bash-output {meta.output_id} --grep <pattern>    — grep for pattern\n"
-        f'  token-goat bash-output {meta.output_id} --section "Heading" — jump to section\n'
+        f"  token-goat bash-output {oid}\n"
+        f"  token-goat bash-output {oid} --head 50\n"
+        f"  token-goat bash-output {oid} --tail 50\n"
+        f"  token-goat bash-output {oid} --grep <pattern>\n"
+        f'  token-goat bash-output {oid} --section "Heading"\n'
     )
     return pre_tool_use_with_context(hint)
 
