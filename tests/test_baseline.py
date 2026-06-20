@@ -621,6 +621,15 @@ def test_tally_tool_calls_ignores_malformed_json() -> None:
     assert mcp_counts == {}
 
 
+def test_tally_tool_calls_extracts_mcp_server_name_with_underscores() -> None:
+    skill_counts: dict[str, int] = {}
+    mcp_counts: dict[str, int] = {}
+    line = '{"message": {"content": [{"type": "tool_use", "name": "mcp__plugin__with__underscores__list_items", "input": {}}]}}'
+    _tally_tool_calls(line, skill_counts, mcp_counts)
+    assert mcp_counts == {"plugin__with__underscores": 1}
+    assert skill_counts == {}
+
+
 def test_scan_transcript_usage_reads_jsonl(tmp_path: Path) -> None:
     proj = tmp_path / "projects" / "slug" / "sess-abc"
     proj.mkdir(parents=True)
