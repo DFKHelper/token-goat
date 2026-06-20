@@ -86,7 +86,7 @@ class TestBuildScopedDiffHint:
         hint = build_scoped_diff_hint(8192, files)
         assert "8.0 KB" in hint
         assert "6 file(s)" in hint
-        assert "and 1 more" in hint
+        assert "+1 more" in hint
         for i in range(5):
             assert f"src/file{i}.py" in hint
         assert "src/file5.py" not in hint
@@ -100,7 +100,7 @@ class TestBuildScopedDiffHint:
 
     def test_hint_prefix(self) -> None:
         hint = build_scoped_diff_hint(4096, ["src/x.py"])
-        assert hint.startswith("[token-goat]")
+        assert hint.startswith("[tg]")
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ class TestPostBashScopedDiffHint:
 
         assert result is not None
         msg = result.get("systemMessage", "")
-        assert "[token-goat]" in msg
+        assert "[tg]" in msg
         assert "git diff --" in msg
         assert "3 file(s)" in msg
 
@@ -186,7 +186,7 @@ class TestPostBashScopedDiffHint:
         msg = result.get("systemMessage", "")
         assert "git diff --" not in msg or "already" not in msg
         # Stricter: the hint prefix must not appear
-        assert "[token-goat] Large diff" not in msg
+        assert "[tg] Large diff" not in msg
 
 
 # ---------------------------------------------------------------------------

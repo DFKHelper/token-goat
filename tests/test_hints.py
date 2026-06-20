@@ -5114,7 +5114,7 @@ class TestTestFileHint:
         assert hint is not None
         assert hint.hint_priority == HINT_PRIORITY_LOW
         assert "worker.py" in hint.text
-        assert "Implementation" in hint.text or "implementation" in hint.text
+        assert "impl" in hint.text.lower()  # impl file referenced in hint
 
     def test_impl_file_already_read_returns_none(self, tmp_data_dir, tmp_path):
         """Test file with already-read impl file → no hint."""
