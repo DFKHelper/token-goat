@@ -116,7 +116,12 @@ def normalize_path(path: str | Path) -> str:
     if m:
         drive_letter = m.group(1).lower()  # lowercase so /mnt/C and /mnt/c agree
         rest = m.group(2)
-        s = f"{drive_letter}:/{rest}"
+        # If rest is empty or starts with /, we need to avoid duplicating the slash.
+        # /mnt/c/ captures rest='', result='c:/'
+        # /mnt/c//foo captures rest='/foo', result='c:/foo' (not 'c:///foo')
+        # /mnt/c///bar captures rest='//bar', result='c:/bar' (collapse multiple leading slashes)
+        rest_stripped = rest.lstrip("/")
+        s = f"{drive_letter}:/{rest_stripped}"
 
     # Step 4: lowercase the drive letter prefix (C: → c:) on all platforms.
     # WSL processes emit Windows-format paths on Linux; both must produce the
