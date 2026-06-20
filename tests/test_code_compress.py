@@ -269,3 +269,36 @@ def test_all_supported_exts_return_string(ext: str):
     result = compress_to_skeleton(source, ext)
     assert result is not None
     assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# Test 13: brace inside string literal should not prematurely close block
+# ---------------------------------------------------------------------------
+
+def test_string_with_closing_brace_in_js():
+    source = (
+        "function test() {\n"
+        '    console.log("string with } brace");\n'
+        "    const x = 1;\n"
+        "}\n"
+    )
+    result = compress_to_skeleton(source, ".js")
+    assert result is not None
+    assert "function test()" in result
+    assert "// ... " in result
+    assert "const x = 1" not in result
+
+
+def test_string_with_opening_brace_in_ts():
+    source = (
+        "function test() {\n"
+        '    const msg = "obj { key: value }";\n'
+        "    return msg;\n"
+        "}\n"
+    )
+    result = compress_to_skeleton(source, ".ts")
+    assert result is not None
+    assert "function test()" in result
+    assert "// ... " in result
+    assert "const msg" not in result
+    assert "return msg" not in result
