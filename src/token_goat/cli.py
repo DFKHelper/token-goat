@@ -4700,9 +4700,16 @@ def _apply_recall_filters(
     if grep:
         _pat = _compile_grep_pattern(grep, case_sensitive=case_sensitive)
         lines = [ln for ln in lines if _pat.search(ln)]
-    if head > 0:
+    if head > 0 and tail > 0:
+        # Combine the first ``head`` and last ``tail`` lines. When the two
+        # ranges would overlap (head + tail >= total) return every line once
+        # instead of duplicating the middle, matching the non-overlapping
+        # convention of the ``--head-tail`` preset.
+        if head + tail < len(lines):
+            lines = [*lines[:head], *lines[-tail:]]
+    elif head > 0:
         lines = lines[:head]
-    if tail > 0:
+    elif tail > 0:
         lines = lines[-tail:]
     if not slicing_requested and not full:
         lines = _apply_smart_default(lines)
@@ -4870,9 +4877,16 @@ def _run_output_recall_command(
         # results are truncated.
         if match_count > 0:
             lines = [f"Match count: {match_count}", *lines]
-    if head > 0:
+    if head > 0 and tail > 0:
+        # Combine the first ``head`` and last ``tail`` lines. When the two
+        # ranges would overlap (head + tail >= total) return every line once
+        # instead of duplicating the middle, matching the non-overlapping
+        # convention of the ``--head-tail`` preset.
+        if head + tail < len(lines):
+            lines = [*lines[:head], *lines[-tail:]]
+    elif head > 0:
         lines = lines[:head]
-    if tail > 0:
+    elif tail > 0:
         lines = lines[-tail:]
     if head_tail and not grep:
         lines = _apply_head_tail(lines)
