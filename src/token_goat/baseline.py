@@ -351,7 +351,7 @@ def _cost_file(path: Path) -> int | None:
         if path.is_file():
             return path.stat().st_size
     except OSError:
-        return None
+        pass
     return None
 
 
