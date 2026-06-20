@@ -471,8 +471,9 @@ def embed_texts(
         return []
     n = len(texts)
     model = _get_model(model_name)
-    expected_dim = DEFAULT_DIM if model_name == DEFAULT_MODEL else None
     vecs: list[list[float]] = []
+    # Every model must produce DEFAULT_DIM vectors: the vec0 index is created as a fixed FLOAT[DEFAULT_DIM] table, so any other width (from the default model or a custom one) is invalid regardless of intra-batch consistency.
+    expected_dim = DEFAULT_DIM
     t0 = time.monotonic()
     try:
         for arr in model.embed(list(texts)):  # type: ignore[union-attr]  # fastembed TextEmbedding.embed() is not in typeshed; duck-typed Iterable[ndarray]
@@ -482,7 +483,7 @@ def embed_texts(
                 raise EmbeddingsUnavailable(
                     f"embed() returned non-array object {type(arr).__name__!r}: {e}"
                 ) from e
-            if expected_dim is not None and len(vec) != expected_dim:
+            if len(vec) != expected_dim:
                 # A silent dimension mismatch would corrupt the sqlite-vec index:
                 # the stored BLOB length determines the assumed dimension at query
                 # time, so mixed-dimension rows produce incorrect distance scores
