@@ -762,6 +762,16 @@ def sentinels_dir() -> Path:
     return data_dir() / "sentinels"
 
 
+def _sentinel_path(session_id: str, prefix: str, ext: str = "") -> Path:
+    """Build a path to a session-keyed sentinel file under sentinels/ with sanitized session_id.
+
+    Handles Windows colon sanitization automatically. Returns the resolved path,
+    raising ValueError on traversal attempts or null bytes.
+    """
+    safe_id = _sanitize_session_id_for_filename(session_id)
+    return _safe_child_path(sentinels_dir(), f"{prefix}_{safe_id}", ext, "session_id")
+
+
 def recovery_pending_path(session_id: str) -> Path:
     """Path to ``sentinels/recovery_pending_{session_id}``.
 
@@ -778,8 +788,7 @@ def recovery_pending_path(session_id: str) -> Path:
     On Windows, colons in *session_id* are sanitized to underscores before
     path construction to prevent silent NTFS Alternate Data Stream creation.
     """
-    safe_id = _sanitize_session_id_for_filename(session_id)
-    return _safe_child_path(sentinels_dir(), f"recovery_pending_{safe_id}", "", "session_id")
+    return _sentinel_path(session_id, "recovery_pending")
 
 
 def baseline_advisory_sent_path(session_id: str) -> Path:
@@ -797,8 +806,7 @@ def baseline_advisory_sent_path(session_id: str) -> Path:
     On Windows, colons in *session_id* are sanitized to underscores before
     path construction to prevent silent NTFS Alternate Data Stream creation.
     """
-    safe_id = _sanitize_session_id_for_filename(session_id)
-    return _safe_child_path(sentinels_dir(), f"baseline_advisory_{safe_id}", "", "session_id")
+    return _sentinel_path(session_id, "baseline_advisory")
 
 
 def precompact_estimate_path(session_id: str) -> Path:
@@ -821,8 +829,7 @@ def precompact_estimate_path(session_id: str) -> Path:
     On Windows, colons in *session_id* are sanitized to underscores before
     path construction to prevent silent NTFS Alternate Data Stream creation.
     """
-    safe_id = _sanitize_session_id_for_filename(session_id)
-    return _safe_child_path(sentinels_dir(), f"precompact_estimate_{safe_id}", ".json", "session_id")
+    return _sentinel_path(session_id, "precompact_estimate", ".json")
 
 
 def skill_pregen_sentinel_path() -> Path:
@@ -855,8 +862,7 @@ def manifest_sha_sidecar_path(session_id: str) -> Path:
     On Windows, colons in *session_id* are sanitized to underscores before
     path construction to prevent silent NTFS Alternate Data Stream creation.
     """
-    safe_id = _sanitize_session_id_for_filename(session_id)
-    return _safe_child_path(sentinels_dir(), f"manifest_sha_{safe_id}", "", "session_id")
+    return _sentinel_path(session_id, "manifest_sha")
 
 
 def manifest_text_sidecar_path(session_id: str) -> Path:
@@ -873,8 +879,7 @@ def manifest_text_sidecar_path(session_id: str) -> Path:
     Raises ``ValueError`` if *session_id* contains a null byte or would produce
     a path outside the ``sentinels/`` directory.
     """
-    safe_id = _sanitize_session_id_for_filename(session_id)
-    return _safe_child_path(sentinels_dir(), f"manifest_text_{safe_id}", ".txt", "session_id")
+    return _sentinel_path(session_id, "manifest_text", ".txt")
 
 
 def claude_config_dir() -> Path:
@@ -894,6 +899,18 @@ def claude_projects_dir() -> Path:
     return claude_config_dir() / "projects"
 
 
+def _validate_session_id_as_path_segment(session_id: str) -> bool:
+    """Return True when session_id is safe to use as a bare path segment.
+
+    Rejects null bytes, forward/backslashes, and special path names (``.`` / `..``).
+    Used by :func:`claude_session_tool_results_dir` and :func:`claude_session_project_dir`
+    to prevent traversal attacks before scanning the projects root.
+    """
+    if not session_id or "\x00" in session_id:
+        return False
+    return "/" not in session_id and "\\" not in session_id and session_id not in (".", "..")
+
+
 def claude_session_tool_results_dir(session_id: str) -> Path | None:
     """Return the ``tool-results`` directory for *session_id*, or ``None``.
 
@@ -907,9 +924,7 @@ def claude_session_tool_results_dir(session_id: str) -> Path | None:
     join. Returns ``None`` on any validation failure, a missing projects root,
     or when no project owns the session. Never raises.
     """
-    if not session_id or "\x00" in session_id:
-        return None
-    if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+    if not _validate_session_id_as_path_segment(session_id):
         return None
     root = claude_projects_dir()
     try:
@@ -942,9 +957,7 @@ def claude_session_project_dir(session_id: str) -> Path | None:
     failure, a missing projects root, or when no project owns the session.
     Never raises.
     """
-    if not session_id or "\x00" in session_id:
-        return None
-    if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
+    if not _validate_session_id_as_path_segment(session_id):
         return None
     root = claude_projects_dir()
     try:
