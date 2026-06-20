@@ -182,6 +182,19 @@ def _skip_brace_body(lines: list[str], start: int, initial_depth: int) -> tuple[
                     else:
                         j += 1
                 continue
+            elif ch == "`":
+                # JS/TS backtick template literal: a `}` (or `{`) inside it — e.g. `text with } brace` or `${x}` — is string content, not a structural brace.
+                j += 1
+                while j < line_len:
+                    if line[j] == "\\":
+                        j += 2
+                    elif line[j] == "`":
+                        j += 1
+                        break
+                    else:
+                        j += 1
+                continue
+            # Regex literals (/.../) are not yet handled — hard to disambiguate from division.
             elif ch == "{":
                 depth += 1
             elif ch == "}":

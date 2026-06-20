@@ -302,3 +302,36 @@ def test_string_with_opening_brace_in_ts():
     assert "// ... " in result
     assert "const msg" not in result
     assert "return msg" not in result
+
+
+def test_template_literal_with_closing_brace_in_js():
+    # A lone `}` inside a backtick template literal must not be counted as a
+    # structural closing brace, or the body closes prematurely (mirrors
+    # test_string_with_closing_brace_in_js for the backtick case).
+    source = (
+        "function test() {\n"
+        "    const s = `string with } brace`;\n"
+        "    const x = 1;\n"
+        "}\n"
+    )
+    result = compress_to_skeleton(source, ".js")
+    assert result is not None
+    assert "function test()" in result
+    assert "// ... " in result
+    assert "const x = 1" not in result
+
+
+def test_template_literal_interpolation_with_brace_in_ts():
+    # Interpolation `${name}` plus a lone `}` inside a backtick string: the body
+    # must still be detected and summarized rather than closing at the lone brace.
+    source = (
+        "function test() {\n"
+        "    const greeting = `hi ${name}, } bye`;\n"
+        "    const y = 2;\n"
+        "}\n"
+    )
+    result = compress_to_skeleton(source, ".ts")
+    assert result is not None
+    assert "function test()" in result
+    assert "// ... " in result
+    assert "const y = 2" not in result
