@@ -335,3 +335,40 @@ def test_template_literal_interpolation_with_brace_in_ts():
     assert "function test()" in result
     assert "// ... " in result
     assert "const y = 2" not in result
+
+
+def test_regex_literal_with_closing_brace_in_js():
+    # A `}` inside a JS/TS regex literal — both a `[...]` char class (`/[}]/`) and a
+    # plain `/a}b/` — must not be counted as a structural closing brace, or the body
+    # closes prematurely (mirrors test_string_with_closing_brace_in_js for regex).
+    source = (
+        "function test() {\n"
+        "    const re = /[}]/;\n"
+        "    const m = /a}b/;\n"
+        "    const x = 1;\n"
+        "}\n"
+    )
+    result = compress_to_skeleton(source, ".js")
+    assert result is not None
+    assert "function test()" in result
+    assert "// ... " in result
+    assert "/[}]/" not in result
+    assert "/a}b/" not in result
+    assert "const x = 1" not in result
+
+
+def test_division_not_treated_as_regex_in_js():
+    # A `/` in division position (here after `)`) must stay division, never a regex:
+    # the body must summarize normally and not leak the trailing statements.
+    source = (
+        "function calc() {\n"
+        "    const r = (a + b) / c;\n"
+        "    const x = 1;\n"
+        "}\n"
+    )
+    result = compress_to_skeleton(source, ".js")
+    assert result is not None
+    assert "function calc()" in result
+    assert "// ... " in result
+    assert "const r =" not in result
+    assert "const x = 1" not in result
