@@ -643,10 +643,12 @@ def _tally_tool_calls(
                 if skill and isinstance(skill, str):
                     skill_counts[skill] = skill_counts.get(skill, 0) + 1
         elif name.startswith("mcp__"):
-            parts = name.split("__", 2)
-            if len(parts) >= 2:
-                server = parts[1]
-                mcp_counts[server] = mcp_counts.get(server, 0) + 1
+            parts = name.split("__", 1)
+            if len(parts) == 2:
+                rest = parts[1]
+                if "__" in rest:
+                    server = rest.rsplit("__", 1)[0]
+                    mcp_counts[server] = mcp_counts.get(server, 0) + 1
 
 
 def scan_transcript_usage(
