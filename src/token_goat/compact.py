@@ -679,10 +679,10 @@ _GREP_RECENCY_HALF_LIFE_SECS: Final[float] = 1800.0  # 30 minutes
 # the trim loop brings it back down — a pointless memory/CPU spike with no benefit.
 _MAX_MANIFEST_TOKENS_CAP: Final[int] = 4_000
 # Directives appended after sidecar write — seen by the compaction LLM but excluded from the SHA/fingerprint.
-_COMPACT_DIRECTIVES: Final[str] = ("\n### Compact Directives\n- `skill_listing` messages (the full available-skills list) are auto-regenerated at session start — replace each with: `[skill_listing: auto-injected]`\n- `hook_success` / `hook_error` messages are diagnostic telemetry — collapse all to: `[N hook events]`")
+_COMPACT_DIRECTIVES: Final[str] = ("\n### Compact Directives\n- `skill_listing` (skills menu, auto-regenerated) → `[skill_listing: auto-injected]`\n- `hook_success`/`hook_error` (hook telemetry) → `[N hook events]`")
 _DIRECTIVE_TOKEN_RESERVE: Final[int] = -(-len(_COMPACT_DIRECTIVES) // 3)  # ceiling div
-# Minimum budget at which the boilerplate directives are appended. Below this the directives would consume a disproportionate share of the budget and crowd out the protected session payload (edited/read files) the manifest exists to preserve, so they are skipped entirely and the body keeps the full budget. Set to 2x the reserve so once directives DO attach the body still retains at least half the budget. Tying the reserve to actual append also fixes the prior bug where body_budget collapsed to 1 at tiny budgets while reserving 93 tokens for directives that the append gate then never added.
-_DIRECTIVE_APPEND_MIN_TOKENS: Final[int] = 2 * _DIRECTIVE_TOKEN_RESERVE
+# Minimum budget at which the boilerplate directives are appended. Below this the directives would consume a disproportionate share of the budget and crowd out the protected session payload (edited/read files) the manifest exists to preserve, so they are skipped entirely and the body keeps the full budget. Floored at 170 so that shortening the directive text never lowers the threshold and causes directives to attach at budgets where the body can't fit the protected sections.
+_DIRECTIVE_APPEND_MIN_TOKENS: Final[int] = max(2 * _DIRECTIVE_TOKEN_RESERVE, 170)
 # Token reserve for the stable "# as-of: YYYY-MM-DDTHH:MM:SSZ" suffix appended by
 # build_manifest.  The suffix is ~32 chars ≈ 11 tokens; reserving it from body_budget
 # ensures the total emitted manifest (body + directives + as-of) stays within max_tokens.
