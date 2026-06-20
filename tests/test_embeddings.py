@@ -986,3 +986,38 @@ def test_try_add_chunk_rejects_out_of_bounds_lines():
     chunks.clear()
     result = _try_add_chunk("f.py", 5, 1, lines, "test", chunks)
     assert result is False and len(chunks) == 0, "start > end should be rejected"
+
+
+def test_embed_texts_custom_model_validates_dimension():
+    """embed_texts should validate dimensions for custom models, not just DEFAULT_MODEL."""
+    fake_model = MagicMock()
+    fake_arr1 = MagicMock()
+    fake_arr1.tolist.return_value = [0.1] * 384
+    fake_arr2 = MagicMock()
+    fake_arr2.tolist.return_value = [0.2] * 768
+    fake_model.embed.return_value = [fake_arr1, fake_arr2]
+    with (
+        patch("token_goat.embeddings._get_model", return_value=fake_model),
+        pytest.raises(EmbeddingsUnavailable, match="Dimension mismatch"),
+    ):
+        emb.embed_texts(["text1", "text2"], model_name="custom/model")
+
+
+def test_embed_texts_rejects_consistent_wrong_dimension():
+    """A model returning a consistent but non-DEFAULT_DIM width must still be rejected.
+
+    The vec0 index is a fixed FLOAT[DEFAULT_DIM] table, so validation must compare
+    against DEFAULT_DIM, not merely against the first vector's width. A batch of
+    uniformly 256-dim vectors is internally consistent yet still invalid.
+    """
+    fake_model = MagicMock()
+    fake_arr1 = MagicMock()
+    fake_arr1.tolist.return_value = [0.1] * 256
+    fake_arr2 = MagicMock()
+    fake_arr2.tolist.return_value = [0.2] * 256
+    fake_model.embed.return_value = [fake_arr1, fake_arr2]
+    with (
+        patch("token_goat.embeddings._get_model", return_value=fake_model),
+        pytest.raises(EmbeddingsUnavailable, match="Dimension mismatch"),
+    ):
+        emb.embed_texts(["text1", "text2"], model_name=emb.DEFAULT_MODEL)
