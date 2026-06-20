@@ -597,3 +597,71 @@ def test_section_in_json_output_includes_section_field(capsys: pytest.CaptureFix
     payload = json.loads(capsys.readouterr().out)
     assert payload["section"] == "API"
     assert "api content" in payload["text"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for combined --head and --tail
+# ---------------------------------------------------------------------------
+
+def test_head_and_tail_combined(capsys: pytest.CaptureFixture[str]) -> None:
+    """--head and --tail together returns first N + last M lines (not sequential).
+
+    When both --head=10 and --tail=20 are specified on a 100-line output,
+    the result should include lines 1-10 and lines 81-100 (first 10 + last 20
+    of the original 100), not just apply them sequentially which would lose
+    most of the output.
+    """
+    body = _make_body(100)
+    cache = _make_cache_module(body=body)
+    with patch("token_goat.db.record_stat"):
+        _run_output_recall_command(
+            output_id="x",
+            head=10,
+            tail=20,
+            grep=None,
+            full=False,
+            json_output=False,
+            cache_module=cache,
+            stat_kind="bash_output_recall",
+            not_found_msg="not found",
+        )
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    # Should have first 10 + last 20 = 30 lines (no duplication at boundaries)
+    assert len(lines) == 30
+    # First 10 lines should be present
+    assert lines[0] == "line 1"
+    assert lines[9] == "line 10"
+    # Last 20 lines should be present
+    assert lines[10] == "line 81"
+    assert lines[29] == "line 100"
+
+
+def test_head_and_tail_overlap_no_duplicate_lines(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When --head and --tail ranges overlap, lines are not duplicated.
+
+    For a 20-line body with --head=15 --tail=10 the two ranges overlap
+    (15 + 10 >= 20). The result must return every line exactly once (all 20
+    lines, in order) rather than concatenating lines[:15] + lines[-10:] which
+    would emit 25 lines with lines 11-15 duplicated.
+    """
+    body = _make_body(20)
+    cache = _make_cache_module(body=body)
+    with patch("token_goat.db.record_stat"):
+        _run_output_recall_command(
+            output_id="x",
+            head=15,
+            tail=10,
+            grep=None,
+            full=False,
+            json_output=False,
+            cache_module=cache,
+            stat_kind="bash_output_recall",
+            not_found_msg="not found",
+        )
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines == [f"line {i}" for i in range(1, 21)]
+    assert len(lines) == len(set(lines))
