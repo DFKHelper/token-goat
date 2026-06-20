@@ -1398,11 +1398,12 @@ def _cleanup_old_sentinels() -> int:
 
 
 def _cleanup_old_sessions() -> int:
-    """Remove session JSON files older than SESSION_RETENTION_DAYS days.
+    """Remove session files and sidecars older than SESSION_RETENTION_DAYS days.
 
     Session JSONs accumulate indefinitely under ``sessions/`` — one per Claude
-    Code session.  Each file is at most a few KB, but long-lived installations
-    can accumulate thousands.  Files are safe to remove once the session they
+    Code session. Sidecar files (`.jsonl`, `.json.lock`, `.json.flock`, etc.)
+    also accumulate. Each is at most a few KB, but long-lived installations
+    can accumulate thousands. Files are safe to remove once the session they
     describe has been over for a week: no running hook will reference a session
     that old.
     """
@@ -1416,19 +1417,22 @@ def _cleanup_old_sessions() -> int:
     removed = 0
     try:
         for fp in sessions_dir.iterdir():
-            if fp.suffix != ".json":
+            # Only process session-related files: .json (session cache) and .jsonl (sidecars). Skip lock/flock (handled as .json companions).
+            if fp.suffix in (".lock", ".flock"):
+                continue
+            if fp.suffix not in (".json", ".jsonl"):
                 continue
             try:
                 if now - fp.stat().st_mtime > max_age:
                     fp.unlink()
                     removed += 1
                     _LOG.debug("_cleanup_old_sessions: removed %s", fp.name)
-                    # Remove companion lock/flock sidecars for this session so they
-                    # do not accumulate after the session JSON is gone.
-                    for sidecar_suffix in (".json.lock", ".json.flock"):
-                        sidecar = fp.with_suffix(sidecar_suffix)
-                        with contextlib.suppress(OSError):
-                            sidecar.unlink(missing_ok=True)
+                    # If this was a .json file, also remove its lock/flock companions.
+                    if fp.suffix == ".json":
+                        for sidecar_suffix in (".json.lock", ".json.flock"):
+                            sidecar = fp.with_suffix(sidecar_suffix)
+                            with contextlib.suppress(OSError):
+                                sidecar.unlink(missing_ok=True)
             except OSError:
                 continue
     except OSError as exc:
