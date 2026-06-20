@@ -529,14 +529,14 @@ def _write_plugin_file(plugins_dir: Path, filename: str, content: str) -> Path:
 def _remove_plugin_file(plugin_path: Path) -> str:
     """Remove *plugin_path* if it exists and return a human-readable status.
 
-    Returns ``"removed <path>"`` on success or ``"not found"`` if the file was
+    Returns ``"removed <path>"`` on success or ``_PLUGIN_NOT_FOUND`` if the file was
     absent.  Both opencode and openclaw share this step; the openclaw uninstall
     additionally deregisters from openclaw.json after calling this helper.
     """
     if plugin_path.exists():
         plugin_path.unlink()
         return f"removed {plugin_path}"
-    return "not found"
+    return _PLUGIN_NOT_FOUND
 
 
 # ---------------------------------------------------------------------------
@@ -555,10 +555,7 @@ def opencode_plugins_dir() -> Path:
 
 def _user_config_path(*parts: str) -> Path:
     """Return a path relative to the user home directory."""
-    result = Path.home()
-    for part in parts:
-        result = result / part
-    return result
+    return Path.home().joinpath(*parts)
 
 
 def openclaw_plugins_dir() -> Path:
@@ -601,6 +598,13 @@ def pi_plugin_path(target_dir: Path | None = None) -> Path:
 # template and always contain these markers.
 _PLUGIN_FINGERPRINT: tuple[str, ...] = ("token-goat", "spawnSync")
 
+# Plugin status strings used across check/install/uninstall functions.
+_PLUGIN_NOT_INSTALLED = "not installed"
+_PLUGIN_INSTALLED = "installed"
+_PLUGIN_PRESENT_NOT_OURS = "present but not token-goat bridge"
+_PLUGIN_NOT_FOUND = "not found"
+_PLUGIN_ERROR_READING = "error reading plugin file"
+
 _OPENCODE_FILENAME = "token-goat.ts"
 
 
@@ -608,22 +612,22 @@ def _check_plugin_file(plugin_path: Path) -> str:
     """Return a status string for a simple single-file bridge plugin.
 
     Returns one of:
-    - ``"not installed"``  — *plugin_path* does not exist
-    - ``"installed"``      — file exists and contains all fingerprint strings
-    - ``"present but not token-goat bridge"`` — file exists but fingerprint missing
-    - ``"error reading plugin file"`` — OSError while reading
+    - ``_PLUGIN_NOT_INSTALLED``  — *plugin_path* does not exist
+    - ``_PLUGIN_INSTALLED``      — file exists and contains all fingerprint strings
+    - ``_PLUGIN_PRESENT_NOT_OURS`` — file exists but fingerprint missing
+    - ``_PLUGIN_ERROR_READING`` — OSError while reading
     """
     if not plugin_path.exists():
-        return "not installed"
+        return _PLUGIN_NOT_INSTALLED
     try:
         content = plugin_path.read_text(encoding="utf-8")
     except OSError as e:
         _LOG.warning("opencode plugin status check failed reading %s: %s", plugin_path, e)
-        return "error reading plugin file"
+        return _PLUGIN_ERROR_READING
     else:
         if all(fp in content for fp in _PLUGIN_FINGERPRINT):
-            return "installed"
-        return "present but not token-goat bridge"
+            return _PLUGIN_INSTALLED
+        return _PLUGIN_PRESENT_NOT_OURS
 
 
 def install_opencode_plugin() -> str:
@@ -707,7 +711,7 @@ def uninstall_openclaw_plugin() -> str:
     removed: list[str] = []
 
     file_result = _remove_plugin_file(openclaw_plugins_dir() / _OPENCLAW_FILENAME)
-    if file_result != "not found":
+    if file_result != _PLUGIN_NOT_FOUND:
         removed.append(file_result)
 
     cfg_path = openclaw_config_path()
@@ -736,9 +740,9 @@ def _check_openclaw_plugin() -> str:
 
     file_status = _check_plugin_file(plugin_path)
     # Pass through error/foreign-file states immediately — registry check not meaningful.
-    if file_status not in ("not installed", "installed"):
+    if file_status not in (_PLUGIN_NOT_INSTALLED, _PLUGIN_INSTALLED):
         return file_status
-    file_installed = file_status == "installed"
+    file_installed = file_status == _PLUGIN_INSTALLED
 
     registered = False
     if cfg_path.exists():
@@ -749,12 +753,12 @@ def _check_openclaw_plugin() -> str:
             _LOG.debug("openclaw.json read failed in check: %s", e)
 
     if file_installed and registered:
-        return "installed"
+        return _PLUGIN_INSTALLED
     if file_installed and not registered:
         return "file present but not registered in openclaw.json"
     if registered and not file_installed:
         return "registered in openclaw.json but plugin file missing"
-    return "not installed"
+    return _PLUGIN_NOT_INSTALLED
 
 
 # ---------------------------------------------------------------------------

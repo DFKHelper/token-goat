@@ -403,18 +403,13 @@ def evict_cache_dir(
             continue
         sidecar = fp.with_suffix(".json")
         try:
-            sidecar.unlink()
-        except FileNotFoundError:
-            pass  # already removed by a concurrent eviction pass — harmless
+            sidecar.unlink(missing_ok=True)
         except OSError as exc:
             _log.debug("%s: sidecar cleanup failed for %s: %s", log_name, sidecar.name, exc)
-        # Free the compressed body too.  Plain (uncompressed) entries have no
-        # .gz sibling, so FileNotFoundError here is the common, harmless case.
+        # Free the compressed body too.  Plain (uncompressed) entries have no .gz sibling, so missing_ok=True handles the common harmless case.
         gz_sibling = fp.with_name(fp.stem + _GZ_SUFFIX)
         try:
-            gz_sibling.unlink()
-        except FileNotFoundError:
-            pass  # uncompressed entry, or already removed by a concurrent pass
+            gz_sibling.unlink(missing_ok=True)
         except OSError as exc:
             _log.debug("%s: gz body cleanup failed for %s: %s", log_name, gz_sibling.name, exc)
     if removed:
