@@ -147,6 +147,19 @@ class TestNormalizePath:
         r"""Regression P3-8: /mnt/c/a\b\c fully normalized to c:/a/b/c."""
         assert normalize_path("/mnt/c/a\\b\\c") == "c:/a/b/c"
 
+    def test_wsl_double_slash_after_drive(self) -> None:
+        """WSL /mnt/c//foo (double slash after drive) normalizes to c:/foo (single slash).
+
+        Regression: the regex captures /foo as rest, then f"{drive}:/{rest}" produces
+        "c:///foo" instead of "c:/foo". The fix ensures rest's leading slash is not
+        duplicated when concatenating with the drive colon.
+        """
+        assert normalize_path("/mnt/c//foo") == "c:/foo"
+
+    def test_wsl_triple_slash_after_drive(self) -> None:
+        """WSL /mnt/c///bar normalizes to c:/bar (leading slashes normalized)."""
+        assert normalize_path("/mnt/c///bar") == "c:/bar"
+
 
 class TestNormalizeKeyDelegates:
     """paths.normalize_key delegates to normalize_path and handles WSL paths."""
