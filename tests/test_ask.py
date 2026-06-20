@@ -89,7 +89,7 @@ class TestResolveBackend:
             b = ask.resolve_backend(None)
         assert b is not None
         assert b.label == "claude:claude-haiku-4-5"
-        assert b.argv == ["/usr/bin/claude", "--print", "--model", "claude-haiku-4-5"]
+        assert b.argv == ["/usr/bin/claude", "--print", "--model", "claude-haiku-4-5", "--bare", "--no-session-persistence"]
 
     def test_codex_defaults_to_own_default_when_unconfigured(self, monkeypatch):
         # No model set, only codex present: token-goat won't guess codex's cheapest, so it runs codex with no --model (codex uses its own default).
