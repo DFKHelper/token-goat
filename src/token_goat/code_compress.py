@@ -132,20 +132,63 @@ def _skip_brace_body(lines: list[str], start: int, initial_depth: int) -> tuple[
     """Advance past a brace-delimited block starting at initial_depth > 0.
 
     Returns (next_line_index, body_line_count) where body_line_count counts
-    lines consumed before the depth returned to zero.
+    lines consumed before the depth returned to zero. Correctly ignores braces
+    inside string literals and comments.
     """
     depth = initial_depth
     body_count = 0
     i = start
     n = len(lines)
+    in_block_comment = False
     while i < n and depth > 0:
-        for ch in lines[i]:
-            if ch == "{":
+        line = lines[i]
+        j = 0
+        line_len = len(line)
+        while j < line_len and depth > 0:
+            ch = line[j]
+            if in_block_comment:
+                if ch == "*" and j + 1 < line_len and line[j + 1] == "/":
+                    in_block_comment = False
+                    j += 2
+                    continue
+                j += 1
+                continue
+            if ch == "/" and j + 1 < line_len:
+                if line[j + 1] == "/":
+                    break
+                elif line[j + 1] == "*":
+                    in_block_comment = True
+                    j += 2
+                    continue
+            elif ch == '"':
+                j += 1
+                while j < line_len:
+                    if line[j] == "\\":
+                        j += 2
+                    elif line[j] == '"':
+                        j += 1
+                        break
+                    else:
+                        j += 1
+                continue
+            elif ch == "'":
+                j += 1
+                while j < line_len:
+                    if line[j] == "\\":
+                        j += 2
+                    elif line[j] == "'":
+                        j += 1
+                        break
+                    else:
+                        j += 1
+                continue
+            elif ch == "{":
                 depth += 1
             elif ch == "}":
                 depth -= 1
                 if depth == 0:
                     break
+            j += 1
         if depth > 0:
             body_count += 1
         i += 1
