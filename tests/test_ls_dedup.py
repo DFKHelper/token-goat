@@ -1,7 +1,7 @@
 """Tests for directory-listing dedup (iter 1 — ls/eza/dir fingerprinting)."""
 from __future__ import annotations
 
-import time
+import os
 
 import pytest
 
@@ -72,8 +72,9 @@ class TestDirStateFingerprint:
         assert dir_state_fingerprint(str(f)) is None
 
     def test_fingerprint_changes_after_file_added(self, tmp_path) -> None:
+        # Backdate the directory so any subsequent write produces a clearly newer mtime.
+        os.utime(tmp_path, (946684800.0, 946684800.0))
         fp1 = dir_state_fingerprint(str(tmp_path))
-        time.sleep(0.01)
         (tmp_path / "new_file.txt").write_text("content")
         fp2 = dir_state_fingerprint(str(tmp_path))
         assert fp1 != fp2, "Fingerprint should change when a file is added"
@@ -93,8 +94,9 @@ class TestCommandHashLsDedup:
 
     def test_ls_hash_changes_after_dir_modified(self, tmp_path) -> None:
         cwd = str(tmp_path)
+        # Backdate the directory so any subsequent write produces a clearly newer mtime.
+        os.utime(tmp_path, (946684800.0, 946684800.0))
         h1 = command_hash("ls -la", cwd)
-        time.sleep(0.01)
         (tmp_path / "added.txt").write_text("x")
         h2 = command_hash("ls -la", cwd)
         assert h1 != h2, "ls hash should change when directory changes"
@@ -108,8 +110,9 @@ class TestCommandHashLsDedup:
 
     def test_non_ls_command_unaffected(self, tmp_path) -> None:
         cwd = str(tmp_path)
+        # Backdate the directory; even after a file is added the non-ls hash must not change.
+        os.utime(tmp_path, (946684800.0, 946684800.0))
         h1 = command_hash("pytest tests/", cwd)
-        time.sleep(0.01)
         (tmp_path / "added.txt").write_text("x")
         h2 = command_hash("pytest tests/", cwd)
         # pytest is not a listing command; hash must not change from dir mtime
@@ -126,8 +129,9 @@ class TestCommandHashLsDedup:
         sub = tmp_path / "sub"
         sub.mkdir()
         cwd = str(tmp_path)
+        # Backdate sub so any subsequent write produces a clearly newer mtime.
+        os.utime(sub, (946684800.0, 946684800.0))
         h1 = command_hash("ls sub/", cwd)
-        time.sleep(0.01)
         (sub / "file.txt").write_text("x")  # change tmp_path/sub, not ./sub
         h2 = command_hash("ls sub/", cwd)
         assert h1 != h2, "Relative target must be resolved against cwd, not Python process cwd"
