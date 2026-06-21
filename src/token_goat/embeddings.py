@@ -674,7 +674,16 @@ def extract_chunks_for_file(
             # full window size so windows don't overlap (non-overlapping is intentional:
             # overlapping windows would produce near-duplicate embeddings that inflate
             # the index without improving recall).
-            window_end = min(line_no + WINDOW_LINES - 1, n)
+            # Clamp window_end to stop before the next covered range so the window
+            # chunk does not overlap with an already-covered symbol or section chunk.
+            # Without this clamp, a window starting just before a large symbol would
+            # extend into (and duplicate) that symbol's lines in the embedding index.
+            next_covered_start = (
+                covered[covered_idx][0]
+                if covered_idx < len(covered) and covered[covered_idx][0] > line_no
+                else n + 1
+            )
+            window_end = min(line_no + WINDOW_LINES - 1, next_covered_start - 1, n)
             if not _try_add_chunk(rel_path, line_no, window_end, lines, "window", chunks):
                 n_dropped_size += 1
             line_no = window_end + 1
