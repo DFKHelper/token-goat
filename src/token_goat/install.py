@@ -576,12 +576,9 @@ def install_linux_autostart() -> tuple[bool, str]:
     if existing_cmd is not None:
         old_interp = _extract_interpreter_from_command(existing_cmd)
         new_interp = sys.executable
-        if old_interp and new_interp:
-            def _norm_linux(p: str) -> str:
-                return p  # Linux paths are case-sensitive
-            if _norm_linux(old_interp) != _norm_linux(new_interp):
-                _LOG.warning(
-                    "install_linux_autostart: replacing existing autostart entry "
+        if old_interp and new_interp and old_interp != new_interp:  # Linux paths are case-sensitive
+            _LOG.warning(
+                "install_linux_autostart: replacing existing autostart entry "
                     "(old interpreter: %s) with new one (new interpreter: %s)",
                     old_interp, new_interp,
                 )
