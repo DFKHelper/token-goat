@@ -137,26 +137,35 @@ _CMD_READ_SYM_SURGICAL: str = "Use `token-goat read \"{path}::sym\"` for surgica
 _CMD_READ_FIRST_SYM_FAST: str = "Use `token-goat read \"{path}::{symbol}\"` (surgical)."
 
 
+_SLIM_WARM_THRESHOLD: int = 600
+"""Hints longer than this at 'warm' pressure are trimmed to first paragraph only."""
+
+
 def slim_hint_text(text: str, tier: str) -> str:
-    """Compress a hint to its first paragraph at hot/critical context pressure.
+    """Compress a hint to its first paragraph based on context pressure tier.
 
-    At cool/warm pressure the full text is returned unchanged.  At hot/critical,
-    only the first paragraph (up to the first blank line) is kept, then capped
-    at _SLIM_HINT_MAX_CHARS characters with a trailing ellipsis when truncated.
-    This keeps the actionable command visible while dropping explanatory detail
-    that costs tokens but adds little when context is scarce.
+    At cool pressure the full text is returned unchanged.  At warm, hints
+    exceeding _SLIM_WARM_THRESHOLD chars are trimmed to their first paragraph
+    (without a char cap) so actionable commands stay intact.  At hot/critical,
+    all hints are trimmed to the first paragraph and then capped at
+    _SLIM_HINT_MAX_CHARS characters with a trailing ellipsis when truncated.
 
-    The char cap is skipped for single-line first paragraphs (no internal newline)
-    because those are invariably the actionable command itself — truncating them
-    mid-command would produce an unrunnable fragment.
+    The char cap is skipped for single-line first paragraphs (no internal
+    newline) because those are invariably the actionable command itself —
+    truncating them mid-command would produce an unrunnable fragment.
     """
-    if tier not in ("hot", "critical"):
+    if tier not in ("warm", "hot", "critical"):
         return text
-    # Keep only the first paragraph.
+    # Keep only the first paragraph for warm/hot/critical tiers.
     first_para = text.split("\n\n")[0].strip()
     if not first_para:
         return text  # empty paragraph — return original rather than empty string
-    # Single-line first paragraphs are the command line itself; skip char cap.
+    if tier == "warm":
+        # At warm pressure only trim long multi-paragraph hints; short ones unchanged.
+        if len(text) <= _SLIM_WARM_THRESHOLD:
+            return text
+        return first_para
+    # hot / critical: always trim to first paragraph + char cap.
     if "\n" not in first_para:
         return first_para
     if len(first_para) <= _SLIM_HINT_MAX_CHARS:
