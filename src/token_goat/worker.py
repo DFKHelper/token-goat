@@ -122,7 +122,7 @@ IDLE_BACKOFF_AFTER_EMPTY_DRAINS = 5
 MAINTENANCE_INTERVAL = 300.0  # 5 min
 # How often to incrementally re-index active projects.
 # Longer than MAINTENANCE_INTERVAL so it does not compete with dirty-queue processing.
-PERIODIC_REINDEX_INTERVAL = 600.0  # 10 min
+PERIODIC_REINDEX_INTERVAL = 1800.0  # 30 min
 # Skip re-indexing any project that has grown beyond this many files.
 # Guards against accidentally indexing a huge directory and thrashing disk.
 #
@@ -140,7 +140,27 @@ PERIODIC_REINDEX_MAX_FILES = 2000
 # Only periodically re-index projects seen within this window. Bounds the sweep
 # to projects actually in use — the `projects` table accumulates every project
 # token-goat has ever touched, and reindexing all of them would be wasteful.
-PERIODIC_REINDEX_ACTIVE_WINDOW = 7 * 24 * 3600.0  # 7 days
+PERIODIC_REINDEX_ACTIVE_WINDOW = 4 * 3600.0  # 4 hours
+
+_BLOCKED_ROOT_PREFIXES: tuple[str, ...] = (
+    "c:/windows",
+    r"c:\windows",
+)
+_BLOCKED_ROOT_SEGMENTS: tuple[str, ...] = (
+    "node_modules",
+    "appdata/local/temp",
+    "appdata\\local\temp",
+)
+
+
+def _is_blocked_root(root: str) -> bool:
+    """Return True when *root* should never be (re-)indexed."""
+    low = root.lower().replace("\\", "/")
+    for prefix in _BLOCKED_ROOT_PREFIXES:
+        if low.startswith(prefix.replace("\\", "/")):
+            return True
+    return any(seg.replace("\\", "/") in low for seg in _BLOCKED_ROOT_SEGMENTS)
+
 
 # How many days of granular stats events to keep in global.db before pruning.
 # After this many days, rows are deleted from the stats table to keep the DB
@@ -2242,6 +2262,9 @@ def _reindex_active_projects() -> None:
     reindexed_count = 0
     skipped_oversized = 0
     for row in rows:
+        if _is_blocked_root(row["root"]):
+            _LOG.info("periodic reindex: skipping blocked root %s", row["root"])
+            continue
         if row["file_count"] > PERIODIC_REINDEX_MAX_FILES:
             _LOG.info(
                 "periodic reindex: skipping %s — %d files exceeds limit of %d "

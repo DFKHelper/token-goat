@@ -134,7 +134,7 @@ _SLIM_HINT_MAX_CHARS: int = 220
 # Reusable token-goat read command templates to reduce f-string duplication.
 _CMD_READ_SYMBOL: str = "Use `token-goat read \"{path}::symbol\"` for more."
 _CMD_READ_SYM_SURGICAL: str = "Use `token-goat read \"{path}::sym\"` for surgical access."
-_CMD_READ_FIRST_SYM_FAST: str = "Use `token-goat read \"{path}::{symbol}\"` (~85% faster)."
+_CMD_READ_FIRST_SYM_FAST: str = "Use `token-goat read \"{path}::{symbol}\"` (surgical)."
 
 
 def slim_hint_text(text: str, tier: str) -> str:
@@ -1886,9 +1886,8 @@ def build_high_frequency_hint(
         safe_path = _sanitize_hint_path(file_path)
         sym = resolved_symbol if resolved_symbol else "<symbol>"
         text = _apply_terse(
-            f"`{fname}` read {count}x this session — consider "
-            f"`token-goat skeleton {safe_path}` or "
-            f"`token-goat read \"{safe_path}::{sym}\"` for a narrower read."
+            f"`{fname}` read {count}x — `token-goat skeleton {safe_path}` or "
+            f"`token-goat read \"{safe_path}::{sym}\"`"
         )
         return HintItem(text, HINT_PRIORITY_MEDIUM)
     except Exception:
@@ -4447,8 +4446,7 @@ def build_test_file_hint(
     impl_rel = _sanitize_hint_path(str(impl_file))
 
     text = _apply_terse(
-        f"Test `{fname}` — impl `{impl_name}` not yet read this session. "
-        f"Consider reading `{impl_rel}` first."
+        f"Test `{fname}` — impl `{impl_name}` unread. Read `{impl_rel}` first."
     )
 
     return HintItem(text, HINT_PRIORITY_LOW)
@@ -4728,9 +4726,8 @@ def maybe_grep_advisory(path: str, session_cache: session.SessionCache, cwd: str
             return None
         safe_path = _sanitize_hint_path(str(p))
         return _apply_terse(
-            f"[tg] Grepped '{safe_path}' 3× this session. "
-            f"Consider `token-goat read \"{safe_path}\"` or "
-            f"`token-goat bash-output <id> --grep <pat>` to filter cached output."
+            f"[tg] Grepped '{safe_path}' 3× — `token-goat read \"{safe_path}\"` or "
+            f"`bash-output <id> --grep <pat>`"
         )
     except Exception:
         return None
