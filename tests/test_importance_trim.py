@@ -6,7 +6,14 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from token_goat.db import get_entry_scores, open_project, record_stat
+
+
+@pytest.fixture(autouse=True)
+def _isolate_project_db(tmp_data_dir: Path) -> None:
+    """Redirect data_dir to tmp so project DBs don't accumulate across WSL sessions."""
 
 # ---------------------------------------------------------------------------
 # Helpers
