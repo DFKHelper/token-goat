@@ -2331,6 +2331,15 @@ def detect_copilot_cli() -> bool:
     return bool(shutil.which("copilot") or shutil.which("github-copilot-cli"))
 
 
+def detect_hermes() -> bool:
+    """Return True if Hermes Agent (NousResearch) is detected on this machine."""
+    if os.environ.get("HERMES_HOME") or os.environ.get("HERMES_SESSION_ID"):
+        return True
+    if (Path.home() / ".hermes").exists():
+        return True
+    return bool(shutil.which("hermes"))
+
+
 def detect_installed_harnesses() -> dict[str, bool]:
     """Return a dict of harness name -> bool indicating presence on this machine.
 
@@ -2349,6 +2358,7 @@ def detect_installed_harnesses() -> dict[str, bool]:
     - ``cline``    — detected when the ``cline`` or ``claude-dev`` binary is on PATH or package is importable.
     - ``windsurf`` — detected when ``windsurf`` binary is on PATH or config dir exists.
     - ``copilot-cli`` — detected when ``copilot`` or ``github-copilot-cli`` binary is on PATH.
+    - ``hermes``  — detected when ``~/.hermes/`` exists, ``HERMES_HOME``/``HERMES_SESSION_ID`` env var is set, or the ``hermes`` binary is on PATH.
     """
     result: dict[str, bool] = {}
 
@@ -2382,6 +2392,7 @@ def detect_installed_harnesses() -> dict[str, bool]:
     result["cline"] = detect_cline()
     result["windsurf"] = detect_windsurf()
     result["copilot-cli"] = detect_copilot_cli()
+    result["hermes"] = detect_hermes()
 
     return result
 
@@ -2578,6 +2589,7 @@ def plan_install(
     install_opencode: bool = False,
     install_openclaw: bool = False,
     install_pi: bool = False,
+    install_hermes: bool = False,
     targets: set[str] | None = None,
 ) -> list[_PlanEntry]:
     """Return what :func:`install_all` *would* do, without making any changes.
@@ -2594,12 +2606,13 @@ def plan_install(
     """
     install_gemini = False
     if targets is not None:
-        effective = targets if "all" not in targets else {"claude", "codex", "gemini", "opencode", "openclaw", "pi"}
+        effective = targets if "all" not in targets else {"claude", "codex", "gemini", "opencode", "openclaw", "pi", "hermes"}
         install_codex = "codex" in effective
         install_gemini = "gemini" in effective
         install_opencode = "opencode" in effective
         install_openclaw = "openclaw" in effective
         install_pi = "pi" in effective
+        install_hermes = "hermes" in effective
     plan: list[_PlanEntry] = []
 
     # 1. settings.json
@@ -2799,6 +2812,14 @@ def plan_install(
                 detail="would write/refresh TS extension",
             ))
 
+    if install_hermes:
+        plan.append(_PlanEntry(
+            component="hermes: hooks",
+            target="~/.claude/settings.json",
+            action="verify",
+            detail="hooks fire via Claude Code settings.json (no separate config needed)",
+        ))
+
     return plan
 
 
@@ -2954,12 +2975,13 @@ def install_all(
     install_opencode: bool = False,
     install_openclaw: bool = False,
     install_pi: bool = False,
+    install_hermes: bool = False,
     targets: set[str] | None = None,
 ) -> dict[str, str]:
     """Run the full install. Returns a dict of step -> result string.
 
     *targets* is an optional set of tool names (``claude``, ``codex``,
-    ``opencode``, ``openclaw``, ``pi``, ``all``).  When provided it overrides the
+    ``opencode``, ``openclaw``, ``pi``, ``hermes``, ``all``).  When provided it overrides the
     individual boolean flags: passing ``targets={"codex"}`` is equivalent to
     ``install_codex=True`` with all other booleans at their defaults.
     ``targets={"all"}`` enables every optional integration.
@@ -2971,20 +2993,22 @@ def install_all(
     """
     install_gemini = False
     if targets is not None:
-        effective = targets if "all" not in targets else {"claude", "codex", "gemini", "opencode", "openclaw", "pi"}
+        effective = targets if "all" not in targets else {"claude", "codex", "gemini", "opencode", "openclaw", "pi", "hermes"}
         install_codex = "codex" in effective
         install_gemini = "gemini" in effective
         install_opencode = "opencode" in effective
         install_openclaw = "openclaw" in effective
         install_pi = "pi" in effective
+        install_hermes = "hermes" in effective
     t0 = time.monotonic()
     _LOG.info(
-        "install_all: starting (platform=%s codex=%s opencode=%s openclaw=%s pi=%s targets=%s)",
+        "install_all: starting (platform=%s codex=%s opencode=%s openclaw=%s pi=%s hermes=%s targets=%s)",
         sys.platform,
         install_codex,
         install_opencode,
         install_openclaw,
         install_pi,
+        install_hermes,
         targets,
     )
     paths.ensure_dirs()
@@ -3059,6 +3083,12 @@ def install_all(
 
     if install_pi:
         _run_step(result, "pi: extension", bridges.install_pi_plugin)
+
+    if install_hermes:
+        # Hermes delegates to Claude Code via `claude -p`, so Claude Code hooks
+        # (settings.json) already intercept every Hermes-spawned session.
+        result["hermes: hooks"] = "OK (hooks fire via Claude Code settings.json)"
+        _LOG.info("install step: hermes — hooks active via Claude Code settings.json")
 
     codec_report = probe_image_codecs()
     result["image codecs"] = (

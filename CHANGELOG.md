@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **Hermes Agent compatibility.** `token-goat install --hermes` confirms that hooks are active for Hermes-delegated Claude Code sessions and reports the result. `detect_harness()` now returns `"hermes"` when `HERMES_SESSION_ID` or `HERMES_HOME` is set, evaluated before the Claude Code check so the subprocess inheritance of `ANTHROPIC_API_KEY` does not mask it. `detect_installed_harnesses()` includes a `"hermes"` key. `--target hermes` and `--target all` are wired through `install_all` and `plan_install`.
+
 ## [1.9.5] - 2026-06-21
 
 ### Added

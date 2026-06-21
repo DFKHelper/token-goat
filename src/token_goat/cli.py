@@ -7211,7 +7211,7 @@ def doctor(
     cli_doctor.doctor(fix=fix, crashes=False, context=context)
 
 
-_VALID_TARGETS = {"claude", "codex", "gemini", "opencode", "openclaw", "pi", "all"}
+_VALID_TARGETS = {"claude", "codex", "gemini", "opencode", "openclaw", "pi", "hermes", "all"}
 
 
 @app.command("context-stats", rich_help_panel="Install")
@@ -7249,13 +7249,14 @@ def cmd_install(
     opencode: bool = typer.Option(False, "--opencode", help="Also install opencode plugin bridge"),  # noqa: B008
     openclaw: bool = typer.Option(False, "--openclaw", help="Also install openclaw plugin bridge"),  # noqa: B008
     pi: bool = typer.Option(False, "--pi", help="Also install pi extension bridge (global ~/.pi/agent/extensions)"),  # noqa: B008
+    hermes: bool = typer.Option(False, "--hermes", help="Also install hooks for Hermes Agent (NousResearch)"),  # noqa: B008
     target: list[str] = typer.Option(  # noqa: B008
         None,
         "--target",
         help=(
             "Install hooks for a specific tool. May be repeated. "
-            "Choices: claude, codex, gemini, opencode, openclaw, pi, all. "
-            "Overrides --codex/--opencode/--openclaw/--pi when provided."
+            "Choices: claude, codex, gemini, opencode, openclaw, pi, hermes, all. "
+            "Overrides --codex/--opencode/--openclaw/--pi/--hermes when provided."
         ),
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print what would change; make no changes"),
@@ -7316,6 +7317,7 @@ def cmd_install(
             install_opencode=opencode,
             install_openclaw=openclaw,
             install_pi=pi,
+            install_hermes=hermes,
             targets=targets,
         )
         typer.echo("token-goat install --dry-run (no changes made):")
@@ -7342,6 +7344,7 @@ def cmd_install(
         install_opencode=opencode,
         install_openclaw=openclaw,
         install_pi=pi,
+        install_hermes=hermes,
         targets=targets,
     )
     typer.echo("token-goat install:")
