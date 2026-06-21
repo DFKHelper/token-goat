@@ -1266,7 +1266,7 @@ def _get_git_diff_stat(
     # Filter out summary line (contains "file changed" / "insertions")
     diff_lines = [
         line for line in raw.splitlines()
-        if "file changed" not in line.lower() and "insertion" not in line.lower()
+        if "file changed" not in line.lower() and "insertion" not in line.lower() and "deletion" not in line.lower()
     ]
     if not diff_lines:
         _LOG.debug("_get_git_diff_stat: no diff lines after filtering summary")
