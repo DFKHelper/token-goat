@@ -310,7 +310,7 @@ def _make_short_stub_hint(seen_count: int) -> ReadHint:
     verbose text is the saving (no duplicate action needed from the agent).
     """
     return ReadHint(
-        f"(↳ same hint seen {seen_count}×, see prior context)",
+        f"(↳ seen {seen_count}×)",
         0,
     )
 
