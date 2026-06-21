@@ -49,7 +49,13 @@ from .hooks_common import (
     continue_with_message,
     sanitize_log_str,
 )
-from .util import configure_stdout_encoding, get_logger, json_dumps_utf8, sanitize_surrogates
+from .util import (
+    configure_stdout_encoding,
+    get_logger,
+    json_compact,
+    json_dumps_utf8,
+    sanitize_surrogates,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1000,14 +1006,10 @@ def _write_compact_skip_sentinel(
     the full import cost instead of taking the fast path; the hook still
     returns ``{"continue": true}`` correctly.
     """
-    import json as _json
     try:
         sentinel = paths.compact_skip_sentinel_path(session_id)
         paths.ensure_dir(sentinel.parent)
-        payload = _json.dumps(
-            {"edited_count": edited_count, "bash_count": bash_count},
-            separators=(",", ":"),
-        )
+        payload = json_compact({"edited_count": edited_count, "bash_count": bash_count})
         paths.atomic_write_text(sentinel, payload)
     except Exception:
         pass
@@ -1029,7 +1031,6 @@ def _write_precompact_estimate(session_id: str, cache: object) -> None:
 
     Errors are silently swallowed — this is advisory telemetry only.
     """
-    import json as _json
     import time as _time
 
     try:
@@ -1040,7 +1041,7 @@ def _write_precompact_estimate(session_id: str, cache: object) -> None:
             bytes_estimate += getattr(be, "stdout_bytes", 0) + getattr(be, "stderr_bytes", 0)
         for we in web_hist.values():
             bytes_estimate += getattr(we, "body_bytes", 0)
-        payload = _json.dumps(
+        payload = json_compact(
             {
                 "bytes_estimate": max(0, bytes_estimate),
                 "bash_count": len(bash_hist),
@@ -1048,7 +1049,6 @@ def _write_precompact_estimate(session_id: str, cache: object) -> None:
                 "session_id": session_id,
                 "ts": _time.time(),
             },
-            separators=(",", ":"),
         )
         sentinel = paths.precompact_estimate_path(session_id)
         paths.ensure_dir(sentinel.parent)
