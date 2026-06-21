@@ -5014,6 +5014,14 @@ class TestSlimHintText:
         text = "Line one.\n\nParagraph two detail."
         assert slim_hint_text(text, "warm") == text
 
+    def test_warm_tier_trims_long_hints_to_first_paragraph(self):
+        from token_goat.hints import _SLIM_WARM_THRESHOLD, slim_hint_text
+        first_para = "Actionable command: `token-goat read foo.py::login`."
+        long_text = first_para + "\n\n" + ("x" * (_SLIM_WARM_THRESHOLD + 50))
+        result = slim_hint_text(long_text, "warm")
+        assert result == first_para
+        assert len(result) < len(long_text)
+
     def test_hot_keeps_first_paragraph(self):
         from token_goat.hints import slim_hint_text
         text = "Actionable line here.\n\nVerbose explanation that costs tokens."
