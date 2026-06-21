@@ -336,6 +336,7 @@ class _WorkerToml(TypedDict, total=False):
 
     watchdog_enabled: bool
     max_pool_workers: int
+    blocked_roots: list[str]
 
 
 class _IndexingToml(TypedDict, total=False):
@@ -1150,6 +1151,7 @@ class WorkerConfig:
 
     watchdog_enabled: bool = True
     max_pool_workers: int = 4
+    blocked_roots: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1953,6 +1955,9 @@ def load() -> Config:
         max_pool_workers=_validated_int(
             wk_raw.get("max_pool_workers", 4), 4, 1, WORKER_MAX_POOL_CEILING,
             "worker.max_pool_workers",
+        ),
+        blocked_roots=_validated_str_list(
+            wk_raw.get("blocked_roots", []), [], "worker.blocked_roots"
         ),
     )
     _apply_env_disable(wk, "watchdog_enabled", _ENV_WORKER_WATCHDOG, "worker.watchdog_enabled")
