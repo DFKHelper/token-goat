@@ -15,6 +15,7 @@ The response body is the hook response JSON that would normally go to stdout.
 """
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import logging
@@ -24,7 +25,9 @@ from http.server import ThreadingHTTPServer
 _LOG = logging.getLogger(__name__)
 
 _relay_server: http.server.HTTPServer | None = None
+_relay_thread: threading.Thread | None = None
 _relay_lock = threading.Lock()
+_RELAY_LIVENESS_INTERVAL = 60.0
 
 
 class _HookRelayHandler(http.server.BaseHTTPRequestHandler):
@@ -65,7 +68,8 @@ class _HookRelayHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        with contextlib.suppress(OSError):
+            self.wfile.write(body)
 
     def log_message(self, *args: object) -> None:
         pass
@@ -78,7 +82,7 @@ def start_relay() -> int:
     port number to paths.hook_relay_port_path() so tg-hook.cmd can discover
     it without any IPC.  Returns 0 on failure.
     """
-    global _relay_server
+    global _relay_server, _relay_thread
     with _relay_lock:
         if _relay_server is not None:
             return _relay_server.server_address[1]  # type: ignore[index]
@@ -96,6 +100,7 @@ def start_relay() -> int:
             )
             thread.start()
             _relay_server = server
+            _relay_thread = thread
             _LOG.info("hook relay started on port %d", port)
             return port
         except Exception:
@@ -105,11 +110,12 @@ def start_relay() -> int:
 
 def stop_relay() -> None:
     """Stop the relay and remove the port file (called on daemon shutdown)."""
-    global _relay_server
+    global _relay_server, _relay_thread
     with _relay_lock:
         if _relay_server is None:
             return
         server, _relay_server = _relay_server, None
+        _relay_thread = None
         try:
             server.shutdown()
         except Exception:
@@ -119,3 +125,21 @@ def stop_relay() -> None:
             paths.hook_relay_port_path().unlink(missing_ok=True)
         except Exception:
             _LOG.exception("hook relay: failed to remove port file")
+def check_relay_liveness() -> None:
+    """Restart the relay if its serve_forever thread has exited unexpectedly.
+
+    Called periodically by the worker daemon main loop.  A dead relay leaves the
+    port file pointing at a closed socket; restarting overwrites it atomically so
+    tg-hook.cmd picks up the new port on its next invocation.
+    """
+    global _relay_server, _relay_thread
+    needs_restart = False
+    with _relay_lock:
+        if _relay_server is not None and _relay_thread is not None and not _relay_thread.is_alive():
+            _LOG.warning("hook relay thread died unexpectedly; will restart")
+            _relay_server = None
+            _relay_thread = None
+            needs_restart = True
+    if needs_restart:
+        start_relay()
+
