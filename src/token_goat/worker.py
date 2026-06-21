@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, TypedDict, cast
+from typing import IO, TYPE_CHECKING, Final, TypedDict, cast
 
 from .util import env_float, get_logger
 
@@ -271,7 +271,7 @@ class _TimedOut:
         return "<TIMED_OUT>"
 
 
-_TIMED_OUT = _TimedOut()
+_TIMED_OUT: Final = _TimedOut()
 
 
 def _installed_version() -> str | None:
@@ -2358,7 +2358,7 @@ def _reindex_active_projects() -> None:
         proj = Project(root=Path(row["root"]), hash=ph, marker=row["marker"])
         try:
             summary = _run_index_with_timeout(proj, False, INDEX_TIMEOUT_SECS)
-            if summary is _TIMED_OUT:
+            if isinstance(summary, _TimedOut):
                 _record_index_failure(ph, "<project>")
                 _record_project_timeout(ph)
                 continue
@@ -2711,7 +2711,7 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
             result = _run_index_with_timeout(project, is_first_index, INDEX_TIMEOUT_SECS)
             elapsed = time.time() - t0
 
-            if result is _TIMED_OUT:
+            if isinstance(result, _TimedOut):
                 # Wall-clock timeout — advance the timeout circuit-breaker for this project.
                 _record_index_failure(ph, "<project>")
                 _record_project_timeout(ph)
