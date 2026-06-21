@@ -29,7 +29,6 @@ wsl.exe -d Ubuntu -- bash -l -c "
   export TOKEN_GOAT_NO_WORKER_SPAWN=1
   export TOKEN_GOAT_HARNESS_OVERRIDE=claudecode
   export TOKEN_GOAT_MEMORY_PRESSURE_MB=99999
-  export TOKEN_GOAT_HOOK_WATCHDOG_MS=5000
   # Isolate the Linux venv from the Windows .venv to avoid cross-OS corruption.
   export UV_PROJECT_ENVIRONMENT=/tmp/tg-linux-venv
   exec uv run pytest -n auto -m 'not slow' -q --tb=short

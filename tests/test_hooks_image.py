@@ -3,11 +3,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from hook_helpers import assert_continue as _assert_continue
 from hook_helpers import make_large_jpeg as _make_large_jpeg
 from hook_helpers import make_small_jpeg as _make_small_jpeg
 
 from token_goat import hooks_cli, image_shrink
+
+
+@pytest.fixture(autouse=True)
+def _raise_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TOKEN_GOAT_HOOK_WATCHDOG_MS", "5000")
+
 
 # ---------------------------------------------------------------------------
 # 11. Large image → hook returns updatedInput with shrunken path
