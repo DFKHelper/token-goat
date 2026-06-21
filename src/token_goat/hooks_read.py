@@ -51,6 +51,7 @@ from .hooks_common import (
     CONTINUE,
     HookPayload,
     HookResponse,
+    continue_with_message,
     deny_redirect,
     emit_if_new_hint,
     extract_tool_response_text,
@@ -4802,7 +4803,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                             f"  token-goat skeleton {file_path}            — full symbol list without bodies\n"
                             f'  token-goat read "{file_path}::N-M"        — targeted line range'
                         )
-                        return {"continue": True, "systemMessage": _pr_hint}
+                        return continue_with_message(_pr_hint)
             # Memory file frontmatter stripping: when the agent reads an
             # individual memory file, strip the YAML block (already captured in
             # MEMORY.md) and surface only the body via systemMessage.
@@ -4810,7 +4811,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                 _mem_body, _n_stripped = _strip_memory_frontmatter(_resp_text)
                 if _n_stripped > 0:
                     _note = f"[token-goat] memory file: {_n_stripped} frontmatter lines stripped\n"
-                    return {"continue": True, "systemMessage": _note + _mem_body}
+                    return continue_with_message(_note + _mem_body)
             # Structural code compression: for large source files replace verbatim content with a skeleton that keeps only signatures and imports.
             import os as _os_cc
             _cc_disabled = _os_cc.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in {"0", "false", "no", "off"}
@@ -4835,7 +4836,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                                 f"\n[token-goat: structural view — {_cc_line_count} lines → {_sk_lines} skeleton lines;"
                                 f' use `token-goat read "{file_path}::SymbolName"` for full body]'
                             )
-                            return {"continue": True, "systemMessage": _skeleton + _cc_footer}
+                            return continue_with_message(_skeleton + _cc_footer)
                     except Exception:
                         pass
     elif tool_name == "Grep":
@@ -6414,7 +6415,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     if _sess_mod is not None and _session_cache is not None:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
-                    return {"continue": True, "systemMessage": _vt_msg}
+                    return continue_with_message(_vt_msg)
         except Exception:
             _LOG.debug("post-bash: verbose pytest suppress failed", exc_info=True)
 
@@ -6551,7 +6552,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     if _sess_mod is not None and _session_cache is not None:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
-                    return {"continue": True, "systemMessage": _cg_msg}
+                    return continue_with_message(_cg_msg)
         except Exception:
             _LOG.debug("post-bash: cargo compile compression failed", exc_info=True)
 
@@ -6609,7 +6610,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     if _sess_mod is not None and _session_cache is not None:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
-                    return {"continue": True, "systemMessage": _mk_msg}
+                    return continue_with_message(_mk_msg)
         except Exception:
             _LOG.debug("post-bash: make compression failed", exc_info=True)
 
@@ -6726,7 +6727,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     if _sess_mod is not None and _session_cache is not None:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
-                    return {"continue": True, "systemMessage": _go_msg}
+                    return continue_with_message(_go_msg)
         except Exception:
             _LOG.debug("post-bash: go test -v compression failed", exc_info=True)
 
@@ -6820,7 +6821,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     if _sess_mod is not None and _session_cache is not None:
                         with contextlib.suppress(Exception):
                             _sess_mod.save(_session_cache)
-                    return {"continue": True, "systemMessage": _tsc_msg}
+                    return continue_with_message(_tsc_msg)
         except Exception:
             _LOG.debug("post-bash: tsc compression failed", exc_info=True)
 
@@ -6989,7 +6990,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 if _sess_mod is not None and _session_cache is not None:
                     with contextlib.suppress(Exception):
                         _sess_mod.save(_session_cache)
-                return {"continue": True, "systemMessage": _py_msg}
+                return continue_with_message(_py_msg)
         except Exception:
             _LOG.debug("post-bash: python traceback compression failed", exc_info=True)
 
@@ -7746,7 +7747,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         _diff_hint = _build_scoped_diff_hint(_diff_output_len, _diff_edited)
                         record_cached_stat("git_diff_scope_hint", sanitize_log_str(display_cmd, max_len=200))
                         _LOG.info("post-bash: git diff scope hint injected, output=%d bytes, edited=%d files", _diff_output_len, len(_diff_edited))
-                        return {"continue": True, "systemMessage": _diff_hint}
+                        return continue_with_message(_diff_hint)
         except Exception:
             _LOG.debug("post-bash: git diff scope hint failed", exc_info=True)
 
@@ -7773,7 +7774,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     _more_f = f" (+{len(_fixed) - 5} more)" if len(_fixed) > 5 else ""
                     _parts.append(f"{len(_fixed)} fixed: {_shown_f}{_more_f}")
                 _delta_msg = "pytest delta — " + "; ".join(_parts)
-                return {"continue": True, "systemMessage": _delta_msg}
+                return continue_with_message(_delta_msg)
         except Exception:
             _LOG.debug("post-bash: pytest delta failed", exc_info=True)
 
@@ -7835,7 +7836,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     "post-bash: auto-promote id=%s bytes=%d cmd=%.80s",
                     meta.output_id, total_bytes, display_cmd,
                 )
-                return {"continue": True, "systemMessage": _promote_msg}
+                return continue_with_message(_promote_msg)
         except Exception:
             _LOG.debug("post-bash: auto-promote failed", exc_info=True)
 

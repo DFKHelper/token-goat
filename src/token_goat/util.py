@@ -27,6 +27,7 @@ __all__ = [
     "env_float",
     "env_int",
     "get_logger",
+    "json_compact",
     "json_dumps_utf8",
     "normalize_path",
     "run_git",
@@ -50,6 +51,17 @@ def get_logger(name: str) -> Logger:
         _LOG = get_logger("module_name")
     """
     return logging.getLogger(f"token_goat.{name}")
+
+
+def json_compact(obj: Any, **kwargs: Any) -> str:
+    """Serialize *obj* to compact JSON: no spaces, no ASCII escaping, Unicode preserved.
+
+    Centralises ``json.dumps(obj, ensure_ascii=False, separators=(",", ":"))`` used
+    at 70+ call sites across cli.py and read_commands.py. Additional kwargs (e.g.
+    ``default=str``) are forwarded; callers must not re-pass ``ensure_ascii`` or
+    ``separators`` as those are set here.
+    """
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), **kwargs)
 
 
 def json_dumps_utf8(obj: Any, **kwargs: Any) -> str:

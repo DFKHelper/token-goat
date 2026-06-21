@@ -42,7 +42,13 @@ from typing import TYPE_CHECKING, Final, Literal, ParamSpec, TypeVar, cast
 
 from . import paths
 from .hook_registry import CANONICAL_TOOLS
-from .hooks_common import CONTINUE, HookPayload, HookResponse, sanitize_log_str
+from .hooks_common import (
+    CONTINUE,
+    HookPayload,
+    HookResponse,
+    continue_with_message,
+    sanitize_log_str,
+)
 from .util import configure_stdout_encoding, get_logger, json_dumps_utf8, sanitize_surrogates
 
 if TYPE_CHECKING:
@@ -1305,7 +1311,7 @@ def pre_compact(payload: HookPayload) -> HookResponse:
     except Exception:
         _LOG.debug("pre-compact: context tracking reset failed", exc_info=True)
 
-    return {"continue": True, "systemMessage": manifest}
+    return continue_with_message(manifest)
 
 
 def _make_lazy_proxy(event: str) -> Callable[[HookPayload], HookResponse]:
