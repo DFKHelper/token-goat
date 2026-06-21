@@ -496,6 +496,7 @@ def _session_file_lock_windows(path: Path) -> Generator[None, None, None]:
                         _LOG.debug(
                             "_session_file_lock: evicted stale flock for %s", path.name
                         )
+                        elapsed_ms += _SESSION_FILE_LOCK_POLL_MS
                         continue
                 time.sleep(_SESSION_FILE_LOCK_POLL_MS / 1000.0)
                 elapsed_ms += _SESSION_FILE_LOCK_POLL_MS
