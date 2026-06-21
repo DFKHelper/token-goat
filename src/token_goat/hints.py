@@ -104,7 +104,7 @@ HINT_PRIORITY_LOW: Final[int] = 4
 
 # Maximum number of hints emitted per tool call.  When more hints would fire
 # than this cap, only the highest-priority ones are emitted and a footer
-# "(+N more hints suppressed)" is appended so the agent is aware.
+# "(+N suppressed)" is appended so the agent is aware.
 HINT_MAX_PER_TOOL_CALL: Final[int] = 3
 
 
@@ -175,7 +175,7 @@ def apply_hint_priority_limit(
     Hints are sorted ascending by ``hint_priority`` (lower = more important),
     then by insertion order within the same priority level (stable sort).
     When ``len(hints) > max_hints``, the lowest-priority excess hints are
-    dropped and a ``(+N more hints suppressed)`` footer is appended to the
+    dropped and a ``(+N suppressed)`` footer is appended to the
     last emitted hint's text so the agent is aware that suppression occurred.
 
     At hot/critical *tier*, each hint text is compressed to its first paragraph
@@ -192,7 +192,7 @@ def apply_hint_priority_limit(
         ...     HintItem("reread hint", HINT_PRIORITY_MEDIUM),
         ... ]
         >>> apply_hint_priority_limit(items, max_hints=3)
-        ['edited hint', 'diff hint', 'reread hint\n(+1 more hints suppressed)']
+        ['edited hint', 'diff hint', 'reread hint\n(+1 suppressed)']
     """
     if not hints:
         return []
@@ -204,7 +204,7 @@ def apply_hint_priority_limit(
     emitted = sorted_hints[:max_hints]
     suppressed_count = len(sorted_hints) - max_hints
     result = [slim_hint_text(h.text, tier) for h in emitted]
-    result[-1] = f"{result[-1]}\n(+{suppressed_count} more hints suppressed)"
+    result[-1] = f"{result[-1]}\n(+{suppressed_count} suppressed)"
     return result
 
 
@@ -276,6 +276,13 @@ _TERSE: dict[str, str] = {
     "not yet read this session": "unread",
     "for a narrower read.": "(narrower).",
     "Consider reading": "Read",
+    # Additional savings ~5-10 chars each
+    "already in context": "in ctx",
+    "instead of reading the whole file": "vs. full read",
+    "to avoid re-running": "(no re-run)",
+    "to avoid re-fetching": "(no re-fetch)",
+    "surgical read": "surgical",
+    "this session": "session",
 }
 
 

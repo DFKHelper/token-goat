@@ -4920,10 +4920,10 @@ class TestHintPriorityOrdering:
         assert result[1] == "high hint"
         # The last emitted hint gets the suppression footer.
         assert "medium hint" in result[2]
-        assert "+1 more hints suppressed" in result[2]
+        assert "+1 suppressed" in result[2]
 
     def test_suppression_footer_appended_to_last_emitted(self):
-        """The (+N more hints suppressed) footer is appended to the last emitted hint."""
+        """The (+N suppressed) footer is appended to the last emitted hint."""
         from token_goat.hints import (
             HINT_PRIORITY_CRITICAL,
             HINT_PRIORITY_LOW,
@@ -4941,7 +4941,7 @@ class TestHintPriorityOrdering:
         assert len(result) == 2
         assert result[0] == "hint A"
         # Footer mentions 2 suppressed hints (C and D).
-        assert "+2 more hints suppressed" in result[1]
+        assert "+2 suppressed" in result[1]
 
     def test_no_footer_when_at_or_under_cap(self):
         """No suppression footer when hint count equals max_hints."""
