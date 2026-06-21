@@ -32,6 +32,8 @@ every response-builder has a precise return type instead of ``dict[str, Any]``.
 """
 from __future__ import annotations
 
+import threading
+
 from .config import HOOKS_WATCHDOG_DEFAULT_MS as _HOOKS_WATCHDOG_DEFAULT_MS
 from .util import get_logger
 
@@ -182,6 +184,7 @@ LOG = get_logger("hooks")
 _effective_watchdog_ms: int = _HOOKS_WATCHDOG_DEFAULT_MS  # Will be overridden by config on first call to get_effective_watchdog_ms()
 _consecutive_timeouts: int = 0
 _timeout_configured: bool = False
+_watchdog_lock: threading.Lock = threading.Lock()
 
 
 def get_effective_watchdog_ms() -> int:
@@ -196,17 +199,18 @@ def get_effective_watchdog_ms() -> int:
     """
     global _effective_watchdog_ms, _timeout_configured
 
-    if not _timeout_configured:
-        try:
-            from . import config
-            _effective_watchdog_ms = config.load().hooks.watchdog_ms
-            LOG.debug("hook watchdog initialized: %d ms", _effective_watchdog_ms)
-        except Exception:
-            _effective_watchdog_ms = _HOOKS_WATCHDOG_DEFAULT_MS
-            LOG.debug("hook watchdog config load failed, using default %d ms", _HOOKS_WATCHDOG_DEFAULT_MS)
-        _timeout_configured = True
+    with _watchdog_lock:
+        if not _timeout_configured:
+            try:
+                from . import config
+                _effective_watchdog_ms = config.load().hooks.watchdog_ms
+                LOG.debug("hook watchdog initialized: %d ms", _effective_watchdog_ms)
+            except Exception:
+                _effective_watchdog_ms = _HOOKS_WATCHDOG_DEFAULT_MS
+                LOG.debug("hook watchdog config load failed, using default %d ms", _HOOKS_WATCHDOG_DEFAULT_MS)
+            _timeout_configured = True
 
-    return _effective_watchdog_ms
+        return _effective_watchdog_ms
 
 
 def record_watchdog_timeout() -> None:
@@ -221,9 +225,10 @@ def record_watchdog_timeout() -> None:
     """
     global _effective_watchdog_ms, _consecutive_timeouts
 
-    _consecutive_timeouts += 1
-    old_ms = _effective_watchdog_ms
-    _effective_watchdog_ms = min(_effective_watchdog_ms * 2, 30_000)
+    with _watchdog_lock:
+        _consecutive_timeouts += 1
+        old_ms = _effective_watchdog_ms
+        _effective_watchdog_ms = min(_effective_watchdog_ms * 2, 30_000)
 
     LOG.warning(
         "hook subprocess timeout (attempt %d); doubling watchdog: %d ms → %d ms",
