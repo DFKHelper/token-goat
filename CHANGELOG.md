@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.9.5] - 2026-06-21
+
 ### Added
 
 - **`token-goat ask "<question>"` — out-of-band codebase Q&A (experimental).** Retrieves the relevant slices, synthesizes a short answer in token-goat's own process, and returns only that answer plus pointer-citations, so the primary model never pays for the slice bodies. When the `claude` CLI (Claude Code) is on PATH, ask synthesizes with Haiku, its cheapest tier, out of the box; `codex` falls back to its own configured default model. Set `TOKEN_GOAT_ASK_MODEL=<model>` or `--model` to pick a different model, or `TOKEN_GOAT_ASK_CMD="<command>"` (prompt piped via stdin) for a custom backend. With no CLI on PATH it makes no network call and degrades to `context-for`-style read pointers. Answers cache across sessions, keyed on the question plus the content hashes of the cited slices, so a repeat question reuses the stored answer and skips the backend entirely; the key self-invalidates when any cited slice changes. `--scope` restricts retrieval to a glob or path substring, `--budget` caps the slice tokens sent to the backend, `--show-sources` dumps the exact slices, and `--json` reports the answer with `tokens_in`/`tokens_out`/`saved_tokens`/`cached`. Hidden while it proves out against the subagent baseline; every failure mode degrades to pointers rather than erroring.
@@ -36,7 +38,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
-- **Pre-push hooks use `python -m` invocation.** `lefthook.yml` and `.lefthook/pre-push/test.sh` replaced `uv run pytest` / `uv run mypy src` with `uv run python -m pytest` / `uv run python -m mypy src` to fix "Failed to canonicalize script path" failures on Windows when `.exe` shims cannot be resolved.
+- **Pre-push hook consolidated into a single bash wrapper.** Replaced lefthook's parallel-mode command configuration (which triggered `filepath.EvalSymlinks` canonicalize failures on Windows) with a single `all-checks` command that runs typecheck, Windows tests, and WSL tests in parallel via bash background jobs. The wrapper anchors to `$(git rev-parse --show-toplevel)` so lefthook's working-directory ambiguity cannot break script resolution.
 
 ## [1.9.4] - 2026-06-20
 
