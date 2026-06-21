@@ -790,7 +790,7 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
             long_edge = max(w, h)
             if long_edge > MAX_LONG_EDGE:
                 scale = MAX_LONG_EDGE / long_edge
-                new_size = (int(w * scale), int(h * scale))
+                new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
                 img = img.resize(new_size, Image.Resampling.LANCZOS)
 
             # Choose output format based on image characteristics.
