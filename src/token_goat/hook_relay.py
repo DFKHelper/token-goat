@@ -34,6 +34,7 @@ class _HookRelayHandler(http.server.BaseHTTPRequestHandler):
         path = self.path.lstrip("/")
         parts = path.split("/", 1)
         if len(parts) != 2 or parts[0] != "hook":
+            self.close_connection = True
             self._respond({"continue": True})
             return
         event = parts[1]
@@ -48,13 +49,13 @@ class _HookRelayHandler(http.server.BaseHTTPRequestHandler):
         except (json.JSONDecodeError, ValueError):
             raw = {}
 
+        result: dict = {"continue": True}
         try:
             from . import hooks_cli
             payload = hooks_cli.normalize_payload(raw, "claude")
             result = hooks_cli.dispatch(event, payload)
         except Exception:
             _LOG.exception("hook relay: unhandled error dispatching %r", event)
-            result = {"continue": True}
 
         self._respond(result)
 
@@ -108,9 +109,9 @@ def stop_relay() -> None:
     with _relay_lock:
         if _relay_server is None:
             return
+        server, _relay_server = _relay_server, None
         try:
-            _relay_server.shutdown()
-            _relay_server = None
+            server.shutdown()
         except Exception:
             _LOG.exception("hook relay: error during shutdown")
         try:
