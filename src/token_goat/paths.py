@@ -625,7 +625,7 @@ def hook_wrapper_content() -> str:
             "\r\n"
             "REM Fast path: relay hook events to the daemon via curl (no Python spawn).\r\n"
             "REM FOR /F reads the port file without touching the batch script's stdin.\r\n"
-            f"SET TG_RELAY_PORT_FILE={relay_port_file}\r\n"
+            f'SET "TG_RELAY_PORT_FILE={relay_port_file}"\r\n'
             "IF EXIST \"%TG_RELAY_PORT_FILE%\" (\r\n"
             "  FOR /F \"usebackq tokens=*\" %%P IN (\"%TG_RELAY_PORT_FILE%\") DO (\r\n"
             "    curl.exe -s -f -m 5 --data-binary @- \"http://127.0.0.1:%%P/hook/%2\" 2>nul\r\n"
