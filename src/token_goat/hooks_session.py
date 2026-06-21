@@ -1918,10 +1918,8 @@ def user_prompt_submit(payload: HookPayload) -> HookResponse:
     _summary_parts.extend(f"hint: {_kh}" for _kh in _keyword_hints)
 
 
-    if _ctx_advisory_prefix is not None:
-        summary = "[" + _ctx_advisory_prefix + " | ".join(_summary_parts) + "]"
-    else:
-        summary = "[" + " | ".join(_summary_parts) + "]"
+    _prefix_parts = [_ctx_advisory_prefix.rstrip()] if _ctx_advisory_prefix is not None else []
+    summary = "[" + " | ".join(_prefix_parts + _summary_parts) + "]"
     _LOG.debug("user-prompt-submit: injecting context summary: %s", summary)
     return {
         "continue": True,

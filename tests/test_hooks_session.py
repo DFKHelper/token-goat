@@ -778,3 +778,104 @@ class TestRecoveryHintPytestCollapse:
             assert "✓ pytest passed @" in hint, (
                 f"Prefix {prefix!r} not collapsed:\n{hint}"
             )
+
+
+class TestUserPromptSubmitCtxAdvisoryFormat:
+    """Context advisory prefix is pipe-separated from session summary parts."""
+
+    def _make_pressure(self, fill_fraction: float):
+        """Return a minimal fake ContextPressure-like object."""
+        class _FakePressure:
+            pass
+        p = _FakePressure()
+        p.fill_fraction = fill_fraction
+        return p
+
+    def test_prefix_and_parts_pipe_separated(self, tmp_data_dir, monkeypatch):
+        """When advisory prefix AND session parts both present, ` | ` separates them."""
+        from token_goat import hooks_session
+
+        sid = "ctx-advisory-sep-01"
+
+        # Build a fake cache with one edited file so 'edits: 1' appears in parts.
+        class _FakeCache:
+            pass
+        fake_cache = _FakeCache()
+        fake_cache.session_id = sid
+        fake_cache.edited_files = {"/proj/src/auth.py": 1}
+        fake_cache.bash_history = {}
+        fake_cache.last_context_advisory_threshold = None
+        fake_cache.turns_since_last_compact = 0
+
+        import token_goat.session as _ses_mod
+        monkeypatch.setattr(_ses_mod, "safe_load", lambda *a, **kw: fake_cache)
+        monkeypatch.setattr(_ses_mod, "save", lambda *a, **kw: None)
+
+        pressure = self._make_pressure(0.90)
+        monkeypatch.setattr(
+            "token_goat.hooks_session._run_git",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("no git")),
+        )
+
+        import token_goat.compact as _compact
+        monkeypatch.setattr(_compact, "get_context_pressure", lambda *a, **kw: pressure)
+
+        import token_goat.config as _cfg
+        orig_load = _cfg.load
+
+        def _patched_load(*a, **kw):
+            cfg = orig_load(*a, **kw)
+            cfg.hints.context_threshold_advisory = True
+            return cfg
+
+        monkeypatch.setattr(_cfg, "load", _patched_load)
+
+        payload = {"session_id": sid, "cwd": str(tmp_data_dir), "prompt": "what files did I edit today"}
+        result = hooks_session.user_prompt_submit(payload)
+
+        output = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert output.startswith("[")
+        assert output.endswith("]")
+        # Prefix must be pipe-separated from session parts, not directly concatenated.
+        assert "CONTEXT" in output
+        assert "edits:" in output
+        assert " | edits:" in output, f"Missing ' | edits:' separator in: {output!r}"
+        # Must not contain double-space or raw trailing space before closing bracket.
+        assert "  " not in output, f"Double space in: {output!r}"
+        assert " ]" not in output, f"Trailing space before ] in: {output!r}"
+
+    def test_prefix_only_no_trailing_space(self, tmp_data_dir, monkeypatch):
+        """When only the advisory prefix fires (no other parts), output has no trailing space."""
+        from token_goat import hooks_session
+
+        sid = "ctx-advisory-sep-02"
+        # No edits — so 'edits: 0' would still appear; suppress it by returning empty cache
+        import token_goat.session as _ses_mod
+        monkeypatch.setattr(_ses_mod, "safe_load", lambda *a, **kw: None)
+
+        pressure = self._make_pressure(0.90)
+        monkeypatch.setattr(
+            "token_goat.hooks_session._run_git",
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("no git")),
+        )
+
+        import token_goat.compact as _compact
+        monkeypatch.setattr(_compact, "get_context_pressure", lambda *a, **kw: pressure)
+
+        import token_goat.config as _cfg
+        orig_load = _cfg.load
+
+        def _patched_load(*a, **kw):
+            cfg = orig_load(*a, **kw)
+            cfg.hints.context_threshold_advisory = True
+            return cfg
+
+        monkeypatch.setattr(_cfg, "load", _patched_load)
+
+        payload = {"session_id": sid, "cwd": str(tmp_data_dir), "prompt": "what files did I edit today"}
+        result = hooks_session.user_prompt_submit(payload)
+
+        output = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        if "CONTEXT" in output:
+            assert " ]" not in output, f"Trailing space before ] in: {output!r}"
+            assert output.endswith("]"), f"Output must end with ]: {output!r}"
