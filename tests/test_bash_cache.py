@@ -396,6 +396,26 @@ class TestNormalizeCommandForCacheKey:
         # but basic flags should sort
         assert bash_cache.normalize_command_for_cache_key("git log -p -v") == "git log -p -v"
 
+
+    def test_value_taking_flags_not_sorted(self):
+        """Flags that take a value argument must not be sorted with boolean flags.
+
+        A contiguous run containing a value-taking flag like -k (pytest) or -m (rg)
+        must not be reordered. Sorting [-x, -k] to [-k, -x] would make -k receive
+        '-x' as its value and 'slow' become a positional — a different command.
+        """
+        # pytest -x -k slow: -x is boolean, -k takes value 'slow'.
+        # Must NOT sort to 'pytest -k -x slow' (where -k receives '-x' as its value).
+        assert bash_cache.normalize_command_for_cache_key("pytest -x -k slow") == "pytest -x -k slow"
+        assert bash_cache.normalize_command_for_cache_key("pytest -k slow -x") == "pytest -k slow -x"
+        # rg -q -m 10 .: -q is boolean, -m takes value '10'.
+        # Must NOT sort to 'rg -m -q 10 .' (separating -m from 10).
+        assert bash_cache.normalize_command_for_cache_key("rg -q -m 10 .") == "rg -q -m 10 ."
+        assert bash_cache.normalize_command_for_cache_key("rg -m -q 10 .") == "rg -m -q 10 ."
+        # Boolean-only runs still get sorted.
+        assert bash_cache.normalize_command_for_cache_key("rg -q -i pattern") == "rg -i -q pattern"
+        assert bash_cache.normalize_command_for_cache_key("pytest -x -v tests/") == "pytest -v -x tests"
+
     def test_flags_only_before_first_positional(self):
         """Only leading single-char flags are sorted; flags after positional args are not."""
         # Trailing / on 'tests/' is stripped (step 3.5).  The -v after the path is not

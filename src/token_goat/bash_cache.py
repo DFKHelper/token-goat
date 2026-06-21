@@ -135,6 +135,13 @@ _WHITESPACE_RE: re.Pattern[str] = re.compile(r"\s+")
 _SINGLE_CHAR_FLAG_RE: re.Pattern[str] = re.compile(r"^-[a-zA-Z0-9]$")
 # Tools where short-flag sorting improves cache-hit rates.
 _SORT_FLAG_TOOLS: frozenset[str] = frozenset({"pytest", "rg", "grep", "git"})
+# Per-tool safe boolean single-char flags (flags known NOT to take a value argument). Only flags in this set are candidates for in-run sorting; value-taking flags like -k (pytest), -m (rg), -e (grep) are excluded so the sort never separates them from their argument.
+_BOOLEAN_FLAGS_BY_TOOL: dict[str, frozenset[str]] = {
+    "pytest": frozenset({"-q", "-s", "-v", "-x"}),
+    "rg": frozenset({"-c", "-H", "-i", "-l", "-L", "-n", "-N", "-o", "-p", "-q", "-s", "-S", "-u", "-v", "-w", "-x", "-z"}),
+    "grep": frozenset({"-c", "-h", "-H", "-i", "-l", "-L", "-n", "-q", "-r", "-R", "-s", "-v", "-w", "-x"}),
+    "git": frozenset({"-p", "-q", "-v"}),
+}
 
 # git diff / git status: output changes with working-tree state (HEAD + index).
 _GIT_MUTABLE_RE: re.Pattern[str] = re.compile(r"^\s*git\s+(diff|status)\b", re.IGNORECASE)
@@ -489,10 +496,14 @@ def normalize_command_for_cache_key(cmd: str) -> str:
                 while j < len(rest) and _SINGLE_CHAR_FLAG_RE.match(rest[j]):
                     j += 1
                 group = rest[idx:j]
-                sorted_group = sorted(group)
-                if sorted_group != group:
-                    changed = True
-                new_rest.extend(sorted_group)
+                boolean_flags = _BOOLEAN_FLAGS_BY_TOOL.get(tool, frozenset())
+                if all(f in boolean_flags for f in group):
+                    sorted_group = sorted(group)
+                    if sorted_group != group:
+                        changed = True
+                    new_rest.extend(sorted_group)
+                else:
+                    new_rest.extend(group)
                 idx = j
             else:
                 new_rest.append(rest[idx])
