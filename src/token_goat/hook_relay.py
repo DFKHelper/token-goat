@@ -22,6 +22,8 @@ import logging
 import threading
 from http.server import ThreadingHTTPServer
 
+from .hooks_common import HookPayload
+
 _LOG = logging.getLogger(__name__)
 
 _relay_server: http.server.HTTPServer | None = None
@@ -48,7 +50,7 @@ class _HookRelayHandler(http.server.BaseHTTPRequestHandler):
             length = 0
         body = self.rfile.read(length) if length else b"{}"
         try:
-            raw: dict = json.loads(body) if body else {}
+            raw: HookPayload = json.loads(body) if body else {}
         except (json.JSONDecodeError, ValueError):
             raw = {}
 
