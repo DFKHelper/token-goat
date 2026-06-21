@@ -13,7 +13,7 @@ Covers:
 from __future__ import annotations
 
 import hashlib
-import time
+import os
 
 from token_goat import hooks_read
 from token_goat import session as _session_mod
@@ -216,14 +216,16 @@ class TestLogFileCacheIntegration:
         _bootstrap_session(sid)
         log = tmp_path / "app.log"
         log.write_text("original content\n")
+        # Backdate mtime by 2 s so the cache stores a clearly old timestamp; the subsequent write lands at ~now (different mtime without any sleep).
+        old_mtime = log.stat().st_mtime
+        os.utime(log, (old_mtime - 2.0, old_mtime - 2.0))
         content1 = log.read_text()
 
-        # First read: populate cache
+        # First read: populate cache (with backdated mtime)
         payload1 = _make_post_bash_payload(sid, f"cat {log}", content1, str(tmp_path))
         hooks_read.post_bash(payload1)
 
-        # Modify the file (guarantees mtime change)
-        time.sleep(0.05)
+        # Modify the file — new write lands at current time, which differs from the backdated mtime
         log.write_text("new content after modification\n")
         content2 = log.read_text()
 
