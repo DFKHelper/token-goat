@@ -533,6 +533,7 @@ def run_daemon(stop_event=None) -> None:
         last_periodic_reindex = time.time()
         last_version_check = time.time()
         last_gc_projects = time.time()
+        last_relay_check = time.time()
         # Consecutive zero-entry drains; drives adaptive back-off so a long-idle worker wakes less often.
         consecutive_empty_drains = 0
         _LOG.debug(
@@ -591,6 +592,11 @@ def run_daemon(stop_event=None) -> None:
             if now - last_gc_projects >= _worker.GC_PROJECTS_INTERVAL:
                 _timed_cycle("gc orphaned projects", _worker._gc_orphaned_projects)  # type: ignore[arg-type]
                 last_gc_projects = now
+
+            from . import hook_relay as _hook_relay
+            if now - last_relay_check >= _hook_relay._RELAY_LIVENESS_INTERVAL:
+                _hook_relay.check_relay_liveness()
+                last_relay_check = now
 
             sleep_for = _worker.adaptive_poll_interval(consecutive_empty_drains)
             if stop_event is not None:
