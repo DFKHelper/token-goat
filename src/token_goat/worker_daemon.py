@@ -517,6 +517,11 @@ def run_daemon(stop_event=None) -> None:
             watchdog.start()
             _LOG.debug("watchdog thread started")
 
+        # Start the in-process hook relay so tg-hook.cmd sends hook events
+        # via curl instead of spawning a new pythonw.exe per event.
+        from . import hook_relay
+        hook_relay.start_relay()
+
         stats = cleanup_on_startup()
         if any(stats.values()):
             _LOG.info("startup cleanup: %s", stats)
@@ -598,6 +603,9 @@ def run_daemon(stop_event=None) -> None:
         # graceful exit and does not attempt a spurious respawn.
         if watchdog is not None:
             watchdog.stop()
+        with contextlib.suppress(Exception):
+            from . import hook_relay
+            hook_relay.stop_relay()
         _worker._clear_pid()
         with contextlib.suppress(OSError):
             os.close(claim_fd)

@@ -983,6 +983,16 @@ def index_project(
     """
     _LOG.info("index_project started: mode=%s path=%s", "full" if full else "incremental", project.root)
 
+    # Refuse to index system/junk roots (node_modules registered as root, Windows dirs, etc.)
+    from . import worker as _worker_mod
+    if _worker_mod._is_blocked_root(project.root.as_posix()):
+        _LOG.warning("index_project: refusing blocked root %s", project.root)
+        return {
+            "total_files": 0, "indexed": 0, "skipped_unchanged": 0, "errors": 0,
+            "total_symbols": 0, "languages": [], "duration_sec": 0.0,
+            "large_files": [], "ext_counts": {},
+        }
+
     # Load configurable large-file thresholds.  Fail soft: if config is
     # unavailable (e.g. during tests that don't want any TOML on disk), fall
     # back to the hardcoded defaults defined in this module.

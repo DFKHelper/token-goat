@@ -46,6 +46,7 @@ __all__ = [
     "session_cache_path",
     "sessions_dir",
     "set_hooks_stderr_log_override",
+    "hook_relay_port_path",
     "skill_pregen_sentinel_path",
     "web_cache_dir",
     "worker_heartbeat_path",
@@ -697,6 +698,11 @@ def worker_pid_path() -> Path:
 def worker_heartbeat_path() -> Path:
     """Path to worker.heartbeat."""
     return locks_dir() / "worker.heartbeat"
+
+
+def hook_relay_port_path() -> Path:
+    """Path to hook-relay.port — contains the TCP port of the in-process hook relay."""
+    return locks_dir() / "hook-relay.port"
 
 
 def dirty_queue_path() -> Path:
