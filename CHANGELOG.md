@@ -8,6 +8,36 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat ask "<question>"` — out-of-band codebase Q&A (experimental).** Retrieves the relevant slices, synthesizes a short answer in token-goat's own process, and returns only that answer plus pointer-citations, so the primary model never pays for the slice bodies. When the `claude` CLI (Claude Code) is on PATH, ask synthesizes with Haiku, its cheapest tier, out of the box; `codex` falls back to its own configured default model. Set `TOKEN_GOAT_ASK_MODEL=<model>` or `--model` to pick a different model, or `TOKEN_GOAT_ASK_CMD="<command>"` (prompt piped via stdin) for a custom backend. With no CLI on PATH it makes no network call and degrades to `context-for`-style read pointers. Answers cache across sessions, keyed on the question plus the content hashes of the cited slices, so a repeat question reuses the stored answer and skips the backend entirely; the key self-invalidates when any cited slice changes. `--scope` restricts retrieval to a glob or path substring, `--budget` caps the slice tokens sent to the backend, `--show-sources` dumps the exact slices, and `--json` reports the answer with `tokens_in`/`tokens_out`/`saved_tokens`/`cached`. Hidden while it proves out against the subagent baseline; every failure mode degrades to pointers rather than erroring.
 
+### Fixed
+
+- **`_apply_context_gutter` in `read_commands.py` injected a spurious 2-space indent on matched lines.** The function prefixed every non-context (matched) line with `f"  {line}"`. Only context lines should be indented; the padding has been removed from matched lines.
+
+- **`token_estimate_header` in `read_replacement.py` overcounted lines by 1 for text ending with a newline.** The function added 1 unconditionally to the newline count. It now adds 1 only when the final character is not `\n`, matching the actual line count.
+
+- **`shrink()` in `image_shrink.py` raised `ValueError` on images with a near-zero dimension.** PIL's `resize()` rejects a zero-dimension target. Very thin images (e.g., 1×2000 px) hit this when scaling rounded one side to 0. Both dimensions are now clamped to at least 1 before the resize call.
+
+- **Window chunks in `embeddings.py` could overlap an already-covered range.** The chunking loop did not stop before a range already indexed. The window start is now clamped so chunks do not extend into covered regions.
+
+- **Deletion-only `git diff --stat` entries leaked into the manifest summary.** `compact.py`'s `build_manifest` included lines such as `foo.py | 1 -` that describe only deletions. These are now filtered out before the summary section is written.
+
+- **`_collapse_to_count` in `bash_compress.py` returned the full line list when `keep_last >= n`.** The early-exit path short-circuited with the original list instead of the collapsed count. The path now returns the collapsed count as intended.
+
+- **`server_close()` in `hook_relay.py` could mask the original exception on cleanup failure.** An `OSError` raised during cleanup replaced the exception in flight. The call is now guarded, a liveness check was added, and the path has test coverage.
+
+- **Stale-flock eviction in `hooks_session.py` spun indefinitely on a stale lock file.** The eviction loop did not advance `elapsed_ms` before the `continue` that followed a stale-lock removal. The timer now advances correctly so eviction terminates.
+
+- **`repomap.py` left stale cache entries when `map_worthy_files` is empty.** When no files were worth mapping, cache eviction bailed out early without clearing existing entries. All entries are cleared when the file list is empty.
+
+- **Path substring check in `compact.py`'s `infer_session_goal` caused false matches.** The function used `in` to test whether a relative path appeared in an absolute path, so `src/foo` matched `tools/src/foo`. The check now compares dot-notation path segments exactly.
+
+- **`infer_session_goal` in `compact.py` used only the last commit for goal inference.** Recent commits were sliced with `[-1:]`. Changed to `[-2:]` so the two most recent commits are available.
+
+- **`hook_relay.py` typed the raw webhook payload as `dict[str, Any]`.** The parameter is now annotated as `HookPayload` for consistency with the rest of the type surface.
+
+### Changed
+
+- **Pre-push hooks use `python -m` invocation.** `lefthook.yml` and `.lefthook/pre-push/test.sh` replaced `uv run pytest` / `uv run mypy src` with `uv run python -m pytest` / `uv run python -m mypy src` to fix "Failed to canonicalize script path" failures on Windows when `.exe` shims cannot be resolved.
+
 ## [1.9.4] - 2026-06-20
 
 ### Added
