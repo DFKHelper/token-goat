@@ -985,8 +985,10 @@ def _collapse_to_count(
     if n == 0:
         return lines
     marker = f"[token-goat: collapsed {n} {label} line{'s' if n != 1 else ''}]"
-    if keep_last > 0 and keep_last < n:
+    if 0 < keep_last < n:
         return [marker, *lines[-keep_last:]]
+    if keep_last >= n:
+        return lines
     return [marker]
 
 
