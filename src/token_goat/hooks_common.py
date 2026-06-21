@@ -37,6 +37,7 @@ from .util import get_logger
 
 __all__ = [
     "CONTINUE",
+    "continue_with_message",
     "LOG",
     "HookPayload",
     "HookResponse",
@@ -246,6 +247,15 @@ def CONTINUE() -> HookResponse:
     and cannot accidentally mutate a shared singleton.
     """
     return {"continue": True}
+
+
+def continue_with_message(message: str) -> HookResponse:
+    """Return ``{"continue": True, "systemMessage": message}``.
+
+    Eliminates the repeated inline literal ``{"continue": True, "systemMessage": X}``
+    that appeared at 13 call sites across hooks_read and hooks_cli.
+    """
+    return {"continue": True, "systemMessage": message}
 
 
 def get_session_context(payload: HookPayload) -> tuple[str | None, str | None]:

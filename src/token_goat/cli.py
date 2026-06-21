@@ -58,7 +58,7 @@ from . import config as config_mod
 from . import hooks_cli
 from .hooks_common import is_real_int
 from .render.ansi import color_stderr
-from .util import get_logger
+from .util import get_logger, json_compact
 
 _LOG = get_logger("cli")
 
@@ -118,9 +118,9 @@ def _emit_json(data: object, *, indent: int | None = None) -> None:
     omits the separators override so indented output remains readable.
     """
     if indent is None:
-        typer.echo(json.dumps(data, separators=(",", ":")))
+        typer.echo(json_compact(data))
     else:
-        typer.echo(json.dumps(data, indent=indent))
+        typer.echo(json.dumps(data, ensure_ascii=False, indent=indent))
     raise typer.Exit(0)
 
 
