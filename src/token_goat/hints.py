@@ -3610,8 +3610,8 @@ def _build_unchanged_file_hint_inner(
 
     prose = ReadHint(
         _apply_terse(
-            f"`{fname}` unchanged since your edit ({age_s}s ago, sha:{sha_prefix}, ~{full_tokens}t). "
-            f"Edit result still in context — for symbols: `token-goat read \"{safe_path}::Symbol\"`."
+            f"`{fname}` unchanged (sha:{sha_prefix}, {age_s}s, ~{full_tokens}t) — "
+            f"`token-goat read \"{safe_path}::Symbol\"`"
         ),
         full_tokens,
     )
