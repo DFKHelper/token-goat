@@ -70,7 +70,7 @@ class TestHandleBashAlreadyReadPositive:
         assert "already read" in _ctx(result)
 
 
-    def test_relative_path_resolved_via_cwd(self, tmp_path):
+    def test_relative_path_resolved_via_cwd(self, tmp_data_dir, tmp_path):
         """cat with a relative path hits the session entry stored under the resolved absolute path."""
         import token_goat.session as sess
         from token_goat.hooks_read import _handle_bash_already_read

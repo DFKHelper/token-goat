@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import urllib.request
 from pathlib import Path
@@ -271,6 +272,7 @@ def test_liveness_port_file_rewritten_after_restart(tmp_path: Path) -> None:
 # hook_wrapper_content CMD structure assertions (paths.py generator)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform != "win32", reason="relay block is Windows CMD only")
 def test_hook_wrapper_content_contains_relay_block() -> None:
     """The generated tg-hook.cmd must include the curl relay fast path."""
     from token_goat import paths as paths_mod
