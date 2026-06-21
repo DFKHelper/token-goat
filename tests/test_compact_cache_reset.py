@@ -86,8 +86,6 @@ class TestRecordCompact:
         session.record_compact(sid)
         ts_first = session.load(sid).last_compact_ts
 
-        # Ensure monotonically increasing by sleeping a tiny bit
-        time.sleep(0.01)
         session.record_compact(sid)
         ts_second = session.load(sid).last_compact_ts
         assert ts_second >= ts_first

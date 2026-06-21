@@ -10,6 +10,7 @@ F. Integration: skill-list --json row includes compact_age_secs when compact exi
 """
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -130,8 +131,10 @@ class TestGetCompactMtimeMonotonic(DataDirMixin):
         mtime_v1 = get_compact_mtime("sess04", "evolving")
         assert mtime_v1 is not None
 
-        # Sleep briefly to guarantee a mtime difference on fast filesystems.
-        time.sleep(0.05)
+        # Backdate every file in the data dir so the re-store produces a clearly newer mtime.
+        for p in self.tmp_data_dir.rglob("*"):
+            if p.is_file():
+                os.utime(p, (946684800.0, 946684800.0))
 
         store_compact("sess04", "evolving", "## v2\nSecond version with more content.")
         mtime_v2 = get_compact_mtime("sess04", "evolving")

@@ -144,13 +144,15 @@ class TestGetCompactAnySessionFallback(DataDirMixin):
 
     def test_skips_corrupted_returns_valid(self):
         """get_compact_any_session skips a corrupted newer file and returns an older valid one."""
-        import time  # noqa: PLC0415
+        import os  # noqa: PLC0415
 
         # Create a valid compact in session A (older).
         store_compact("fall02a", "mixskill", _REAL_COMPACT)
 
-        # Sleep briefly to ensure newer mtime.
-        time.sleep(0.05)
+        # Backdate all files in the data dir so the subsequent write has a clearly newer mtime.
+        for p in self.tmp_data_dir.rglob("*"):
+            if p.is_file():
+                os.utime(p, (946684800.0, 946684800.0))
 
         # Overwrite with an empty (corrupt) compact in session B (newer).
         _write_raw("fall02b", "mixskill", "")
