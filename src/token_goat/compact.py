@@ -1263,7 +1263,11 @@ def is_noise_path(path: str) -> bool:
     if basename.startswith((".improve-state-", "improve_commit_msg_")):
         return True
     dot_idx = basename.rfind(".")
-    return dot_idx >= 0 and basename[dot_idx:] in _NOISE_EXTS
+    if dot_idx >= 0 and basename[dot_idx:] in _NOISE_EXTS:
+        return True
+    # Compound extension check (e.g. .d.ts): rfind only sees the last dot,
+    # so multi-dot extensions need an endswith pass.
+    return any(basename.endswith(ext) for ext in _NOISE_EXTS if ext.count(".") > 1)
 
 
 def _get_git_diff_stat(
