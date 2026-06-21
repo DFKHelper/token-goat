@@ -245,7 +245,7 @@ def dedup_hints(
         if prior_summary is not None:
             # Duplicate content: replace with short stub.
             session_cache.record_hint_content_seen(content_hash, summary)
-            stub_text = f"Same as previously shown hint for '{prior_summary}...'"
+            stub_text = f"[tg: dup] {prior_summary[:35]}"
             result.append(HintItem(stub_text, item.hint_priority))
         else:
             # First occurrence: keep original, record for future dedup.

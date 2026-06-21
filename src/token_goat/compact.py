@@ -1145,6 +1145,12 @@ _NOISE_EXTS: Final[frozenset[str]] = frozenset({
     ".bak",                            # backup files
     ".pid",                            # daemon/process id files
     ".lock",                           # generic lockfiles (worker locks, etc.)
+    ".map",                            # JS source maps — large, unreadable by LLM
+    ".wasm",                           # WebAssembly binaries
+    ".gz", ".zip", ".tar", ".tgz",    # compressed archives
+    ".db", ".sqlite", ".sqlite3", ".db3",  # binary databases
+    ".d.ts",                           # TS declaration files — not useful for LLM context
+    ".snap",                           # Jest/Vitest snapshot files
 })
 _NOISE_BASENAMES: Final[frozenset[str]] = frozenset({
     ".ds_store", "thumbs.db", "desktop.ini",  # OS metadata
@@ -1173,6 +1179,14 @@ _NOISE_SEGMENTS: Final[tuple[str, ...]] = (
     "/site-packages/", ".egg-info/",
     # Rust / JVM compiled output
     "/target/",
+    # Test snapshot directories (Jest, Vitest, Playwright)
+    "/__snapshots__/",
+    # Coverage HTML reports
+    "/htmlcov/", "/coverage_html_report/",
+    # Hypothesis temporary state
+    "/.hypothesis/",
+    # Storybook / Playwright outputs
+    "/storybook-static/", "/playwright-report/", "/test-results/",
 )
 
 
