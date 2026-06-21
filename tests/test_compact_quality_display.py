@@ -107,8 +107,6 @@ class TestQualityFieldsInJson(DataDirMixin):
 
     def test_compact_quality_score_none_when_no_compact(self):
         """compact_quality_score is None when has_compact=False."""
-        import time  # noqa: PLC0415
-
         from token_goat.skill_cache import _skill_outputs_dir  # noqa: PLC0415
 
         sid = "qjson03"
@@ -119,8 +117,6 @@ class TestQualityFieldsInJson(DataDirMixin):
         for f in out_dir.iterdir():
             if f.name.endswith("-compact"):
                 f.unlink()
-
-        time.sleep(0.01)  # allow FS to settle
 
         data = _run_skill_list_json(sid)
         for skill in data.get("skills", []):

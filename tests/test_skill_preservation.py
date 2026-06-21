@@ -445,8 +445,6 @@ class TestPostSkillHook:
         Fix: mark_skill_loaded is called before the early return so skill_ts
         advances past the sidecar mtime, restoring dedup for the next epoch.
         """
-        import time
-
         sid = "session-ts-advance"
         body = "# Ralph\n\n" + ("rule. " * 200)
 
@@ -454,10 +452,11 @@ class TestPostSkillHook:
         fire_skill_hook(sid, "ralph", body)
         ts_after_first = session.load(sid).skill_history["ralph"].ts
 
-        time.sleep(0.05)  # ensure clock advances
-
-        # Second (duplicate) load — with the fix, mark_skill_loaded is called.
-        fire_skill_hook(sid, "ralph", body)
+        # Patch time.time to return a value strictly greater than ts_after_first — no real sleep needed.
+        import unittest.mock
+        with unittest.mock.patch("token_goat.session.time.time", return_value=ts_after_first + 1.0):
+            # Second (duplicate) load — with the fix, mark_skill_loaded is called.
+            fire_skill_hook(sid, "ralph", body)
         ts_after_second = session.load(sid).skill_history["ralph"].ts
 
         assert ts_after_second > ts_after_first, (

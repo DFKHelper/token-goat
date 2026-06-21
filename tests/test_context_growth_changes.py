@@ -100,7 +100,6 @@ class TestGetCompactAnySession:
         sha = skill_cache.content_hash(body)
         compact = skill_cache.generate_compact_summary(body)
         skill_cache.store_compact("session-aaa", "multi-skill", compact, source_sha=sha)
-        time.sleep(0.01)
         compact2 = compact + "\n# Extra section"
         skill_cache.store_compact("session-bbb", "multi-skill", compact2, source_sha=sha)
 
@@ -268,7 +267,6 @@ class TestPluginGapDetection:
         sentinel = paths.skill_pregen_sentinel_path()
         ts1 = json.loads(sentinel.read_text())["ts"]
 
-        time.sleep(0.05)
         install.pregen_skill_compacts()
         ts2 = json.loads(sentinel.read_text())["ts"]
         assert ts2 >= ts1
