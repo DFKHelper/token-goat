@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import typer
 
 from . import paths
-from .util import _humanize_bytes as _humanize_bytes_doctor
+from .util import _humanize_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -95,7 +95,7 @@ def _render_cache_section(
         ok(label, "0 files (empty)")
         return
     age_str = f", oldest {oldest_age // 3600}h ago" if oldest_age is not None else ""
-    size_str = _humanize_bytes_doctor(total_bytes)
+    size_str = _humanize_bytes(total_bytes)
     # Detect over-cap: bytes cap OR file-count cap.  The file-count cap is
     # expressed in .txt bodies; _cache_dir_stats counts ALL files (bodies +
     # sidecars), so compare against cap_file_count * 2 to give a fair
@@ -929,7 +929,7 @@ def doctor(
                 total_size = sum(f.stat().st_size for f in onnx_files if f.is_file())
                 ok(
                     "fastembed model",
-                    f"{len(onnx_files)} onnx file(s), {_humanize_bytes_doctor(total_size)}",
+                    f"{len(onnx_files)} onnx file(s), {_humanize_bytes(total_size)}",
                 )
             else:
                 flag(
@@ -1626,7 +1626,7 @@ def doctor(
                         )
                     else:
                         ok("oldest session", f"{oldest_age_sec // 3600}h ago")
-                ok("sessions/ size", _humanize_bytes_doctor(total_size))
+                ok("sessions/ size", _humanize_bytes(total_size))
     except Exception as e:
         flag("session health", str(e), warn=True)
 
@@ -1657,8 +1657,8 @@ def doctor(
             continue
     if cache_details:
         for label, total_bytes, file_count in cache_details:
-            ok(f"{label}", f"{file_count} files, {_humanize_bytes_doctor(total_bytes)}")
-        ok("total cache size", _humanize_bytes_doctor(cache_total_bytes))
+            ok(f"{label}", f"{file_count} files, {_humanize_bytes(total_bytes)}")
+        ok("total cache size", _humanize_bytes(cache_total_bytes))
     else:
         ok("(none)", "cache directories not yet created")
 
@@ -1729,7 +1729,7 @@ def doctor(
 
             ok("distinct skills", str(len(skill_names)))
             ok("cached entries", str(len(body_entries)))
-            ok("total body bytes", _humanize_bytes_doctor(total_body_bytes))
+            ok("total body bytes", _humanize_bytes(total_body_bytes))
             if oldest_ts is not None:
                 oldest_age_days = (time.time() - oldest_ts) / 86400
                 ok("oldest entry", f"{oldest_age_days:.1f}d ago")

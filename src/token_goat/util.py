@@ -424,9 +424,7 @@ def strip_bom(text: str) -> str:
         >>> strip_bom("hello")
         'hello'
     """
-    if text.startswith("﻿"):
-        return text[1:]
-    return text
+    return text.removeprefix("﻿")
 
 
 def _norm(p: str) -> str:
