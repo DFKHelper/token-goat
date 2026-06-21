@@ -477,25 +477,29 @@ def normalize_command_for_cache_key(cmd: str) -> str:
         cmd_tool = tool_and_args[0]
         rest = tool_and_args[1:]
 
-        # Identify contiguous single-char flags at the start of rest
-        single_char_flags = []
-        other_args = []
-        found_non_flag = False
-
-        for token in rest:
-            if not found_non_flag and _SINGLE_CHAR_FLAG_RE.match(token):
-                # Single-char flag: -x, -q, -1, etc.
-                single_char_flags.append(token)
+        # Sort single-char flags within each contiguous run of flags.
+        # This handles flags before, after, or between positional arguments
+        # (e.g. ``rg pattern -o -i`` -> ``rg pattern -i -o``).
+        new_rest: list[str] = []
+        idx = 0
+        changed = False
+        while idx < len(rest):
+            if _SINGLE_CHAR_FLAG_RE.match(rest[idx]):
+                j = idx
+                while j < len(rest) and _SINGLE_CHAR_FLAG_RE.match(rest[j]):
+                    j += 1
+                group = rest[idx:j]
+                sorted_group = sorted(group)
+                if sorted_group != group:
+                    changed = True
+                new_rest.extend(sorted_group)
+                idx = j
             else:
-                found_non_flag = True
-                other_args.append(token)
+                new_rest.append(rest[idx])
+                idx += 1
 
-        # Sort the single-char flags
-        if single_char_flags:
-            single_char_flags.sort()
-            normalized = ' '.join(pre_tool + [cmd_tool] + single_char_flags + other_args)
-        else:
-            normalized = normalized  # No change needed
+        if changed:
+            normalized = ' '.join(pre_tool + [cmd_tool] + new_rest)
 
     return normalized
 

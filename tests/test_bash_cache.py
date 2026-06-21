@@ -373,14 +373,15 @@ class TestNormalizeCommandForCacheKey:
         assert bash_cache.normalize_command_for_cache_key("uv run pytest -x -q tests/") == "uv run pytest -q -x tests"
 
     def test_rg_flag_sorting(self):
-        """Single-char flags in rg commands are sorted (only leading flags before positional args)."""
+        """Single-char flags in rg commands are sorted, including contiguous runs after positional args."""
         # Flags before positional args are sorted
         assert bash_cache.normalize_command_for_cache_key("rg -o -i pattern") == "rg -i -o pattern"
         assert bash_cache.normalize_command_for_cache_key("rg -i -o pattern") == "rg -i -o pattern"
         # Leading flags get sorted
         assert bash_cache.normalize_command_for_cache_key("rg -x -y -z pattern") == "rg -x -y -z pattern"
-        # Flags after positional args stay in order (not sorted)
-        assert bash_cache.normalize_command_for_cache_key("rg pattern -o -i") == "rg pattern -o -i"
+        # Flags after positional args are also sorted so rg pattern -o -i == rg pattern -i -o
+        assert bash_cache.normalize_command_for_cache_key("rg pattern -o -i") == "rg pattern -i -o"
+        assert bash_cache.normalize_command_for_cache_key("rg pattern -i -o") == "rg pattern -i -o"
 
     def test_grep_flag_sorting(self):
         """Single-char flags in grep commands are sorted (only leading flags before positional args)."""
