@@ -19,6 +19,7 @@ import http.server
 import json
 import logging
 import threading
+from http.server import ThreadingHTTPServer
 
 _LOG = logging.getLogger(__name__)
 
@@ -37,7 +38,10 @@ class _HookRelayHandler(http.server.BaseHTTPRequestHandler):
             return
         event = parts[1]
 
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = min(int(self.headers.get("Content-Length", 0)), 1_048_576)
+        except (ValueError, TypeError):
+            length = 0
         body = self.rfile.read(length) if length else b"{}"
         try:
             raw: dict = json.loads(body) if body else {}
@@ -79,11 +83,11 @@ def start_relay() -> int:
             return _relay_server.server_address[1]  # type: ignore[index]
         try:
             from . import paths
-            server = http.server.HTTPServer(("127.0.0.1", 0), _HookRelayHandler)
+            server = ThreadingHTTPServer(("127.0.0.1", 0), _HookRelayHandler)
             port: int = server.server_address[1]  # type: ignore[index]
             port_path = paths.hook_relay_port_path()
             port_path.parent.mkdir(parents=True, exist_ok=True)
-            port_path.write_text(str(port), encoding="utf-8")
+            paths.atomic_write_text(port_path, str(port))
             thread = threading.Thread(
                 target=server.serve_forever,
                 name="tg-hook-relay",
