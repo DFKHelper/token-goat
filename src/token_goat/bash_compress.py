@@ -4580,14 +4580,6 @@ class KubectlLogsFilter(Filter):
         return "\n".join(non_empty)
 
 
-def _strip_timestamp(line: str) -> str:
-    """Remove leading ISO-8601 timestamp from a log line for pattern comparison.
-
-    Delegates to the shared :data:`_TIMESTAMP_PREFIX_RE` so all timestamp
-    formats (ISO-8601, compact datetime, HH:MM:SS) are handled consistently.
-    """
-    return _TIMESTAMP_PREFIX_RE.sub("", line).strip()
-
 
 # Pod/container prefix patterns for ``kubectl logs --prefix`` and sidecar-style
 # output. Compiled at module level — used by _dedup_log_lines_with_pod_prefix
@@ -4614,7 +4606,7 @@ def _dedup_log_lines_with_pod_prefix(lines: list[str], keep_first_n: int = 3) ->
     def _normalise(line: str) -> str:
         # Strip pod prefix then timestamp.
         no_pod = _KUBECTL_POD_PREFIX_RE.sub("", line)
-        return _strip_timestamp(no_pod).strip()
+        return _TIMESTAMP_PREFIX_RE.sub("", no_pod).strip()
 
     out: list[str] = []
     seen: dict[str, int] = {}

@@ -670,7 +670,7 @@ def _build_recovery_hint(session_id: str) -> str | None:
     manifest.
     """
     from .cache_common import short_output_id as _short_id
-    from .compact import _humanize_bytes
+    from .util import _humanize_bytes
 
     try:
         from . import session as session_mod
