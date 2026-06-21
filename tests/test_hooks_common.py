@@ -938,3 +938,73 @@ class TestRecordCachedStatSavingsAccounting:
         from token_goat.hooks_common import record_cached_stat
         # Must not raise
         record_cached_stat("bash_output_cached", "cmd", bytes_saved=1024)
+
+
+# ---------------------------------------------------------------------------
+# Thread-safety: watchdog globals
+# ---------------------------------------------------------------------------
+
+class TestWatchdogThreadSafety:
+    """get_effective_watchdog_ms and record_watchdog_timeout must be safe under
+    concurrent access — both functions share module-level state and are called
+    from hook handler threads that can run concurrently."""
+
+    def _reset_watchdog_state(self, monkeypatch) -> None:
+        import token_goat.hooks_common as hc
+        monkeypatch.setattr(hc, "_effective_watchdog_ms", hc._HOOKS_WATCHDOG_DEFAULT_MS)
+        monkeypatch.setattr(hc, "_consecutive_timeouts", 0)
+        monkeypatch.setattr(hc, "_timeout_configured", False)
+
+    def test_concurrent_get_effective_watchdog_ms_does_not_raise(self, monkeypatch):
+        """Many threads calling get_effective_watchdog_ms simultaneously must not
+        raise or produce a corrupted value."""
+        import threading
+
+        import token_goat.hooks_common as hc
+
+        self._reset_watchdog_state(monkeypatch)
+
+        results: list[int] = []
+        errors: list[Exception] = []
+
+        def _call() -> None:
+            try:
+                results.append(hc.get_effective_watchdog_ms())
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_call) for _ in range(40)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Unexpected exceptions: {errors}"
+        assert len(results) == 40
+        # All returned values must be positive integers (never 0 or negative)
+        assert all(v > 0 for v in results), f"Non-positive watchdog value seen: {results}"
+
+    def test_concurrent_record_watchdog_timeout_does_not_corrupt_state(self, monkeypatch):
+        """Many threads calling record_watchdog_timeout simultaneously must leave
+        _consecutive_timeouts at exactly the number of calls made — no lost
+        increments from a read-modify-write race, and _effective_watchdog_ms
+        must remain positive and not exceed the 30 000 ms cap."""
+        import threading
+
+        import token_goat.hooks_common as hc
+
+        self._reset_watchdog_state(monkeypatch)
+        # Pre-configure so get_effective_watchdog_ms doesn't also mutate during the race
+        monkeypatch.setattr(hc, "_timeout_configured", True)
+
+        n_threads = 20
+        threads = [threading.Thread(target=hc.record_watchdog_timeout) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert hc._consecutive_timeouts == n_threads, (
+            f"Expected {n_threads} increments, got {hc._consecutive_timeouts}"
+        )
+        assert 0 < hc._effective_watchdog_ms <= 30_000
