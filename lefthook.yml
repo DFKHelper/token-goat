@@ -4,7 +4,7 @@ pre-commit:
       run: uv run ruff check {staged_files}
       glob: "*.py"
     wal-guard:
-      run: uv run pytest tests/test_wal_growth_guard.py -q --tb=short
+      run: .venv/Scripts/python.exe -m pytest tests/test_wal_growth_guard.py -q --tb=short
       glob: "*.py"
 
 pre-push:
