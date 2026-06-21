@@ -298,7 +298,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 from .entropy import has_high_entropy_token
 from .hooks_common import record_cached_stat
 from .render.ansi import strip_ansi
-from .util import env_int, get_logger, sanitize_control_chars
+from .util import env_int, get_logger, json_compact, sanitize_control_chars
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -5381,7 +5381,7 @@ def _try_compress_json_list(text: str) -> str | None:
                 changed = True
     if not changed:
         return None
-    return json.dumps(data, separators=(",", ":"))
+    return json_compact(data)
 
 
 # --- Linters (eslint / ruff / mypy / pylint) -------------------------------

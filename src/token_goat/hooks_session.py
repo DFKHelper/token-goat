@@ -1179,7 +1179,6 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     prevent the session from continuing — the recovery hint is advisory and
     its loss is benign.
     """
-    import json as _json
 
     if source != "compact" or not session_id:
         return None
@@ -1196,12 +1195,8 @@ def _try_recovery_response(session_id: str | None, source: str) -> HookResponse 
     # Write the hint + estimate as JSON to the sidecar for deferred injection.
     try:
         from . import paths
-
-        payload = _json.dumps(
-            {"hint": hint, "bytes_estimate": bytes_estimate},
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
+        from .util import json_compact as _json_compact
+        payload = _json_compact({"hint": hint, "bytes_estimate": bytes_estimate})
         sidecar = paths.recovery_pending_path(session_id)
         paths.atomic_write_text(sidecar, payload)
         _LOG.info(

@@ -38,7 +38,7 @@ import typer
 
 from . import db
 from .project import find_project
-from .util import env_int, get_logger
+from .util import env_int, get_logger, json_compact
 
 _LOG = get_logger("token_goat.ask")
 
@@ -225,7 +225,7 @@ def cache_put(
                     key,
                     question,
                     answer,
-                    json.dumps(citations, separators=(",", ":")),
+                    json_compact(citations),
                     backend_label,
                     tokens_in,
                     tokens_out,
@@ -501,7 +501,7 @@ def _emit_answer(
             payload["sources"] = [
                 {**s.citation(), "text": s.text} for s in slices
             ]
-        typer.echo(json.dumps(payload, separators=(",", ":")))
+        typer.echo(json_compact(payload))
         return
 
     typer.echo(answer)
@@ -561,7 +561,7 @@ def _emit_degraded(
         }
         if show_sources:
             payload["sources"] = [{**s.citation(), "text": s.text} for s in slices]
-        typer.echo(json.dumps(payload, separators=(",", ":")))
+        typer.echo(json_compact(payload))
         return
 
     typer.echo(notice)
@@ -575,7 +575,7 @@ def _emit_degraded(
 
 
 def _emit_json_no_context(question: str) -> None:
-    typer.echo(json.dumps(
+    typer.echo(json_compact(
         {
             "question": question,
             "synthesized": False,
@@ -587,5 +587,4 @@ def _emit_json_no_context(question: str) -> None:
             "entries": [],
             "baseline_tokens": 0,
         },
-        separators=(",", ":"),
     ))

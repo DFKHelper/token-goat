@@ -44,7 +44,7 @@ from typing import Any, Final, TypedDict, TypeVar, cast
 from . import config, db, session, snapshots
 from .hooks_common import load_session_safe, sanitize_log_str, validate_cwd
 from .project import find_project
-from .util import get_logger
+from .util import get_logger, json_compact
 
 # Maximum entries in the recent_hints ring buffer stored per session.
 _RECENT_HINTS_MAX: int = 3
@@ -370,7 +370,7 @@ def _emit_json_sidecar(hint: ReadHint | None, kind: str, **fields: Any) -> ReadH
             if v is None:
                 continue
             payload[k] = v
-        line = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        line = json_compact(payload)
         if len(line.encode("utf-8")) > _JSON_SIDECAR_MAX_BYTES:
             # Pathological payload — drop the sidecar rather than bloat context.
             return hint
