@@ -140,7 +140,7 @@ PERIODIC_REINDEX_MAX_FILES = 2000
 # Only periodically re-index projects seen within this window. Bounds the sweep
 # to projects actually in use — the `projects` table accumulates every project
 # token-goat has ever touched, and reindexing all of them would be wasteful.
-PERIODIC_REINDEX_ACTIVE_WINDOW = 4 * 3600.0  # 4 hours
+PERIODIC_REINDEX_ACTIVE_WINDOW = 7 * 24 * 3600.0  # 7 days
 
 _BLOCKED_ROOT_PREFIXES: tuple[str, ...] = (
     "c:/windows",
@@ -148,8 +148,6 @@ _BLOCKED_ROOT_PREFIXES: tuple[str, ...] = (
 )
 _BLOCKED_ROOT_SEGMENTS: tuple[str, ...] = (
     "node_modules",
-    "appdata/local/temp",
-    "appdata\\local\temp",
 )
 
 

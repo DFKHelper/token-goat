@@ -374,7 +374,7 @@ class TestLargeIndexedFile:
         assert "token-goat read" in hint
         assert "MyClass" in hint
         assert "symbol" in hint.lower()
-        assert "85%" in hint
+        assert "surgical" in hint
 
     def test_large_file_hint_is_terse(self, tmp_data_dir, tmp_path):
         """The large-file hint must not enumerate every indexed symbol.
