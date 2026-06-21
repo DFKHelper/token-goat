@@ -828,9 +828,13 @@ def _evict_stale_cache(conn: sqlite3.Connection, current_files: dict[str, _FileI
     or a full re-index reset the file rows, leaving orphaned cache rows with
     stale mtime/size keys that will never be hit again.
     """
-    if not current_files:
-        return
     try:
+        if not current_files:
+            # No map-worthy files remain: every cache entry is stale. DELETE all rather
+            # than returning early — the empty-IN guard was preventing any eviction in
+            # exactly the scenario the docstring describes ("files table was wiped").
+            conn.execute("DELETE FROM repomap_cache")
+            return
         ph = ",".join("?" for _ in current_files)
         conn.execute(
             f"DELETE FROM repomap_cache WHERE rel_path NOT IN ({ph})",

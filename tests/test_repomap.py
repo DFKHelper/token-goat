@@ -1608,3 +1608,35 @@ def test_build_map_monolingual_compact_summary_uses_legacy_format(tmp_path, tmp_
     assert "files indexed. Top modules:" in text, (
         f"Expected legacy format for mono-language project; got:\n{text[:500]}"
     )
+
+
+def test_evict_stale_cache_empty_current_files_deletes_all():
+    """_evict_stale_cache with empty current_files must delete all cache rows.
+
+    Regression test: the old guard ``if not current_files: return`` left every
+    cache row intact when called with an empty map-worthy file set, defeating the
+    purpose of the function for the "re-indexed from scratch" scenario.
+    """
+    import sqlite3
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript("""
+        CREATE TABLE repomap_cache (
+            rel_path TEXT PRIMARY KEY,
+            mtime REAL,
+            size INTEGER,
+            summary_text TEXT,
+            created_at REAL
+        );
+        INSERT INTO repomap_cache VALUES ('src/a.py', 1.0, 100, 'summary a', 0.0);
+        INSERT INTO repomap_cache VALUES ('src/b.py', 2.0, 200, 'summary b', 0.0);
+    """)
+
+    # Pre-condition: two rows exist.
+    assert con.execute("SELECT count(*) FROM repomap_cache").fetchone()[0] == 2
+
+    repomap._evict_stale_cache(con, {})
+
+    # Post-condition: all rows evicted.
+    assert con.execute("SELECT count(*) FROM repomap_cache").fetchone()[0] == 0
