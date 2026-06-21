@@ -53,6 +53,7 @@ __all__ = [
     "get_type_definitions",
     "index_health",
     "list_all_project_hashes",
+    "list_all_projects",
     "open_global",
     "open_global_readonly",
     "open_project",
@@ -1377,6 +1378,21 @@ def list_all_project_hashes() -> list[str]:
         return []
     except (DBError, sqlite3.Error, OSError) as exc:
         _LOG.debug("list_all_project_hashes: global DB unavailable: %s", exc)
+        return []
+
+
+def list_all_projects() -> list[dict[str, object]]:
+    """Return all tracked project roots with metadata from the global DB."""
+    try:
+        with open_global_readonly() as conn:
+            rows = conn.execute(
+                "SELECT hash, root, file_count, languages, last_seen FROM projects ORDER BY root"
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except FileNotFoundError:
+        return []
+    except (DBError, sqlite3.Error, OSError) as exc:
+        _LOG.debug("list_all_projects: global DB unavailable: %s", exc)
         return []
 
 

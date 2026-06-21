@@ -157,7 +157,13 @@ def _is_blocked_root(root: str) -> bool:
     for prefix in _BLOCKED_ROOT_PREFIXES:
         if low.startswith(prefix.replace("\\", "/")):
             return True
-    return any(seg.replace("\\", "/") in low for seg in _BLOCKED_ROOT_SEGMENTS)
+    if any(seg.replace("\\", "/") in low for seg in _BLOCKED_ROOT_SEGMENTS):
+        return True
+    from . import config as _config_mod  # local import to avoid circular dep
+    for blocked in _config_mod.load().worker.blocked_roots:
+        if low == blocked.lower().replace("\\", "/"):
+            return True
+    return False
 
 
 # How many days of granular stats events to keep in global.db before pruning.

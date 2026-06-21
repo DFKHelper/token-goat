@@ -520,8 +520,15 @@ config_app = typer.Typer(
     help="Inspect and edit token-goat's config.toml (compact_assist, paths, hint thresholds).",
 )
 
+project_app = typer.Typer(
+    name="project",
+    no_args_is_help=True,
+    help="Manage project roots tracked by token-goat.",
+)
+
 app.add_typer(hook_app, hidden=True)
 app.add_typer(config_app, rich_help_panel="Config")
+app.add_typer(project_app, rich_help_panel="Projects")
 
 
 def _version_callback(value: bool) -> None:
@@ -9867,6 +9874,82 @@ def _assert_hook_registry_aligned() -> None:
 # Runs once per process at module import; cache is automatic via sys.modules.
 # Do not call from request paths or command bodies.
 _assert_hook_registry_aligned()
+
+
+# ---------------------------------------------------------------------------
+# project subcommands
+# ---------------------------------------------------------------------------
+
+@project_app.command("list")
+def project_list(json_output: bool = _OPT_JSON) -> None:
+    """List all project roots tracked by token-goat."""
+    from . import db as _db_mod
+    projects = _db_mod.list_all_projects()
+    blocked = {p.lower().replace("\\", "/") for p in config_mod.load().worker.blocked_roots}
+    if json_output:
+        _emit_json(projects)
+        return
+    if not projects:
+        typer.echo("No projects tracked yet.")
+        return
+    for p in projects:
+        root = str(p["root"])
+        tag = " [excluded]" if root.lower().replace("\\", "/") in blocked else ""
+        typer.echo(f"{root}{tag}  ({p['file_count']} files)")
+
+
+@project_app.command("exclude")
+def project_exclude(
+    path: str = typer.Argument(..., help="Project root path to exclude from indexing."),
+) -> None:
+    """Add a project root to the blocklist so it is never indexed."""
+    import tomli_w
+    normalized = Path(path).resolve().as_posix()
+    from . import paths as _paths
+    cfg_path = _paths.config_path()
+    if cfg_path.exists():
+        import tomllib as _tomllib
+        data: dict[str, object] = _tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+    else:
+        data = {}
+    worker_section = data.setdefault("worker", {})
+    assert isinstance(worker_section, dict)
+    roots: list[str] = worker_section.get("blocked_roots", [])  # type: ignore[assignment]
+    if normalized in roots:
+        typer.echo(f"Already excluded: {normalized}")
+        raise typer.Exit()
+    roots.append(normalized)
+    worker_section["blocked_roots"] = roots
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cfg_path, "wb") as f:
+        tomli_w.dump(data, f)  # type: ignore[arg-type]
+    typer.echo(f"Excluded: {normalized}")
+    typer.echo("The worker will skip this root on the next daemon cycle.")
+
+
+@project_app.command("prune")
+def project_prune(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be removed without removing it."),
+) -> None:
+    """Remove tracked project roots that no longer exist on disk."""
+    from . import db as _db_mod
+    projects = _db_mod.list_all_projects()
+    to_remove = [p for p in projects if not Path(str(p["root"])).exists()]
+    if not to_remove:
+        typer.echo("Nothing to prune — all tracked roots still exist.")
+        return
+    for p in to_remove:
+        root = str(p["root"])
+        if dry_run:
+            typer.echo(f"  would remove: {root}")
+        else:
+            with _db_mod.open_global() as conn:
+                conn.execute("DELETE FROM projects WHERE hash = ?", (p["hash"],))
+            typer.echo(f"  removed: {root}")
+    if dry_run:
+        typer.echo(f"\n{len(to_remove)} root(s) would be pruned. Re-run without --dry-run to apply.")
+    else:
+        typer.echo(f"\nPruned {len(to_remove)} stale root(s).")
 
 
 if __name__ == "__main__":
