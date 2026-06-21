@@ -1084,9 +1084,12 @@ def _prune_stats_table() -> int:
     computed at query time from the rows that remain; events older than the
     retention window simply roll off.  Returns the number of rows deleted.
 
-    Raises ``db.DBError`` or ``sqlite3.DatabaseError`` on DB failure so the
-    caller (``cleanup_on_startup``) can record the failure in its summary and
-    continue with the remaining tasks.
+    Returns 0 silently when global.db is read-only (sandboxed environment such
+    as Codex unelevated on Windows, where WAL coordination fails and _connect()
+    falls back to an immutable read-only URI).  Raises ``db.DBError`` or
+    ``sqlite3.DatabaseError`` on other DB failures so the caller
+    (``cleanup_on_startup``) can record the failure in its summary and continue
+    with the remaining tasks.
     """
     from . import db as _db
     cutoff_ts = int(time.time() - STATS_RETENTION_DAYS * _SECS_PER_DAY)
@@ -1096,6 +1099,12 @@ def _prune_stats_table() -> int:
             pruned = cur.rowcount or 0
             _LOG.debug("stats prune: deleted %d rows older than %d days", pruned, STATS_RETENTION_DAYS)
             return pruned
+    except sqlite3.OperationalError as exc:
+        if "readonly" in str(exc).lower():
+            _LOG.debug("stats prune skipped (read-only db / sandbox environment): %s", exc)
+            return 0
+        _LOG.warning("stats prune failed (global.db unavailable): %s", exc)
+        raise
     except (_db.DBError, sqlite3.DatabaseError, OSError) as exc:
         _LOG.warning("stats prune failed (global.db unavailable): %s", exc)
         raise

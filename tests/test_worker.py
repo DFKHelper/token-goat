@@ -1707,6 +1707,33 @@ def test_cleanup_on_startup_records_failures(tmp_data_dir, monkeypatch):
     assert "logs_deleted" in stats
 
 
+def test_prune_stats_table_readonly_db_silently_skips(tmp_data_dir, monkeypatch):
+    """_prune_stats_table must return 0 without raising when global.db is read-only.
+
+    Regression guard: db._connect() falls back to an immutable read-only URI when
+    WAL coordination fails (sandboxed / Codex unelevated on Windows).  Before the
+    fix, _prune_stats_table() re-raised the OperationalError, polluting
+    cleanup_on_startup's failures list with a non-actionable sandbox error.
+    After the fix it must return 0 silently.
+    """
+    from unittest.mock import patch
+
+    from token_goat import db as _db
+
+    # Create global.db and insert one old stats row (older than the retention window).
+    old_ts = int(time.time()) - (worker.STATS_RETENTION_DAYS + 1) * int(worker._SECS_PER_DAY)
+    with _db.open_global() as conn:
+        conn.execute("INSERT INTO stats (kind, ts) VALUES ('test:read', ?)", (old_ts,))
+
+    # Simulate the WAL-fallback read-only path by replacing open_global with
+    # open_global_readonly, which yields a connection that rejects writes.
+    with patch.object(_db, "open_global", _db.open_global_readonly):
+        result = worker._prune_stats_table()
+
+    # Must return 0, not raise OperationalError.
+    assert result == 0
+
+
 def test_cleanup_on_startup_no_failures_omits_key(tmp_data_dir, monkeypatch):
     """When all tasks succeed, stats must NOT include a 'failures' key."""
     monkeypatch.setattr(worker, "_cleanup_stale_locks", lambda: 0)
