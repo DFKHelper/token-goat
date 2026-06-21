@@ -840,7 +840,7 @@ def _apply_context_gutter(
         if is_context:
             result.append(f"{_ANSI_DIM}│ {line}{_ANSI_RESET}")
         else:
-            result.append(f"  {line}")
+            result.append(line)
     return "\n".join(result)
 
 

@@ -929,7 +929,7 @@ def token_estimate_header(text: str) -> str:
     The compact format saves ~6 chars per read compared to the previous
     "({approx_tokens} tokens est.)" form, which adds up across many reads.
     """
-    n_lines = text.count("\n") + (1 if text else 0)
+    n_lines = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
     approx_tokens = len(text) // 4
     return f"# {n_lines} lines (~{approx_tokens} tok)"
 
