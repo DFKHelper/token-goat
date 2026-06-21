@@ -147,7 +147,6 @@ Numbers below come from synthetic-fixture benchmarks in the test suite. Each row
 | Repomap output | Short labels (`f:`, `s:`, `c:`) and auto-compact mode below 6 KB | ~30–40% denser output for the same byte budget | `repomap.py` (`token-goat map --budget`) |
 | DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `parser.py`, `db.py` (index migration) |
 | Hook cold-start | Lazy import of heavy modules; unknown events short-circuit | 86 ms → 30 ms (~65% faster); unknown-event dispatch <1 ms | `hooks_cli.py` |
-| Hook process spawn (Windows) | In-process HTTP relay: daemon serves hook events over localhost; `tg-hook.cmd` uses `curl.exe` instead of spawning `pythonw.exe` | 200–500 ms + AV scan per event → 3–10 ms; eliminates process-storm under heavy tool use | `hook_relay.py` |
 | Symbol start_line | TypeScript decorators captured in symbol span | One `token-goat read` returns the decorator + signature + body; no re-read | `languages/typescript.py` |
 | Section extraction | Setext headings, h5/h6, anchor IDs, and `__frontmatter__` | `token-goat section` resolves more headings without falling back to a full file read | `languages/markdown.py` |
 | Image cache | Real LRU eviction (was FIFO; old hot entries got dropped) | Higher hit rate on repeat screenshots in long sessions | `image_shrink.py` |
