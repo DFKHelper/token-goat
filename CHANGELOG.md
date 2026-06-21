@@ -42,6 +42,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Performance
 
+- **In-process HTTP relay eliminates per-hook pythonw spawning on Windows.** Every Claude Code hook event previously spawned a new `pythonw.exe` process (200–500 ms startup + AV scan per spawn). The daemon now starts a `ThreadingHTTPServer` on a random localhost port and writes the port number to `locks/hook-relay.port`. The generated `tg-hook.cmd` wrapper tries a `curl.exe` POST to that port first (3–10 ms, no process spawn); it only falls back to `pythonw.exe` when the daemon is unavailable. A 60-second liveness check in the worker main loop detects a dead relay thread and restarts it automatically, so the port file never silently points at a closed socket.
+
 - **`pre_read` hook now uses a read-only DB connection for symbol lookup.** `_get_indexed_symbols_and_line_count` was opening a write-capable connection (`db.open_project()`) that loads the sqlite-vec extension, sets WAL mode, and runs schema DDL on every call. Switching to `db.open_project_readonly()` eliminates those steps, cutting the function from ~9.8 ms to ~1.4 ms. Every Read tool call passes through `pre_read`, so the saving applies to every hook invocation. Fail-soft behavior is unchanged.
 
 ### Fixed
