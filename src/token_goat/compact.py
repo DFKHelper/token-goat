@@ -4634,22 +4634,6 @@ def merge_session_manifests(manifests: list[dict[str, Any]], budget_tokens: int)
     return result
 
 
-def _cap_line(line: str, max_len: int = 120) -> str:
-    """Cap a line to max_len characters, truncating with '…' if exceeded.
-
-    If the line is longer than *max_len*, returns ``line[:max_len-1] + "…"``.
-    Otherwise returns *line* unchanged.  Header lines (starting with '###')
-    are never capped — they are structural and must be preserved whole.
-
-    Args:
-        line: The line to cap.
-        max_len: Maximum line length (default 120).
-
-    Returns:
-        The original line, or a truncated version with ellipsis.
-    """
-    return ellipsize(line, max_len)
-
 
 def _load_task_list(session_id: str) -> list[dict[str, str]]:
     """Load TaskList entries for *session_id* from ``~/.claude/tasks/<session_id>/``.
@@ -4926,7 +4910,7 @@ def _render_section(
     for entry in entries:
         line = fmt(entry)
         if line:
-            lines.append(_cap_line(line))
+            lines.append(ellipsize(line, 120))
     return lines
 
 
