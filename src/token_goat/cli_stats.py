@@ -1,7 +1,6 @@
 """Stats CLI helpers."""
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from re import sub as re_sub
@@ -11,6 +10,7 @@ import typer
 
 from . import stats as stats_mod
 from .render.ansi import color_stdout
+from .util import json_compact
 
 
 def _write_raw(text: str) -> None:
@@ -50,7 +50,7 @@ def stats(
     if json_output:
         from . import __version__
         typer.echo(
-            json.dumps(
+            json_compact(
                 {
                     "version": __version__,
                     "total_events": summary.total_events,
@@ -62,7 +62,6 @@ def stats(
                     "by_command": summary.by_command,
                     "window_days": summary.window_days,
                 },
-                separators=(",", ":"),
             )
         )
         return

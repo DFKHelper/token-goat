@@ -28,7 +28,6 @@ import contextlib
 import fnmatch
 import hashlib
 import heapq
-import json
 import os
 import sqlite3
 import threading
@@ -40,7 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, NamedTuple, TypedDict
 
 from . import db
-from .util import get_logger
+from .util import get_logger, json_compact
 
 if TYPE_CHECKING:
     from .project import Project
@@ -1188,12 +1187,11 @@ def index_project(
             _upsert_meta(
                 conn,
                 "skipped_large_files",
-                json.dumps(
+                json_compact(
                     [
                         {"rel_path": lf.rel_path, "size_bytes": lf.size_bytes}
                         for lf in _skipped_large
                     ],
-                    separators=(",", ":"),
                 ),
             )
 

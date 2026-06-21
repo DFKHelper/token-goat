@@ -83,7 +83,7 @@ from .cache_common import (
     write_sidecar_metadata,
 )
 from .hooks_common import sanitize_log_str
-from .util import get_logger, strip_ansi
+from .util import get_logger, json_compact, strip_ansi
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -275,7 +275,7 @@ def _compress_json_body(body: str, max_string_chars: int = JSON_STRING_TRUNCATE_
 
     try:
         compressed = _truncate(data)
-        return json.dumps(compressed, ensure_ascii=False, separators=(",", ":"))
+        return json_compact(compressed)
     except (TypeError, ValueError):
         return body
 

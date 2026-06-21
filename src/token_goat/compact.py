@@ -63,7 +63,7 @@ from .cache_common import short_output_id as _short_id
 from .config import Config as _Config
 from .config import load as _load_config
 from .hooks_common import sanitize_log_str
-from .util import _humanize_bytes, ellipsize, get_logger
+from .util import _humanize_bytes, ellipsize, get_logger, json_compact
 from .util import run_git_silent as _run_git
 
 
@@ -790,7 +790,7 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
     edited_count = len(edited_files)
     bash_count = len(getattr(cache, "bash_history", None) or {})
 
-    payload = json.dumps(
+    payload = json_compact(
         {
             "age_tier": age_tier,
             "bash_count": bash_count,
@@ -808,7 +808,6 @@ def _compute_manifest_fingerprint(cache: SessionCache) -> str:  # type: ignore[n
             "skill_history": _dict_payload(getattr(cache, "skill_history", None)),
             "web_history": _dict_payload(getattr(cache, "web_history", None)),
         },
-        separators=(",", ":"),
         sort_keys=True,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
@@ -889,7 +888,7 @@ def _write_manifest_sidecar(
         }
         if counts:
             payload_dict["counts"] = {k: int(v) for k, v in counts.items()}
-        payload = json.dumps(payload_dict, separators=(",", ":"), sort_keys=True)
+        payload = json_compact(payload_dict, sort_keys=True)
         paths.atomic_write_text(sidecar, payload)
     except Exception as _e:
         _LOG.debug("write_session_manifest: failed to write %s: %s", sidecar, _e, exc_info=True)
