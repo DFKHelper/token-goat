@@ -271,7 +271,7 @@ def get_context_pressure(  # type: ignore[name-defined]  # SessionCache imported
 
 #: Known harness identifiers returned by :func:`detect_harness`.
 _KNOWN_HARNESSES: Final[frozenset[str]] = frozenset(
-    ["claudecode", "codex", "opencode", "gemini", "generic"]
+    ["claudecode", "codex", "opencode", "gemini", "hermes", "generic"]
 )
 
 #: Per-harness default multipliers for auto_trigger_multiplier.
@@ -299,13 +299,16 @@ def detect_harness(config_override: str = "auto") -> str:
     0. ``TOKEN_GOAT_HARNESS_OVERRIDE`` env var → use that value directly (CI /
        test environments that need a deterministic harness without injecting
        harness-specific secrets like ``ANTHROPIC_API_KEY``).
-    1. ``CLAUDE_CODE_SESSION_ID`` or ``ANTHROPIC_API_KEY`` → ``"claudecode"``
-    2. ``CODEX_SESSION`` env var present → ``"codex"``
-    3. ``OPENAI_API_KEY`` present without ``ANTHROPIC_API_KEY`` → ``"codex"``
-    4. ``OPENCODE_SESSION`` env var present → ``"opencode"``
-    5. Fallback → ``"generic"``
+    1. ``HERMES_SESSION_ID`` or ``HERMES_HOME`` → ``"hermes"`` (checked before
+       Claude Code because Hermes spawns ``claude -p`` as a subprocess that also
+       has ``ANTHROPIC_API_KEY`` set).
+    2. ``CLAUDE_CODE_SESSION_ID`` or ``ANTHROPIC_API_KEY`` → ``"claudecode"``
+    3. ``CODEX_SESSION`` env var present → ``"codex"``
+    4. ``OPENAI_API_KEY`` present without ``ANTHROPIC_API_KEY`` → ``"codex"``
+    5. ``OPENCODE_SESSION`` env var present → ``"opencode"``
+    6. Fallback → ``"generic"``
 
-    Returns one of: ``"claudecode"``, ``"codex"``, ``"opencode"``, ``"generic"``.
+    Returns one of: ``"claudecode"``, ``"codex"``, ``"opencode"``, ``"hermes"``, ``"generic"``.
     """
     if config_override != "auto":
         if config_override in _KNOWN_HARNESSES:
@@ -325,6 +328,12 @@ def detect_harness(config_override: str = "auto") -> str:
             "detect_harness: TOKEN_GOAT_HARNESS_OVERRIDE=%r not a known harness; ignoring",
             _harness_override,
         )
+
+    # Hermes Agent: check before Claude Code because Hermes spawns `claude -p`
+    # as a subprocess, which inherits ANTHROPIC_API_KEY — so the Hermes-specific
+    # env vars must be matched first.
+    if os.environ.get("HERMES_SESSION_ID") or os.environ.get("HERMES_HOME"):
+        return "hermes"
 
     # Claude Code: specific session ID env var or Anthropic API key
     if os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("ANTHROPIC_API_KEY"):
