@@ -411,14 +411,11 @@ def install_worker_task() -> tuple[bool, str]:
     if existing_cmd is not None:
         old_interp = _extract_interpreter_from_command(existing_cmd)
         new_interp = _extract_interpreter_from_command(cmd)
-        if old_interp and new_interp:
-            def _norm(p: str) -> str:
-                return p.replace("\\", "/").casefold()
-            if _norm(old_interp) != _norm(new_interp):
-                _LOG.warning(
-                    "install_worker_task: replacing existing autostart entry "
-                    "(old interpreter: %s) with new one (new interpreter: %s)",
-                    old_interp, new_interp,
+        if old_interp and new_interp and _norm(old_interp) != _norm(new_interp):
+            _LOG.warning(
+                "install_worker_task: replacing existing autostart entry "
+                "(old interpreter: %s) with new one (new interpreter: %s)",
+                old_interp, new_interp,
                 )
 
     try:
