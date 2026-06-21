@@ -5531,6 +5531,11 @@ def _json_structural_summary(data: object, max_depth: int = 2, max_keys: int = 1
     return "\n".join(lines)
 
 
+def _bash_recall(out_id: str | None) -> str:
+    """Return a '[Full output: bash-output <id>]' recall hint, or '' when *out_id* is None."""
+    return f"\n[Full output: bash-output {out_id}]" if out_id else ""
+
+
 def _safe_int(v: object, default: int = 0) -> int:
     """Return ``int(v)`` or *default* when *v* is empty, None, or non-numeric."""
     try:
@@ -6063,7 +6068,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     _pkg_unique_kept.add(_pkg_summary_line)
                 _pkg_kept = len(_pkg_unique_kept)
                 _pkg_cmd_short = display_cmd[:60]
-                _pkg_recall = f"\n[Full output: bash-output {_pkg_out_id}]" if _pkg_out_id else ""
+                _pkg_recall = _bash_recall(_pkg_out_id)
 
                 _pkg_parts = [
                     f"[token-goat] pkg install: {_pkg_n_lines} lines → {_pkg_kept} kept | {_pkg_cmd_short}",
@@ -6166,9 +6171,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                                 _bc_env_cache.write_sidecar(_env_meta)
                                 _env_out_id = _env_meta.output_id
 
-                    _env_recall = (
-                        f"\n[Full output: bash-output {_env_out_id}]" if _env_out_id else ""
-                    )
+                    _env_recall = _bash_recall(_env_out_id)
                     _env_msg_parts = [
                         f"[token-goat] env: {_env_total_vars} variables ({_env_n_lines} lines)",
                     ]
@@ -6264,9 +6267,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                                 _bc_cl_cache.write_sidecar(_cl_meta)
                                 _cl_out_id = _cl_meta.output_id
 
-                    _cl_recall = (
-                        f"\n[Full output: bash-output {_cl_out_id}]" if _cl_out_id else ""
-                    )
+                    _cl_recall = _bash_recall(_cl_out_id)
                     _cl_short_cmd = display_cmd[:80]
                     _cl_msg_parts = [
                         f"[token-goat] container logs: {_cl_n_lines} lines"
@@ -6397,7 +6398,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             if _vt_meta is not None:
                                 _bc_vt.write_sidecar(_vt_meta)
                                 _vt_out_id = _vt_meta.output_id
-                    _vt_recall = f"\n[Full output: bash-output {_vt_out_id}]" if _vt_out_id else ""
+                    _vt_recall = _bash_recall(_vt_out_id)
                     _vt_body = "\n".join(_vt_kept)
                     if stdout.endswith(("\n", "\r\n")):
                         _vt_body += "\n"
@@ -6513,7 +6514,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             if _cg_meta is not None:
                                 _bc_cg.write_sidecar(_cg_meta)
                                 _cg_out_id = _cg_meta.output_id
-                    _cg_recall = f"\n[Full output: bash-output {_cg_out_id}]" if _cg_out_id else ""
+                    _cg_recall = _bash_recall(_cg_out_id)
 
                     if _cg_error_count == 0 and _cg_warn_count == 0:
                         # Clean but noisy build — only the terminal line matters
@@ -6592,7 +6593,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             if _mk_meta is not None:
                                 _bc_mk.write_sidecar(_mk_meta)
                                 _mk_out_id = _mk_meta.output_id
-                    _mk_recall = (f"\n[Full output: bash-output {_mk_out_id}]" if _mk_out_id else "")
+                    _mk_recall = _bash_recall(_mk_out_id)
 
                     _mk_body = "\n".join(_mk_kept)
                     if stdout.endswith(("\n", "\r\n")):
@@ -6710,7 +6711,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             if _go_meta is not None:
                                 _bc_go.write_sidecar(_go_meta)
                                 _go_out_id = _go_meta.output_id
-                    _go_recall = (f"\n[Full output: bash-output {_go_out_id}]" if _go_out_id else "")
+                    _go_recall = _bash_recall(_go_out_id)
                     _go_body = "\n".join(_go_kept)
                     if stdout.endswith(("\n", "\r\n")):
                         _go_body += "\n"
@@ -6771,7 +6772,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             if _tsc_meta is not None:
                                 _bc_tsc.write_sidecar(_tsc_meta)
                                 _tsc_out_id = _tsc_meta.output_id
-                    _tsc_recall = (f"\n[Full output: bash-output {_tsc_out_id}]" if _tsc_out_id else "")
+                    _tsc_recall = _bash_recall(_tsc_out_id)
 
                     if not _tsc_diag_lines and exit_code in (None, 0):
                         # Clean build with verbose/timestamp noise only
@@ -7024,7 +7025,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
                         if _min_meta is not None:
                             _bc_min.write_sidecar(_min_meta)
                             _min_out_id = _min_meta.output_id
-                _min_recall = (f"\n[Full output: bash-output {_min_out_id}]" if _min_out_id else "")
+                _min_recall = _bash_recall(_min_out_id)
                 _min_elided = 0
                 _min_kept: list[str] = []
                 for _min_line in stdout.splitlines():
