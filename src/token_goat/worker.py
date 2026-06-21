@@ -254,6 +254,25 @@ _BACKOFF_MAX_SECS = 300.0  # 5 minutes
 _index_failure_counts: dict[tuple[str, str], int] = {}
 _index_backoff_until: dict[tuple[str, str], float] = {}
 
+# Timeout circuit-breaker: tracks consecutive index *timeouts* per project (keyed by
+# project_hash alone).  After _TIMEOUT_CB_THRESHOLD consecutive timeouts the project
+# is placed in a much longer backoff (2^n minutes, capped at 8 hours) to prevent a
+# pathologically large project from monopolising the worker across hundreds of cycles.
+_TIMEOUT_CB_THRESHOLD = 3
+_TIMEOUT_CB_MAX_SECS = 8 * 3600  # 8 hours
+_project_timeout_counts: dict[str, int] = {}
+_project_timeout_until: dict[str, float] = {}
+
+
+class _TimedOut:
+    """Singleton sentinel returned by _run_index_with_timeout on a wall-clock timeout."""
+    __slots__ = ()
+    def __repr__(self) -> str:
+        return "<TIMED_OUT>"
+
+
+_TIMED_OUT = _TimedOut()
+
 
 def _installed_version() -> str | None:
     """The token-goat version currently installed on disk.
@@ -408,6 +427,49 @@ def _record_index_success(project_hash: str, rel_path: str) -> None:
     key = (project_hash, rel_path)
     _index_failure_counts.pop(key, None)
     _index_backoff_until.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
+# Per-project timeout circuit-breaker helpers
+# ---------------------------------------------------------------------------
+
+
+def _should_skip_due_to_timeout_cb(project_hash: str) -> bool:
+    """Return True if this project is in an active timeout circuit-breaker window.
+
+    Only consecutive *timeout* failures (not general exceptions) contribute to
+    this counter.  The per-path general backoff (_should_skip_due_to_backoff)
+    still fires separately for all failure kinds; this guard handles the
+    long-duration cooldown specific to projects that consistently time out.
+    """
+    until = _project_timeout_until.get(project_hash, 0.0)
+    now = time.time()
+    if now < until:
+        _LOG.debug("timeout CB active for project %s: %.0fs remaining", project_hash[:8], until - now)
+        return True
+    return False
+
+
+def _record_project_timeout(project_hash: str) -> None:
+    """Increment the timeout counter for a project and set a long backoff if needed.
+
+    The backoff formula is ``2^(count - threshold) * 60`` seconds (i.e. 2^n minutes),
+    capped at _TIMEOUT_CB_MAX_SECS (8 hours).  The first _TIMEOUT_CB_THRESHOLD - 1
+    timeouts are tolerated without a long cooldown; the circuit opens on the third.
+    """
+    count = _project_timeout_counts.get(project_hash, 0) + 1
+    _project_timeout_counts[project_hash] = count
+    if count >= _TIMEOUT_CB_THRESHOLD:
+        exponent = count - _TIMEOUT_CB_THRESHOLD
+        delay = min(2 ** exponent * 60, _TIMEOUT_CB_MAX_SECS)
+        _project_timeout_until[project_hash] = time.time() + delay
+        _LOG.warning("timeout CB: project %s has timed out %d times; backing off %.0fs (%.1f min)", project_hash[:8], count, delay, delay / 60)
+
+
+def _clear_project_timeout_cb(project_hash: str) -> None:
+    """Reset the timeout circuit-breaker for a project after a successful index."""
+    _project_timeout_counts.pop(project_hash, None)
+    _project_timeout_until.pop(project_hash, None)
 
 
 def _setup_logging() -> None:
@@ -1299,6 +1361,10 @@ def _gc_orphaned_projects() -> int:
         except (db.DBError, sqlite3.DatabaseError, OSError) as exc:
             _LOG.warning("_gc_orphaned_projects: could not delete row for %s: %s", project_hash, exc)
             continue
+
+        # Clean up circuit-breaker state for the removed project.
+        _project_timeout_counts.pop(project_hash, None)
+        _project_timeout_until.pop(project_hash, None)
 
         # Remove per-project DB files; ignore individual errors so a locked file
         # does not abort cleanup of the remaining orphans.
@@ -2283,16 +2349,24 @@ def _reindex_active_projects() -> None:
             skipped_oversized += 1
             continue
         ph = row["hash"]
+        if _should_skip_due_to_timeout_cb(ph):
+            _LOG.info("timeout CB: skipping periodic reindex for project %s", ph[:8])
+            continue
         if _should_skip_due_to_backoff(ph, "<project>"):
             _LOG.info("backoff: skipping periodic reindex for project %s", ph[:8])
             continue
         proj = Project(root=Path(row["root"]), hash=ph, marker=row["marker"])
         try:
             summary = _run_index_with_timeout(proj, False, INDEX_TIMEOUT_SECS)
+            if summary is _TIMED_OUT:
+                _record_index_failure(ph, "<project>")
+                _record_project_timeout(ph)
+                continue
             if summary is None:
-                # Timeout or error — record failure and move on.
+                # Unhandled exception — record general failure but do not advance the timeout CB.
                 _record_index_failure(ph, "<project>")
                 continue
+            _clear_project_timeout_cb(ph)
             _record_index_success(ph, "<project>")
             if summary["indexed"] > 0 or summary["errors"] > 0:  # type: ignore[operator]  # summary is IndexStats TypedDict; mypy cannot prove keys are always present when typed total=False
                 _LOG.info(
@@ -2472,17 +2546,14 @@ def _run_index_with_timeout(
     timeout: float,
     *,
     max_workers: int | None = None,
-) -> dict[str, object] | None:
+) -> dict[str, object] | _TimedOut | None:
     """Run ``parser.index_project`` in a thread with a wall-clock timeout.
 
-    Returns the result dict on success, or ``None`` when the call times out
-    or raises. Timeout is enforced via :mod:`concurrent.futures`; the indexing
-    thread is left to complete naturally in the background (Python threads
-    cannot be forcibly killed), but the worker loop is unblocked immediately
-    after the timeout so it can process the next project without delay.
-
-    A ``None`` return means the caller should treat this project as a failure
-    and record a backoff entry.
+    Returns the result dict on success, ``_TIMED_OUT`` when the call exceeds
+    *timeout* seconds, or ``None`` when the call raises an unhandled exception.
+    Callers that need to distinguish a timeout from a general failure check
+    ``result is _TIMED_OUT``; both non-dict returns mean the project was not
+    successfully indexed this cycle.
 
     The *max_workers* parameter overrides the pool size for this call; when
     ``None`` (the default) the configured ``worker.max_pool_workers`` value is
@@ -2503,7 +2574,7 @@ def _run_index_with_timeout(
                 str(project.hash)[:8],
                 project.root,
             )
-            return None
+            return _TIMED_OUT
         except Exception:
             _LOG.exception(
                 "index_project raised for project %s (root=%s)",
@@ -2624,6 +2695,9 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
         # Backoff check: use the project hash as a synthetic path key since
         # the dirty-queue drain re-indexes all changed files per project in
         # one call — there is no per-file granularity at this layer.
+        if _should_skip_due_to_timeout_cb(ph):
+            _LOG.info("timeout CB: skipping project %s this cycle", ph[:8])
+            continue
         if _should_skip_due_to_backoff(ph, "<project>"):
             _LOG.info("backoff: skipping project %s this cycle", ph[:8])
             continue
@@ -2637,11 +2711,18 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
             result = _run_index_with_timeout(project, is_first_index, INDEX_TIMEOUT_SECS)
             elapsed = time.time() - t0
 
+            if result is _TIMED_OUT:
+                # Wall-clock timeout — advance the timeout circuit-breaker for this project.
+                _record_index_failure(ph, "<project>")
+                _record_project_timeout(ph)
+                continue
+
             if result is None:
-                # Timeout or unhandled exception — treat as failure for backoff.
+                # Unhandled exception — general failure only; do not advance timeout CB.
                 _record_index_failure(ph, "<project>")
                 continue
 
+            _clear_project_timeout_cb(ph)
             _record_index_success(ph, "<project>")
             projects_processed += 1
             if result["errors"] > 0:  # type: ignore[operator]  # IndexStats TypedDict total=False; key always set by index_project but mypy cannot prove it

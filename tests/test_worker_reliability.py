@@ -365,8 +365,8 @@ class TestIndexTimeout:
 
         assert result == expected
 
-    def test_slow_index_returns_none(self, tmp_data_dir):
-        """A slow index call that exceeds the timeout returns None."""
+    def test_slow_index_returns_timed_out(self, tmp_data_dir):
+        """A slow index call that exceeds the timeout returns _TIMED_OUT (not None)."""
 
         def _slow_index(project, full):
             threading.Event().wait(10)  # blocks until thread is killed; much longer than the test timeout
@@ -379,7 +379,7 @@ class TestIndexTimeout:
         with patch.object(_parser, "index_project", side_effect=_slow_index):
             result = worker._run_index_with_timeout(proj, False, timeout=0.2)
 
-        assert result is None, "timeout should return None"
+        assert result is worker._TIMED_OUT, f"timeout should return _TIMED_OUT, got {result!r}"
 
     def test_raising_index_returns_none(self, tmp_data_dir):
         """An index call that raises an exception returns None (does not re-raise)."""
@@ -414,8 +414,8 @@ class TestIndexTimeout:
         with patch.object(_parser, "index_project", side_effect=_slow_index):
             result = worker._run_index_with_timeout(proj, False, timeout=0.1)
 
-        if result is None:
-            worker._record_index_failure(ph, "<project>")
+        assert result is worker._TIMED_OUT, f"expected _TIMED_OUT sentinel, got {result!r}"
+        worker._record_index_failure(ph, "<project>")
 
         count = worker._index_failure_counts.get((ph, "<project>"), 0)
         assert count >= 1, "failure count should be incremented after timeout"
@@ -425,7 +425,81 @@ class TestIndexTimeout:
 
 
 # ---------------------------------------------------------------------------
-# 6. Pool size cap — max_pool_workers config & ceiling
+# 6. Timeout circuit-breaker
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutCircuitBreaker:
+    """Per-project timeout circuit-breaker (_record_project_timeout / _should_skip_due_to_timeout_cb)."""
+
+    def setup_method(self):
+        worker._project_timeout_counts.clear()
+        worker._project_timeout_until.clear()
+
+    def teardown_method(self):
+        worker._project_timeout_counts.clear()
+        worker._project_timeout_until.clear()
+
+    def test_no_cb_before_threshold(self):
+        """Fewer than _TIMEOUT_CB_THRESHOLD timeouts do not open the circuit."""
+        ph = "deadbeef"
+        for _ in range(worker._TIMEOUT_CB_THRESHOLD - 1):
+            worker._record_project_timeout(ph)
+        assert not worker._should_skip_due_to_timeout_cb(ph)
+
+    def test_cb_opens_at_threshold(self):
+        """Exactly _TIMEOUT_CB_THRESHOLD timeouts open the circuit."""
+        ph = "deadbeef"
+        for _ in range(worker._TIMEOUT_CB_THRESHOLD):
+            worker._record_project_timeout(ph)
+        assert worker._should_skip_due_to_timeout_cb(ph)
+
+    def test_cb_delay_grows_exponentially_in_minutes(self):
+        """Each timeout beyond the threshold doubles the cooldown (2^n minutes)."""
+        ph = "deadbeef"
+        prev_delay = 0.0
+        for i in range(1, worker._TIMEOUT_CB_THRESHOLD + 4):
+            worker._record_project_timeout(ph)
+            until = worker._project_timeout_until.get(ph, 0.0)
+            if i < worker._TIMEOUT_CB_THRESHOLD:
+                assert until == 0.0, f"no cooldown expected at failure {i}"
+            else:
+                delay = until - time.time()
+                assert delay > prev_delay, f"delay did not grow at failure {i}: {delay:.0f}s vs prev {prev_delay:.0f}s"
+                prev_delay = delay
+
+    def test_cb_capped_at_max(self):
+        """After many timeouts the cooldown is capped at _TIMEOUT_CB_MAX_SECS."""
+        ph = "deadbeef"
+        for _ in range(30):
+            worker._record_project_timeout(ph)
+        until = worker._project_timeout_until.get(ph, 0.0)
+        delay = until - time.time()
+        assert delay <= worker._TIMEOUT_CB_MAX_SECS + 1, f"delay {delay:.0f}s exceeds cap {worker._TIMEOUT_CB_MAX_SECS}s"
+
+    def test_clear_resets_cb(self):
+        """_clear_project_timeout_cb resets the counter and clears the cooldown."""
+        ph = "deadbeef"
+        for _ in range(worker._TIMEOUT_CB_THRESHOLD):
+            worker._record_project_timeout(ph)
+        assert worker._should_skip_due_to_timeout_cb(ph)
+        worker._clear_project_timeout_cb(ph)
+        assert not worker._should_skip_due_to_timeout_cb(ph)
+        assert ph not in worker._project_timeout_counts
+        assert ph not in worker._project_timeout_until
+
+    def test_exception_does_not_advance_cb(self):
+        """A None return (exception) from _run_index_with_timeout must not advance the timeout CB."""
+        ph = "deadbeef"
+        # Simulate the drain-loop exception path: only _record_index_failure is called, not _record_project_timeout.
+        for _ in range(worker._TIMEOUT_CB_THRESHOLD + 2):
+            worker._record_index_failure(ph, "<project>")
+        # The timeout CB should still be clean.
+        assert not worker._should_skip_due_to_timeout_cb(ph)
+
+
+# ---------------------------------------------------------------------------
+# 7. Pool size cap — max_pool_workers config & ceiling
 # ---------------------------------------------------------------------------
 
 
