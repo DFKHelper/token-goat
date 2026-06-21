@@ -57,8 +57,8 @@ class TestDedupHints:
 
         assert len(result2) == 1
         # Text should be compressed to short stub.
-        assert "Same as previously shown hint for" in result2[0].text
-        assert hint_text.replace("\n", " ")[:50] in result2[0].text or "..." in result2[0].text
+        assert "[tg: dup]" in result2[0].text
+        assert hint_text.replace("\n", " ")[:35] in result2[0].text
 
     def test_different_content_not_deduped(self):
         """Different hint texts are not confused with each other."""
@@ -91,7 +91,7 @@ class TestDedupHints:
 
         result2 = dedup_hints([HintItem(hint_text_2, HINT_PRIORITY_MEDIUM)], cache)
         # Whitespace-normalized match should trigger dedup.
-        assert "Same as previously shown hint for" in result2[0].text
+        assert "[tg: dup]" in result2[0].text
 
     def test_case_insensitive_dedup(self):
         """Hints differing only in case are treated as duplicates."""
@@ -106,7 +106,7 @@ class TestDedupHints:
 
         result2 = dedup_hints([HintItem(hint_upper, HINT_PRIORITY_MEDIUM)], cache)
         # Case-normalized match should trigger dedup.
-        assert "Same as previously shown hint for" in result2[0].text
+        assert "[tg: dup]" in result2[0].text
 
     def test_priority_preserved_after_dedup(self):
         """Deduped hints retain their original priority."""
@@ -212,6 +212,6 @@ class TestDedupHints:
 
         assert len(result) == 2
         # First should be deduped (stub).
-        assert "Same as previously shown hint for" in result[0].text
+        assert "[tg: dup]" in result[0].text
         # Second should be original (new).
         assert result[1].text == "Unique hint C"
