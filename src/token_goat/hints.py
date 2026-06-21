@@ -290,8 +290,6 @@ _TERSE: dict[str, str] = {
     "instead of reading the whole file": "vs. full read",
     "to avoid re-running": "(no re-run)",
     "to avoid re-fetching": "(no re-fetch)",
-    "surgical read": "surgical",
-    "this session": "session",
 }
 
 
