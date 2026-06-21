@@ -5338,6 +5338,7 @@ def _compress_pytest_failures(stdout: str, output_id: str | None) -> str:
     in_tb_block = False
     current_tb_name = ""
     failure_count = 0
+    recall = f" (bash-output {output_id} for full output)" if output_id else ""
 
     for line in lines:
         stripped = line.rstrip("\r\n")
@@ -5355,7 +5356,6 @@ def _compress_pytest_failures(stdout: str, output_id: str | None) -> str:
                 failure_count += 1
                 in_tb_block = True
                 current_tb_name = stripped.strip("_").strip()
-                recall = f" (bash-output {output_id} for full output)" if output_id else ""
                 out.append(
                     f"[token-goat] traceback omitted — re-run with:"
                     f" pytest {current_tb_name} -x for details{recall}\n"
@@ -5371,11 +5371,10 @@ def _compress_pytest_failures(stdout: str, output_id: str | None) -> str:
     if failure_count == 0:
         return stdout
 
-    recall_hdr = f" (bash-output {output_id} for full output)" if output_id else ""
     header = (
         f"[token-goat] pytest: {failure_count}"
         f" failure{'s' if failure_count != 1 else ''}"
-        f" detected — tracebacks suppressed{recall_hdr}:\n"
+        f" detected — tracebacks suppressed{recall}:\n"
     )
     return header + "".join(out)
 
