@@ -87,6 +87,13 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
+def _cap_line(line: str, max_len: int = 120) -> str:
+    """Truncate *line* to *max_len* characters, replacing the tail with '…'."""
+    if len(line) <= max_len:
+        return line
+    return line[: max_len - 1] + "…"
+
+
 def _norm_key(path: object) -> str:
     """Return the case-insensitive normalized path key used in compact lookups."""
     return paths.normalize_key(str(path)).lower()
@@ -507,7 +514,7 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
                     if cmd_lower.startswith(prefix) or f" {prefix}" in cmd_lower:
                         work_mode_counts[mode] += 1
                         break
-        recent_commits = recent_commits[:2]  # keep last 2 commits
+        recent_commits = recent_commits[-2:]  # keep last 2 commits (most recent)
 
         # Pick dominant work mode (if any mode has >= 2 occurrences it adds signal).
         dominant_mode = ""
