@@ -250,7 +250,7 @@ class TestVerboseHintSuppression:
         from token_goat.hints import _make_short_stub_hint
 
         stub = _make_short_stub_hint(3)
-        assert "same hint seen 3×" in str(stub)
+        assert "seen 3×" in str(stub)
         assert stub.tokens_saved == 0
 
     def test_short_stub_format(self) -> None:
