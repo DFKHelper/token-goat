@@ -4,7 +4,9 @@
 # parallel-mode stdin race on Windows (EvalSymlinks canonicalize failures).
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Always anchor to git root so this script works whether lefthook invokes it
+# in-place or copies it to a temp location.
+SCRIPT_DIR="$(git rev-parse --show-toplevel)/.lefthook-scripts"
 
 bash "$SCRIPT_DIR/run-typecheck.sh" &
 TYPECHECK_PID=$!
