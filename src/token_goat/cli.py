@@ -1032,7 +1032,7 @@ def symbol(
             # When the --file scope resolved to a single indexed file, attach the skeleton-or-empty hint so JSON callers see the same guidance as text.
             if file and not results and file_scope_hint is not None:
                 envelope["file_hint"] = file_scope_hint
-            typer.echo(json.dumps(envelope, separators=(",", ":")))
+            typer.echo(json_compact(envelope))
         elif results:
             if redirected_from is not None:
                 marker = f"(redirected from: {redirected_from!r})"
@@ -1177,7 +1177,7 @@ def symbol(
                         _sym_file_total += _sum_file_sizes(proj_hash_val, file_rels)
                 except Exception:
                     pass
-            _sym_output_bytes = max(80 * len(results), len(json.dumps(results, separators=(",", ":")).encode()))
+            _sym_output_bytes = max(80 * len(results), len(json_compact(results).encode()))
             _sym_bytes_saved = max(0, _sym_file_total - _sym_output_bytes)
         _record_lookup_stat(
             "symbol_lookup", name, len(results), scope="all_projects",
@@ -1296,7 +1296,7 @@ def symbol(
     # metadata output (file:line:kind:name:sig lines, roughly 80 bytes each).
     _sym_file_rels = [r["file"] for r in results if r.get("file")]
     _sym_file_total = _sum_file_sizes(proj.hash, _sym_file_rels)
-    _sym_output_bytes = max(80 * len(results), len(json.dumps(results, separators=(",", ":")).encode()))
+    _sym_output_bytes = max(80 * len(results), len(json_compact(results).encode()))
     _sym_bytes_saved = max(0, _sym_file_total - _sym_output_bytes)
     _record_lookup_stat(
         "symbol_lookup", name, len(results), scope="project",
@@ -1361,9 +1361,8 @@ def ref(
     ]
 
     if as_json:
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {"query": name, "results": results, "total": len(results)},
-            separators=(",", ":"),
         ))
     elif results:
         use_tty_color = sys.stdout.isatty()
@@ -1475,9 +1474,8 @@ def refs(
     ]
 
     if as_json:
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {"query": symbol, "results": results, "total": len(results)},
-            separators=(",", ":"),
         ))
         return
 
@@ -1837,9 +1835,8 @@ def semantic(
                 }
                 for pr, h in all_hits
             ]
-            typer.echo(json.dumps(
+            typer.echo(json_compact(
                 {"query": query, "results": out, "total": len(out)},
-                separators=(",", ":"),
             ))
             return
 
@@ -1891,9 +1888,8 @@ def semantic(
         )
         if json_output:
             note = "(keyword fallback — embeddings not ready)"
-            typer.echo(json.dumps(
+            typer.echo(json_compact(
                 {"query": query, "results": fallback, "total": len(fallback), "fallback": note},
-                separators=(",", ":"),
             ))
             return
         if not fallback:
@@ -1928,9 +1924,8 @@ def semantic(
             }
             for h in hits
         ]
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {"query": query, "results": out, "total": len(out)},
-            separators=(",", ":"),
         ))
         return
 
@@ -2150,7 +2145,7 @@ def cmd_map(
             data = repomap.build_map_json(proj)
             elapsed = time.monotonic() - t0
             _LOG.info("map complete: project=%s files=%d dur=%.3fs", proj.root.name, len(data), elapsed)
-            _map_json_bytes = len(json.dumps(data, separators=(",", ":")).encode())
+            _map_json_bytes = len(json_compact(data).encode())
             _record_lookup_stat(
                 "map_lookup",
                 f"budget={budget},mode=json,compact={compact},full={full}",
@@ -2159,7 +2154,7 @@ def cmd_map(
                 project_hash=proj.hash,
                 bytes_saved=max(0, _map_proj_total - _map_json_bytes),
             )
-            typer.echo(json.dumps(data, separators=(",", ":")))
+            typer.echo(json_compact(data))
             return
 
         if fmt == "mermaid":
@@ -3769,7 +3764,7 @@ def session_touched(
             }
             for e in entries
         ]
-        typer.echo(json.dumps(out, separators=(",", ":")))
+        typer.echo(json_compact(out))
         return
     if not entries:
         typer.echo("(no files touched in this session)")
@@ -4442,7 +4437,7 @@ def stats(
         _hook_timing = _db.get_hook_timing_stats(window_days=7)
         if json_output:
             data["hook_timing"] = _hook_timing
-            typer.echo(json.dumps(data, separators=(",", ":")))
+            typer.echo(json_compact(data))
         else:
             typer.echo(f"Token savings ({label}):")
             typer.echo(f"  Bash outputs compressed : {data['outputs_compressed']:,}")
@@ -4949,7 +4944,7 @@ def _run_output_recall_command(
         payload.update(meta)
         if sidecar is not None:
             payload.update(vars(sidecar))
-        typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(payload))
         return
 
     # Text mode: prepend a one-line metadata header showing cache age and key
@@ -5141,7 +5136,7 @@ def cmd_web_output(
                 if sidecar is not None:
                     row.update({"url_preview": sidecar.url_preview, "status_code": sidecar.status_code})
                 out_list.append(row)
-            typer.echo(json.dumps(out_list, ensure_ascii=False, separators=(",", ":")))
+            typer.echo(json_compact(out_list))
             return
         now = time.time()
         for e in all_entries:
@@ -5170,7 +5165,7 @@ def cmd_web_output(
                 if sidecar is not None:
                     row.update({"url_preview": sidecar.url_preview, "status_code": sidecar.status_code})
                 out.append(row)
-            typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+            typer.echo(json_compact(out))
             return
         now = time.time()
         for e in entries:
@@ -5247,7 +5242,7 @@ def _run_history_listing_command(
             if sidecar is not None:
                 row.update(json_sidecar_fields(sidecar))
             out.append(row)
-        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(out))
         return
 
     if not entries:
@@ -5772,7 +5767,7 @@ def cmd_skill_body(
             }
             if meta is not None:
                 payload_c["output_id"] = meta.output_id
-            typer.echo(json.dumps(payload_c, ensure_ascii=False, separators=(",", ":")))
+            typer.echo(json_compact(payload_c))
         else:
             typer.echo(compact_display)
         return
@@ -5812,7 +5807,7 @@ def cmd_skill_body(
             }
             if meta is not None:
                 payload["output_id"] = meta.output_id
-            typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            typer.echo(json_compact(payload))
         else:
             typer.echo(sliced)
         return
@@ -5869,7 +5864,7 @@ def cmd_skill_body(
             payload2["ts"] = meta.ts
             payload2["truncated"] = meta.truncated
             payload2["source_path"] = meta.source_path
-        typer.echo(json.dumps(payload2, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(payload2))
         return
 
     typer.echo(sliced)
@@ -6098,13 +6093,13 @@ def cmd_skill_compact(
                 failed += 1
 
         if json_output:
-            typer.echo(json.dumps({
+            typer.echo(json_compact({
                 "all": True,
                 "processed": processed,
                 "skipped": skipped,
                 "failed": failed,
                 "skills": results,
-            }, ensure_ascii=False, separators=(",", ":")))
+            }))
         else:
             typer.echo(
                 f"\nDone: {processed} regenerated, {skipped} up-to-date, {failed} failed/not-found."
@@ -6155,7 +6150,7 @@ def cmd_skill_compact(
         }
         if meta is not None:
             payload["output_id"] = meta.output_id
-        typer.echo(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(payload))
     else:
         typer.echo(compact_display)
 
@@ -8375,7 +8370,7 @@ def config_list(
             k: {"value": current_pairs[k], "default": default_pairs[k]}
             for k in current_pairs
         }
-        typer.echo(json.dumps(out, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(out))
         return
 
     # Human-readable table
@@ -8451,7 +8446,7 @@ def config_validate(
     except tomllib.TOMLDecodeError as exc:
         issue: dict[str, object] = {"path": str(cfg_path), "error": f"TOML parse error: {exc}"}
         if json_output:
-            typer.echo(json.dumps({"ok": False, "issues": [issue]}, separators=(",", ":")))
+            typer.echo(json_compact({"ok": False, "issues": [issue]}))
         else:
             _error(f"TOML parse error in {cfg_path}: {exc}")
         raise typer.Exit(1) from None
@@ -8532,7 +8527,7 @@ def get(
     if is_dataclass(value) and not isinstance(value, type):
         value = asdict(value)
 
-    typer.echo(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    typer.echo(json_compact(value))
 
 
 @config_app.command()
@@ -8671,7 +8666,7 @@ def cmd_clean_cache(
             results["images"] = {"status": "error", "error": str(exc)}
 
     if json_output:
-        typer.echo(json.dumps(results, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(results))
         return
 
     for target, info in results.items():
@@ -8875,7 +8870,7 @@ def cmd_prune_cache(
             "total_bytes_freed": total_freed_bytes,
             "details": results,
         }
-        typer.echo(json.dumps(output, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(output))
         return
 
     # Text output
@@ -9199,7 +9194,7 @@ def cmd_sessions(
     rows = _load_session_summaries(limit, project)
 
     if json_output:
-        typer.echo(json.dumps(rows, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(rows))
         return
 
     if not rows:
@@ -9424,7 +9419,7 @@ def cmd_sessions_show(
         raise typer.Exit(1)
 
     if json_output:
-        typer.echo(json.dumps(raw, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(raw))
         return
 
     now = time.time()

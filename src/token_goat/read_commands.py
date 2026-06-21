@@ -18,7 +18,7 @@ import typer
 
 from . import db, hints, overflow_guard, read_replacement, session
 from .project import Project, find_project
-from .util import get_logger
+from .util import get_logger, json_compact
 
 _LOG = get_logger("read_commands")
 
@@ -526,7 +526,7 @@ def _emit_read_error(
         if candidates:
             error["candidates"] = list(candidates)
         error.update(details)
-        typer.echo(json.dumps({"ok": False, "error": error}, separators=(",", ":")))
+        typer.echo(json_compact({"ok": False, "error": error}))
         return
 
     typer.echo(message, err=err)
@@ -1014,7 +1014,7 @@ def _run_read_like_command(
             display_text = read_replacement.truncate_symbol_body(out.get("text", ""), full=full)
             out = dict(out)
             out["text"] = display_text
-            typer.echo(json.dumps(out, separators=(",", ":")))
+            typer.echo(json_compact(out))
         else:
             cb, ca = _context_bounds(cached_result)
             display_text = read_replacement.truncate_symbol_body(cached_result["text"], full=full)
@@ -1164,7 +1164,7 @@ def _run_read_like_command(
             out = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
             out["_project_root"] = str(file_target.project.root)
             out["text"] = display_text
-            typer.echo(json.dumps(out, separators=(",", ":")))
+            typer.echo(json_compact(out))
             return
         cb, ca = _context_bounds(result)
         typer.echo(note, err=True)
@@ -1178,7 +1178,7 @@ def _run_read_like_command(
         # Strip internal stat fields — model never acts on them; stats are recorded above.
         out = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
         out["text"] = display_text
-        typer.echo(json.dumps(out, separators=(",", ":")))
+        typer.echo(json_compact(out))
         return
     cb, ca = _context_bounds(result)
     _emit_text_result(
@@ -1356,7 +1356,7 @@ def _run_disk_fallback_line_range(
         }
         if source_root is not None:
             out["_project_root"] = str(source_root)
-        typer.echo(json.dumps(out, separators=(",", ":")))
+        typer.echo(json_compact(out))
         return
 
     if source_root is not None:
@@ -1458,7 +1458,7 @@ def _run_read_line_range(
         out: dict[str, object] = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
         if cross_project:
             out["_project_root"] = str(file_target.project.root)
-        typer.echo(json.dumps(out, separators=(",", ":")))
+        typer.echo(json_compact(out))
         return
 
     if cross_project:
@@ -1658,7 +1658,6 @@ def skill_section(
     )
 
     if json_output:
-        import json as _json
 
         payload: dict[str, object] = {
             "ok": True,
@@ -1668,7 +1667,7 @@ def skill_section(
             "text": section_text,
             "body_bytes": body_bytes,
         }
-        typer.echo(_json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        typer.echo(json_compact(payload))
         return
 
     rel_label = f"skills/{skill_name}"
@@ -1911,9 +1910,8 @@ def outline(
 
     if not rows_with_depth:
         if json_output:
-            typer.echo(json.dumps(
+            typer.echo(json_compact(
                 {"file": file_rel, "symbols": [], "results": [], "total": 0},
-                separators=(",", ":"),
             ))
         elif not quiet:
             if db.count_symbols_for_file(proj.hash, file_rel) == 0:
@@ -1928,9 +1926,8 @@ def outline(
     if not filtered:
         # All symbols exist but none pass the kind + depth filter.
         if json_output:
-            typer.echo(json.dumps(
+            typer.echo(json_compact(
                 {"file": file_rel, "symbols": [], "results": [], "total": 0},
-                separators=(",", ":"),
             ))
         elif not quiet:
             typer.echo(f"No structural top-level symbols found for {file_rel}.")
@@ -1958,9 +1955,8 @@ def outline(
                 "depth": depth,
                 "docstring": doc,
             })
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {"file": file_rel, "symbols": out, "results": out, "total": len(out)},
-            separators=(",", ":"),
         ))
         return
 
@@ -2161,7 +2157,7 @@ def scope(
             result["imports_truncated"] = truncated_imports
         if innermost_fn:
             result["suggestion"] = f'token-goat read "{file_rel}::{innermost_fn}"'
-        typer.echo(json.dumps(result, separators=(",", ":")))
+        typer.echo(json_compact(result))
         return
 
     # Text output
@@ -2355,7 +2351,7 @@ def stub_view(
             }
             for row in filtered
         ]
-        typer.echo(json.dumps(out, separators=(",", ":")))
+        typer.echo(json_compact(out))
         return
 
     abs_path = proj.root / file_rel
@@ -2435,7 +2431,7 @@ def exports(
                 "end_line": row["end_line"],
                 "docstring": doc,
             })
-        typer.echo(json.dumps({"file": file_rel, "symbols": out}, separators=(",", ":")))
+        typer.echo(json_compact({"file": file_rel, "symbols": out}))
         return
 
     count = len(export_rows)
@@ -2504,13 +2500,12 @@ def imports(
     imported_by = db.get_file_importers(proj.hash, file_rel)
 
     if json_output:
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {
                 "file": file_rel,
                 "imports_from": imports_from,
                 "imported_by": imported_by,
             },
-            separators=(",", ":"),
         ))
         return
 
@@ -2597,7 +2592,7 @@ def refs(
 
     if json_output:
         # Unified envelope: query/results/total + file/symbol/refs for backward compat.
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {
                 "query": target,
                 "results": rows,
@@ -2606,7 +2601,6 @@ def refs(
                 "symbol": symbol_name,
                 "refs": rows,
             },
-            separators=(",", ":"),
         ))
         return
 
@@ -2859,7 +2853,7 @@ def _render_callers_json(rows: list[sqlite3.Row], symbol_name: str) -> None:
             "calls": calls,
         })
 
-    typer.echo(json.dumps({"query": symbol_name, "callers": result}, separators=(",", ":")))
+    typer.echo(json_compact({"query": symbol_name, "callers": result}))
 
 
 # ---------------------------------------------------------------------------
@@ -2971,9 +2965,8 @@ def call_chain(
     if not tree:
         typer.echo(f"No callers found for {symbol_name!r}", err=True)
         if json_output:
-            typer.echo(json.dumps(
+            typer.echo(json_compact(
                 {"query": symbol_name, "depth": depth, "tree": []},
-                separators=(",", ":"),
             ))
         return
 
@@ -2987,9 +2980,8 @@ def call_chain(
         )
 
     if json_output:
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {"query": symbol_name, "depth": depth, "tree": tree},
-            separators=(",", ":"),
         ))
         return
 
@@ -3074,7 +3066,7 @@ def impact(symbol_name: str, *, json_output: bool = False) -> None:
     ]
 
     if json_output:
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {
                 "symbol": symbol_name,
                 "direct_callers": len(caller_list),
@@ -3082,7 +3074,6 @@ def impact(symbol_name: str, *, json_output: bool = False) -> None:
                 "test_files": test_files,
                 "callers": caller_list,
             },
-            separators=(",", ":"),
         ))
         return
 
@@ -3183,7 +3174,7 @@ def changed(
 
         if json_output:
             # Unified envelope + backward-compat aliases (files/count).
-            typer.echo(json.dumps(
+            typer.echo(json_compact(
                 {
                     "since": since_ref,
                     "query": since_ref,
@@ -3192,7 +3183,6 @@ def changed(
                     "count": len(file_entries),
                     "files": file_entries,
                 },
-                separators=(",", ":"),
             ))
             return
 
@@ -3234,7 +3224,7 @@ def changed(
 
     if json_output:
         # Unified envelope + backward-compat aliases (symbols/count).
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {
                 "since": since_ref,
                 "query": since_ref,
@@ -3243,7 +3233,6 @@ def changed(
                 "count": len(entries),
                 "symbols": entries,
             },
-            separators=(",", ":"),
         ))
         return
 
@@ -3384,13 +3373,13 @@ def blame(
         # Git not available or file not in a git repo — graceful fallback.
         msg = f"git blame returned no output for {file_rel} lines {start_line}-{end_line}"
         if json_output:
-            typer.echo(json.dumps({"ok": False, "error": msg}, separators=(",", ":")))
+            typer.echo(json_compact({"ok": False, "error": msg}))
         else:
             typer.echo(msg)
         raise typer.Exit(0)
 
     if json_output:
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {
                 "file": file_rel,
                 "symbol": symbol_name,
@@ -3398,7 +3387,6 @@ def blame(
                 "end_line": end_line,
                 "lines": blame_lines,
             },
-            separators=(",", ":"),
         ))
         return
 
@@ -3588,9 +3576,8 @@ def test_for(
                 "test_count": len(fns),
                 "tests": fns,
             })
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {"impl": impl_rel, "test_files": result_list},
-            separators=(",", ":"),
         ))
         return
 
@@ -3677,9 +3664,8 @@ def types(
 
     if json_output:
         scope_label = file_rel or str(proj.root)
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {"project": scope_label, "types": type_defs},
-            separators=(",", ":"),
             default=list,
         ))
         return
@@ -3815,14 +3801,14 @@ def grep(
         if proc.returncode == 2:
             error_msg = proc.stderr.strip() or "rg returned exit code 2"
             if json_output:
-                typer.echo(json.dumps({"ok": False, "error": error_msg}, separators=(",", ":")))
+                typer.echo(json_compact({"ok": False, "error": error_msg}))
             else:
                 typer.echo(f"grep error: {error_msg}", err=True)
             return
     except FileNotFoundError:
         error_msg = "rg (ripgrep) not found — install ripgrep to use token-goat grep"
         if json_output:
-            typer.echo(json.dumps({"ok": False, "error": error_msg}, separators=(",", ":")))
+            typer.echo(json_compact({"ok": False, "error": error_msg}))
         else:
             typer.echo(error_msg, err=True)
         return
@@ -3856,7 +3842,7 @@ def grep(
         }
         if cache_hit:
             payload["cache_age_seconds"] = elapsed_seconds
-        typer.echo(json.dumps(payload, separators=(",", ":")))
+        typer.echo(json_compact(payload))
     else:
         if cache_hit:
             typer.echo(
@@ -4108,7 +4094,7 @@ def recent(
         })
 
     if json_output:
-        typer.echo(json.dumps({"files": results}, separators=(",", ":")))
+        typer.echo(json_compact({"files": results}))
         return
 
     if not results:
@@ -4259,13 +4245,12 @@ def find(
     # ------------------------------------------------------------------
     if json_output:
         typer.echo(
-            json.dumps(
+            json_compact(
                 {
                     "query": query,
                     "symbol_matches": sym_results,
                     "semantic_matches": sem_results,
                 },
-                separators=(",", ":"),
             )
         )
         return
@@ -4368,7 +4353,7 @@ def similar(target: str, *, json_output: bool = False, top_k: int = 5) -> None:
             "Run `token-goat index` to (re-)index the project."
         )
         if json_output:
-            typer.echo(json.dumps({"error": msg, "results": []}, separators=(",", ":")))
+            typer.echo(json_compact({"error": msg, "results": []}))
         else:
             typer.echo(msg)
         return
@@ -4385,7 +4370,7 @@ def similar(target: str, *, json_output: bool = False, top_k: int = 5) -> None:
     # ------------------------------------------------------------------
     if json_output:
         typer.echo(
-            json.dumps(
+            json_compact(
                 {
                     "query": target,
                     "results": [
@@ -4398,7 +4383,6 @@ def similar(target: str, *, json_output: bool = False, top_k: int = 5) -> None:
                         for h in hits
                     ],
                 },
-                separators=(",", ":"),
             )
         )
         return
@@ -4497,7 +4481,7 @@ def context_for(
 
     if not ctx_hits:
         if json_output:
-            typer.echo(json.dumps(
+            typer.echo(json_compact(
                 {
                     "task": task,
                     "budget_tokens": budget,
@@ -4505,7 +4489,6 @@ def context_for(
                     "used_embeddings": used_embeddings,
                     "entries": [],
                 },
-                separators=(",", ":"),
             ))
         else:
             typer.echo(
@@ -4538,7 +4521,7 @@ def context_for(
         entries.append(entry)
 
     if json_output:
-        typer.echo(json.dumps(
+        typer.echo(json_compact(
             {
                 "task": task,
                 "budget_tokens": budget,
@@ -4546,7 +4529,6 @@ def context_for(
                 "used_embeddings": used_embeddings,
                 "entries": entries,
             },
-            separators=(",", ":"),
         ))
         return
 
