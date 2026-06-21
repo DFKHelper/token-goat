@@ -211,8 +211,8 @@ class TestEvictStaleCache:
         rows = conn.execute("SELECT rel_path FROM repomap_cache").fetchall()
         assert len(rows) == 1
 
-    def test_no_op_when_current_files_empty(self):
-        """When current_files is empty, function returns early without touching DB."""
+    def test_evicts_all_when_current_files_empty(self):
+        """When current_files is empty, all cache entries are evicted (no map-worthy files remain)."""
         conn = self._make_conn()
         conn.execute(
             "INSERT INTO repomap_cache VALUES (?,?,?,?,?)",
@@ -220,9 +220,9 @@ class TestEvictStaleCache:
         )
         conn.commit()
         _evict_stale_cache(conn, {})
-        # Should still have the row (early return)
+        # All rows should be deleted: empty current_files means every cached entry is stale
         rows = conn.execute("SELECT rel_path FROM repomap_cache").fetchall()
-        assert len(rows) == 1
+        assert len(rows) == 0
 
     def test_graceful_when_table_absent(self):
         """No exception when repomap_cache table does not exist."""

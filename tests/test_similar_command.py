@@ -213,7 +213,9 @@ def test_cli_similar_self_excluded(ts_project, monkeypatch):
     # If results appear, ensure the exact "file — name (kind) — N% similar"
     # line for the query symbol itself is not present.
     for line in result.output.splitlines():
-        if "% similar" in line and sym["name"] in line and sym["file_rel"] in line:
+        # Use "name (" to avoid false positives from symbols whose name is a
+        # prefix of another (e.g. "User" matching "UserId (type)").
+        if "% similar" in line and f"{sym['name']} (" in line and sym["file_rel"] in line:
             # This would mean the query symbol was returned as a result
             pytest.fail(f"Query symbol appeared in its own similar results: {line!r}")
 
