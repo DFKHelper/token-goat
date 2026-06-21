@@ -433,8 +433,10 @@ def infer_session_goal(cache: object, max_tokens: int = 80) -> str:
         for fpath in edited_files_raw:
             try:
                 parent = str(_Path(str(fpath)).parent)
-                # Normalize: strip leading ./
-                if parent.startswith("."):
+                # Normalize: strip leading ./ but leave hidden dirs (e.g. .github) intact.
+                if parent == ".":
+                    parent = "root"
+                elif parent.startswith("./"):
                     parent = parent[2:].lstrip("/\\") or "root"
                 if parent:
                     dir_counts[parent] += 1
