@@ -19,6 +19,14 @@ from compact_test_helpers import make_cache, make_file_entry
 
 from token_goat.compact import _build_manifest_from_cache, normalize_for_cache
 
+
+@pytest.fixture(autouse=True)
+def _no_error_scan(monkeypatch):
+    """Prevent get_recent_error_outputs from walking real sidecar files during tests."""
+    import token_goat.bash_cache as _bc
+    monkeypatch.setattr(_bc, "get_recent_error_outputs", lambda *a, **kw: [])
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
