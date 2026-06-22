@@ -9816,6 +9816,10 @@ def cmd_config_get(
     # ------------------------------------------------------------------
     if json_output or isinstance(target, (dict, list)):
         typer.echo(json.dumps(target, ensure_ascii=False))
+    elif isinstance(target, bool):
+        # bool is a subclass of int — must check before the general str() path or Python
+        # renders True/False (capital) instead of the canonical config-file form true/false.
+        typer.echo("true" if target else "false")
     else:
         # Scalars: print bare so scripts can consume without stripping quotes.
         typer.echo(str(target) if target is not None else "null")

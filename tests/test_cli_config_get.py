@@ -116,6 +116,17 @@ class TestConfigGetToml:
         parsed = json.loads(result.output)
         assert parsed == "myapp"
 
+    def test_toml_bool_value(self, tmp_path):
+        """TOML boolean is printed as lowercase true/false, not Python's True/False."""
+        p = tmp_path / "config.toml"
+        p.write_text("[settings]\nenabled = true\ndisabled = false\n", encoding="utf-8")
+        r_true = runner.invoke(app, ["config-get", str(p), "settings.enabled"])
+        r_false = runner.invoke(app, ["config-get", str(p), "settings.disabled"])
+        assert r_true.exit_code == 0
+        assert r_true.output.strip() == "true"
+        assert r_false.exit_code == 0
+        assert r_false.output.strip() == "false"
+
     def test_project_version_from_real_pyproject(self):
         """Smoke test against the real pyproject.toml in this repo."""
         import pathlib
@@ -165,7 +176,7 @@ class TestConfigGetYaml:
         p = _make_yaml(tmp_path)
         result = runner.invoke(app, ["config-get", str(p), "debug"])
         assert result.exit_code == 0
-        assert result.output.strip() in {"false", "False"}
+        assert result.output.strip() == "false"
 
     def test_yaml_missing_key_exits_2(self, tmp_path):
         """Missing key in YAML must exit with code 2."""
@@ -202,6 +213,18 @@ class TestConfigGetJson:
         assert result.exit_code == 0
         parsed = json.loads(result.output)
         assert parsed["build"] == "tsc"
+
+    def test_json_bool_value(self, tmp_path):
+        """JSON boolean is printed as lowercase true/false, not Python's True/False."""
+        import json as _json
+        p = tmp_path / "flags.json"
+        p.write_text(_json.dumps({"feature_on": True, "feature_off": False}), encoding="utf-8")
+        r_true = runner.invoke(app, ["config-get", str(p), "feature_on"])
+        r_false = runner.invoke(app, ["config-get", str(p), "feature_off"])
+        assert r_true.exit_code == 0
+        assert r_true.output.strip() == "true"
+        assert r_false.exit_code == 0
+        assert r_false.output.strip() == "false"
 
     def test_json_missing_key_exits_2(self, tmp_path):
         """Missing key in JSON must exit with code 2."""
