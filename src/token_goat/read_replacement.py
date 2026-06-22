@@ -26,7 +26,7 @@ import sqlite3
 import time
 from itertools import islice
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TypedDict
+from typing import TYPE_CHECKING, Final, NotRequired, TypedDict
 
 from . import db
 from .paths import is_safe_rel_path as _is_safe_rel_path
@@ -88,6 +88,9 @@ class SectionResult(TypedDict):
     bytes_total: int
     bytes_extracted: int
     bytes_saved: int
+    # Set when multiple sections in the same file share this heading so callers
+    # can surface a disambiguation hint.  Not present when the heading is unique.
+    ambiguous_at_lines: NotRequired[list[int]]
 
 
 class LineRangeResult(TypedDict):
@@ -1232,6 +1235,7 @@ def read_section(
         return None
 
     # Apply ordinal selection if the caller asked for a specific occurrence.
+    _ambiguous_at_lines: list[int] = []
     if ordinal is not None:
         if ordinal > len(rows):
             _LOG.info(
@@ -1243,8 +1247,8 @@ def read_section(
         chosen = rows[ordinal - 1]
     elif len(rows) > 1:
         # Multiple sections share this name and the caller did NOT specify an ordinal.
-        # Pick the first (stable: ORDER BY line) and surface a hint so the caller can
-        # disambiguate next time by adding ``#2``, ``#3``, etc.
+        # Pick the first (stable: ORDER BY line) and record the other line numbers so
+        # the CLI layer can surface a disambiguation hint to the agent via stderr.
         other_lines = ", ".join(str(int(r["line"])) for r in rows[1:])
         _LOG.warning(
             "read_section: %d sections in %s share heading %r; returning the first "
@@ -1253,6 +1257,7 @@ def read_section(
             base_heading, base_heading, other_lines,
         )
         chosen = rows[0]
+        _ambiguous_at_lines = [int(r["line"]) for r in rows[1:]]
     else:
         chosen = rows[0]  # single match — straightforward
 
@@ -1292,7 +1297,7 @@ def read_section(
         _pct_saved(snippet_bytes, full_bytes),
         elapsed,
     )
-    return SectionResult(
+    result = SectionResult(
         file=rel_path,
         heading=chosen["heading"],
         level=chosen["level"],
@@ -1305,6 +1310,9 @@ def read_section(
         bytes_extracted=snippet_bytes,
         bytes_saved=max(0, full_bytes - snippet_bytes),
     )
+    if _ambiguous_at_lines:
+        result["ambiguous_at_lines"] = _ambiguous_at_lines
+    return result
 
 
 # ---------------------------------------------------------------------------

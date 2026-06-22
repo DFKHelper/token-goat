@@ -162,8 +162,97 @@ class TestRunReadLikeCommand:
                 reader=lambda *a, **kw: None,
             )
 
+    def test_duplicate_heading_hint_emitted_to_stderr(self, capsys):
+        """When read_section returns ambiguous_at_lines, a stderr hint names the other lines."""
+        from token_goat.read_commands import _run_read_like_command
+        from token_goat.read_replacement import SectionResult
+
+        sec_result = SectionResult(
+            file="docs/guide.md",
+            heading="Setup",
+            level=2,
+            start_line=10,
+            end_line=20,
+            core_start_line=10,
+            core_end_line=20,
+            text="## Setup\n\nfirst occurrence",
+            bytes_total=800,
+            bytes_extracted=80,
+            bytes_saved=720,
+            ambiguous_at_lines=[45, 80],
+        )
+
+        with (
+            patch("token_goat.read_commands.find_project", return_value=None),
+            patch(
+                "token_goat.read_replacement.find_in_all_projects",
+                return_value=(MagicMock(hash="d" * 40), "docs/guide.md"),
+            ),
+            patch("token_goat.db.record_stat"),
+        ):
+            _run_read_like_command(
+                target="guide.md::Setup",
+                session_id=None,
+                json_output=False,
+                context_lines=0,
+                separator_label="heading",
+                missing_label="Section",
+                stat_kind="section_replacement",
+                reader=lambda *a, **kw: sec_result,
+            )
+
         captured = capsys.readouterr()
-        assert "Symbol" in captured.out
+        # Hint must appear on stderr and mention the other line numbers
+        assert "45" in captured.err
+        assert "80" in captured.err
+        assert "#2" in captured.err
+
+    def test_duplicate_heading_hint_suppressed_in_json_mode(self, capsys):
+        """ambiguous_at_lines hint is not emitted when json_output=True."""
+        from token_goat.read_commands import _run_read_like_command
+        from token_goat.read_replacement import SectionResult
+
+        sec_result = SectionResult(
+            file="docs/guide.md",
+            heading="Setup",
+            level=2,
+            start_line=10,
+            end_line=20,
+            core_start_line=10,
+            core_end_line=20,
+            text="## Setup\n\nfirst occurrence",
+            bytes_total=800,
+            bytes_extracted=80,
+            bytes_saved=720,
+            ambiguous_at_lines=[45],
+        )
+
+        with (
+            patch("token_goat.read_commands.find_project", return_value=None),
+            patch(
+                "token_goat.read_replacement.find_in_all_projects",
+                return_value=(MagicMock(hash="e" * 40), "docs/guide.md"),
+            ),
+            patch("token_goat.db.record_stat"),
+        ):
+            _run_read_like_command(
+                target="guide.md::Setup",
+                session_id=None,
+                json_output=True,
+                context_lines=0,
+                separator_label="heading",
+                missing_label="Section",
+                stat_kind="section_replacement",
+                reader=lambda *a, **kw: sec_result,
+            )
+
+        captured = capsys.readouterr()
+        # No disambiguation hint in json mode
+        assert "#2" not in captured.err
+        # JSON output must not leak the internal field
+        import json
+        payload = json.loads(captured.out)
+        assert "ambiguous_at_lines" not in payload
 
 
 # ===========================================================================
