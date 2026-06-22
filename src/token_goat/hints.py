@@ -290,6 +290,14 @@ _TERSE: dict[str, str] = {
     "instead of reading the whole file": "vs. full read",
     "to avoid re-running": "(no re-run)",
     "to avoid re-fetching": "(no re-fetch)",
+    # Surgical-read boilerplate (~10-18 chars each)
+    "for surgical access.": "(surgical).",
+    "for surgical reads": "surgical",
+    "Use `token-goat skeleton": "`token-goat skeleton",
+    "Use `token-goat section": "`token-goat section",
+    "Use `token-goat bash-output": "`token-goat bash-output",
+    "Use `token-goat web-output": "`token-goat web-output",
+    "for more.": "",
 }
 
 

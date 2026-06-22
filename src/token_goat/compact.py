@@ -1161,6 +1161,8 @@ _NOISE_EXTS: Final[frozenset[str]] = frozenset({
     ".db", ".sqlite", ".sqlite3", ".db3",  # binary databases
     ".d.ts",                           # TS declaration files — not useful for LLM context
     ".snap",                           # Jest/Vitest snapshot files
+    ".eot", ".ttf", ".woff", ".woff2",  # web font binaries
+    ".ico",                            # icon files — binary, no textual value
 })
 _NOISE_BASENAMES: Final[frozenset[str]] = frozenset({
     ".ds_store", "thumbs.db", "desktop.ini",  # OS metadata
@@ -1199,6 +1201,10 @@ _NOISE_SEGMENTS: Final[tuple[str, ...]] = (
     "/tasks/",
     # Storybook / Playwright outputs
     "/storybook-static/", "/playwright-report/", "/test-results/",
+    # Python packaging / hatch / nox / tox build isolation dirs
+    "/.hatch/", "/.nox/", "/.eggs/",
+    # Benchmark output directories
+    "/.benchmarks/",
 )
 
 
