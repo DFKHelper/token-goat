@@ -924,7 +924,10 @@ def _build_read_hint_inner(
             # (tokens_saved == 0) are never suppressed by this threshold since
             # they fire on large-file / index-miss paths regardless of prior read.
             if hint.tokens_saved > 0 and _cfg_obj is not None:
-                _min_bytes = _cfg_obj.hints.min_session_hint_savings_bytes
+                try:
+                    _min_bytes = _cfg_obj.hints.min_session_hint_savings_bytes
+                except AttributeError:
+                    _min_bytes = 0
                 if _min_bytes > 0:
                     estimated_bytes_saved = hint.tokens_saved * 3
                     if estimated_bytes_saved < _min_bytes:
