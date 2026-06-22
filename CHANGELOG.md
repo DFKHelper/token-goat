@@ -12,6 +12,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`token-goat project list/exclude/prune` — manage tracked projects from the CLI.** `project list` shows all indexed roots with file counts; roots on the blocklist appear tagged `[excluded]`. `project exclude <path>` writes the resolved absolute path to `[worker] blocked_roots` in `config.toml` — the worker skips it on the next daemon cycle. `project prune` drops roots that no longer exist on disk; `--dry-run` previews without touching the database. All three accept `--json`.
 
+- **Duplicate-heading disambiguation hint.** When `token-goat section` is called with a heading that appears more than once in a document, it now emits an inline hint showing the available indexed positions (e.g., `Setup#2`, `Setup#3`) so the caller can address the exact occurrence without re-reading the whole file.
+
+- **`bash-output` and `web-output` handle empty or whitespace-only cached content.** Passing an empty string or a string of only whitespace to `--grep` or `--tail` no longer raises; both commands return an empty result rather than erroring.
+
 ### Fixed
 
 - **`_prune_stats_table()` crashed when the global DB was opened read-only.** It now catches `OperationalError` and logs at DEBUG, returning 0 instead of raising.
@@ -21,6 +25,16 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **Watchdog globals in `hooks_common` were unguarded.** Concurrent hook firings could race on the watchdog thread and stop-event globals. Both are now protected with a `threading.Lock`.
 
 - **Context advisory prefix produced `[CONTEXT ~90% full. /compact now. edits: 3]` — missing the `|` separator.** The hook now uses a unified list-join that inserts `|` between the advisory and summary parts, matching the documented format.
+
+- **`file::symbol` target splitting used the first `::` instead of the last.** All target-parsing sites in `read_commands.py` (`_run_read_like_command`, `_run_read_line_range`, `read`, `refs`, `blame`) and in `hints.py` pinned-symbol lookup and the `ask` command now use `rpartition`/`rsplit` to split on the last `::`. On Unix, file paths can legally contain `::`, so splitting on the first occurrence was producing a wrong file path and a malformed symbol name.
+
+- **`min_session_hint_savings_bytes` access raised `AttributeError` when the config attribute was absent.** `hints.py` now guards the attribute access with `getattr` before using it in the hint-savings check.
+
+- **`token-goat config-get` emitted Python `True`/`False` for boolean values.** Output is now lowercase `true`/`false` matching TOML and JSON conventions, so downstream scripts that parse the value do not need a case-fold.
+
+- **`token-goat skeleton` produced an inconsistent JSON object format and an inaccurate empty-file hint.** The JSON output now follows a uniform structure across all symbol kinds, and the empty-file message accurately describes what was found.
+
+- **Dirty-queue byte-cap check in `worker.py` raced against concurrent writers.** The file-size check called `os.path.exists` then `os.path.getsize` in separate syscalls; a concurrent writer could create or remove the file in between. The check now uses a single `try/except` around `os.path.getsize`, and `FileNotFoundError` is distinguished from other `OSError` subtypes so each case is logged accurately.
 
 ## [1.9.5] - 2026-06-21
 
