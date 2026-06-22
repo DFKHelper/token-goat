@@ -94,6 +94,12 @@ class TestStoreLoadGrepResult:
 # ---------------------------------------------------------------------------
 
 class TestLookupGrepEntry:
+    @pytest.fixture(autouse=True)
+    def _no_db_stat(self, monkeypatch):
+        """Prevent db.record_stat / update_global_grep_pattern from opening SQLite DB."""
+        monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
+        monkeypatch.setattr("token_goat.db.update_global_grep_pattern", lambda *a, **kw: None)
+
     def test_returns_none_for_empty_session(self):
         from token_goat.session import _fresh_cache, lookup_grep_entry
         cache = _fresh_cache("lookup-grep-test")

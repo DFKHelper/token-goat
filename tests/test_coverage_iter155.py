@@ -71,6 +71,7 @@ class TestRunReadLikeCommand:
             ),
             patch("token_goat.read_replacement.read_symbol", return_value=sym_result),
             patch("token_goat.db.record_stat"),
+            patch("token_goat.db.reset_miss"),
         ):
             _run_read_like_command(
                 target="foo.py::my_func",
@@ -100,6 +101,7 @@ class TestRunReadLikeCommand:
             ),
             patch("token_goat.read_replacement.read_section", return_value=sec_result),
             patch("token_goat.db.record_stat"),
+            patch("token_goat.db.reset_miss"),
         ):
             _run_read_like_command(
                 target="README.md::Install",

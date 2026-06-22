@@ -1499,6 +1499,8 @@ def test_exit_zero_invariant_all_events(event, tmp_path, monkeypatch, capsys):
     # Redirect crash sink so tests stay isolated.
     monkeypatch.setattr(paths, "_hooks_stderr_log_override", tmp_path / "hooks-stderr.log")
     monkeypatch.setattr(paths, "logs_dir", lambda: tmp_path / "logs")
+    # Prevent db.record_stat from opening the global SQLite DB (avoids ~1.7s sqlite-vec load).
+    monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
 
     # Inject a handler that raises RuntimeError for this event.
     def _crashing(_payload):

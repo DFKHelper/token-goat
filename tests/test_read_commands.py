@@ -89,6 +89,7 @@ def test_run_read_like_command_no_header_non_tty(capsys: pytest.CaptureFixture[s
     with (
         patch("token_goat.read_commands._resolve_file_target", return_value=file_target),
         patch("token_goat.db.record_stat"),
+        patch("token_goat.db.reset_miss"),
         patch("token_goat.read_commands.session.mark_file_read"),
         patch.object(sys.stdout, "isatty", return_value=False),
     ):
@@ -120,6 +121,7 @@ def test_run_read_like_command_with_header_tty(capsys: pytest.CaptureFixture[str
     with (
         patch("token_goat.read_commands._resolve_file_target", return_value=file_target),
         patch("token_goat.db.record_stat"),
+        patch("token_goat.db.reset_miss"),
         patch("token_goat.read_commands.session.mark_file_read"),
         patch.object(sys.stdout, "isatty", return_value=True),
     ):
@@ -299,6 +301,7 @@ def test_run_read_like_command_no_color_flag(capsys: pytest.CaptureFixture[str])
     with (
         patch("token_goat.read_commands._resolve_file_target", return_value=file_target),
         patch("token_goat.db.record_stat"),
+        patch("token_goat.db.reset_miss"),
         patch("token_goat.read_commands.session.mark_file_read"),
         patch.object(sys.stdout, "isatty", return_value=True),
     ):

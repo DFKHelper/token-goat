@@ -17,6 +17,8 @@ Covers:
 """
 from __future__ import annotations
 
+import pytest
+
 from token_goat import hooks_read
 from token_goat import session as _session_mod
 from token_goat.bash_compress import _is_container_log_cmd
@@ -145,6 +147,11 @@ class TestIsContainerLogCmd:
 
 
 class TestPostBashContainerLogCompress:
+    @pytest.fixture(autouse=True)
+    def _no_db_stat(self, monkeypatch):
+        """Prevent db.record_stat from opening the global SQLite DB during tests."""
+        monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
+
     def test_docker_logs_60_lines_compressed(self, tmp_path):
         sid = "cl-test-001"
         _bootstrap_session(sid)

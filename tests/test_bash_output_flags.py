@@ -1,12 +1,19 @@
 """Tests for token-goat bash-output --full and --diff flags."""
 from __future__ import annotations
 
+import pytest
 from typer.testing import CliRunner
 
 from token_goat import bash_cache
 from token_goat.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _no_db_stat(monkeypatch):
+    """Prevent db.record_stat from opening the global SQLite DB during tests."""
+    monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
 
 # Enough lines to trigger the smart-default trimming (threshold = 30 + 80 = 110).
 _MANY = 200

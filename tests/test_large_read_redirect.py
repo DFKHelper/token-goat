@@ -33,6 +33,12 @@ from token_goat.hooks_read import _INLINE_SKELETON_MAX_CHARS, _try_get_inline_sk
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
+
+@pytest.fixture(autouse=True)
+def _no_db_stat(monkeypatch):
+    """Prevent db.record_stat from opening the global SQLite DB during tests."""
+    monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
