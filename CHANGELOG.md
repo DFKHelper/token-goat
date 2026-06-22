@@ -8,6 +8,20 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Hermes Agent compatibility.** `token-goat install --hermes` confirms that hooks are active for Hermes-delegated Claude Code sessions and reports the result. `detect_harness()` now returns `"hermes"` when `HERMES_SESSION_ID` or `HERMES_HOME` is set, evaluated before the Claude Code check so the subprocess inheritance of `ANTHROPIC_API_KEY` does not mask it. `detect_installed_harnesses()` includes a `"hermes"` key. `--target hermes` and `--target all` are wired through `install_all` and `plan_install`.
 
+- **Per-project timeout circuit-breaker.** When a project's index job times out three consecutive runs, the worker backs off exponentially: 2ⁿ minutes per attempt, capped at 8 hours. A persistently slow project no longer monopolizes a thread-pool slot on every worker tick. Back-off clears when the project is garbage-collected or the daemon restarts.
+
+- **`token-goat project list/exclude/prune` — manage tracked projects from the CLI.** `project list` shows all indexed roots with file counts; roots on the blocklist appear tagged `[excluded]`. `project exclude <path>` writes the resolved absolute path to `[worker] blocked_roots` in `config.toml` — the worker skips it on the next daemon cycle. `project prune` drops roots that no longer exist on disk; `--dry-run` previews without touching the database. All three accept `--json`.
+
+### Fixed
+
+- **`_prune_stats_table()` crashed when the global DB was opened read-only.** It now catches `OperationalError` and logs at DEBUG, returning 0 instead of raising.
+
+- **Bash cache flag sorting reordered value-taking flags.** A flag like `--output file` was treated as a standalone flag during sort, moving its value to the wrong position. The sort now guards against value-taking flags.
+
+- **Watchdog globals in `hooks_common` were unguarded.** Concurrent hook firings could race on the watchdog thread and stop-event globals. Both are now protected with a `threading.Lock`.
+
+- **Context advisory prefix produced `[CONTEXT ~90% full. /compact now. edits: 3]` — missing the `|` separator.** The hook now uses a unified list-join that inserts `|` between the advisory and summary parts, matching the documented format.
+
 ## [1.9.5] - 2026-06-21
 
 ### Added
