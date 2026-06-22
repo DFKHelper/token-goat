@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, TypedDict, cast
 
 from . import paths
-from .util import get_logger
+from .util import get_logger, strip_lower
 
 _LOG = get_logger("config")
 
@@ -103,7 +103,7 @@ def _apply_env_enable(cfg_obj: Any, attr: str, env_key: str, label: str) -> None
     or holds any other value.  Logs an INFO line on enable so the change is
     visible in the token-goat log.
     """
-    val = os.environ.get(env_key, "").strip().lower()
+    val = strip_lower(os.environ.get(env_key, ""))
     if val in _TRUTHY_ENV_VALUES:
         _LOG.info("%s enabled by environment variable (%s=%s)", label, env_key, val)
         setattr(cfg_obj, attr, True)
@@ -145,7 +145,7 @@ def _apply_env_disable(cfg_obj: Any, attr: str, env_key: str, label: str) -> Non
     value.  Logs an INFO message on disable so the change is visible in the
     token-goat log.
     """
-    val = os.environ.get(env_key, "").strip().lower()
+    val = strip_lower(os.environ.get(env_key, ""))
     if val in _FALSY_ENV_VALUES:
         _LOG.info("%s disabled by environment variable (%s=%s)", label, env_key, val)
         setattr(cfg_obj, attr, False)
@@ -187,7 +187,7 @@ def _env_bool(env_key: str, default: bool) -> bool:
     Accepts 1/true/yes (case-insensitive) as True, 0/false/no as False.
     Returns *default* when the variable is unset or has an unrecognised value.
     """
-    val = os.environ.get(env_key, "").strip().lower()
+    val = strip_lower(os.environ.get(env_key, ""))
     if val in ("1", "true", "yes"):
         return True
     if val in ("0", "false", "no"):
@@ -2015,7 +2015,7 @@ def load() -> Config:
     )
 
     cmp_raw: _CompressionToml = cast("_CompressionToml", raw.get("compression", {}))
-    _cmp_profile_raw = str(cmp_raw.get("profile", "auto")).strip().lower()
+    _cmp_profile_raw = strip_lower(str(cmp_raw.get("profile", "auto")))
     if _cmp_profile_raw not in _VALID_COMPRESSION_PROFILES:
         _LOG.warning(
             "config: compression.profile=%r is not valid (expected %s); using 'auto'",
@@ -2024,7 +2024,7 @@ def load() -> Config:
         )
         _cmp_profile_raw = "auto"
     # Env override: TOKEN_GOAT_COMPRESS_PROFILE takes precedence over config file.
-    _cmp_profile_env = os.environ.get(_ENV_COMPRESS_PROFILE, "").strip().lower()
+    _cmp_profile_env = strip_lower(os.environ.get(_ENV_COMPRESS_PROFILE, ""))
     if _cmp_profile_env:
         if _cmp_profile_env in _VALID_COMPRESSION_PROFILES:
             _LOG.info(

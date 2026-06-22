@@ -35,6 +35,7 @@ __all__ = [
     "sanitize_surrogates",
     "strip_ansi",
     "strip_bom",
+    "strip_lower",
     "utf8_bytes",
 ]
 
@@ -71,6 +72,16 @@ def json_dumps_utf8(obj: Any, **kwargs: Any) -> str:
     across 13+ call sites. Additional kwargs (e.g. default=str) are passed through.
     """
     return json.dumps(obj, ensure_ascii=False, **kwargs)
+
+
+def strip_lower(s: str) -> str:
+    """Return *s* stripped of whitespace and lowercased.
+
+    Consolidates the repeated pattern of ``.strip().lower()`` found 30+ times
+    across 12+ modules (config.py, cli.py, compact.py, hooks_session.py, etc.),
+    replacing manual chaining with a single function call.
+    """
+    return s.strip().lower()
 
 
 # Compiled once at import time — avoids recompiling on every normalize_path call.
