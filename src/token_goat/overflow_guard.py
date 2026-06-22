@@ -10,7 +10,7 @@ the agent how to narrow the request.
 from __future__ import annotations
 
 from . import config
-from .util import sanitize_surrogates, strip_ansi
+from .util import sanitize_surrogates, strip_ansi, strip_lower
 
 # House marker style matches bash_cache._TRUNC_MARKER: "[token-goat: …]".
 _MARKER_MARGIN_TOKENS = 64  # reserve headroom so the appended marker itself stays within budget
@@ -91,7 +91,7 @@ def guard(
 
 def _hint_for(command: str) -> str:
     """Tailor the remediation hint to the originating command label."""
-    cmd = (command or "").strip().lower()
+    cmd = strip_lower(command or "")
     if cmd == "symbol":
         return "Request a specific method (file.py::Class.method) or use --json for structured access."
     if cmd in {"heading", "section"}:

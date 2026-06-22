@@ -22,6 +22,7 @@ import logging
 import threading
 from http.server import ThreadingHTTPServer
 
+from . import paths
 from .hooks_common import HookPayload
 
 _LOG = logging.getLogger(__name__)
@@ -89,11 +90,10 @@ def start_relay() -> int:
         if _relay_server is not None:
             return _relay_server.server_address[1]  # type: ignore[index]
         try:
-            from . import paths
             server = ThreadingHTTPServer(("127.0.0.1", 0), _HookRelayHandler)
             port: int = server.server_address[1]  # type: ignore[index]
             port_path = paths.hook_relay_port_path()
-            port_path.parent.mkdir(parents=True, exist_ok=True)
+            paths.ensure_dir(port_path.parent)
             paths.atomic_write_text(port_path, str(port))
             thread = threading.Thread(
                 target=server.serve_forever,
@@ -123,7 +123,6 @@ def stop_relay() -> None:
         except Exception:
             _LOG.exception("hook relay: error during shutdown")
         try:
-            from . import paths
             paths.hook_relay_port_path().unlink(missing_ok=True)
         except Exception:
             _LOG.exception("hook relay: failed to remove port file")

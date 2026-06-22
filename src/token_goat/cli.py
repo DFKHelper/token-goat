@@ -58,7 +58,7 @@ from . import config as config_mod
 from . import hooks_cli
 from .hooks_common import is_real_int
 from .render.ansi import color_stderr
-from .util import get_logger, json_compact
+from .util import get_logger, json_compact, strip_lower
 
 _LOG = get_logger("cli")
 
@@ -4610,7 +4610,7 @@ def _extract_body_section(body: str, heading: str) -> str | None:
     matches: list[tuple[int, int]] = []
     for idx, line in enumerate(lines):
         m = _BODY_ATX_RE.match(line)
-        if m and m.group(2).strip().lower() == target_lower:
+        if m and strip_lower(m.group(2)) == target_lower:
             matches.append((idx, len(m.group(1))))
 
     if not matches:
@@ -5405,7 +5405,7 @@ def _parse_since_duration(since: str) -> float | None:
     >>> _parse_since_duration("2h")
     7200.0
     """
-    since = since.strip().lower()
+    since = strip_lower(since)
     _multipliers = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
     suffix = since[-1] if since else ""
     multiplier = _multipliers.get(suffix)
@@ -7537,7 +7537,7 @@ def cmd_worker(
             typer.echo(f"Last log: {info['last_log_line']}")
         return
 
-    if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in (
+    if strip_lower(os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "")) in (
         "1", "true", "yes", "on",
     ):
         return
@@ -9935,7 +9935,7 @@ def project_exclude(
         raise typer.Exit()
     roots.append(normalized)
     worker_section["blocked_roots"] = roots
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    _paths.ensure_dir(cfg_path.parent)
     with open(cfg_path, "wb") as f:
         tomli_w.dump(data, f)  # type: ignore[arg-type]
     typer.echo(f"Excluded: {normalized}")

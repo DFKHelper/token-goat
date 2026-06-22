@@ -54,6 +54,7 @@ from .hooks_common import (
     LOG as _LOG,
 )
 from .util import run_git as _run_git
+from .util import strip_lower
 
 if TYPE_CHECKING:
     # ``project`` pulls in ``hashlib`` (~6 ms cold) plus the marker regexes,
@@ -168,7 +169,7 @@ def _is_green_pytest(entry: BashEntry) -> bool:
     """
     if entry.exit_code != 0:
         return False
-    preview = entry.cmd_preview.strip().lower()
+    preview = strip_lower(entry.cmd_preview)
     return any(preview.startswith(p) for p in _PYTEST_PREFIXES)
 
 
@@ -388,7 +389,7 @@ def _build_pending_work_section(
         # --- 1. Failed pytest ---
         pytest_failures: list[object] = []
         for be in bash_hist.values():
-            preview = getattr(be, "cmd_preview", "").strip().lower()
+            preview = strip_lower(getattr(be, "cmd_preview", ""))
             if not any(preview.startswith(p) for p in _PYTEST_PREFIXES):
                 continue
             exit_code = getattr(be, "exit_code", None)
@@ -444,7 +445,7 @@ def _build_pending_work_section(
 
             last_commit_ts = 0.0
             for be in bash_hist.values():
-                preview = getattr(be, "cmd_preview", "").strip().lower()
+                preview = strip_lower(getattr(be, "cmd_preview", ""))
                 if preview.startswith("git commit"):
                     ec = getattr(be, "exit_code", None)
                     if ec == 0:
@@ -471,7 +472,7 @@ def _build_pending_work_section(
         if len(items) < 3:
             uv_failures: list[object] = []
             for be in bash_hist.values():
-                preview = getattr(be, "cmd_preview", "").strip().lower()
+                preview = strip_lower(getattr(be, "cmd_preview", ""))
                 # Skip pytest (already handled above) and trivial commands.
                 if any(preview.startswith(p) for p in _PYTEST_PREFIXES):
                     continue
@@ -1043,10 +1044,10 @@ def _build_recovery_hint(session_id: str) -> str | None:
         for entry in files_keep
     ) or any(str(ep).endswith(".py") for ep in raw_edited)
     _has_pytest_in_hint = any(
-        any(getattr(be, "cmd_preview", "").strip().lower().startswith(p) for p in _PYTEST_PREFIXES)
+        any(strip_lower(getattr(be, "cmd_preview", "")).startswith(p) for p in _PYTEST_PREFIXES)
         for be in bash_entries
     ) or any(
-        any(getattr(be, "cmd_preview", "").strip().lower().startswith(p) for p in _PYTEST_PREFIXES)
+        any(strip_lower(getattr(be, "cmd_preview", "")).startswith(p) for p in _PYTEST_PREFIXES)
         for be in (getattr(cache, "bash_history", {}) or {}).values()
     )
     _has_web_in_hint = bool(web_entries)
@@ -1309,7 +1310,7 @@ def _build_session_brief(cwd: str) -> str | None:
     import time
 
     # Feature gate: env var override (checked first, cheapest)
-    env_val = os.environ.get("TOKEN_GOAT_SESSION_BRIEF", "").strip().lower()
+    env_val = strip_lower(os.environ.get("TOKEN_GOAT_SESSION_BRIEF", ""))
     if env_val in ("0", "false", "no", "off"):
         return None
 

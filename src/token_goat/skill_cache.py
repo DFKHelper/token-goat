@@ -94,7 +94,7 @@ from .cache_common import (
     truncate_tail_preserve,
 )
 from .hooks_common import sanitize_log_str
-from .util import get_logger, json_dumps_utf8
+from .util import get_logger, json_dumps_utf8, strip_lower
 
 _LOG = get_logger("skill_cache")
 
@@ -521,7 +521,7 @@ def extract_named_section(body: str, heading: str) -> str | None:
         return None
 
     base_heading, ordinal = _parse_section_ordinal(heading)
-    heading_lower = base_heading.strip().lower()
+    heading_lower = strip_lower(base_heading)
     lines = body.splitlines()
     n = len(lines)
 
@@ -544,7 +544,7 @@ def extract_named_section(body: str, heading: str) -> str | None:
             if in_code_block:
                 continue
             if stripped.startswith(prefix):
-                section_title = stripped[len(prefix):].strip().lower()
+                section_title = strip_lower(stripped[len(prefix):])
                 if section_title.startswith(heading_lower):
                     level_matches.append((i, pass_level))
         if level_matches:

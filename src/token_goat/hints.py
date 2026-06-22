@@ -44,7 +44,7 @@ from typing import Any, Final, TypedDict, TypeVar, cast
 from . import config, db, session, snapshots
 from .hooks_common import load_session_safe, sanitize_log_str, validate_cwd
 from .project import find_project
-from .util import get_logger, json_compact
+from .util import get_logger, json_compact, strip_lower
 
 # Maximum entries in the recent_hints ring buffer stored per session.
 _RECENT_HINTS_MAX: int = 3
@@ -243,7 +243,7 @@ def dedup_hints(
     result: list[HintItem] = []
     for item in hint_items:
         # Normalize hint text: strip whitespace, convert to lowercase for comparison.
-        normalized = item.text.strip().lower()
+        normalized = strip_lower(item.text)
         # Compute content hash: first 8 hex chars of SHA256.
         content_hash = _sha256_hex(normalized, 8)
         # Compute summary once (used in both branches below): first 50 chars without newlines.

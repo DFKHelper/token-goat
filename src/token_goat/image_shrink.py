@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from PIL import Image as _PilImage
 
 from . import paths
-from .util import get_logger
+from .util import get_logger, strip_lower
 
 _LOG = get_logger("image_shrink")
 
@@ -311,7 +311,7 @@ def _lossy_format() -> str:
     warning and falls back to the default, so a typo in the env var can never
     silently disable image shrinking.
     """
-    raw = os.environ.get(_ENV_IMAGE_FORMAT, "").strip().lower()
+    raw = strip_lower(os.environ.get(_ENV_IMAGE_FORMAT, ""))
     if raw in ("", _DEFAULT_LOSSY_FORMAT):
         return _DEFAULT_LOSSY_FORMAT
     if raw in ("jpeg", "jpg"):
