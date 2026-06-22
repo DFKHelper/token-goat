@@ -46,6 +46,7 @@ from .hooks_common import (
 from .hooks_common import (
     LOG as _LOG,
 )
+from .util import strip_lower
 
 # Maximum URL length accepted for embedding in hook messages.  URLs longer than
 # this are almost certainly not legitimate image URLs; they may be crafted to
@@ -685,7 +686,7 @@ def _extract_web_response(payload: HookPayload) -> tuple[str, int | None, str | 
     # Normalize content-type: extract just the MIME type, drop charset and other params
     content_type: str | None = None
     if isinstance(content_type_val, str):
-        content_type = content_type_val.split(";")[0].strip().lower()
+        content_type = strip_lower(content_type_val.split(";")[0])
 
     return body, status_code, content_type
 

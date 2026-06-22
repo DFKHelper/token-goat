@@ -63,7 +63,7 @@ from .cache_common import short_output_id as _short_id
 from .config import Config as _Config
 from .config import load as _load_config
 from .hooks_common import sanitize_log_str
-from .util import _humanize_bytes, ellipsize, get_logger, json_compact
+from .util import _humanize_bytes, ellipsize, get_logger, json_compact, strip_lower
 from .util import run_git_silent as _run_git
 
 
@@ -320,7 +320,7 @@ def detect_harness(config_override: str = "auto") -> str:
 
     # Explicit override for CI / test environments — takes precedence over all
     # other env-var probes so CI doesn't need to inject harness-specific secrets.
-    _harness_override = os.environ.get("TOKEN_GOAT_HARNESS_OVERRIDE", "").strip().lower()
+    _harness_override = strip_lower(os.environ.get("TOKEN_GOAT_HARNESS_OVERRIDE", ""))
     if _harness_override in _KNOWN_HARNESSES:
         return _harness_override
     if _harness_override:
@@ -2736,7 +2736,7 @@ def _is_test_command(entry: object) -> bool:
     Matches against :data:`_TEST_COMMAND_PREFIXES` (case-insensitive prefix check).
     Short or empty previews never match.
     """
-    cmd = getattr(entry, "cmd_preview", "").strip().lower()
+    cmd = strip_lower(getattr(entry, "cmd_preview", ""))
     if not cmd:
         return False
     return cmd.startswith(_TEST_COMMAND_PREFIXES)
@@ -2938,7 +2938,7 @@ _DEP_COMMAND_PREFIXES: Final[tuple[str, ...]] = (
 
 def _is_dep_command(entry: object) -> bool:
     """Return True when *entry*'s cmd_preview looks like a package-install command."""
-    cmd = getattr(entry, "cmd_preview", "").strip().lower()
+    cmd = strip_lower(getattr(entry, "cmd_preview", ""))
     return cmd.startswith(_DEP_COMMAND_PREFIXES)
 
 
@@ -4703,7 +4703,7 @@ def _load_task_list(session_id: str) -> list[dict[str, str]]:
                     continue
                 task_id = str(data.get("id", p.stem))
                 subject = str(data.get("subject", "")).strip()
-                status = str(data.get("status", "")).strip().lower()
+                status = strip_lower(str(data.get("status", "")))
                 if subject and status:
                     results.append({"id": task_id, "subject": subject, "status": status})
             except Exception:

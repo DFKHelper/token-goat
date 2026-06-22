@@ -1845,7 +1845,7 @@ def pregen_skill_compacts() -> str:
     # Write sentinel so doctor can detect newly installed skills.
     try:
         sentinel_path = paths.skill_pregen_sentinel_path()
-        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.ensure_dir(sentinel_path.parent)
         sentinel_data = json.dumps({
             "ts": time.time(),
             "skill_count": len(skill_files),

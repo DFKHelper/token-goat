@@ -72,6 +72,7 @@ from .hooks_common import (
 from .hooks_common import LOG as _LOG
 from .util import env_int as _env_int
 from .util import sanitize_surrogates as _sanitize_surrogates
+from .util import strip_lower as _strip_lower
 from .util import utf8_bytes as _utf8_bytes
 
 # Environment variable that disables Bash output compression at the hook layer.
@@ -231,7 +232,7 @@ def _bash_compress_enabled() -> bool:
     """
     import os
 
-    val = os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower()
+    val = _strip_lower(os.environ.get(_ENV_BASH_COMPRESS, ""))
     return val not in _FALSY_ENV
 
 
@@ -4793,7 +4794,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                     _pr_start, _pr_end, _pr_total = _partial
                     _pr_ext = Path(file_path).suffix.lower()
                     import os as _os
-                    _pr_disabled = _os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in _FALSY_ENV
+                    _pr_disabled = _strip_lower(_os.environ.get(_ENV_BASH_COMPRESS, "")) in _FALSY_ENV
                     try:
                         from . import config as _cfg_trunc
                         _pr_min = _cfg_trunc.load().hints.truncated_read_min_lines
@@ -4823,7 +4824,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                     return continue_with_message(_note + _mem_body)
             # Structural code compression: for large source files replace verbatim content with a skeleton that keeps only signatures and imports.
             import os as _os_cc
-            _cc_disabled = _os_cc.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in _FALSY_ENV
+            _cc_disabled = _strip_lower(_os_cc.environ.get(_ENV_BASH_COMPRESS, "")) in _FALSY_ENV
             if not _cc_disabled and _resp_text:
                 _cc_ext = Path(file_path).suffix.lower()
                 _cc_line_count = _resp_text.count("\n") + 1

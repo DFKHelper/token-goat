@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Final, TypedDict, cast
 
-from .util import env_float, get_logger
+from .util import env_float, get_logger, strip_lower
 
 if sys.platform == "win32":
     import msvcrt
@@ -1913,7 +1913,7 @@ def spawn_detached() -> int | None:
 
     creationflags = _detach_creationflags()
 
-    if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in _TRUTHY_ENV:
+    if strip_lower(os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "")) in _TRUTHY_ENV:
         _LOG.debug("spawn_detached suppressed: TOKEN_GOAT_NO_WORKER_SPAWN is set")
         return None
 
@@ -2087,7 +2087,7 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
         )
         return None
 
-    if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in _TRUTHY_ENV:
+    if strip_lower(os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "")) in _TRUTHY_ENV:
         _LOG.debug("spawn_index_detached suppressed: TOKEN_GOAT_NO_WORKER_SPAWN is set")
         return None
 

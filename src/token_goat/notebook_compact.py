@@ -11,6 +11,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
+from . import paths
 from .util import json_dumps_utf8
 
 if TYPE_CHECKING:
@@ -52,6 +53,6 @@ def get_or_create_sidecar(raw_bytes: bytes, cache_root: Path) -> tuple[Path, boo
     if not isinstance(nb, dict) or "cells" not in nb:
         raise ValueError("Not a notebook")
     stripped = strip_notebook(nb)
-    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    paths.ensure_dir(sidecar_dir)
     sidecar_path.write_bytes(json_dumps_utf8(stripped).encode())
     return sidecar_path, True

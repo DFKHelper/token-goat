@@ -36,7 +36,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Final, Protocol, TypedDict
 
 from . import db
-from .util import get_logger
+from .util import get_logger, strip_lower
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -258,7 +258,7 @@ def _get_excluded_prefixes() -> tuple[str, ...]:
     import os
 
     from . import config as _cfg
-    env_val = os.environ.get("TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS", "").strip().lower()
+    env_val = strip_lower(os.environ.get("TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS", ""))
     if env_val in _cfg._FALSY_ENV_VALUES:
         exclude_tests = False
     elif env_val in _cfg._TRUTHY_ENV_VALUES:
