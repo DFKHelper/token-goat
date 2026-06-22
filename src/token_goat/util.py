@@ -35,7 +35,6 @@ __all__ = [
     "sanitize_control_chars",
     "sanitize_surrogates",
     "strip_ansi",
-    "strip_bom",
     "strip_lower",
     "utf8_bytes",
 ]
@@ -433,32 +432,6 @@ def configure_stdout_encoding() -> None:
     with contextlib.suppress(AttributeError, OSError):
         if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
-
-
-def strip_bom(text: str) -> str:
-    """Remove UTF-8 BOM (U+FEFF) from the start of a string if present.
-
-    On Windows, files may be written with a UTF-8 BOM (Byte Order Mark).
-    When these files are read and parsed as JSON, the BOM becomes U+FEFF
-    at the start of the string, causing json.loads() to fail with a JSONDecodeError.
-
-    This function removes the BOM character if it appears at position 0, leaving
-    the string unchanged otherwise. It is idempotent — calling it multiple times
-    on the same string has no additional effect after the first call.
-
-    Args:
-        text: Input string that may start with a UTF-8 BOM.
-
-    Returns:
-        String with the BOM removed (if present), or unchanged if no BOM.
-
-    Examples:
-        >>> strip_bom("﻿hello")
-        'hello'
-        >>> strip_bom("hello")
-        'hello'
-    """
-    return text.removeprefix("﻿")
 
 
 def _norm(p: str) -> str:

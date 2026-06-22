@@ -73,7 +73,7 @@ from .hooks_common import LOG as _LOG
 from .util import env_int as _env_int
 from .util import sanitize_surrogates as _sanitize_surrogates
 from .util import strip_lower as _strip_lower
-from .util import utf8_bytes as _utf8_bytes
+from .util import utf8_bytes
 
 # Environment variable that disables Bash output compression at the hook layer.
 # Recognised values: "0", "false", "no", "off" (case-insensitive).  Any other
@@ -1634,7 +1634,7 @@ def _try_diff_serve(
         return None
 
     diff_text = "\n".join(diff_lines)
-    diff_bytes = len(_utf8_bytes(diff_text))
+    diff_bytes = len(utf8_bytes(diff_text))
     file_size = len(current_bytes)
 
     # Only intercept when the diff is meaningfully smaller than the full file.
@@ -3307,7 +3307,7 @@ def _check_recovery_pending(session_id: str, cache: object) -> str | None:
         # Mark in-process so we don't re-check on subsequent calls.
         with contextlib.suppress(Exception):
             cache.recovery_injected = True  # type: ignore[attr-defined]  # cache is typed as object; SessionCache has this attribute at runtime
-        hint_bytes = len(_utf8_bytes(hint))
+        hint_bytes = len(utf8_bytes(hint))
         _LOG.info(
             "pre-read: deferred recovery hint injected for session=%s (%d chars, stored_estimate=%d)",
             session_id[:16], hint_bytes, stored_bytes_estimate,
@@ -7626,8 +7626,8 @@ def post_bash(payload: HookPayload) -> HookResponse:
                             cmd_sha=_dedup_cmd_sha,
                             cmd_preview=display_cmd,
                             output_id=_dedup_hist.output_id,
-                            stdout_bytes=len(_utf8_bytes(stdout)),
-                            stderr_bytes=len(_utf8_bytes(stderr)),
+                            stdout_bytes=len(utf8_bytes(stdout)),
+                            stderr_bytes=len(utf8_bytes(stderr)),
                             exit_code=exit_code,
                             truncated=_dedup_hist.truncated,
                             output_sha=_dedup_hist.output_sha or "",
@@ -7651,7 +7651,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
         except Exception:
             _LOG.debug("post-bash: cmd-output dedup check failed", exc_info=True)
 
-    total_bytes = len(_utf8_bytes(stdout)) + len(_utf8_bytes(stderr))
+    total_bytes = len(utf8_bytes(stdout)) + len(utf8_bytes(stderr))
     if total_bytes < _BASH_CACHE_MIN_BYTES:
         _LOG.debug(
             "post-bash: output too small to cache (%d bytes < %d threshold)",
@@ -7676,8 +7676,8 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     cmd_sha=_cmd_sha,
                     cmd_preview=display_cmd,
                     output_id=_output_id,
-                    stdout_bytes=len(_utf8_bytes(stdout)),
-                    stderr_bytes=len(_utf8_bytes(stderr)),
+                    stdout_bytes=len(utf8_bytes(stdout)),
+                    stderr_bytes=len(utf8_bytes(stderr)),
                     exit_code=exit_code,
                     truncated=False,
                     output_sha=_output_sha,
@@ -7752,7 +7752,7 @@ def post_bash(payload: HookPayload) -> HookResponse:
             from .bash_cache import is_unscoped_git_diff as _is_unscoped_git_diff
             from .hints import build_scoped_diff_hint as _build_scoped_diff_hint
             if _is_unscoped_git_diff(display_cmd):
-                _diff_output_len = len(_utf8_bytes(stdout)) + len(_utf8_bytes(stderr))
+                _diff_output_len = len(utf8_bytes(stdout)) + len(utf8_bytes(stderr))
                 if _diff_output_len >= 4096:
                     _diff_edited = list(_session_cache.edited_files.keys())
                     if 1 <= len(_diff_edited) <= 10:
