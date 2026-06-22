@@ -3781,7 +3781,8 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _fp_input = get_tool_input(payload)
         _fp_cmd = (_fp_input.get("command") or "").strip()
         if _fp_cmd and "&&" not in _fp_cmd:
-            _fp_first = (_fp_cmd.split()[0] if _fp_cmd.split() else "").lower()
+            _fp_parts = _fp_cmd.split()
+            _fp_first = (_fp_parts[0] if _fp_parts else "").lower()
             if _fp_first and not _fp_first.startswith(("token-goat", "token_goat")):
                 from . import bash_detect as _bdet
                 from . import bash_parser as _bpar
@@ -3962,19 +3963,20 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _ctx_tier = "cool"
         _ctx_fill = 0.0
         _eff_threshold = 500  # lines — default LARGE_FILE_LINE_THRESHOLD
-        try:
-            from .compact import get_context_pressure as _gcp
-            _cp = _gcp(session_id, cache=cache)
-            _ctx_tier = _cp.tier
-            _ctx_fill = _cp.fill_fraction
-            if _ctx_tier == "critical":
-                _eff_threshold = 50
-            elif _ctx_tier == "hot":
-                _eff_threshold = 200
-            elif _ctx_tier == "warm":
-                _eff_threshold = 350
-        except Exception:
-            pass
+        if cache is not None:
+            try:
+                from .compact import get_context_pressure as _gcp
+                _cp = _gcp(session_id, cache=cache)
+                _ctx_tier = _cp.tier
+                _ctx_fill = _cp.fill_fraction
+                if _ctx_tier == "critical":
+                    _eff_threshold = 50
+                elif _ctx_tier == "hot":
+                    _eff_threshold = 200
+                elif _ctx_tier == "warm":
+                    _eff_threshold = 350
+            except Exception:
+                pass
 
         # Deny whole-file bash cat/bat on indexed files at warm+; flag set by _handle_bash_read_equivalent only for no-limit reads.
         if payload.get("_tg_from_bash_cat"):
@@ -4076,6 +4078,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         entry = cache.files.get(session._normalize_path(file_path))  # type: ignore[attr-defined]  # private function on lazy-loaded session module (types.ModuleType has no typed attrs)
 
         # Partial-overlap advisory: some lines already in context; suggest narrowed read.
+        # Only check for overlaps if entry exists and file hasn't been edited since last read.
         if entry is not None and entry.last_edit_ts <= entry.last_read_ts:
             _partial_overlap = _handle_partial_overlap_hint(file_path, tool_input, entry)
             if _partial_overlap is not None:
@@ -4131,12 +4134,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
             # unified diff as the tool result instead of the full file.  Fires
             # before the normal diff-hint path — if it returns a response we
             # short-circuit the entire hint pipeline.
+            _hints_cfg = None
             try:
                 from . import config as _cfg_mod
 
                 _hints_cfg = _cfg_mod.load().hints
             except Exception:
-                _hints_cfg = None
+                pass
             if _hints_cfg is not None and getattr(_hints_cfg, "serve_diff_on_reread", False):
                 _diff_serve_response = _try_diff_serve(
                     session_id,
