@@ -9683,11 +9683,18 @@ def cmd_clean(
         if not sess_dir.exists():
             typer.echo(f"{prefix}skipped — sessions dir does not exist")
         else:
-            files = [
-                f for f in sess_dir.iterdir()
-                if f.is_file() and f.suffix == ".json" and f.stat().st_mtime < cutoff
-            ]
-            total_bytes = sum(f.stat().st_size for f in files)
+            files = []
+            total_bytes = 0
+            for f in sess_dir.iterdir():
+                if not f.is_file() or f.suffix != ".json":
+                    continue
+                try:
+                    st = f.stat()
+                except OSError:
+                    continue
+                if st.st_mtime < cutoff:
+                    files.append(f)
+                    total_bytes += st.st_size
             mb = total_bytes / (1024 * 1024)
             if not files:
                 typer.echo(f"{prefix}nothing to remove — sessions (0 files older than {older_than}d)")
