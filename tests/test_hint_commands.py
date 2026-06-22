@@ -148,7 +148,7 @@ def test_hint_commands_use_registered_subcommands() -> None:
         tokens = _tokenize(cmd)
         if len(tokens) < 2:
             continue
-        subcmd = tokens[1]
+        subcmd = tokens[1].rstrip('":,.')  # strip dict-key punctuation (_TERSE keys embed token-goat commands)
         if subcmd.startswith("-"):  # a global option like `token-goat --version`
             continue
         if "<" in subcmd or ">" in subcmd:  # meta-placeholder, e.g. `<tool>-output`
