@@ -3886,7 +3886,6 @@ def pre_read(payload: HookPayload) -> HookResponse:
     if tool_name == "Grep":
         # Record grep-target count first (before dedup may short-circuit the branch).
         # The advisory is emitted only if no blocking handler fires below.
-        advisory_text = _handle_grep_advisory(payload)
         dedup = _handle_grep_dedup(payload)
         if dedup is not None:
             return dedup
@@ -3899,6 +3898,8 @@ def pre_read(payload: HookPayload) -> HookResponse:
         large_grep = _handle_large_grep_redirect(payload)
         if large_grep is not None:
             return large_grep
+        # Lazy construction: only build advisory if all blocking handlers returned None.
+        advisory_text = _handle_grep_advisory(payload)
         if advisory_text:
             return pre_tool_use_with_context(advisory_text)
         return CONTINUE()
@@ -3919,14 +3920,6 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _LOG.debug("pre-read: no file_path in tool_input; skipping")
         return CONTINUE()
 
-    session_id, cwd = get_session_context(payload)
-
-    # Task-output intercept: detect Claude agent task temp files and redirect
-    # subsequent reads to `token-goat bash-output <id>` instead of re-reading.
-    task_output_response = _handle_task_output_read(file_path, session_id)
-    if task_output_response is not None:
-        return task_output_response
-
     shrink_response = _try_shrink_image(file_path, tool_input)
     if shrink_response:
         return shrink_response
@@ -3942,15 +3935,26 @@ def pre_read(payload: HookPayload) -> HookResponse:
     if large_read is not None:
         return large_read
 
+    # Load session context only after non-session checks have early-exited; deferred
+    # until needed to avoid overhead for sessionless reads.
+    session_id, cwd = get_session_context(payload)
+    if not session_id:
+        _LOG.debug("pre-read: no session_id; skipping hint for %s", sanitize_log_str(file_path))
+        return CONTINUE()
+
+    # Task-output intercept: detect Claude agent task temp files and redirect
+    # subsequent reads to `token-goat bash-output <id>` instead of re-reading.
+    # This must run BEFORE the binary/large file check, since task-output temp files
+    # can be large or binary and should be intercepted regardless.
+    task_output_response = _handle_task_output_read(file_path, session_id)
+    if task_output_response is not None:
+        return task_output_response
+
     # Skip all hint logic for binary files and very large unindexed files.
     # These files are never indexed by token-goat so session hints, diff hints,
     # and structured-file hints would all be meaningless overhead.
     if _is_binary_or_large_file(file_path):
         _LOG.debug("pre-read: skipping hints for binary/large file %s", sanitize_log_str(file_path))
-        return CONTINUE()
-
-    if not session_id:
-        _LOG.debug("pre-read: no session_id; skipping hint for %s", sanitize_log_str(file_path))
         return CONTINUE()
 
     session = _get_session()

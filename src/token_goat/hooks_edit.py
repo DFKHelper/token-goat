@@ -505,18 +505,25 @@ def post_edit(payload: HookPayload) -> HookResponse:
         _LOG.debug("post-edit: no file_path(s) in payload; nothing to enqueue")
         return CONTINUE()
 
+    # Batch-record all successfully edited files in one session update
+    # to avoid per-file update_session overhead.
+    successful_paths = []
     for file_path in file_paths:
-        if session_id:
-            if _edit_succeeded(payload, file_path):
-                def _record_edit(cache, _fp=file_path):
-                    session.mark_file_edited(session_id, _fp, cache=cache)
-                update_session(session_id, _record_edit)
-            else:
-                _LOG.debug(
-                    "post-edit: file %s not recorded (edit did not succeed)",
-                    sanitize_log_str(file_path),
-                )
+        if _edit_succeeded(payload, file_path):
+            successful_paths.append(file_path)
+        else:
+            _LOG.debug(
+                "post-edit: file %s not recorded (edit did not succeed)",
+                sanitize_log_str(file_path),
+            )
 
+    if session_id and successful_paths:
+        def _record_edits(cache):
+            for fp in successful_paths:
+                session.mark_file_edited(session_id, fp, cache=cache)
+        update_session(session_id, _record_edits)
+
+    for file_path in file_paths:
         _LOG.debug("post-edit: enqueuing %s for reindex", sanitize_log_str(file_path))
         _enqueue_for_reindex(file_path, cwd)
 
