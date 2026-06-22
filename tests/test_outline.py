@@ -322,7 +322,7 @@ class TestOutlineLineCount:
         out = capsys.readouterr().out
 
         # short() spans lines 1-2 → 2 lines; Big spans 4-9 → 6 lines
-        assert "lines)" in out, f"Expected '(N lines)' in output, got:\n{out}"
+        assert "ℓ)" in out, f"Expected '(Nℓ)' line count marker in output, got:\n{out}"
 
     def test_json_output_has_line_count_field(self, tmp_path, tmp_data_dir, make_project, capsys, monkeypatch):
         """JSON output includes a 'line_count' key for each symbol."""
