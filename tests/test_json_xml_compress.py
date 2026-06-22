@@ -146,6 +146,11 @@ class TestJsonStructuralSummary:
 class TestPostBashJsonXml:
     SID = "test-json-xml-iter17"
 
+    @pytest.fixture(autouse=True)
+    def _no_db_stat(self, monkeypatch):
+        """Prevent db.record_stat from opening the global SQLite DB during tests."""
+        monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
+
     def setup_method(self):
         _bootstrap_session(self.SID)
 

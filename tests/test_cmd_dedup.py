@@ -73,7 +73,14 @@ def fresh_cache():
     return SessionCache(session_id=_SID, started_ts=now, last_activity_ts=now)
 
 
+@pytest.fixture(autouse=True)
+def _no_db_stat(monkeypatch):
+    """Prevent db.record_stat from opening the global SQLite DB during tests."""
+    monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
+
+
 class TestCmdDedup:
+
     def _call_post_bash(self, payload: dict, cache):
         """Invoke post_bash with the session module patched to use *cache* in-memory.
 

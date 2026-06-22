@@ -212,6 +212,11 @@ class TestStatsRecording:
 
 
 class TestMaxTokensCap:
+    @pytest.fixture(autouse=True)
+    def _no_db_stat(self, monkeypatch):
+        """Prevent db.record_stat from opening the global SQLite DB during tests."""
+        monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
+
     @pytest.mark.slow
     def test_max_tokens_zero_no_cap(self):
         """max_tokens=0 means no post-compress cap — large output passes through unchanged."""

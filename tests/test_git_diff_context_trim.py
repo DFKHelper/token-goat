@@ -3,8 +3,17 @@ from __future__ import annotations
 
 import textwrap
 
+import pytest
+
 from token_goat.bash_compress import _compress_git_diff_body
 from token_goat.render.stats_renderer import _kind_group_label
+
+
+@pytest.fixture(autouse=True)
+def _no_db_stat(monkeypatch):
+    """Prevent db.record_stat from opening the global SQLite DB during tests."""
+    monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
