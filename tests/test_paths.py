@@ -106,7 +106,7 @@ def test_python_runner_command_cmd_with_inner_double_quotes():
     )
 
 
-def test_global_db_path_structure(tmp_data_dir):
+def test_global_db_path_structure(module_tmp_data_dir):
     """Test that global_db_path returns a valid path."""
     db_path = paths.global_db_path()
     assert isinstance(db_path, Path)
@@ -114,7 +114,7 @@ def test_global_db_path_structure(tmp_data_dir):
     assert "global.db" in str(db_path)
 
 
-def test_project_db_path_structure(tmp_data_dir):
+def test_project_db_path_structure(module_tmp_data_dir):
     """Test that project_db_path includes project hash."""
     hash_val = "abc123def456"
     db_path = paths.project_db_path(hash_val)
@@ -123,7 +123,7 @@ def test_project_db_path_structure(tmp_data_dir):
     assert hash_val in str(db_path)
 
 
-def test_session_cache_path_structure(tmp_data_dir):
+def test_session_cache_path_structure(module_tmp_data_dir):
     """Test that session_cache_path includes session ID."""
     session_id = "sess_12345"
     cache_path = paths.session_cache_path(session_id)
@@ -132,35 +132,35 @@ def test_session_cache_path_structure(tmp_data_dir):
     assert cache_path.name == f"{session_id}.json"
 
 
-def test_image_cache_dir_structure(tmp_data_dir):
+def test_image_cache_dir_structure(module_tmp_data_dir):
     """Test that image_cache_dir returns correct path."""
     img_dir = paths.image_cache_dir()
     assert isinstance(img_dir, Path)
     assert img_dir.name == "images"
 
 
-def test_models_dir_structure(tmp_data_dir):
+def test_models_dir_structure(module_tmp_data_dir):
     """Test that models_dir returns correct path."""
     models = paths.models_dir()
     assert isinstance(models, Path)
     assert models.name == "models"
 
 
-def test_logs_dir_structure(tmp_data_dir):
+def test_logs_dir_structure(module_tmp_data_dir):
     """Test that logs_dir returns correct path."""
     logs = paths.logs_dir()
     assert isinstance(logs, Path)
     assert logs.name == "logs"
 
 
-def test_locks_dir_structure(tmp_data_dir):
+def test_locks_dir_structure(module_tmp_data_dir):
     """Test that locks_dir returns correct path."""
     locks = paths.locks_dir()
     assert isinstance(locks, Path)
     assert locks.name == "locks"
 
 
-def test_worker_pid_path_structure(tmp_data_dir):
+def test_worker_pid_path_structure(module_tmp_data_dir):
     """Test that worker_pid_path returns correct path."""
     pid_path = paths.worker_pid_path()
     assert isinstance(pid_path, Path)
@@ -168,7 +168,7 @@ def test_worker_pid_path_structure(tmp_data_dir):
     assert "locks" in str(pid_path)
 
 
-def test_worker_heartbeat_path_structure(tmp_data_dir):
+def test_worker_heartbeat_path_structure(module_tmp_data_dir):
     """Test that worker_heartbeat_path returns correct path."""
     hb_path = paths.worker_heartbeat_path()
     assert isinstance(hb_path, Path)
@@ -176,7 +176,7 @@ def test_worker_heartbeat_path_structure(tmp_data_dir):
     assert "locks" in str(hb_path)
 
 
-def test_dirty_queue_path_structure(tmp_data_dir):
+def test_dirty_queue_path_structure(module_tmp_data_dir):
     """Test that dirty_queue_path returns correct path."""
     queue_path = paths.dirty_queue_path()
     assert isinstance(queue_path, Path)
@@ -184,28 +184,28 @@ def test_dirty_queue_path_structure(tmp_data_dir):
     assert "queue" in str(queue_path)
 
 
-def test_config_path_structure(tmp_data_dir):
+def test_config_path_structure(module_tmp_data_dir):
     """Test that config_path returns correct path."""
     config = paths.config_path()
     assert isinstance(config, Path)
     assert config.name == "config.toml"
 
 
-def test_gdrive_creds_path_structure(tmp_data_dir):
+def test_gdrive_creds_path_structure(module_tmp_data_dir):
     """Test that gdrive_creds_path returns correct path."""
     creds = paths.gdrive_creds_path()
     assert isinstance(creds, Path)
     assert creds.name == "gdrive_creds.json"
 
 
-def test_gdrive_cache_dir_structure(tmp_data_dir):
+def test_gdrive_cache_dir_structure(module_tmp_data_dir):
     """Test that gdrive_cache_dir returns correct path."""
     gdrive_cache = paths.gdrive_cache_dir()
     assert isinstance(gdrive_cache, Path)
     assert gdrive_cache.name == "gdrive_cache"
 
 
-def test_web_cache_dir_structure(tmp_data_dir):
+def test_web_cache_dir_structure(module_tmp_data_dir):
     """Test that web_cache_dir returns correct path."""
     web_cache = paths.web_cache_dir()
     assert isinstance(web_cache, Path)

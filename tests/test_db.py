@@ -783,14 +783,14 @@ def test_write_file_index_uses_transaction(tmp_data_dir):
 # ---------------------------------------------------------------------------
 
 
-def test_grep_patterns_table_created_on_fresh_global_db(tmp_data_dir):
+def test_grep_patterns_table_created_on_fresh_global_db(module_tmp_data_dir):
     """A fresh global.db must include the grep_patterns table."""
     with db.open_global() as conn:
         tables = _table_names(conn)
     assert "grep_patterns" in tables, "grep_patterns table missing from fresh global.db"
 
 
-def test_grep_patterns_index_present(tmp_data_dir):
+def test_grep_patterns_index_present(module_tmp_data_dir):
     """idx_grep_patterns_last_ts index must exist for efficient age-range queries."""
     with db.open_global() as conn:
         rows = conn.execute(
@@ -1503,7 +1503,7 @@ def _explain_plan(conn: sqlite3.Connection, sql: str, params: tuple) -> str:
     return " | ".join(r[-1] for r in rows)
 
 
-def test_project_symbols_name_kind_index_exists(tmp_data_dir):
+def test_project_symbols_name_kind_index_exists(module_tmp_data_dir):
     """Per-project symbols table must have (name, kind) composite index."""
     h = "abcdef0123456789abcdef0123456789abcde010"
     with db.open_project(h) as conn:
@@ -1513,7 +1513,7 @@ def test_project_symbols_name_kind_index_exists(tmp_data_dir):
     )
 
 
-def test_global_symbols_name_kind_index_exists(tmp_data_dir):
+def test_global_symbols_name_kind_index_exists(module_tmp_data_dir):
     """Global symbols_global table must have (name, kind) composite index."""
     with db.open_global() as conn:
         indexes = _index_names(conn)
@@ -1522,7 +1522,7 @@ def test_global_symbols_name_kind_index_exists(tmp_data_dir):
     )
 
 
-def test_project_symbol_kind_query_uses_composite_index(tmp_data_dir):
+def test_project_symbol_kind_query_uses_composite_index(module_tmp_data_dir):
     """EXPLAIN QUERY PLAN for 'name=? AND kind IN (?,?)' must use idx_symbols_name_kind.
 
     Without the composite index, SQLite uses idx_symbols_name (name=?) and filters
@@ -1542,7 +1542,7 @@ def test_project_symbol_kind_query_uses_composite_index(tmp_data_dir):
     )
 
 
-def test_global_symbol_kind_query_uses_composite_index(tmp_data_dir):
+def test_global_symbol_kind_query_uses_composite_index(module_tmp_data_dir):
     """EXPLAIN QUERY PLAN for global symbols with kind filter must use composite index."""
     with db.open_global() as conn:
         plan = _explain_plan(
