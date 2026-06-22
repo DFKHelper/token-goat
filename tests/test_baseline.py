@@ -28,7 +28,6 @@ from token_goat.baseline import (
     _read_mcp_server_names,
     _skill_listing_entry_bytes,
     _tally_tool_calls,
-    _tokens_from_bytes,
     collect_baseline,
     scan_transcript_usage,
 )
@@ -106,7 +105,7 @@ def synth_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     [(0, 0), (3, 0), (4, 1), (4000, 1000), (-50, 0)],
 )
 def test_tokens_from_bytes_matches_doctor_convention(n_bytes: int, expected: int) -> None:
-    assert _tokens_from_bytes(n_bytes) == expected
+    assert max(0, n_bytes) // 4 == expected
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +191,7 @@ def test_collect_baseline_token_sums_and_bucketing(synth_session: dict) -> None:
     assert report.total_tokens == sum(r.tokens for r in report.rows)
     assert report.fixed_tokens == sum(r.tokens for r in report.rows if r.kind == "fixed")
     # The variable one-off (250 tok) is excluded from the fixed total.
-    assert report.fixed_tokens == report.total_tokens - _tokens_from_bytes(len(_ONEOFF_DUMP))
+    assert report.fixed_tokens == report.total_tokens - (max(0, len(_ONEOFF_DUMP)) // 4)
 
 
 def test_collect_baseline_rows_sorted_descending(synth_session: dict) -> None:

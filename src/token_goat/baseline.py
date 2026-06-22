@@ -81,15 +81,6 @@ _AVG_SKILL_LISTING_ENTRY_BYTES = 284
 _USAGE_MAX_FILES = 2000
 
 
-def _tokens_from_bytes(n_bytes: int) -> int:
-    """Token estimate matching ``token-goat doctor`` and ``compact._token_count``.
-
-    1 token ≈ 4 bytes — the conservative convention used across token-goat's
-    context-budget accounting.  Using it here keeps a baseline total consistent
-    with the doctor's Context footprint instead of presenting a second, larger
-    number from ``estimate_tokens`` (``len // 3 + 1``).
-    """
-    return max(0, n_bytes) // 4
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +327,7 @@ def _scan_hook_dumps(
             BaselineRow(
                 source=g.title,
                 n_bytes=g.n_bytes,
-                tokens=_tokens_from_bytes(g.n_bytes),
+                tokens=max(0, g.n_bytes) // 4,
                 owner=g.owner,
                 fix="disable-hook",
                 kind=kind,
@@ -345,14 +336,6 @@ def _scan_hook_dumps(
         )
 
 
-def _cost_file(path: Path) -> int | None:
-    """Return *path*'s size in bytes, or ``None`` if it is absent/unreadable."""
-    try:
-        if path.is_file():
-            return path.stat().st_size
-    except OSError:
-        pass
-    return None
 
 
 def _scan_claude_md(cwd: Path, rows: list[BaselineRow], notes: list[str]) -> None:
@@ -369,7 +352,10 @@ def _scan_claude_md(cwd: Path, rows: list[BaselineRow], notes: list[str]) -> Non
     )
     any_found = False
     for label, path in candidates:
-        size = _cost_file(path)
+        try:
+            size = path.stat().st_size if path.is_file() else None
+        except OSError:
+            size = None
         if size is None:
             continue
         any_found = True
@@ -377,7 +363,7 @@ def _scan_claude_md(cwd: Path, rows: list[BaselineRow], notes: list[str]) -> Non
             BaselineRow(
                 source=label,
                 n_bytes=size,
-                tokens=_tokens_from_bytes(size),
+                tokens=max(0, size) // 4,
                 owner="you",
                 fix="slim",
                 kind="fixed",
@@ -421,7 +407,10 @@ def _scan_memory_md(
         notes.append("MEMORY.md: skipped (no session resolved to locate the project's memory dir).")
         return
     memory_md = tool_results.parent.parent / "memory" / "MEMORY.md"
-    size = _cost_file(memory_md)
+    try:
+        size = memory_md.stat().st_size if memory_md.is_file() else None
+    except OSError:
+        size = None
     if size is None:
         notes.append("MEMORY.md: not found for this project.")
         return
@@ -430,7 +419,7 @@ def _scan_memory_md(
         BaselineRow(
             source="MEMORY.md (auto-memory index)",
             n_bytes=size,
-            tokens=_tokens_from_bytes(size),
+            tokens=max(0, size) // 4,
             owner="you",
             fix="none" if lazy else "lazy-load",
             kind="fixed",
