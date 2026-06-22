@@ -4550,7 +4550,7 @@ def build_pinned_hint(
     for spec in pinned:
         if "::" not in spec:
             continue
-        spec_file, spec_sym = spec.split("::", 1)
+        spec_file, spec_sym = spec.rsplit("::", 1)
         if _paths.normalize_key(spec_file) == norm_file and spec_sym == symbol_name:
             text = f"Pinned: `{spec}` — always prioritized."
             return HintItem(text, HINT_PRIORITY_CRITICAL)

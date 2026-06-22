@@ -59,3 +59,39 @@ class TestTargetParsingAffectsAllCommands:
             f"Found {len(matches)} bare partition('::') call(s) that should be rpartition:\n"
             + '\n'.join(matches)
         )
+
+    def test_no_first_split_on_double_colon_in_hints(self):
+        """hints.py pinned-symbol lookup uses rsplit (LAST ::) not split (FIRST ::).
+
+        Regression guard: split('::', 1) on a spec like 'my::path.py::sym' would
+        yield file='my', sym='path.py::sym' instead of file='my::path.py', sym='sym'.
+        """
+        result = subprocess.run(
+            ['rg', r'\.split\("::", 1\)', 'src/token_goat/hints.py'],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent
+        )
+        matches = [line for line in result.stdout.split('\n') if line.strip()]
+        assert matches == [], (
+            f"Found {len(matches)} split('::', 1) in hints.py that should be rsplit:\n"
+            + '\n'.join(matches)
+        )
+
+    def test_no_first_split_on_double_colon_in_target_parsing(self):
+        """read_commands.py target-parsing site uses rsplit (LAST ::) not split (FIRST ::)."""
+        result = subprocess.run(
+            ['rg', r'split\("::", 1\)', 'src/token_goat/read_commands.py'],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent
+        )
+        # Only rsplit calls should appear; bare split("::", 1) is the bug
+        bare = [
+            line for line in result.stdout.split('\n')
+            if line.strip() and 'rsplit' not in line
+        ]
+        assert bare == [], (
+            f"Found {len(bare)} bare split('::', 1) in read_commands.py that should be rsplit:\n"
+            + '\n'.join(bare)
+        )
