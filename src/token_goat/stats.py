@@ -1003,11 +1003,14 @@ def render_text(
         _LOG.error("rich is not installed; cannot render stats: %s", exc)
         return f"(stats render unavailable: {exc})"
 
+    import os
+    import sys
+    _want_color = not os.environ.get("NO_COLOR") and sys.stdout.isatty()
     buf = io.StringIO()
     console = Console(
         file=buf,
-        force_terminal=True,
-        color_system="truecolor",
+        force_terminal=_want_color,
+        color_system="truecolor" if _want_color else None,
         width=80,
         legacy_windows=False,
     )
