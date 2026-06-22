@@ -92,6 +92,24 @@ _call_index: int = 0
 # these files because token-goat never indexes them and the hints would be
 # meaningless noise.  Image extensions are handled separately by the shrink
 # path; this set covers non-image binaries.
+def _record_hook_stat(session_id: str | None, stat_name: str, *, detail: str = "") -> None:
+    """Safely record a hook statistic via lazy db import; silently ignore failures.
+
+    Consolidates the repeated pattern of ``with contextlib.suppress(Exception):
+    from . import db; db.record_stat(...)`` found 8+ times across different
+    hint paths in this module. Catches and silently swallows any import or
+    call failure, making it safe to call without risk of crashing a hook.
+
+    Args:
+        session_id: Session ID (can be None for global stats).
+        stat_name:  Name of the stat to record (e.g. "large_read_redirect").
+        detail:     Optional detail string (e.g. file path, command excerpt).
+    """
+    with contextlib.suppress(Exception):
+        from . import db
+        db.record_stat(session_id, stat_name, detail=detail)
+
+
 _BINARY_EXTENSIONS: frozenset[str] = frozenset([
     # Archives
     ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar", ".zst", ".lz4",
@@ -2301,9 +2319,7 @@ def _handle_large_read_redirect(
     if skeleton_text:
         context += f"\n\nIndexed symbols in this file:\n{skeleton_text}"
 
-    with contextlib.suppress(Exception):
-        from . import db
-        db.record_stat(None, "large_read_redirect", detail=f"{sanitize_log_str(file_path)} size={size}")
+    _record_hook_stat(None, "large_read_redirect", detail=f"{sanitize_log_str(file_path)} size={size}")
     return deny_redirect(reason, context)
 
 
@@ -2338,9 +2354,7 @@ def _handle_indexed_cat_deny(
         f"Or re-issue as Read with offset+limit to window it.\n\n"
         f"Indexed symbols in this file:\n{skeleton_text}"
     )
-    with contextlib.suppress(Exception):
-        from . import db
-        db.record_stat(None, "indexed_cat_deny", detail=sanitize_log_str(file_path))
+    _record_hook_stat(None, "indexed_cat_deny", detail=sanitize_log_str(file_path))
     return deny_redirect(reason, context)
 
 
@@ -2380,9 +2394,7 @@ def _handle_indexed_cat_advisory(
     parts: list[str] = []
     if not emit_if_new_hint(cache, fp, hint, "indexed_cat_advisory", parts):
         return None
-    with contextlib.suppress(Exception):
-        from . import db
-        db.record_stat(None, "indexed_cat_advisory", detail=sanitize_log_str(file_path))
+    _record_hook_stat(None, "indexed_cat_advisory", detail=sanitize_log_str(file_path))
     return pre_tool_use_with_context(parts[0])
 
 
@@ -2426,9 +2438,7 @@ def _handle_bash_range_read_hint(payload: HookPayload) -> HookResponse | None:
         f'  `token-goat read "{intent.target_path}::<symbol>"`\n\n'
         f"Indexed symbols:\n{skeleton_text}"
     )
-    with contextlib.suppress(Exception):
-        from . import db as _db
-        _db.record_stat(None, "bash_range_read_hint", detail=sanitize_log_str(intent.target_path))
+    _record_hook_stat(None, "bash_range_read_hint", detail=sanitize_log_str(intent.target_path))
     return pre_tool_use_with_context(hint)
 
 
@@ -2494,9 +2504,7 @@ def _handle_compound_cmd_hint(payload: HookPayload) -> HookResponse | None:
         + "\n".join(parts)
         + "\nRun them separately to use the cache."
     )
-    with contextlib.suppress(Exception):
-        from . import db as _db
-        _db.record_stat(None, "compound_cmd_hint", detail=sanitize_log_str(cmd, max_len=200))
+    _record_hook_stat(None, "compound_cmd_hint", detail=sanitize_log_str(cmd, max_len=200))
     _LOG.debug("compound_cmd_hint: %d/%d segments cached", len(cached_hits), len(read_type_segments))
     return pre_tool_use_with_context(hint)
 
@@ -2547,9 +2555,7 @@ def _handle_bash_streak_hint(payload: HookPayload) -> HookResponse | None:
             f"  `token-goat symbol {sym_arg}`   (list symbols)\n"
             f"  `token-goat read {read_arg}`   (read one symbol)"
         )
-    with contextlib.suppress(Exception):
-        from . import db as _db
-        _db.record_stat(sid, "bash_streak_hint", detail=sanitize_log_str(rel))
+    _record_hook_stat(sid, "bash_streak_hint", detail=sanitize_log_str(rel))
     return pre_tool_use_with_context(hint)
 
 
@@ -2590,9 +2596,7 @@ def _handle_bash_poll_hint(payload: HookPayload) -> HookResponse | None:
         f"  `until <success-condition>; do sleep 5; done`\n"
         f"Or retrieve the cached output: `token-goat bash-output {entry.output_id}`"
     )
-    with contextlib.suppress(Exception):
-        from . import db as _db
-        _db.record_stat(sid, "bash_poll_hint", detail=sanitize_log_str(cmd[:80]))
+    _record_hook_stat(sid, "bash_poll_hint", detail=sanitize_log_str(cmd[:80]))
     return pre_tool_use_with_context(hint)
 
 
@@ -2778,9 +2782,7 @@ def _handle_large_grep_redirect(payload: HookPayload) -> HookResponse | None:
         f"  - re-run Grep with `head_limit` set to cap the lines returned\n"
         f"  - or Read with `offset`/`limit` to window the file directly."
     )
-    with contextlib.suppress(Exception):
-        from . import db
-        db.record_stat(None, "large_grep_redirect", detail=f"{sanitize_log_str(path)} size={size}")
+    _record_hook_stat(None, "large_grep_redirect", detail=f"{sanitize_log_str(path)} size={size}")
     return deny_redirect(reason, context)
 
 

@@ -31,6 +31,7 @@ __all__ = [
     "json_dumps_utf8",
     "normalize_path",
     "run_git",
+    "safe_json_load_file",
     "sanitize_control_chars",
     "sanitize_surrogates",
     "strip_ansi",
@@ -72,6 +73,28 @@ def json_dumps_utf8(obj: Any, **kwargs: Any) -> str:
     across 13+ call sites. Additional kwargs (e.g. default=str) are passed through.
     """
     return json.dumps(obj, ensure_ascii=False, **kwargs)
+
+
+def safe_json_load_file(path: Path, *, errors: str = "strict") -> Any | None:
+    """Load JSON from a file; return None on any read or parse error.
+
+    Centralises the repeated pattern of ``try: json.loads(path.read_text(...))
+    except (OSError, json.JSONDecodeError): return None`` found 7+ times across
+    cache_common.py, cli.py, baseline.py, compact.py, hooks_cli.py, cli_doctor.py.
+    Returns the raw parsed value (dict, list, str, int, etc.) or None on error.
+
+    Args:
+        path:   File path to read and parse.
+        errors: Encoding error handler (passed to read_text); default "strict".
+
+    Returns:
+        Parsed JSON value if successful; None if file not found or JSON invalid.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8", errors=errors)
+        return json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def strip_lower(s: str) -> str:
