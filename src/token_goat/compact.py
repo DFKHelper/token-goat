@@ -1163,6 +1163,8 @@ _NOISE_EXTS: Final[frozenset[str]] = frozenset({
     ".snap",                           # Jest/Vitest snapshot files
     ".eot", ".ttf", ".woff", ".woff2",  # web font binaries
     ".ico",                            # icon files — binary, no textual value
+    ".pdb",                            # debugger symbol files (Python/C/C++)
+    ".exe", ".bin",                    # Windows executables and raw binaries
 })
 _NOISE_BASENAMES: Final[frozenset[str]] = frozenset({
     ".ds_store", "thumbs.db", "desktop.ini",  # OS metadata
@@ -1205,6 +1207,12 @@ _NOISE_SEGMENTS: Final[tuple[str, ...]] = (
     "/.hatch/", "/.nox/", "/.eggs/",
     # Benchmark output directories
     "/.benchmarks/",
+    # Terraform state and provider cache
+    "/.terraform/",
+    # Java/Kotlin build tool caches (Gradle, Maven)
+    "/.gradle/", "/.m2/",
+    # Jest/Vitest manual mock directories
+    "/__mocks__/",
 )
 
 
