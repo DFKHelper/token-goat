@@ -339,16 +339,26 @@ def _humanize_bytes(n: int) -> str:
     return f"{n / (1024 * 1024 * 1024):.1f}GB"
 
 
+def _env_numeric(env_key: str, converter: type, default: float | int, lo: float | int | None, hi: float | int | None) -> float | int:
+    """Shared implementation for env_float and env_int. Not part of the public API."""
+    raw = os.environ.get(env_key, "").strip()
+    if not raw:
+        return default
+    try:
+        val = converter(raw)
+    except (ValueError, OverflowError):
+        return default
+    if lo is not None and val < lo:
+        val = lo
+    if hi is not None and val > hi:
+        val = hi
+    return val  # type: ignore[return-value]
+
+
 def env_float(env_key: str, default: float, *, lo: float | None = None, hi: float | None = None) -> float:
     """Read a float from an environment variable, falling back to *default* on any error.
 
-    Parses ``os.environ.get(env_key)``, strips whitespace, and converts to
-    ``float``.  Returns *default* when the variable is unset, empty, or
-    non-numeric.  Optionally clamps the result to ``[lo, hi]`` when either
-    bound is given.
-
-    This consolidates the repeated ``float(os.environ.get(key, str(default)))``
-    pattern that crashes on non-numeric values.
+    Parses ``os.environ.get(env_key)``, strips whitespace, and converts to ``float``. Returns *default* when the variable is unset, empty, or non-numeric. Optionally clamps the result to ``[lo, hi]`` when either bound is given.
 
     Args:
         env_key: Environment variable name.
@@ -359,31 +369,13 @@ def env_float(env_key: str, default: float, *, lo: float | None = None, hi: floa
     Returns:
         Parsed float, clamped to ``[lo, hi]`` when bounds are given, or *default*.
     """
-    raw = os.environ.get(env_key, "").strip()
-    if not raw:
-        return default
-    try:
-        val = float(raw)
-    except (ValueError, OverflowError):
-        return default
-    if lo is not None and val < lo:
-        val = lo
-    if hi is not None and val > hi:
-        val = hi
-    return val
+    return _env_numeric(env_key, float, default, lo, hi)  # type: ignore[return-value]
 
 
 def env_int(env_key: str, default: int, *, lo: int | None = None, hi: int | None = None) -> int:
     """Read an integer from an environment variable, falling back to *default* on any error.
 
-    Parses ``os.environ.get(env_key)``, strips whitespace, and converts to
-    ``int``.  Returns *default* when the variable is unset, empty, or
-    non-numeric.  Optionally clamps the result to ``[lo, hi]`` when either
-    bound is given.
-
-    This consolidates the repeated ``int(os.environ.get(key, str(default)))``
-    pattern and the manual ``try: int(raw) except ValueError: default`` blocks
-    found across multiple modules.
+    Parses ``os.environ.get(env_key)``, strips whitespace, and converts to ``int``. Returns *default* when the variable is unset, empty, or non-numeric. Optionally clamps the result to ``[lo, hi]`` when either bound is given.
 
     Args:
         env_key: Environment variable name.
@@ -394,18 +386,7 @@ def env_int(env_key: str, default: int, *, lo: int | None = None, hi: int | None
     Returns:
         Parsed int, clamped to ``[lo, hi]`` when bounds are given, or *default*.
     """
-    raw = os.environ.get(env_key, "").strip()
-    if not raw:
-        return default
-    try:
-        val = int(raw)
-    except (ValueError, OverflowError):
-        return default
-    if lo is not None and val < lo:
-        val = lo
-    if hi is not None and val > hi:
-        val = hi
-    return val
+    return _env_numeric(env_key, int, default, lo, hi)  # type: ignore[return-value]
 
 
 def configure_stdout_encoding() -> None:

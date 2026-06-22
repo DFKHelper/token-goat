@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from . import paths
-from .util import _norm, get_logger
+from .util import _norm, get_logger, safe_json_load_file
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -2101,15 +2101,10 @@ def patch_gemini_settings() -> str:
     settings_path = gemini_settings_path()
     paths.ensure_dir(settings_path.parent)
 
-    existing: dict[str, object] = {}
-    if settings_path.exists():
-        try:
-            raw = settings_path.read_text(encoding="utf-8")
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                existing = parsed
-        except (json.JSONDecodeError, OSError) as e:
-            _LOG.warning("gemini settings.json read failed, starting fresh: %s", e)
+    parsed = safe_json_load_file(settings_path)
+    existing: dict[str, object] = parsed if isinstance(parsed, dict) else {}
+    if settings_path.exists() and not isinstance(parsed, dict):
+        _LOG.warning("gemini settings.json read failed, starting fresh: unreadable or not a JSON object")
 
     our_hooks = _gemini_hooks_block()
     existing_hooks_raw = existing.get("hooks", {})
@@ -2133,12 +2128,9 @@ def unpatch_gemini_settings() -> str:
     if not settings_path.exists():
         return "gemini settings.json not found"
 
-    try:
-        raw = settings_path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (json.JSONDecodeError, OSError) as e:
-        return f"error reading gemini settings.json: {e}"
-
+    data = safe_json_load_file(settings_path)
+    if data is None:
+        return "error reading gemini settings.json: unreadable or malformed"
     if not isinstance(data, dict):
         return "gemini settings.json is not a JSON object; skipped"
 
@@ -2157,13 +2149,9 @@ def _check_gemini_settings() -> str:
     settings_path = gemini_settings_path()
     if not settings_path.exists():
         return "not installed (gemini settings.json absent)"
-    try:
-        raw = settings_path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-    except (json.JSONDecodeError, OSError):
-        return "error (gemini settings.json malformed)"
+    data = safe_json_load_file(settings_path)
     if not isinstance(data, dict):
-        return "error (gemini settings.json not a JSON object)"
+        return "error (gemini settings.json malformed)"
     hooks_raw = data.get("hooks", {})
     hooks: dict[str, object] = hooks_raw if isinstance(hooks_raw, dict) else {}
     return "installed" if _hooks_contain_token_goat(hooks) else "not installed"

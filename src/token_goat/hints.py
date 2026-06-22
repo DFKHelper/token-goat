@@ -3979,6 +3979,20 @@ def _extract_csv_headers(path: Path) -> str | None:
         return None
 
 
+def _build_schema_str(obj: dict[str, object]) -> str | None:
+    """Build a compact schema string from the first 5 keys of a JSON object dict. Returns None if obj has no keys; truncates to 60 chars."""
+    _TYPE_MAP: tuple[tuple[type, str], ...] = ((bool, "bool"), (int, "int"), (float, "float"), (str, "str"), (list, "list"), (dict, "dict"))
+    schema_parts = []
+    for key in list(obj.keys())[:5]:
+        val = obj[key]
+        type_name = next((n for t, n in _TYPE_MAP if isinstance(val, t)), "null" if val is None else "?")
+        schema_parts.append(f"{key}: {type_name}")
+    if not schema_parts:
+        return None
+    schema_str = ", ".join(schema_parts)
+    return schema_str[:57] + "..." if len(schema_str) > 60 else schema_str
+
+
 def _extract_json_array_schema(path: Path) -> str | None:
     """Extract schema from first object in a JSON array.
 
@@ -4001,7 +4015,6 @@ def _extract_json_array_schema(path: Path) -> str | None:
             return None
 
         # Try to extract a complete object by finding matching }.
-        # Start from the { and find the closing }.
         obj_start = brace_idx
         depth = 0
         in_string = False
@@ -4028,39 +4041,10 @@ def _extract_json_array_schema(path: Path) -> str | None:
         else:
             return None
 
-        # Parse the extracted object and build schema.
         obj = json.loads(obj_str)
         if not isinstance(obj, dict):
             return None
-
-        schema_parts = []
-        for key in list(obj.keys())[:5]:  # Limit to first 5 keys.
-            val = obj[key]
-            if isinstance(val, bool):
-                type_name = "bool"
-            elif isinstance(val, int):
-                type_name = "int"
-            elif isinstance(val, float):
-                type_name = "float"
-            elif isinstance(val, str):
-                type_name = "str"
-            elif isinstance(val, list):
-                type_name = "list"
-            elif isinstance(val, dict):
-                type_name = "dict"
-            elif val is None:
-                type_name = "null"
-            else:
-                type_name = "?"
-            schema_parts.append(f"{key}: {type_name}")
-
-        if schema_parts:
-            schema_str = ", ".join(schema_parts)
-            # Truncate if too long.
-            if len(schema_str) > 60:
-                schema_str = schema_str[:57] + "..."
-            return schema_str
-        return None
+        return _build_schema_str(obj)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return None
 
@@ -4077,39 +4061,10 @@ def _extract_ndjson_first_line_schema(path: Path) -> str | None:
             first_line = fh.readline().strip()
         if not first_line:
             return None
-
         obj = json.loads(first_line)
         if not isinstance(obj, dict):
             return None
-
-        schema_parts = []
-        for key in list(obj.keys())[:5]:  # Limit to first 5 keys.
-            val = obj[key]
-            if isinstance(val, bool):
-                type_name = "bool"
-            elif isinstance(val, int):
-                type_name = "int"
-            elif isinstance(val, float):
-                type_name = "float"
-            elif isinstance(val, str):
-                type_name = "str"
-            elif isinstance(val, list):
-                type_name = "list"
-            elif isinstance(val, dict):
-                type_name = "dict"
-            elif val is None:
-                type_name = "null"
-            else:
-                type_name = "?"
-            schema_parts.append(f"{key}: {type_name}")
-
-        if schema_parts:
-            schema_str = ", ".join(schema_parts)
-            # Truncate if too long.
-            if len(schema_str) > 60:
-                schema_str = schema_str[:57] + "..."
-            return schema_str
-        return None
+        return _build_schema_str(obj)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return None
 
