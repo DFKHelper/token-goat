@@ -2354,6 +2354,15 @@ def stub_view(
         and (include_private or not str(row["name"]).startswith("_"))
     ][:_STUB_VIEW_MAX_SYMBOLS]
 
+    if not filtered:
+        if json_output:
+            typer.echo(json_compact({"file": file_rel, "symbols": [], "total": 0}))
+        else:
+            hint = " Use --private / -p to include private names." if not include_private else ""
+            label = "symbols" if include_private else "public symbols"
+            typer.echo(f"No {label} found for {file_rel}.{hint}")
+        return
+
     if json_output:
         out = [
             {
@@ -2364,7 +2373,7 @@ def stub_view(
             }
             for row in filtered
         ]
-        typer.echo(json_compact(out))
+        typer.echo(json_compact({"file": file_rel, "symbols": out, "total": len(out)}))
         return
 
     abs_path = proj.root / file_rel
