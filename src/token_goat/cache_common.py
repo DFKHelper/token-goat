@@ -35,7 +35,6 @@ __all__ = [
 import contextlib
 import gzip
 import hashlib
-import json
 import os
 import re
 import stat as _stat_module
@@ -44,7 +43,7 @@ import time
 from contextlib import contextmanager, suppress
 from typing import TYPE_CHECKING, Any, TypedDict
 
-from .util import get_logger, json_dumps_utf8
+from .util import get_logger, json_dumps_utf8, safe_json_load_file
 
 if TYPE_CHECKING:
     import logging
@@ -432,10 +431,7 @@ def load_sidecar_json(path: Path) -> dict[str, Any] | None:
     """
     if not path.exists():
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
+    data = safe_json_load_file(path)
     if not isinstance(data, dict):
         return None
     return data
