@@ -551,6 +551,17 @@ class TestComputeAdaptiveBudget:
         # 200 base + 20 bash bonus = 220
         assert budget == 220
 
+    def test_bash_history_bonus_scales_with_count(self, tmp_data_dir):
+        """Bash bonus scales with history length: 10 entries gives 50, not 20."""
+        sid = "bash-scale-session"
+        for i in range(10):
+            session.mark_bash_run(sid, f"sha{i}", f"cmd{i}", f"id{i}", 1000, 500, 0, False)
+        cache = session.load(sid)
+        budget = compact.compute_adaptive_budget(cache, age_seconds=1800)
+        # 200 base + min(100, max(20, 10*5)=50) = 250
+        assert budget == 250
+
+
     def test_complex_session_combines_bonuses(self, tmp_data_dir):
         """Complex session: edits + symbols + bash all contribute."""
         sid = "complex-session"

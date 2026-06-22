@@ -1160,6 +1160,10 @@ _READ_COUNT_FULL_FILE_THRESHOLD: Final[int] = 10
 # preferable to unbounded growth, and the fingerprint set is a performance
 # optimization, not a correctness requirement).
 HINTS_SEEN_MAX: Final[int] = 500
+# Evict only after accumulating this many entries beyond HINTS_SEEN_MAX.
+# Sorting 500+ items on every single overflow is O(N log N) per hint call;
+# batching reduces sort frequency ~50x at the cost of slightly more memory.
+_HINTS_SEEN_EVICT_BATCH: Final[int] = 50
 
 # Maximum number of hint content-hash entries retained per session.  The
 # hints_content_dedup dict tracks emitted hint content to compress duplicate
@@ -1634,7 +1638,7 @@ class SessionCache:
         # (most relevant for dedup) and discard the lowest-count (least recent/important).
         # False-positive re-emission of a suppressed hint is acceptable;
         # unbounded growth is not.
-        if len(self.hints_seen) > HINTS_SEEN_MAX:
+        if len(self.hints_seen) > HINTS_SEEN_MAX + _HINTS_SEEN_EVICT_BATCH:
             sorted_hints = sorted(self.hints_seen.items(), key=itemgetter(1), reverse=True)
             self.hints_seen = dict(sorted_hints[:HINTS_SEEN_MAX])
         self.last_activity_ts = time.time()

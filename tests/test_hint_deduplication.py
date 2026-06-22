@@ -70,6 +70,28 @@ class TestSessionCacheHintMethods:
         assert cache.has_hint_fingerprint(fp)
         assert cache.hints_seen[fp] == 2
 
+    def test_mark_hint_seen_batch_eviction_bounds_dict(self) -> None:
+        """Adding hints beyond HINTS_SEEN_MAX+batch stays bounded.
+
+        Batch eviction fires only after _HINTS_SEEN_EVICT_BATCH entries
+        accumulate past HINTS_SEEN_MAX, then trims back to HINTS_SEEN_MAX.
+        The dict should never exceed HINTS_SEEN_MAX + _HINTS_SEEN_EVICT_BATCH.
+        """
+        from token_goat.session import _HINTS_SEEN_EVICT_BATCH, HINTS_SEEN_MAX
+        cache = session.SessionCache("evict-test", 0, 0)
+        # Add enough entries to trigger at least one eviction
+        total = HINTS_SEEN_MAX + _HINTS_SEEN_EVICT_BATCH + 10
+        for i in range(total):
+            cache.mark_hint_seen(f"fp_{i:04d}")
+        # After all insertions, dict must be bounded
+        assert len(cache.hints_seen) <= HINTS_SEEN_MAX + _HINTS_SEEN_EVICT_BATCH, (
+            f"hints_seen grew to {len(cache.hints_seen)}, "
+            f"expected <= {HINTS_SEEN_MAX + _HINTS_SEEN_EVICT_BATCH}"
+        )
+        # And must contain at least HINTS_SEEN_MAX entries (not over-trimmed)
+        assert len(cache.hints_seen) >= HINTS_SEEN_MAX
+
+
     def test_mark_hint_seen_persists_to_disk(self, tmp_data_dir) -> None:
         """mark_hint_seen updates in-memory state; save() flushes to disk."""
         session_id = "test_session_persist"
