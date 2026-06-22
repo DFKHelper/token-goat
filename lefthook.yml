@@ -3,6 +3,9 @@ pre-commit:
     lint:
       run: uv run ruff check {staged_files}
       glob: "*.py"
+    typecheck:
+      run: uv run mypy src
+      glob: "*.py"
     wal-guard:
       run: .venv/Scripts/python.exe -m pytest tests/test_wal_growth_guard.py -q --tb=short
       glob: "*.py"
