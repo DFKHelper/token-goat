@@ -141,6 +141,7 @@ def test_detect_installed_harnesses_returns_dict():
         "cline",
         "windsurf",
         "copilot-cli",
+        "hermes",
     }
     assert set(result.keys()) == expected_keys
 
