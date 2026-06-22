@@ -923,10 +923,19 @@ def enqueue_dirty(
             return
 
         # Byte-size cap: single stat() instead of reading all entries.
-        with contextlib.suppress(OSError):
+        # Differentiate race cases: FileNotFoundError means the queue was reset/cleared
+        # (safe to append), while other OSErrors mean the file is inaccessible (reject).
+        try:
             if queue_path.exists() and queue_path.stat().st_size >= DIRTY_QUEUE_MAX_BYTES:
-                _LOG.info("dirty queue byte cap reached (%d B); dropping entry: %s", DIRTY_QUEUE_MAX_BYTES, rel_path)
-                return
+                    _LOG.info("dirty queue byte cap reached (%d B); dropping entry: %s", DIRTY_QUEUE_MAX_BYTES, rel_path)
+                    return
+        except FileNotFoundError:
+            pass  # Race: file deleted between exists() and stat() — queue is empty/reset, safe to append.
+        except OSError as e:
+            # exists() succeeded but stat() failed for a non-deletion reason (permission error, etc.).
+            # Fail-safe: reject the append to avoid exceeding the cap.
+            _LOG.warning("dirty queue byte-cap check failed; dropping entry to be safe: %s", e)
+            return
 
         try:
             with queue_path.open("a", encoding="utf-8") as f:
