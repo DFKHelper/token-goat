@@ -3955,8 +3955,10 @@ def compute_adaptive_budget(
     symbols_files = sum(1 for e in cache.files.values() if e.symbols_read)
     symbols_bonus = min(150, symbols_files * 30)
 
-    # Bash history bonus: 20 tokens if there are any entries
-    bash_bonus = 20 if (getattr(cache, "bash_history", None) and cache.bash_history) else 0
+    # Bash history bonus: scales with history length (min 20, max 100) so bash-heavy
+    # sessions get enough manifest room to fit all 6 entries at ~10-15 tokens/header each.
+    bash_count = len(cache.bash_history) if getattr(cache, "bash_history", None) else 0
+    bash_bonus = min(100, max(20, bash_count * 5)) if bash_count else 0
 
     # Web history bonus: 15 tokens if there are any cached web fetches
     web_bonus = 15 if (getattr(cache, "web_history", None) and cache.web_history) else 0

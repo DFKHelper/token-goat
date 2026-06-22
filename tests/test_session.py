@@ -1033,32 +1033,38 @@ class TestHintsSeenCap:
     """HINTS_SEEN_MAX cap — hints_seen is cleared via mark_hint_seen() when exceeded."""
 
     def test_hints_seen_capped_via_mark(self, tmp_data_dir):
-        """hints_seen is capped via LRU when mark_hint_seen exceeds HINTS_SEEN_MAX."""
+        """hints_seen is capped via LRU when mark_hint_seen exceeds the eviction threshold.
+
+        Eviction fires only after accumulating _HINTS_SEEN_EVICT_BATCH entries beyond
+        HINTS_SEEN_MAX (batch eviction reduces sort frequency ~50x vs per-entry eviction).
+        """
         sid = "hints_cap_1"
         cache = session.load(sid)
         # Build hints_seen with a high-count fingerprint before reaching the cap.
         # Mark fp_overflow multiple times first to give it a high count.
         for _ in range(100):
             cache.mark_hint_seen("fp_overflow")
-        # Now fill the rest up to the cap with single-count entries.
-        for i in range(session.HINTS_SEEN_MAX - 1):
+        # Fill to just below the eviction trigger (HINTS_SEEN_MAX + _HINTS_SEEN_EVICT_BATCH).
+        # Need HINTS_SEEN_MAX - 1 more unique entries (fp_overflow already occupies 1 slot).
+        for i in range(session.HINTS_SEEN_MAX + session._HINTS_SEEN_EVICT_BATCH):
             cache.mark_hint_seen(f"fp_{i}")
-        # At this point, len(hints_seen) == HINTS_SEEN_MAX and fp_overflow has count 100.
-        assert len(cache.hints_seen) == session.HINTS_SEEN_MAX
-        # Add one more entry to trigger LRU eviction.
-        cache.mark_hint_seen("fp_trigger")
-        # After LRU, the cap is respected.
+        # After crossing the batch threshold, eviction fires and the dict is trimmed.
         assert len(cache.hints_seen) <= session.HINTS_SEEN_MAX
         # The high-count fingerprint (fp_overflow with count 100) should survive LRU.
         assert "fp_overflow" in cache.hints_seen
         assert cache.hints_seen["fp_overflow"] == 100
 
     def test_hints_seen_cleared_after_cap_roundtrip(self, tmp_data_dir):
-        """After cap fires and cache is saved+loaded, hints_seen is compact."""
+        """After eviction fires and cache is saved+loaded, hints_seen is compact.
+
+        Eviction fires only after crossing HINTS_SEEN_MAX + _HINTS_SEEN_EVICT_BATCH,
+        so the test must add enough entries to cross that threshold.
+        """
         sid = "hints_cap_2"
         cache = session.load(sid)
-        # Overflow via mark_hint_seen
-        for i in range(session.HINTS_SEEN_MAX + 1):
+        # Add enough entries to cross the batch-eviction threshold.
+        threshold = session.HINTS_SEEN_MAX + session._HINTS_SEEN_EVICT_BATCH + 1
+        for i in range(threshold):
             cache.mark_hint_seen(f"fp_{i}")
         session.save(cache)
         reloaded = session.load(sid)

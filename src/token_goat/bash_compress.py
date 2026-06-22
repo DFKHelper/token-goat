@@ -2171,7 +2171,9 @@ class GenericFilter(Filter):
         out_lines = dedupe_consecutive(stdout.split("\n"), entropy_bypass=True)
         err_lines = dedupe_consecutive(stderr.split("\n"), entropy_bypass=True)
         if stderr.strip():
-            result = "\n".join(out_lines).rstrip() + "\n---\n" + "\n".join(err_lines).rstrip()
+            out_part = "\n".join(out_lines).rstrip()
+            err_part = "\n".join(err_lines).rstrip()
+            result = (out_part + "\n---\n" + err_part) if out_part else err_part
         else:
             result = "\n".join(out_lines)
         # Cap token-aware output to ~2000 tokens (~7KB).

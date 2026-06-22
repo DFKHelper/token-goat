@@ -2484,6 +2484,22 @@ class TestGenericFilterCapTokens:
         # Should indicate it was capped.
         assert "output capped at" in result.text
 
+    def test_empty_stdout_with_stderr_no_leading_separator(self):
+        """When stdout is empty and stderr has content, output must not start with separator.
+
+        Regression for: GenericFilter.compress produced '\n---\n' + stderr when
+        stdout was empty, creating a spurious leading separator.
+        """
+        f = bc.GenericFilter()
+        result = f.apply("", "error: command not found", 1, ["badcmd"])
+        # Must not start with the separator
+        assert not result.text.startswith("\n---\n"), (
+            f"Output should not start with separator, got: {result.text[:40]!r}"
+        )
+        # Must contain the stderr content
+        assert "error: command not found" in result.text
+
+
 
 # ---------------------------------------------------------------------------
 # RuffFilter
