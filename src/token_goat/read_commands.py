@@ -1124,6 +1124,19 @@ def _run_read_like_command(
     # Apply smart truncation to the result text (no-op when full=True or body is short).
     display_text = read_replacement.truncate_symbol_body(result["text"], full=full)
 
+    # Duplicate-heading hint: when read_section returned the first of multiple sections
+    # sharing the same heading name, surface a stderr warning so the agent knows to
+    # use the #N ordinal suffix next time.  Emitted before the body so it is visible.
+    _ambiguous = result.get("ambiguous_at_lines")
+    if _ambiguous and not json_output:
+        _other = ", ".join(str(ln) for ln in _ambiguous)
+        typer.echo(
+            f"[tg] Multiple sections named {item_part!r} in {file_target.rel_path} — "
+            f"returned line {result.get('start_line')}; others at line(s): {_other}. "
+            f"Add #2/#3 to select a specific occurrence.",
+            err=True,
+        )
+
     # Symbol-level stale-edit hint: warn the agent when the symbol body has changed
     # since the session's last snapshot of this file.  Only fires for symbol reads
     # (not section/line-range reads) when a session_id is provided.  Emitted to
@@ -1697,7 +1710,7 @@ _STUB_VIEW_MAX_SYMBOLS: int = 80
 #: Internal stat fields stored in ``SymbolResult`` / ``SectionResult`` dicts that
 #: are never forwarded to callers — they drive savings accounting only.
 #: Defined once here to avoid repeating the same tuple in every JSON-emission site.
-_INTERNAL_RESULT_FIELDS: frozenset[str] = frozenset({"bytes_total", "bytes_extracted"})
+_INTERNAL_RESULT_FIELDS: frozenset[str] = frozenset({"bytes_total", "bytes_extracted", "ambiguous_at_lines"})
 
 
 def _format_stub_line(name: str, kind: str, line: int, signature: str | None) -> str:
