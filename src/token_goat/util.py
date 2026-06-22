@@ -14,7 +14,7 @@ import subprocess
 import sys
 from logging import Logger
 from subprocess import CompletedProcess
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from .render.ansi import strip_ansi as strip_ansi
 
@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = [
+    "FALSY_ENV_VALUES",
+    "TRUTHY_ENV_VALUES",
     "configure_stdout_encoding",
     "ellipsize",
     "env_float",
@@ -39,6 +41,12 @@ __all__ = [
     "strip_lower",
     "utf8_bytes",
 ]
+
+# Canonical truthy/falsy env-var value sets.  Centralises three identical
+# frozenset literals previously duplicated in config.py (_TRUTHY_ENV_VALUES /
+# _FALSY_ENV_VALUES), hooks_read.py (_FALSY_ENV), and worker.py (_TRUTHY_ENV).
+FALSY_ENV_VALUES: Final[frozenset[str]] = frozenset(("0", "false", "no", "off"))
+TRUTHY_ENV_VALUES: Final[frozenset[str]] = frozenset(("1", "true", "yes", "on"))
 
 
 def get_logger(name: str) -> Logger:

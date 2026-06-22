@@ -70,6 +70,7 @@ from .hooks_common import (
     validate_cwd,
 )
 from .hooks_common import LOG as _LOG
+from .util import FALSY_ENV_VALUES as _FALSY_ENV
 from .util import env_int as _env_int
 from .util import safe_stat_size as _safe_stat_size
 from .util import sanitize_surrogates as _sanitize_surrogates
@@ -81,7 +82,6 @@ from .util import utf8_bytes
 # value (including unset) leaves compression enabled.  Matches the pattern used
 # by compact_assist for consistency.
 _ENV_BASH_COMPRESS = "TOKEN_GOAT_BASH_COMPRESS"
-_FALSY_ENV: frozenset[str] = frozenset(("0", "false", "no", "off"))
 
 # Monotonically increasing counter incremented at the top of pre_read on every tool call.
 # Stored in FileEntry.last_read_call_index so the recent-read suppression window can

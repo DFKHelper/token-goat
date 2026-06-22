@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, TypedDict, cast
 
 from . import paths
-from .util import get_logger, strip_lower
+from .util import FALSY_ENV_VALUES, TRUTHY_ENV_VALUES, get_logger, strip_lower
 
 _LOG = get_logger("config")
 
@@ -90,8 +90,11 @@ CONFIG_SCHEMA_VERSION: Final[int] = 1
 
 _VALID_TRIGGERS: Final[frozenset[str]] = frozenset(["manual", "auto"])
 
-_FALSY_ENV_VALUES: Final[frozenset[str]] = frozenset(["0", "false", "no", "off"])
-_TRUTHY_ENV_VALUES: Final[frozenset[str]] = frozenset(["1", "true", "yes", "on"])
+# These aliases preserve backward compatibility for repomap.py, which imports
+# _cfg._FALSY_ENV_VALUES / _cfg._TRUTHY_ENV_VALUES directly.  The canonical
+# definitions now live in util.FALSY_ENV_VALUES / util.TRUTHY_ENV_VALUES.
+_FALSY_ENV_VALUES = FALSY_ENV_VALUES
+_TRUTHY_ENV_VALUES = TRUTHY_ENV_VALUES
 
 
 def _apply_env_enable(cfg_obj: Any, attr: str, env_key: str, label: str) -> None:
