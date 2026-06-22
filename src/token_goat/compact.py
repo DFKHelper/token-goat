@@ -2164,11 +2164,24 @@ def _is_noop_bash_command(entry: object) -> bool:
     return False
 
 
+def _bash_history_values(bash_history: object) -> list[Any]:
+    """Return bash_history entry values, or [] if the history is absent/empty/wrong type."""
+    if not isinstance(bash_history, dict) or not bash_history:
+        return []
+    return list(bash_history.values())
+
+
+def _edited_file_count(cache: object) -> int:
+    """Return the number of edited files recorded in *cache*, or 0 if unavailable."""
+    edited = getattr(cache, "edited_files", None)
+    return len(edited) if isinstance(edited, dict) else 0
+
+
 def _select_failed_bash_entries(bash_history: object, now_ts: float) -> list[object]:
     """Return up to :data:`_MAX_BLOCKER_ENTRIES` recently-failed bash commands.
 
     A "failure" is any entry whose ``exit_code`` is a real integer != 0.
-    Entries with ``exit_code=None`` (unknown / not captured) are excluded —
+    Entries with ``exit_code=None`` (unknown / not captured) are excluded—
     we cannot assert they failed, so surfacing them as blockers would be noisy.
 
     Only commands run within the last :data:`_BLOCKER_STALE_SECS` seconds (60
@@ -2180,13 +2193,14 @@ def _select_failed_bash_entries(bash_history: object, now_ts: float) -> list[obj
     as :func:`_select_top_bash_entries` — legacy or test SessionCache instances
     may not have the field.
     """
-    if not isinstance(bash_history, dict) or not bash_history:
+    entries = _bash_history_values(bash_history)
+    if not entries:
         return []
     cutoff = now_ts - _BLOCKER_STALE_SECS
     candidates = [
-        e for e in bash_history.values()
+        e for e in entries
         if isinstance(getattr(e, "exit_code", None), int)
-        and e.exit_code != 0  # type: ignore[union-attr]  # e is object from bash_history.values(); isinstance(getattr(...), int) check above guarantees exit_code exists
+        and e.exit_code != 0
         and getattr(e, "ts", 0.0) >= cutoff
     ]
     if not candidates:
@@ -2202,7 +2216,7 @@ def _session_activity_score(cache: SessionCache) -> int:
 
     Returns a non-negative integer; higher means more session activity.
     """
-    edited_count = len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0
+    edited_count = _edited_file_count(cache)
     bash_count = len(getattr(cache, "bash_history", None) or {})
     web_count = len(getattr(cache, "web_history", None) or {})
     skill_count = len(getattr(cache, "skill_history", None) or {})
@@ -2772,10 +2786,11 @@ def _select_what_worked(bash_history: object, blocker_ids: set[object]) -> list[
     *bash_history* is typed as ``object`` for the same defensive reason as
     :func:`_select_top_bash_entries` — legacy/test fixtures may not supply a dict.
     """
-    if not isinstance(bash_history, dict) or not bash_history:
+    entries = _bash_history_values(bash_history)
+    if not entries:
         return []
     candidates = [
-        e for e in bash_history.values()
+        e for e in entries
         if getattr(e, "exit_code", None) == 0
         and _is_test_command(e)
         and getattr(e, "output_id", None) not in blocker_ids
@@ -2887,12 +2902,13 @@ def _extract_test_failures(bash_history: object) -> list[str]:
     available, or no ``FAILED`` lines are found.  All errors are swallowed
     — manifest construction must never raise.
     """
-    if not isinstance(bash_history, dict) or not bash_history:
+    entries = _bash_history_values(bash_history)
+    if not entries:
         return []
 
     # Collect test-runner entries, sorted most-recent first.
     test_entries = sorted(
-        (e for e in bash_history.values() if _is_test_command(e)),
+        (e for e in entries if _is_test_command(e)),
         key=lambda e: getattr(e, "ts", 0.0),
         reverse=True,
     )
@@ -2968,11 +2984,12 @@ def _extract_dep_changes(bash_history: object) -> list[str]:
     Returns an empty list when no relevant commands are found or all fail.
     All errors are swallowed.
     """
-    if not isinstance(bash_history, dict) or not bash_history:
+    entries = _bash_history_values(bash_history)
+    if not entries:
         return []
 
     dep_entries = sorted(
-        (e for e in bash_history.values() if _is_dep_command(e)),
+        (e for e in entries if _is_dep_command(e)),
         key=lambda e: getattr(e, "ts", 0.0),
         reverse=True,
     )
@@ -3963,7 +3980,7 @@ def compute_adaptive_budget(
     min_total = 200
 
     # Edited files bonus: 50 tokens per file, capped at 200
-    edited_count = len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0
+    edited_count = _edited_file_count(cache)
     edited_bonus = min(200, edited_count * 50)
 
     # Symbols accessed files bonus: 30 tokens per file, capped at 150
@@ -4045,7 +4062,7 @@ def _compute_budget_multiplier(
     _TEST_FAILURES_THRESHOLD: int = 5
     _ESCALATED_MULTIPLIER: float = 2.5
 
-    edited_count = len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0
+    edited_count = _edited_file_count(cache)
     if edited_count > _EDITED_FILES_THRESHOLD:
         return max(base_multiplier, _ESCALATED_MULTIPLIER)
 
@@ -4108,7 +4125,7 @@ def build_manifest_adaptive(session_id: str) -> str:
         budget,
         _session_age_tier(age_seconds),
         pressure.tier,
-        len(cache.edited_files) if isinstance(cache.edited_files, dict) else 0,
+        _edited_file_count(cache),
         sum(1 for e in cache.files.values() if e.symbols_read),
         bool(getattr(cache, "bash_history", None) and cache.bash_history),
         bool(getattr(cache, "web_history", None) and cache.web_history),
