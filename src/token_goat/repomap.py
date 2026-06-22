@@ -256,14 +256,15 @@ def _get_excluded_prefixes() -> tuple[str, ...]:
     The ``TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS=0`` env var overrides the config.
     """
     import os
+
+    from . import config as _cfg
     env_val = os.environ.get("TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS", "").strip().lower()
-    if env_val in ("0", "false", "no", "off"):
+    if env_val in _cfg._FALSY_ENV_VALUES:
         exclude_tests = False
-    elif env_val in ("1", "true", "yes", "on"):
+    elif env_val in _cfg._TRUTHY_ENV_VALUES:
         exclude_tests = True
     else:
         try:
-            from . import config as _cfg
             exclude_tests = _cfg.load().repomap.exclude_tests
         except (OSError, ValueError, AttributeError):
             exclude_tests = True

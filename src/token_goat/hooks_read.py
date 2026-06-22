@@ -79,6 +79,7 @@ from .util import utf8_bytes as _utf8_bytes
 # value (including unset) leaves compression enabled.  Matches the pattern used
 # by compact_assist for consistency.
 _ENV_BASH_COMPRESS = "TOKEN_GOAT_BASH_COMPRESS"
+_FALSY_ENV: frozenset[str] = frozenset(("0", "false", "no", "off"))
 
 # Monotonically increasing counter incremented at the top of pre_read on every tool call.
 # Stored in FileEntry.last_read_call_index so the recent-read suppression window can
@@ -231,7 +232,7 @@ def _bash_compress_enabled() -> bool:
     import os
 
     val = os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower()
-    return val not in ("0", "false", "no", "off")
+    return val not in _FALSY_ENV
 
 
 def _resolve_compression_profile(harness: str, config_profile: str) -> str:
@@ -4784,7 +4785,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                     _pr_start, _pr_end, _pr_total = _partial
                     _pr_ext = Path(file_path).suffix.lower()
                     import os as _os
-                    _pr_disabled = _os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in {"0", "false", "no", "off"}
+                    _pr_disabled = _os.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in _FALSY_ENV
                     try:
                         from . import config as _cfg_trunc
                         _pr_min = _cfg_trunc.load().hints.truncated_read_min_lines
@@ -4814,7 +4815,7 @@ def post_read(payload: HookPayload) -> HookResponse:
                     return continue_with_message(_note + _mem_body)
             # Structural code compression: for large source files replace verbatim content with a skeleton that keeps only signatures and imports.
             import os as _os_cc
-            _cc_disabled = _os_cc.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in {"0", "false", "no", "off"}
+            _cc_disabled = _os_cc.environ.get(_ENV_BASH_COMPRESS, "").strip().lower() in _FALSY_ENV
             if not _cc_disabled and _resp_text:
                 _cc_ext = Path(file_path).suffix.lower()
                 _cc_line_count = _resp_text.count("\n") + 1

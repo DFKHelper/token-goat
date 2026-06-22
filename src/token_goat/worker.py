@@ -62,6 +62,8 @@ from . import db, parser, paths
 from .hooks_common import sanitize_log_str
 from .project import Project
 
+_TRUTHY_ENV: Final[frozenset[str]] = frozenset(("1", "true", "yes", "on"))
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
@@ -1911,7 +1913,7 @@ def spawn_detached() -> int | None:
 
     creationflags = _detach_creationflags()
 
-    if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in ("1", "true", "yes", "on"):
+    if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in _TRUTHY_ENV:
         _LOG.debug("spawn_detached suppressed: TOKEN_GOAT_NO_WORKER_SPAWN is set")
         return None
 
@@ -2085,7 +2087,7 @@ def spawn_index_detached(project_root: str, project_hash: str) -> int | None:
         )
         return None
 
-    if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in ("1", "true", "yes", "on"):
+    if os.environ.get("TOKEN_GOAT_NO_WORKER_SPAWN", "").strip().lower() in _TRUTHY_ENV:
         _LOG.debug("spawn_index_detached suppressed: TOKEN_GOAT_NO_WORKER_SPAWN is set")
         return None
 
