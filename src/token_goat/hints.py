@@ -1237,7 +1237,7 @@ def _hint_from_cache(
         max_line = max(cached_end for cached_start, cached_end in entry.line_ranges)
         if cfg is not None:
             try:
-                _min_lines = cfg.hints.min_file_lines_for_hint
+                _min_lines = cfg.hints.min_file_lines_for_hint  # type: ignore[attr-defined]
             except AttributeError:
                 _min_lines = config.load().hints.min_file_lines_for_hint
         else:
@@ -2304,7 +2304,7 @@ def _curator_should_emit(cache: session.SessionCache, cfg_obj: object | None = N
 
             cfg = _config.load().curator
         else:
-            cfg = getattr(cfg_obj, "curator", None)
+            cfg = getattr(cfg_obj, "curator", None)  # type: ignore[assignment]
             if cfg is None:
                 return True
 
@@ -2413,7 +2413,7 @@ def _hint_budget_check(cache: session.SessionCache, hint_kind: str, cfg_obj: obj
 
             cfg = _config.load().hint_budget
         else:
-            cfg = getattr(cfg_obj, "hint_budget", None)
+            cfg = getattr(cfg_obj, "hint_budget", None)  # type: ignore[assignment]
             if cfg is None:
                 return True
 

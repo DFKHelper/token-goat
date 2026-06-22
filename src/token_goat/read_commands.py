@@ -1127,7 +1127,7 @@ def _run_read_like_command(
     # Duplicate-heading hint: when read_section returned the first of multiple sections
     # sharing the same heading name, surface a stderr warning so the agent knows to
     # use the #N ordinal suffix next time.  Emitted before the body so it is visible.
-    _ambiguous = result.get("ambiguous_at_lines")
+    _ambiguous: list[int] | None = result.get("ambiguous_at_lines")  # type: ignore[assignment]
     if _ambiguous and not json_output:
         _other = ", ".join(str(ln) for ln in _ambiguous)
         typer.echo(
