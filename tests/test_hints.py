@@ -1746,7 +1746,7 @@ class TestHintsEdgeCases:
 
 
 class TestHintThrottleByFileSize:
-    """Test that small files (< 30 lines) with single read don't emit hints."""
+    """Test that small files (< 60 lines) with single read don't emit hints."""
 
     def test_small_file_10_lines_single_read_no_hint(self, tmp_data_dir):
         """A 10-line file with only 1 prior read should not emit a hint.
@@ -1771,9 +1771,9 @@ class TestHintThrottleByFileSize:
         assert hint is None
 
     def test_small_file_25_lines_multiple_reads_with_overlap_emits_hint(self, tmp_data_dir):
-        """A 25-line file (< 30) with 3 reads and overlap (not exact) should emit.
+        """A 25-line file (< 60) with 3 reads and overlap (not exact) should emit.
 
-        The small-file suppression (skip when <30 lines AND read_count==1) should
+        The small-file suppression (skip when <60 lines AND read_count==1) should
         NOT apply when read_count > 1. Overlap hint fires because it's > 50 lines.
         """
         sid = "s_small_25_3_reads_overlap"
@@ -1798,8 +1798,7 @@ class TestHintThrottleByFileSize:
     def test_large_file_100_lines_emits_hint(self, tmp_data_dir):
         """A 100-line file with single read should emit a hint.
 
-        Files >= 30 lines should always emit hints when there is overlap,
-        regardless of read count.
+        Files >= 60 lines should emit hints when there is overlap, regardless of read count.
         """
         sid = "s_large_1_read"
         path = "C:/proj/medium.py"
@@ -1820,14 +1819,10 @@ class TestHintThrottleByFileSize:
         assert "waste" in hint.lower()
 
     def test_exactly_30_lines_boundary_emits_hint(self, tmp_data_dir):
-        """A 30-line file (boundary) should emit a hint when not subject to surgical intent.
+        """A file cached over 100 lines (above the 60-line threshold) emits a hint.
 
-        The threshold _MIN_LINES_FOR_HINT = 30 is inclusive on the boundary.
-        Since 30 lines <= NARROW_EXPLICIT_READ_LINES (50), exact-match surgical
-        intent guard applies. Use a non-exact overlap instead (30 lines cached,
-        request 100 lines → 30-line overlap which is still < 50, so no overlap
-        hint either). Instead, request from offset 0 without explicit limit,
-        or mark a larger range. Use the latter.
+        Marks 100 lines (> _MIN_LINES_FOR_HINT = 60) so the single-read suppression
+        does not apply; then re-reads the same range to confirm the dedup hint fires.
         """
         sid = "s_boundary_30"
         path = "C:/proj/boundary.py"
@@ -1849,6 +1844,28 @@ class TestHintThrottleByFileSize:
         assert hint is not None
         assert "⌘" in hint  # terse form of "cached"
         assert "waste" in hint.lower()
+
+    def test_mid_range_50_lines_single_read_suppressed(self, tmp_data_dir):
+        """A 50-line file with only 1 prior read should not emit a hint.
+
+        Previously _MIN_LINES_FOR_HINT=30 allowed hints for 30-59 line files.
+        Raising the threshold to 60 means files in this range with a single read
+        are now suppressed — the hint ROI is too low for files this small.
+        """
+        sid = "s_mid_50_1read"
+        path = "C:/proj/mid50.py"
+        # Mark as read with 50-line span
+        _mark(tmp_data_dir, sid, path, offset=0, limit=50)
+
+        hint = build_read_hint(
+            session_id=sid,
+            file_path=path,
+            offset=0,
+            limit=50,
+            cwd=None,
+        )
+        # Should be suppressed: 50 lines < _MIN_LINES_FOR_HINT (60), read_count == 1
+        assert hint is None
 
     def test_sentinel_full_file_hint(self, tmp_data_dir):
         """Full-file collapse sentinel [(0, 0)] generates a summary hint."""

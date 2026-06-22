@@ -619,10 +619,8 @@ _MAX_CACHED_RANGES_DISPLAY: Final[int] = 10
 _NARROW_EXPLICIT_READ_LINES = MIN_OVERLAP_TO_WARN
 
 # Minimum line count for a file to warrant an "already read" hint.
-# Tiny files (< 30 lines) are cheap to re-read; the hint itself (~25 tokens)
-# costs almost as much as the saving it advertises, making the nudge net-negative.
-# Skip hints entirely for small files with only a single prior read.
-_MIN_LINES_FOR_HINT = 30
+# Small files (< 60 lines) are cheap to re-read; the hint itself (~25 tokens) costs a significant fraction of the saving it would advertise, making the nudge net-negative or barely break-even for these sizes. Skip dedup hints for files that fall below this threshold. The threshold was raised from 30 to 60 because files in the 30–59 line range still produce a poor hint ROI: the saving is at most ~1000 tokens while the hint burns ~25–40 tokens, leaving only a 25–40× gain — fine for very large files but not compelling enough to interrupt the agent's flow for small ones.
+_MIN_LINES_FOR_HINT = 60
 
 
 class ReadHint(str):
@@ -1283,19 +1281,30 @@ def _hint_from_cache(
     # (does not include the dynamic read count) so the fingerprint dedup in
     # pre_read suppresses it after the first injection — the model hears the
     # suggestion exactly once and is not nagged on subsequent accesses.
+    # Guard: skip the nudge for small files (< _MIN_LINES_FOR_HINT lines).
+    # A 50-line file re-read 5 times is still cheap to re-read; the surgical-read
+    # suggestion only pays off when the file is large enough that fetching a symbol
+    # slice saves meaningful tokens vs. a full read.
     if entry.read_count >= _SUPPRESS_HINT_AT_READ_COUNT and entry.line_ranges:
-        sym_suffix = _symbols_suffix(entry.symbols_read)
-        _LOG.debug(
-            "_hint_from_cache: surgical-read nudge for %s (working file: read_count=%d)",
-            fname, entry.read_count,
-        )
-        return ReadHint(
-            _apply_terse(
-                f"`{fname}` re-read often{sym_suffix}. "
-                f"{_CMD_READ_SYM_SURGICAL.format(path=recall_path)}"
-            ),
-            0,
-        )
+        _nudge_max_line = max(cached_end for cached_start, cached_end in entry.line_ranges)
+        if _nudge_max_line < _MIN_LINES_FOR_HINT:
+            _LOG.debug(
+                "_hint_from_cache: suppressing surgical-read nudge for %s (small file: %d lines, read_count=%d)",
+                fname, _nudge_max_line, entry.read_count,
+            )
+        else:
+            sym_suffix = _symbols_suffix(entry.symbols_read)
+            _LOG.debug(
+                "_hint_from_cache: surgical-read nudge for %s (working file: read_count=%d)",
+                fname, entry.read_count,
+            )
+            return ReadHint(
+                _apply_terse(
+                    f"`{fname}` re-read often{sym_suffix}. "
+                    f"{_CMD_READ_SYM_SURGICAL.format(path=recall_path)}"
+                ),
+                0,
+            )
 
     # Suppress hints for very small files (< 30 lines) with only a single prior read.
     # The hint text itself (~25 tokens) costs almost as much as the saving it advertises,
