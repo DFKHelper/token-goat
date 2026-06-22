@@ -952,7 +952,7 @@ def _run_read_like_command(
         )
         raise typer.Exit(2)
 
-    file_part, _, item_part = target.partition("::")
+    file_part, _, item_part = target.rpartition("::")
 
     try:
         file_target = _resolve_file_target(file_part)
@@ -1392,7 +1392,7 @@ def _run_read_line_range(
     confirms the item part is a ``start-end`` integer pair.  Resolves the file,
     reads the requested lines, emits result, and records stats.
     """
-    file_part, _, item_part = target.partition("::")
+    file_part, _, item_part = target.rpartition("::")
     range_parsed = read_replacement.parse_line_range(item_part)
     if range_parsed is None:
         _emit_read_error(
@@ -1508,7 +1508,7 @@ def read(
     # Route line-range syntax ``file::N-M`` to a dedicated handler that skips
     # the symbol DB entirely and slices the file directly by line numbers.
     if "::" in target:
-        _, _, item_part = target.partition("::")
+        _, _, item_part = target.rpartition("::")
         if read_replacement.parse_line_range(item_part) is not None:
             _run_read_line_range(
                 target=target,
@@ -2585,7 +2585,7 @@ def refs(
         )
         raise typer.Exit(1)
 
-    file_part, _, symbol_name = target.partition("::")
+    file_part, _, symbol_name = target.rpartition("::")
     symbol_name = symbol_name.strip()
     file_part = file_part.strip()
 
@@ -3320,7 +3320,7 @@ def blame(
         )
         raise typer.Exit(2)
 
-    file_part, _, symbol_name = target.partition("::")
+    file_part, _, symbol_name = target.rpartition("::")
     file_part = file_part.strip()
     symbol_name = symbol_name.strip()
 
