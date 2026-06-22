@@ -744,8 +744,8 @@ def query_worker_status() -> dict[str, object]:
     try:
         from . import config as _cfg
         pool_size = _cfg.load().worker.max_pool_workers
-    except Exception:
-        pass
+    except Exception as e:
+        _LOG.debug("query_worker_status: failed to load config, using default pool_size: %s", e)
 
     autostart: str | None = None
     autostart_active: bool | None = None
@@ -767,21 +767,23 @@ def query_worker_status() -> dict[str, object]:
                     autostart_active = True
                 except FileNotFoundError:
                     autostart_active = False
-        except Exception:
+        except OSError as e:
+            _LOG.debug("query_worker_status: failed to check Windows autostart registry: %s", e)
             autostart_active = None
     elif sys.platform.startswith("linux") or sys.platform == "darwin":
         from . import install
         if install._systemd_service_path().exists():
             autostart = "systemd"
+            import subprocess  # noqa: PLC0415
             try:
-                import subprocess
                 result = subprocess.run(
                     ["systemctl", "--user", "is-active", f"{install.SYSTEMD_SERVICE_NAME}.service"],
                     capture_output=True,
                     timeout=5,
                 )
                 autostart_active = result.returncode == 0
-            except Exception:
+            except (OSError, subprocess.TimeoutExpired) as e:
+                _LOG.debug("query_worker_status: failed to check systemd service status: %s", e)
                 autostart_active = None
         else:
             from . import install as _inst
@@ -803,8 +805,8 @@ def query_worker_status() -> dict[str, object]:
             lines = [ln for ln in text.splitlines() if ln.strip()]
             if lines:
                 last_log_line = lines[-1]
-    except Exception:
-        pass
+    except OSError as e:
+        _LOG.debug("query_worker_status: failed to read log file: %s", e)
 
     return {
         "running": running,
