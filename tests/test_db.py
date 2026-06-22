@@ -564,7 +564,7 @@ def test_open_global_close_error_does_not_propagate(tmp_data_dir):
 # 19. Index optimization: composite indexes for read_symbol / read_section
 # ---------------------------------------------------------------------------
 
-def test_composite_indexes_present(tmp_data_dir):
+def test_composite_indexes_present(module_tmp_data_dir):
     """The (file_rel, name) and (file_rel, heading) composite indexes are
     required for read_symbol / read_section's hot lookups.  Without them the
     planner falls back to a single-column index and filters in memory, which
@@ -582,7 +582,7 @@ def test_composite_indexes_present(tmp_data_dir):
     assert "idx_sections_file_heading" in idx_names, idx_names
 
 
-def test_read_symbol_query_uses_composite_index(tmp_data_dir):
+def test_read_symbol_query_uses_composite_index(module_tmp_data_dir):
     """EXPLAIN QUERY PLAN must confirm the symbols(file_rel,name) composite
     index is selected for the (file_rel = ? AND name = ?) lookup pattern used
     by read_symbol().  A regression to a single-column index would cause the
@@ -601,7 +601,7 @@ def test_read_symbol_query_uses_composite_index(tmp_data_dir):
     assert "idx_symbols_file_name" in plan_text, plan_text
 
 
-def test_read_section_query_uses_composite_index(tmp_data_dir):
+def test_read_section_query_uses_composite_index(module_tmp_data_dir):
     h = "abcdef0123456789abcdef0123456789abcdef03"
     with db.open_project(h) as conn:
         plan_rows = conn.execute(
