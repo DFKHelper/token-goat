@@ -102,15 +102,15 @@ class LineRangeResult(TypedDict):
     bytes_saved: int
 
 
-# Regex matching the ``start-end`` line-range suffix, e.g. ``100-200``.
+# Regex matching the ``start-end`` line-range suffix, e.g. ``100-200`` or ``@100-200``.
 # Both numbers are required; ``start`` must be ≥ 1; ``end`` ≥ ``start`` is
 # validated at runtime.  The pattern is anchored so ``read_symbol`` fallback
 # for names like ``MY-CONST`` is not mis-parsed as a range.
-_LINE_RANGE_RE = re.compile(r"^(\d+)-(\d+)$")
+_LINE_RANGE_RE = re.compile(r"^@?(\d+)-(\d+)$")
 
 
 def parse_line_range(item: str) -> tuple[int, int] | None:
-    """Return ``(start, end)`` when *item* matches ``"N-M"`` syntax, else ``None``.
+    """Return ``(start, end)`` when *item* matches ``"N-M"`` or ``"@N-M"`` syntax, else ``None``.
 
     Validates that both numbers are positive integers and that start ≤ end.
     A match of ``"0-5"`` returns ``None`` because line numbers are 1-based.
