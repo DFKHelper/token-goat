@@ -81,22 +81,25 @@ def _warn(msg: str) -> None:
 
 def _require_project(
     msg: str = "no project detected — run from a project directory",
+    *,
+    root: Path | None = None,
 ) -> Project:
     """Return the current project or exit with code 1.
 
     Centralises the repeated pattern::
 
-        proj = find_project(Path.cwd())
+        proj = find_project(root or Path.cwd())
         if proj is None:
             _error("...")
             raise typer.Exit(1)
 
     All callers that import ``find_project`` at module scope can use this
     instead; it performs the import lazily so startup time is unaffected.
+    Pass *root* to search from a directory other than ``Path.cwd()``.
     """
     from .project import find_project
 
-    proj = find_project(Path.cwd())
+    proj = find_project(root if root is not None else Path.cwd())
     if proj is None:
         _error(msg)
         raise typer.Exit(1)
@@ -3630,13 +3633,8 @@ def memory_cmd(
     from pathlib import Path
 
     from . import project_memory
-    from .project import find_project
-
     root = Path(project_dir) if project_dir else Path(os.getcwd())
-    proj = find_project(root)
-    if proj is None:
-        typer.echo("Not in an indexed project root.", err=True)
-        raise typer.Exit(1)
+    proj = _require_project("Not in an indexed project root.", root=root)
 
     if action == "show":
         entries = project_memory.load_entries(proj.hash)
@@ -3676,13 +3674,8 @@ def git_history_cmd(
     from pathlib import Path
 
     from . import git_history
-    from .project import find_project
-
     cwd = Path(os.getcwd())
-    proj = find_project(cwd)
-    if proj is None:
-        typer.echo("Not in an indexed project root.", err=True)
-        raise typer.Exit(1)
+    proj = _require_project("Not in an indexed project root.", root=cwd)
 
     try:
         abs_file = Path(file) if Path(file).is_absolute() else (cwd / file)
@@ -4372,12 +4365,7 @@ def ignores(
         SKIP_FILE_SUFFIXES,
         load_project_ignore_patterns,
     )
-    from .project import find_project
-
-    proj = find_project(Path.cwd())
-    if proj is None:
-        _error("no project detected — run from a project directory")
-        raise typer.Exit(1)
+    proj = _require_project()
 
     ignore_patterns = load_project_ignore_patterns(proj.root)
     ignore_file = _paths.project_ignore_file_path(proj.root)
@@ -6199,8 +6187,6 @@ def cmd_compact_doc(
         token-goat compact-doc docs/api-reference.md --sentences 3 --show
     """
     from . import doc_compact as _dc
-    from .project import find_project
-
     abs_path = Path(path).resolve()
     if not abs_path.exists():
         _error(f"File not found: {_format_path_output(abs_path)}")
@@ -6210,10 +6196,7 @@ def cmd_compact_doc(
         _error(f"Only .md / .markdown files are supported (got {suffix!r}).")
         raise typer.Exit(1)
 
-    proj = find_project(abs_path.parent)
-    if proj is None:
-        _error("Could not find a token-goat project for this path. Is token-goat installed in this repo?")
-        raise typer.Exit(1)
+    proj = _require_project("Could not find a token-goat project for this path. Is token-goat installed in this repo?", root=abs_path.parent)
 
     compact_path = _dc.compact_path_for(abs_path, proj.hash)
 
@@ -9554,13 +9537,8 @@ def cmd_export(
 
     _db = _lazy_import("db")
 
-    from .project import find_project
-
     root = _Path(project) if project else _Path(os.getcwd())
-    proj = find_project(root)
-    if proj is None:
-        _error("no project detected — run from a project directory or pass --project")
-        raise typer.Exit(1)
+    proj = _require_project("no project detected — run from a project directory or pass --project", root=root)
 
     fmt_lower = fmt.lower()
     if fmt_lower not in {"json", "csv", "ctags"}:
