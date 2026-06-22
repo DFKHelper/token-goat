@@ -1971,15 +1971,40 @@ class Filter(BaseFilter):
         )
 
 
+#: Lines longer than this in fallback-truncate output are capped to preserve context budget. Minified JS, base64 blobs, and long JSON values regularly exceed this without carrying proportionally more signal.
+_FALLBACK_MAX_LINE_CHARS = 400
+
+
+def _cap_long_lines(lines: list[str], max_chars: int = _FALLBACK_MAX_LINE_CHARS) -> list[str]:
+    """Truncate individual lines that exceed *max_chars* with an inline marker.
+
+    Targets pathologically long output lines (minified JS, base64 blobs, long
+    JSON/XML values) that inflate byte counts without adding proportional signal.
+    Lines within budget are returned unchanged.
+    """
+    out = []
+    for line in lines:
+        if len(line) > max_chars:
+            out.append(line[:max_chars] + f"  … [{len(line) - max_chars} chars elided]")
+        else:
+            out.append(line)
+    return out
+
+
 def _fallback_truncate(stdout: str, stderr: str, max_lines: int) -> str:
     """Produce a head/tail-truncated dump when a filter cannot run normally.
 
     Used when input exceeds the inspect budget or when a filter raises.
     Combines stdout + stderr (each separately truncated) and includes a
     clear ``---`` separator so the model can tell them apart.
+
+    Applies ``dedupe_consecutive`` and ``_cap_long_lines`` before truncation so
+    that repeated identical lines and pathologically long lines (minified JS,
+    base64 blobs) are collapsed/trimmed first, preserving more unique signal
+    within the line and byte budget.
     """
-    out_lines = truncate_middle(stdout.split("\n"), max_lines // 2)
-    err_lines = truncate_middle(stderr.split("\n"), max_lines // 2)
+    out_lines = truncate_middle(_cap_long_lines(dedupe_consecutive(stdout.split("\n"))), max_lines // 2)
+    err_lines = truncate_middle(_cap_long_lines(dedupe_consecutive(stderr.split("\n"))), max_lines // 2)
     if stderr:
         return "\n".join(out_lines) + "\n---\n" + "\n".join(err_lines)
     return "\n".join(out_lines)
