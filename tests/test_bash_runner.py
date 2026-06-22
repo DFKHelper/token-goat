@@ -212,6 +212,7 @@ class TestStatsRecording:
 
 
 class TestMaxTokensCap:
+    @pytest.mark.slow
     def test_max_tokens_zero_no_cap(self):
         """max_tokens=0 means no post-compress cap — large output passes through unchanged."""
         out_buf, _ = _captured_writers()

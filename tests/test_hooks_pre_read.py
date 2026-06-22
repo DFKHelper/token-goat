@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 
+import pytest
 from hook_helpers import assert_continue as _assert_continue
 from hook_helpers import run_hook_subprocess as _run_hook_subprocess
 
@@ -251,12 +252,14 @@ class TestPreReadCli:
     def _run_hook(self, payload: dict, tmp_data_dir) -> dict:
         return _run_hook_subprocess("pre-read", payload)
 
+    @pytest.mark.slow
     def test_cli_non_read_tool_no_hint(self, tmp_data_dir):
         payload = {"session_id": "cli1", "tool_name": "Bash", "tool_input": {"command": "pwd"}}
         result = self._run_hook(payload, tmp_data_dir)
         _assert_continue(result)
         assert "hookSpecificOutput" not in result
 
+    @pytest.mark.slow
     def test_cli_garbage_payload_continue(self, tmp_data_dir):
         """Garbage JSON payload → subprocess still exits 0, returns continue:true."""
         proc = subprocess.run(

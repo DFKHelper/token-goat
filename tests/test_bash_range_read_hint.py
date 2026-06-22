@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 
 def _bash_payload(command: str, session_id: str = "sess-1", cwd: str = "C:/proj") -> dict[str, Any]:
     return {
@@ -18,6 +20,11 @@ SKELETON = "   10  function  my_func\n   50  function  other_func"
 
 
 class TestHandleBashRangeReadHint:
+    @pytest.fixture(autouse=True)
+    def _no_db_stat(self, monkeypatch):
+        """Prevent db.record_stat from running expensive SQLite integrity checks."""
+        monkeypatch.setattr("token_goat.db.record_stat", lambda *a, **kw: None)
+
     def _call(self, command: str, skeleton: str = SKELETON, target: str = "/proj/foo.py") -> Any:
         from dataclasses import replace
 
