@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 import token_goat.paths as paths
 from token_goat import db, worker
 
@@ -48,6 +50,7 @@ def _global_wal_path():
     return p.with_name(p.name + "-wal")
 
 
+@pytest.mark.slow
 def test_checkpoint_global_wal_drains_a_bloated_wal(tmp_data_dir):
     """worker._checkpoint_global_wal must drain a WAL that grew under contention."""
     with db.open_global() as conn:
