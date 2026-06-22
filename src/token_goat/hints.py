@@ -718,6 +718,15 @@ def _est_tokens_from_chars(n_chars: int) -> int:
     return max(1, int(n_chars / CHARS_PER_TOKEN))
 
 
+def _format_content_type_str(obj: object) -> str:
+    """Return a display string for the content-type field of a web cache entry. Returns '' when absent or unrecognised."""
+    content_type = getattr(obj, "content_type", None)
+    if not content_type:
+        return ""
+    ct_parts = content_type.split("/")
+    return f" {ct_parts[1]}" if len(ct_parts) >= 2 else f" {content_type}"
+
+
 def _line_count(path: Path) -> int | None:
     """Cheap newline count; returns None on any error."""
     try:
@@ -3374,13 +3383,7 @@ def build_web_dedup_hint(
     status_str = (
         f" status={entry.status_code}" if entry.status_code is not None else ""
     )
-    # Format content-type for display (e.g., "html" from "text/html")
-    content_type_str = ""
-    content_type = getattr(entry, "content_type", None)
-    if content_type:
-        # Extract the main type: "text/html" → "html", "application/json" → "json"
-        ct_parts = content_type.split("/")
-        content_type_str = f" {ct_parts[1]}" if len(ct_parts) >= 2 else f" {content_type}"
+    content_type_str = _format_content_type_str(entry)
 
     from . import cache_common as _cc
 
@@ -3510,13 +3513,7 @@ def build_web_cache_hit_hint(
     status_str = (
         f" status={meta.status_code}" if meta.status_code is not None else ""
     )
-    # Format content-type for display (e.g., "html" from "text/html")
-    content_type_str = ""
-    content_type = getattr(meta, "content_type", None)
-    if content_type:
-        # Extract the main type: "text/html" → "html", "application/json" → "json"
-        ct_parts = content_type.split("/")
-        content_type_str = f" {ct_parts[1]}" if len(ct_parts) >= 2 else f" {content_type}"
+    content_type_str = _format_content_type_str(meta)
 
     short_id = _cc.short_output_id(meta.output_id)
     age_str = f"{int(age // 3600)}h" if age >= 3600 else f"{int(age // 60)}m"
