@@ -1199,8 +1199,6 @@ _NOISE_SEGMENTS: Final[tuple[str, ...]] = (
     "/htmlcov/", "/coverage_html_report/",
     # Hypothesis temporary state
     "/.hypothesis/",
-    # Ralph/automation loop-state and task tracking (ephemeral run artifacts)
-    "/tasks/",
     # Storybook / Playwright outputs
     "/storybook-static/", "/playwright-report/", "/test-results/",
     # Python packaging / hatch / nox / tox build isolation dirs
