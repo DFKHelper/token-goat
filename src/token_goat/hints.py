@@ -44,7 +44,7 @@ from typing import Any, Final, TypedDict, TypeVar, cast
 from . import config, db, session, snapshots
 from .hooks_common import load_session_safe, sanitize_log_str, validate_cwd
 from .project import find_project
-from .util import get_logger, json_compact, strip_lower
+from .util import get_logger, json_compact, safe_stat_size, strip_lower
 
 # Maximum entries in the recent_hints ring buffer stored per session.
 _RECENT_HINTS_MAX: int = 3
@@ -3800,9 +3800,8 @@ def _build_index_only_file_hint_inner(
         return None
 
     # Cheap size check — skip hint for tiny files.
-    try:
-        file_size = path.stat().st_size
-    except OSError:
+    file_size = safe_stat_size(path)
+    if file_size is None:
         return None
 
     if file_size < _INDEX_ONLY_MIN_BYTES:
@@ -4205,9 +4204,8 @@ def _build_structured_file_hint_inner(
         return None
 
     # Cheap size check first — skip the row-count probe for small files.
-    try:
-        file_size = path.stat().st_size
-    except OSError:
+    file_size = safe_stat_size(path)
+    if file_size is None:
         return None
 
     # New file types use per-category thresholds that are lower than the global
@@ -4672,9 +4670,8 @@ def _build_doc_compact_hint_inner(
                 return ReadHint(serve_text, tokens_saved)
 
     # No compact: if large markdown with sections, emit section-map hint
-    try:
-        stat_size = abs_path.stat().st_size
-    except OSError:
+    stat_size = safe_stat_size(abs_path)
+    if stat_size is None:
         return None
 
     if stat_size < _DOC_COMPACT_MIN_BYTES:

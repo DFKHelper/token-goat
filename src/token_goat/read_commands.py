@@ -106,6 +106,44 @@ def _not_indexed_hint(project_hash: str) -> str | None:
     return None
 
 
+def _require_symbol_name(symbol_name: str) -> str:
+    """Strip *symbol_name* and exit with code 1 if it is empty.
+
+    Centralises the repeated pattern::
+
+        symbol_name = symbol_name.strip()
+        if not symbol_name:
+            typer.echo("Symbol name cannot be empty", err=True)
+            raise typer.Exit(1)
+
+    found at 3 call sites in this module.  Returns the stripped name so the
+    caller can use it directly: ``symbol_name = _require_symbol_name(symbol_name)``.
+    """
+    symbol_name = symbol_name.strip()
+    if not symbol_name:
+        typer.echo("Symbol name cannot be empty", err=True)
+        raise typer.Exit(1)
+    return symbol_name
+
+
+def _emit_not_indexed_hint(current_project: object) -> None:
+    """Emit the "project not yet indexed" hint if available.
+
+    Centralises the repeated pattern::
+
+        hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
+        if hint:
+            typer.echo(hint)
+
+    found at 4 call sites in this module.  Accepts the ``current_project``
+    attribute value directly (may be None) so callers need not inline the guard.
+    """
+    if current_project is not None:
+        hint = _not_indexed_hint(getattr(current_project, "hash", ""))
+        if hint:
+            typer.echo(hint)
+
+
 # Maximum bytes hashed when computing a file-content SHA for the in-session
 # result cache.  Mirrors the 2 MB cap enforced by read_replacement._MAX_READ_BYTES
 # so the SHA is computed over exactly the contents that read_symbol/read_section
@@ -1875,9 +1913,7 @@ def outline(
             typer.echo(over_cap)
             raise typer.Exit(1)
         typer.echo(f"File not found in any indexed project: {file}")
-        hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
-        if hint:
-            typer.echo(hint)
+        _emit_not_indexed_hint(target.current_project)
         raise typer.Exit(1)
 
     proj = target.project
@@ -2424,9 +2460,7 @@ def exports(
     target = _resolve_file_target(file)
     if target.project is None or target.rel_path is None:
         typer.echo(f"File not found in any indexed project: {file}")
-        hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
-        if hint:
-            typer.echo(hint)
+        _emit_not_indexed_hint(target.current_project)
         raise typer.Exit(1)
 
     proj = target.project
@@ -2510,9 +2544,7 @@ def imports(
     target = _resolve_file_target(file_target)
     if target.project is None or target.rel_path is None:
         typer.echo(f"File not found in any indexed project: {file_target}")
-        hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
-        if hint:
-            typer.echo(hint)
+        _emit_not_indexed_hint(target.current_project)
         raise typer.Exit(1)
 
     proj = target.project
@@ -2599,9 +2631,7 @@ def refs(
     file_target = _resolve_file_target(file_part)
     if file_target.project is None or file_target.rel_path is None:
         typer.echo(f"File not found in any indexed project: {file_part}")
-        hint = _not_indexed_hint(file_target.current_project.hash) if file_target.current_project else None
-        if hint:
-            typer.echo(hint)
+        _emit_not_indexed_hint(file_target.current_project)
         raise typer.Exit(1)
 
     proj = file_target.project
@@ -2749,10 +2779,7 @@ def callers(
         typer.echo("No project detected — run from a project directory", err=True)
         raise typer.Exit(1)
 
-    symbol_name = symbol_name.strip()
-    if not symbol_name:
-        typer.echo("Symbol name cannot be empty", err=True)
-        raise typer.Exit(1)
+    symbol_name = _require_symbol_name(symbol_name)
 
     try:
         with db.open_project_readonly(proj.hash) as conn:
@@ -2969,10 +2996,7 @@ def call_chain(
         typer.echo("No project detected — run from a project directory", err=True)
         raise typer.Exit(1)
 
-    symbol_name = symbol_name.strip()
-    if not symbol_name:
-        typer.echo("Symbol name cannot be empty", err=True)
-        raise typer.Exit(1)
+    symbol_name = _require_symbol_name(symbol_name)
 
     try:
         with db.open_project_readonly(proj.hash) as conn:
@@ -3036,10 +3060,7 @@ def impact(symbol_name: str, *, json_output: bool = False) -> None:
         typer.echo("No project detected — run from a project directory", err=True)
         raise typer.Exit(1)
 
-    symbol_name = symbol_name.strip()
-    if not symbol_name:
-        typer.echo("Symbol name cannot be empty", err=True)
-        raise typer.Exit(1)
+    symbol_name = _require_symbol_name(symbol_name)
 
     _FK = ("function", "async_function", "method", "constructor")
 
@@ -3576,9 +3597,7 @@ def test_for(
     target = _resolve_file_target(file_target)
     if target.project is None or target.rel_path is None:
         typer.echo(f"File not found in any indexed project: {file_target}")
-        hint = _not_indexed_hint(target.current_project.hash) if target.current_project else None
-        if hint:
-            typer.echo(hint)
+        _emit_not_indexed_hint(target.current_project)
         raise typer.Exit(1)
 
     proj = target.project

@@ -71,6 +71,7 @@ from .hooks_common import (
 )
 from .hooks_common import LOG as _LOG
 from .util import env_int as _env_int
+from .util import safe_stat_size as _safe_stat_size
 from .util import sanitize_surrogates as _sanitize_surrogates
 from .util import strip_lower as _strip_lower
 from .util import utf8_bytes
@@ -2290,9 +2291,8 @@ def _handle_large_read_redirect(
         return None
     if Path(file_path).suffix.lower() in _BINARY_EXTENSIONS:
         return None
-    try:
-        size = Path(file_path).stat().st_size
-    except OSError:
+    size = _safe_stat_size(Path(file_path))
+    if size is None:
         return None
     if size < effective:
         return None
