@@ -32,6 +32,7 @@ __all__ = [
     "normalize_path",
     "run_git",
     "safe_json_load_file",
+    "safe_stat_size",
     "sanitize_control_chars",
     "sanitize_surrogates",
     "strip_ansi",
@@ -93,6 +94,32 @@ def safe_json_load_file(path: Path, *, errors: str = "strict") -> Any | None:
         raw = path.read_text(encoding="utf-8", errors=errors)
         return json.loads(raw)
     except (OSError, json.JSONDecodeError):
+        return None
+
+
+def safe_stat_size(path: Path) -> int | None:
+    """Return ``path.stat().st_size`` or ``None`` on any ``OSError``.
+
+    Centralises the repeated pattern::
+
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+
+    found at 6 call sites across hints.py, hooks_read.py, image_shrink.py,
+    and snapshots.py.  Callers can test the return value and return early if
+    None (file missing or inaccessible) before using the size.
+
+    Args:
+        path: File path to stat.
+
+    Returns:
+        File size in bytes, or None if the stat call fails.
+    """
+    try:
+        return path.stat().st_size
+    except OSError:
         return None
 
 

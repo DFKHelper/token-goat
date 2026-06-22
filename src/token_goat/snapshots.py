@@ -62,7 +62,7 @@ from typing import TYPE_CHECKING
 from . import paths
 from .cache_common import safe_cache_op
 from .hooks_common import sanitize_log_str
-from .util import get_logger
+from .util import get_logger, safe_stat_size
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -391,9 +391,8 @@ def load(
     p = snapshot_path(session_id, file_path)
     if p is None or not p.exists():
         return None
-    try:
-        size = p.stat().st_size
-    except OSError:
+    size = safe_stat_size(p)
+    if size is None:
         return None
     if size > MAX_SNAPSHOT_BYTES:
         _LOG.warning(

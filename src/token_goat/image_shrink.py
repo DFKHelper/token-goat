@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from PIL import Image as _PilImage
 
 from . import paths
-from .util import get_logger, strip_lower
+from .util import get_logger, safe_stat_size, strip_lower
 
 _LOG = get_logger("image_shrink")
 
@@ -606,9 +606,8 @@ def shrink(src_path: Path, *, _session_id: str | None = None) -> Path | None:
     # cheap extension test before the syscall so non-image paths skip stat entirely.
     if not is_image_path(src_path):
         return None
-    try:
-        src_size = src_path.stat().st_size
-    except OSError:
+    src_size = safe_stat_size(src_path)
+    if src_size is None:
         return None
     if src_size <= format_threshold(src_path):
         return None
