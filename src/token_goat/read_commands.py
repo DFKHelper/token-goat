@@ -1880,9 +1880,9 @@ def _format_outline_line(
     indent = "  " * depth
     range_str = f"{start_line}-{end_line}"
     line_count = end_line - start_line + 1
-    count_part = f"  ({line_count} lines)" if show_line_count else ""
+    count_part = f"({line_count}ℓ)" if show_line_count else ""
     doc_part = f"  # {docstring_line}" if docstring_line else ""
-    return f"{indent}  {range_str:<10}  {kind:<16}  {name}{count_part}{doc_part}"
+    return f"{indent}  {range_str:<10}  {kind:<12}  {name}  {count_part}{doc_part}"
 
 
 def outline(
@@ -3757,16 +3757,29 @@ _GREP_HEAD_LINES: int = 100
 _GREP_TAIL_LINES: int = 20
 
 
+def _dedupe_blank_lines(lines: list[str]) -> list[str]:
+    """Collapse consecutive blank lines to a single blank line."""
+    if not lines:
+        return lines
+    out = [lines[0]]
+    for line in lines[1:]:
+        if line.strip() or out[-1].strip():
+            out.append(line)
+    return out
+
+
 def _compress_grep_output(lines: list[str]) -> list[str]:
     """Compress *lines* to at most :data:`_GREP_MAX_LINES` lines.
 
     When the total line count exceeds the cap, the first
     :data:`_GREP_HEAD_LINES` lines are shown, followed by a
     ``... N more lines ...`` marker, then the last
-    :data:`_GREP_TAIL_LINES` lines.
+    :data:`_GREP_TAIL_LINES` lines. Collapses consecutive blank lines.
 
     Returns *lines* unchanged when the total is within the cap.
     """
+    total = len(lines)
+    lines = _dedupe_blank_lines(lines)
     total = len(lines)
     if total <= _GREP_MAX_LINES:
         return lines
