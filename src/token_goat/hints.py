@@ -889,6 +889,13 @@ def _build_read_hint_inner(
         except ValueError:
             pass  # file_path not under cwd — keep absolute path
 
+    # Load config once upfront to avoid repeated loads in curator/budget/threshold checks.
+    try:
+        from . import config as _cfg
+        _cfg_obj = _cfg.load()
+    except Exception:
+        _cfg_obj = None
+
     # 1. Check session cache first.
     # Load the cache once and pass it explicitly so _hint_from_cache can access
     # created_ts for the adaptive staleness threshold without a second disk read.
@@ -897,10 +904,10 @@ def _build_read_hint_inner(
     entry = session.get_file_entry(session_id, file_path, cache=cache)
     if entry is not None:
         # Curator: if the agent has been ignoring re-read dedup hints, stop emitting them.
-        if cache is None or not _curator_should_emit(cache):
+        if cache is None or not _curator_should_emit(cache, _cfg_obj):
             return None
         # Budget: hard cap on total dedup hints for the session.
-        if cache is not None and not _hint_budget_check(cache, _HINT_KIND_DEDUP):
+        if cache is not None and not _hint_budget_check(cache, _HINT_KIND_DEDUP, _cfg_obj):
             return None
         hint = _hint_from_cache(
             entry, req_start, req_end, file_path,
@@ -908,6 +915,7 @@ def _build_read_hint_inner(
             has_explicit_limit=has_explicit_limit,
             cache=cache,
             cwd=cwd,
+            cfg=_cfg_obj,
         )
         if hint is not None:
             # Apply minimum-savings threshold: suppress re-read dedup hints where
@@ -915,12 +923,8 @@ def _build_read_hint_inner(
             # Only applies to dedup hints (tokens_saved > 0); suggestion hints
             # (tokens_saved == 0) are never suppressed by this threshold since
             # they fire on large-file / index-miss paths regardless of prior read.
-            if hint.tokens_saved > 0:
-                try:
-                    from . import config as _cfg
-                    _min_bytes = _cfg.load().hints.min_session_hint_savings_bytes
-                except Exception:
-                    _min_bytes = 0
+            if hint.tokens_saved > 0 and _cfg_obj is not None:
+                _min_bytes = _cfg_obj.hints.min_session_hint_savings_bytes
                 if _min_bytes > 0:
                     estimated_bytes_saved = hint.tokens_saved * 3
                     if estimated_bytes_saved < _min_bytes:
@@ -1143,6 +1147,7 @@ def _hint_from_cache(
     has_explicit_limit: bool = False,
     cache: session.SessionCache | None = None,
     cwd: str | None = None,
+    cfg: object | None = None,
 ) -> ReadHint | None:
     """Build hint when the file was already accessed this session.
 
@@ -1155,6 +1160,9 @@ def _hint_from_cache(
     hints.  When provided, it should be the shortest unambiguous path (e.g.
     relative path from project root) rather than the full absolute path.  If
     omitted, falls back to ``file_path``.
+
+    ``cfg`` is an optional pre-loaded config object (passed from _build_read_hint_inner
+    to avoid repeated config.load() calls).
     """
     # Accept pre-computed fname from build_read_hint to avoid a redundant
     # Path allocation on the hot pre-read path (one Path per hook call saved).
@@ -1224,7 +1232,13 @@ def _hint_from_cache(
     # threshold, verify the actual line count before suppressing.
     if entry.line_ranges and entry.line_ranges != [(0, 0)]:
         max_line = max(cached_end for cached_start, cached_end in entry.line_ranges)
-        _min_lines = config.load().hints.min_file_lines_for_hint
+        if cfg is not None:
+            try:
+                _min_lines = cfg.hints.min_file_lines_for_hint
+            except AttributeError:
+                _min_lines = config.load().hints.min_file_lines_for_hint
+        else:
+            _min_lines = config.load().hints.min_file_lines_for_hint
         if _should_suppress_full_file_hint(max_line, _min_lines):
             # max_line proxy says "maybe suppress".  Resolve the true line count:
             # 1. Indexed DB count (no extra I/O, most reliable).
@@ -2267,7 +2281,7 @@ def _get_grep_dedup_min_matches() -> int:
 # ---------------------------------------------------------------------------
 
 
-def _curator_should_emit(cache: session.SessionCache) -> bool:
+def _curator_should_emit(cache: session.SessionCache, cfg_obj: object | None = None) -> bool:
     """Return False when the session's hint-acceptance rate is too low.
 
     The curator suppresses future dedup hints once:
@@ -2275,13 +2289,22 @@ def _curator_should_emit(cache: session.SessionCache) -> bool:
     - ``cache.hints_ignored / cache.hints_emitted * 100 < cfg.threshold_pct``
       (the agent accepted fewer than threshold_pct% of hinted suppressions).
 
+    ``cfg_obj`` is an optional pre-loaded config object (passed from pre-read path
+    to avoid repeated config.load() calls). If None, config is loaded on demand.
+
     Returns True (emit the hint) in all other cases, including when the config
     feature is disabled or the cache is unavailable.  Never raises.
     """
     try:
-        from . import config as _config
+        if cfg_obj is None:
+            from . import config as _config
 
-        cfg = _config.load().curator
+            cfg = _config.load().curator
+        else:
+            cfg = getattr(cfg_obj, "curator", None)
+            if cfg is None:
+                return True
+
         if not cfg.enabled:
             return True
 
@@ -2367,7 +2390,7 @@ _HINT_KIND_STRUCTURED: Final[str] = "structured"
 _HINT_KIND_INDEX_ONLY: Final[str] = "index_only"
 
 
-def _hint_budget_check(cache: session.SessionCache, hint_kind: str) -> bool:
+def _hint_budget_check(cache: session.SessionCache, hint_kind: str, cfg_obj: object | None = None) -> bool:
     """Return False (suppress) when the session has exhausted the budget for *hint_kind*.
 
     Three independent budgets:
@@ -2375,13 +2398,22 @@ def _hint_budget_check(cache: session.SessionCache, hint_kind: str) -> bool:
     - ``"structured"``  — checked against ``cache.structured_hints_emitted`` vs ``max_structured_per_session``
     - ``"index_only"``  — checked against ``cache.index_only_hints_emitted`` vs ``max_index_only_per_session``
 
+    ``cfg_obj`` is an optional pre-loaded config object (passed from pre-read path
+    to avoid repeated config.load() calls). If None, config is loaded on demand.
+
     Returns True (emit) when the config feature is disabled, the kind is unknown,
     or the relevant counter is below the cap.  Never raises.
     """
     try:
-        from . import config as _config
+        if cfg_obj is None:
+            from . import config as _config
 
-        cfg = _config.load().hint_budget
+            cfg = _config.load().hint_budget
+        else:
+            cfg = getattr(cfg_obj, "hint_budget", None)
+            if cfg is None:
+                return True
+
         if not cfg.enabled:
             return True
 
@@ -2404,6 +2436,8 @@ def _hint_budget_check(cache: session.SessionCache, hint_kind: str) -> bool:
         return True
     except Exception:
         return True
+
+
 
 
 def _record_non_dedup_hint_emitted(
