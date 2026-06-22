@@ -4321,7 +4321,7 @@ def similar(target: str, *, json_output: bool = False, top_k: int = 5) -> None:
         )
         raise typer.Exit(code=1)
 
-    file_part, symbol_part = target.split("::", 1)
+    file_part, symbol_part = target.rsplit("::", 1)
     file_part = file_part.strip()
     symbol_part = symbol_part.strip()
 
