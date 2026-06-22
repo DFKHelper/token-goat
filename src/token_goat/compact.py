@@ -1150,6 +1150,7 @@ _NOISE_EXTS: Final[frozenset[str]] = frozenset({
     ".class",                          # Java
     ".o", ".obj", ".a", ".lib", ".dll", ".so", ".dylib",  # compiled native
     ".log",                            # log files
+    ".jsonl",                          # JSONL session/event logs — large, ephemeral
     ".tmp", ".temp", ".swp", ".swo",  # editor / scratch files
     ".bak",                            # backup files
     ".pid",                            # daemon/process id files
@@ -1194,6 +1195,8 @@ _NOISE_SEGMENTS: Final[tuple[str, ...]] = (
     "/htmlcov/", "/coverage_html_report/",
     # Hypothesis temporary state
     "/.hypothesis/",
+    # Ralph/automation loop-state and task tracking (ephemeral run artifacts)
+    "/tasks/",
     # Storybook / Playwright outputs
     "/storybook-static/", "/playwright-report/", "/test-results/",
 )
