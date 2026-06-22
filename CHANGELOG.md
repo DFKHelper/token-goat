@@ -4,6 +4,52 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Changed
+
+- **Compact manifest excludes JSONL and task-state files.** Session transcripts and task-state files are no longer included — they change every session but carry no useful context for the model. A shared content-type helper now drives both the compact and hints modules.
+
+- **Small-file hint threshold raised to 60 lines.** Files under 60 lines (up from 30) are treated as cheap direct reads; the suppression hint is no longer emitted for them, reducing noise on small utility modules.
+
+- **mypy typecheck added to pre-commit.** `uv run mypy src` now runs alongside ruff lint on every staged `.py` file, catching type errors at commit time rather than accumulating until the pre-push full suite.
+
+## [1.9.7] - 2026-06-22
+
+### Added
+
+- **Duplicate-heading disambiguation hint.** When `token-goat section` is called with a heading that appears more than once in a document, it now emits an inline hint showing the available indexed positions (e.g., `Setup#2`, `Setup#3`) so the caller can address the exact occurrence without re-reading the whole file.
+
+- **`bash-output` and `web-output` handle empty or whitespace-only cached content.** Passing an empty string or a string of only whitespace to `--grep` or `--tail` no longer raises; both commands return an empty result rather than erroring.
+
+- **`token-goat read` accepts `@N-M` line-range prefix.** The first windowed bash read on a file now emits a hint showing the `@N-M` syntax so the caller can request a narrower range on follow-up reads.
+
+### Changed
+
+- **Hook session updates are now batched.** Multiple hints emitted in a single hook cycle are flushed in one write rather than one per hint. The session file is not loaded at all when early-exit conditions eliminate all candidates before it is needed. The grep advisory is deferred past the early exits.
+
+- **Hint config is loaded once per hint cycle.** `config.load()` is no longer called per-hint inside hot-path hint functions — the config object is loaded once at cycle start and passed through.
+
+- **Hooks cache the path/symbol split and guard context-pressure on a null cache.** The split is computed once and reused; the context-pressure check no longer crashes when the session cache has not been populated yet.
+
+- **Session hint eviction is batched; bash bonus scales with output size.** Eviction processes all stale entries in a single pass, and the bash-output savings bonus is proportional to actual output size rather than a flat value.
+
+- Internal: extracted `strip_lower()` helper applied across 14 modules; consolidated `json.load` and `db.record_stat` boilerplate into shared helpers; removed dead `strip_bom()` and the `utf8_bytes` alias; inlined single-use `_tokens_from_bytes` and `_cost_file` helpers; named constants for falsy/truthy env-value sets; fast-tier tests mock file and DB I/O to cut local loop time.
+
+### Fixed
+
+- **`file::symbol` target splitting used the first `::` instead of the last.** All target-parsing sites in `read_commands.py` and in `hints.py` now use `rpartition`/`rsplit` to split on the last `::`. On Unix, file paths can legally contain `::`, so splitting on the first occurrence produced a wrong file path and a malformed symbol name.
+
+- **`min_session_hint_savings_bytes` access raised `AttributeError` when the config attribute was absent.** `hints.py` now guards the access with `getattr`.
+
+- **`token-goat config-get` emitted Python `True`/`False` for boolean values.** Output is now lowercase `true`/`false`, matching TOML and JSON conventions.
+
+- **`token-goat skeleton` produced an inconsistent JSON object format and an inaccurate empty-file hint.** The JSON output now follows a uniform structure across all symbol kinds.
+
+- **Dirty-queue byte-cap check in `worker.py` raced against concurrent writers.** The check now uses a single `try/except` around `os.path.getsize`, with `FileNotFoundError` distinguished from other `OSError` subtypes so each case is logged accurately.
+
+- **`query_worker_status` swallowed exceptions silently.** Exception handlers now log at DEBUG level, and catch clauses are narrowed to the specific exception types they handle.
+
+## [1.9.6] - 2026-06-21
+
 ### Added
 
 - **Hermes Agent compatibility.** `token-goat install --hermes` confirms that hooks are active for Hermes-delegated Claude Code sessions and reports the result. `detect_harness()` now returns `"hermes"` when `HERMES_SESSION_ID` or `HERMES_HOME` is set, evaluated before the Claude Code check so the subprocess inheritance of `ANTHROPIC_API_KEY` does not mask it. `detect_installed_harnesses()` includes a `"hermes"` key. `--target hermes` and `--target all` are wired through `install_all` and `plan_install`.
@@ -11,10 +57,6 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **Per-project timeout circuit-breaker.** When a project's index job times out three consecutive runs, the worker backs off exponentially: 2ⁿ minutes per attempt, capped at 8 hours. A persistently slow project no longer monopolizes a thread-pool slot on every worker tick. Back-off clears when the project is garbage-collected or the daemon restarts.
 
 - **`token-goat project list/exclude/prune` — manage tracked projects from the CLI.** `project list` shows all indexed roots with file counts; roots on the blocklist appear tagged `[excluded]`. `project exclude <path>` writes the resolved absolute path to `[worker] blocked_roots` in `config.toml` — the worker skips it on the next daemon cycle. `project prune` drops roots that no longer exist on disk; `--dry-run` previews without touching the database. All three accept `--json`.
-
-- **Duplicate-heading disambiguation hint.** When `token-goat section` is called with a heading that appears more than once in a document, it now emits an inline hint showing the available indexed positions (e.g., `Setup#2`, `Setup#3`) so the caller can address the exact occurrence without re-reading the whole file.
-
-- **`bash-output` and `web-output` handle empty or whitespace-only cached content.** Passing an empty string or a string of only whitespace to `--grep` or `--tail` no longer raises; both commands return an empty result rather than erroring.
 
 ### Fixed
 
@@ -25,16 +67,6 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **Watchdog globals in `hooks_common` were unguarded.** Concurrent hook firings could race on the watchdog thread and stop-event globals. Both are now protected with a `threading.Lock`.
 
 - **Context advisory prefix produced `[CONTEXT ~90% full. /compact now. edits: 3]` — missing the `|` separator.** The hook now uses a unified list-join that inserts `|` between the advisory and summary parts, matching the documented format.
-
-- **`file::symbol` target splitting used the first `::` instead of the last.** All target-parsing sites in `read_commands.py` (`_run_read_like_command`, `_run_read_line_range`, `read`, `refs`, `blame`) and in `hints.py` pinned-symbol lookup and the `ask` command now use `rpartition`/`rsplit` to split on the last `::`. On Unix, file paths can legally contain `::`, so splitting on the first occurrence was producing a wrong file path and a malformed symbol name.
-
-- **`min_session_hint_savings_bytes` access raised `AttributeError` when the config attribute was absent.** `hints.py` now guards the attribute access with `getattr` before using it in the hint-savings check.
-
-- **`token-goat config-get` emitted Python `True`/`False` for boolean values.** Output is now lowercase `true`/`false` matching TOML and JSON conventions, so downstream scripts that parse the value do not need a case-fold.
-
-- **`token-goat skeleton` produced an inconsistent JSON object format and an inaccurate empty-file hint.** The JSON output now follows a uniform structure across all symbol kinds, and the empty-file message accurately describes what was found.
-
-- **Dirty-queue byte-cap check in `worker.py` raced against concurrent writers.** The file-size check called `os.path.exists` then `os.path.getsize` in separate syscalls; a concurrent writer could create or remove the file in between. The check now uses a single `try/except` around `os.path.getsize`, and `FileNotFoundError` is distinguished from other `OSError` subtypes so each case is logged accurately.
 
 ## [1.9.5] - 2026-06-21
 
