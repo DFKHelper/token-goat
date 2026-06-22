@@ -665,3 +665,63 @@ def test_head_and_tail_overlap_no_duplicate_lines(
     lines = out.splitlines()
     assert lines == [f"line {i}" for i in range(1, 21)]
     assert len(lines) == len(set(lines))
+
+
+def test_empty_body_prints_notice(capsys: pytest.CaptureFixture[str]) -> None:
+    """Empty output file (body is empty string) prints a clear notice instead of silent nothing."""
+    cache = _make_cache_module(body="")
+    with patch("token_goat.db.record_stat") as mock_stat:
+        _run_output_recall_command(
+            output_id="x",
+            head=0,
+            tail=0,
+            grep=None,
+            full=False,
+            json_output=False,
+            cache_module=cache,
+            stat_kind="bash_output_recall",
+            not_found_msg="not found",
+        )
+    out = capsys.readouterr().out
+    assert "empty output" in out
+    mock_stat.assert_called_once_with(None, "bash_output_recall", bytes_saved=0, tokens_saved=0, detail="x")
+
+
+def test_whitespace_only_body_prints_notice(capsys: pytest.CaptureFixture[str]) -> None:
+    """Whitespace-only output file prints the empty notice instead of silent nothing."""
+    cache = _make_cache_module(body="   \n\n   ")
+    with patch("token_goat.db.record_stat"):
+        _run_output_recall_command(
+            output_id="x",
+            head=0,
+            tail=0,
+            grep=None,
+            full=False,
+            json_output=False,
+            cache_module=cache,
+            stat_kind="bash_output_recall",
+            not_found_msg="not found",
+        )
+    out = capsys.readouterr().out
+    assert "empty output" in out
+
+
+def test_empty_body_json_output(capsys: pytest.CaptureFixture[str]) -> None:
+    """Empty body with --json emits a JSON object with output=null, not plain text."""
+    cache = _make_cache_module(body="")
+    with patch("token_goat.db.record_stat"):
+        _run_output_recall_command(
+            output_id="x",
+            head=0,
+            tail=0,
+            grep=None,
+            full=False,
+            json_output=True,
+            cache_module=cache,
+            stat_kind="bash_output_recall",
+            not_found_msg="not found",
+        )
+    out = capsys.readouterr().out.strip()
+    data = json.loads(out)
+    assert data.get("output") is None
+    assert "reason" in data

@@ -4844,6 +4844,14 @@ def _run_output_recall_command(
         _error(not_found_msg)
         raise typer.Exit(1)
 
+    if not body.strip():
+        _db.record_stat(None, stat_kind, bytes_saved=0, tokens_saved=0, detail=output_id[:64])
+        if json_output:
+            typer.echo('{"output": null, "reason": "empty output"}')
+        else:
+            typer.echo("(empty output — task produced no visible text)")
+        return
+
     # --section: narrow the body to a single markdown section before any other
     # filters are applied.  Allows agents to jump directly to e.g.
     # "## Installation" in a large documentation page, avoiding the cost of
