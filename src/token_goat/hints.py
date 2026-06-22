@@ -1308,7 +1308,9 @@ def _hint_from_cache(
     # suggestion only pays off when the file is large enough that fetching a symbol
     # slice saves meaningful tokens vs. a full read.
     if entry.read_count >= _SUPPRESS_HINT_AT_READ_COUNT and entry.line_ranges:
-        _nudge_max_line = max(cached_end for cached_start, cached_end in entry.line_ranges)
+        # Use actual file line count when available; cached range max underestimates size for partial reads.
+        _actual_lines = _line_count(Path(fname))
+        _nudge_max_line = _actual_lines if _actual_lines is not None else max(cached_end for _, cached_end in entry.line_ranges)
         if _nudge_max_line < _MIN_LINES_FOR_HINT:
             _LOG.debug(
                 "_hint_from_cache: suppressing surgical-read nudge for %s (small file: %d lines, read_count=%d)",
