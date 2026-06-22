@@ -298,6 +298,11 @@ _TERSE: dict[str, str] = {
     "Use `token-goat bash-output": "`token-goat bash-output",
     "Use `token-goat web-output": "`token-goat web-output",
     "for more.": "",
+    # Grep / bash-cache / doc-compact boilerplate (~12-20 chars each)
+    "read via `token-goat read`": "via tg-read",
+    "is a frequent pattern": "frequent",
+    "for targeted reads.": "(targeted).",
+    "for a reusable compact": "→compact",
 }
 
 
