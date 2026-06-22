@@ -1384,7 +1384,7 @@ def _run_read_line_range(
     if range_parsed is None:
         _emit_read_error(
             code="invalid_target",
-            message=f"Error: line range '{item_part}' is invalid (expected 'N-M' with N≥1 and M≥N)",
+            message=f"Error: line range '{item_part}' is invalid (expected 'N-M' or '@N-M' with N≥1 and M≥N)",
             json_output=json_output,
             target=target,
             err=True,
@@ -1467,7 +1467,7 @@ def _run_read_line_range(
 
 
 def read(
-    target: str = typer.Argument(..., help="<file>::<symbol|N-M> — e.g., 'parser.py::index_project', 'auth.py::Session.refresh' for a method, or 'parser.py::100-200' for a line range."),
+    target: str = typer.Argument(..., help="<file>::<symbol|N-M> — e.g., 'parser.py::index_project', 'auth.py::Session.refresh' for a method, or 'parser.py::100-200' (also '@100-200') for a line range."),
     session_id: str | None = _OPT_SESSION_ID,
     json_output: bool = typer.Option(False, "--json"),
     context_lines: int = typer.Option(0, "--context", "-c", help="Extra lines before/after the symbol body. Context lines are visually distinguished on TTY output."),

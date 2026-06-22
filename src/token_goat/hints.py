@@ -937,6 +937,15 @@ def _build_read_hint_inner(
             _LOG.debug("build_read_hint: no hint (non-overlapping prior read of %s)", fname)
         return hint
 
+    # 2a. First-read with explicit line range (e.g. Get-Content | Select-Object -Skip N -First M).
+    # Suggest token-goat read "file::N-M" so the agent can use it directly next time.
+    if has_explicit_limit and safe_offset > 0:
+        _tg_cmd = f'token-goat read "{recall_path}::{req_start}-{req_end}"'
+        return ReadHint(
+            f"[tg] Use `{_tg_cmd}` to read this range directly (saves re-parsing the full file).",
+            tokens_saved=0,
+        )
+
     # 2. Not cached — consider "large file with indexed symbols" suggestion or
     # "co-read import suggestions" for small Python files.
     # Fast-path: a file smaller than LARGE_FILE_LINE_THRESHOLD * _BYTES_PER_LINE_ESTIMATE
