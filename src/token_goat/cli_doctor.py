@@ -13,6 +13,7 @@ import typer
 
 from . import paths
 from .util import _humanize_bytes
+from .util import safe_json_load_file as _safe_json_load_file
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -316,9 +317,10 @@ def _build_context_section() -> tuple[list[str], bool]:
     try:
         pregen_sentinel = paths.skill_pregen_sentinel_path()
         if pregen_sentinel.is_file():
-            pregen_data = json.loads(pregen_sentinel.read_text(encoding="utf-8"))
-            pregen_count = int(pregen_data.get("skill_count", 0))
-            new_since_pregen = max(0, catalog_count - pregen_count)
+            pregen_data = _safe_json_load_file(pregen_sentinel)
+            if pregen_data is not None:
+                pregen_count = int(pregen_data.get("skill_count", 0))
+                new_since_pregen = max(0, catalog_count - pregen_count)
     except Exception:
         pass
 

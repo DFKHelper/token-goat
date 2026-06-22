@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Final, TypedDict, cast
 
-from .util import env_float, get_logger, strip_lower
+from .util import TRUTHY_ENV_VALUES, env_float, get_logger, strip_lower
 
 if sys.platform == "win32":
     import msvcrt
@@ -62,7 +62,7 @@ from . import db, parser, paths
 from .hooks_common import sanitize_log_str
 from .project import Project
 
-_TRUTHY_ENV: Final[frozenset[str]] = frozenset(("1", "true", "yes", "on"))
+_TRUTHY_ENV = TRUTHY_ENV_VALUES
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator

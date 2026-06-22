@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import paths
-from .util import get_logger
+from .util import get_logger, safe_json_load_file
 
 _LOG = get_logger("baseline")
 
@@ -506,9 +506,8 @@ def _skill_listing_entry_bytes(skill_dir: Path) -> int:
 
 def _read_enabled_plugin_names(settings_path: Path) -> list[str]:
     """Return enabled ``plugin@marketplace`` keys from ``settings.json``."""
-    try:
-        data = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
+    data = safe_json_load_file(settings_path)
+    if data is None:
         return []
     enabled = data.get("enabledPlugins", {})
     if not isinstance(enabled, dict):

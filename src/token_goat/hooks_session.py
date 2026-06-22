@@ -54,6 +54,7 @@ from .hooks_common import (
     LOG as _LOG,
 )
 from .util import run_git as _run_git
+from .util import safe_json_load_file as _safe_json_load_file
 from .util import strip_lower
 
 if TYPE_CHECKING:
@@ -1113,7 +1114,6 @@ def _read_precompact_estimate() -> int:
 
     Returns 0 when no suitable sentinel is found (fail-soft).
     """
-    import json as _json
     import time as _time
 
     try:
@@ -1137,11 +1137,8 @@ def _read_precompact_estimate() -> int:
         # Pick the most recently written estimate sentinel.
         candidates.sort(key=lambda x: x[0], reverse=True)
         _, best = candidates[0]
-        try:
-            data = _json.loads(best.read_text(encoding="utf-8"))
-            estimate = int(data.get("bytes_estimate", 0))
-        except (OSError, ValueError, TypeError):
-            estimate = 0
+        _data = _safe_json_load_file(best)
+        estimate = int(_data.get("bytes_estimate", 0)) if _data is not None else 0
         # Delete the sentinel so it is not consumed again.
         import contextlib as _contextlib
         with _contextlib.suppress(OSError):
