@@ -367,6 +367,86 @@ def test_stub_view_returns_symbols(indexed_py_dir, tmp_data_dir, monkeypatch, ca
     assert "Skeleton:" in out
 
 
+def test_stub_view_all_private_symbols_emits_hint(capsys):
+    """stub_view emits a --private hint when every indexed symbol is private-named.
+
+    Regression guard: before this fix, stub_view printed '# Skeleton: f (0 symbols)'
+    with no body, giving the caller no actionable guidance.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from token_goat import read_commands
+
+    fake_rows = [{"name": "_internal", "kind": "function", "line": 1, "signature": "def _internal():"}]
+    fake_proj = MagicMock()
+    fake_proj.hash = "testhash"
+    fake_target = read_commands._FileTarget(project=fake_proj, rel_path="helpers.py", current_project=fake_proj)
+    fake_conn = MagicMock()
+    fake_conn.__enter__ = MagicMock(return_value=fake_conn)
+    fake_conn.__exit__ = MagicMock(return_value=False)
+    fake_conn.execute.return_value.fetchall.return_value = fake_rows
+
+    with patch.object(read_commands, "_resolve_file_target", return_value=fake_target), \
+         patch("token_goat.read_commands.db.open_project_readonly", return_value=fake_conn):
+        read_commands.stub_view("helpers.py", json_output=False, include_private=False)
+
+    out = capsys.readouterr().out
+    assert "No public symbols" in out, f"Expected 'No public symbols' hint; got: {out!r}"
+    assert "--private" in out, f"Expected '--private' flag hint; got: {out!r}"
+    assert "Skeleton:" not in out, f"Should not print skeleton header for 0 symbols; got: {out!r}"
+
+
+def test_stub_view_all_private_json_returns_empty(capsys):
+    """stub_view --json with all-private symbols returns an empty symbols list, not a 0-symbol header."""
+    from unittest.mock import MagicMock, patch
+
+    from token_goat import read_commands
+
+    fake_rows = [{"name": "_internal", "kind": "function", "line": 1, "signature": "def _internal():"}]
+    fake_proj = MagicMock()
+    fake_proj.hash = "testhash"
+    fake_target = read_commands._FileTarget(project=fake_proj, rel_path="helpers.py", current_project=fake_proj)
+    fake_conn = MagicMock()
+    fake_conn.__enter__ = MagicMock(return_value=fake_conn)
+    fake_conn.__exit__ = MagicMock(return_value=False)
+    fake_conn.execute.return_value.fetchall.return_value = fake_rows
+
+    with patch.object(read_commands, "_resolve_file_target", return_value=fake_target), \
+         patch("token_goat.read_commands.db.open_project_readonly", return_value=fake_conn):
+        read_commands.stub_view("helpers.py", json_output=True, include_private=False)
+
+    out = capsys.readouterr().out.strip()
+    data = json.loads(out)
+    assert data.get("symbols") == [], f"Expected empty symbols list; got: {data!r}"
+    assert data.get("total") == 0, f"Expected total=0; got: {data!r}"
+
+
+def test_stub_view_nonempty_json_uses_object_format(capsys):
+    """stub_view --json with symbols must return {file, symbols, total}, not a bare array."""
+    from unittest.mock import MagicMock, patch
+
+    from token_goat import read_commands
+
+    fake_rows = [{"name": "my_func", "kind": "function", "line": 5, "signature": "def my_func():"}]
+    fake_proj = MagicMock()
+    fake_proj.hash = "testhash"
+    fake_target = read_commands._FileTarget(project=fake_proj, rel_path="helpers.py", current_project=fake_proj)
+    fake_conn = MagicMock()
+    fake_conn.__enter__ = MagicMock(return_value=fake_conn)
+    fake_conn.__exit__ = MagicMock(return_value=False)
+    fake_conn.execute.return_value.fetchall.return_value = fake_rows
+
+    with patch.object(read_commands, "_resolve_file_target", return_value=fake_target),          patch("token_goat.read_commands.db.open_project_readonly", return_value=fake_conn):
+        read_commands.stub_view("helpers.py", json_output=True, include_private=True)
+
+    out = capsys.readouterr().out.strip()
+    data = json.loads(out)
+    assert isinstance(data, dict), f"Expected object, got {type(data).__name__}: {data!r}"
+    assert "symbols" in data and "total" in data, f"Missing keys: {data!r}"
+    assert data["total"] == 1, f"Expected total=1; got: {data!r}"
+    assert data["symbols"][0]["name"] == "my_func"
+
+
 # ---------------------------------------------------------------------------
 # Cross-reference footer wiring in _run_read_like_command
 # ---------------------------------------------------------------------------
