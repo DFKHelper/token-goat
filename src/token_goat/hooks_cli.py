@@ -1409,13 +1409,15 @@ def dispatch(event: str, payload: HookPayload) -> dict[str, object]:
             result.setdefault("continue", True)
             return result
         except TimeoutError:
+            elapsed_ms_wdog = round((time.monotonic() - t0) * 1000, 2)
             _LOG.warning(
-                "hook %s watchdog tripped after %.0fms — abandoning wait (handler continues in background)",
+                "hook %s watchdog tripped after %.0fms (budget: %.0fms) — abandoning wait (handler continues in background). Tune with TOKEN_GOAT_HOOK_TIMEOUT env var.",
                 safe_event,
+                elapsed_ms_wdog,
                 watchdog_ms,
             )
             watchdog_result: dict[str, object] = dict(CONTINUE())
-            watchdog_result["_tg_elapsed_ms"] = round((time.monotonic() - t0) * 1000, 2)
+            watchdog_result["_tg_elapsed_ms"] = elapsed_ms_wdog
             watchdog_result["_tg_watchdog_tripped"] = True
             watchdog_result["_tg_watchdog_budget_ms"] = watchdog_ms
             return watchdog_result
