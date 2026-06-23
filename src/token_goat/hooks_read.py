@@ -7852,6 +7852,44 @@ def post_bash(payload: HookPayload) -> HookResponse:
         except Exception:
             _LOG.debug("post-bash: auto-promote failed", exc_info=True)
 
+    # GitHub API advisory hints: scope errors and large JSON responses.
+    # Only fires on `gh api` commands to avoid false positives on unrelated output.
+    if stdout and display_cmd.startswith("gh api"):
+        try:
+            import json as _json_gh
+
+            _gh_hints: list[str] = []
+
+            # Improvement 2: scope / permission error detection.
+            _GH_SCOPE_PHRASES = (
+                "Must have push access",
+                "Resource not accessible by integration",
+                "Must be an admin",
+            )
+            _GH_SECURITY_PATHS = ("/security_advisories", "/advisories", "security_events")
+            _is_security_path = any(p in display_cmd for p in _GH_SECURITY_PATHS)
+            _has_scope_phrase = any(p in stdout for p in _GH_SCOPE_PHRASES)
+            _has_404_security = (exit_code not in (None, 0)) and _is_security_path
+            if _has_scope_phrase or _has_404_security:
+                _gh_hints.append(
+                    "[token-goat] GitHub API scope issue — try: gh auth refresh -s security_events"
+                )
+
+            # Improvement 3: large JSON response hint.
+            _parsed_gh = _json_gh.loads(stdout)
+            if isinstance(_parsed_gh, dict) and len(_parsed_gh) >= 15:
+                _gh_hints.append(
+                    f"[token-goat] Large API response ({len(_parsed_gh)} keys)."
+                    " Filter with --jq '.key1,.key2' to reduce tokens."
+                )
+
+            if _gh_hints:
+                _hint_msg = " ".join(_gh_hints)
+                _LOG.debug("post-bash: gh api hint cmd=%.80s", display_cmd)
+                return continue_with_message(_hint_msg)
+        except Exception:
+            _LOG.debug("post-bash: gh api hint failed", exc_info=True)
+
     return CONTINUE()
 
 
