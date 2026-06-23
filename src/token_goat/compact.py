@@ -853,9 +853,9 @@ def _read_manifest_sidecar(
         sidecar = paths.manifest_sha_sidecar_path(session_id)
         raw = sidecar.read_text(encoding="utf-8")
         data = json.loads(raw)
-        sha = str(data["sha"])
-        fp = str(data["fp"])
-        ts = float(data["ts"])
+        sha = str(data.get("sha", ""))
+        fp = str(data.get("fp", ""))
+        ts = float(data.get("ts", 0.0))
         # Non-finite ts (NaN, inf) would compare-false in every cache-hit
         # predicate but the upstream caller has no reason to inspect for it.
         # Treat the whole sidecar as unreadable to keep the contract simple
