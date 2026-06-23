@@ -14,6 +14,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Watchdog log shows elapsed ms, budget ms, and tuning hint.** The timeout log previously showed only the watchdog budget; it now shows the actual elapsed time too (`watchdog tripped after 342ms (budget: 300ms)`) and appends `Tune with TOKEN_GOAT_HOOK_TIMEOUT env var.`
 
+### Fixed
+
+- **Console window flash eliminated on Windows.** Hook calls previously spawned `tg-hook.cmd`, causing Windows to start `cmd.exe`; in Electron (which has no console), this produced a visible popup window on every hook invocation. `token-goat install` now writes `token-goat-hook.EXE` (a GUI-subsystem binary) to `settings.json` instead. Windows never allocates a console for GUI-subsystem processes. The `.cmd` wrapper remains as a fallback when the binary is absent.
+
+- **Hook-command detection uses anchored regex.** The markers used to identify and strip token-goat hook entries from `settings.json` previously matched as plain substrings. A user hook at a path like `/my-tg-hook-config/tool` would be silently removed on reinstall or uninstall. All three markers (`token_goat`, `tg-hook`, `token-goat-hook`) now require a word/path boundary on both sides of the match, so hooks whose names merely contain a marker as part of a longer string are left alone.
+
 ## [1.9.8] - 2026-06-23
 
 ### Fixed

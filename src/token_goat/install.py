@@ -1085,16 +1085,23 @@ def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]
     return _build_hooks_block(_hook_runner_command, codex=False)
 
 
-# Substrings that identify a hook command as belonging to token-goat.
-# - "token_goat" matches the legacy direct ``pythonw -m token_goat.cli`` form.
-# - "tg-hook" matches the persistent wrapper at ``data_dir/bin/tg-hook.cmd``
-#   (or ``tg-hook.sh`` on POSIX).
-_TOKEN_GOAT_HOOK_MARKERS = ("token_goat", "tg-hook", "token-goat-hook")
+# Patterns that identify a hook command as belonging to token-goat.  Each is
+# anchored so it must appear at a path/word boundary — not embedded inside a
+# longer name like ``my-tg-hook-wrapper`` or ``/my-token-goat-hook-config/tool``.
+# A character in ``[a-zA-Z0-9_-]`` immediately before or after the marker would
+# mean it is part of a larger identifier and should not match.
+_TOKEN_GOAT_HOOK_MARKERS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(r"(?<![a-zA-Z0-9_-])" + re.escape(m) + r"(?![a-zA-Z0-9_-])")
+    for m in ("token_goat", "tg-hook", "token-goat-hook")
+)
 # Legacy command markers from before the tokenwise -> token-goat rename
 # (2026-05-13). Configs patched by old tokenwise builds still carry these; they
 # point at a uv-tool path that no longer exists, so they must be stripped on
 # re-install/uninstall instead of accumulating as dead duplicate hooks.
-_LEGACY_HOOK_MARKERS = ("tokenwise",)
+_LEGACY_HOOK_MARKERS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(r"(?<![a-zA-Z0-9_-])" + re.escape(m) + r"(?![a-zA-Z0-9_-])")
+    for m in ("tokenwise",)
+)
 
 
 def _is_token_goat_hook(command: str) -> bool:
@@ -1105,7 +1112,7 @@ def _is_token_goat_hook(command: str) -> bool:
     *not* installed and prompts a re-install. Use :func:`_is_managed_hook` for
     the strip path, which must also recognise legacy entries.
     """
-    return any(marker in command for marker in _TOKEN_GOAT_HOOK_MARKERS)
+    return any(pat.search(command) for pat in _TOKEN_GOAT_HOOK_MARKERS)
 
 
 def _is_managed_hook(command: str) -> bool:
@@ -1116,7 +1123,7 @@ def _is_managed_hook(command: str) -> bool:
     leaving them as dead duplicates beside the fresh ones.
     """
     return _is_token_goat_hook(command) or any(
-        marker in command for marker in _LEGACY_HOOK_MARKERS
+        pat.search(command) for pat in _LEGACY_HOOK_MARKERS
     )
 
 

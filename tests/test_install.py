@@ -1406,6 +1406,28 @@ def test_hook_runner_command_prefers_exe_on_windows(tmp_path, monkeypatch):
     assert "token_goat.cli" not in cmd
 
 
+def test_hook_runner_command_prefers_exe_over_wrapper_when_both_exist(tmp_path, monkeypatch):
+    """Exe is chosen over the wrapper when both are present on Windows."""
+    import sys  # noqa: PLC0415
+
+    from token_goat import paths as paths_mod  # noqa: PLC0415
+
+    fake_exe = tmp_path / "token-goat-hook.EXE"
+    fake_exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(install, "token_goat_hook_binary", lambda: str(fake_exe))
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    fake_wrapper = tmp_path / "bin" / "tg-hook.cmd"
+    fake_wrapper.parent.mkdir(parents=True)
+    fake_wrapper.write_text("@echo off\r\n", encoding="utf-8")
+    monkeypatch.setattr(paths_mod, "hook_wrapper_path", lambda: fake_wrapper)
+
+    cmd = install._hook_runner_command("hook", "session-start")
+    assert "token-goat-hook" in cmd
+    assert "tg-hook" not in cmd
+    assert "token_goat.cli" not in cmd
+
+
 def test_hook_runner_command_prefers_wrapper_when_exe_absent(tmp_path, monkeypatch):
     """When the exe is absent, ``_hook_runner_command`` falls back to the .cmd wrapper."""
     import sys  # noqa: PLC0415
@@ -1439,6 +1461,38 @@ def test_hook_runner_command_falls_back_when_wrapper_missing(tmp_path, monkeypat
     cmd = install._hook_runner_command("hook", "session-start")
     assert "token_goat.cli" in cmd
     assert "session-start" in cmd
+
+
+def test_hook_runner_command_skips_exe_on_non_windows(tmp_path, monkeypatch):
+    """On non-Windows, the exe path is skipped and the wrapper is used instead."""
+    import sys  # noqa: PLC0415
+
+    from token_goat import paths as paths_mod  # noqa: PLC0415
+
+    fake_exe = tmp_path / "token-goat-hook.EXE"
+    fake_exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(install, "token_goat_hook_binary", lambda: str(fake_exe))
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    fake_wrapper = tmp_path / "bin" / "tg-hook.sh"
+    fake_wrapper.parent.mkdir(parents=True)
+    fake_wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(paths_mod, "hook_wrapper_path", lambda: fake_wrapper)
+
+    cmd = install._hook_runner_command("hook", "session-start")
+    assert "tg-hook" in cmd
+    assert "token-goat-hook" not in cmd
+
+
+def test_is_token_goat_hook_does_not_match_similar_name(monkeypatch):
+    """Anchored matching must not strip a hook whose path merely contains a marker."""
+    commands = [
+        '"C:/tools/my-tg-hook-wrapper.cmd" run',
+        '"C:/my-token-goat-hook-config/tool" run',
+        '"path/to/mythical_token_goat_cli.exe" run',
+    ]
+    for cmd in commands:
+        assert not install._is_token_goat_hook(cmd), f"false positive: {cmd!r}"
 
 
 def test_write_hook_wrapper_creates_file_with_expected_content(tmp_path, monkeypatch):
