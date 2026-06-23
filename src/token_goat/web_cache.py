@@ -330,18 +330,9 @@ def store_output(
 
         body_bytes = len(body.encode("utf-8", errors="replace"))
 
-        # Prepend a content-length marker if body will be truncated, so the model knows how much was omitted. This is critical for understanding fetched content bounds.
-        _prepend_marker = ""
-        if body_bytes > _MAX_STORED_BYTES:
-            _prepend_marker = f"[token-goat: fetched {body_bytes} bytes; stored up to {_MAX_STORED_BYTES} bytes]\n"
-
         stored, truncated = truncate_tail_preserve(
             cleaned_body, _MAX_STORED_BYTES, marker_template=_TRUNC_MARKER,
         )
-
-        # Apply the prepended content-length marker before compression so it's included in the final stored body.
-        if _prepend_marker:
-            stored = _prepend_marker + stored
 
         # Determine whether to compress this body.
         stored_bytes_len = len(stored.encode("utf-8", errors="replace"))
