@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.9.8] - 2026-06-23
+
 ### Fixed
 
 - **TOCTOU double-stat race in `cmd_clean` session sweep.** The old list comprehension called `.stat()` twice per file (once for mtime, once for size), with no error handling between calls. A single `stat()` call now accumulates both values atomically, and `OSError` from concurrent file deletion is caught and skipped.
