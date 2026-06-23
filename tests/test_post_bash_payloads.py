@@ -580,3 +580,22 @@ class TestAutoPromoteOversizedOutput:
         )
         assert result.get("continue") is True
         assert "Large output from" not in result.get("systemMessage", "")
+
+    def test_auto_promote_hint_advertises_surgical_modifiers(self, tmp_data_dir):
+        """The auto-promote pointer must teach the surgical recall modifiers so the
+        model extracts a slice instead of re-running the command or pulling the
+        whole cached body. Uses a sub-200-line, >8 KiB output to hit the legacy
+        auto-promote handler rather than the iter-19 line compressor."""
+        # 100 lines padded past 8 KiB but under the 200-line iter-19 trigger.
+        lines = [f"line {i}" for i in range(100)]
+        big_out = "\n".join(lines) + "\n" + "X" * 9000
+        result = hooks_read.post_bash(
+            self._payload("obscure-tool --verbose", stdout=big_out, session_id="ap-test-8")
+        )
+        assert result.get("continue") is True
+        msg = result.get("systemMessage", "")
+        assert "Large output from" in msg
+        assert "bash-output" in msg
+        # The actionable improvement: every surgical modifier is named.
+        for modifier in ("--grep", "--section", "--tail", "--head"):
+            assert modifier in msg, f"missing {modifier} in auto-promote hint"
