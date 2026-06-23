@@ -1957,11 +1957,20 @@ def build_high_frequency_hint(
             return None
         fname = _sanitize_hint_path(Path(file_path).name)
         safe_path = _sanitize_hint_path(file_path)
-        sym = resolved_symbol if resolved_symbol else "<symbol>"
-        text = _apply_terse(
-            f"`{fname}` read {count}x — `token-goat skeleton {safe_path}` or "
-            f"`token-goat read \"{safe_path}::{sym}\"`"
-        )
+        # Markdown/prose docs (reports, memory files, READMEs) have headings, not
+        # code symbols — skeleton/read::symbol don't apply. Point repeat readers
+        # at section extraction instead, which is the surgical tool for prose.
+        if Path(file_path).suffix.lower() in (".md", ".markdown"):
+            text = _apply_terse(
+                f"`{fname}` read {count}x — extract one section instead: "
+                f"`token-goat section \"{safe_path}::<Heading>\"`"
+            )
+        else:
+            sym = resolved_symbol if resolved_symbol else "<symbol>"
+            text = _apply_terse(
+                f"`{fname}` read {count}x — `token-goat skeleton {safe_path}` or "
+                f"`token-goat read \"{safe_path}::{sym}\"`"
+            )
         return HintItem(text, HINT_PRIORITY_MEDIUM)
     except Exception:
         return None

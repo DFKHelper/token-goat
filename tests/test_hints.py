@@ -5388,3 +5388,34 @@ class TestHighFrequencyHintResolvedSymbol:
         from token_goat.hints import build_high_frequency_hint
         cache = self._make_cache("src/foo.py", 2)
         assert build_high_frequency_hint(cache, "src/foo.py", threshold=3) is None
+
+    def test_markdown_file_recommends_section_not_symbol(self):
+        """Repeat reads of a markdown doc must suggest `section`, not the
+        code-oriented `skeleton`/`read::symbol` commands which don't apply to
+        prose. Covers report files and Claude memory files (both .md)."""
+        from token_goat.hints import build_high_frequency_hint
+        cache = self._make_cache("report.md", 4)
+        item = build_high_frequency_hint(cache, "report.md", threshold=3)
+        assert item is not None
+        assert "token-goat section" in item.text
+        assert "::<Heading>" in item.text
+        # The code-only commands must NOT leak into a prose hint.
+        assert "skeleton" not in item.text
+        assert "read \"" not in item.text
+
+    def test_markdown_extension_uppercase_recommends_section(self):
+        """Extension match is case-insensitive (.MD / .Markdown)."""
+        from token_goat.hints import build_high_frequency_hint
+        cache = self._make_cache("NOTES.MD", 3)
+        item = build_high_frequency_hint(cache, "NOTES.MD", threshold=3)
+        assert item is not None
+        assert "token-goat section" in item.text
+
+    def test_code_file_still_recommends_skeleton(self):
+        """Non-markdown files keep the skeleton/read::symbol recommendation."""
+        from token_goat.hints import build_high_frequency_hint
+        cache = self._make_cache("src/foo.py", 4)
+        item = build_high_frequency_hint(cache, "src/foo.py", threshold=3)
+        assert item is not None
+        assert "skeleton" in item.text
+        assert "token-goat section" not in item.text
