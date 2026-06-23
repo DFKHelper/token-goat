@@ -7834,8 +7834,10 @@ def post_bash(payload: HookPayload) -> HookResponse:
                     f" stored as bash-output {meta.output_id}.\n"
                     f"Preview (first {_HEAD} lines):\n"
                     f"{_preview}\n"
-                    f"[{total_bytes:,} bytes total — retrieve full output:"
-                    f" `token-goat bash-output {meta.output_id}`]"
+                    f"[{total_bytes:,} bytes total — retrieve surgically instead of re-running:"
+                    f" `token-goat bash-output {meta.output_id}`"
+                    f" (add `--grep PATTERN`, `--section HEADING`, `--tail N`, or `--head N`"
+                    f" to extract just the part you need)]"
                 )
                 record_cached_stat(
                     "bash_output_auto_promote",
