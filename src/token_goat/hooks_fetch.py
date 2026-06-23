@@ -737,11 +737,7 @@ def post_fetch(payload: HookPayload) -> HookResponse:
 
     body, status_code, content_type = _extract_web_response(payload)
 
-    # Strip script/style/nav/header/footer blocks from HTML responses before
-    # caching.  These blocks are typically 60-90% of raw HTML bytes and pure
-    # noise for `token-goat web-output --grep`.  _strip_html_to_text operates
-    # on bytes; encode round-trip only when the body looks like HTML (the
-    # function checks for <html / <!doctype in the preamble before stripping).
+    # Strip script/style/nav/header/footer blocks from HTML responses before caching. These blocks are typically 60-90% of raw HTML bytes and pure noise for `token-goat web-output --grep`. _strip_html_to_text operates on bytes; encode round-trip only when the body looks like HTML (the function checks for <html / <!doctype in the preamble before stripping).
     try:
         _body_bytes = body.encode("utf-8", errors="replace")
         _stripped = webfetch._strip_html_to_text(_body_bytes)
@@ -753,6 +749,21 @@ def post_fetch(payload: HookPayload) -> HookResponse:
             )
     except Exception:
         pass
+
+    # Deduplicate consecutive identical lines (cookie banners, breadcrumbs, repeated CTAs) to further reduce noise. Typically saves 5-15% additional tokens on already-stripped HTML.
+    try:
+        _dedup_body = webfetch._deduplicate_consecutive_lines(body)
+        if _dedup_body != body:
+            _orig_size = len(body.encode("utf-8", errors="replace"))
+            _dedup_size = len(_dedup_body.encode("utf-8", errors="replace"))
+            if _dedup_size < _orig_size:
+                body = _dedup_body
+                _LOG.debug(
+                    "post-fetch: deduplicated %d→%d bytes for %s",
+                    _orig_size, _dedup_size, sanitize_log_str(url, max_len=100),
+                )
+    except Exception as _dedup_exc:
+        _LOG.debug("post-fetch: deduplication failed, using original body: %s", _dedup_exc)
 
     # Injection protection: scan head+tail windows, then wrap all fetched content
     # in an untrusted-content fence so the model always knows its provenance.
