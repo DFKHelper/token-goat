@@ -4861,8 +4861,12 @@ class GhFilter(Filter):
     * **``gh pr list`` / ``gh run list`` / ``gh issue list``**: truncate to
       first 30 rows with a count summary (table rows can exceed 100 lines
       when listing many runs/PRs; first 30 + count preserves search ability).
-    * **Everything else** (``gh api``, ``gh release view``, …): generic
-      ANSI/progress strip only (already handled by :meth:`apply`).
+    * **``gh api``**: parse response as JSON and strip boilerplate ``*_url`` fields
+      (``followers_url``, ``gists_url``, ``starred_url``, …) plus ``gravatar_id`` /
+      ``site_admin``; preserves ``html_url``, ``avatar_url``, ``clone_url``, ``ssh_url``.
+      Falls back to generic strip when the output is not valid JSON.
+    * **Everything else** (``gh release view``, …): generic ANSI/progress strip only
+      (already handled by :meth:`apply`).
     """
 
     name = "gh"
@@ -4880,6 +4884,8 @@ class GhFilter(Filter):
             return _compress_gh_run_view(merged)
         if subcommand in ("pr", "run", "issue") and action == "list":
             return _compress_gh_list(merged, subcommand)
+        if subcommand == "api":
+            return _compress_gh_api(merged)
         # Everything else passes through with just blank-line squeezing.
         return _squeeze_blank_lines(merged)
 
@@ -4953,6 +4959,68 @@ def _compress_gh_list(text: str, subcommand: str) -> str:
     notes = [f"showing first {max_rows} of {total_data_rows} {subcommand}s"]
     Filter._emit_notes(kept_lines, notes)
     return _squeeze_blank_lines("\n".join(kept_lines))
+
+
+# --- GitHub API URL-field stripping ----------------------------------------
+
+#: URL-like field suffixes that are pure boilerplate in GitHub API responses.
+_GH_API_URL_SUFFIX = "_url"
+#: URL fields that carry genuinely useful information and must be preserved.
+_GH_API_URL_KEEP: frozenset[str] = frozenset({"html_url", "avatar_url", "clone_url", "ssh_url"})
+#: Non-URL keys that are structural noise in nearly every GitHub API response.
+_GH_API_NOISE_KEYS: frozenset[str] = frozenset({"gravatar_id", "site_admin"})
+
+
+def _strip_gh_api_url_fields(obj: object) -> tuple[object, int]:
+    """Recursively strip boilerplate ``*_url`` and noise fields from a GitHub API JSON object.
+
+    Returns the cleaned object and the total count of fields removed.  Only fields whose name ends
+    with ``_url`` (excluding :data:`_GH_API_URL_KEEP`) and the handful of always-noise keys in
+    :data:`_GH_API_NOISE_KEYS` are removed.  All other fields are kept unchanged.
+    """
+    if isinstance(obj, dict):
+        cleaned: dict[str, object] = {}
+        removed = 0
+        for key, value in obj.items():
+            if (key.endswith(_GH_API_URL_SUFFIX) and key not in _GH_API_URL_KEEP) or key in _GH_API_NOISE_KEYS:
+                removed += 1
+            else:
+                child, child_removed = _strip_gh_api_url_fields(value)
+                cleaned[key] = child
+                removed += child_removed
+        return cleaned, removed
+    if isinstance(obj, list):
+        result_list: list[object] = []
+        total_removed = 0
+        for item in obj:
+            cleaned_item, item_removed = _strip_gh_api_url_fields(item)
+            result_list.append(cleaned_item)
+            total_removed += item_removed
+        return result_list, total_removed
+    return obj, 0
+
+
+def _compress_gh_api(text: str) -> str:
+    """Strip boilerplate ``*_url`` fields from ``gh api`` JSON output.
+
+    GitHub user/repo objects embed 15+ redundant URL fields (``followers_url``, ``gists_url``,
+    ``starred_url``, …) that the model never uses.  Stripping them typically reduces response size
+    by 60-80% for user/repo objects.  Falls back to returning *text* unchanged when it is not
+    valid JSON.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return text
+    try:
+        obj = _json.loads(stripped)
+    except (_json.JSONDecodeError, ValueError):
+        return _squeeze_blank_lines(text)
+    cleaned, removed = _strip_gh_api_url_fields(obj)
+    if removed == 0:
+        return _squeeze_blank_lines(text)
+    serialized = _json.dumps(cleaned, indent=2, ensure_ascii=False)
+    note = f"# [token-goat] stripped {removed} *_url boilerplate fields from gh api response"
+    return f"{serialized}\n{note}"
 
 
 # --- GitHub Actions log (gh run view --log) --------------------------------

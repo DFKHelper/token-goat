@@ -36,11 +36,69 @@ def test_gh_pr_view_passthrough() -> None:
     assert "[token-goat:" not in out
 
 
-def test_gh_api_passthrough() -> None:
-    # gh api routes through _squeeze_blank_lines — content passes through unchanged
+def test_gh_api_no_url_fields_passthrough() -> None:
+    # gh api with no *_url fields — content passes through unchanged, no note
     content = '{"id": 1, "name": "test"}'
     out = _other(content)
-    assert content in out
+    assert '"id": 1' in out
+    assert '"name": "test"' in out
+    assert "[token-goat:" not in out
+
+
+def test_gh_api_strips_url_fields() -> None:
+    # gh api strips boilerplate *_url fields and emits a count note
+    payload = '{"login": "octocat", "id": 1, "followers_url": "https://api.github.com/users/octocat/followers", "html_url": "https://github.com/octocat"}'
+    out = _other(payload)
+    assert '"login": "octocat"' in out
+    assert "html_url" in out
+    assert "followers_url" not in out
+    assert "[token-goat] stripped 1 *_url boilerplate fields" in out
+
+
+def test_gh_api_keeps_preserved_url_fields() -> None:
+    # html_url, avatar_url, clone_url, ssh_url must survive stripping
+    payload = '{"html_url": "h", "avatar_url": "a", "clone_url": "c", "ssh_url": "s", "followers_url": "f"}'
+    out = _other(payload)
+    assert "html_url" in out
+    assert "avatar_url" in out
+    assert "clone_url" in out
+    assert "ssh_url" in out
+    assert "followers_url" not in out
+
+
+def test_gh_api_strips_noise_keys() -> None:
+    # gravatar_id and site_admin are stripped as structural noise
+    payload = '{"login": "octocat", "gravatar_id": "", "site_admin": false}'
+    out = _other(payload)
+    assert "gravatar_id" not in out
+    assert "site_admin" not in out
+    assert '"login": "octocat"' in out
+
+
+def test_gh_api_recursive_strip_nested() -> None:
+    # *_url fields inside nested objects are stripped too
+    payload = '{"repo": {"name": "myrepo", "forks_url": "https://api.github.com/repos/o/r/forks", "html_url": "https://github.com/o/r"}}'
+    out = _other(payload)
+    assert "forks_url" not in out
+    assert '"name": "myrepo"' in out
+    assert "html_url" in out
+
+
+def test_gh_api_strips_url_fields_in_list() -> None:
+    # *_url fields in list items are stripped
+    payload = '[{"login": "a", "followers_url": "x"}, {"login": "b", "followers_url": "y"}]'
+    out = _other(payload)
+    assert "followers_url" not in out
+    assert '"login": "a"' in out
+    assert '"login": "b"' in out
+    assert "[token-goat] stripped 2 *_url boilerplate fields" in out
+
+
+def test_gh_api_non_json_fallback() -> None:
+    # non-JSON output passes through without error
+    content = "Not JSON at all"
+    out = _other(content)
+    assert "Not JSON at all" in out
     assert "[token-goat:" not in out
 
 
