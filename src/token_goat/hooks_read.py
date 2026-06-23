@@ -4472,15 +4472,18 @@ def pre_read(payload: HookPayload) -> HookResponse:
                 _sym_from_surg = _sym_m.group(1)
         _freq_item = build_high_frequency_hint(cache, file_path, resolved_symbol=_sym_from_surg)
         if _freq_item is not None:
+            _is_markdown = Path(file_path).suffix.lower() in (".md", ".markdown")
             _freq_fp = _hfp2(_freq_item.text, path=file_path)
-            if not cache.has_hint_fingerprint(_freq_fp):
-                cache.mark_hint_seen(_freq_fp)
+            if _is_markdown or not cache.has_hint_fingerprint(_freq_fp):
+                if not _is_markdown:
+                    cache.mark_hint_seen(_freq_fp)
                 cache.record_hint_emitted("high_frequency_read")
                 hint_items.append(_freq_item)
                 _LOG.debug(
-                    "pre-read: high-frequency hint for %s (access count=%d)",
+                    "pre-read: high-frequency hint for %s (access count=%d%s)",
                     sanitize_log_str(file_path),
                     cache.get_file_access_count(file_path),
+                    " [markdown: re-fire enabled]" if _is_markdown else "",
                 )
 
         # Test-file hint: when reading a test file, check if the corresponding
@@ -4768,7 +4771,8 @@ def post_read(payload: HookPayload) -> HookResponse:
                     if _p.is_file() and 0 < _p.stat().st_size <= _CONTENT_DEDUP_MAX_BYTES:
                         _raw = _p.read_bytes()
                         _sha16 = hashlib.sha1(_raw, usedforsecurity=False).hexdigest()[:16]
-                        _norm = str(_p.resolve()).replace("\\", "/")
+                        from .util import normalize_path as _util_norm
+                        _norm = _util_norm(str(_p.resolve()))
                         cache.register_file_content(_sha16, _norm)
                         # SHA256 for cross-tool dedup with `cat FILE`.
                         # Normalize CRLF → LF before hashing so the comparison
@@ -5827,7 +5831,8 @@ def post_bash(payload: HookPayload) -> HookResponse:
                 _ct_path = Path(_raw_path_str)
                 if not _ct_path.is_absolute() and cwd:
                     _ct_path = Path(cwd) / _raw_path_str
-                _ct_norm = str(_ct_path.resolve()).replace("\\", "/")
+                from .util import normalize_path as _util_norm_bash
+                _ct_norm = _util_norm_bash(str(_ct_path.resolve()))
                 # Normalize CRLF → LF before hashing (mirrors post_read normalization).
                 _ct_hash = hashlib.sha256(stdout.replace("\r\n", "\n").encode()).hexdigest()
                 _prior_hash = _session_cache.get_read_hash(_ct_norm)
