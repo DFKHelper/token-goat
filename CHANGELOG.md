@@ -4,6 +4,16 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **`gh api` scope-error and large-JSON hints.** After any `gh api` command, the post-bash hook checks stdout for GitHub permission error phrases ("Must have push access", "Resource not accessible by integration", "Must be an admin") and for non-zero exits on security endpoints (`/security_advisories`, `/advisories`, `security_events`). When either fires, a system message suggests `gh auth refresh -s security_events`. A separate hint fires when the JSON response is a dict with 15 or more keys, recommending `--jq` filtering.
+
+- **`gh api` URL field stripping in bash compress.** The `gh` compress filter now strips boilerplate `*_url` fields from `gh api` JSON responses — `followers_url`, `gists_url`, `starred_url`, and about a dozen others. Four fields are preserved: `html_url`, `avatar_url`, `clone_url`, `ssh_url`. The noise keys `gravatar_id` and `site_admin` are also removed. A stripped-count note is appended to the output. User and repo objects typically shrink 60–80%.
+
+### Changed
+
+- **Watchdog log shows elapsed ms, budget ms, and tuning hint.** The timeout log previously showed only the watchdog budget; it now shows the actual elapsed time too (`watchdog tripped after 342ms (budget: 300ms)`) and appends `Tune with TOKEN_GOAT_HOOK_TIMEOUT env var.`
+
 ## [1.9.8] - 2026-06-23
 
 ### Fixed
