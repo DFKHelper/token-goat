@@ -2592,19 +2592,21 @@ def _run_index_with_timeout(
                 project.root,
             )
             return _TIMED_OUT
-        except Exception:
+        except Exception as e:
             _LOG.exception(
-                "index_project raised for project %s (root=%s)",
+                "index_project raised for project %s (root=%s); error_type=%s",
                 str(project.hash)[:8],
                 project.root,
+                type(e).__name__,
             )
             return None
     finally:
-        # shutdown(wait=False) releases the worker thread immediately without blocking until it finishes. Python threads cannot be forcibly killed, so a timed-out indexing thread will continue running in the background, but the caller is unblocked right away — which is the documented contract of this function. Using wait=True (the default when exiting a ``with`` block) would defeat the timeout entirely by making the caller wait for the full thread duration on a timeout path. Wrap in try/except to prevent hangs from unexpected executor states.
         try:
             executor.shutdown(wait=False)
+        except OSError as e:
+            _LOG.warning("executor shutdown failed to release resources: %s (non-fatal)", e)
         except Exception as e:
-            _LOG.warning("executor shutdown raised: %s (non-fatal)", e)
+            _LOG.warning("executor shutdown raised unexpected error (type=%s): %s (non-fatal)", type(e).__name__, e)
 
 
 def _invalidate_skill_cache_entries(entries: list[DirtyQueueEntry]) -> None:
@@ -2689,8 +2691,10 @@ def _process_dirty_entries(entries: list[DirtyQueueEntry]) -> None:
     # an import or I/O error here must never block the index path.
     try:
         _invalidate_skill_cache_entries(entries)
-    except Exception:
-        _LOG.debug("skill cache invalidation failed (non-fatal)", exc_info=True)
+    except (OSError, ValueError, KeyError) as e:
+        _LOG.debug("skill cache invalidation failed (expected error: %s); continuing", type(e).__name__)
+    except Exception as e:
+        _LOG.debug("skill cache invalidation failed (unexpected error: %s); continuing", type(e).__name__, exc_info=True)
 
     if _is_under_memory_pressure():
         _LOG.info(

@@ -732,13 +732,11 @@ def _try_surgical_read_hint(
         )
         _surg_hint_cache[_cache_key] = _result
         return _result
-    except (OSError, ValueError, AttributeError):
-        # OSError: DB/file access errors (transient locks, permission)
-        # ValueError: path resolution failures, invalid line ranges
-        # AttributeError: missing DB column, project attributes
+    except (OSError, ValueError, AttributeError) as e:
+        _LOG.debug("surgical-read-hint: expected error (type=%s); returning None", type(e).__name__)
         return None
-    except Exception:
-        _LOG.warning("surgical-read-hint: unexpected exception", exc_info=True)
+    except Exception as e:
+        _LOG.warning("surgical-read-hint: unexpected exception (type=%s); returning None", type(e).__name__, exc_info=True)
         return None
 
 
