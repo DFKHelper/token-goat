@@ -53,6 +53,28 @@ from .util import strip_lower
 # flood the hint text or exploit length-based parsing bugs downstream.
 _MAX_URL_EMBED_LEN = 2048
 
+# ---------------------------------------------------------------------------
+# Module-level ephemeral state for browser automation hints.
+# Keyed by session_id; reset on process restart (intentional — hints are
+# session-scoped and state is cheap to rebuild).
+# ---------------------------------------------------------------------------
+
+# Feature #3: tracks the last snapshot timestamp (float) and tool name (str)
+# per session so we can detect rapid re-snapshot calls.
+_last_snapshot_ts: dict[str, tuple[float, str]] = {}
+
+# Feature #4: tracks which harness prefixes have been seen per session.
+_session_harnesses: dict[str, set[str]] = {}
+
+# Threshold (bytes) above which a browser_evaluate result is flagged as large.
+_BROWSER_EVAL_LARGE_BYTES = 4096
+
+# Snapshot tools that fire the redundancy hint (ends-with matches).
+_SNAPSHOT_TOOL_SUFFIXES = ("browser_snapshot", "take_snapshot")
+
+# Minimum gap (seconds) between snapshots before the redundancy hint fires.
+_SNAPSHOT_GAP_SECONDS = 30.0
+
 
 def _sanitize_url_for_embed(url: str) -> str | None:
     """Return a sanitized copy of *url* safe for embedding in hint text, or None to reject.
@@ -582,6 +604,73 @@ def pre_fetch(payload: HookPayload) -> HookResponse:
                     if mcp_hint is not None:
                         return mcp_hint
 
+    # -----------------------------------------------------------------------
+    # Feature #3: snapshot redundancy hint
+    # -----------------------------------------------------------------------
+    if tool_name.startswith("mcp__") and (
+        any(tool_name.endswith(sfx) for sfx in _SNAPSHOT_TOOL_SUFFIXES)
+        or (
+            "computer" in tool_name
+            and get_tool_input(payload).get("action") == "screenshot"
+        )
+    ):
+        import time as _time
+        _snap_sid, _ = get_hook_context(payload)
+        if _snap_sid:
+            _now = _time.monotonic()
+            _prev = _last_snapshot_ts.get(_snap_sid)
+            if _prev is not None:
+                _prev_ts, _prev_tool = _prev
+                _elapsed = _now - _prev_ts
+                if _elapsed < _SNAPSHOT_GAP_SECONDS and _prev_tool == tool_name:
+                    from .hooks_common import emit_if_new_hint, record_hint_stat_pair
+                    _snap_fp = f"snapshot_redundancy:{_snap_sid}:{tool_name}:{int(_now / _SNAPSHOT_GAP_SECONDS)}"
+                    _snap_parts: list[str] = []
+                    _snap_hint = (
+                        f"A snapshot was taken {int(_elapsed)}s ago — the prior accessibility tree"
+                        " may still be valid. Use it before re-snapshotting to save ~200 tokens."
+                    )
+                    _snap_cache = None
+                    try:
+                        from . import session as _sess
+                        _snap_cache = _sess.safe_load(_snap_sid, caller="pre_fetch_snapshot")
+                    except Exception:
+                        pass
+                    if emit_if_new_hint(_snap_cache, _snap_fp, _snap_hint, "snapshot_redundancy", _snap_parts):
+                        record_hint_stat_pair("snapshot_redundancy", _snap_hint, tool_name)
+                        _last_snapshot_ts[_snap_sid] = (_now, tool_name)
+                        return pre_tool_use_with_context("\n".join(_snap_parts))
+            _last_snapshot_ts[_snap_sid] = (_now, tool_name)
+
+    # -----------------------------------------------------------------------
+    # Feature #4: harness duplication hint (fires once per session)
+    # -----------------------------------------------------------------------
+    if tool_name.startswith("mcp__plugin_playwright_") or tool_name.startswith("mcp__plugin_chrome-devtools-mcp_"):
+        _hdup_sid, _ = get_hook_context(payload)
+        if _hdup_sid:
+            _harness_key = "playwright" if tool_name.startswith("mcp__plugin_playwright_") else "devtools"
+            _seen = _session_harnesses.setdefault(_hdup_sid, set())
+            _already_had = _harness_key in _seen
+            _seen.add(_harness_key)
+            if not _already_had and len(_seen) == 2:
+                from .hooks_common import emit_if_new_hint, record_hint_stat_pair
+                _hdup_fp = f"harness_dup:{_hdup_sid}"
+                _hdup_hint = (
+                    "Both Playwright and Chrome DevTools MCP tools are active in this session."
+                    " Pick one harness to reduce context-switching overhead — Playwright for"
+                    " end-to-end flows, DevTools for inspection and console access."
+                )
+                _hdup_parts: list[str] = []
+                _hdup_cache = None
+                try:
+                    from . import session as _sess_hdup
+                    _hdup_cache = _sess_hdup.safe_load(_hdup_sid, caller="pre_fetch_harness")
+                except Exception:
+                    pass
+                if emit_if_new_hint(_hdup_cache, _hdup_fp, _hdup_hint, "harness_duplication", _hdup_parts):
+                    record_hint_stat_pair("harness_duplication", _hdup_hint, "both")
+                    return pre_tool_use_with_context("\n".join(_hdup_parts))
+
     return CONTINUE()
 
 
@@ -714,6 +803,42 @@ def post_fetch(payload: HookPayload) -> HookResponse:
             _mcp_inv_sid, _ = get_hook_context(payload)
             if _mcp_inv_sid:
                 _invalidate_mcp_cache(_mcp_inv_sid, tool_name)
+
+        # -----------------------------------------------------------------------
+        # Feature #1: browser_evaluate large-output hint
+        # -----------------------------------------------------------------------
+        _eval_tools = (
+            "mcp__plugin_playwright_playwright__browser_evaluate",
+            "mcp__plugin_chrome-devtools-mcp_chrome-devtools__evaluate_script",
+        )
+        if tool_name in _eval_tools:
+            from .hooks_common import (
+                emit_if_new_hint,
+                extract_tool_response_text,
+                record_hint_stat_pair,
+            )
+            _eval_text = extract_tool_response_text(payload)
+            _eval_bytes = len(_eval_text.encode("utf-8", errors="replace"))
+            if _eval_bytes > _BROWSER_EVAL_LARGE_BYTES:
+                _eval_sid, _ = get_hook_context(payload)
+                if _eval_sid:
+                    _eval_fp = f"browser_eval_large:{_eval_sid}:{tool_name}"
+                    _eval_hint = (
+                        f"browser_evaluate returned a large result ({_eval_bytes} bytes)."
+                        " If this data will be needed again, use"
+                        " `token-goat mcp-output --grep PATTERN` to recall it surgically"
+                        " rather than re-evaluating."
+                    )
+                    _eval_parts: list[str] = []
+                    _eval_cache = None
+                    try:
+                        from . import session as _sess_eval
+                        _eval_cache = _sess_eval.safe_load(_eval_sid, caller="post_fetch_eval")
+                    except Exception:
+                        pass
+                    if emit_if_new_hint(_eval_cache, _eval_fp, _eval_hint, "browser_eval_large", _eval_parts):
+                        record_hint_stat_pair("browser_eval_large", _eval_hint, tool_name)
+
         return CONTINUE()
 
     if tool_name != "WebFetch":
