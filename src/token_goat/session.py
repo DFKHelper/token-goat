@@ -1819,8 +1819,10 @@ class SessionCache:
         suppressed with a dedup note in post_bash.
 
         Enforces READ_CONTENT_HASHES_MAX via FIFO eviction.
+        Path is automatically normalized for cross-platform dedup.
         """
-        self.read_content_hashes[path] = content_hash
+        norm_path = _normalize_path(path)
+        self.read_content_hashes[norm_path] = content_hash
         if len(self.read_content_hashes) > READ_CONTENT_HASHES_MAX:
             items_to_remove = len(self.read_content_hashes) - (READ_CONTENT_HASHES_MAX - _READ_CONTENT_HASHES_EVICT)
             for _ in range(items_to_remove):
@@ -1831,9 +1833,10 @@ class SessionCache:
     def get_read_hash(self, path: str) -> str | None:
         """Return the stored SHA256 hash for *path*, or None if not recorded.
 
-        *path* must already be normalized (resolve + forward-slashes).
+        Path is automatically normalized for cross-platform dedup (separators, case).
         """
-        return self.read_content_hashes.get(path)
+        norm_path = _normalize_path(path)
+        return self.read_content_hashes.get(norm_path)
 
     @staticmethod
     def _log_cache_key(path: str, size: int, mtime: float) -> str:
