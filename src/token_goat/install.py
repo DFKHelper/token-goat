@@ -1004,17 +1004,23 @@ def _write_hook_wrapper() -> Path:
 def _hook_runner_command(*subcommand: str) -> str:
     """Return the hook command for ``settings.json``.
 
-    Prefers the persistent wrapper (data_dir/bin/tg-hook.cmd) when it exists,
-    so a ``uv tool install --reinstall`` mid-session does not surface a
-    transient ``ModuleNotFoundError`` to the user.  Falls back to direct
-    ``pythonw -m token_goat.cli`` invocation when the wrapper is absent
-    (e.g. first install, or wrapper manually deleted).
+    On Windows, prefers ``token-goat-hook.exe`` (GUI-subsystem binary) so Windows
+    does not allocate a visible console window on every hook call.  Falls back to
+    the persistent wrapper (data_dir/bin/tg-hook.cmd) when the binary is absent,
+    then to direct ``pythonw -m token_goat.cli``.
     """
+    def _fmt(exe: str, *args: str) -> str:
+        exe_str = exe.replace("\\", "/")
+        quoted_args = " ".join(f'"{a}"' if " " in a else a for a in args)
+        return f'"{exe_str}" {quoted_args}' if args else f'"{exe_str}"'
+
+    if sys.platform == "win32":
+        hook_exe = token_goat_hook_binary()
+        if hook_exe and Path(hook_exe).exists():
+            return _fmt(hook_exe, *subcommand)
     wrapper = paths.hook_wrapper_path()
     if wrapper.exists():
-        wrapper_str = str(wrapper).replace("\\", "/")
-        quoted_args = " ".join(f'"{a}"' if " " in a else a for a in subcommand)
-        return f'"{wrapper_str}" {quoted_args}' if subcommand else f'"{wrapper_str}"'
+        return _fmt(str(wrapper), *subcommand)
     return paths.python_runner_command(*subcommand)
 
 
@@ -1083,7 +1089,7 @@ def _hooks_block(binary: str | None = None) -> dict[str, list[_HookMatcherEntry]
 # - "token_goat" matches the legacy direct ``pythonw -m token_goat.cli`` form.
 # - "tg-hook" matches the persistent wrapper at ``data_dir/bin/tg-hook.cmd``
 #   (or ``tg-hook.sh`` on POSIX).
-_TOKEN_GOAT_HOOK_MARKERS = ("token_goat", "tg-hook")
+_TOKEN_GOAT_HOOK_MARKERS = ("token_goat", "tg-hook", "token-goat-hook")
 # Legacy command markers from before the tokenwise -> token-goat rename
 # (2026-05-13). Configs patched by old tokenwise builds still carry these; they
 # point at a uv-tool path that no longer exists, so they must be stripped on

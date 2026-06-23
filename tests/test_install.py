@@ -34,7 +34,7 @@ def test_patch_settings_json_missing_file(patched_home, monkeypatch):
     # the wrapper file exists on disk).
     ss_hooks = hooks["SessionStart"][0]["hooks"]
     assert any(
-        ("token_goat" in h["command"]) or ("tg-hook" in h["command"])
+        ("token_goat" in h["command"]) or ("tg-hook" in h["command"]) or ("token-goat-hook" in h["command"])
         for h in ss_hooks
     )
 
@@ -76,7 +76,7 @@ def test_patch_settings_json_preserves_existing_hooks(patched_home, monkeypatch)
     # Existing unrelated entry must survive
     assert any("other-tool" in c for c in commands_flat)
     # Our entries must be present too (either direct pythonw form or wrapper)
-    assert any(("token_goat" in c) or ("tg-hook" in c) for c in commands_flat)
+    assert any(("token_goat" in c) or ("tg-hook" in c) or ("token-goat-hook" in c) for c in commands_flat)
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ def test_patch_settings_json_idempotent(patched_home, monkeypatch):
         h["command"]
         for entry in ss_entries
         for h in entry.get("hooks", [])
-        if ("token_goat" in h["command"]) or ("tg-hook" in h["command"])
+        if ("token_goat" in h["command"]) or ("tg-hook" in h["command"]) or ("token-goat-hook" in h["command"])
     ]
     assert len(cc_commands) == 1, f"expected 1, got {len(cc_commands)}: {cc_commands}"
 
@@ -122,7 +122,7 @@ def test_unpatch_settings_json_removes_token_goat(patched_home, monkeypatch):
         for entry in entries:
             for h in entry.get("hooks", []):
                 command = h.get("command", "")
-                assert "token_goat" not in command and "tg-hook" not in command, (
+                assert "token_goat" not in command and "tg-hook" not in command and "token-goat-hook" not in command, (
                     f"token-goat found in event {event}: {h}"
                 )
 
@@ -479,7 +479,7 @@ def test_install_uninstall_round_trip(patched_home, monkeypatch, tmp_data_dir, t
     for _event, entries in hooks.items():
         for entry in entries:
             for h in entry.get("hooks", []):
-                assert "token_goat" not in h.get("command", "")
+                assert "token_goat" not in h.get("command", "") and "token-goat-hook" not in h.get("command", "")
 
     # CLAUDE.md block gone
     md_content = md_path.read_text()
@@ -509,7 +509,7 @@ def test_strip_deduplicates_on_reinstall(patched_home, monkeypatch):
     data = json.loads((home / ".claude" / "settings.json").read_text())
     pre_entries = data["hooks"].get("PreToolUse", [])
     all_commands = [h["command"] for entry in pre_entries for h in entry.get("hooks", [])]
-    tg_commands = [c for c in all_commands if "token_goat" in c]
+    tg_commands = [c for c in all_commands if "token_goat" in c or "token-goat-hook" in c]
 
     assert len(tg_commands) == len(set(tg_commands)), (
         f"duplicate token-goat PreToolUse commands after re-install: {tg_commands}"
@@ -1327,7 +1327,7 @@ def test_patch_settings_json_strips_legacy_tokenwise_hooks(patched_home, monkeyp
     # Stale legacy hook command is gone.
     assert not any("tokenwise" in c for c in commands_flat)
     # Fresh token-goat hooks are present.
-    assert any(("token_goat" in c) or ("tg-hook" in c) for c in commands_flat)
+    assert any(("token_goat" in c) or ("tg-hook" in c) or ("token-goat-hook" in c) for c in commands_flat)
 
     allowed = data["permissions"]["allow"]
     # Legacy permission dropped, current present exactly once, unrelated kept.
@@ -1365,7 +1365,7 @@ def test_patch_codex_config_strips_legacy_tokenwise_hooks(patched_home, monkeypa
     assert commands_flat, "expected token-goat hook entries after patch"
     assert not any("tokenwise" in c for c in commands_flat)
     # Assert on the stable hook markers, not the literal "token-goat" binary/path string: the Codex command is "<interpreter> -m token_goat.cli hook <name> --harness codex", whose only reliable token-goat substring is the module name "token_goat". A bare "token-goat" check passes on Windows only by accident (the uv-tool interpreter path contains the hyphenated project name) and fails on the WSL runner whose venv lives at /tmp/tg-linux-venv. Mirrors the settings.json strip test above.
-    assert any(("token_goat" in c) or ("tg-hook" in c) for c in commands_flat)
+    assert any(("token_goat" in c) or ("tg-hook" in c) or ("token-goat-hook" in c) for c in commands_flat)
 
 
 def test_write_hook_wrapper_byte_faithful_no_crlf_doubling(tmp_data_dir):
@@ -1389,9 +1389,31 @@ def test_write_hook_wrapper_byte_faithful_no_crlf_doubling(tmp_data_dir):
     assert "\r\r\n" not in on_disk
 
 
-def test_hook_runner_command_prefers_wrapper_when_present(tmp_path, monkeypatch):
-    """``_hook_runner_command`` returns the wrapper path when the file exists."""
+def test_hook_runner_command_prefers_exe_on_windows(tmp_path, monkeypatch):
+    """On Windows, ``_hook_runner_command`` prefers the GUI-subsystem exe over the wrapper."""
+    import sys  # noqa: PLC0415
+
+
+    fake_exe = tmp_path / "token-goat-hook.EXE"
+    fake_exe.write_text("", encoding="utf-8")
+    monkeypatch.setattr(install, "token_goat_hook_binary", lambda: str(fake_exe))
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    cmd = install._hook_runner_command("hook", "session-start")
+    assert "token-goat-hook" in cmd
+    assert "session-start" in cmd
+    assert "tg-hook" not in cmd
+    assert "token_goat.cli" not in cmd
+
+
+def test_hook_runner_command_prefers_wrapper_when_exe_absent(tmp_path, monkeypatch):
+    """When the exe is absent, ``_hook_runner_command`` falls back to the .cmd wrapper."""
+    import sys  # noqa: PLC0415
+
     from token_goat import paths as paths_mod  # noqa: PLC0415
+
+    monkeypatch.setattr(install, "token_goat_hook_binary", lambda: str(tmp_path / "no-exe.EXE"))
+    monkeypatch.setattr(sys, "platform", "win32")
 
     fake_wrapper = tmp_path / "bin" / "tg-hook.cmd"
     fake_wrapper.parent.mkdir(parents=True)
@@ -1401,14 +1423,17 @@ def test_hook_runner_command_prefers_wrapper_when_present(tmp_path, monkeypatch)
     cmd = install._hook_runner_command("hook", "session-start")
     assert "tg-hook" in cmd
     assert "session-start" in cmd
-    # token_goat.cli must NOT appear — the wrapper hides it.
     assert "token_goat.cli" not in cmd
 
 
 def test_hook_runner_command_falls_back_when_wrapper_missing(tmp_path, monkeypatch):
-    """When the wrapper file is absent, fall back to the direct pythonw form."""
+    """When both the exe and wrapper are absent, fall back to the direct pythonw form."""
+    import sys  # noqa: PLC0415
+
     from token_goat import paths as paths_mod  # noqa: PLC0415
 
+    monkeypatch.setattr(install, "token_goat_hook_binary", lambda: str(tmp_path / "no-exe.EXE"))
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(paths_mod, "hook_wrapper_path", lambda: tmp_path / "nope.cmd")
 
     cmd = install._hook_runner_command("hook", "session-start")

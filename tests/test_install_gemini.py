@@ -52,7 +52,7 @@ def test_patch_creates_settings_json(tmp_path, monkeypatch):
         for entry in event_entries:
             for h in entry.get("hooks", []):
                 cmd = h.get("command", "")
-                assert "tg-hook" in cmd or "token_goat" in cmd, (
+                assert "tg-hook" in cmd or "token_goat" in cmd or "token-goat-hook" in cmd, (
                     f"hook command does not reference token-goat runner: {cmd!r}"
                 )
 
@@ -110,7 +110,7 @@ def test_patch_preserves_existing_hooks(tmp_path, monkeypatch):
     all_cmds = _all_hook_commands(data)
 
     assert any("other-tool" in c for c in all_cmds), "pre-existing hook was lost"
-    assert any("tg-hook" in c or "token_goat" in c for c in all_cmds), "token-goat hook not added"
+    assert any("tg-hook" in c or "token_goat" in c or "token-goat-hook" in c for c in all_cmds), "token-goat hook not added"
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ def test_patch_merges_into_malformed_json(tmp_path, monkeypatch):
     assert hooks, "hooks should be present after recovery from malformed JSON"
     # Verify token-goat hooks were written
     all_cmds = _all_hook_commands(data)
-    assert any("tg-hook" in c or "token_goat" in c for c in all_cmds)
+    assert any("tg-hook" in c or "token_goat" in c or "token-goat-hook" in c for c in all_cmds)
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ def test_unpatch_removes_token_goat_hooks(tmp_path, monkeypatch):
 
     data = json.loads(settings_file.read_text(encoding="utf-8"))
     all_cmds = _all_hook_commands(data)
-    assert not any("tg-hook" in c or "token_goat" in c for c in all_cmds), (
+    assert not any("tg-hook" in c or "token_goat" in c or "token-goat-hook" in c for c in all_cmds), (
         "token-goat hooks were not fully removed by unpatch"
     )
 
@@ -184,7 +184,7 @@ def test_unpatch_preserves_other_hooks(tmp_path, monkeypatch):
     all_cmds = _all_hook_commands(data)
 
     assert any("other-tool" in c for c in all_cmds), "non-token-goat hook was removed by unpatch"
-    assert not any("tg-hook" in c or "token_goat" in c for c in all_cmds), (
+    assert not any("tg-hook" in c or "token_goat" in c or "token-goat-hook" in c for c in all_cmds), (
         "token-goat hook still present after unpatch"
     )
 
@@ -271,7 +271,7 @@ def test_hook_commands_have_harness_gemini_flag(tmp_path, monkeypatch):
 
     assert all_cmds, "no hook commands found in settings.json"
     for cmd in all_cmds:
-        if "tg-hook" in cmd or "token_goat" in cmd:
+        if "tg-hook" in cmd or "token_goat" in cmd or "token-goat-hook" in cmd:
             assert "--harness gemini" in cmd, (
                 f"token-goat hook command is missing '--harness gemini': {cmd!r}"
             )
