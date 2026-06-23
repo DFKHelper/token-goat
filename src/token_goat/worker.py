@@ -2600,14 +2600,11 @@ def _run_index_with_timeout(
             )
             return None
     finally:
-        # shutdown(wait=False) releases the worker thread immediately without
-        # blocking until it finishes.  Python threads cannot be forcibly
-        # killed, so a timed-out indexing thread will continue running in the
-        # background, but the caller is unblocked right away — which is the
-        # documented contract of this function.  Using wait=True (the default
-        # when exiting a ``with`` block) would defeat the timeout entirely by
-        # making the caller wait for the full thread duration on a timeout path.
-        executor.shutdown(wait=False)
+        # shutdown(wait=False) releases the worker thread immediately without blocking until it finishes. Python threads cannot be forcibly killed, so a timed-out indexing thread will continue running in the background, but the caller is unblocked right away — which is the documented contract of this function. Using wait=True (the default when exiting a ``with`` block) would defeat the timeout entirely by making the caller wait for the full thread duration on a timeout path. Wrap in try/except to prevent hangs from unexpected executor states.
+        try:
+            executor.shutdown(wait=False)
+        except Exception as e:
+            _LOG.warning("executor shutdown raised: %s (non-fatal)", e)
 
 
 def _invalidate_skill_cache_entries(entries: list[DirtyQueueEntry]) -> None:

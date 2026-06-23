@@ -1,8 +1,11 @@
 """Project-wide architecture analysis using the import graph."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -92,8 +95,9 @@ def build_arch(project_hash: str, *, top_hubs: int = 10, max_cycles: int = 10) -
             if len(cycles) >= max_cycles:
                 break
             cycles.append(list(cycle))
-    except Exception:
-        pass
+    except Exception as e:
+        # networkx cycle detection may fail on edge cases; degrade gracefully with empty cycles list.
+        _log.debug("build_arch: cycle detection failed: %s", e)
 
     leaf_count = sum(1 for n in subG.nodes() if subG.out_degree(n) == 0)
     edge_count = subG.number_of_edges()
@@ -110,8 +114,9 @@ def build_arch(project_hash: str, *, top_hubs: int = 10, max_cycles: int = 10) -
                 break
         if dag.nodes():
             max_depth = nx.dag_longest_path_length(dag)
-    except Exception:
-        pass
+    except Exception as e:
+        # DAG depth calculation may fail on edge cases; default to 0 and log the failure.
+        _log.debug("build_arch: DAG depth calculation failed: %s", e)
 
     return ArchResult(
         module_count=len(non_isolated),
