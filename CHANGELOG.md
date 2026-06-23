@@ -4,7 +4,19 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **TOCTOU double-stat race in `cmd_clean` session sweep.** The old list comprehension called `.stat()` twice per file (once for mtime, once for size), with no error handling between calls. A single `stat()` call now accumulates both values atomically, and `OSError` from concurrent file deletion is caught and skipped.
+
+- **Missing-key guards in `bash_cache`, `compact`, and `paths`.** `bash_cache` now uses `isinstance` to guard the `exit_code` field before conversion instead of a bare dict access that raised `KeyError` on malformed entries. `compact` sidecar parsing uses `.get()` with safe defaults for `sha`, `fp`, and `ts` fields. `paths` catches `FileNotFoundError` explicitly alongside the existing `OSError`.
+
+- **Graceful degradation logging in `arch.py` and `worker.py`.** `logging` is now imported at module level in `arch.py` via a named `_log` logger; the two `except Exception` blocks in cycle detection and DAG depth calculation log failures at DEBUG instead of silently swallowing them. `worker.py` wraps `executor.shutdown()` to prevent unexpected exceptions from propagating.
+
+- **Redundant content-size marker removed from `web_cache.store_output`.** The added marker used pre-processing byte counts and duplicated the accurate `_TRUNC_MARKER` already injected by `truncate_tail_preserve`; removed to avoid misleading byte-count claims.
+
 ### Changed
+
+- **WebFetch post-fetch pipeline deduplicates consecutive identical lines.** `_deduplicate_consecutive_lines()` collapses repeated lines (cookie banners, breadcrumbs, repeated CTAs) after HTML stripping, typically saving 5–15% additional tokens on fetched content. Failures are logged at DEBUG rather than silently swallowed.
 
 - **Compact manifest excludes JSONL and task-state files.** Session transcripts and task-state files are no longer included — they change every session but carry no useful context for the model. A shared content-type helper now drives both the compact and hints modules.
 
