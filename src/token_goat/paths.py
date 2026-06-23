@@ -694,7 +694,7 @@ def roll_log_if_oversized(path: Path, max_bytes: int) -> None:
             f"({size} bytes > {max_bytes} limit)",
             file=sys.stderr,
         )
-    except OSError:
+    except (FileNotFoundError, OSError):
         pass
 
 
