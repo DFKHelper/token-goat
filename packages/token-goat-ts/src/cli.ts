@@ -21,13 +21,14 @@ import { querySymbols, searchSymbolsFts } from './index_reader.js'
 import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import { readSection } from './section_reader.js'
-import { isInstalled, installHooks, uninstallHooks } from './install.js'
+import { installHooks, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
 import { isWorkerRunning, startDetachedWorker, stopWorker } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getSkillFilePath, listSkills, storeCompact } from './skill_cache.js'
 import { loadConfig } from './config.js'
 import { runGit } from './util.js'
+import { renderStats } from './stats.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -188,23 +189,7 @@ function cmdWorkerStatus(): void {
 }
 
 function cmdStats(): void {
-  const files = getSessionFiles()
-  let reads = 0
-  let edits = 0
-  for (const entry of files.values()) {
-    if (entry.readCount > 0) reads += 1
-    if (entry.wasEdited) edits += 1
-  }
-  const installed = isInstalled('user') ? 'yes' : 'no'
-  const lines = [
-    '# token-goat session stats',
-    `Files touched: ${files.size}`,
-    `  read:   ${reads}`,
-    `  edited: ${edits}`,
-    `Hooks installed (user scope): ${installed}`,
-    `Worker running: ${isWorkerRunning() ? 'yes' : 'no'}`,
-  ]
-  out(lines.join('\n'))
+  renderStats({ windowDays: 30 })
 }
 
 function cmdBashOutput(
