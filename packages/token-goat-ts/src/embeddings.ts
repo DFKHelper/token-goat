@@ -442,16 +442,17 @@ export async function searchSemantic(
     Math.max(topK, topK * _OVER_FETCH_FACTOR),
   )
 
-  // Query sqlite-vec for nearest neighbors.
-  // The chunk_vectors table stores (rowid, embedding).
-  // We need to join with chunk_metadata (or reconstruct from symbols table).
+  // sqlite-vec KNN query: both MATCH (the query vector blob) and k (row limit)
+  // must appear as WHERE constraints for the virtual table to run an ANN scan.
+  // Omitting either causes a full-table scan or an error.
   const stmt = db.prepare(`
     SELECT rowid, distance FROM chunk_vectors
+    WHERE embedding MATCH ?
+    AND k = ?
     ORDER BY distance ASC
-    LIMIT ?
   `)
 
-  const rows = stmt.all(overFetchK) as Array<{ rowid: number; distance: number } | undefined>
+  const rows = stmt.all(packVec(queryVec), overFetchK) as Array<{ rowid: number; distance: number } | undefined>
 
   if (!rows || rows.length === 0) {
     return []

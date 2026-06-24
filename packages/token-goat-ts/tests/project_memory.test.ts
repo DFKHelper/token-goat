@@ -114,6 +114,23 @@ describe('project_memory', () => {
       expect(entries['multiline']).toBe('line1\nline2\nline3');
     });
 
+    it('should round-trip values containing backslashes without corruption', () => {
+      // "C:\\Users\\name" contains backslash+n; a sequential unescape would
+      // incorrectly convert the escaped "\\n" to a newline before removing "\\".
+      setEntry('test', 'path', 'C:\\Users\\name');
+      const entries = loadEntries('test');
+      expect(entries['path']).toBe('C:\\Users\\name');
+    });
+
+    it('should round-trip a literal backslash followed by n without treating it as a newline', () => {
+      // The TOML file will contain "a\\nb"; a sequential parser converts \n first
+      // and produces "a\<newline>b" instead of the correct "a\nb".
+      setEntry('test', 'escaped', 'a\\nb');
+      const entries = loadEntries('test');
+      expect(entries['escaped']).toBe('a\\nb');
+      expect(entries['escaped']).not.toContain('\n');
+    });
+
     it('should accept alphanumeric, hyphens, underscores', () => {
       setEntry('test', 'key_with-hyphen123', 'value');
       const entries = loadEntries('test');
