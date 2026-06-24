@@ -1,0 +1,148 @@
+/**
+ * CLI handler for ``token-goat stats``.
+ *
+ * Thin layer over the aggregation logic in ``stats.ts``.  Adds:
+ * - ``writeRaw`` — bypass any buffering and write directly to stdout
+ * - ``renderTopSessionFiles`` — pull the in-memory session read-counts and
+ *   format the top-N most-read files as a brief nudge
+ * - ``runStats`` — the CLI entry-point wiring flags to the stats module
+ */
+
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import * as os from 'node:os'
+import { summarize, renderStats } from './stats.js'
+import { dataDir } from './constants.js'
+import { getSessionFiles } from './session.js'
+
+// ---- helpers ----------------------------------------------------------------
+
+/** Write ``text`` directly to stdout (no colorama buffering layer needed in TS). */
+export function writeRaw(text: string): void {
+  process.stdout.write(text.endsWith('\n') ? text : text + '\n')
+}
+
+/**
+ * Return a plain-text summary of the top N most-read files in the current
+ * session.  Uses the in-memory session state (``getSessionFiles``).
+ *
+ * Returns an empty string when no file has been read more than once — single-
+ * access sessions produce no actionable nudge.  Fail-soft: errors return "".
+ */
+export function renderTopSessionFiles(topN: number = 5): string {
+  try {
+    const sessionFiles = getSessionFiles()
+    if (sessionFiles.size === 0) return ''
+
+    const ranked = [...sessionFiles.values()]
+      .filter((e) => e.readCount > 1)
+      .sort((a, b) => b.readCount - a.readCount)
+      .slice(0, topN)
+
+    if (ranked.length === 0) return ''
+
+    const lines = ['Top files this session:']
+    for (const entry of ranked) {
+      const basename = path.basename(entry.path)
+      lines.push(`  ${entry.readCount.toString().padStart(3)}x  ${basename}  (${entry.path})`)
+    }
+    return lines.join('\n')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Return the top-N most-read files from the most recently modified session
+ * JSON on disk (used when the in-process session state is empty, e.g. when
+ * ``stats`` is invoked as a standalone command).
+ */
+export function renderTopSessionFilesFromDisk(topN: number = 5, overrideSessionsDir?: string): string {
+  try {
+    const sessionsDir = overrideSessionsDir ?? path.join(dataDir(), 'sessions')
+    if (!fs.existsSync(sessionsDir)) return ''
+
+    const files = fs
+      .readdirSync(sessionsDir)
+      .filter((f) => f.endsWith('.json'))
+      .map((f) => ({ name: f, mtime: fs.statSync(path.join(sessionsDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, 3)
+
+    for (const { name } of files) {
+      try {
+        const raw = fs.readFileSync(path.join(sessionsDir, name), 'utf-8')
+        const data = JSON.parse(raw) as Record<string, unknown>
+        const counts = data['file_access_counts']
+        if (typeof counts !== 'object' || counts === null) continue
+
+        const ranked = Object.entries(counts as Record<string, number>)
+          .filter(([, v]) => v > 1)
+          .sort(([, a], [, b]) => b - a)
+          .slice(0, topN)
+
+        if (ranked.length === 0) continue
+
+        const lines = ['Top files this session:']
+        for (const [filePath, count] of ranked) {
+          const basename = path.basename(filePath)
+          lines.push(`  ${count.toString().padStart(3)}x  ${basename}  (${filePath})`)
+        }
+        return lines.join('\n')
+      } catch {
+        continue
+      }
+    }
+    return ''
+  } catch {
+    return ''
+  }
+}
+
+// ---- public entry point -----------------------------------------------------
+
+export interface StatsOptions {
+  /** Days to include (0 = all time). */
+  windowDays?: number
+  /** Emit JSON instead of human-readable output. */
+  json?: boolean
+  /** Show breakdown by project. */
+  byProject?: boolean
+  /** Show breakdown by command. */
+  byCommand?: boolean
+  /** Number of top entries to show in project view. */
+  top?: number
+  /** Home directory (injectable for tests). */
+  homeDir?: string
+}
+
+/** Run the ``token-goat stats`` command. */
+export function runStats(opts: StatsOptions = {}): void {
+  const window = opts.windowDays ?? 30
+  const summary = summarize(window)
+
+  if (opts.json === true) {
+    const out = {
+      total_events: summary.total_events,
+      total_bytes_saved: summary.total_bytes_saved,
+      total_tokens_saved: summary.total_tokens_saved,
+      by_kind: summary.by_kind,
+      by_day: summary.by_day,
+      by_project: summary.by_project,
+      by_command: summary.by_command,
+      window_days: summary.window_days,
+    }
+    process.stdout.write(JSON.stringify(out) + '\n')
+    return
+  }
+
+  renderStats({ windowDays: window })
+
+  const topFilesText = renderTopSessionFiles(5) || renderTopSessionFilesFromDisk(5)
+  if (topFilesText) {
+    writeRaw(topFilesText)
+  }
+}
+
+// Ensure homeDir param is not unused when we use it in future expansions.
+void (os.homedir)
