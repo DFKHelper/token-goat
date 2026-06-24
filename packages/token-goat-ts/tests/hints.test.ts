@@ -190,7 +190,7 @@ describe("buildBashDedupHint", () => {
     expect(result).toBeNull();
   });
 
-  it("returns null stub for valid inputs (stub implementation)", () => {
+  it("returns hint for valid inputs with cache", () => {
     const mockCache = {
       get_file_access_count: vi.fn(() => 3),
     };
@@ -201,6 +201,29 @@ describe("buildBashDedupHint", () => {
       cache: mockCache as never,
     });
 
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    if (result) {
+      expect(result).toContain("echo");
+      expect(result).toContain("cached");
+    }
+  });
+
+  it("truncates long bash commands", () => {
+    const mockCache = {
+      get_file_access_count: vi.fn(() => 3),
+    };
+
+    const longCmd = "pytest " + "x".repeat(100) + " --verbose --extra --options";
+    const result = buildBashDedupHint({
+      session_id: "test-session",
+      command: longCmd,
+      cache: mockCache as never,
+    });
+
+    expect(result).not.toBeNull();
+    if (result) {
+      expect(result.length).toBeLessThan(longCmd.length);
+      expect(result).toContain("…");
+    }
   });
 });

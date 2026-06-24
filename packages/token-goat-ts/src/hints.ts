@@ -6,6 +6,8 @@ export interface SessionCache {
   record_hint_content_seen?(hash: string, summary: string): void;
   has_hint_fingerprint?(key: string): boolean;
   mark_hint_seen?(key: string): void;
+  files?: Record<string, unknown>;
+  pinned_symbols?: string[];
 }
 
 const _LOG = {
@@ -43,8 +45,34 @@ const _BASH_DEDUP_LIGHT_MAX_BYTES = 512;
 const _BASH_DEDUP_GREP_SUGGEST_BYTES = 50000;
 const _GLOB_DEDUP_MIN_RESULT_COUNT = 2;
 const _GLOB_AVG_BYTES_PER_RESULT = 150;
+const _MAX_BASH_COMMAND_DISPLAY_LEN = 60;
 
 const _MIN_LINES_FOR_HINT = 60;
+const _INDEX_ONLY_MIN_BYTES = 5000;
+const _STRUCTURED_FILE_MIN_BYTES = 50000;
+
+const _INDEX_ONLY_LOCKFILE_NAMES = new Set([
+  "uv.lock",
+  "poetry.lock",
+  "cargo.lock",
+  "gemfile.lock",
+  "composer.lock",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "package-lock.json",
+  "bun.lockb",
+]);
+
+const _STRUCTURED_BASENAME_ENV = new Set([
+  ".env",
+  ".env.example",
+  ".env.local",
+  ".env.test",
+  ".env.production",
+  ".env.staging",
+  ".env.development",
+  ".env.defaults",
+]);
 
 export function slimHintText(text: string, tier?: string): string {
   if (!tier || !["warm", "hot", "critical"].includes(tier)) {
@@ -159,6 +187,10 @@ function _buildReadHintInner(_options: {
   cache?: SessionCache | undefined;
   large_file_line_threshold?: number;
 }): ReadHint | null {
+  if (!_options.session_id || !_options.file_path) {
+    return null;
+  }
+
   return null;
 }
 
@@ -252,7 +284,10 @@ export function buildBashDedupHint(options: {
       return null;
     }
 
-    return null;
+    const cmdShort = _formatBashCommandForHint(command);
+    const hint = `\`${cmdShort}\` cached. Use \`token-goat bash-output\` to retrieve.`;
+
+    return (hint + "") as ReadHint;
   } catch {
     return null;
   }
@@ -297,6 +332,196 @@ export function buildGlobDedupHint(_options: {
   }
 }
 
+export function buildWebDedupHint(_options: {
+  session_id: string;
+  url: string;
+  cache?: SessionCache | undefined;
+}): ReadHint | null {
+  try {
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildWebCacheHitHint(_options: {
+  session_id: string;
+  url: string;
+  cache?: SessionCache | undefined;
+}): ReadHint | null {
+  try {
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildUnchangedFileHint(_options: {
+  session_id: string;
+  file_path: string;
+  cache?: SessionCache | undefined;
+}): ReadHint | null {
+  try {
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildIndexOnlyFileHint(options: {
+  file_path: string;
+  offset?: object | null;
+  limit?: object | null;
+}): ReadHint | null {
+  try {
+    const hasOffset = options.offset !== null && options.offset !== undefined && typeof options.offset === "number" && options.offset >= 0;
+    const hasLimit = options.limit !== null && options.limit !== undefined && typeof options.limit === "number" && options.limit > 0;
+
+    if (hasOffset && hasLimit) {
+      return null;
+    }
+
+    const fname = _sanitizeHintPath(options.file_path.split(/[/\\]/).pop() ?? "");
+    const basenameLower = fname.toLowerCase();
+
+    if (!_INDEX_ONLY_LOCKFILE_NAMES.has(basenameLower)) {
+      return null;
+    }
+
+    const hint = `\`${fname}\` is a lockfile. Use grep or package manager commands instead.`;
+    return (hint + "") as ReadHint;
+  } catch {
+    return null;
+  }
+}
+
+export function buildStructuredFileHint(options: {
+  file_path: string;
+  offset?: object | null;
+  limit?: object | null;
+}): ReadHint | null {
+  try {
+    const hasOffset = options.offset !== null && options.offset !== undefined && typeof options.offset === "number" && options.offset >= 0;
+    const hasLimit = options.limit !== null && options.limit !== undefined && typeof options.limit === "number" && options.limit > 0;
+
+    if (hasOffset && hasLimit) {
+      return null;
+    }
+
+    const fname = _sanitizeHintPath(options.file_path.split(/[/\\]/).pop() ?? "");
+    const ext = fname.substring(fname.lastIndexOf(".")).toLowerCase();
+
+    if (![".csv", ".tsv", ".json", ".xml", ".yaml", ".yml", ".toml"].includes(ext)) {
+      return null;
+    }
+
+    const hint = `\`${fname}\` is a structured file. Use \`token-goat section\` or surgical reads.`;
+    return (hint + "") as ReadHint;
+  } catch {
+    return null;
+  }
+}
+
+export function buildTestFileHint(
+  testFilePath: string,
+  sessionCache: SessionCache | undefined,
+  _projectRoot: string
+): HintItem | null {
+  try {
+    if (!sessionCache) {
+      return null;
+    }
+
+    const fname = testFilePath.split(/[/\\]/).pop() ?? "";
+    const isTestFile = fname.toLowerCase().startsWith("test_") || testFilePath.toLowerCase().includes("tests");
+
+    if (!isTestFile) {
+      return null;
+    }
+
+    const text = `Test file \`${fname}\` — consider reading the implementation first.`;
+    return {
+      text,
+      hint_priority: HINT_PRIORITY_LOW,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function buildPinnedHint(
+  sessionCache: SessionCache | undefined,
+  filePath: string,
+  symbolName: string
+): HintItem | null {
+  try {
+    if (!sessionCache || !symbolName) {
+      return null;
+    }
+
+    const pinned = sessionCache.pinned_symbols ?? [];
+    if (pinned.length === 0) {
+      return null;
+    }
+
+    const spec = `${filePath}::${symbolName}`;
+    if (pinned.includes(spec)) {
+      const text = `Pinned: \`${spec}\` — always prioritized.`;
+      return {
+        text,
+        hint_priority: HINT_PRIORITY_CRITICAL,
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildDocCompactHint(
+  _filePath: string,
+  _cwd: string | undefined,
+  _opts?: { cache?: SessionCache | undefined }
+): ReadHint | null {
+  try {
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildScopedDiffHint(outputBytes: number, editedFiles: string[]): string {
+  const kb = outputBytes / 1024;
+  const shown = editedFiles.slice(0, 5);
+  const overflow = editedFiles.length - shown.length;
+  const fileArgs = shown.join(" ");
+  const n = editedFiles.length;
+  const cmdLine = `  git diff -- ${fileArgs}`;
+  const overflowNote = overflow > 0 ? `\n  (+${overflow} more)` : "";
+  return (
+    `[tg] Large diff (${kb.toFixed(1)} KB, ${n} file(s)) — scope:\n` +
+    `${cmdLine}${overflowNote}`
+  );
+}
+
+export function maybeGrepAdvisory(
+  path: string,
+  _sessionCache: SessionCache | undefined,
+  _cwd?: string | undefined
+): string | null {
+  try {
+    if (!path || path === "-") {
+      return null;
+    }
+
+    const fname = _sanitizeHintPath(path.split(/[/\\]/).pop() ?? "");
+    return `[tg] Grepped '${fname}' multiple times — consider reading the file instead.`;
+  } catch {
+    return null;
+  }
+}
+
 function _sanitizeHintPath(path: string): string {
   if (typeof path !== "string") {
     return "???";
@@ -308,4 +533,44 @@ function _sanitizeHintPath(path: string): string {
 function _sha256Hex(text: string, chars: number = 8): string {
   const hash = createHash("sha256").update(text).digest("hex");
   return hash.slice(0, chars);
+}
+
+function _formatBashCommandForHint(command: string): string {
+  const safe = _sanitizeHintPath(command);
+
+  if (safe.length <= _MAX_BASH_COMMAND_DISPLAY_LEN) {
+    return safe;
+  }
+
+  const parts = safe.split(/\s+/);
+  if (parts.length === 0) {
+    return safe;
+  }
+
+  const resultParts: string[] = [];
+  let currentLen = 0;
+
+  for (const part of parts) {
+    const sep = resultParts.length > 0 ? " " : "";
+    const candidateLen = currentLen + sep.length + part.length;
+
+    if (candidateLen > _MAX_BASH_COMMAND_DISPLAY_LEN) {
+      break;
+    }
+
+    resultParts.push(part);
+    currentLen = candidateLen;
+  }
+
+  let result = resultParts.join(" ");
+
+  if (result !== safe) {
+    result = result + "…";
+  }
+
+  return result;
+}
+
+function _estTokensFromChars(chars: number): number {
+  return Math.max(1, Math.ceil(chars / 4));
 }
