@@ -180,3 +180,227 @@ class TestSymbolEndLineRegression:
         data = json.loads(result.output.strip())
         # JSON output is a list of symbol dicts or an envelope dict.
         assert isinstance(data, (list, dict))
+
+
+class TestSectionRedirectTarget:
+    """Unit tests for ``read_commands._section_redirect_target`` close-match logic."""
+
+    @staticmethod
+    def _target(heading, pool):
+        from token_goat.read_commands import _section_redirect_target
+        return _section_redirect_target(heading, pool)
+
+    def test_clean_prefix_substring_redirects(self):
+        """A query that is a substring of exactly one heading redirects to it."""
+        assert self._target("Install", ["Installation", "Usage"]) == "Installation"
+
+    def test_substring_case_insensitive(self):
+        assert self._target("architecture ref", ["Architecture Reference", "Commands"]) == (
+            "Architecture Reference"
+        )
+
+    def test_high_confidence_typo_redirects(self):
+        """A near-typo above the 0.75 cutoff (no substring) redirects."""
+        assert self._target("Instalation", ["Installation", "Usage"]) == "Installation"
+
+    def test_two_substring_hits_no_redirect(self):
+        """Ambiguous substring match (two headings contain the query) refuses to guess."""
+        assert self._target("Test", ["Testing", "Test Conventions"]) is None
+
+    def test_exact_match_no_redirect(self):
+        """An exact heading is never redirected to itself (reader would have served it)."""
+        assert self._target("Commands", ["Commands", "Usage"]) is None
+
+    def test_exact_match_case_insensitive_no_redirect(self):
+        assert self._target("commands", ["Commands", "Usage"]) is None
+
+    def test_low_confidence_no_redirect(self):
+        """A weak fuzzy match below the cutoff falls through to Did-you-mean."""
+        assert self._target("xyzzy", ["Installation", "Usage"]) is None
+
+    def test_empty_pool_no_redirect(self):
+        assert self._target("Install", []) is None
+
+    def test_empty_query_no_redirect(self):
+        assert self._target("", ["Installation"]) is None
+
+
+class TestSectionCliRedirect:
+    """Integration: ``_run_read_like_command`` transparently redirects section misses."""
+
+    @staticmethod
+    def _mock_result(text="REDIRECTED BODY"):
+        return {
+            "text": text, "start_line": 1, "end_line": 3,
+            "bytes_total": 1000, "bytes_extracted": 40, "bytes_saved": 960,
+        }
+
+    def _file_target(self):
+        from unittest.mock import MagicMock
+        proj = MagicMock()
+        proj.hash = "abc123"
+        ft = MagicMock()
+        ft.rel_path = "README.md"
+        ft.project = proj
+        ft.current_project = proj
+        return ft
+
+    def test_close_match_redirects_transparently(self, monkeypatch, capsys):
+        """A reader miss on a fuzzy heading re-runs against the matched heading."""
+        import sys
+        from unittest.mock import patch
+
+        from token_goat import read_commands
+
+        ft = self._file_target()
+        calls = []
+
+        def _reader(_proj, _rel, heading, *, context_lines=0):
+            calls.append(heading)
+            # Miss for the paraphrase, hit for the real heading.
+            return self._mock_result() if heading == "Installation" else None
+
+        monkeypatch.setattr(read_commands, "_section_heading_pool", lambda p, r: ["Installation"])
+
+        with (
+            patch("token_goat.read_commands._resolve_file_target", return_value=ft),
+            patch("token_goat.db.record_stat"),
+            patch("token_goat.db.reset_miss"),
+            patch("token_goat.read_commands.session.mark_file_read"),
+            patch.object(sys.stdout, "isatty", return_value=False),
+        ):
+            read_commands._run_read_like_command(
+                target="README.md::Install",
+                session_id=None,
+                json_output=False,
+                context_lines=0,
+                separator_label="heading",
+                missing_label="Section",
+                stat_kind="section_replacement",
+                reader=_reader,
+                no_header=True,
+            )
+
+        captured = capsys.readouterr()
+        assert "REDIRECTED BODY" in captured.out
+        assert "redirected from" in captured.err
+        assert calls == ["Install", "Installation"]
+
+    def test_json_redirect_carries_redirected_from(self, monkeypatch):
+        import json as _json
+        import sys
+        from unittest.mock import patch
+
+        import typer
+
+        from token_goat import read_commands
+
+        ft = self._file_target()
+
+        def _reader(_proj, _rel, heading, *, context_lines=0):
+            return self._mock_result() if heading == "Installation" else None
+
+        monkeypatch.setattr(read_commands, "_section_heading_pool", lambda p, r: ["Installation"])
+
+        with (
+            patch("token_goat.read_commands._resolve_file_target", return_value=ft),
+            patch("token_goat.db.record_stat"),
+            patch("token_goat.db.reset_miss"),
+            patch("token_goat.read_commands.session.mark_file_read"),
+            patch.object(sys.stdout, "isatty", return_value=False),
+        ):
+            captured_lines: list[str] = []
+            monkeypatch.setattr(typer, "echo", lambda msg="", **kw: captured_lines.append(str(msg)))
+            read_commands._run_read_like_command(
+                target="README.md::Install",
+                session_id=None,
+                json_output=True,
+                context_lines=0,
+                separator_label="heading",
+                missing_label="Section",
+                stat_kind="section_replacement",
+                reader=_reader,
+                no_header=True,
+            )
+
+        payload = _json.loads(captured_lines[-1])
+        assert payload["redirected_from"] == "Install"
+
+    def test_no_match_falls_through_unchanged(self, monkeypatch):
+        """A genuine miss with no close heading still exits 1 with not-found."""
+        import sys
+        from unittest.mock import patch
+
+        import typer
+
+        from token_goat import read_commands
+
+        ft = self._file_target()
+
+        monkeypatch.setattr(read_commands, "_section_heading_pool", lambda p, r: ["Installation"])
+        monkeypatch.setattr(read_commands, "_close_section_matches", lambda p, r, h: [])
+
+        with (
+            patch("token_goat.read_commands._resolve_file_target", return_value=ft),
+            patch("token_goat.db.record_miss"),
+            patch("token_goat.db.get_miss_count", return_value=1),
+            patch.object(sys.stdout, "isatty", return_value=False),
+        ):
+            try:
+                read_commands._run_read_like_command(
+                    target="README.md::Totally Absent",
+                    session_id=None,
+                    json_output=False,
+                    context_lines=0,
+                    separator_label="heading",
+                    missing_label="Section",
+                    stat_kind="section_replacement",
+                    reader=lambda *a, **k: None,
+                    no_header=True,
+                )
+            except typer.Exit as exc:
+                assert exc.exit_code == 1
+            else:
+                raise AssertionError("expected typer.Exit(1) on a genuine section miss")
+
+    def test_ambiguous_matches_list_with_scores(self, monkeypatch, capsys):
+        """When the redirect declines, suggestions carry similarity scores."""
+        import contextlib
+        import sys
+        from unittest.mock import patch
+
+        import typer
+
+        from token_goat import read_commands
+
+        ft = self._file_target()
+
+        # Pool has two substring hits → redirect refuses; close-matches list both.
+        monkeypatch.setattr(
+            read_commands, "_section_heading_pool", lambda p, r: ["Testing", "Test Conventions"]
+        )
+        monkeypatch.setattr(
+            read_commands, "_close_section_matches", lambda p, r, h: ["Testing", "Test Conventions"]
+        )
+
+        with (
+            patch("token_goat.read_commands._resolve_file_target", return_value=ft),
+            patch("token_goat.db.record_miss"),
+            patch("token_goat.db.get_miss_count", return_value=1),
+            patch.object(sys.stdout, "isatty", return_value=False),contextlib.suppress(typer.Exit)
+        ):
+            read_commands._run_read_like_command(
+                target="README.md::Test",
+                session_id=None,
+                json_output=False,
+                context_lines=0,
+                separator_label="heading",
+                missing_label="Section",
+                stat_kind="section_replacement",
+                reader=lambda *a, **k: None,
+                no_header=True,
+            )
+
+        out = capsys.readouterr().out
+        assert "Did you mean" in out
+        assert "similarity" in out

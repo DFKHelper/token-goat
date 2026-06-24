@@ -186,6 +186,14 @@ _DIDYOUMEAN_LIMIT = 3
 # more candidates but also more noise. The aim is to cover near-typos and
 # case mismatches, not arbitrary substring containment.
 _DIDYOUMEAN_CUTOFF = 0.6
+# Confidence cutoff for the section close-match auto-redirect. Mirrors the symbol
+# command's redirect (cli.py::_SYMBOL_AUTO_REDIRECT_CUTOFF) but is set lower (0.75
+# vs 0.85) because headings are prose-like and often paraphrased rather than
+# typoed — "Install" for "Installation", "Quick Start" for "Getting Started" — so
+# a slightly looser threshold catches the common partial-recall case. A query
+# that is a clean substring or prefix of exactly one heading also redirects,
+# regardless of ratio, since that is an unambiguous partial match.
+_SECTION_AUTO_REDIRECT_CUTOFF = 0.75
 
 
 def _close_db_matches(
@@ -242,6 +250,65 @@ def _close_section_matches(project: Project, rel_path: str, heading: str) -> lis
     Returns an empty list on any DB error.
     """
     return _close_db_matches(project, rel_path, heading, table="sections", column="heading", kind="section")
+
+
+def _section_heading_pool(project: Project, rel_path: str) -> list[str]:
+    """Return the distinct section-heading pool for ``rel_path``.
+
+    Used by :func:`_section_redirect_target` to evaluate the auto-redirect
+    against the file's full heading set. Returns an empty list on any DB error
+    so the caller falls through to the standard miss path.
+    """
+    try:
+        with db.open_project_readonly(project.hash) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT heading FROM sections"
+                " WHERE file_rel = ? AND heading IS NOT NULL",
+                (rel_path,),
+            ).fetchall()
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError) as exc:
+        _LOG.debug("section heading pool query failed for %s: %s", rel_path, exc)
+        return []
+    return [r["heading"] for r in rows if r["heading"]]
+
+
+def _section_redirect_target(heading: str, candidate_pool: list[str]) -> str | None:
+    """Return the unambiguous high-confidence heading to redirect to, or None.
+
+    Mirrors :func:`~token_goat.cli._auto_redirect_target` for ``token-goat
+    section`` but with two ways to qualify:
+
+    1. **Clean partial match** — the query is a case-insensitive substring or
+       prefix of exactly one heading (e.g. ``Install`` → ``Installation``).
+       Substring containment is the common heading-paraphrase case and is an
+       unambiguous signal, so it redirects regardless of difflib ratio.
+    2. **High-confidence fuzzy match** — exactly one heading scores at or above
+       :data:`_SECTION_AUTO_REDIRECT_CUTOFF`. Two candidates at the cutoff means
+       the agent should choose; we refuse to guess.
+
+    The redirect never fires when the query already matches a heading exactly
+    (the reader would have found it) or when either candidate condition is
+    ambiguous. Returns ``None`` to fall through to the standard "Did you mean…?"
+    path in every non-redirect case.
+    """
+    if not candidate_pool or not heading:
+        return None
+    needle = heading.casefold()
+    # Exact match should have been served by the reader; never redirect to self.
+    if any(c.casefold() == needle for c in candidate_pool):
+        return None
+    substring_hits = [c for c in candidate_pool if needle in c.casefold()]
+    if len(substring_hits) == 1:
+        return substring_hits[0]
+    if len(substring_hits) > 1:
+        # Ambiguous partial match — let the agent pick from "Did you mean".
+        return None
+    high_conf = difflib.get_close_matches(
+        heading, candidate_pool, n=2, cutoff=_SECTION_AUTO_REDIRECT_CUTOFF,
+    )
+    if len(high_conf) != 1:
+        return None
+    return high_conf[0]
 
 
 def _close_file_matches(project: Project, file_part: str) -> list[str]:
@@ -1070,6 +1137,30 @@ def _run_read_like_command(
         return
 
     result = reader(file_target.project, file_target.rel_path, item_part, context_lines=context_lines)
+    # Section close-match auto-redirect: when a heading lookup misses but exactly
+    # one indexed heading is a high-confidence (or clean substring/prefix) match,
+    # transparently re-run against it instead of stopping at "Did you mean…?".
+    # Keeps the agent on the surgical-read path rather than falling back to a
+    # ~9K-token full-file Read.  Mirrors the symbol command's redirect; text mode
+    # prepends a "(redirected from: …)" marker and JSON carries a redirected_from
+    # field so the substitution stays auditable.
+    redirected_from: str | None = None
+    if result is None and missing_label.lower() == "section":
+        _pool = _section_heading_pool(file_target.project, file_target.rel_path)
+        _redirect = _section_redirect_target(item_part, _pool)
+        if _redirect is not None:
+            _redirected_result = reader(
+                file_target.project, file_target.rel_path, _redirect, context_lines=context_lines,
+            )
+            if _redirected_result is not None:
+                _LOG.debug(
+                    "section: auto-redirected %r -> %r in %s",
+                    item_part, _redirect, file_target.rel_path,
+                )
+                redirected_from = item_part
+                item_part = _redirect
+                cache_item_key = f"{item_part}\x1ec={context_lines}"
+                result = _redirected_result
     if result is None:
         _label_lower = missing_label.lower()
         # Suggest close matches from the same file so the agent has an
@@ -1080,6 +1171,13 @@ def _run_read_like_command(
             suggestions = _close_symbol_matches(file_target.project, file_target.rel_path, item_part)
         elif _label_lower == "section":
             suggestions = _close_section_matches(file_target.project, file_target.rel_path, item_part)
+            # Annotate each ambiguous heading with its similarity score so the
+            # agent can rank the "Did you mean" options (the redirect already
+            # consumed the unambiguous single-match case upstream).
+            suggestions = [
+                f"{h} (similarity {difflib.SequenceMatcher(None, item_part.casefold(), h.casefold()).ratio():.2f})"
+                for h in suggestions
+            ]
         else:
             suggestions = []
         base_message = f"{missing_label} not found: {item_part} (in {file_target.rel_path})"
@@ -1129,6 +1227,12 @@ def _run_read_like_command(
         raise typer.Exit(1)
 
     db.reset_miss(item_part, file_target.rel_path or "")
+    # Audit marker for the section auto-redirect.  Emitted to stderr (like the
+    # ambiguous-heading and stale-edit hints) so it precedes the body without
+    # corrupting piped/JSON stdout.  JSON callers receive the same signal via the
+    # ``redirected_from`` field injected at each JSON emit branch below.
+    if redirected_from is not None and not json_output:
+        typer.echo(f"(redirected from: {redirected_from!r})", err=True)
     if session_id:
         session.mark_file_read(session_id, file_target.rel_path, symbol=item_part)
         # Store the freshly-computed result for future same-session lookups.
@@ -1215,6 +1319,8 @@ def _run_read_like_command(
             out = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
             out["_project_root"] = str(file_target.project.root)
             out["text"] = display_text
+            if redirected_from is not None:
+                out["redirected_from"] = redirected_from
             typer.echo(json_compact(out))
             return
         cb, ca = _context_bounds(result)
@@ -1229,6 +1335,8 @@ def _run_read_like_command(
         # Strip internal stat fields — model never acts on them; stats are recorded above.
         out = {k: v for k, v in result.items() if k not in _INTERNAL_RESULT_FIELDS}
         out["text"] = display_text
+        if redirected_from is not None:
+            out["redirected_from"] = redirected_from
         typer.echo(json_compact(out))
         return
     cb, ca = _context_bounds(result)
@@ -1586,6 +1694,13 @@ def section(
     by default to avoid paying ~10 tokens per call for information the agent
     already has.  Pass ``--header`` to force it on, or ``--no-header`` to
     force it off regardless of TTY state.
+
+    Close-match auto-redirect: when <heading> misses but exactly one indexed
+    heading is a high-confidence match (difflib ratio >= 0.75, or the query is a
+    clean substring/prefix of a single heading), the section is served
+    transparently with a ``(redirected from: ...)`` marker (``redirected_from``
+    field in ``--json``).  Ambiguous or low-confidence misses fall through to the
+    "Did you mean…?" list with similarity scores instead.
     """
     _run_read_like_command(
         target=target,

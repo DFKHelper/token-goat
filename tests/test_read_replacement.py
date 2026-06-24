@@ -1737,34 +1737,59 @@ class TestSurgicalReadSuggestionsOnMiss:
         assert "Symbol not found" in combined
         assert "Did you mean" not in combined
 
-    def test_section_miss_lists_close_heading_in_same_file(self, indexed_md_cli):
-        """`token-goat section file::TypoHeading` should suggest real headings
-        with similar spelling from that file."""
+    def test_section_typo_auto_redirects_to_real_heading(self, indexed_md_cli):
+        """`token-goat section file::TypoHeading` with a single high-confidence
+        close match transparently serves that section (auto-redirect), mirroring
+        the symbol command.  Without it the agent would parse a "Did you mean"
+        hint and retry, or fall back to a full-file Read."""
         from typer.testing import CliRunner
 
         from token_goat.cli import app
 
         runner = CliRunner()
-        # Article has "Methodology"; "Methodolgy" is a 1-char typo.
+        # Article has "Methodology"; "Methodolgy" is a 1-char typo (ratio ~0.95).
         result = runner.invoke(app, ["section", "article.md::Methodolgy"])
+        assert result.exit_code == 0
+        combined = result.output + (result.stderr or "")
+        # Audit marker so the substitution is visible to the caller.
+        assert "redirected from" in combined
+        assert "Methodolgy" in combined
+        # The real section body is served.
+        assert "Methodology" in combined
+        assert "How we did it" in combined
+
+    def test_section_miss_lists_close_heading_in_same_file(self, indexed_md_cli):
+        """An ambiguous/low-confidence section miss (no single high-confidence
+        match) still suggests real headings with their similarity scores instead
+        of redirecting."""
+        from typer.testing import CliRunner
+
+        from token_goat.cli import app
+
+        runner = CliRunner()
+        # Two-word garble that fuzzy-matches "Methodology" only weakly (~0.67,
+        # below the 0.75 redirect cutoff) so the redirect declines and the
+        # "Did you mean" list is shown.
+        result = runner.invoke(app, ["section", "article.md::Methdolgy Reslts"])
         combined = result.output + (result.stderr or "")
         assert "Section not found" in combined
         assert "Did you mean" in combined
         assert "Methodology" in combined
+        assert "similarity" in combined
 
     def test_section_miss_json_carries_candidates(self, indexed_md_cli):
-        """Section JSON miss includes candidates list."""
+        """Section JSON miss (below the redirect cutoff) includes candidates list."""
         from typer.testing import CliRunner
 
         from token_goat.cli import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["section", "--json", "article.md::Methodolgy"])
+        result = runner.invoke(app, ["section", "--json", "article.md::Methdolgy Reslts"])
         payload = json.loads(result.output)
         assert payload["ok"] is False
         assert payload["error"]["code"] == "section_not_found"
         assert "candidates" in payload["error"]
-        assert "Methodology" in payload["error"]["candidates"]
+        assert any("Methodology" in c for c in payload["error"]["candidates"])
 
     def test_symbol_typo_auto_redirects_to_real_match(self, indexed_ts_cli):
         """`token-goat symbol Typo` with a single high-confidence close match

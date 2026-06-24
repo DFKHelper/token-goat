@@ -3167,6 +3167,73 @@ class TestSidecarBashOutputHintDedup:
         assert "hookSpecificOutput" not in result2
 
 
+class TestGrepSidecarBashOutputHint:
+    """Grep over a cached sidecar → suggest `bash-output --grep`; dedup by (id, pattern)."""
+
+    def _grep_payload(self, sid: str, path: str, pattern: str) -> dict:
+        return {
+            "session_id": sid,
+            "tool_name": "Grep",
+            "tool_input": {"pattern": pattern, "path": path, "output_mode": "content"},
+            "cwd": "/proj",
+        }
+
+    def test_grep_tool_results_sidecar_emits_hint(self, tmp_data_dir):
+        """Grep on tool-results/<id>.txt → hint suggests bash-output --grep with id+pattern."""
+        payload = self._grep_payload("grep-sc-1", "/proj/tool-results/abc123.txt", "error")
+        result = hooks_cli.pre_read(payload)
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        ctx = result["hookSpecificOutput"]["additionalContext"]
+        assert "[tg]" in ctx
+        assert "bash-output abc123" in ctx
+        assert "--grep" in ctx
+        assert "error" in ctx
+
+    def test_grep_tasks_output_sidecar_emits_hint(self, tmp_data_dir):
+        """Grep on tasks/<id>.output → hint fires with the task id."""
+        payload = self._grep_payload("grep-sc-tasks", "/proj/tasks/deadbeef.output", "Traceback")
+        result = hooks_cli.pre_read(payload)
+        _assert_continue(result)
+        assert "hookSpecificOutput" in result
+        assert "bash-output deadbeef" in result["hookSpecificOutput"]["additionalContext"]
+
+    def test_grep_sidecar_dedup_same_pattern(self, tmp_data_dir):
+        """Second identical Grep (same id + pattern) → hint suppressed."""
+        payload = self._grep_payload("grep-sc-dedup", "/proj/tool-results/abc123.txt", "error")
+        first = hooks_cli.pre_read(payload)
+        _assert_continue(first)
+        assert "hookSpecificOutput" in first
+
+        second = hooks_cli.pre_read(payload)
+        _assert_continue(second)
+        assert "hookSpecificOutput" not in second
+
+    def test_grep_sidecar_different_pattern_refires(self, tmp_data_dir):
+        """A different pattern on the same sidecar is genuinely new filtering → hint fires again."""
+        sid = "grep-sc-newpat"
+        first = hooks_cli.pre_read(
+            self._grep_payload(sid, "/proj/tool-results/abc123.txt", "error")
+        )
+        _assert_continue(first)
+        assert "hookSpecificOutput" in first
+
+        second = hooks_cli.pre_read(
+            self._grep_payload(sid, "/proj/tool-results/abc123.txt", "warning")
+        )
+        _assert_continue(second)
+        assert "hookSpecificOutput" in second
+        assert "warning" in second["hookSpecificOutput"]["additionalContext"]
+
+    def test_grep_non_sidecar_path_no_hint(self, tmp_data_dir):
+        """Grep on an ordinary source path does not trigger the sidecar hint."""
+        payload = self._grep_payload("grep-sc-plain", "/proj/src/app.py", "error")
+        result = hooks_cli.pre_read(payload)
+        _assert_continue(result)
+        ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+        assert "bash-output" not in ctx
+
+
 class TestServeDiffAdvisoryDedup:
     """_try_serve_diff_hint must emit once per file per session."""
 
@@ -3212,7 +3279,7 @@ class TestServeDiffAdvisoryDedup:
         result1 = hooks_cli.pre_read(payload)
         _assert_continue(result1)
         assert "hookSpecificOutput" in result1
-        ctx1 = result1["hookSpecificOutput"]["additionalContext"]
+        assert isinstance(result1["hookSpecificOutput"]["additionalContext"], str)
 
         # Second read: if it was a serve_diff advisory, it should be gone;
         # but regular diff hint may still appear

@@ -3922,6 +3922,75 @@ def _try_sidecar_bash_output_hint(file_path: str, session_id: str | None = None,
     return pre_tool_use_with_context(hint)
 
 
+#: Sidecar path patterns recognised by the Grep-on-snapshot hint.  Mirrors the
+#: Read-path patterns in :func:`_try_sidecar_bash_output_hint` minus the
+#: ``glm_temp`` form, which has no bash-output id and so cannot be grepped via
+#: ``bash-output``.  Each tuple is (compiled regex, capture-group label).
+_GREP_SIDECAR_PATTERNS = (
+    (r"/tool-results/([a-z0-9]+)\.txt$", "tool-results"),
+    (r"/tasks/([a-z0-9]+)\.output$", "tasks"),
+)
+
+
+def _try_grep_sidecar_bash_output_hint(payload: HookPayload) -> HookResponse | None:
+    """Emit an advisory when Grep targets a cached tool/task sidecar file.
+
+    The Read-path hint (:func:`_try_sidecar_bash_output_hint`) only fires on
+    ``Read`` of these sidecars; a ``Grep`` over the same path re-loads the whole
+    file into Grep context just to filter it.  ``token-goat bash-output <id>
+    --grep`` does the same filtering against the cached copy without pulling the
+    full file, so point the agent there instead.
+
+    Advisory only — never blocks the Grep.  Dedups by ``(id, pattern)`` so the
+    same Grep does not re-hint, but a different pattern on the same sidecar still
+    surfaces (the agent is doing genuinely new filtering).  Returns ``None`` when
+    the Grep path is not a recognised sidecar.
+    """
+    import re
+
+    args = _extract_grep_args(payload)
+    if args is None:
+        return None
+    pattern, path = args
+    if not path:
+        return None
+
+    path_str = str(path).replace("\\", "/")
+    output_id: str | None = None
+    for regex, _typ in _GREP_SIDECAR_PATTERNS:
+        match = re.search(regex, path_str, re.IGNORECASE)
+        if match:
+            output_id = match.group(1)
+            break
+    if not output_id:
+        return None
+
+    session_id, _cwd = get_session_context(payload)
+    fingerprint = f"grep_sidecar_hint:{output_id}:{pattern}"
+    cache = None
+    _session_module = None
+    if session_id:
+        _session_module = _get_session()
+        cache = _session_module.safe_load(session_id, caller="_try_grep_sidecar_bash_output_hint")
+    if cache:
+        if _fingerprint_already_seen(cache, fingerprint):
+            return None
+        cache.mark_hint_seen(fingerprint)  # type: ignore[attr-defined]
+        if _session_module:
+            with contextlib.suppress(Exception):
+                _session_module.save(cache)
+    elif _fingerprint_already_seen({}, fingerprint):
+        return None
+
+    hint = (
+        f"[tg] Grep is loading a cached tool/task output in full. Filter the "
+        f"cached copy instead:\n"
+        f"  `token-goat bash-output {output_id} --grep {_shlex.quote(pattern)}`"
+        f"   — filter cached output without loading the full file\n"
+    )
+    return pre_tool_use_with_context(hint)
+
+
 def _try_serve_diff_hint(file_path: str, cache: object | None, session_id: str | None) -> HookResponse | None:
     """Emit advisory hint when serve_diff_on_reread is disabled but applicable.
 
@@ -4149,6 +4218,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
         large_grep = _handle_large_grep_redirect(payload)
         if large_grep is not None:
             return large_grep
+        # Sidecar advisory: a Grep over a cached tool/task output should filter
+        # the cached copy via `bash-output --grep` instead of loading the whole
+        # sidecar.  Advisory only; placed after the blocking handlers so a real
+        # cached-result serve still wins.
+        sidecar_grep_hint = _try_grep_sidecar_bash_output_hint(payload)
+        if sidecar_grep_hint is not None:
+            return sidecar_grep_hint
         # Lazy construction: only build advisory if all blocking handlers returned None.
         advisory_text = _handle_grep_advisory(payload)
         if advisory_text:
