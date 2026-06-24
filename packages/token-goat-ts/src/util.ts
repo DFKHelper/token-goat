@@ -86,6 +86,7 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
 
   // mode 0o600: owner read/write only (no effect on Windows ACLs, but harmless).
   const fd = openSync(tmp, 'w', 0o600)
+  // eslint-disable-next-line no-useless-assignment -- initial false is the sentinel read in the outer finally when writeSync throws before wrote = true
   let wrote = false
   try {
     if (typeof content === 'string') {

@@ -110,7 +110,10 @@ END;
  * are best-effort: a SQLite build lacking either still yields a working DB.
  */
 function initConnection(conn: BetterSqlite3Database): void {
-  conn.pragma('journal_mode = WAL')
+  const walMode = conn.pragma('journal_mode = WAL', { simple: true })
+  if (String(walMode).toLowerCase() !== 'wal') {
+    throw new Error(`db: failed to enable WAL mode (got: ${walMode})`)
+  }
   conn.pragma('synchronous = NORMAL')
 
   conn.exec(SCHEMA_SQL)

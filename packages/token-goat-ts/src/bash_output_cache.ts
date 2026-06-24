@@ -6,8 +6,8 @@
  * later identical command can be served from cache, and so surgical re-reads
  * (`token-goat bash-output <id>`) can extract a slice without re-running it.
  *
- * Storage is process-local: an `id -> entry` map plus a `commandHash -> id`
- * index. Cleared between tests via {@link registerReset}.
+ * Storage is process-local: a single `id -> entry` map keyed by the
+ * command hash. Cleared between tests via {@link registerReset}.
  */
 
 import { fingerprintContent } from './fingerprint.js'
@@ -32,8 +32,6 @@ export interface BashOutputEntry {
 // id -> entry.
 let _byId = new Map<string, BashOutputEntry>()
 
-// commandHash -> id (the most recent run wins for a given command).
-let _byCommandHash = new Map<string, string>()
 
 /**
  * Return the stable hash for a command: 16-hex-char SHA-256 prefix of the
@@ -64,7 +62,6 @@ export function storeBashOutput(command: string, output: string, exitCode: numbe
     sizeBytes: Buffer.byteLength(output, 'utf-8'),
   }
   _byId.set(id, entry)
-  _byCommandHash.set(id, id)
   return id
 }
 
@@ -80,12 +77,9 @@ export function getBashOutput(id: string): BashOutputEntry | null {
  * command-hash index and then the id map.
  */
 export function getBashOutputByCommandHash(commandHash: string): BashOutputEntry | null {
-  const id = _byCommandHash.get(commandHash)
-  if (id === undefined) return null
-  return _byId.get(id) ?? null
+  return _byId.get(commandHash) ?? null
 }
 
 registerReset(() => {
   _byId = new Map()
-  _byCommandHash = new Map()
 })
