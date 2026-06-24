@@ -162,6 +162,11 @@ export function getWebFetchCacheId(url: string): string | null {
   return _webFetches.get(url) ?? null
 }
 
+/** Return every web-fetch this session as a `url -> cacheId` map (insertion order). */
+export function getSessionWebFetches(): ReadonlyMap<string, string> {
+  return _webFetches
+}
+
 /**
  * Index a bash-output result: `commandHash` -> `outputId`.
  *
