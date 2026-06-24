@@ -3790,8 +3790,19 @@ def _try_bash_read_equivalent_hint(payload: HookPayload) -> HookResponse | None:
     if binary not in simple_readers:
         return None
 
-    if _fingerprint_already_seen("bash_read_equiv_hint", file_path):
-        return None
+    session_id, _ = get_session_context(payload)
+    if session_id:
+        _sess = _get_session()
+        cache = _sess.safe_load(session_id, caller="_try_bash_read_equivalent_hint")
+        fingerprint = f"bash_read_equiv_hint:{file_path}"
+        if _fingerprint_already_seen(cache, fingerprint):
+            return None
+        cache.mark_hint_seen(fingerprint)  # type: ignore[attr-defined]
+        with contextlib.suppress(Exception):
+            _sess.save(cache)
+    else:
+        if _fingerprint_already_seen({}, f"bash_read_equiv_hint:{file_path}"):
+            return None
 
     hint = (
         f"[tg] Bash read-equivalent detected. Surgical reads are much cheaper:\n"
@@ -3824,8 +3835,19 @@ def _try_bash_grep_hint(payload: HookPayload) -> HookResponse | None:
     if not pattern or len(pattern) < 3:
         return None
 
-    if _fingerprint_already_seen("bash_grep_hint", pattern):
-        return None
+    session_id, _ = get_session_context(payload)
+    if session_id:
+        _sess = _get_session()
+        cache = _sess.safe_load(session_id, caller="_try_bash_grep_hint")
+        fingerprint = f"bash_grep_hint:{pattern}"
+        if _fingerprint_already_seen(cache, fingerprint):
+            return None
+        cache.mark_hint_seen(fingerprint)  # type: ignore[attr-defined]
+        with contextlib.suppress(Exception):
+            _sess.save(cache)
+    else:
+        if _fingerprint_already_seen({}, f"bash_grep_hint:{pattern}"):
+            return None
 
     hint = (
         f"[tg] Recursive search detected. For code searches, token-goat offers "
@@ -3836,7 +3858,7 @@ def _try_bash_grep_hint(payload: HookPayload) -> HookResponse | None:
     return pre_tool_use_with_context(hint)
 
 
-def _try_sidecar_bash_output_hint(file_path: str) -> HookResponse | None:
+def _try_sidecar_bash_output_hint(file_path: str, session_id: str | None = None, cache: object | None = None) -> HookResponse | None:
     """Emit hint when reading Claude agent task-output or tool-result sidecar files.
 
     These files are typically large cached outputs; surgical-read commands are
@@ -3844,6 +3866,8 @@ def _try_sidecar_bash_output_hint(file_path: str) -> HookResponse | None:
 
     Args:
         file_path: Path being read.
+        session_id: Session ID (optional; loaded if not provided).
+        cache: Session cache object (optional; loaded if not provided).
 
     Returns:
         A PreToolUse hint response, or None when the path is not a sidecar file.
@@ -3869,8 +3893,24 @@ def _try_sidecar_bash_output_hint(file_path: str) -> HookResponse | None:
     if not output_id:
         return None
 
-    if _fingerprint_already_seen("sidecar_hint", output_id):
-        return None
+    _session_module = None
+    if session_id and cache is None:
+        _session_module = _get_session()
+        cache = _session_module.safe_load(session_id, caller="_try_sidecar_bash_output_hint")
+
+    fingerprint = f"sidecar_hint:{output_id}"
+    if cache:
+        if _fingerprint_already_seen(cache, fingerprint):
+            return None
+        cache.mark_hint_seen(fingerprint)  # type: ignore[attr-defined]
+        if _session_module is None and session_id:
+            _session_module = _get_session()
+        if _session_module:
+            with contextlib.suppress(Exception):
+                _session_module.save(cache)
+    else:
+        if _fingerprint_already_seen({}, fingerprint):
+            return None
 
     hint = (
         f"[tg] This looks like a cached tool/task output. Use surgical-read "
@@ -3911,7 +3951,8 @@ def _try_serve_diff_hint(file_path: str, cache: object | None, session_id: str |
     except Exception:
         return None
 
-    if _fingerprint_already_seen("serve_diff_hint", file_path):
+    fingerprint = f"serve_diff_hint:{file_path}"
+    if _fingerprint_already_seen(cache, fingerprint):
         return None
 
     try:
@@ -3929,6 +3970,13 @@ def _try_serve_diff_hint(file_path: str, cache: object | None, session_id: str |
             return None
     except Exception:
         return None
+
+    cache.mark_hint_seen(fingerprint)  # type: ignore[attr-defined]
+    try:
+        _sess_mod = _get_session()
+        _sess_mod.save(cache)
+    except Exception:
+        pass
 
     hint = (
         "📌 This file was edited since you last read it — "
@@ -4154,7 +4202,7 @@ def pre_read(payload: HookPayload) -> HookResponse:
         return task_output_response
 
     # Sidecar bash-output hint: detect tool-result and task sidecar files and suggest surgical reads.
-    sidecar_hint = _try_sidecar_bash_output_hint(file_path)
+    sidecar_hint = _try_sidecar_bash_output_hint(file_path, session_id=session_id)
     if sidecar_hint is not None:
         return sidecar_hint
 
