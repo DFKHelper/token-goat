@@ -17,8 +17,12 @@ TEST_PID=$!
 bash "$SCRIPT_DIR/wsl-test.sh" &
 WSL_PID=$!
 
+bash "$SCRIPT_DIR/run-ts-checks.sh" &
+TS_PID=$!
+
 FAIL=0
 wait "$TYPECHECK_PID" || { echo "pre-push: typecheck FAILED"; FAIL=1; }
 wait "$TEST_PID"       || { echo "pre-push: tests FAILED"; FAIL=1; }
 wait "$WSL_PID"        || { echo "pre-push: wsl-test FAILED"; FAIL=1; }
+wait "$TS_PID"         || { echo "pre-push: ts-checks FAILED"; FAIL=1; }
 exit $FAIL
