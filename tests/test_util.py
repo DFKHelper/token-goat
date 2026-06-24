@@ -5,7 +5,10 @@ import io
 import logging
 import pathlib
 import re
+import subprocess
 from unittest import mock
+
+import pytest
 
 from token_goat.util import (
     configure_stdout_encoding,
@@ -50,6 +53,34 @@ def test_no_bare_git_subprocess_calls_outside_util() -> None:
     assert not offenders, (
         f"Bare git subprocess.run found outside util.py: {offenders}. Use util.run_git instead."
     )
+
+
+def test_no_window_creationflags_win32(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On Windows the helper returns CREATE_NO_WINDOW so windowless parents don't flash a console."""
+    import token_goat.util as util
+    monkeypatch.setattr(util.sys, "platform", "win32")
+    assert util.no_window_creationflags() == 0x08000000
+
+
+def test_no_window_creationflags_posix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """On POSIX the flag does not exist; the helper returns 0, which subprocess accepts everywhere."""
+    import token_goat.util as util
+    monkeypatch.setattr(util.sys, "platform", "linux")
+    assert util.no_window_creationflags() == 0
+
+
+def test_run_git_passes_no_window_creationflags() -> None:
+    """run_git forwards creationflags=no_window_creationflags() to suppress console-window flashes.
+
+    Regression: the windowless ``pythonw`` worker daemon and read/compact hooks spawned bare
+    ``git`` without CREATE_NO_WINDOW, so Windows allocated a fresh console that flashed on screen.
+    """
+    import token_goat.util as util
+    completed = subprocess.CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
+    with mock.patch("token_goat.util.subprocess.run", return_value=completed) as m:
+        util.run_git(["status"])
+    assert m.call_args.kwargs.get("creationflags") == util.no_window_creationflags()
+
 
 class TestEllipsize:
     """ellipsize(s, max_chars) truncates with trailing … when over budget."""

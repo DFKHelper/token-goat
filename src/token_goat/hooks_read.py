@@ -1302,11 +1302,13 @@ def _handle_doc_compact(
                 import subprocess as _subprocess
                 _exe = _shutil.which("token-goat")
                 if _exe:
+                    from .util import no_window_creationflags as _no_window
                     _subprocess.Popen(
                         [_exe, "compact-doc", file_path],
                         stdin=_subprocess.DEVNULL,
                         stdout=_subprocess.DEVNULL,
                         stderr=_subprocess.DEVNULL,
+                        creationflags=_no_window(),
                     )
     return pre_tool_use_with_context(hint_text)
 
@@ -5791,20 +5793,13 @@ def _get_head_sha(cwd: str | None) -> str | None:
     Runs ``git rev-parse HEAD`` in *cwd*.  Returns ``None`` when the directory
     is not a git repository, the repo has no commits yet, or the subprocess
     call fails for any reason.  Never raises.
+
+    Routed through ``run_git_silent`` so it inherits the ``CREATE_NO_WINDOW``
+    flag — this runs inside the windowless ``pythonw`` read hook, where a bare
+    ``git`` spawn would flash a console window.
     """
-    import subprocess as _subp
-    try:
-        kwargs: dict[str, object] = {"capture_output": True, "text": True, "timeout": 5, "check": False}
-        if cwd:
-            kwargs["cwd"] = cwd
-        result = _subp.run(["git", "rev-parse", "HEAD"], **kwargs)  # type: ignore[call-overload]
-        if result.returncode == 0:
-            sha = result.stdout.strip()
-            if sha:
-                return sha
-    except Exception:
-        pass
-    return None
+    from .util import run_git_silent
+    return run_git_silent(["rev-parse", "HEAD"], cwd=cwd, timeout=5)
 
 
 def _extract_pytest_failure_ids(output: str) -> list[str]:

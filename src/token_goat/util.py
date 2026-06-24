@@ -212,6 +212,23 @@ def normalize_path(path: str | Path) -> str:
     return s
 
 
+def no_window_creationflags() -> int:
+    """Return Windows ``creationflags`` that suppress console-window allocation.
+
+    When a windowless parent (the ``pythonw.exe`` worker daemon or a hook
+    launcher) spawns a console-subsystem program such as ``git.exe``, Windows
+    has no console for the child to inherit and allocates a fresh one, which
+    flashes on screen and immediately vanishes.  ``CREATE_NO_WINDOW``
+    (``0x08000000``) suppresses that allocation.  Returns ``0`` on POSIX, where
+    the flag does not exist; ``subprocess`` accepts a zero ``creationflags`` on
+    every platform.  This is the Win32 equivalent of Node's ``windowsHide``,
+    which the TypeScript port already passes for the same reason.
+    """
+    if sys.platform == "win32":
+        return 0x08000000  # CREATE_NO_WINDOW
+    return 0
+
+
 def run_git(
     args: list[str],
     *,
@@ -254,6 +271,7 @@ def run_git(
         timeout=timeout,
         check=check,
         env=env,
+        creationflags=no_window_creationflags(),
     )
 
 
