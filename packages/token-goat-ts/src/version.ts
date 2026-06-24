@@ -14,7 +14,6 @@ import { createRequire } from 'node:module'
 declare const __TG_VERSION__: string | undefined
 
 function resolveVersion(): string {
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- __TG_VERSION__ is only defined in esbuild builds; undefined under tsx/vitest.
   if (typeof __TG_VERSION__ === 'string') {
     return __TG_VERSION__
   }
