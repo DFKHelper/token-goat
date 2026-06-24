@@ -70,7 +70,10 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Same large skill invoked twice in a session | PreToolUse hook blocks the reload; serves cached compact (~400 tokens) via `additionalContext` instead of the full 40–65k body. Allows the reload if compaction fired since the last load |
 | Skill invoked with `first_load_compact=true` and `<!-- COMPACT_END -->` present | First load also blocked; only the curated compact section is served. Full body available via `token-goat skill-body <name>` on demand |
 | Same docs URL fetched twice in a session | Re-fetch blocked at warm+ context pressure; cached body available via `token-goat web-output <id>` |
+| `cat src/auth.py` or `Get-Content module.py` run via Bash | Pre-Bash hook detects whole-file reads of indexed source files and suggests `token-goat read "file::Symbol"`, `skeleton`, or `section` — covers `cat`, `bat`, `type`, PowerShell `Get-Content`/`gc` |
+| `rg pattern src/` or `grep -rn` run via Bash (first time) | Pre-Bash hook suggests `token-goat symbol <name>` and `token-goat semantic "<query>"` as indexed alternatives to a full directory walk |
 | `rg` or `grep` run twice with the same pattern | Pre-Bash dedup hint fires on repeated `rg`/`grep`/`ag` calls the same way it fires on the native Grep tool; repeat searches return a cached match-count hint instead of re-running |
+| Read tool targets `tool-results/<id>.txt` or `tasks/<id>.output` | Pre-Read hook suggests `token-goat bash-output <id> --tail N` / `--grep PATTERN` / `--section H`; the filename stem is the output ID |
 | `pnpm`/`yarn`/`bun` install or build dumps full output | pnpm, yarn, and bun compress filters now strip install noise and build logs the same way npm does; `pnpm run`/`yarn run` route through their own filter |
 | Surgical-read command returns a 10k-line symbol or a full section dump | Capped at ~25k tokens; marker names the truncation ratio and narrowing command (`symbol` → `file::Class.method`; `section` → sub-heading; cached → `--grep`/`--tail`) |
 | Full file read for one function or section | `token-goat read file::symbol`, about 85% smaller |
@@ -339,7 +342,7 @@ Manual paths:
 |---------|-------------|
 | `token-goat symbol <name>` | Jump to a symbol definition. Add `--all-projects` to search across every indexed repo. |
 | `token-goat read "file::symbol"` | Pull one function or class, not the whole file. Supports qualified lookups: `read "file.py::Class.method"`. |
-| `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading. Disambiguate duplicates with `"doc.md::Heading#2"`. |
+| `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading. Near-miss headings auto-redirect (difflib ratio ≥ 0.75) with a `(redirected from: …)` marker. Disambiguate duplicates with `"doc.md::Heading#2"`. |
 | `token-goat skill-section "<name>::<heading>"` | Extract a named section from an installed skill without reading the full skill file. |
 | `token-goat skeleton "file"` | Show all signatures in a file without bodies — typically 70–90% fewer tokens than a full read. |
 | `token-goat outline "file"` | List top-level symbols with line ranges and docstring hints — one-glance file map. |
