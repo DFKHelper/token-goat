@@ -45,3 +45,8 @@ export function clearModuleCaches(): void {
     throw new AggregateError(errors, 'clearModuleCaches: one or more resets failed')
   }
 }
+
+/** For use in tests only — clears all registered reset callbacks. */
+export function _clearResetRegistryForTesting(): void {
+  _resets.length = 0
+}
