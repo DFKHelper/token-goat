@@ -26,7 +26,7 @@ describe('detectLanguage', () => {
   })
 
   it('classifies named files (Dockerfile, pyproject.toml) by basename', () => {
-    expect(detectLanguage('Dockerfile')).toBe('bash')
+    expect(detectLanguage('Dockerfile')).toBe('dockerfile')
     expect(detectLanguage('repo/pyproject.toml')).toBe('toml')
     expect(detectLanguage('package.json')).toBe('json')
   })

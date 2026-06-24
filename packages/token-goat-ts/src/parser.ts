@@ -93,6 +93,18 @@ function loadGrammar(lang: Language): Grammar | null {
       grammar = _require('tree-sitter-javascript') as Grammar
     } else if (lang === 'python') {
       grammar = _require('tree-sitter-python') as Grammar
+    } else if (lang === 'go') {
+      grammar = _require('tree-sitter-go') as Grammar
+    } else if (lang === 'rust') {
+      grammar = _require('tree-sitter-rust') as Grammar
+    } else if (lang === 'ruby') {
+      grammar = _require('tree-sitter-ruby') as Grammar
+    } else if (lang === 'java') {
+      grammar = _require('tree-sitter-java') as Grammar
+    } else if (lang === 'c') {
+      grammar = _require('tree-sitter-c') as Grammar
+    } else if (lang === 'cpp') {
+      grammar = _require('tree-sitter-c') as Grammar
     }
   } catch {
     grammar = null
@@ -107,10 +119,21 @@ function loadGrammar(lang: Language): Grammar | null {
  *
  * Returns `false` rather than throwing when the native binding or a grammar
  * package is missing, so callers can branch to the regex fallback. Languages
- * without a bundled grammar (everything but ts/js/python) are always `false`.
+ * without a bundled grammar (markdown, json, yaml, toml, css, dockerfile,
+ * bash, unknown) are always `false`.
  */
 export function isTreeSitterAvailable(lang: Language): boolean {
-  if (lang !== 'typescript' && lang !== 'javascript' && lang !== 'python') {
+  if (
+    lang !== 'typescript' &&
+    lang !== 'javascript' &&
+    lang !== 'python' &&
+    lang !== 'go' &&
+    lang !== 'rust' &&
+    lang !== 'ruby' &&
+    lang !== 'java' &&
+    lang !== 'c' &&
+    lang !== 'cpp'
+  ) {
     return false
   }
   return loadParserCtor() !== null && loadGrammar(lang) !== null
@@ -257,6 +280,354 @@ function stripPythonStringQuotes(raw: string): string {
   return s.trim()
 }
 
+// --- Tree-sitter extractors for Go, Rust, Ruby, Java, C++ ---
+
+const GO_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
+  ['function_declaration', 'function'],
+  ['type_declaration', 'type'],
+  ['const_declaration', 'const'],
+  ['var_declaration', 'variable'],
+])
+
+function extractGoSymbols(root: TsNode, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+
+  const visit = (node: TsNode): void => {
+    const kind = GO_KIND_BY_TYPE.get(node.type)
+    if (kind !== undefined) {
+      const name = nodeName(node)
+      if (name !== null && name !== '') {
+        out.push(makeSymbol(filePath, name, kind, node))
+      }
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child)
+    }
+  }
+
+  visit(root)
+  return out
+}
+
+const RUST_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
+  ['function_item', 'function'],
+  ['struct_item', 'struct'],
+  ['enum_item', 'enum'],
+  ['impl_item', 'impl'],
+  ['trait_item', 'trait'],
+  ['type_item', 'type'],
+  ['const_item', 'const'],
+])
+
+function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+
+  const visit = (node: TsNode): void => {
+    const kind = RUST_KIND_BY_TYPE.get(node.type)
+    if (kind !== undefined) {
+      const name = nodeName(node)
+      if (name !== null && name !== '') {
+        out.push(makeSymbol(filePath, name, kind, node))
+      }
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child)
+    }
+  }
+
+  visit(root)
+  return out
+}
+
+const RUBY_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
+  ['method_definition', 'method'],
+  ['class_definition', 'class'],
+  ['module_definition', 'module'],
+])
+
+function extractRubySymbols(root: TsNode, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+
+  const visit = (node: TsNode, insideClass: boolean): void => {
+    const kind = RUBY_KIND_BY_TYPE.get(node.type)
+    if (kind !== undefined) {
+      const name = nodeName(node)
+      if (name !== null && name !== '') {
+        out.push(makeSymbol(filePath, name, kind, node))
+      }
+    }
+
+    const nowInsideClass =
+      node.type === 'class_definition' || node.type === 'module_definition'
+    for (const child of node.namedChildren) {
+      visit(child, nowInsideClass || insideClass)
+    }
+  }
+
+  visit(root, false)
+  return out
+}
+
+const JAVA_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
+  ['method_declaration', 'method'],
+  ['class_declaration', 'class'],
+  ['interface_declaration', 'interface'],
+  ['enum_declaration', 'enum'],
+])
+
+function extractJavaSymbols(root: TsNode, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+
+  const visit = (node: TsNode): void => {
+    const kind = JAVA_KIND_BY_TYPE.get(node.type)
+    if (kind !== undefined) {
+      const name = nodeName(node)
+      if (name !== null && name !== '') {
+        out.push(makeSymbol(filePath, name, kind, node))
+      }
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child)
+    }
+  }
+
+  visit(root)
+  return out
+}
+
+const CPP_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
+  ['function_definition', 'function'],
+  ['class_specifier', 'class'],
+  ['struct_specifier', 'struct'],
+  ['enum_specifier', 'enum'],
+])
+
+function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+
+  const visit = (node: TsNode): void => {
+    const kind = CPP_KIND_BY_TYPE.get(node.type)
+    if (kind !== undefined) {
+      const name = nodeName(node)
+      if (name !== null && name !== '') {
+        out.push(makeSymbol(filePath, name, kind, node))
+      }
+    }
+
+    for (const child of node.namedChildren) {
+      visit(child)
+    }
+  }
+
+  visit(root)
+  return out
+}
+
+// --- Regex extractors for languages without tree-sitter ---
+
+function extractMarkdownSymbols(content: string, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+  const lines = content.split(/\r?\n/)
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === undefined) continue
+
+    const atxMatch = /^(#{1,6})\s+(.+?)(?:\s*#+\s*)?$/.exec(line)
+    if (atxMatch !== null && atxMatch[2] !== undefined) {
+      const name = atxMatch[2].trim()
+      if (name !== '') {
+        out.push({
+          filePath,
+          name,
+          kind: 'heading',
+          lineStart: i + 1,
+          lineEnd: i + 1,
+          body: line.trim(),
+          docstring: '',
+        })
+      }
+    }
+  }
+
+  return out
+}
+
+function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+
+  try {
+    const lines = content.split(/\r?\n/)
+    let braceDepth = 0
+    let inString = false
+    let escaping = false
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      if (line === undefined) continue
+
+      for (let j = 0; j < line.length; j++) {
+        const ch = line[j]
+        if (escaping) {
+          escaping = false
+          continue
+        }
+        if (ch === '\\' && inString) {
+          escaping = true
+          continue
+        }
+        if (ch === '"' && !escaping) {
+          inString = !inString
+        } else if ((ch === '{' || ch === '[') && !inString) {
+          braceDepth++
+        } else if ((ch === '}' || ch === ']') && !inString) {
+          braceDepth--
+        }
+      }
+
+      if (braceDepth === 1 && !inString) {
+        const keyMatch = /^\s*"([^"]+)"\s*:/.exec(line)
+        if (keyMatch !== null && keyMatch[1] !== undefined) {
+          out.push({
+            filePath,
+            name: keyMatch[1],
+            kind: 'property',
+            lineStart: i + 1,
+            lineEnd: i + 1,
+            body: line.trim(),
+            docstring: '',
+          })
+        }
+      }
+    }
+  } catch {
+    // Silently fall through
+  }
+
+  return out
+}
+
+function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+  const lines = content.split(/\r?\n/)
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === undefined) continue
+
+    const match = /^([a-zA-Z_]\w*)\s*:/.exec(line)
+    if (match !== null && match[1] !== undefined) {
+      out.push({
+        filePath,
+        name: match[1],
+        kind: 'key',
+        lineStart: i + 1,
+        lineEnd: i + 1,
+        body: line.trim(),
+        docstring: '',
+      })
+    }
+  }
+
+  return out
+}
+
+function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+  const lines = content.split(/\r?\n/)
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === undefined) continue
+
+    const sectionMatch = /^\s*\[\s*([^\]]+)\s*\]/.exec(line)
+    if (sectionMatch !== null && sectionMatch[1] !== undefined) {
+      out.push({
+        filePath,
+        name: sectionMatch[1].trim(),
+        kind: 'section',
+        lineStart: i + 1,
+        lineEnd: i + 1,
+        body: line.trim(),
+        docstring: '',
+      })
+    }
+
+    const keyMatch = /^\s*([a-zA-Z_]\w*)\s*=/.exec(line)
+    if (keyMatch !== null && keyMatch[1] !== undefined) {
+      out.push({
+        filePath,
+        name: keyMatch[1],
+        kind: 'key',
+        lineStart: i + 1,
+        lineEnd: i + 1,
+        body: line.trim(),
+        docstring: '',
+      })
+    }
+  }
+
+  return out
+}
+
+function extractCssSymbols(content: string, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+  const lines = content.split(/\r?\n/)
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === undefined) continue
+
+    const selectorMatch = /^([.#][\w-]+)[,\s{]/.exec(line)
+    if (selectorMatch !== null && selectorMatch[1] !== undefined) {
+      out.push({
+        filePath,
+        name: selectorMatch[1],
+        kind: 'selector',
+        lineStart: i + 1,
+        lineEnd: i + 1,
+        body: line.trim(),
+        docstring: '',
+      })
+    }
+  }
+
+  return out
+}
+
+function extractDockerfileSymbols(content: string, filePath: string): SymbolEntry[] {
+  const out: SymbolEntry[] = []
+  const lines = content.split(/\r?\n/)
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === undefined) continue
+
+    const match = /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT)\s+(.+)/.exec(
+      line,
+    )
+    if (match !== null && match[1] !== undefined) {
+      const cmd = match[1]
+      const arg = (match[2] ?? '').substring(0, 40)
+      const name = `${cmd} ${arg}`.trim()
+      out.push({
+        filePath,
+        name,
+        kind: 'directive',
+        lineStart: i + 1,
+        lineEnd: i + 1,
+        body: line.trim(),
+        docstring: '',
+      })
+    }
+  }
+
+  return out
+}
+
 // --- Regex fallback ---------------------------------------------------------
 
 // Top-level function/class patterns for the languages we lack a grammar for
@@ -356,6 +727,16 @@ function parseContent(content: string, filePath: string, language: Language): Sy
         const tree = parser.parse(content)
         if (language === 'python') {
           return extractPythonSymbols(tree.rootNode, filePath)
+        } else if (language === 'go') {
+          return extractGoSymbols(tree.rootNode, filePath)
+        } else if (language === 'rust') {
+          return extractRustSymbols(tree.rootNode, filePath)
+        } else if (language === 'ruby') {
+          return extractRubySymbols(tree.rootNode, filePath)
+        } else if (language === 'java') {
+          return extractJavaSymbols(tree.rootNode, filePath)
+        } else if (language === 'cpp' || language === 'c') {
+          return extractCppSymbols(tree.rootNode, filePath)
         }
         return extractTsJsSymbols(tree.rootNode, filePath)
       }
@@ -363,6 +744,14 @@ function parseContent(content: string, filePath: string, language: Language): Sy
       // Parser threw on this input — fall through to the regex pass below.
     }
   }
+
+  // Regex-based extractors for languages without tree-sitter
+  if (language === 'markdown') return extractMarkdownSymbols(content, filePath)
+  if (language === 'json') return extractJsonSymbols(content, filePath)
+  if (language === 'yaml') return extractYamlSymbols(content, filePath)
+  if (language === 'toml') return extractTomlSymbols(content, filePath)
+  if (language === 'css') return extractCssSymbols(content, filePath)
+  if (language === 'dockerfile') return extractDockerfileSymbols(content, filePath)
 
   if (language === 'unknown') return []
   return extractWithRegex(content, filePath)
