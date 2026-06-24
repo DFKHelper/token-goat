@@ -51,4 +51,28 @@ describe('token-goat CLI', () => {
     expect(r.status).toBe(0)
     expect(r.stdout.trim()).toBe('{}')
   }, 30000)
+
+  it('bash-output exits 1 for missing ID', () => {
+    const r = runCli(['bash-output', 'nonexistent-id'])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('no cached bash output')
+  }, 30000)
+
+  it('skill-list --help exits 0', () => {
+    const r = runCli(['skill-list', '--help'])
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('skill')
+  }, 30000)
+
+  it('skill-body exits 1 for missing skill', () => {
+    const r = runCli(['skill-body', 'nonexistent-skill'])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('not found')
+  }, 30000)
+
+  it('changed --help exits 0', () => {
+    const r = runCli(['changed', '--help'])
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('changed')
+  }, 30000)
 })
