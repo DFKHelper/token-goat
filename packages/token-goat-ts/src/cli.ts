@@ -12,6 +12,7 @@
  */
 
 import { Command } from 'commander'
+import * as fs from 'fs'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { VERSION } from './constants.js'
@@ -23,6 +24,10 @@ import { readSection } from './section_reader.js'
 import { isInstalled, installHooks, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
 import { isWorkerRunning, startDetachedWorker, stopWorker } from './worker.js'
+import { getBashOutput } from './bash_output_cache.js'
+import { getSkillFilePath, listSkills, storeCompact } from './skill_cache.js'
+import { loadConfig } from './config.js'
+import { runGit } from './util.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -202,6 +207,177 @@ function cmdStats(): void {
   out(lines.join('\n'))
 }
 
+function cmdBashOutput(
+  id: string,
+  opts: { head?: string; tail?: string; grep?: string; section?: string },
+): void {
+  const entry = getBashOutput(id)
+  if (entry === null) {
+    throw new CliError(`no cached bash output for id: ${id}`)
+  }
+
+  let content = entry.output
+  if (opts.grep !== undefined) {
+    const pattern = opts.grep
+    try {
+      const re = new RegExp(pattern)
+      content = content
+        .split(/\r?\n/)
+        .filter((line) => re.test(line))
+        .join('\n')
+    } catch {
+      content = content
+        .split(/\r?\n/)
+        .filter((line) => line.includes(pattern))
+        .join('\n')
+    }
+  }
+
+  const lines = content.split(/\r?\n/)
+  const headN = opts.head ? Number.parseInt(opts.head, 10) : 30
+  const tailN = opts.tail ? Number.parseInt(opts.tail, 10) : 80
+
+  let result = lines
+  if (opts.head === undefined && opts.tail === undefined && opts.grep === undefined) {
+    result =
+      lines.length > headN + tailN
+        ? [...lines.slice(0, headN), '...(elided)...', ...lines.slice(lines.length - tailN)]
+        : lines
+  } else if (opts.head !== undefined && opts.tail === undefined) {
+    result = lines.slice(0, headN)
+  } else if (opts.tail !== undefined && opts.head === undefined) {
+    result = lines.slice(Math.max(0, lines.length - tailN))
+  }
+
+  out(result.join('\n'))
+}
+
+async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<void> {
+  const filePath = await getSkillFilePath(name)
+  if (filePath === null) {
+    throw new CliError(`skill '${name}' not found`)
+  }
+
+  const body = fs.readFileSync(filePath, 'utf-8')
+  if (opts.compact === true) {
+    const lines = body.split('\n')
+    const end = lines.findIndex((l) => l.includes('COMPACT_END'))
+    if (end > 0) {
+      out(lines.slice(0, end).join('\n'))
+    } else {
+      out(body)
+    }
+  } else {
+    out(body)
+  }
+}
+
+async function cmdSkillCompact(name: string): Promise<void> {
+  const filePath = await getSkillFilePath(name)
+  if (filePath === null) {
+    throw new CliError(`skill '${name}' not found`)
+  }
+
+  const body = fs.readFileSync(filePath, 'utf-8')
+  const sessionFiles = getSessionFiles()
+  const sessionId = Array.from(sessionFiles.keys())[0] ?? 'default'
+  await storeCompact(sessionId, name, body)
+  out(`Cached compact for skill '${name}'.`)
+}
+
+async function cmdSkillList(opts: { json?: boolean; sessionId?: string }): Promise<void> {
+  const skills = await listSkills(opts.sessionId)
+  if (opts.json === true) {
+    const json = skills.map((s) => ({
+      name: s.name,
+      body_bytes: s.bodyLen,
+      compact_bytes: s.compactLen,
+      has_marker: s.hasMarker,
+    }))
+    out(JSON.stringify(json, null, 2))
+  } else {
+    const lines = skills.map((s) => {
+      const compact = s.compactLen > 0 ? ` (compact: ${s.compactLen})` : ''
+      return `${s.name}: ${s.bodyLen} bytes${compact}`
+    })
+    out(lines.join('\n'))
+  }
+}
+
+async function cmdSkillSize(opts: { sessionId?: string }): Promise<void> {
+  const skills = await listSkills(opts.sessionId)
+  let totalBody = 0
+  let totalCompact = 0
+  for (const skill of skills) {
+    totalBody += skill.bodyLen
+    totalCompact += skill.compactLen
+  }
+  const lines = [
+    `# token-goat skill cache (${skills.length} skills)`,
+    `Body:    ${totalBody} bytes`,
+    `Compact: ${totalCompact} bytes`,
+  ]
+  out(lines.join('\n'))
+}
+
+function cmdChanged(opts: { since?: string; symbol?: boolean }): void {
+  const since = opts.since ?? 'HEAD~5'
+  const result = runGit(['diff', since, '--name-only'])
+
+  if (result.exitCode !== 0) {
+    throw new CliError(`git diff failed: ${result.stderr}`)
+  }
+
+  const files = result.stdout
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean)
+  if (files.length === 0) {
+    out('No files changed.')
+    return
+  }
+
+  if (opts.symbol === true) {
+    const allSymbols: SymbolEntry[] = []
+    for (const file of files) {
+      const symbols = querySymbols({ filePath: file, limit: 1000 })
+      allSymbols.push(...symbols)
+    }
+
+    if (allSymbols.length === 0) {
+      out('No symbols changed.')
+      return
+    }
+
+    const lines = allSymbols.map((s) => `${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}`)
+    out(lines.join('\n'))
+  } else {
+    out(files.join('\n'))
+  }
+}
+
+function cmdConfigGet(file: string, key: string): void {
+  const config = loadConfig()
+  const keys = key.split('.')
+  let value: unknown = config
+
+  for (const k of keys) {
+    if (typeof value === 'object' && value !== null && k in value) {
+      value = (value as Record<string, unknown>)[k]
+    } else {
+      throw new CliError(`key '${key}' not found in '${file}'`)
+    }
+  }
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    out(String(value))
+  } else if (typeof value === 'object') {
+    out(JSON.stringify(value, null, 2))
+  } else {
+    out(String(value))
+  }
+}
+
 // --- Program assembly -------------------------------------------------------
 
 /** Build the Commander program. Exported so tests can introspect/parse it. */
@@ -290,6 +466,50 @@ export function buildProgram(): Command {
   worker.command('status').description('check if the indexer is running').action(guard(cmdWorkerStatus))
 
   program.command('stats').description('show session statistics').action(guard(cmdStats))
+
+  program
+    .command('bash-output <id>')
+    .description('retrieve cached bash output by ID')
+    .option('--head <n>', 'show first N lines')
+    .option('--tail <n>', 'show last N lines')
+    .option('--grep <pattern>', 'filter lines matching regex')
+    .action(guard(cmdBashOutput))
+
+  program
+    .command('skill-body <name>')
+    .description("retrieve a skill's cached body")
+    .option('-c, --compact', 'print compact slice instead of full body')
+    .action(guard(cmdSkillBody))
+
+  program
+    .command('skill-compact <name>')
+    .description('regenerate and cache compact slice for a skill')
+    .action(guard(cmdSkillCompact))
+
+  program
+    .command('skill-list')
+    .description('list all cached skills with token counts')
+    .option('-j, --json', 'output as JSON')
+    .option('--session-id <id>', 'filter by session')
+    .action(guard(cmdSkillList))
+
+  program
+    .command('skill-size')
+    .description('show body/compact token counts per skill')
+    .option('--session-id <id>', 'filter by session')
+    .action(guard(cmdSkillSize))
+
+  program
+    .command('changed')
+    .description('list files or symbols changed since a git ref')
+    .option('--since <ref>', 'git ref to compare against (default: HEAD~5)')
+    .option('--symbol', 'list symbols instead of files')
+    .action(guard(cmdChanged))
+
+  program
+    .command('config-get <file> <key>')
+    .description('read one value from a config file (TOML/JSON/YAML/INI)')
+    .action(guard(cmdConfigGet))
 
   program
     .command('version')
