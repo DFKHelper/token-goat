@@ -1,0 +1,48 @@
+{
+  "name": "token-goat",
+  "version": "0.1.0",
+  "description": "Surgical token-reduction companion for Claude Code and other AI coding agents",
+  "type": "module",
+  "main": "./dist/token-goat.mjs",
+  "bin": {
+    "token-goat": "./dist/token-goat.mjs"
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src tests --ext .ts",
+    "dev": "tsx src/main.ts"
+  },
+  "contributors": [
+    {
+      "name": "eSaadster",
+      "url": "https://github.com/eSaadster/pi-token-goat"
+    }
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "token",
+    "ai",
+    "coding-assistant",
+    "token-reduction",
+    "llm"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
