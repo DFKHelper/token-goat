@@ -3746,6 +3746,198 @@ def _handle_task_output_read(
     return pre_tool_use_with_context(hint)
 
 
+def _try_bash_read_equivalent_hint(payload: HookPayload) -> HookResponse | None:
+    """Emit hint when bash cat/bat/type/Get-Content could use token-goat surgical reads.
+
+    This hint fires *before* the read-equivalent is converted to a Read payload,
+    for whole-file reads only (cat, bat, type, Get-Content without line limits).
+
+    Args:
+        payload: Bash tool payload.
+
+    Returns:
+        A PreToolUse hint response, or None to continue downstream.
+    """
+    from . import bash_parser
+
+    tool_input = get_tool_input(payload)
+    cmd = tool_input.get("command", "").strip()
+    if not cmd:
+        return None
+
+    intent = bash_parser.parse(cmd)
+
+    if intent.kind != "read" or not intent.target_path:
+        return None
+
+    file_path = intent.target_path
+    if _is_binary_or_large_file(file_path):
+        return None
+
+    # Only fire for whole-file reads (no limit/offset); skip tail -n +N, head -n N, etc.
+    if intent.limit is not None or intent.offset is not None:
+        return None
+
+    # Check the actual command to ensure it's one of the simple readers.
+    # Extract the binary name from the command string.
+    cmd_parts = cmd.split()
+    if not cmd_parts:
+        return None
+    binary = cmd_parts[0].lower()
+
+    # Only suggest for simple whole-file readers, not for sed/awk/grep variants.
+    simple_readers = {"cat", "bat", "batcat", "type", "get-content", "gc"}
+    if binary not in simple_readers:
+        return None
+
+    if _fingerprint_already_seen("bash_read_equiv_hint", file_path):
+        return None
+
+    hint = (
+        f"[tg] Bash read-equivalent detected. Surgical reads are much cheaper:\n"
+        f"  `token-goat read \"{file_path}::<Symbol>\"`  — read one function/class/method\n"
+        f"  `token-goat skeleton {file_path}`     — list all signatures (no bodies)\n"
+        f"  `token-goat section \"{file_path}::<Heading>\"`  — for markdown files\n"
+    )
+    return pre_tool_use_with_context(hint)
+
+
+def _try_bash_grep_hint(payload: HookPayload) -> HookResponse | None:
+    """Emit hint when bash grep/rg/find is used instead of token-goat semantic search.
+
+    Args:
+        payload: Bash tool payload with grep-like command.
+
+    Returns:
+        A PreToolUse hint response, or None to continue downstream.
+    """
+    from . import bash_parser
+
+    tool_input = get_tool_input(payload)
+    cmd = tool_input.get("command", "")
+    intent = bash_parser.parse(cmd)
+
+    if intent.kind != "grep":
+        return None
+
+    pattern = intent.pattern or ""
+    if not pattern or len(pattern) < 3:
+        return None
+
+    if _fingerprint_already_seen("bash_grep_hint", pattern):
+        return None
+
+    hint = (
+        f"[tg] Recursive search detected. For code searches, token-goat offers "
+        f"semantic search that understands intent:\n"
+        f"  `token-goat symbol {_shlex.quote(pattern)}`       — find a symbol by name\n"
+        f"  `token-goat semantic \"{pattern}\"`  — search by meaning/intent\n"
+    )
+    return pre_tool_use_with_context(hint)
+
+
+def _try_sidecar_bash_output_hint(file_path: str) -> HookResponse | None:
+    """Emit hint when reading Claude agent task-output or tool-result sidecar files.
+
+    These files are typically large cached outputs; surgical-read commands are
+    much cheaper than re-reading the full file.
+
+    Args:
+        file_path: Path being read.
+
+    Returns:
+        A PreToolUse hint response, or None when the path is not a sidecar file.
+    """
+    import re
+
+    path_str = str(file_path).replace("\\", "/")
+
+    sidecar_patterns = [
+        (r"/tool-results/([a-z0-9]+)\.txt$", "tool-results"),
+        (r"/tasks/([a-z0-9]+)\.output$", "tasks"),
+        (r"glm_[a-z0-9]+\.txt$", "glm_temp"),
+    ]
+
+    output_id = None
+
+    for pattern, typ in sidecar_patterns:
+        match = re.search(pattern, path_str, re.IGNORECASE)
+        if match:
+            output_id = match.group(1) if typ != "glm_temp" else Path(file_path).stem
+            break
+
+    if not output_id:
+        return None
+
+    if _fingerprint_already_seen("sidecar_hint", output_id):
+        return None
+
+    hint = (
+        f"[tg] This looks like a cached tool/task output. Use surgical-read "
+        f"commands instead of re-reading the full file:\n"
+        f"  `token-goat bash-output {output_id} --tail 50`      — last N lines\n"
+        f"  `token-goat bash-output {output_id} --grep PATTERN` — filter by pattern\n"
+        f"  `token-goat bash-output {output_id} --section H`    — extract markdown section\n"
+    )
+    return pre_tool_use_with_context(hint)
+
+
+def _try_serve_diff_hint(file_path: str, cache: object | None, session_id: str | None) -> HookResponse | None:
+    """Emit advisory hint when serve_diff_on_reread is disabled but applicable.
+
+    This hint fires when ALL of these are true:
+    1. The file was previously read this session
+    2. The file was edited in this session
+    3. serve_diff_on_reread is currently disabled
+
+    The hint is informational only — it does not change behavior.
+
+    Args:
+        file_path: Path being read.
+        cache: Session cache (may be None).
+        session_id: Session ID (may be None).
+
+    Returns:
+        A PreToolUse hint response, or None when the hint is not applicable.
+    """
+    if not session_id or not cache:
+        return None
+
+    try:
+        from . import config as _config
+        cfg = _config.load().hints
+        if cfg.serve_diff_on_reread:
+            return None
+    except Exception:
+        return None
+
+    if _fingerprint_already_seen("serve_diff_hint", file_path):
+        return None
+
+    try:
+        from .session import SessionCache
+        if not isinstance(cache, SessionCache):
+            return None
+
+        files = cache.files or {}
+
+        if file_path not in files:
+            return None
+
+        file_entry = files[file_path]
+        if not file_entry.last_edit_ts or not file_entry.last_read_ts:
+            return None
+    except Exception:
+        return None
+
+    hint = (
+        "📌 This file was edited since you last read it — "
+        "`TOKEN_GOAT_SERVE_DIFF_ON_REREAD=1` would inject a unified diff "
+        "instead of the full file (~90% smaller).\n"
+    )
+    return pre_tool_use_with_context(hint)
+
+
 def pre_read(payload: HookPayload) -> HookResponse:
     """Pre-read hook: image shrinking, dedup hints, and diff-aware re-read hints.
 
@@ -3869,6 +4061,16 @@ def pre_read(payload: HookPayload) -> HookResponse:
         if bash_poll_hint is not None:
             return bash_poll_hint
 
+        # Pre-bash-read-equivalent hints: suggest token-goat surgical-read for indexed files
+        bash_read_hint = _try_bash_read_equivalent_hint(payload)
+        if bash_read_hint is not None:
+            return bash_read_hint
+
+        # Pre-bash-grep hints: suggest token-goat semantic search for recursive patterns
+        bash_grep_hint = _try_bash_grep_hint(payload)
+        if bash_grep_hint is not None:
+            return bash_grep_hint
+
         read_payload = _handle_bash_read_equivalent(payload)
         if read_payload:
             # Recurse once with a synthesized Read payload so image-shrink and
@@ -3951,6 +4153,11 @@ def pre_read(payload: HookPayload) -> HookResponse:
     if task_output_response is not None:
         return task_output_response
 
+    # Sidecar bash-output hint: detect tool-result and task sidecar files and suggest surgical reads.
+    sidecar_hint = _try_sidecar_bash_output_hint(file_path)
+    if sidecar_hint is not None:
+        return sidecar_hint
+
     # Skip all hint logic for binary files and very large unindexed files.
     # These files are never indexed by token-goat so session hints, diff hints,
     # and structured-file hints would all be meaningless overhead.
@@ -4003,6 +4210,13 @@ def pre_read(payload: HookPayload) -> HookResponse:
         _recovery_text = _check_recovery_pending(session_id, cache)
         if _recovery_text:
             return pre_tool_use_with_context(_recovery_text)
+
+        # Serve-diff-on-reread advisory: hint when a file was edited since last read
+        # but serve_diff_on_reread is disabled. Fires only once per file per session.
+        # Must run after recovery hint so recovery context reaches agent first.
+        serve_diff_hint = _try_serve_diff_hint(file_path, cache, session_id)
+        if serve_diff_hint is not None:
+            return serve_diff_hint
 
         # Skill-file read hint: fires first when the agent tries to Read a skill body
         # file directly (e.g. ~/.claude/skills/ralph/SKILL.md) for a skill already
