@@ -5,6 +5,17 @@ import {
   getBashOutputByCommandHash,
   hashCommand,
   storeBashOutput,
+  isGitMutableCommand,
+  isGitImmutableCommand,
+  isDirListingCommand,
+  isEnvProbeCommand,
+  isDepListCommand,
+  isUnscopedGitDiff,
+  normalizeCommandForCacheKey,
+  globHash,
+  storeGlobResult,
+  getBashGlobResult,
+  commandHash,
 } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -30,16 +41,131 @@ describe('hashCommand', () => {
   })
 })
 
+describe('isGitMutableCommand', () => {
+  it('detects git diff/status', () => {
+    expect(isGitMutableCommand('git diff')).toBe(true)
+    expect(isGitMutableCommand('git status')).toBe(true)
+  })
+
+  it('rejects immutable commands', () => {
+    expect(isGitMutableCommand('git show abc123')).toBe(false)
+  })
+})
+
+describe('isGitImmutableCommand', () => {
+  it('detects git show with full SHA', () => {
+    expect(isGitImmutableCommand('git show 0123456789abcdef0123456789abcdef01234567')).toBe(true)
+  })
+
+  it('rejects partial SHAs', () => {
+    expect(isGitImmutableCommand('git show abc123')).toBe(false)
+  })
+})
+
+describe('isDirListingCommand', () => {
+  it('detects ls variants', () => {
+    expect(isDirListingCommand('ls')).toBe(true)
+    expect(isDirListingCommand('eza --long')).toBe(true)
+    expect(isDirListingCommand('dir')).toBe(true)
+  })
+})
+
+describe('isEnvProbeCommand', () => {
+  it('detects version checks', () => {
+    expect(isEnvProbeCommand('node --version')).toBe(true)
+    expect(isEnvProbeCommand('python -V')).toBe(true)
+    expect(isEnvProbeCommand('which node')).toBe(true)
+  })
+})
+
+describe('isDepListCommand', () => {
+  it('detects dependency commands', () => {
+    expect(isDepListCommand('npm list')).toBe(true)
+    expect(isDepListCommand('pip freeze')).toBe(true)
+  })
+
+  it('rejects install/add variants', () => {
+    expect(isDepListCommand('npm install')).toBe(false)
+  })
+})
+
+describe('isUnscopedGitDiff', () => {
+  it('detects unscoped diffs', () => {
+    expect(isUnscopedGitDiff('git diff')).toBe(true)
+  })
+
+  it('rejects scoped diffs', () => {
+    expect(isUnscopedGitDiff('git diff -- file.txt')).toBe(false)
+  })
+})
+
+describe('normalizeCommandForCacheKey', () => {
+  it('strips whitespace', () => {
+    expect(normalizeCommandForCacheKey('  cat file  ')).toBe('cat file')
+  })
+
+  it('normalizes path separators', () => {
+    expect(normalizeCommandForCacheKey('cat C:\\foo\\bar')).toBe('cat C:/foo/bar')
+  })
+
+  it('strips ./ prefix', () => {
+    expect(normalizeCommandForCacheKey('cat ./file')).toBe('cat file')
+  })
+
+  it('strips trailing /', () => {
+    expect(normalizeCommandForCacheKey('ls src/')).toBe('ls src')
+  })
+})
+
+describe('commandHash', () => {
+  it('returns 16-char hex', async () => {
+    const hash = await commandHash('ls', null)
+    expect(hash).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  it('produces consistent hashes', async () => {
+    const hash1 = await commandHash('ls', null)
+    const hash2 = await commandHash('ls', null)
+    expect(hash1).toBe(hash2)
+  })
+})
+
+describe('globHash', () => {
+  it('returns 16-char hex', () => {
+    const hash = globHash('**/*.ts', '/src')
+    expect(hash).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  it('treats null path as empty string', () => {
+    const hash1 = globHash('**/*.ts', null)
+    const hash2 = globHash('**/*.ts', '')
+    expect(hash1).toBe(hash2)
+  })
+})
+
+describe('glob result caching', () => {
+  it('stores and retrieves', () => {
+    storeGlobResult('session1', '**/*.ts', '/src', 'file1\nfile2\n')
+    const result = getBashGlobResult('session1', '**/*.ts', '/src')
+    expect(result).toBe('file1\nfile2\n')
+  })
+
+  it('returns null for missing', () => {
+    const result = getBashGlobResult('nonexistent', 'pattern', '/path')
+    expect(result).toBeNull()
+  })
+})
+
 describe('storeBashOutput', () => {
-  it('returns an id equal to the command hash', () => {
-    const id = storeBashOutput('echo hi', 'hi\n', 0)
-    expect(id).toBe(hashCommand('echo hi'))
+  it('returns an id equal to the command hash', async () => {
+    const id = await storeBashOutput('echo hi', 'hi\n', 0)
+    expect(id).toBe(await commandHash('echo hi', null))
   })
 })
 
 describe('retrieval', () => {
-  it('getBashOutput retrieves the full entry by id', () => {
-    const id = storeBashOutput('pytest', 'all passed', 0)
+  it('getBashOutput retrieves the full entry by id', async () => {
+    const id = await storeBashOutput('pytest', 'all passed', 0)
     const entry = getBashOutput(id)
     expect(entry).not.toBeNull()
     expect(entry?.command).toBe('pytest')
@@ -53,9 +179,9 @@ describe('retrieval', () => {
     expect(getBashOutput('0000000000000000')).toBeNull()
   })
 
-  it('getBashOutputByCommandHash retrieves by command hash', () => {
-    storeBashOutput('git status', 'clean', 0)
-    const entry = getBashOutputByCommandHash(hashCommand('git status'))
+  it('getBashOutputByCommandHash retrieves by command hash', async () => {
+    const id = await storeBashOutput('git status', 'clean', 0)
+    const entry = getBashOutputByCommandHash(id)
     expect(entry?.output).toBe('clean')
   })
 
@@ -63,17 +189,17 @@ describe('retrieval', () => {
     expect(getBashOutputByCommandHash('ffffffffffffffff')).toBeNull()
   })
 
-  it('captures a non-zero exit code', () => {
-    const id = storeBashOutput('false', '', 1)
+  it('captures a non-zero exit code', async () => {
+    const id = await storeBashOutput('false', '', 1)
     expect(getBashOutput(id)?.exitCode).toBe(1)
   })
 })
 
 describe('reset', () => {
-  it('clearModuleCaches removes all entries', () => {
-    const id = storeBashOutput('echo gone', 'gone', 0)
+  it('clearModuleCaches removes all entries', async () => {
+    const id = await storeBashOutput('echo gone', 'gone', 0)
     clearModuleCaches()
     expect(getBashOutput(id)).toBeNull()
-    expect(getBashOutputByCommandHash(hashCommand('echo gone'))).toBeNull()
+    expect(getBashOutputByCommandHash(id)).toBeNull()
   })
 })
