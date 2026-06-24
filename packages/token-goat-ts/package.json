@@ -7,6 +7,14 @@
   "bin": {
     "token-goat": "./dist/token-goat.mjs"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DFKHelper/token-goat.git"
+  },
+  "homepage": "https://github.com/DFKHelper/token-goat#readme",
+  "bugs": {
+    "url": "https://github.com/DFKHelper/token-goat/issues"
+  },
   "scripts": {
     "build": "node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
