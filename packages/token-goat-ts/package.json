@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
+    "commander": "^12.1.0",
     "sharp": "^0.33.5"
   },
   "devDependencies": {
@@ -48,5 +49,11 @@
     "typescript": "^5.6.0",
     "typescript-eslint": "^8.62.0",
     "vitest": "^2.1.0"
+  },
+  "optionalDependencies": {
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-javascript": "^0.23.1",
+    "tree-sitter-python": "^0.23.6",
+    "tree-sitter-typescript": "^0.23.2"
   }
 }
