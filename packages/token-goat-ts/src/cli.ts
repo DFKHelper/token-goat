@@ -15,6 +15,7 @@ import { Command } from 'commander'
 import * as fs from 'fs'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
+import { buildCompactMap, formatMap } from './repomap.js'
 import { VERSION } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
@@ -148,8 +149,13 @@ function cmdOutline(file: string): void {
 
 function cmdMap(opts: { compact?: boolean }): void {
   const compact = opts.compact === true
-  const map = buildProjectMap(process.cwd(), { compact })
-  out(formatProjectMap(map, compact))
+  if (compact) {
+    const entries = buildCompactMap(2000, process.cwd())
+    out(formatMap(entries, { compact: true }))
+  } else {
+    const map = buildProjectMap(process.cwd(), { compact: false })
+    out(formatProjectMap(map, false))
+  }
 }
 
 async function cmdHook(event: string): Promise<void> {
