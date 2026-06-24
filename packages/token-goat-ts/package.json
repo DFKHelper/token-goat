@@ -45,7 +45,8 @@
   "dependencies": {
     "better-sqlite3": "^11.3.0",
     "commander": "^12.1.0",
-    "sharp": "^0.33.5"
+    "sharp": "^0.33.5",
+    "smol-toml": "^1.7.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
