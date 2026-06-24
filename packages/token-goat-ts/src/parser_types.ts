@@ -50,11 +50,15 @@ export type Language =
   | 'go'
   | 'c'
   | 'cpp'
+  | 'ruby'
+  | 'java'
   | 'bash'
   | 'markdown'
   | 'toml'
   | 'json'
   | 'yaml'
+  | 'css'
+  | 'dockerfile'
   | 'unknown'
 
 /**
@@ -83,6 +87,9 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.cxx', 'cpp'],
   ['.hpp', 'cpp'],
   ['.hxx', 'cpp'],
+  ['.rb', 'ruby'],
+  ['.ruby', 'ruby'],
+  ['.java', 'java'],
   ['.sh', 'bash'],
   ['.bash', 'bash'],
   ['.md', 'markdown'],
@@ -91,6 +98,10 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.json', 'json'],
   ['.yaml', 'yaml'],
   ['.yml', 'yaml'],
+  ['.css', 'css'],
+  ['.scss', 'css'],
+  ['.sass', 'css'],
+  ['.less', 'css'],
 ])
 
 /**
@@ -100,7 +111,7 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
  * the extension table. Compared case-insensitively against the basename.
  */
 const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
-  ['dockerfile', 'bash'],
+  ['dockerfile', 'dockerfile'],
   ['makefile', 'bash'],
   ['cargo.toml', 'toml'],
   ['pyproject.toml', 'toml'],
