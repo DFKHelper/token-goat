@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
-import { clearModuleCaches, registerReset } from '../src/reset.js'
+import { _clearResetRegistryForTesting, clearModuleCaches, registerReset } from '../src/reset.js'
 
 describe('reset registry', () => {
+  beforeEach(() => {
+    _clearResetRegistryForTesting()
+  })
   it('calls every registered reset function', () => {
     const calls: string[] = []
     registerReset(() => calls.push('a'))
@@ -48,7 +51,6 @@ describe('reset registry', () => {
 
     expect(caught).toBeInstanceOf(AggregateError)
     const agg = caught as AggregateError
-    // At least the two errors registered in this test are present.
-    expect(agg.errors.length).toBeGreaterThanOrEqual(2)
+    expect(agg.errors.length).toBe(2)
   })
 })
