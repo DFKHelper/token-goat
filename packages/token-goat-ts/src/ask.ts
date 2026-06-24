@@ -6,7 +6,7 @@
 import * as os from 'node:os'
 import * as crypto from 'node:crypto'
 import * as subprocess from 'node:child_process'
-import * as minimatch from 'minimatch'
+import { minimatch as minimatchFn } from 'minimatch'
 
 // Default retrieval budget (tokens of slice text fed to the backend).
 export const DEFAULT_BUDGET = 6000
@@ -68,8 +68,7 @@ export function retrieve(
 function _matchesScope(fileRel: string, scope: string): boolean {
   const norm = fileRel.replace(/\\/g, '/')
   const pat = scope.replace(/\\/g, '/')
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if ((minimatch as any).minimatch(norm, pat)) {
+  if (minimatchFn(norm, pat)) {
     return true
   }
   // A bare directory matches as substring too
