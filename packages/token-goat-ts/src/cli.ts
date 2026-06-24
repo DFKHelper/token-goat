@@ -30,6 +30,7 @@ import { getSkillFilePath, listSkills, storeCompact } from './skill_cache.js'
 import { loadConfig } from './config.js'
 import { runGit } from './util.js'
 import { renderStats } from './stats.js'
+import { runDoctorAndExit } from './cli_doctor.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -196,6 +197,13 @@ function cmdWorkerStatus(): void {
 
 function cmdStats(): void {
   renderStats({ windowDays: 30 })
+}
+
+function cmdDoctor(): void {
+  const code = runDoctorAndExit()
+  if (code !== 0) {
+    throw new CliError('doctor checks failed')
+  }
 }
 
 function cmdBashOutput(
@@ -457,6 +465,8 @@ export function buildProgram(): Command {
   worker.command('status').description('check if the indexer is running').action(guard(cmdWorkerStatus))
 
   program.command('stats').description('show session statistics').action(guard(cmdStats))
+
+  program.command('doctor').description('diagnose token-goat health').action(guard(cmdDoctor))
 
   program
     .command('bash-output <id>')
