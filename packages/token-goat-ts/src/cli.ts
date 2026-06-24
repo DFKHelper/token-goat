@@ -31,6 +31,7 @@ import { loadConfig } from './config.js'
 import { runGit } from './util.js'
 import { renderStats } from './stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
+import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -377,6 +378,20 @@ function cmdConfigGet(file: string, key: string): void {
   }
 }
 
+async function cmdGdriveSections(fileId: string, opts: { heading?: string }): Promise<void> {
+  if (opts.heading !== undefined) {
+    const content = await getSectionContent(fileId, opts.heading)
+    if (content === null) {
+      throw new CliError(`section '${opts.heading}' not found in document ${fileId}`)
+    }
+    out(`# ${opts.heading}\n${content}`)
+  } else {
+    const sections = await getDocSections(fileId)
+    const formatted = formatSections(sections)
+    out(formatted)
+  }
+}
+
 // --- Program assembly -------------------------------------------------------
 
 /** Build the Commander program. Exported so tests can introspect/parse it. */
@@ -511,6 +526,12 @@ export function buildProgram(): Command {
     .command('config-get <file> <key>')
     .description('read one value from a config file (TOML/JSON/YAML/INI)')
     .action(guard(cmdConfigGet))
+
+  program
+    .command('gdrive-sections <file-id>')
+    .description('fetch and list sections from a public Google Doc')
+    .option('--heading <name>', 'get content of one named section')
+    .action(guard(cmdGdriveSections))
 
   program
     .command('version')
