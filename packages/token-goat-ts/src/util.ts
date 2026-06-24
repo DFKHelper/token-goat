@@ -30,6 +30,11 @@ export function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
+/** Windows creation flags for suppressing console windows (CREATE_NO_WINDOW). */
+export function noWindowCreationFlags(): number {
+  return process.platform === 'win32' ? 0x08000000 : 0
+}
+
 /**
  * Run git and return its captured output.
  *
