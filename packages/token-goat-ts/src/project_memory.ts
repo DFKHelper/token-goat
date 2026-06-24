@@ -42,12 +42,17 @@ function parseTOML(content: string): Record<string, string> {
     if (match) {
       const [, key, value] = match;
       if (key && value !== undefined) {
-        // Unescape TOML string escapes
-        const unescaped = value
-          .replace(/\\n/g, '\n')
-          .replace(/\\r/g, '\r')
-          .replace(/\\"/g, '"')
-          .replace(/\\\\/g, '\\');
+        // Unescape TOML string escapes in a single pass to avoid
+        // sequential-replace interference (e.g. "a\\nb" → "a\nb" not "a\<NL>b").
+        const unescaped = value.replace(/\\([\\nrt"])/g, (_, c: string) => {
+          switch (c) {
+            case '\\': return '\\'
+            case 'n': return '\n'
+            case 'r': return '\r'
+            case '"': return '"'
+            default: return _
+          }
+        });
         result[key] = unescaped;
       }
     }

@@ -339,4 +339,29 @@ describe('embeddings module', () => {
       }
     })
   })
+
+  describe('searchSemantic() SQL vector matching', () => {
+    it('should pass query vector via MATCH clause (not omit it)', async () => {
+      if (!embeddings.isAvailable()) {
+        return
+      }
+      // Verify the query issued to sqlite uses the embedded vector (MATCH ?)
+      // rather than a bare ORDER BY with no WHERE clause.
+      const preparedStatements: string[] = []
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mockDb: any = {
+        prepare: (sql: string) => {
+          preparedStatements.push(sql)
+          return {
+            all: () => [],
+          }
+        },
+      }
+      await embeddings.searchSemantic(mockDb, 'find auth functions')
+      const sql = preparedStatements.join('\n')
+      expect(sql).toContain('MATCH')
+      expect(sql).toContain('embedding')
+      expect(sql).not.toMatch(/ORDER BY distance\s+ASC\s*$/)  // bare ORDER BY with no WHERE
+    })
+  })
 })
