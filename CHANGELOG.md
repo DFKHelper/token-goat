@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [1.9.9] - 2026-06-24
+
 ### Added
 
 - **Close-match auto-redirect for `token-goat section`.** A heading lookup that misses now mirrors the `symbol` command: when exactly one indexed heading is a high-confidence match (difflib ratio ≥ 0.75, or the query is a clean substring/prefix of a single heading), the section is served transparently with a `(redirected from: …)` marker (and a `redirected_from` field in `--json`). Ambiguous or low-confidence misses still list "Did you mean" suggestions, now annotated with their similarity scores. This keeps the agent on the surgical-read path instead of falling back to a full-file Read on a paraphrased heading.
@@ -14,6 +16,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`gh api` URL field stripping in bash compress.** The `gh` compress filter now strips boilerplate `*_url` fields from `gh api` JSON responses — `followers_url`, `gists_url`, `starred_url`, and about a dozen others. Four fields are preserved: `html_url`, `avatar_url`, `clone_url`, `ssh_url`. The noise keys `gravatar_id` and `site_admin` are also removed. A stripped-count note is appended to the output. User and repo objects typically shrink 60–80%.
 
+- **Bash `cat`/`bat`/`type`/`Get-Content` → surgical-read hint.** When a Bash command reads an entire source file (`cat src/auth.py`, `bat module.ts`, `Get-Content config.py`) and the file is in the project index, the pre-Bash hook emits an advisory suggesting `token-goat read "file::Symbol"`, `skeleton`, or `section` — whichever fits the file type. Covers `cat`, `bat`, `batcat`, `type`, and PowerShell `Get-Content`/`gc`. Advisory only; never blocks the command. Deduplicated per file per session.
+
+- **Bash `grep -r`/`rg`/`find` → semantic-search hint.** When a Bash command runs a recursive code search (`grep -rn pattern src/`, `rg getUserById`, `find . -name "*.py"`), the pre-Bash hook suggests `token-goat symbol <name>` and `token-goat semantic "<query>"` as indexed alternatives. The existing hint covers repeated grep runs; this one fires on initial searches and routes toward the symbol index instead of a full directory walk.
+
+- **Read-path sidecar hint for cached tool/task output files.** When the Read tool targets a Claude Code sidecar file (`tool-results/<id>.txt` or `tasks/<id>.output`), the pre-Read hook emits an advisory suggesting `token-goat bash-output <id> --tail N` / `--grep PATTERN` / `--section H`. The sidecar filename stem is the output ID. Advisory only, deduplicated per path per session.
+
+- **`serve_diff_on_reread` advisory hint.** When a file that was previously read and then edited in the same session is read again with `serve_diff_on_reread` currently disabled, the pre-Read hook emits a one-time advisory: enabling `TOKEN_GOAT_SERVE_DIFF_ON_REREAD=1` would inject a unified diff instead of the full re-read — typically 90% smaller. Fires at most once per path per session.
+
 ### Changed
 
 - **Watchdog log shows elapsed ms, budget ms, and tuning hint.** The timeout log previously showed only the watchdog budget; it now shows the actual elapsed time too (`watchdog tripped after 342ms (budget: 300ms)`) and appends `Tune with TOKEN_GOAT_HOOK_TIMEOUT env var.`
@@ -23,6 +33,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **Console window flash eliminated on Windows.** Hook calls previously spawned `tg-hook.cmd`, causing Windows to start `cmd.exe`; in Electron (which has no console), this produced a visible popup window on every hook invocation. `token-goat install` now writes `token-goat-hook.EXE` (a GUI-subsystem binary) to `settings.json` instead. Windows never allocates a console for GUI-subsystem processes. The `.cmd` wrapper remains as a fallback when the binary is absent.
 
 - **Hook-command detection uses anchored regex.** The markers used to identify and strip token-goat hook entries from `settings.json` previously matched as plain substrings. A user hook at a path like `/my-tg-hook-config/tool` would be silently removed on reinstall or uninstall. All three markers (`token_goat`, `tg-hook`, `token-goat-hook`) now require a word/path boundary on both sides of the match, so hooks whose names merely contain a marker as part of a longer string are left alone.
+
+- **Session read-cache normalizes path separators and drive-letter case.** The dedup cache backing "already read" hints and `serve_diff_on_reread` was keyed on the raw path string. On Windows, the same file read as `C:\Projects\foo.py` versus `C:/Projects/foo.py` (or via WSL as `/mnt/c/Projects/foo.py`) appeared as three distinct entries, disabling dedup. Paths are now canonicalized before they enter the cache — separators unified, drive letter lower-cased — so all three spellings unify to a single entry.
 
 ## [1.9.8] - 2026-06-23
 
@@ -1364,7 +1376,8 @@ First public release.
 - Windows 10 and 11 only.
 - Python 3.11, 3.12, 3.13, and 3.14 supported.
 
-[Unreleased]: https://github.com/DFKHelper/token-goat/compare/v1.9.4...HEAD
+[Unreleased]: https://github.com/DFKHelper/token-goat/compare/v1.9.9...HEAD
+[1.9.9]: https://github.com/DFKHelper/token-goat/compare/v1.9.8...v1.9.9
 [1.9.4]: https://github.com/DFKHelper/token-goat/compare/v1.9.3...v1.9.4
 [1.9.3]: https://github.com/DFKHelper/token-goat/compare/v1.9.2...v1.9.3
 [1.9.2]: https://github.com/DFKHelper/token-goat/compare/v1.9.1...v1.9.2

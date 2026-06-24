@@ -1577,7 +1577,7 @@ wheels = [
 
 [[package]]
 name = "token-goat"
-version = "1.9.8"
+version = "1.9.9"
 source = { editable = "." }
 dependencies = [
     { name = "fastembed" },
