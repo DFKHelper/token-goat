@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { atomicWriteBytes, atomicWriteText, runGit, sleepSync } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, runGit, sleepSync, noWindowCreationFlags } from '../src/util.js'
 
 describe('sleepSync', () => {
   it('blocks for approximately the requested duration', () => {
@@ -66,6 +66,28 @@ describe('atomic writes', () => {
   })
 })
 
+describe('noWindowCreationFlags', () => {
+  it('returns 0x08000000 on win32', () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    try {
+      expect(noWindowCreationFlags()).toBe(0x08000000)
+    } finally {
+      if (original) Object.defineProperty(process, 'platform', original)
+    }
+  })
+
+  it('returns 0 on POSIX', () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { value: 'linux' })
+    try {
+      expect(noWindowCreationFlags()).toBe(0)
+    } finally {
+      if (original) Object.defineProperty(process, 'platform', original)
+    }
+  })
+})
+
 describe('runGit', () => {
   it('runs git --version and returns exit code 0', () => {
     const result = runGit(['--version'])
@@ -77,4 +99,5 @@ describe('runGit', () => {
     const result = runGit(['definitely-not-a-real-subcommand'])
     expect(result.exitCode).not.toBe(0)
   })
+
 })
