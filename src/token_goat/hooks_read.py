@@ -4031,10 +4031,12 @@ def _try_serve_diff_hint(file_path: str, cache: object | None, session_id: str |
 
         files = cache.files or {}
 
-        if file_path not in files:
+        from .session import _normalize_path as _snp
+        _norm_path = _snp(file_path)
+        if _norm_path not in files:
             return None
 
-        file_entry = files[file_path]
+        file_entry = files[_norm_path]
         if not file_entry.last_edit_ts or not file_entry.last_read_ts:
             return None
     except Exception:
@@ -4335,13 +4337,6 @@ def pre_read(payload: HookPayload) -> HookResponse:
         if _recovery_text:
             return pre_tool_use_with_context(_recovery_text)
 
-        # Serve-diff-on-reread advisory: hint when a file was edited since last read
-        # but serve_diff_on_reread is disabled. Fires only once per file per session.
-        # Must run after recovery hint so recovery context reaches agent first.
-        serve_diff_hint = _try_serve_diff_hint(file_path, cache, session_id)
-        if serve_diff_hint is not None:
-            return serve_diff_hint
-
         # Skill-file read hint: fires first when the agent tries to Read a skill body
         # file directly (e.g. ~/.claude/skills/ralph/SKILL.md) for a skill already
         # loaded this session.  The body is already in context from the Skill tool
@@ -4530,6 +4525,11 @@ def pre_read(payload: HookPayload) -> HookResponse:
                         cache.mark_hint_seen(_diff_fp)
                         # Diff hints are HIGH priority: file changed since last read.
                         hint_items.append(HintItem(diff_text, HINT_PRIORITY_HIGH))
+            else:
+                # No diff hint: emit serve_diff_on_reread advisory as fallback (once per file).
+                _sdra = _try_serve_diff_hint(file_path, cache, session_id)
+                if _sdra is not None:
+                    return _sdra
 
         if not hint_items:
             # Large-read fallback (45 KB-10 MB band): no recovery/skill/index/structured/unchanged/serve-diff/diff hint claimed this read, so it is a full read of a large file with no cheaper context already available. Hard-deny and redirect to surgical/windowed reads before build_read_hint softens it to an advisory — the user-chosen mechanism is a deny, not a nudge. Placed after the diff block so serve_diff_on_reread and real diff hints (which populate hint_items above) always win; windowed/binary/small/under-threshold reads return None and fall through to the normal hint logic below.
