@@ -9,6 +9,10 @@ import {
   CONTEXT_TIER_CRITICAL,
   CONTEXT_TIER_HOT,
   CONTEXT_TIER_WARM,
+  buildManifest,
+  buildManifestAdaptive,
+  buildManifestWithCount,
+  computeAdaptiveBudget,
   estimateTokens,
   getAutoTriggerMultiplier,
   getContextPressure,
@@ -286,6 +290,90 @@ describe('compact', () => {
       const result = mergeSessionManifests(manifests as Record<string, unknown>[], 1000)
       expect(result).toHaveLength(1)
       expect((result[0] as Record<string, unknown>).rel_path).toBe('a.ts')
+    })
+  })
+
+  describe('computeAdaptiveBudget', () => {
+    it('returns minimum budget for empty cache', () => {
+      const cache = {}
+      const budget = computeAdaptiveBudget(cache)
+      expect(budget).toBeGreaterThanOrEqual(200)
+      expect(budget).toBeLessThanOrEqual(800)
+    })
+
+    it('adds bonus for edited files', () => {
+      const cache = {
+        editedFiles: {
+          'a.ts': {},
+          'b.ts': {},
+          'c.ts': {},
+        },
+      }
+      const budget = computeAdaptiveBudget(cache)
+      expect(budget).toBeGreaterThan(200)
+    })
+
+    it('caps budget based on context pressure', () => {
+      const cache = {
+        editedFiles: {
+          'a.ts': {},
+          'b.ts': {},
+          'c.ts': {},
+        },
+      }
+      const budgetCritical = computeAdaptiveBudget(cache, 0, {
+        contextPressure: { fillFraction: 0.9, tier: 'critical' },
+      })
+      expect(budgetCritical).toBeLessThanOrEqual(300)
+
+      const budgetHot = computeAdaptiveBudget(cache, 0, {
+        contextPressure: { fillFraction: 0.75, tier: 'hot' },
+      })
+      expect(budgetHot).toBeLessThanOrEqual(500)
+    })
+
+    it('applies activity multiplier for mature sessions', () => {
+      const cache = {
+        editedFiles: { 'a.ts': {}, 'b.ts': {} },
+      }
+      const budgetYoung = computeAdaptiveBudget(cache, 300)
+      const budgetMature = computeAdaptiveBudget(cache, 4000)
+      expect(budgetMature).toBeGreaterThan(budgetYoung)
+    })
+  })
+
+  describe('buildManifest', () => {
+    it('returns empty string for missing session', () => {
+      const manifest = buildManifest('nonexistent-session-id')
+      expect(manifest).toBe('')
+    })
+
+    it('returns empty string when session cache not on disk', () => {
+      const manifest = buildManifest('test-session')
+      expect(typeof manifest).toBe('string')
+    })
+  })
+
+  describe('buildManifestWithCount', () => {
+    it('returns empty manifest and zero count for missing session', () => {
+      const [manifest, count] = buildManifestWithCount('nonexistent-session-id')
+      expect(manifest).toBe('')
+      expect(count).toBe(0)
+    })
+
+    it('returns tuple with text and number', () => {
+      const result = buildManifestWithCount('nonexistent-session-id')
+      expect(Array.isArray(result)).toBe(true)
+      expect(result).toHaveLength(2)
+      expect(typeof result[0]).toBe('string')
+      expect(typeof result[1]).toBe('number')
+    })
+  })
+
+  describe('buildManifestAdaptive', () => {
+    it('returns empty string for missing session', () => {
+      const manifest = buildManifestAdaptive('nonexistent-session-id')
+      expect(manifest).toBe('')
     })
   })
 })

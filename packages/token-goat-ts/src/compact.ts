@@ -547,40 +547,253 @@ export function mergeSessionManifests(
 }
 
 // ---------------------------------------------------------------------------
-// Stubs for part 2
+// Helpers for computing adaptive budget
+// ---------------------------------------------------------------------------
+
+function _editedFileCount(cache: SessionCacheObject): number {
+  const edited = cache.editedFiles ?? {}
+  return Object.keys(edited).length
+}
+
+function _computeActivityMultiplier(ageSecs: number, editedCount: number): number {
+  const TEN_MIN_SECS = 600
+  const SIXTY_MIN_SECS = 3600
+  const EDITS_PER_MIN_DENSITY_THRESHOLD = 0.3
+
+  let tier: 'young' | 'active' | 'mature'
+  if (ageSecs < TEN_MIN_SECS) {
+    tier = 'young'
+  } else if (ageSecs < SIXTY_MIN_SECS) {
+    tier = 'active'
+  } else {
+    tier = 'mature'
+  }
+
+  const baseFactor: Record<typeof tier, number> = {
+    young: 0.6,
+    active: 1.0,
+    mature: 1.4,
+  }
+
+  let factor = baseFactor[tier]
+
+  if (ageSecs >= TEN_MIN_SECS) {
+    const editsPerMin = ageSecs > 0 ? editedCount / (ageSecs / 60) : 0
+    if (editsPerMin < EDITS_PER_MIN_DENSITY_THRESHOLD) {
+      factor = Math.min(factor, 1.0)
+    }
+  }
+
+  return factor
+}
+
+// ---------------------------------------------------------------------------
+// Load session cache from disk
+// ---------------------------------------------------------------------------
+
+function _loadSessionCache(sessionId: string): SessionCacheObject | null {
+  try {
+    const sessionsDir = path.join(dataDir(), 'sessions')
+    const cachePath = path.join(sessionsDir, `${sessionId}.json`)
+    if (!fs.existsSync(cachePath)) {
+      return null
+    }
+    const content = fs.readFileSync(cachePath, 'utf8')
+    return JSON.parse(content) as SessionCacheObject
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Build manifest from loaded cache
+// ---------------------------------------------------------------------------
+
+function _buildManifestText(cache: SessionCacheObject, maxTokens: number): string {
+  const lines: string[] = []
+  lines.push('# token-goat session manifest')
+  lines.push('')
+
+  const editedFiles = Object.keys(cache.editedFiles ?? {})
+  const files = cache.files ?? {}
+  const readPaths = Object.keys(files).filter((p) => !(cache.editedFiles ?? {})[p])
+  const bashHistory = cache.bashHistory ?? {}
+  const webHistory = cache.webHistory ?? {}
+
+  const usedTokens = estimateTokens(lines.join('\n'))
+  const budgetRemaining = maxTokens - usedTokens
+
+  if (editedFiles.length > 0) {
+    lines.push('## Edited files')
+    let sectionTokens = estimateTokens('## Edited files\n')
+    for (const fpath of editedFiles) {
+      if (sectionTokens > budgetRemaining * 0.4) break
+      const cleanPath = normalizePath(fpath).replace(/\\/g, '/')
+      if (!isNoisePath(cleanPath)) {
+        lines.push(`- ${cleanPath}`)
+        sectionTokens += estimateTokens(`- ${cleanPath}\n`)
+      }
+    }
+    lines.push('')
+  }
+
+  if (readPaths.length > 0) {
+    lines.push('## Files read')
+    let sectionTokens = estimateTokens('## Files read\n')
+    const sortedRead = readPaths.sort((a, b) => {
+      const countA = (files[a] as Record<string, number>)?.['hit_count'] ?? 0
+      const countB = (files[b] as Record<string, number>)?.['hit_count'] ?? 0
+      return countB - countA
+    })
+    for (const fpath of sortedRead.slice(0, 15)) {
+      if (sectionTokens > budgetRemaining * 0.3) break
+      const cleanPath = normalizePath(fpath).replace(/\\/g, '/')
+      if (!isNoisePath(cleanPath)) {
+        lines.push(`- ${cleanPath}`)
+        sectionTokens += estimateTokens(`- ${cleanPath}\n`)
+      }
+    }
+    lines.push('')
+  }
+
+  if (Object.keys(bashHistory).length > 0) {
+    lines.push('## Recent bash')
+    lines.push('(bash history recorded)')
+    lines.push('')
+  }
+
+  if (Object.keys(webHistory).length > 0) {
+    lines.push('## Web fetches')
+    let sectionTokens = estimateTokens('## Web fetches\n')
+    for (const url of Object.keys(webHistory).slice(0, 10)) {
+      if (sectionTokens > budgetRemaining * 0.2) break
+      lines.push(`- ${url}`)
+      sectionTokens += estimateTokens(`- ${url}\n`)
+    }
+    lines.push('')
+  }
+
+  lines.push(`# as-of: ${new Date().toISOString()}`)
+
+  return lines.join('\n')
+}
+
+// ---------------------------------------------------------------------------
+// Core functions
 // ---------------------------------------------------------------------------
 
 /**
- * Build a session manifest (part 2 — stub).
- */
-export function buildManifest(_sessionId: string, _opts?: { maxTokens?: number }): string {
-  return ''
-}
-
-/**
- * Build a manifest with adaptive budget (part 2 — stub).
- */
-export function buildManifestAdaptive(_sessionId: string): string {
-  return ''
-}
-
-/**
- * Compute adaptive budget for manifest (part 2 — stub).
+ * Compute adaptive token budget for manifest based on session complexity.
+ *
+ * Returns value in range [200, 800], capped by context pressure tier.
  */
 export function computeAdaptiveBudget(
-  _cache: object,
-  _ageSecs?: number,
-  _opts?: object
+  cache: SessionCacheObject,
+  ageSecs: number = 0.0,
+  opts?: {
+    hasPendingDiff?: boolean
+    hasUncommittedChanges?: boolean
+    staleCompactFraction?: number
+    contextPressure?: ContextPressure
+  }
 ): number {
-  return 400
+  const base = 200
+  const maxTotal = 800
+  const minTotal = 200
+
+  const editedCount = _editedFileCount(cache)
+  const editedBonus = Math.min(200, editedCount * 50)
+
+  const files = cache.files ?? {}
+  const symbolFiles = Object.values(files).filter((f) => {
+    const entry = f as Record<string, unknown>
+    return ((entry['symbols_read'] as unknown[]) ?? []).length > 0
+  }).length
+  const symbolsBonus = Math.min(150, symbolFiles * 30)
+
+  const bashHistory = cache.bashHistory ?? {}
+  const bashCount = Object.keys(bashHistory).length
+  const bashBonus = bashCount > 0 ? Math.min(100, Math.max(20, bashCount * 5)) : 0
+
+  const webHistory = cache.webHistory ?? {}
+  const webBonus = Object.keys(webHistory).length > 0 ? 15 : 0
+
+  const diffBonus = opts?.hasPendingDiff ? 50 : 0
+  const uncommittedBonus = opts?.hasUncommittedChanges ? 10 : 0
+
+  const staleFrac = Math.max(0.0, Math.min(1.0, opts?.staleCompactFraction ?? 0.0))
+  const staleBonus = Math.min(60, Math.round(staleFrac * 60))
+
+  const rawTotal =
+    base + editedBonus + symbolsBonus + bashBonus + webBonus + diffBonus + uncommittedBonus + staleBonus
+
+  const factor = _computeActivityMultiplier(ageSecs, editedCount)
+  const total = Math.round(rawTotal * factor)
+
+  let capMax = maxTotal
+  if (opts?.contextPressure) {
+    if (opts.contextPressure.tier === 'critical') {
+      capMax = Math.min(capMax, 300)
+    } else if (opts.contextPressure.tier === 'hot') {
+      capMax = Math.min(capMax, 500)
+    }
+  }
+
+  return Math.max(minTotal, Math.min(capMax, total))
 }
 
 /**
- * Build a manifest and return both text and token count (part 2 — stub).
+ * Build a session manifest from a loaded cache.
+ */
+export function buildManifest(sessionId: string, opts?: { maxTokens?: number }): string {
+  const maxTokens = opts?.maxTokens ?? 400
+  const cache = _loadSessionCache(sessionId)
+  if (!cache) {
+    return ''
+  }
+
+  return _buildManifestText(cache, maxTokens)
+}
+
+/**
+ * Build manifest with adaptively-computed budget.
+ */
+export function buildManifestAdaptive(sessionId: string): string {
+  const cache = _loadSessionCache(sessionId)
+  if (!cache) {
+    return ''
+  }
+
+  const createdTs = (cache as unknown as Record<string, unknown>)['created_ts'] as number | undefined
+  const ageSecs = createdTs ? Math.max(0, Date.now() / 1000 - createdTs) : 0
+
+  const budget = computeAdaptiveBudget(cache, ageSecs, {
+    contextPressure: getContextPressure(cache),
+  })
+
+  return _buildManifestText(cache, budget)
+}
+
+/**
+ * Build manifest and return both text and event count.
  */
 export function buildManifestWithCount(
-  _sessionId: string,
-  _opts?: { maxTokens?: number }
+  sessionId: string,
+  opts?: { maxTokens?: number }
 ): [string, number] {
-  return ['', 0]
+  const cache = _loadSessionCache(sessionId)
+  if (!cache) {
+    return ['', 0]
+  }
+
+  const editedCount = Object.keys(cache.editedFiles ?? {}).length
+  const readCount = Object.keys(cache.files ?? {}).length
+  const bashCount = Object.keys(cache.bashHistory ?? {}).length
+  const webCount = Object.keys(cache.webHistory ?? {}).length
+  const skillCount = Object.keys((cache as unknown as Record<string, unknown>)['skill_history'] as Record<string, unknown> ?? {}).length
+
+  const eventCount = editedCount + readCount + bashCount + webCount + skillCount
+
+  const manifest = buildManifest(sessionId, opts)
+  return [manifest, eventCount]
 }
