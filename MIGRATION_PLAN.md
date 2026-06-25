@@ -1,3 +1,5 @@
+> **Status: COMPLETE** — All Python modules ported to TypeScript as of 2026-06-25. Structural cutover (removing Python source, promoting TS package to root) is pending.
+
 # Migration Plan: Python → TypeScript (token-goat)
 
 Generated from codebase audit. The Python package (65 source files + 26 language adapters) is the current production release. The TypeScript package (`packages/token-goat-ts/`) replaces it completely. Python is not maintained after migration.
