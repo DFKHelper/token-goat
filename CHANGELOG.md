@@ -4,9 +4,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-06-25
+
 ### Changed
 
-- **Full migration to TypeScript.** The codebase has been fully ported to TypeScript. The TypeScript package at `packages/token-goat-ts/` is a complete 1:1 replacement of all Python modules in `src/token_goat/`. The Python source is preserved for the current release and will be removed in the next major version following a structural cutover (promoting `packages/token-goat-ts/` to the repository root).
+- **Full migration to TypeScript; published to npm.** The entire codebase has been ported to TypeScript and promoted to the repository root. The Python source and PyPI package have been retired. Install via `npm install -g token-goat`.
 
 ### Fixed
 
