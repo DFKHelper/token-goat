@@ -49,6 +49,22 @@ describe('atomic writes', () => {
     expect(entries).toEqual(['note.txt'])
   })
 
+  it('leaves no orphaned .tmp files after a successful write', () => {
+    // Regression guard: the cleanup condition in atomicWriteCore was
+    // `wrote && !renamed`, which would skip cleanup when writeSync threw
+    // before `wrote = true` (the temp file is created before the write attempt
+    // so it always needs cleanup on any non-rename path).  On a successful
+    // write, this verifies no extra .tmp files accumulate alongside the dest.
+    const target = path.join(dir, 'multi.txt')
+    atomicWriteText(target, 'first')
+    atomicWriteText(target, 'second')
+    atomicWriteText(target, 'third')
+    const entries = readdirSync(dir)
+    const temps = entries.filter((e) => e.endsWith('.tmp'))
+    expect(temps).toHaveLength(0)
+    expect(readFileSync(target, 'utf-8')).toBe('third')
+  })
+
   it('atomicWriteText does not double newlines (no CRLF expansion)', () => {
     const target = path.join(dir, 'crlf.txt')
     atomicWriteText(target, 'a\r\nb\n')

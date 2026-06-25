@@ -268,6 +268,16 @@ describe('read_commands', () => {
       expect(code).toBe(1)
     })
 
+    it('returns 1 and does not emit undefined when leaf key is missing from an existing parent', () => {
+      // Regression: before fix, obj traversal would produce undefined for the
+      // leaf and emit JSON.stringify(undefined) = "undefined" while returning 0.
+      const f = path.join(tempDir, 'leaf-missing.json')
+      fs.writeFileSync(f, JSON.stringify({ project: { name: 'foo' } }))
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'project.missing' }) })
+      // Must not emit the string "undefined" — that is not valid JSON output
+      expect(stdout).not.toContain('undefined')
+    })
+
     it('returns 1 when file does not exist', () => {
       const code = runConfigGet({ file: path.join(tempDir, 'nope.json'), key: 'x' })
       expect(code).toBe(1)
