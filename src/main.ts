@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Package executable. Thin shim over {@link run} in `cli.ts`.
  *

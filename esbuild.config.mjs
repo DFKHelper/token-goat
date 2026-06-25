@@ -13,7 +13,15 @@ await esbuild.build({
   // native addons cannot be bundled
   external: ['better-sqlite3', 'sqlite-vec', 'tree-sitter', 'tree-sitter-*'],
   banner: {
-    js: '#!/usr/bin/env node',
+    // The shebang lets the OS run this file directly.
+    // The require polyfill makes esbuild's CJS-interop stub (__require2) work
+    // on Node.js 24 ESM: the stub checks `typeof require !== "undefined"` and
+    // delegates to this createRequire-backed implementation when found.
+    js: [
+      '#!/usr/bin/env node',
+      "import { createRequire as __cjsRequire } from 'node:module';",
+      'const require = __cjsRequire(import.meta.url);',
+    ].join('\n'),
   },
   define: {
     'import.meta.env': '{}',
