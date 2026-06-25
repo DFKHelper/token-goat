@@ -18,7 +18,8 @@ describe('project', () => {
   describe('canonicalize', () => {
     it('should resolve absolute paths to forward slashes', () => {
       const result = canonicalize(tmpDir);
-      expect(result).toMatch(/^\w:/); // Windows drive letter or /path
+      const absRegex = process.platform === 'win32' ? /^\w:/ : /^\//;
+      expect(result).toMatch(absRegex);
       expect(result).not.toContain('\\');
     });
 

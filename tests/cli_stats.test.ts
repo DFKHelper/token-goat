@@ -4,6 +4,21 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 import { writeRaw, renderTopSessionFiles, renderTopSessionFilesFromDisk, runStats } from '../src/cli_stats.js'
 
+// Stub stats module so runStats never touches the real on-disk DB
+vi.mock('../src/stats.js', () => ({
+  summarize: (_windowDays?: number) => ({
+    total_events: 0,
+    total_bytes_saved: 0,
+    total_tokens_saved: 0,
+    by_kind: {},
+    by_day: {},
+    by_project: {},
+    by_command: {},
+    window_days: _windowDays ?? 30,
+  }),
+  renderStats: () => {},
+}))
+
 // Stub session module so renderTopSessionFiles is deterministic
 vi.mock('../src/session.js', () => {
   let _files = new Map<string, { path: string; readCount: number; lastReadAt: number; wasEdited: boolean; sizeBytes: number }>()
