@@ -138,6 +138,15 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runRead({ spec: 'src/foo.ts::myFn' }) })
       expect(stdout).toContain('myFn')
     })
+
+    it('prints correct line count in header (inclusive both ends)', () => {
+      // lineStart=5, lineEnd=10 spans 6 lines, not 5
+      const sym: MockSymbol = { name: 'myFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 5, lineEnd: 10, body: 'function myFn() {}', docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const { stdout } = capture(() => { runRead({ spec: 'src/foo.ts::myFn' }) })
+      expect(stdout).toContain('# 6 lines')
+    })
   })
 
   // ---- runSection ---------------------------------------------------------

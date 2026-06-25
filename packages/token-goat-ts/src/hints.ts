@@ -142,7 +142,7 @@ export function dedupHints(
 
     const priorSummary = sessionCache.get_hint_content_summary?.(contentHash);
     if (priorSummary) {
-      sessionCache.record_hint_content_seen?.(contentHash, summary);
+      // Do not overwrite the stored summary — the original first-seen summary is canonical.
       const stubText = `[tg: dup] ${priorSummary.slice(0, 35)}`;
       result.push({
         text: stubText,
