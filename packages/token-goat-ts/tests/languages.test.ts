@@ -1,0 +1,517 @@
+import { describe, it, expect } from 'vitest'
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+import * as os from 'node:os'
+import { parseFile } from '../src/parser.js'
+import { extractCsharp } from '../src/languages/csharp.js'
+import { extractPhp } from '../src/languages/php.js'
+import { extractHtml } from '../src/languages/html.js'
+import { extractLiquid } from '../src/languages/liquid.js'
+import { extractKotlin } from '../src/languages/kotlin.js'
+import { extractGraphql } from '../src/languages/graphql_idx.js'
+import { extractSql } from '../src/languages/sql_idx.js'
+import { extractIni, extractEnv } from '../src/languages/ini_idx.js'
+import { extractMakefile } from '../src/languages/makefile_idx.js'
+import { extractProto } from '../src/languages/proto_idx.js'
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function tmp(name: string, content: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lang-test-'))
+  const file = path.join(dir, name)
+  fs.writeFileSync(file, content)
+  return file
+}
+
+// ---------------------------------------------------------------------------
+// C#
+// ---------------------------------------------------------------------------
+
+describe('csharp adapter', () => {
+  it('extracts class, method, namespace, and using import', () => {
+    const content = `using System;
+using System.Collections.Generic;
+
+namespace MyApp.Services {
+
+public class UserService {
+  public string GetUser(int id) {
+    return "";
+  }
+}
+}
+`
+    const { symbols, imports } = extractCsharp(content, 'UserService.cs')
+    expect(symbols.length).toBeGreaterThan(0)
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('UserService')
+    expect(imports.some((i) => i.target === 'System')).toBe(true)
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractCsharp('', 'empty.cs')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+
+  it('detects .cs language via parseFile', async () => {
+    const file = tmp('Foo.cs', 'public class Foo {}')
+    const result = await parseFile(file)
+    expect(result.language).toBe('csharp')
+    fs.rmSync(path.dirname(file), { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PHP
+// ---------------------------------------------------------------------------
+
+describe('php adapter', () => {
+  it('extracts class, method, function, and use import', () => {
+    const content = `<?php
+use App\\Models\\User;
+namespace App\\Services;
+
+class UserService {
+  public function getUser(int $id): User {
+    return new User();
+  }
+}
+
+function helperFn() {}
+`
+    const { symbols, imports } = extractPhp(content, 'UserService.php')
+    expect(symbols.length).toBeGreaterThan(0)
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('UserService')
+    expect(names).toContain('getUser')
+    expect(imports.some((i) => i.target.includes('User'))).toBe(true)
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractPhp('', 'empty.php')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+
+  it('detects .php language via parseFile', async () => {
+    const file = tmp('foo.php', '<?php function foo() {}')
+    const result = await parseFile(file)
+    expect(result.language).toBe('php')
+    fs.rmSync(path.dirname(file), { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// HTML
+// ---------------------------------------------------------------------------
+
+describe('html adapter', () => {
+  it('extracts id symbols, class symbols, and link imports', () => {
+    const content = `<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="/styles/main.css">
+  <script src="/js/app.js"></script>
+</head>
+<body>
+  <h1>Main Title</h1>
+  <div id="hero-banner" class="product-card featured">Hello</div>
+  <h2>Subtitle</h2>
+</body>
+</html>`
+    const { symbols, imports, sections } = extractHtml(content, 'index.html')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('hero-banner')
+    expect(names).toContain('product-card')
+    expect(imports.some((i) => i.kind === 'html_link')).toBe(true)
+    expect(imports.some((i) => i.kind === 'html_script')).toBe(true)
+    expect(sections.some((s) => s.heading === 'Main Title')).toBe(true)
+  })
+
+  it('suppresses noisy ids and class names', () => {
+    const content = `<div id="container" class="wrapper row">content</div>`
+    const { symbols } = extractHtml(content, 'test.html')
+    const names = symbols.map((s) => s.name)
+    expect(names).not.toContain('container')
+    expect(names).not.toContain('wrapper')
+    expect(names).not.toContain('row')
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports, sections } = extractHtml('', 'empty.html')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+    expect(sections).toHaveLength(0)
+  })
+
+  it('detects .html language via parseFile', async () => {
+    const file = tmp('page.html', '<h1>Hello</h1>')
+    const result = await parseFile(file)
+    expect(result.language).toBe('html')
+    fs.rmSync(path.dirname(file), { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Liquid
+// ---------------------------------------------------------------------------
+
+describe('liquid adapter', () => {
+  it('extracts include/render imports and schema symbol', () => {
+    const content = `{% include 'header' %}
+{% render 'product-card' %}
+{% schema %}
+{ "name": "Featured Section" }
+{% endschema %}
+<h1>Welcome</h1>`
+    const { symbols, imports, sections } = extractLiquid(content, 'test.liquid', 'test.liquid')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Featured Section')
+    expect(imports.some((i) => i.kind === 'liquid_include' && i.target === 'header')).toBe(true)
+    expect(imports.some((i) => i.kind === 'liquid_render' && i.target === 'product-card')).toBe(true)
+    expect(sections.some((s) => s.heading === 'Welcome')).toBe(true)
+  })
+
+  it('emits liquid_section_file symbol for files in sections/ directory', () => {
+    const content = `<h1>Header</h1>`
+    const { symbols } = extractLiquid(content, 'sections/header.liquid', 'sections/header.liquid')
+    expect(symbols.some((s) => s.kind === 'liquid_section_file' && s.name === 'header')).toBe(true)
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports, sections } = extractLiquid('', 'empty.liquid')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+    expect(sections).toHaveLength(0)
+  })
+
+  it('detects .liquid language via parseFile', async () => {
+    const file = tmp('test.liquid', '{% include "foo" %}')
+    const result = await parseFile(file)
+    expect(result.language).toBe('liquid')
+    fs.rmSync(path.dirname(file), { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Kotlin
+// ---------------------------------------------------------------------------
+
+describe('kotlin adapter', () => {
+  it('extracts class, method, top-level function, and import', () => {
+    const content = `import kotlin.collections.List
+
+class UserService {
+  fun getUser(id: Int): String {
+    return ""
+  }
+}
+
+fun topLevel() {}
+`
+    const { symbols, imports } = extractKotlin(content, 'UserService.kt')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('UserService')
+    expect(names).toContain('getUser')
+    expect(names).toContain('topLevel')
+    expect(imports.some((i) => i.target.includes('List'))).toBe(true)
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractKotlin('', 'empty.kt')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+
+  it('detects .kt language via parseFile', async () => {
+    const file = tmp('Foo.kt', 'fun main() {}')
+    const result = await parseFile(file)
+    expect(result.language).toBe('kotlin')
+    fs.rmSync(path.dirname(file), { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// GraphQL
+// ---------------------------------------------------------------------------
+
+describe('graphql adapter', () => {
+  it('extracts type, query, mutation, enum, and fragment', () => {
+    const content = `
+type User {
+  id: ID!
+  name: String
+}
+
+enum Role { ADMIN USER }
+
+query GetUser($id: ID!) {
+  user(id: $id) { id name }
+}
+
+mutation CreateUser($name: String!) {
+  createUser(name: $name) { id }
+}
+
+fragment UserFields on User {
+  id name
+}
+`
+    const { symbols } = extractGraphql(content, 'schema.graphql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('User')
+    expect(names).toContain('Role')
+    expect(names).toContain('GetUser')
+    expect(names).toContain('CreateUser')
+    expect(names).toContain('UserFields')
+    expect(symbols.find((s) => s.name === 'User')?.kind).toBe('graphql_type')
+    expect(symbols.find((s) => s.name === 'Role')?.kind).toBe('graphql_enum')
+  })
+
+  it('extracts #import pragmas as imports', () => {
+    const content = `# import UserFields from "user.graphql"
+type Query { users: [User] }
+`
+    const { imports } = extractGraphql(content, 'query.graphql')
+    expect(imports.some((i) => i.target === 'user.graphql')).toBe(true)
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractGraphql('', 'empty.graphql')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+
+  it('detects .graphql language via parseFile', async () => {
+    const file = tmp('schema.graphql', 'type Query { hello: String }')
+    const result = await parseFile(file)
+    expect(result.language).toBe('graphql')
+    fs.rmSync(path.dirname(file), { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// SQL
+// ---------------------------------------------------------------------------
+
+describe('sql adapter', () => {
+  it('extracts CREATE TABLE, VIEW, FUNCTION, INDEX', () => {
+    const content = `
+CREATE TABLE users (
+  id SERIAL PRIMARY KEY,
+  name VARCHAR(255)
+);
+
+CREATE VIEW active_users AS SELECT * FROM users WHERE active = true;
+
+CREATE OR REPLACE FUNCTION get_user(p_id INT) RETURNS users AS $$ BEGIN END; $$ LANGUAGE plpgsql;
+
+CREATE UNIQUE INDEX idx_users_name ON users(name);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('users')
+    expect(names).toContain('active_users')
+    expect(names).toContain('get_user')
+    expect(names).toContain('idx_users_name')
+    expect(symbols.find((s) => s.name === 'users')?.kind).toBe('sql_table')
+    expect(symbols.find((s) => s.name === 'active_users')?.kind).toBe('sql_view')
+  })
+
+  it('returns empty array for empty input', () => {
+    expect(extractSql('', 'empty.sql')).toHaveLength(0)
+  })
+
+  it('detects .sql language via parseFile', async () => {
+    const file = tmp('schema.sql', 'CREATE TABLE foo (id INT);')
+    const result = await parseFile(file)
+    expect(result.language).toBe('sql')
+    fs.rmSync(path.dirname(file), { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// INI
+// ---------------------------------------------------------------------------
+
+describe('ini adapter', () => {
+  it('extracts [section] headers as ini_section symbols', () => {
+    const content = `[database]
+host = localhost
+port = 5432
+
+[tool.black]
+line-length = 100
+
+[server]
+debug = true
+`
+    const symbols = extractIni(content, 'config.ini')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('database')
+    expect(names).toContain('tool.black')
+    expect(names).toContain('server')
+    expect(symbols[0]?.kind).toBe('ini_section')
+  })
+
+  it('returns empty array for empty input', () => {
+    expect(extractIni('', 'empty.ini')).toHaveLength(0)
+  })
+
+  it('detects .ini language via parseFile', async () => {
+    const file = tmp('config.ini', '[section]\nkey=value\n')
+    const result = await parseFile(file)
+    expect(result.language).toBe('ini')
+    fs.rmSync(path.dirname(file), { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// .env (extractEnv)
+// ---------------------------------------------------------------------------
+
+describe('env adapter', () => {
+  it('extracts KEY=value assignments as env_key symbols', () => {
+    const content = `# Database config
+DATABASE_URL=postgres://localhost/mydb
+SECRET_KEY=supersecret
+DEBUG=false
+PORT=3000
+`
+    const symbols = extractEnv(content, '.env')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('DATABASE_URL')
+    expect(names).toContain('SECRET_KEY')
+    expect(names).toContain('DEBUG')
+    expect(names).toContain('PORT')
+    expect(symbols[0]?.kind).toBe('env_key')
+  })
+
+  it('skips comment lines', () => {
+    const content = `# This is a comment
+KEY=value
+`
+    const symbols = extractEnv(content, '.env')
+    expect(symbols.map((s) => s.name)).not.toContain('This')
+  })
+
+  it('returns empty array for empty input', () => {
+    expect(extractEnv('', '.env')).toHaveLength(0)
+  })
+
+  it('detects .env filename via parseFile', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-env-test-'))
+    const file = path.join(dir, '.env')
+    fs.writeFileSync(file, 'KEY=value\n')
+    const result = await parseFile(file)
+    expect(result.language).toBe('env_file')
+    fs.rmSync(dir, { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Makefile
+// ---------------------------------------------------------------------------
+
+describe('makefile adapter', () => {
+  it('extracts targets and define blocks', () => {
+    const content = `all: build test
+
+build:
+\tgo build ./...
+
+test:
+\tgo test ./...
+
+clean:
+\trm -rf dist/
+
+define GREETING
+Hello World
+endef
+`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('all')
+    expect(names).toContain('build')
+    expect(names).toContain('test')
+    expect(names).toContain('clean')
+    expect(names).toContain('GREETING')
+    expect(symbols.find((s) => s.name === 'build')?.kind).toBe('makefile_target')
+    expect(symbols.find((s) => s.name === 'GREETING')?.kind).toBe('makefile_define')
+  })
+
+  it('skips .PHONY and other special targets', () => {
+    const content = `.PHONY: all build\n\nall:\n\techo done\n`
+    const symbols = extractMakefile(content, 'Makefile')
+    expect(symbols.map((s) => s.name)).not.toContain('.PHONY')
+  })
+
+  it('returns empty array for empty input', () => {
+    expect(extractMakefile('', 'Makefile')).toHaveLength(0)
+  })
+
+  it('detects Makefile by name via parseFile', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-make-test-'))
+    const file = path.join(dir, 'Makefile')
+    fs.writeFileSync(file, 'all:\n\techo hi\n')
+    const result = await parseFile(file)
+    expect(result.language).toBe('makefile')
+    fs.rmSync(dir, { recursive: true })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Protobuf
+// ---------------------------------------------------------------------------
+
+describe('proto adapter', () => {
+  it('extracts message, service, rpc, enum, and import', () => {
+    const content = `syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+message User {
+  string id = 1;
+  string name = 2;
+}
+
+enum Role {
+  ADMIN = 0;
+  USER = 1;
+}
+
+service UserService {
+  rpc GetUser(GetUserRequest) returns (User);
+  rpc CreateUser(CreateUserRequest) returns (User);
+}
+`
+    const { symbols, imports } = extractProto(content, 'user.proto')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('User')
+    expect(names).toContain('Role')
+    expect(names).toContain('UserService')
+    expect(names).toContain('GetUser')
+    expect(names).toContain('CreateUser')
+    expect(symbols.find((s) => s.name === 'User')?.kind).toBe('proto_message')
+    expect(symbols.find((s) => s.name === 'UserService')?.kind).toBe('proto_service')
+    expect(symbols.find((s) => s.name === 'GetUser')?.kind).toBe('proto_rpc')
+    expect(imports.some((i) => i.target === 'google/protobuf/timestamp.proto')).toBe(true)
+  })
+
+  it('returns empty arrays for empty input', () => {
+    const { symbols, imports } = extractProto('', 'empty.proto')
+    expect(symbols).toHaveLength(0)
+    expect(imports).toHaveLength(0)
+  })
+
+  it('detects .proto language via parseFile', async () => {
+    const file = tmp('user.proto', 'message Foo {}')
+    const result = await parseFile(file)
+    expect(result.language).toBe('proto')
+    fs.rmSync(path.dirname(file), { recursive: true })
+  })
+})
