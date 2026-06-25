@@ -142,9 +142,9 @@ export function pruneIndex(memoryDir: string, opts?: { dryRun?: boolean }): Prun
   result.removedDup = dups
   result.kept = keep.length
   result.changed = dead.length > 0 || dups.length > 0
-  result.tokensSaved = estimateTokens(
-    dead.map((e) => e.raw).join('') + dups.map((e) => e.raw).join(''),
-  )
+  result.tokensSaved =
+    dead.reduce((sum, e) => sum + estimateTokens(e.raw), 0) +
+    dups.reduce((sum, e) => sum + estimateTokens(e.raw), 0)
 
   if (!result.changed || opts?.dryRun) {
     return result

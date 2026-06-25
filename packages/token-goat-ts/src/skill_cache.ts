@@ -222,10 +222,15 @@ export function extractNamedSection(body: string, heading: string): string | nul
   if (startIdx === -1) return null
 
   const bodyLines: string[] = []
+  let inBodyCodeBlock = false
   for (let j = startIdx; j < n; j++) {
     const stripped = lines[j]!.trim()
 
-    if (stripped.startsWith('## ')) {
+    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+      inBodyCodeBlock = !inBodyCodeBlock
+    }
+
+    if (!inBodyCodeBlock && stripped.startsWith('## ')) {
       break
     }
 
@@ -274,9 +279,13 @@ export function extractChecklistSection(body: string): string | null {
   if (bestStart === -1) return null
 
   const bodyLines: string[] = []
+  let inBodyCodeBlock = false
   for (let j = bestStart + 1; j < n; j++) {
     const stripped = lines[j]!.trim()
-    if (stripped.startsWith('## ')) break
+    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+      inBodyCodeBlock = !inBodyCodeBlock
+    }
+    if (!inBodyCodeBlock && stripped.startsWith('## ')) break
     bodyLines.push(lines[j]!)
   }
 
