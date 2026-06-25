@@ -157,7 +157,7 @@ export function runRead(opts: ReadOptions): number {
     return 0
   }
 
-  const bodyLen = match.lineEnd - match.lineStart
+  const bodyLen = match.lineEnd - match.lineStart + 1
   const lines: string[] = [
     `# ${bodyLen} lines (~${Math.ceil(match.body.length / 4)} tok)`,
     match.body,
@@ -293,7 +293,7 @@ export function runSkeleton(opts: SkeletonOptions): number {
 
   const filtered =
     opts.minLines !== undefined
-      ? symbols.filter((s) => s.lineEnd - s.lineStart >= (opts.minLines ?? 0))
+      ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
 
   const totalLines = symbols.at(-1)?.lineEnd ?? 0
@@ -329,14 +329,14 @@ export function runOutline(opts: OutlineOptions): number {
 
   const filtered =
     opts.minLines !== undefined
-      ? symbols.filter((s) => s.lineEnd - s.lineStart >= (opts.minLines ?? 0))
+      ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
 
   emit(`# Outline: ${opts.file}  (${filtered.length} symbols)`)
   for (const sym of filtered) {
     const rangeStr = `${sym.lineStart.toString().padStart(4)}-${sym.lineEnd.toString().padEnd(6)}`
     const kindStr = sym.kind.padEnd(14)
-    const bodyLen = sym.lineEnd - sym.lineStart
+    const bodyLen = sym.lineEnd - sym.lineStart + 1
     const docFirst = sym.docstring ? `  # ${sym.docstring.split('\n')[0] ?? ''}` : ''
     emit(`  ${rangeStr}  ${kindStr}  ${sym.name}  (${bodyLen}ℓ)${docFirst}`)
   }
