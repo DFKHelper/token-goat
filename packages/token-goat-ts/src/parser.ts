@@ -22,6 +22,16 @@ import { getDb } from './db.js'
 import { fingerprintFile } from './fingerprint.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
+import { extractCsharp } from './languages/csharp.js'
+import { extractPhp } from './languages/php.js'
+import { extractHtml } from './languages/html.js'
+import { extractLiquid } from './languages/liquid.js'
+import { extractKotlin } from './languages/kotlin.js'
+import { extractGraphql } from './languages/graphql_idx.js'
+import { extractSql } from './languages/sql_idx.js'
+import { extractIni, extractEnv } from './languages/ini_idx.js'
+import { extractMakefile } from './languages/makefile_idx.js'
+import { extractProto } from './languages/proto_idx.js'
 
 const _require = createRequire(import.meta.url)
 
@@ -752,6 +762,19 @@ function parseContent(content: string, filePath: string, language: Language): Sy
   if (language === 'toml') return extractTomlSymbols(content, filePath)
   if (language === 'css') return extractCssSymbols(content, filePath)
   if (language === 'dockerfile') return extractDockerfileSymbols(content, filePath)
+
+  // New language adapters from ./languages/
+  if (language === 'csharp') return extractCsharp(content, filePath).symbols
+  if (language === 'php') return extractPhp(content, filePath).symbols
+  if (language === 'html') return extractHtml(content, filePath).symbols
+  if (language === 'liquid') return extractLiquid(content, filePath).symbols
+  if (language === 'kotlin') return extractKotlin(content, filePath).symbols
+  if (language === 'graphql') return extractGraphql(content, filePath).symbols
+  if (language === 'sql') return extractSql(content, filePath)
+  if (language === 'ini') return extractIni(content, filePath)
+  if (language === 'makefile') return extractMakefile(content, filePath)
+  if (language === 'proto') return extractProto(content, filePath).symbols
+  if (language === 'env_file') return extractEnv(content, filePath)
 
   if (language === 'unknown') return []
   return extractWithRegex(content, filePath)

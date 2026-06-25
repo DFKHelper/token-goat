@@ -59,6 +59,17 @@ export type Language =
   | 'yaml'
   | 'css'
   | 'dockerfile'
+  | 'csharp'
+  | 'php'
+  | 'html'
+  | 'liquid'
+  | 'kotlin'
+  | 'graphql'
+  | 'sql'
+  | 'ini'
+  | 'makefile'
+  | 'proto'
+  | 'env_file'
   | 'unknown'
 
 /**
@@ -102,6 +113,21 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.scss', 'css'],
   ['.sass', 'css'],
   ['.less', 'css'],
+  ['.cs', 'csharp'],
+  ['.php', 'php'],
+  ['.html', 'html'],
+  ['.htm', 'html'],
+  ['.liquid', 'liquid'],
+  ['.kt', 'kotlin'],
+  ['.kts', 'kotlin'],
+  ['.graphql', 'graphql'],
+  ['.gql', 'graphql'],
+  ['.sql', 'sql'],
+  ['.ini', 'ini'],
+  ['.cfg', 'ini'],
+  ['.conf', 'ini'],
+  ['.proto', 'proto'],
+  ['.env', 'env_file'],
 ])
 
 /**
@@ -112,11 +138,20 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
  */
 const FILENAME_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['dockerfile', 'dockerfile'],
-  ['makefile', 'bash'],
+  ['makefile', 'makefile'],
+  ['gnumakefile', 'makefile'],
+  ['bsdmakefile', 'makefile'],
   ['cargo.toml', 'toml'],
   ['pyproject.toml', 'toml'],
   ['package.json', 'json'],
   ['tsconfig.json', 'json'],
+  ['.env', 'env_file'],
+  ['.env.local', 'env_file'],
+  ['.env.example', 'env_file'],
+  ['.env.sample', 'env_file'],
+  ['.env.test', 'env_file'],
+  ['.env.production', 'env_file'],
+  ['.envrc', 'env_file'],
 ])
 
 /**
