@@ -1,26 +1,17 @@
 pre-commit:
   commands:
-    lint:
-      run: uv run ruff check {staged_files}
-      glob: "*.py"
-    typecheck:
-      run: uv run mypy src
-      glob: "*.py"
-    wal-guard:
-      run: .venv/Scripts/python.exe -m pytest tests/test_wal_growth_guard.py -q --tb=short
-      glob: "*.py"
     ts-typecheck:
-      run: cd packages/token-goat-ts && npm run typecheck
-      glob: "packages/token-goat-ts/**/*.ts"
+      run: npm run typecheck
+      glob: "**/*.ts"
     ts-lint:
-      run: cd packages/token-goat-ts && npm run lint
-      glob: "packages/token-goat-ts/**/*.ts"
+      run: npm run lint
+      glob: "**/*.ts"
 
 pre-push:
   commands:
     all-checks:
-      # Single bash wrapper runs typecheck + Windows tests + WSL tests in
-      # parallel internally. Avoids lefthook's parallel-mode EvalSymlinks
-      # canonicalize failure on Windows (affects commands with glob: on
-      # parallel runners when stdin is read concurrently).
+      # Single bash wrapper runs typecheck + tests in parallel internally.
+      # Avoids lefthook's parallel-mode EvalSymlinks canonicalize failure on
+      # Windows (affects commands with glob: on parallel runners when stdin
+      # is read concurrently).
       run: bash .lefthook-scripts/run-all-checks.sh

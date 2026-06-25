@@ -1,16 +1,4 @@
-name: Publish to PyPI
-
-# Publishes the package to PyPI on every GitHub Release using OIDC-based
-# Trusted Publishing — no long-lived API tokens are stored as repo secrets.
-#
-# PyPI side: configure a Trusted Publisher at
-# https://pypi.org/manage/project/token-goat/settings/publishing/ with
-#   Owner:        DFKHelper
-#   Repository:   token-goat
-#   Workflow:     publish.yml
-#   Environment:  pypi
-# The first publish must be done manually (or via PyPI's "Pending publisher"
-# flow) so the project exists; subsequent releases flow through here.
+name: Publish to npm
 
 on:
   release:
@@ -21,37 +9,25 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
-  build:
-    name: Build sdist + wheel
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
-      - run: uv python install 3.13
-      - name: Build
-        run: uv build
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist
-          path: dist/
-          retention-days: 1
-
-  publish:
-    name: Publish to PyPI (OIDC)
-    needs: build
+  build-and-publish:
+    name: Build and publish to npm
     runs-on: ubuntu-latest
     environment:
-      name: pypi
-      url: https://pypi.org/p/token-goat
+      name: npm
+      url: https://www.npmjs.com/package/token-goat
     permissions:
       id-token: write
       contents: read
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          name: dist
-          path: dist/
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - name: Build
+        run: npm run build
       - name: Publish
-        uses: pypa/gh-action-pypi-publish@release/v1
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

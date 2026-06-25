@@ -1,10 +1,6 @@
 name: CI
 on: [push, pull_request]
 
-# Full test suite (Windows serial + WSL parallel, ~14 900 tests) runs
-# pre-push via lefthook on the developer's machine before any push reaches
-# GitHub. CI is a thin gate: lint and type-check only.
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
@@ -13,13 +9,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/setup-node@v4
         with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-      - run: uv python install 3.13
-      - run: uv sync --all-extras
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
       - name: Lint
-        run: uv run ruff check
+        run: npm run lint
       - name: Type check
-        run: uv run mypy src
+        run: npm run typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Test
+        run: npm test

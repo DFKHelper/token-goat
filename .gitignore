@@ -156,5 +156,11 @@ CLAUDE.md
 # JS/TS dependencies (root-level)
 node_modules/
 
+# TypeScript build output
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
 # Temp test artifacts
 .temp-skill-cache-test/
