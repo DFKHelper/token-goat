@@ -152,3 +152,9 @@ CLAUDE.md
 # Accidental local data dir from misconfigured LOCALAPPDATA in dev/test runs
 .localapp/
 .improve-state-*.json
+
+# JS/TS dependencies (root-level)
+node_modules/
+
+# Temp test artifacts
+.temp-skill-cache-test/
