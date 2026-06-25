@@ -1,0 +1,74 @@
+{
+  "name": "token-goat",
+  "version": "1.9.6",
+  "description": "Surgical token-reduction companion for Claude Code and other AI coding agents",
+  "type": "module",
+  "main": "./dist/token-goat.mjs",
+  "bin": {
+    "token-goat": "./dist/token-goat.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DFKHelper/token-goat.git"
+  },
+  "homepage": "https://github.com/DFKHelper/token-goat#readme",
+  "bugs": {
+    "url": "https://github.com/DFKHelper/token-goat/issues"
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src tests",
+    "dev": "tsx src/main.ts"
+  },
+  "contributors": [
+    {
+      "name": "eSaadster",
+      "url": "https://github.com/eSaadster/pi-token-goat"
+    }
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "token",
+    "ai",
+    "coding-assistant",
+    "token-reduction",
+    "llm"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "commander": "^12.1.0",
+    "sharp": "^0.33.5",
+    "smol-toml": "^1.7.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^10.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.62.0",
+    "vitest": "^2.1.0"
+  },
+  "optionalDependencies": {
+    "@xenova/transformers": "^2.17.2",
+    "tree-sitter": "^0.22.4",
+    "tree-sitter-javascript": "^0.23.1",
+    "tree-sitter-python": "^0.23.6",
+    "tree-sitter-typescript": "^0.23.2",
+    "tree-sitter-go": "^0.23.0",
+    "tree-sitter-rust": "^0.23.0",
+    "tree-sitter-ruby": "^0.23.0",
+    "tree-sitter-java": "^0.23.0",
+    "tree-sitter-c": "^0.23.0"
+  }
+}

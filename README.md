@@ -21,17 +21,17 @@ Token-Goat sits silently between your AI and your tools. Re-read a file? It gets
 
 Works with **Claude Code**, **Gemini CLI**, **Codex CLI**, **Aider**, **Cursor**, **Cline**, **Windsurf**, **Copilot CLI**, OpenCode, OpenClaw, and **pi** ([pi-coding-agent](https://github.com/earendil-works/pi-mono)).
 
-**Ask your AI to install it fully (give it this GitHub link), or install in one command (install UV first if needed):**
+**Ask your AI to install it fully (give it this GitHub link), or install in one command:**
 
 ```
-uv tool install token-goat && token-goat install
+npm install -g token-goat && token-goat install
 ```
 
 Restart your AI sessions. Run `token-goat stats` a couple of minutes after your next session to see the massive savings. It also doubles as a great tracker of your work. Welcome to token efficiency.
 
-[![PyPI version](https://img.shields.io/pypi/v/token-goat?label=PyPI&logo=pypi&logoColor=white)](https://pypi.org/project/token-goat/) [![CI status](https://github.com/DFKHelper/token-goat/actions/workflows/ci.yml/badge.svg)](https://github.com/DFKHelper/token-goat/actions/workflows/ci.yml) [![Python 3.12 | 3.13](https://img.shields.io/pypi/pyversions/token-goat?logo=python&logoColor=white)](https://pypi.org/project/token-goat/) [![PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey)](LICENSE)
+[![npm](https://img.shields.io/npm/v/token-goat.svg)](https://www.npmjs.com/package/token-goat) [![CI status](https://github.com/DFKHelper/token-goat/actions/workflows/ci.yml/badge.svg)](https://github.com/DFKHelper/token-goat/actions/workflows/ci.yml) [![PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey)](LICENSE)
 
-![Windows 10 | 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?logo=windows&logoColor=white) ![Linux including WSL](https://img.shields.io/badge/Linux-including%20WSL-FCC624?logo=linux&logoColor=black) ![macOS (untested)](https://img.shields.io/badge/macOS-untested-lightgrey?logo=apple&logoColor=white) ![requires uv](https://img.shields.io/badge/requires-uv-6340ac)
+![Windows 10 | 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?logo=windows&logoColor=white) ![Linux including WSL](https://img.shields.io/badge/Linux-including%20WSL-FCC624?logo=linux&logoColor=black) ![macOS (untested)](https://img.shields.io/badge/macOS-untested-lightgrey?logo=apple&logoColor=white) ![requires Node.js](https://img.shields.io/badge/requires-Node.js-339933?logo=node.js&logoColor=white)
 
 > **Built and continually improved, free, by one person. If it saves you tokens, drop a ⭐️ at the top of this page. One click. Makes my day. Also, if you'd like anything added, [drop me a line](mailto:token-goat@dfkhelper.com).**
 
@@ -246,16 +246,12 @@ Token-goat tracks how close a session is to the autocompact trigger and tightens
 
 ## Install
 
-> **Easiest install:** paste this repo's URL into your AI and ask it to install token-goat properly. It will handle uv, run the commands, check codecs, and confirm everything is working.
+> **Easiest install:** paste this repo's URL into your AI and ask it to install token-goat properly. It will run the commands, check codecs, and confirm everything is working.
 
-**Windows requirements:** Windows 10 or 11 · Python 3.12 or 3.13 · [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`)
-
-**Linux / WSL requirements:** Python 3.12 or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-
-**macOS requirements (untested):** Python 3.12 or 3.13 · [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
+**Requirements:** Node.js 18 or later (all platforms)
 
 ```
-uv tool install token-goat
+npm install -g token-goat
 token-goat install
 token-goat doctor          # confirms image codecs (WebP/JPEG/PNG) are available
 ```
