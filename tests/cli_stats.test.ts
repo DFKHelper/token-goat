@@ -16,7 +16,7 @@ vi.mock('../src/stats.js', () => ({
     by_command: {},
     window_days: _windowDays ?? 30,
   }),
-  renderStats: () => {},
+  renderStats: () => { process.stdout.write('No stats recorded yet.\n') },
 }))
 
 // Stub session module so renderTopSessionFiles is deterministic
