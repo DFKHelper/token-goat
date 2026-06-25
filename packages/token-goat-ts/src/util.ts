@@ -91,8 +91,6 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
 
   // mode 0o600: owner read/write only (no effect on Windows ACLs, but harmless).
   const fd = openSync(tmp, 'w', 0o600)
-  // eslint-disable-next-line no-useless-assignment -- initial false is the sentinel read in the outer finally when writeSync throws before wrote = true
-  let wrote = false
   try {
     if (typeof content === 'string') {
       // Encode ourselves so we control the encoding; a Buffer write avoids the
@@ -101,7 +99,6 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
     } else {
       writeSync(fd, Buffer.from(content))
     }
-    wrote = true
   } finally {
     closeSync(fd)
   }
@@ -123,8 +120,11 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
     // Unreachable: the loop either returns or throws, but satisfies tsc.
     throw lastErr
   } finally {
-    if (wrote && !renamed) {
-      // Clean up the orphaned temp file on a failed rename. Best-effort.
+    if (!renamed) {
+      // Clean up the orphaned temp file on a failed write or rename. Best-effort.
+      // The `wrote` guard was wrong: the temp file is created by openSync *before*
+      // the write attempt, so it exists (and leaks) whether the write succeeded or
+      // failed.  We must clean up whenever the rename did not happen.
       try {
         unlinkSync(tmp)
       } catch {

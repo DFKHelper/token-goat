@@ -581,6 +581,10 @@ export function runConfigGet(opts: ConfigGetOptions): number {
           return 1
         }
         obj = obj[part]
+        if (obj === undefined) {
+          emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+          return 1
+        }
       }
       emit(JSON.stringify(obj))
       return 0

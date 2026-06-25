@@ -641,8 +641,11 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     lines.push('## Files read')
     let sectionTokens = estimateTokens('## Files read\n')
     const sortedRead = readPaths.sort((a, b) => {
-      const countA = (files[a] as Record<string, number>)?.['hit_count'] ?? 0
-      const countB = (files[b] as Record<string, number>)?.['hit_count'] ?? 0
+      // FileEntry uses `readCount`, not `hit_count` (which is the cross-session
+      // manifest format field).  Using the wrong key meant countA/B were always
+      // 0 and files were never prioritised by actual read frequency.
+      const countA = (files[a] as Record<string, number>)?.['readCount'] ?? 0
+      const countB = (files[b] as Record<string, number>)?.['readCount'] ?? 0
       return countB - countA
     })
     for (const fpath of sortedRead.slice(0, 15)) {
