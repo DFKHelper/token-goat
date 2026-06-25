@@ -793,7 +793,7 @@ export function buildManifestWithCount(
   const readCount = Object.keys(cache.files ?? {}).length
   const bashCount = Object.keys(cache.bashHistory ?? {}).length
   const webCount = Object.keys(cache.webHistory ?? {}).length
-  const skillCount = Object.keys((cache as unknown as Record<string, unknown>)['skill_history'] as Record<string, unknown> ?? {}).length
+  const skillCount = Object.keys(cache.skillHistory ?? {}).length
 
   const eventCount = editedCount + readCount + bashCount + webCount + skillCount
 

@@ -9,6 +9,7 @@ import {
   findContentDuplicates,
   auditClaudeMd,
 } from '../src/memory_prune.js'
+import { estimateTokens } from '../src/compact.js'
 
 describe('parseIndex', () => {
   it('parses valid index entries', () => {
@@ -199,6 +200,26 @@ Some notes here
     const result = pruneIndex(tempDir)
 
     expect(result.tokensSaved).toBeGreaterThan(0)
+  })
+
+  it('tokensSaved is sum of per-entry estimates, not estimate of concatenated string', () => {
+    // Use entries whose length is a multiple of 3 so that floor arithmetic guarantees
+    // sum-of-individual > estimate-of-concatenation (difference = N-1 = 2 for N=3).
+    // "- [D](x.md)\n" is 12 chars (divisible by 3).
+    const line1 = '- [D](x.md)\n'
+    const line2 = '- [E](y.md)\n'
+    const line3 = '- [F](z.md)\n'
+    const memoryMd = line1 + line2 + line3
+    fs.writeFileSync(path.join(tempDir, 'MEMORY.md'), memoryMd)
+
+    const result = pruneIndex(tempDir)
+
+    expect(result.removedDead).toHaveLength(3)
+    const expectedSum = estimateTokens(line1) + estimateTokens(line2) + estimateTokens(line3)
+    expect(result.tokensSaved).toBe(expectedSum)
+    // Verify per-entry sum > combined estimate, proving the old single-call code undercounted
+    const combinedEstimate = estimateTokens(line1 + line2 + line3)
+    expect(expectedSum).toBeGreaterThan(combinedEstimate)
   })
 
   it('handles combined dead and duplicate entries', () => {

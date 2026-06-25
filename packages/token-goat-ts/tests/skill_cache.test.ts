@@ -233,6 +233,15 @@ describe('extractNamedSection', () => {
     expect(extractNamedSection('', 'test')).toBeNull()
     expect(extractNamedSection('## test', '')).toBeNull()
   })
+
+  it('does not truncate at ## inside a code block in body', () => {
+    const body =
+      '## Section\nSome text\n```\n## Not a heading\ncode\n```\nmore text\n## Real End\nafter'
+    const section = extractNamedSection(body, 'Section')
+    expect(section).toContain('## Not a heading')
+    expect(section).toContain('more text')
+    expect(section).not.toContain('after')
+  })
 })
 
 describe('extractChecklistSection', () => {
@@ -277,6 +286,15 @@ describe('extractChecklistSection', () => {
     const section = extractChecklistSection(body)
     expect(section).toContain('Item1')
     expect(section).not.toContain('Item2')
+  })
+
+  it('does not truncate at ## inside a code block in body', () => {
+    const body = '## Checklist\n- [ ] Task1\n```\n## Inside code\n```\n- [ ] Task2\n## Done\nafter'
+    const section = extractChecklistSection(body)
+    expect(section).toContain('Task1')
+    expect(section).toContain('## Inside code')
+    expect(section).toContain('Task2')
+    expect(section).not.toContain('after')
   })
 })
 
