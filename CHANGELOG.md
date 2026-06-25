@@ -4,6 +4,17 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Changed
+
+- **Full migration to TypeScript.** The codebase has been fully ported to TypeScript. The TypeScript package at `packages/token-goat-ts/` is a complete 1:1 replacement of all Python modules in `src/token_goat/`. The Python source is preserved for the current release and will be removed in the next major version following a structural cutover (promoting `packages/token-goat-ts/` to the repository root).
+
+### Fixed
+
+- **(76f4eab) TypeScript port correctness fixes.** `findIndex` out-of-bounds check, compact token count divisor, and method lookup corrected in the TS port.
+- **(75a5b16) TypeScript atomic write and sort fixes.** `atomicWriteCore` temp file leak plugged; undefined key output and sort key mismatch corrected.
+- **(7c5dccf) TypeScript hint dedup and line-count fixes.** Dup-hint summary overwrite and line count off-by-one corrected.
+- **(8182789) TypeScript token estimation and heading detection fixes.** Per-entry token rounding corrected, code-fence heading detection improved, and unnecessary type assertions removed.
+
 ## [1.9.9] - 2026-06-24
 
 ### Added

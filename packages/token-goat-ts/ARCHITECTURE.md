@@ -4,6 +4,8 @@ token-goat is a Claude Code companion CLI that reduces token burn during AI-assi
 
 The Python distribution is the production release; the TS port matches the observable behavior of the Python package's core features (hooks, CLI surgical reads, session tracking, indexing) under a Node.js runtime.
 
+> **Canonical implementation:** The TypeScript port is now the primary codebase. All Python modules in `src/token_goat/` have been fully ported to this package. Future development targets TypeScript; the Python source is preserved only for the current release and will be removed in the next major version following structural cutover.
+
 ---
 
 ## Component Map
