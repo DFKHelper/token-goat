@@ -1,2 +1,4 @@
 #!/usr/bin/env bash
-exec uv run python -m mypy src
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+npm run typecheck
