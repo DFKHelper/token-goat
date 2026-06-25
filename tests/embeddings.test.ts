@@ -359,9 +359,8 @@ describe('embeddings module', () => {
       }
       await embeddings.searchSemantic(mockDb, 'find auth functions')
       const sql = preparedStatements.join('\n')
-      expect(sql).toContain('MATCH')
+      expect(sql).toContain('WHERE embedding MATCH')
       expect(sql).toContain('embedding')
-      expect(sql).not.toMatch(/ORDER BY distance\s+ASC\s*$/)  // bare ORDER BY with no WHERE
     })
   })
 })

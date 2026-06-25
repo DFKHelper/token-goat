@@ -99,7 +99,7 @@ describe('isTreeSitterAvailable', () => {
     expect(typeof isTreeSitterAvailable('python')).toBe('boolean')
     expect(typeof isTreeSitterAvailable('javascript')).toBe('boolean')
     // A language with no bundled grammar is always false.
-    expect(isTreeSitterAvailable('rust')).toBe(false)
+    expect(isTreeSitterAvailable('erlang')).toBe(false)
     expect(isTreeSitterAvailable('unknown')).toBe(false)
   })
 })
