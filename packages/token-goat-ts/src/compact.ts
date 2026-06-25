@@ -533,7 +533,7 @@ export function mergeSessionManifests(
 
   for (const entry of sorted) {
     const relPath = (entry['rel_path'] as string) ?? ''
-    const entryTokens = Math.max(1, Math.floor(relPath.length / 10))
+    const entryTokens = Math.max(1, Math.floor(relPath.length / 3))
 
     if (totalTokens + entryTokens > budgetTokens) {
       break

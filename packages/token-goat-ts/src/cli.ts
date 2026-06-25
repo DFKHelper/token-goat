@@ -262,7 +262,7 @@ async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<
   if (opts.compact === true) {
     const lines = body.split('\n')
     const end = lines.findIndex((l) => l.includes('COMPACT_END'))
-    if (end > 0) {
+    if (end !== -1) {
       out(lines.slice(0, end).join('\n'))
     } else {
       out(body)

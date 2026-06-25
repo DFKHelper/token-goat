@@ -136,12 +136,14 @@ export function runRead(opts: ReadOptions): number {
     ? [symbol.split('.')[0] ?? symbol, symbol.split('.')[1]]
     : [symbol, undefined]
 
-  const candidates = querySymbols({ name: symBase, filePath: file, limit: 10 })
+  // When a method name is given (e.g. "Session.refresh"), query for the method
+  // name directly. Querying for symBase (the class name) and then searching for
+  // methodName among those results always fails because all returned symbols have
+  // name === symBase, never name === methodName.
+  const lookupName = methodName ?? symBase
+  const candidates = querySymbols({ name: lookupName, filePath: file, limit: 10 })
 
-  const match =
-    methodName !== undefined
-      ? (candidates.find((s) => s.name === methodName) ?? candidates[0])
-      : candidates[0]
+  const match = candidates[0]
 
   if (match === undefined) {
     emitErr(`Symbol '${symbol}' not found in '${file}'`)

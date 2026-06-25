@@ -275,6 +275,30 @@ describe('compact', () => {
       expect(result.length).toBeLessThanOrEqual(2)
     })
 
+    it('uses ~3 chars/token ratio so a long path exhausts budget quickly', () => {
+      // "src/foo/bar/baz.ts" = 18 chars → floor(18/3)=6 tokens. With a budget
+      // of 7 it fits; with a budget of 5 the loop breaks before adding it.
+      // With the old /10 divisor (floor(18/10)=1 token) both budgets would
+      // have included the entry, silently exceeding the true token cost.
+      const manifests = [
+        {
+          files: [
+            { rel_path: 'src/foo/bar/baz.ts', hit_count: 10 },
+            { rel_path: 'a.ts', hit_count: 5 },
+          ],
+        },
+      ]
+      // Budget 7: "src/foo/bar/baz.ts" costs 6 tokens → fits; "a.ts" costs 1 token →
+      // running total 7 which equals the budget, so it fits too.
+      const resultFits = mergeSessionManifests(manifests as Record<string, unknown>[], 7)
+      expect(resultFits).toHaveLength(2)
+
+      // Budget 5: first entry costs 6 tokens > 5 → loop breaks immediately.
+      // With the old /10 divisor it would cost only 1 token and both entries would fit.
+      const resultExceeds = mergeSessionManifests(manifests as Record<string, unknown>[], 5)
+      expect(resultExceeds).toHaveLength(0)
+    })
+
     it('handles missing files field gracefully', () => {
       const manifests = [{ other_field: 'value' }]
       const result = mergeSessionManifests(manifests as Record<string, unknown>[], 1000)
