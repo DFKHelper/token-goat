@@ -114,7 +114,7 @@ function loadGrammar(lang: Language): Grammar | null {
     } else if (lang === 'c') {
       grammar = _require('tree-sitter-c') as Grammar
     } else if (lang === 'cpp') {
-      grammar = _require('tree-sitter-c') as Grammar
+      grammar = _require('tree-sitter-cpp') as Grammar
     }
   } catch {
     grammar = null
