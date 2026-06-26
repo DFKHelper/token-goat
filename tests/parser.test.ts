@@ -93,6 +93,39 @@ describe('indexFile', () => {
   })
 })
 
+describe('parseFile', () => {
+  it('extracts correct line ranges for individual variables in variable_declarator (regression: parent vs child node)', async () => {
+    const file = write(
+      'vars.ts',
+      'const x = 1, y = 2, z = 3;\n',
+    )
+    const result = await parseFile(file)
+    const variables = result.symbols.filter((s) => s.kind === 'variable')
+    expect(variables.length).toBeGreaterThanOrEqual(1)
+    variables.forEach((v) => {
+      expect(v.lineStart).toBe(1)
+      expect(v.lineEnd).toBe(1)
+    })
+  })
+
+  it('extracts JSON properties at top level (regression: depthAtLineStart check)', async () => {
+    const file = write(
+      'config.json',
+      JSON.stringify({
+        'name': 'myapp',
+        'nested': {
+          'key': 'value',
+        },
+      }, null, 2),
+    )
+    const result = await parseFile(file)
+    const properties = result.symbols.filter((s) => s.kind === 'property')
+    const names = properties.map((p) => p.name)
+    expect(names).toContain('name')
+    expect(names).toContain('nested')
+  })
+})
+
 describe('isTreeSitterAvailable', () => {
   it('returns a boolean without throwing for every language case', () => {
     expect(typeof isTreeSitterAvailable('typescript')).toBe('boolean')

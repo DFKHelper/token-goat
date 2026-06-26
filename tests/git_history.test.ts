@@ -322,6 +322,35 @@ author-time 1686900000
       })
     })
 
+    it('should count actual line additions/removals, not hunk header totals (regression test for hunk-count bug)', () => {
+      const mockOutput = `diff --git a/src/foo.ts b/src/foo.ts
+--- a/src/foo.ts
++++ b/src/foo.ts
+@@ -10,5 +10,7 @@ function myFunc() {
+-removed line 1
+-removed line 2
+ context line
++added line 1
++added line 2
++added line 3`
+
+      vi.mocked(util.runGit).mockReturnValue({
+        stdout: mockOutput,
+        stderr: '',
+        exitCode: 0,
+      })
+
+      const symbols = gitHistory.getChangedSymbols('/repo', 'HEAD~5', 50)
+
+      expect(symbols).toHaveLength(1)
+      expect(symbols[0]).toEqual({
+        file: 'src/foo.ts',
+        symbol: 'myFunc',
+        linesAdded: 3,
+        linesRemoved: 2,
+      })
+    })
+
     it('should return empty array on error', () => {
       vi.mocked(util.runGit).mockReturnValue({
         stdout: '',

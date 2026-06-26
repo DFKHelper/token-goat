@@ -122,6 +122,28 @@ describe('embeddings module', () => {
         }
       }
     })
+
+    it('should handle Windows CRLF line endings correctly (regression: \\r?\\n split)', () => {
+      const lines = Array(20)
+        .fill(0)
+        .map((_, i) => `const line${i} = "some content to make the file larger";`)
+      const contentCRLF = lines.join('\r\n')
+      const contentLF = lines.join('\n')
+
+      const chunksCRLF = embeddings.chunkFile('test.ts', contentCRLF, 500)
+      const chunksLF = embeddings.chunkFile('test.ts', contentLF, 500)
+
+      expect(chunksCRLF.length).toBeGreaterThan(0)
+      expect(chunksLF.length).toBeGreaterThan(0)
+
+      if (chunksCRLF.length > 0 && chunksLF.length > 0) {
+        const crlfText = chunksCRLF[0].text
+        const lfText = chunksLF[0].text
+
+        expect(crlfText).not.toContain('\r')
+        expect(lfText).not.toContain('\r')
+      }
+    })
   })
 
   describe('mergeNearbyHits()', () => {

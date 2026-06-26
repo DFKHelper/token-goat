@@ -222,10 +222,8 @@ export function failSoft(
     } catch (exc) {
       const err = exc instanceof Error ? exc : new Error(String(exc))
 
-      if (err instanceof Error && (err.name === 'Error' || err.constructor.name === 'Error')) {
-        const errSummary = `${err.name}: ${err.message}`
-        _LOG.error('hook handler crashed: error=%s', errSummary, err)
-      }
+      const errSummary = `${err.name}: ${err.message}`
+      _LOG.error('hook handler crashed: error=%s', errSummary, err)
 
       return {
         continue: true,

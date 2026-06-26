@@ -298,7 +298,7 @@ export function chunkFile(
   chunkSize: number = MAX_CHUNK_CHARS,
   overlap: number = 200,
 ): Chunk[] {
-  const lines = content.split('\n')
+  const lines = content.split(/\r?\n/)
   const chunks: Chunk[] = []
 
   let currentChunk = ''

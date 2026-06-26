@@ -215,7 +215,7 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
           (value.type === 'arrow_function' ||
             value.type === 'function_expression' ||
             value.type === 'function')
-        out.push(makeSymbol(filePath, name.text, isFn ? 'function' : 'variable', node))
+        out.push(makeSymbol(filePath, name.text, isFn ? 'function' : 'variable', child))
       }
     }
 
@@ -479,6 +479,8 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
       const line = lines[i]
       if (line === undefined) continue
 
+      const depthAtLineStart = braceDepth
+
       for (let j = 0; j < line.length; j++) {
         const ch = line[j]
         if (escaping) {
@@ -498,7 +500,7 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
         }
       }
 
-      if (braceDepth === 1 && !inString) {
+      if (depthAtLineStart === 1 && !inString) {
         const keyMatch = /^\s*"([^"]+)"\s*:/.exec(line)
         if (keyMatch !== null && keyMatch[1] !== undefined) {
           out.push({
