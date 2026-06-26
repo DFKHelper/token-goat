@@ -13,6 +13,7 @@
 
 import { Command } from 'commander'
 import * as fs from 'fs'
+import * as path from 'path'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { buildCompactMap, formatMap } from './repomap.js'
@@ -404,17 +405,67 @@ function cmdConfigGet(file: string, key: string): void {
   }
 }
 
-function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): void {
+function atomicWriteBuffer(dest: string, data: Buffer): void {
+  const tmp = dest + '.tmp.' + process.pid
+  try {
+    fs.writeFileSync(tmp, data)
+    try {
+      fs.renameSync(tmp, dest)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
+        fs.copyFileSync(tmp, dest)
+        fs.unlinkSync(tmp)
+      } else {
+        throw e
+      }
+    }
+  } catch (e) {
+    try { fs.unlinkSync(tmp) } catch { /* ignore cleanup failure */ }
+    throw e
+  }
+}
+
+function mapFsError(e: unknown, src?: string): never {
+  const fe = e as NodeJS.ErrnoException
+  if (fe.code === 'ENOENT') {
+    const errPath = fe.path ?? ''
+    const isSource = src !== undefined && path.resolve(errPath) === path.resolve(src)
+    if (isSource) throw new CliError(`source file not found: ${src}`)
+    throw new CliError(`destination directory does not exist: ${errPath}`)
+  }
+  throw e
+}
+
+function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
   if (opts.from !== undefined) {
-    fs.copyFileSync(opts.from, dest)
-  } else if (opts.b64 !== undefined) {
-    fs.writeFileSync(dest, Buffer.from(opts.b64, 'base64'))
-  } else {
+    try {
+      fs.copyFileSync(opts.from, dest)
+    } catch (e) {
+      mapFsError(e, opts.from)
+    }
+    return
+  }
+  if (opts.b64 !== undefined) {
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(opts.b64)) {
+      throw new CliError('--b64 payload contains non-base64 characters — check for shell expansion of $VAR or backticks')
+    }
+    try {
+      atomicWriteBuffer(dest, Buffer.from(opts.b64, 'base64'))
+    } catch (e) {
+      mapFsError(e)
+    }
+    return
+  }
+  return new Promise<void>((resolve, reject) => {
     const chunks: Buffer[] = []
     process.stdin.on('data', (chunk: Buffer) => chunks.push(chunk))
-    process.stdin.on('end', () => fs.writeFileSync(dest, Buffer.concat(chunks)))
+    process.stdin.on('end', () => {
+      try { atomicWriteBuffer(dest, Buffer.concat(chunks)); resolve() }
+      catch (e) { reject(e) }
+    })
+    process.stdin.on('error', reject)
     process.stdin.resume()
-  }
+  })
 }
 
 async function cmdGdriveSections(fileId: string, opts: { heading?: string }): Promise<void> {
