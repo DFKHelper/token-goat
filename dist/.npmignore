@@ -1,0 +1,4 @@
+*.whl
+*.tar.gz
+*.cjs
+.gitignore
