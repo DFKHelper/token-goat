@@ -281,7 +281,7 @@ export async function runAsk(
   // Try synthesis
   if (backend) {
     const prompt = buildPrompt(question, slices, { maxWords: DEFAULT_ANSWER_WORDS })
-    const timeout = parseInt(process.env[ENV_TIMEOUT] ?? '') || DEFAULT_TIMEOUT_SECS
+    const timeout = parseInt(process.env[ENV_TIMEOUT] ?? '', 10) || DEFAULT_TIMEOUT_SECS
 
     let answer: string | null = null
     for (let attempt = 1; attempt <= 2; attempt++) {

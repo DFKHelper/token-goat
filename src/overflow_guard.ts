@@ -5,12 +5,14 @@
  * protection against accidentally dumping huge payloads to the model.
  */
 
+import { stripAnsiCodes } from './bash_compress.js'
+
 /**
  * Estimate tokens from text: ~3 chars/token (conservative).
  * Strips ANSI color codes before counting to avoid inflating token estimates.
  */
 export function estimateTokens(text: string): number {
-  const stripped = stripAnsi(text)
+  const stripped = stripAnsiCodes(text)
   return Math.max(1, Math.floor(stripped.length / 3) + 1)
 }
 
@@ -70,7 +72,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   let used = 0
 
   for (const ln of lines) {
-    const cost = stripAnsi(ln).length + 1
+    const cost = stripAnsiCodes(ln).length + 1
     if (kept.length === 0 && cost > charBudget) {
       kept.push(ln.slice(0, charBudget))
       break
@@ -89,9 +91,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   return kept.join('\n') + '\n' + marker
 }
 
-/**
- * Get a tailored remediation hint based on the originating command.
- */
+/** Get a tailored remediation hint based on the originating command. */
 function getHintFor(command?: string): string {
   const cmd = (command || '').toLowerCase().trim()
   if (cmd === 'symbol') {
@@ -107,12 +107,4 @@ function getHintFor(command?: string): string {
     return "Use --grep PATTERN, --section HEADING, or --tail N to narrow the cached output."
   }
   return 'Narrow your query or raise overflow_guard max_tokens in config.'
-}
-
-/**
- * Strip ANSI color/formatting codes from text.
- */
-function stripAnsi(text: string): string {
-    // eslint-disable-next-line no-control-regex
-  return text.replace(/\[[0-9;]*m/g, '')
 }
