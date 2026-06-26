@@ -151,6 +151,7 @@ export async function depLockfileFingerprint(cmd: string, cwd: string | null): P
   if (!cwd) return null
   const stripped = cmd.trim()
   const firstToken = stripped.split(/\s+/)[0]?.toLowerCase() || ''
+  if (!firstToken) return null
   const candidates = firstToken === 'uv' ? DEP_LOCKFILES['uv'] : DEP_LOCKFILES[firstToken]
   if (!candidates) return null
 

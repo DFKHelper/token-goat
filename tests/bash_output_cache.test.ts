@@ -17,6 +17,7 @@ import {
   storeGlobResult,
   getBashGlobResult,
   commandHash,
+  depLockfileFingerprint,
 } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -219,6 +220,28 @@ describe('retrieval', () => {
   it('captures a non-zero exit code', async () => {
     const id = await storeBashOutput('false', '', 1)
     expect(getBashOutput(id)?.exitCode).toBe(1)
+  })
+})
+
+describe('depLockfileFingerprint', () => {
+  it('returns null when cwd is null', async () => {
+    const result = await depLockfileFingerprint('npm ls', null)
+    expect(result).toBeNull()
+  })
+
+  it('returns null when command has no leading token', async () => {
+    const result = await depLockfileFingerprint('', '/path/to/project')
+    expect(result).toBeNull()
+  })
+
+  it('returns null when first token is just whitespace', async () => {
+    const result = await depLockfileFingerprint('   ', '/path/to/project')
+    expect(result).toBeNull()
+  })
+
+  it('returns null when no matching lockfile found', async () => {
+    const result = await depLockfileFingerprint('npm ls', '/nonexistent/path')
+    expect(result).toBeNull()
   })
 })
 
