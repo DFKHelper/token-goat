@@ -24,6 +24,13 @@ import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
+import {
+  extractMarkdownHeadings,
+  formatHeadingTree,
+  getWellKnownSections,
+  extractChangelogVersionHint,
+  MARKDOWN_SIZE_THRESHOLD,
+} from './hints/markdown_hints.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -123,6 +130,39 @@ export function preReadHandler(event: HookEvent): HookOutput {
       'You\'ve already read ' + basename + '. Use `token-goat section "' + normalized + '::<field>"` ' +
       'or `token-goat config-get ' + normalized + ' <key>` to extract just the value you need.',
     )
+  }
+
+  // Markdown large-file intercept
+  const isMarkdown = /\.(md|mdx|markdown|rst)$/i.test(basename)
+  if (isMarkdown) {
+    let fileContent: string | null = null
+    try {
+      const sz = statSize(normalized)
+      if (sz !== null && sz >= MARKDOWN_SIZE_THRESHOLD) {
+        fileContent = fs.readFileSync(normalized, 'utf8')
+      }
+    } catch {
+      // best-effort
+    }
+    if (fileContent !== null) {
+      const headings = extractMarkdownHeadings(fileContent)
+      if (headings.length >= 3) {
+        recordFileRead(normalized)
+        const hintText = formatHeadingTree(headings, normalized)
+        const wellKnown = getWellKnownSections(basename)
+        const wellKnownText =
+          wellKnown.length > 0
+            ? '\nQuick access: ' +
+              wellKnown
+                .map(s => 'token-goat section "' + normalized + '::' + s + '"')
+                .join(' | ')
+            : ''
+        const changelogExtra = basename.toLowerCase() === 'changelog.md'
+          ? extractChangelogVersionHint(fileContent, normalized)
+          : ''
+        return denyOutput(hintText + wellKnownText + changelogExtra)
+      }
+    }
   }
 
   if (wasFileReadThisSession(normalized)) {
