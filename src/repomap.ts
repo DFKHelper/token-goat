@@ -93,6 +93,7 @@ export function buildCompactMap(maxTokens: number = 2000, cwd: string = process.
 interface FormatOptions {
   compact?: boolean
   maxEntries?: number
+  cwd?: string
 }
 
 /**
@@ -105,7 +106,7 @@ export function formatMap(entries: RepoEntry[], opts: FormatOptions = {}): strin
   }
 
   const lines: string[] = []
-  const { compact = false, maxEntries } = opts
+  const { compact = false, maxEntries, cwd = process.cwd() } = opts
 
   lines.push(`# Repo map (${entries.length} file${entries.length === 1 ? '' : 's'})`)
 
@@ -126,7 +127,7 @@ export function formatMap(entries: RepoEntry[], opts: FormatOptions = {}): strin
     lines.push('')
     lines.push('## Files')
     for (const e of shown) {
-      const rel = path.relative(process.cwd(), e.filePath)
+      const rel = path.relative(cwd, e.filePath)
       if (compact) {
         lines.push(`- ${rel} (${e.language})`)
       } else {

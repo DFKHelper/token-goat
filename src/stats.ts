@@ -86,6 +86,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   changed_lookup: SOURCE_READ,
   outline: SOURCE_READ,
   exports: SOURCE_READ,
+  web_fetch: SOURCE_WEB,
+  skill_load: SOURCE_SKILL,
 }
 
 const KIND_PREFIX_TO_SOURCE: Array<[string, string]> = [

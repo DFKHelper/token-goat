@@ -2,6 +2,7 @@ import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import { passOutput, getToolName, getToolInput } from './hooks_common.js';
+import { recordStat } from './stats.js';
 
 function extractSkillName(toolInput: Record<string, unknown>): string | null {
   const skill = toolInput['skill'] as string;
@@ -78,6 +79,8 @@ function postSkillHandler(event: HookEvent): HookOutput {
     if (!event.sessionId) {
       return passOutput();
     }
+
+    recordStat('skill_load');
 
     const body = extractSkillBody(event.raw);
     if (!body) {

@@ -452,5 +452,31 @@ describe('stats', () => {
       // An in-memory DB with no stats table — recordStat must not throw.
       expect(() => recordStat('session_hint', 0, 0, new Database(':memory:'))).not.toThrow()
     })
+
+    it('web_fetch maps to SOURCE_WEB and skill_load maps to SOURCE_SKILL', () => {
+      const dbPath = path.join(tempDir, 'source-mapping-test.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+
+      recordStat('web_fetch', 0, 0, db)
+      recordStat('skill_load', 0, 0, db)
+
+      const summary = summarize(30, db)
+      db.close()
+
+      expect(summary.by_source[SOURCE_WEB]).toMatchObject({ events: 1 })
+      expect(summary.by_source[SOURCE_SKILL]).toMatchObject({ events: 1 })
+    })
   })
 })
