@@ -4,9 +4,19 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-06-26
+
 ### Added
 
 - **git diff and npm run monitoring recall patterns.** `git diff HEAD`, `git diff`, and `git diff --cached` now trigger bash-output recall hints when prior output is cached (full diffs can be many KB; `git diff --stat` is excluded as it produces small output). `npm run test`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm run check`, and `npm run spec` are now covered by monitoring recall — these invoke vitest/eslint/tsc under the hood but weren't matched by the direct-invocation patterns.
+
+- **codex and glm.sh monitoring recall patterns.** `codex exec` and `~/.claude/bin/glm.sh` invocations are now tracked as monitoring commands; when prior output is cached and exceeds 2 KB, a recall pointer is injected.
+
+- **cat source-file recall hint.** Repeated `cat <file>` calls on source files now emit a `token-goat read 'file::Symbol'` suggestion rather than a generic shell recall hint.
+
+### Fixed
+
+- **post_tool_use Bash hook was missing.** `getBashOutputId` always returned null in production because the Bash post-hook was never registered, silently disabling all monitoring and build recall hints. The hook is now wired up and bash output caching works end-to-end.
 
 ## [2.0.1] - 2026-06-25
 
