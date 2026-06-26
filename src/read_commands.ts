@@ -296,7 +296,7 @@ export function runSkeleton(opts: SkeletonOptions): number {
       ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
 
-  const totalLines = symbols.at(-1)?.lineEnd ?? 0
+  const totalLines = filtered.at(-1)?.lineEnd ?? 0
   emit(`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`)
   for (const sym of filtered) {
     const lineStr = sym.lineStart.toString().padStart(6)
