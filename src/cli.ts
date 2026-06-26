@@ -414,8 +414,7 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
   }
-  // Place tmp in same directory as dest so rename is always same-device (avoids EXDEV).
-  // Include random suffix to eliminate PID-reuse collisions.
+  // Place tmp in same directory as dest so rename is always same-device (avoids EXDEV); include random suffix to eliminate PID-reuse collisions.
   const rnd = Math.random().toString(36).slice(2, 8)
   const tmp = path.join(path.dirname(path.resolve(dest)), `.tmp.${process.pid}.${rnd}`)
   try {
@@ -455,8 +454,7 @@ function mapFsError(e: unknown, src?: string, dest?: string): never {
   }
   if (fe.code === 'EISDIR') {
     const errPath = fe.path ?? ''
-    // Windows: readFileSync on a directory yields e.path===undefined; atomicWriteBuffer always sets e.path=dest.
-    // Empty errPath with a src arg means the source was the directory.
+    // Windows: readFileSync on a directory yields e.path===undefined (atomicWriteBuffer always sets e.path=dest); empty errPath with a src arg means the source was the directory.
     const isSource = src !== undefined && (errPath === '' || path.resolve(errPath) === path.resolve(src))
     if (isSource) throw new CliError(`source is a directory, not a file: ${src}`)
     throw new CliError(`destination is a directory, not a file: ${dest ?? (errPath || '(unknown)')}`)
