@@ -119,6 +119,7 @@ export function applyHintPriorityLimit(
     return sorted.map((h) => slimHintText(h.text, tier));
   }
 
+  if (maxHints <= 0) return [];
   const emitted = sorted.slice(0, maxHints);
   const suppressedCount = sorted.length - maxHints;
   const result = emitted.map((h) => slimHintText(h.text, tier));
@@ -377,7 +378,7 @@ export function buildIndexOnlyFileHint(options: {
     const hasOffset = options.offset !== null && options.offset !== undefined && typeof options.offset === "number" && options.offset >= 0;
     const hasLimit = options.limit !== null && options.limit !== undefined && typeof options.limit === "number" && options.limit > 0;
 
-    if (hasOffset && hasLimit) {
+    if (hasOffset || hasLimit) {
       return null;
     }
 
@@ -404,7 +405,7 @@ export function buildStructuredFileHint(options: {
     const hasOffset = options.offset !== null && options.offset !== undefined && typeof options.offset === "number" && options.offset >= 0;
     const hasLimit = options.limit !== null && options.limit !== undefined && typeof options.limit === "number" && options.limit > 0;
 
-    if (hasOffset && hasLimit) {
+    if (hasOffset || hasLimit) {
       return null;
     }
 
@@ -433,7 +434,7 @@ export function buildPackageManifestHint(options: {
     const hasLimit =
       options.limit !== null && options.limit !== undefined && options.limit > 0
 
-    if (hasOffset && hasLimit) {
+    if (hasOffset || hasLimit) {
       return null;
     }
 
