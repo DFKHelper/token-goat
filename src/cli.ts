@@ -207,18 +207,16 @@ function cmdDoctor(): void {
   }
 }
 
-function cmdBashOutput(
-  id: string,
+function _applyFiltersAndPrint(
+  content: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string },
 ): void {
-  const entry = getBashOutput(id)
-  if (entry === null) {
-    throw new CliError(`no cached bash output for id: ${id}`)
-  }
-
-  let content = entry.output
   if (opts.grep !== undefined) {
-    const pattern = opts.grep
+    let pattern = opts.grep
+    // Normalize pattern to handle -E or --extended-regexp prefix
+    if (pattern.startsWith('-E ') || pattern.startsWith('--extended-regexp ')) {
+      pattern = pattern.replace(/^(?:-E\s+|--extended-regexp\s+)/, '')
+    }
     try {
       const re = new RegExp(pattern)
       content = content
@@ -250,6 +248,33 @@ function cmdBashOutput(
   }
 
   out(result.join('\n'))
+}
+
+function cmdBashOutput(
+  id: string | undefined,
+  opts: { head?: string; tail?: string; grep?: string; section?: string; file?: string },
+): void {
+  if (opts.file !== undefined) {
+    let content: string
+    try {
+      content = fs.readFileSync(opts.file, 'utf-8')
+    } catch {
+      throw new CliError(`cannot read file: ${opts.file}`)
+    }
+    _applyFiltersAndPrint(content, opts)
+    return
+  }
+
+  if (id === undefined) {
+    throw new CliError('provide an <id> or --file <path>')
+  }
+
+  const entry = getBashOutput(id)
+  if (entry === null) {
+    throw new CliError(`no cached bash output for id: ${id}`)
+  }
+
+  _applyFiltersAndPrint(entry.output, opts)
 }
 
 async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<void> {
@@ -484,11 +509,12 @@ export function buildProgram(): Command {
   program.command('doctor').description('diagnose token-goat health').action(guard(cmdDoctor))
 
   program
-    .command('bash-output <id>')
-    .description('retrieve cached bash output by ID')
+    .command('bash-output [id]')
+    .description('retrieve cached bash output by ID or file')
     .option('--head <n>', 'show first N lines')
     .option('--tail <n>', 'show last N lines')
     .option('--grep <pattern>', 'filter lines matching regex')
+    .option('--file <path>', 'read from raw output file instead of cache')
     .action(guard(cmdBashOutput))
 
   program

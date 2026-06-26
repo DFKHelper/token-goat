@@ -19,11 +19,31 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFiles } from './session.js'
-import { contextOutput, passOutput } from './hooks_common.js'
+import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
+import { buildPackageManifestHint } from './hints.js'
 
 /** Size at or above which a read is nudged toward a surgical command. */
 const LARGE_FILE_BYTES = 100 * 1024
+
+/** Check if a path is under node_modules/. Case-insensitive on Windows, case-sensitive elsewhere. */
+function isNodeModulesPath(path: string): boolean {
+  const isWindows = process.platform === 'win32'
+  const check = isWindows ? path.toLowerCase() : path
+  // Match both forward slashes (normalized) and backslashes (Windows).
+  return check.includes('/node_modules/') || check.includes('\\node_modules\\')
+}
+
+/** True for documentation/markup files where `section` applies but `skeleton` and `symbol` do not. */
+function _isDocFile(filePath: string): boolean {
+  const lower = filePath.toLowerCase()
+  return (
+    lower.endsWith('.md') ||
+    lower.endsWith('.mdx') ||
+    lower.endsWith('.markdown') ||
+    lower.endsWith('.rst')
+  )
+}
 
 /** Best-effort file size in bytes, or null when the file cannot be stat'd. */
 function statSize(absPath: string): number | null {
@@ -47,14 +67,30 @@ export function preReadHandler(event: HookEvent): HookOutput {
 
   const normalized = normalizePath(filePath)
 
+  if (isNodeModulesPath(normalized)) {
+    return denyOutput(
+      'node_modules is typically noise; use npm ls, npm outdated, or npm audit instead for dependency info. ' +
+      'To force access, use: token-goat read node_modules/package/file.js::symbol-name or token-goat section node_modules/package/file.js::heading',
+    )
+  }
+
+  const manifestHint = buildPackageManifestHint({ file_path: normalized })
+  if (manifestHint) {
+    recordFileRead(normalized)
+    return contextOutput(manifestHint.text)
+  }
+
   if (wasFileReadThisSession(normalized)) {
     const entry = getSessionFiles().get(normalized)
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
     recordFileRead(normalized)
+    const hint = _isDocFile(normalized)
+      ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
+      : 'Use token-goat read/section/symbol to re-read surgically.'
     return contextOutput(
-      `Note: ${normalized} was already read this session (${reads} ${plural}). ` +
-        `Use token-goat read/section/symbol to re-read surgically.`,
+      'Note: ' + normalized + ' was already read this session (' + reads + ' ' + plural + '). ' +
+        hint,
     )
   }
 
@@ -62,9 +98,12 @@ export function preReadHandler(event: HookEvent): HookOutput {
   if (size !== null && size >= LARGE_FILE_BYTES) {
     const kb = Math.round(size / 1024)
     recordFileRead(normalized)
+    const hint = _isDocFile(normalized)
+      ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
+      : 'Consider token-goat skeleton or token-goat section.'
     return contextOutput(
-      `Note: ${normalized} is large (${kb}kb). ` +
-        `Consider token-goat skeleton or token-goat section.`,
+      'Note: ' + normalized + ' is large (' + kb + 'kb). ' +
+        hint,
     )
   }
 
@@ -73,3 +112,4 @@ export function preReadHandler(event: HookEvent): HookOutput {
 }
 
 registerHook('pre_tool_use', preReadHandler, { toolName: 'Read' })
+registerHook('pre_tool_use', preReadHandler, { toolName: 'Grep' })

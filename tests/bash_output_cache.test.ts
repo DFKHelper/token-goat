@@ -10,6 +10,7 @@ import {
   isDirListingCommand,
   isEnvProbeCommand,
   isDepListCommand,
+  isNpxCommand,
   isUnscopedGitDiff,
   normalizeCommandForCacheKey,
   globHash,
@@ -75,6 +76,32 @@ describe('isEnvProbeCommand', () => {
     expect(isEnvProbeCommand('node --version')).toBe(true)
     expect(isEnvProbeCommand('python -V')).toBe(true)
     expect(isEnvProbeCommand('which node')).toBe(true)
+  })
+})
+
+describe('isNpxCommand', () => {
+  it('detects npx version checks', () => {
+    expect(isNpxCommand('npx --version')).toBe(true)
+    expect(isNpxCommand('npx tsc --version')).toBe(true)
+    expect(isNpxCommand('npx eslint --version')).toBe(true)
+  })
+
+  it('detects npx with optional --yes flag', () => {
+    expect(isNpxCommand('npx --yes tsc --version')).toBe(true)
+    expect(isNpxCommand('npx -y prettier --check src/')).toBe(true)
+  })
+
+  it('detects npx command executions', () => {
+    expect(isNpxCommand('npx prettier --check src/')).toBe(true)
+    expect(isNpxCommand('npx eslint src/')).toBe(true)
+  })
+
+  it('rejects mutable npx commands', () => {
+    expect(isNpxCommand('npx npm install')).toBe(false)
+    expect(isNpxCommand('npx something install')).toBe(false)
+    expect(isNpxCommand('npx package add')).toBe(false)
+    expect(isNpxCommand('npx dep remove')).toBe(false)
+    expect(isNpxCommand('npx pkg update')).toBe(false)
   })
 })
 

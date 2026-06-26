@@ -1,4 +1,6 @@
 import { spawnSync } from 'node:child_process'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -74,5 +76,51 @@ describe('token-goat CLI', () => {
     const r = runCli(['changed', '--help'])
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('changed')
+  }, 30000)
+
+  it('bash-output --file reads from a file path', async () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-test-${Date.now()}.txt`)
+    fs.writeFileSync(tmpFile, 'line one\nline two\nline three\n')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('line one')
+      expect(r.stdout).toContain('line three')
+    } finally {
+      fs.unlinkSync(tmpFile)
+    }
+  }, 30000)
+
+  it('bash-output --file --grep filters lines', async () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-test-${Date.now()}.txt`)
+    fs.writeFileSync(tmpFile, 'test passed\ntest failed\ntest skipped\n')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'passed'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('passed')
+      expect(r.stdout).not.toContain('failed')
+    } finally {
+      fs.unlinkSync(tmpFile)
+    }
+  }, 30000)
+
+  it('bash-output --file --grep with -E prefix normalizes pattern', async () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-test-${Date.now()}.txt`)
+    fs.writeFileSync(tmpFile, 'test passed\ntest failed\nerror here\n')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--grep', '-E passed|failed'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('passed')
+      expect(r.stdout).toContain('failed')
+      expect(r.stdout).not.toContain('error')
+    } finally {
+      fs.unlinkSync(tmpFile)
+    }
+  }, 30000)
+
+  it('bash-output with no id and no --file exits 1', () => {
+    const r = runCli(['bash-output'])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('provide an <id> or --file')
   }, 30000)
 })
