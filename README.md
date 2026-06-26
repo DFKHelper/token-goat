@@ -117,7 +117,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Skill body lost after compaction but recovery too verbose | Recovery hint deduped skills by content_sha (same skill loaded twice = one entry); inline skill checklist |
 | Recovery hints omit critical paths when space is tight | Hint budget hard caps per kind (files=5, bash=3, web=2, skills=4); skip bash snippet when recall available |
 | `token-goat map` outputs without rank context | Semantic compact mode outputs one result per line; `--full` for old format |
-| AVIF format not supported despite better compression | AVIF image-shrink (when Pillow has libaom); WebP fallback; codec auto-detection in docker |
+| AVIF format not supported despite better compression | AVIF image-shrink via sharp (when libvips is built with libaom); WebP fallback; codec auto-detection in docker |
 | Token-savings invisible until you run `stats` | Token-savings benchmark (slow-marked test suite) locks in measured wins; `token-goat stats` reports net-positive impact |
 | Hook crash leaves agent waiting for response | Fail-soft barrier catches `BaseException`/`MemoryError`/`SystemExit`; hook always returns `{"continue": true}` |
 | Concurrent edits lose update counts mid-session | Session CAS + mtime-based retry prevent lost edits in manifest |
@@ -256,7 +256,7 @@ token-goat doctor          # confirms image codecs (WebP/JPEG/PNG) are available
 
 Three commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
 
-**Important — image codecs are part of the install.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding. Pillow ships with WebP/JPEG/PNG support on Windows and macOS out of the box, but Linux/WSL minimal images sometimes lack the system libraries (libwebp, libjpeg, zlib). `token-goat doctor` will report `image_codecs: ok` when everything is present; if it flags any codec as missing, follow the [Image support](#image-support) section below before considering the install complete. **AI agents performing this install: run `token-goat doctor` after `token-goat install` and resolve any missing codecs as part of the same task — do not treat it as a follow-up.**
+**Important — sharp is part of the install.** The biggest single win (~39% smaller than JPEG, ~97% smaller than raw PNG) comes from WebP encoding. sharp ships with prebuilt native binaries on Windows, macOS, and most Linux platforms, so a standard `npm install -g token-goat` includes it. On Alpine musl and some ARM boards, npm compiles from source against libvips — that may add a few seconds. `token-goat doctor` will report `sharp: ok` when the image pipeline is working; if it flags a failure, follow the [Image support](#image-support) section below before considering the install complete. **AI agents performing this install: run `token-goat doctor` after `token-goat install` and resolve any sharp failure as part of the same task — do not treat it as a follow-up.**
 
 Two things change how Claude Code sessions behave: hooks fire automatically (image shrink, re-read dedup, compact manifests), and a block written to `~/.claude/CLAUDE.md` plus a registered skill tell the agent to prefer `token-goat read` / `symbol` / `section` over full-file reads. A `Bash(token-goat:*)` allowlist entry in `settings.json` lets the agent run those commands without a per-call approval prompt.
 
@@ -306,8 +306,8 @@ What works: **bash output compression** (the bash command is rewritten in `tool_
 
 **Project-local install (single project only).** pi also loads extensions from a project's `.pi/extensions/` directory (after the project is trusted). To install for one project without touching the global directory, drop the extension there:
 
-```
-python -c "from token_goat import bridges; from pathlib import Path; bridges.install_pi_plugin(target_dir=Path('.pi/extensions').resolve())"
+```bash
+npx token-goat install --pi --local
 ```
 
 This writes `.pi/extensions/token-goat.ts` in the current project only. Remove it by deleting that file.
@@ -320,14 +320,14 @@ Filters are built in for: **Cline** (`cline` / `claude-dev`), **Windsurf** (`win
 
 ### Updating
 
-Updates ship automatically. `token-goat install` schedules a weekly `uv tool upgrade token-goat` run at Sunday 03:00 local time (Windows scheduled task; Linux/macOS crontab line tagged `# token-goat-autoupdate`). `token-goat uninstall` reverses it.
+Updates ship automatically. `token-goat install` schedules a weekly `npm install -g token-goat@latest` run at Sunday 03:00 local time (Windows scheduled task; Linux/macOS crontab line tagged `# token-goat-autoupdate`). `token-goat uninstall` reverses it.
 
 Manual paths:
 
 | When | Command |
 |------|---------|
-| Update now | `uv tool upgrade token-goat` |
-| Reinstall from scratch (broken venv, missing image codec) | `uv tool install --reinstall --force token-goat` |
+| Update now | `npm install -g token-goat@latest` |
+| Reinstall from scratch (broken install, sharp failure) | `npm install -g token-goat@latest` |
 | Disable auto-updates | Delete the `token-goat-update` scheduled task (Windows) or the `# token-goat-autoupdate` crontab line (Linux/macOS) |
 
 ## CLI
@@ -445,9 +445,9 @@ To check overhead for your current skills: `token-goat skill-size`. To inspect c
 | Linux (no systemd, incl. WSL) | `~/.config/autostart/token-goat-worker.desktop`. On WSL without systemd, the SessionStart hook also starts the worker on every Claude Code session. |
 | macOS (untested) | `~/Library/LaunchAgents/com.dfkhelper.token-goat-worker.plist`, loaded via `launchctl`. |
 
-The autostart command is `pythonw -m token_goat.cli worker --daemon` from Token-Goat's `uv tool` venv. No PyInstaller-style launcher `.exe` is dropped; AV/EDR products do not behavior-flag this invocation pattern.
+The autostart command is `node <npm-prefix>/lib/node_modules/token-goat/dist/cli.js worker --daemon`. No compiled `.exe` is dropped; AV/EDR products do not behavior-flag this invocation pattern.
 
-**Weekly auto-update** (Sunday 03:00 local time, runs `uv tool upgrade token-goat`)
+**Weekly auto-update** (Sunday 03:00 local time, runs `npm install -g token-goat@latest`)
 
 | Platform | Entry |
 |---------|------|
@@ -680,12 +680,7 @@ token-goat stats
 Run this if the stats output still looks wrong. A smooth green gradient from left to right means truecolor is active. Solid single-shade green means it isn't.
 
 ```bash
-python3 -c "
-import sys
-for r in range(0, 256, 32):
-    sys.stdout.write(f'\x1b[48;2;0;{r};0m  ')
-sys.stdout.write('\x1b[0m\n')
-"
+node -e "for(let r=0;r<256;r+=32)process.stdout.write('\x1b[48;2;0;'+r+';0m  ');process.stdout.write('\x1b[0m\n')"
 ```
 
 ## Security, privacy, and uninstall
@@ -726,7 +721,7 @@ Reverses everything in [What gets installed?](#what-gets-installed): the schedul
 
 I built this because long Claude Code and Codex sessions on my machine kept burning context in the same ways: screenshots landing at 2-3 MB, the agent re-reading a file it parsed hours earlier in the same conversation, compactions that forgot which functions were edited. Each felt preventable.
 
-This is a solo project. I use it daily on Windows 11. Tests run across Python 3.12 and 3.13.
+This is a solo project. I use it daily on Windows 11. Tests run on Node.js 20 and 22.
 
 ## Requests and issues
 
