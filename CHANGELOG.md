@@ -4,6 +4,28 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-06-26
+
+### Fixed
+
+- **`stats` recording restored end-to-end.** The TypeScript rewrite had ported only the read/display side of stat recording; the write side was silently missing since 2026-06-25. `recordStat()` is now implemented in `stats.ts` and wired into all four hook handlers (`hooks_read.ts`, `hooks_bash.ts`, `hooks_fetch.ts`, `hooks_skill.ts`). Recorded rows now also carry real `bytes_saved` / `tokens_saved` values (file size and bytes/4) instead of defaulting to zero.
+
+- **`git_history.ts` hunk line counts overcounted.** The `@@ -L,N +L,N @@` header N values (which include context lines) were used directly as `linesAdded`/`linesRemoved`. The parser now counts actual +/- prefixed body lines, giving accurate per-symbol change counts.
+
+- **`git_history.ts` hunk loop broke early on diff content starting with `+++`/`---`.** A bare `hunkLine.startsWith('+++')` guard would prematurely exit the hunk body when a file contained lines whose content began with `++` or `--`. Guard now matches exact git file-header prefixes (`+++ b/`, `+++ /dev/null`, `--- a/`, `--- /dev/null`).
+
+- **`parser.ts` symbol line ranges used the parent declaration node instead of the child declarator.** Multi-declarator `const x = 1, y = 2` statements reported each variable's range as the whole declaration span instead of the individual `variable_declarator` child node's span.
+
+- **`parser.ts` JSON property extraction missed top-level keys whose values opened a nested object on the same line.** The `braceDepth` check captured depth after processing the line, so a key like `"nested": {` was recorded at depth 1 (inside the nested object) rather than depth 0 (top-level).
+
+- **`embeddings.ts` left `\r` in chunks on Windows CRLF content.** `raw.split('\n')` produced chunks with trailing carriage returns. Changed to `raw.split(/\r?\n/)`.
+
+- **`hooks_cli.ts` suppressed non-`Error` thrown values in catch blocks.** The `instanceof Error` check silently swallowed string errors, rejected Promises, and other thrown values.
+
+- **`read_commands.ts` `skeleton()` reported the wrong final line number when `--min-lines` was active.** The function used the unfiltered symbol array's last element for the total line count even after `--min-lines` had reduced the set, producing a count larger than the visible output.
+
+- **Event listener leaks on stdin and `parentPort`.** `readStdin()` in `hooks_cli.ts` and the stdin mode of `cmdWriteFile()` in `cli.ts` registered `data`/`end`/`error` listeners without ever removing them, leaking listeners across invocations. Named handler refs and a `cleanup()` call in all exit paths now prevent the leak. `worker.ts` `parentPort` message listener is removed when the `'stop'` message is received.
+
 ## [2.0.2-post] - 2026-06-26
 
 ### Fixed
