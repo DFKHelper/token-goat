@@ -127,8 +127,6 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Compaction hook subprocess ~190 ms cold | Lazy imports of heavy modules in `hooks_session` and `compact`; compaction path ~110 ms cold (~42% faster) |
 | Pre-compact subprocess runs on every session | Compact-skip sentinel on disk: if session file is <5 min old and no edits logged, subprocess exits in <1 ms |
 | Git ops slow manifest build in non-repo dirs | `git diff` / `git log` calls skipped when `cwd` is not inside a git repo (saves 60–100 ms per hook fire) |
-| Test suite slow on multi-core machines | `pytest-xdist --dist=loadscope` + module-scoped fixtures for read-only groups; parallel workers cut wall time |
-| Flaky tests fail the whole run | `pytest-rerunfailures` auto-retries once before failing; `pytest-randomly` seeds expose order-dependent flakes |
 | `terraform init` downloads 30+ provider plugins | Provider install lines collapsed to a count note; generic progress lines head/tail compressed (5+5 kept); `Init complete!` preserved |
 | `terraform show` dumps a full resource block | Noise attributes (id, arn, timeouts, tags) stripped per resource block; high-signal fields kept with a suppression note |
 | `kubectl events` lists raw repetitive events | Events grouped by REASON with a per-group count; field-selector hint added to narrow scope |
@@ -513,7 +511,9 @@ token-goat stats
 
 ## Image support
 
-The image-shrink pipeline relies on Pillow with WebP, JPEG, and PNG codecs. Pillow ships as a binary wheel on every platform `uv` supports, so a normal `uv tool install token-goat` puts all three codecs in place without extra steps. The instructions below are only needed if `token-goat doctor` reports `Pillow codecs: WebP=MISSING` (or similar) — that flag means Pillow was built from source against a system that did not ship the codec libraries.
+Token-goat shrinks large images before they reach the model, cutting vision token costs by 60–90%. The pipeline uses [`sharp`](https://sharp.pixelplumbing.com/), a Node.js image processing library that ships prebuilt native binaries for Windows, macOS, Linux, and Alpine.
+
+On most platforms, `npm install -g token-goat` installs sharp without additional steps. npm pulls a prebuilt binary keyed to your Node.js major version and OS — no C++ compiler, libvips, or system codec libraries required.
 
 Quick check (any platform):
 
@@ -521,116 +521,38 @@ Quick check (any platform):
 token-goat doctor
 ```
 
-If the `Pillow codecs` line reports any `MISSING` or `FAIL`, follow the platform section below.
+If the `sharp` line shows `OK`, you're done.
 
-### Image support — Windows
+### Image support — troubleshooting
 
-The official Pillow wheel for Windows bundles libwebp, libjpeg-turbo, and libpng. A failing codec almost always means Pillow was reinstalled inside a stripped-down environment. Reinstall token-goat (and its bundled Pillow wheel) end-to-end:
+If `token-goat doctor` reports `sharp: FAIL`, the most common cause is a cached binary built against a different Node.js version. A fresh install usually fixes it:
 
-```powershell
-uv tool install --reinstall --force token-goat
+```bash
+npm install -g token-goat@latest
 token-goat doctor
 ```
 
-### Image support — macOS
-
-Same story as Windows — the universal wheel ships every codec. Reinstall to get the wheel back:
-
-```bash
-uv tool install --reinstall --force token-goat
-token-goat doctor
-```
-
-If you previously installed Pillow via Homebrew with `--build-from-source`, install the libraries first, then reinstall:
-
-```bash
-brew install webp jpeg-turbo libpng
-uv tool install --reinstall --force token-goat
-```
-
-### Image support — Linux / WSL
-
-Almost every Linux distro pulls the manylinux Pillow wheel, which bundles every codec. The exceptions are: musl-based distros (Alpine), some ARM boards lacking a matching wheel, and environments where the user forced `--no-binary :all:`. In those cases, install the system headers, then reinstall:
+On Alpine Linux, some ARM boards, and air-gapped environments, npm can't fetch a prebuilt binary and falls back to compiling from source. That requires `libvips` and C++ build tools:
 
 ```bash
 # Debian / Ubuntu / WSL
-sudo apt-get update
-sudo apt-get install -y libwebp-dev libjpeg-turbo8-dev libpng-dev
-uv tool install --reinstall --force token-goat
-token-goat doctor
-```
+sudo apt-get install -y libvips-dev build-essential
 
-```bash
-# Fedora / RHEL / Alma
-sudo dnf install -y libwebp-devel libjpeg-turbo-devel libpng-devel
-uv tool install --reinstall --force token-goat
-```
-
-```bash
-# Arch / Manjaro
-sudo pacman -S --noconfirm libwebp libjpeg-turbo libpng
-uv tool install --reinstall --force token-goat
-```
-
-```bash
 # Alpine
-sudo apk add libwebp-dev libjpeg-turbo-dev libpng-dev
-uv tool install --reinstall --force token-goat
+apk add --no-cache vips-dev build-base python3
+
+# Fedora / RHEL
+sudo dnf install -y vips-devel gcc-c++ make
 ```
 
-### Image support — AI automated setup
-
-Non-interactive snippets agents can run unattended. Each one is idempotent: it checks current state before changing anything, and re-runs `token-goat doctor` at the end so the agent can verify success from the output.
-
-#### Windows (PowerShell)
-
-```powershell
-# 1. Verify token-goat is reachable; reinstall if not
-if (-not (Get-Command token-goat -ErrorAction SilentlyContinue)) {
-    uv tool install token-goat
-}
-
-# 2. If doctor flags any image codec, reinstall the bundled Pillow wheel
-$doctor = token-goat doctor 2>&1 | Out-String
-if ($doctor -match 'Pillow codecs:.*(MISSING|FAIL)') {
-    uv tool install --reinstall --force token-goat
-}
-
-# 3. Verify
-token-goat doctor
-```
-
-#### macOS / Linux / WSL (bash)
+After installing the system packages:
 
 ```bash
-set -e
-
-# 1. Verify token-goat is reachable; reinstall if not
-command -v token-goat >/dev/null 2>&1 || uv tool install token-goat
-
-# 2. If doctor flags any image codec, install platform packages then reinstall
-need_fix=$(token-goat doctor 2>&1 | grep -E 'Pillow codecs:.*(MISSING|FAIL)' || true)
-if [[ -n "$need_fix" ]]; then
-    OS="$(uname -s)"
-    if [[ "$OS" == "Darwin" ]]; then
-        command -v brew >/dev/null 2>&1 && brew install webp jpeg-turbo libpng
-    elif [[ "$OS" == "Linux" ]]; then
-        if   command -v apt-get >/dev/null 2>&1; then
-            sudo apt-get update && sudo apt-get install -y libwebp-dev libjpeg-turbo8-dev libpng-dev
-        elif command -v dnf     >/dev/null 2>&1; then
-            sudo dnf install -y libwebp-devel libjpeg-turbo-devel libpng-devel
-        elif command -v pacman  >/dev/null 2>&1; then
-            sudo pacman -S --noconfirm libwebp libjpeg-turbo libpng
-        elif command -v apk     >/dev/null 2>&1; then
-            sudo apk add libwebp-dev libjpeg-turbo-dev libpng-dev
-        fi
-    fi
-    uv tool install --reinstall --force token-goat
-fi
-
-# 3. Verify
+npm install -g token-goat@latest
 token-goat doctor
 ```
+
+For platform-specific build details, see the [sharp installation docs](https://sharp.pixelplumbing.com/install).
 
 ## Stats display
 
