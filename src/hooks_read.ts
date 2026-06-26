@@ -32,6 +32,7 @@ import {
   MARKDOWN_SIZE_THRESHOLD,
 } from './hints/markdown_hints.js'
 import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
+import { recordStat } from './stats.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -174,6 +175,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
+    recordStat('session_hint')
     return contextOutput(
       'Note: ' + normalized + ' was already read this session (' + reads + ' ' + plural + '). ' +
         hint,
@@ -187,6 +189,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Consider token-goat skeleton or token-goat section.'
+    recordStat('session_hint')
     return contextOutput(
       'Note: ' + normalized + ' is large (' + kb + 'kb). ' +
         hint,

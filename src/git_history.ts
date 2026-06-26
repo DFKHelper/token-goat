@@ -299,7 +299,7 @@ export function getChangedSymbols(
  * in the hunk (including context lines), NOT the actual additions/deletions. We must parse
  * the actual hunk body (lines prefixed with + or -) to get accurate counts.
  */
-function parseChangedSymbols(raw: string, limit: number): ChangedSymbolEntry[] {
+export function parseChangedSymbols(raw: string, limit: number): ChangedSymbolEntry[] {
   const fileRe = /^\+\+\+ b\/(.+)$/
   const hunkRe = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@ ?(.*)$/
 
@@ -343,8 +343,8 @@ function parseChangedSymbols(raw: string, limit: number): ChangedSymbolEntry[] {
           continue
         }
         if (hunkLine.startsWith('@@')) break
-        if (hunkLine.startsWith('+++') || hunkLine.startsWith('---')) {
-          i++
+        // File headers in git diffs always use "--- a/" or "+++ b/" format. Don't break on content lines that happen to start with +++ or --- (e.g., an added line whose content starts with "++").
+        if (hunkLine.startsWith('+++ b/') || hunkLine.startsWith('+++ /dev/null') || hunkLine.startsWith('--- a/') || hunkLine.startsWith('--- /dev/null')) {
           break
         }
         if (hunkLine.startsWith('+')) {

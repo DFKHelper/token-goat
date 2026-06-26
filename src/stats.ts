@@ -18,6 +18,7 @@ import { dataDir } from './constants.js'
 import { VERSION } from './version.js'
 import { renderStats as richRenderStats } from './render/stats_renderer.js'
 import type { StatsData } from './render/types.js'
+import { registerReset } from './reset.js'
 
 interface StatsBucket {
   events: number
@@ -146,9 +147,47 @@ function incBucket(bucket: StatsBucket, bytesSaved: number, tokensSaved: number)
   bucket.tokens_saved += tokensSaved
 }
 
+const GLOBAL_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  tokens_saved INTEGER NOT NULL DEFAULT 0,
+  bytes_saved INTEGER NOT NULL DEFAULT 0,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
+CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
+`
+
+const _globalSchemaApplied = new Set<string>()
+registerReset(() => _globalSchemaApplied.clear())
+
 function getGlobalDb(): Database.Database {
   const dbPath = path.join(dataDir(), 'global.db')
-  return getDb(dbPath)
+  const db = getDb(dbPath)
+  if (!_globalSchemaApplied.has(dbPath)) {
+    db.exec(GLOBAL_SCHEMA_SQL)
+    _globalSchemaApplied.add(dbPath)
+  }
+  return db
+}
+
+/**
+ * Record a stat event in the global database.
+ *
+ * Silently no-ops on any error so hook paths are never blocked.
+ * Pass `_testDb` in tests to inject a pre-initialized database.
+ */
+export function recordStat(kind: string, bytesSaved = 0, tokensSaved = 0, _testDb?: Database.Database): void {
+  try {
+    const db = _testDb ?? getGlobalDb()
+    db.prepare(
+      'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, ?, ?)',
+    ).run(Math.floor(Date.now() / 1000), kind, bytesSaved, tokensSaved)
+  } catch {
+    // Best-effort — never block the hook path.
+  }
 }
 
 export function summarize(windowDays: number = 30, testDb?: Database.Database): StatsSummary {
