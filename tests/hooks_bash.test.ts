@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
-import { postBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler } from '../src/hooks_bash.js'
 import { getBashOutputId } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -128,5 +128,52 @@ describe('postBashHandler', () => {
       raw: { tool_response: null as unknown as string },
     }
     await expect(postBashHandler(event)).resolves.toMatchObject({ hookType: 'pass' })
+  })
+})
+
+describe('preBashHandler — cat source file recall', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits token-goat read suggestion when cat output is cached', async () => {
+    const cmd = 'cat src/Auth.java'
+    const largeOutput = 'public class Auth {\n  // ...\n}\n'.repeat(50)
+
+    // Post handler caches the output
+    await postBashHandler({
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: cmd },
+      sessionId: 's',
+      raw: { tool_response: largeOutput },
+    })
+
+    // Pre handler should emit the tailored recall message
+    const result = preBashHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: cmd },
+      sessionId: 's',
+      raw: {},
+    })
+
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat read')
+      expect(result.context).toContain('src/Auth.java')
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
+  it('passes through on first cat call (not yet cached)', () => {
+    const result = preBashHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: 'cat Auth.java' },
+      sessionId: 's',
+      raw: {},
+    })
+    expect(result.hookType).toBe('pass')
   })
 })
