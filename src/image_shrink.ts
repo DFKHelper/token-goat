@@ -137,13 +137,6 @@ export async function shrinkImage(
   if (sharp === null) return null
 
   try {
-    const base = sharp(input).rotate().resize({
-      width: maxDimension,
-      height: maxDimension,
-      fit: 'inside',
-      withoutEnlargement: true,
-    })
-
     // Encode both candidates from independent pipelines (a sharp instance is
     // single-shot once consumed) and keep the smaller output.
     const jpegBuf = await sharp(input)
@@ -151,7 +144,11 @@ export async function shrinkImage(
       .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality, mozjpeg: true })
       .toBuffer()
-    const webpBuf = await base.webp({ quality }).toBuffer()
+    const webpBuf = await sharp(input)
+      .rotate()
+      .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
+      .webp({ quality })
+      .toBuffer()
 
     const useWebp = webpBuf.length < jpegBuf.length
     const data = useWebp ? webpBuf : jpegBuf

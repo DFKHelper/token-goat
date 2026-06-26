@@ -181,7 +181,7 @@ export function searchSymbolsFts(
   const sql =
     `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring ` +
     `FROM symbols_fts f JOIN symbols s ON s.id = f.rowid ` +
-    `WHERE symbols_fts MATCH ? ORDER BY bm25(symbols_fts) LIMIT ?`
+    `WHERE f MATCH ? ORDER BY bm25(f) LIMIT ?`
   try {
     const rows = db.prepare(sql).all(query, limit) as SymbolRow[]
     return rows.map(toSymbolEntry)

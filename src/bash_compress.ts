@@ -142,8 +142,11 @@ function truncateLine(line: string, maxLineLength: number): string {
  */
 function truncateLines(lines: readonly string[], maxLines: number): string[] {
   if (lines.length <= maxLines) return [...lines]
-  const headKeep = Math.max(1, Math.floor(maxLines * 0.4))
-  const tailKeep = Math.max(0, maxLines - headKeep - 1)
+  if (maxLines < 2) {
+    return [`... [${lines.length} lines elided by token-goat]`]
+  }
+  const headKeep = Math.max(1, Math.floor((maxLines - 1) * 0.4))
+  const tailKeep = Math.max(0, maxLines - 1 - headKeep)
   const elided = lines.length - headKeep - tailKeep
   return [
     ...lines.slice(0, headKeep),
