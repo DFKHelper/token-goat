@@ -271,3 +271,63 @@ export function isGeneratedFile(filePath: string): boolean {
 export function isBuildCommand(cmd: string): boolean {
   return BUILD_COMMAND_PATTERNS.some((re) => re.test(cmd))
 }
+
+/**
+ * Monitoring command patterns — long-running or repeatedly-run commands whose
+ * output is always worth recalling from cache rather than re-running.
+ *
+ * Each entry carries a `recallHint` string with --grep / --tail flags to pass
+ * to `token-goat bash-output` for surgical inspection.
+ */
+export const MONITORING_COMMAND_PATTERNS: Array<{
+  pattern: RegExp
+  recallHint: string
+}> = [
+  // GitHub CI
+  { pattern: /^gh run (?:watch|view|list)/, recallHint: '--grep "fail|error|pass|✓|✗|conclusion"' },
+  { pattern: /^gh run view.*--log/, recallHint: '--tail 100 --grep "Error|FAIL|error"' },
+  { pattern: /^gh pr checks/, recallHint: '--grep "fail|error|pass|pending"' },
+  { pattern: /^gh workflow (?:run|list|view)/, recallHint: '--grep "completed|failed|in_progress"' },
+
+  // Dev servers (Next, Vite, Nuxt, Remix, Astro)
+  { pattern: /^(?:npx\s+)?next dev/, recallHint: '--tail 30 --grep "error|warn|ready|compiled"' },
+  { pattern: /^(?:npx\s+)?next build/, recallHint: '--grep "error|warn|Failed|✓"' },
+  { pattern: /^(?:npx\s+)?vite(?:\s+dev|\s+build|\s+preview)?$/, recallHint: '--tail 20 --grep "error|warn|ready"' },
+  { pattern: /^(?:npx\s+)?nuxt dev/, recallHint: '--tail 30 --grep "error|warn|ready"' },
+  { pattern: /^(?:npx\s+)?remix dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
+  { pattern: /^(?:npx\s+)?astro dev/, recallHint: '--tail 20 --grep "error|warn|ready"' },
+
+  // Test watchers
+  { pattern: /^(?:npx\s+)?vitest(?:\s+run|\s+watch)?/, recallHint: '--grep "FAIL|PASS|Error|✓|✗"' },
+  { pattern: /^(?:npx\s+)?jest(?:\s+--watch)?/, recallHint: '--grep "FAIL|PASS|Error|Tests:"' },
+  { pattern: /^pytest(?:\s|$)/, recallHint: '--grep "FAILED|PASSED|ERROR|passed|failed"' },
+  { pattern: /^(?:cargo\s+test|cargo\s+watch)/, recallHint: '--grep "FAILED|ok|error\\["' },
+  { pattern: /^go test/, recallHint: '--grep "FAIL|ok|---"' },
+
+  // Docker / compose
+  { pattern: /^docker(?:\s+compose)?\s+logs/, recallHint: '--tail 50 --grep "error|warn|Error|WARN"' },
+  { pattern: /^docker-compose\s+logs/, recallHint: '--tail 50 --grep "error|warn|Error|WARN"' },
+
+  // File watchers / hot-reload
+  { pattern: /^nodemon/, recallHint: '--tail 20 --grep "error|crash|restart"' },
+  { pattern: /^air(?:\s|$)/, recallHint: '--tail 20 --grep "error|build failed"' },
+  { pattern: /^cargo watch/, recallHint: '--tail 20 --grep "error\\[|warning\\["' },
+  { pattern: /^watchexec/, recallHint: '--tail 20 --grep "error|warn"' },
+
+  // Linters / formatters run repeatedly
+  { pattern: /^(?:npx\s+)?eslint(?:\s|$)/, recallHint: '--grep "error|warning|✖|problems"' },
+  { pattern: /^(?:npx\s+)?prettier(?:\s|$)/, recallHint: '--grep "unchanged|reformatted|error"' },
+  { pattern: /^ruff(?:\s|$)/, recallHint: '--grep "error|warning|Found"' },
+  { pattern: /^(?:cargo\s+)?clippy/, recallHint: '--grep "error\\[|warning\\["' },
+]
+
+/**
+ * Returns the recall hint string for `cmd` if it matches a known monitoring
+ * command pattern, otherwise returns `null`.
+ */
+export function getMonitoringRecallHint(cmd: string): string | null {
+  for (const { pattern, recallHint } of MONITORING_COMMAND_PATTERNS) {
+    if (pattern.test(cmd.trim())) return recallHint
+  }
+  return null
+}
