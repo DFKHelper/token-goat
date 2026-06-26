@@ -10,9 +10,10 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId } from './session.js'
+import { getBashOutputId, recordBashOutput } from './session.js'
 import { fingerprintContent } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
+import { storeBashOutput } from './bash_output_cache.js'
 
 /** Extract the command string from a Bash tool_input. */
 function extractCommand(event: HookEvent): string | undefined {
@@ -93,3 +94,53 @@ export function preBashHandler(event: HookEvent): HookOutput {
 }
 
 registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
+
+/** Minimum output size (bytes) worth caching; smaller outputs aren't worth the overhead. */
+const MIN_CACHE_BYTES = 512
+
+/**
+ * Extract the tool response text from a post_tool_use event.
+ * Claude Code may send a string or an object with an output/content field.
+ */
+function extractBashOutput(raw: Record<string, unknown>): string {
+  const resp = raw['tool_response']
+  if (typeof resp === 'string') return resp
+  if (resp !== null && typeof resp === 'object') {
+    const r = resp as Record<string, unknown>
+    for (const key of ['output', 'content', 'text', 'body']) {
+      if (typeof r[key] === 'string') return r[key] as string
+    }
+  }
+  return ''
+}
+
+/**
+ * post_tool_use handler for the Bash tool.
+ *
+ * Caches the output of monitoring and build commands so that `preBashHandler`
+ * can emit a recall hint the next time the same command is run, avoiding a
+ * redundant re-execution and the token cost of re-reading the output.
+ */
+export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
+  try {
+    const cmd = extractCommand(event)
+    if (cmd === undefined) return passOutput()
+
+    // Only cache monitoring and build commands — not generic shell commands.
+    const isMonitoring = getMonitoringRecallHint(cmd) !== null
+    if (!isMonitoring && !isBuildCommand(cmd)) return passOutput()
+
+    const output = extractBashOutput(event.raw)
+    if (Buffer.byteLength(output, 'utf-8') < MIN_CACHE_BYTES) return passOutput()
+
+    const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
+    const simpleHash = fingerprintContent(cmd).slice(0, 16)
+    const id = await storeBashOutput(cmd, output, 0, cwd)
+    recordBashOutput(simpleHash, id, Buffer.byteLength(output, 'utf-8'))
+  } catch {
+    // Never block — hook failures must be silent.
+  }
+  return passOutput()
+}
+
+registerHook('post_tool_use', postBashHandler, { toolName: 'Bash' })
