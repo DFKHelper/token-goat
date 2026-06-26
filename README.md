@@ -9,7 +9,7 @@ permalink: /
 
 ![Token-Goat](assets/logo.png)
 
-**85%** smaller reads · **97.4%** image compression · **130+** bash output filters · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard
+**85%** smaller reads · **97.4%** image compression · **130+** bash output filters · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard · **3.7 GB** never reached the model · **1.1 Gt** tokens saved
 
 **Reduces AI token use/costs by 40–90%, and improves its focus. Fully automated, always online.**
 
@@ -40,9 +40,9 @@ Restart your AI sessions. Run `token-goat stats` a couple of minutes after your 
 ---
 
 <p align="center">
-  <img src="assets/stats_v180.png" alt="token-goat stats — v1.8.0" width="589">
+  <img src="assets/stats_v180.png" alt="token-goat stats display" width="589">
   <br>
-  <sub><b>v1.8.0</b> — with bash output compression and extended filter library</sub>
+  <sub>Stats display — gradient bars, sparklines, and a calendar heatmap in 24-bit color</sub>
 </p>
 
 ## The problem
@@ -144,15 +144,15 @@ Numbers below come from synthetic-fixture benchmarks in the test suite. Each row
 
 | Source | Improvement | Measured impact | Where |
 |--------|-------------|-----------------|-------|
-| Image shrink | WebP encoder beats JPEG on screenshot-shaped images | ~39% smaller than the same image at JPEG quality 85 | `image_shrink.py` (codec selection) |
-| Repomap output | Short labels (`f:`, `s:`, `c:`) and auto-compact mode below 6 KB | ~30–40% denser output for the same byte budget | `repomap.py` (`token-goat map --budget`) |
-| DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `parser.py`, `db.py` (index migration) |
-| Hook cold-start | Lazy import of heavy modules; unknown events short-circuit | 86 ms → 30 ms (~65% faster); unknown-event dispatch <1 ms | `hooks_cli.py` |
-| Symbol start_line | TypeScript decorators captured in symbol span | One `token-goat read` returns the decorator + signature + body; no re-read | `languages/typescript.py` |
-| Section extraction | Setext headings, h5/h6, anchor IDs, and `__frontmatter__` | `token-goat section` resolves more headings without falling back to a full file read | `languages/markdown.py` |
-| Image cache | Real LRU eviction (was FIFO; old hot entries got dropped) | Higher hit rate on repeat screenshots in long sessions | `image_shrink.py` |
-| Monorepo defaults | Reindex batch 500 → 2000; compact `min_events` 5 → 3 | Fewer worker wakeups; compact manifests fire on shorter sessions | `config.py` defaults |
-| Miss suggestions | `symbol` auto-redirects on a single high-confidence close match (`--strict` opts out); `read` / `section` print "Did you mean…?" | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `read_replacement.py` |
+| Image shrink | WebP encoder beats JPEG on screenshot-shaped images | ~39% smaller than the same image at JPEG quality 85 | `src/image_shrink.ts` (codec selection) |
+| Repomap output | Short labels (`f:`, `s:`, `c:`) and auto-compact mode below 6 KB | ~30–40% denser output for the same byte budget | `src/repomap.ts` (`token-goat map --budget`) |
+| DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `src/parser.ts`, `src/db.ts` (index migration) |
+| Hook cold-start | Lazy import of heavy modules; unknown events short-circuit | 86 ms → 30 ms (~65% faster); unknown-event dispatch <1 ms | `src/hooks_cli.ts` |
+| Symbol start_line | TypeScript decorators captured in symbol span | One `token-goat read` returns the decorator + signature + body; no re-read | `src/parser.ts` (TypeScript adapter) |
+| Section extraction | Setext headings, h5/h6, anchor IDs, and `__frontmatter__` | `token-goat section` resolves more headings without falling back to a full file read | `src/parser.ts` (Markdown adapter) |
+| Image cache | Real LRU eviction (was FIFO; old hot entries got dropped) | Higher hit rate on repeat screenshots in long sessions | `src/image_shrink.ts` |
+| Monorepo defaults | Reindex batch 500 → 2000; compact `min_events` 5 → 3 | Fewer worker wakeups; compact manifests fire on shorter sessions | `src/config.ts` defaults |
+| Miss suggestions | `symbol` auto-redirects on a single high-confidence close match (`--strict` opts out); `read` / `section` print "Did you mean…?" | Keeps agents on the surgical-read path instead of falling back to full-file `Read` | `src/read_replacement.ts` |
 
 ## Token-savings examples
 
@@ -251,7 +251,7 @@ Token-goat tracks how close a session is to the autocompact trigger and tightens
 ```
 npm install -g token-goat
 token-goat install
-token-goat doctor          # confirms image codecs (WebP/JPEG/PNG) are available
+token-goat doctor          # confirms hooks and sharp are working; look for "sharp: ok"
 ```
 
 Three commands. Done. Hooks register, a background worker starts at logon and stays out of the way. No terminal popups, no tray icon, no service to babysit.
