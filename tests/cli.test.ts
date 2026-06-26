@@ -241,4 +241,52 @@ describe('token-goat CLI', () => {
       fs.rmSync(tmp, { force: true })
     }
   })
+
+  it('write-file --from and --b64 together exits 1', () => {
+    const r = runCli(['write-file', '/tmp/nope', '--from', '/tmp/a', '--b64', 'dGVzdA=='])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('cannot use --from and --b64 together')
+  })
+
+  it('write-file --from overwrites existing file atomically', () => {
+    const src = path.join(os.tmpdir(), `tg-wf-src-ow-${Date.now()}.txt`)
+    const dst = path.join(os.tmpdir(), `tg-wf-dst-ow-${Date.now()}.txt`)
+    fs.writeFileSync(src, 'source content', 'utf8')
+    fs.writeFileSync(dst, 'old content', 'utf8')
+    try {
+      const r = runCli(['write-file', dst, '--from', src])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(dst, 'utf8')).toBe('source content')
+    } finally {
+      fs.rmSync(src, { force: true })
+      fs.rmSync(dst, { force: true })
+    }
+  })
+
+  it('write-file --b64 accepts url-safe base64 (- and _)', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-urlsafe-${Date.now()}.bin`)
+    // bytes that produce + and / in standard base64
+    const bytes = Buffer.from([0xfb, 0xff, 0xfe])
+    const urlSafe = bytes.toString('base64').replace(/\+/g, '-').replace(/\//g, '_')
+    try {
+      const r = runCli(['write-file', tmp, '--b64', urlSafe])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(tmp)).toEqual(bytes)
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file dest is a directory exits 1 with readable message', () => {
+    const r = runCli(['write-file', os.tmpdir(), '--b64', 'dGVzdA=='])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('directory')
+  })
+
+  it('write-file --from where source is a directory exits 1', () => {
+    const dst = path.join(os.tmpdir(), `tg-wf-dst-isdir-${Date.now()}.txt`)
+    const r = runCli(['write-file', dst, '--from', os.tmpdir()])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('directory')
+  })
 })

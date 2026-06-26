@@ -406,6 +406,14 @@ function cmdConfigGet(file: string, key: string): void {
 }
 
 function atomicWriteBuffer(dest: string, data: Buffer): void {
+  try {
+    if (fs.statSync(dest).isDirectory()) {
+      const e = Object.assign(new Error(`EISDIR: illegal operation on a directory, open '${dest}'`), { code: 'EISDIR', path: dest }) as NodeJS.ErrnoException
+      throw e
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
+  }
   const tmp = dest + '.tmp.' + process.pid
   try {
     fs.writeFileSync(tmp, data)
@@ -433,24 +441,31 @@ function mapFsError(e: unknown, src?: string): never {
     if (isSource) throw new CliError(`source file not found: ${src}`)
     throw new CliError(`destination directory does not exist: ${errPath}`)
   }
+  if (fe.code === 'EISDIR') {
+    throw new CliError(`destination is a directory, not a file: ${fe.path ?? ''}`)
+  }
   throw e
 }
 
 function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
+  if (opts.from !== undefined && opts.b64 !== undefined) {
+    throw new CliError('cannot use --from and --b64 together')
+  }
   if (opts.from !== undefined) {
     try {
-      fs.copyFileSync(opts.from, dest)
+      atomicWriteBuffer(dest, fs.readFileSync(opts.from))
     } catch (e) {
       mapFsError(e, opts.from)
     }
     return
   }
   if (opts.b64 !== undefined) {
-    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(opts.b64)) {
+    const normalized = opts.b64.replace(/-/g, '+').replace(/_/g, '/')
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
       throw new CliError('--b64 payload contains non-base64 characters — check for shell expansion of $VAR or backticks')
     }
     try {
-      atomicWriteBuffer(dest, Buffer.from(opts.b64, 'base64'))
+      atomicWriteBuffer(dest, Buffer.from(normalized, 'base64'))
     } catch (e) {
       mapFsError(e)
     }
@@ -461,7 +476,7 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     process.stdin.on('data', (chunk: Buffer) => chunks.push(chunk))
     process.stdin.on('end', () => {
       try { atomicWriteBuffer(dest, Buffer.concat(chunks)); resolve() }
-      catch (e) { reject(e) }
+      catch (e) { try { mapFsError(e) } catch (e2) { reject(e2) } }
     })
     process.stdin.on('error', reject)
     process.stdin.resume()
