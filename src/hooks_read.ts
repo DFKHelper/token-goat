@@ -80,9 +80,12 @@ function statSize(absPath: string): number | null {
 /**
  * pre_tool_use handler for Read/Grep/Glob.
  *
- * Returns a `context` hint (re-read or large-file) when one applies, otherwise
- * `pass`. Always records the read on the way out so the re-read hint fires on
- * the *next* touch, not the current one.
+ * Returns `deny` for: node_modules, lock files, .tsbuildinfo, build artifacts,
+ * large markdown files with headings, re-reads of files >50KB, first reads of
+ * files >500KB, and file-type specific oversize files.
+ * Returns `context` for: manifest/tsconfig re-reads, and large files 100KB–500KB.
+ * Returns `pass` otherwise.
+ * Always records the read so the re-read hint fires on the next touch.
  */
 export function preReadHandler(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
