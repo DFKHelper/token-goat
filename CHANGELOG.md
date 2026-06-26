@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **git diff and npm run monitoring recall patterns.** `git diff HEAD`, `git diff`, and `git diff --cached` now trigger bash-output recall hints when prior output is cached (full diffs can be many KB; `git diff --stat` is excluded as it produces small output). `npm run test`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm run check`, and `npm run spec` are now covered by monitoring recall — these invoke vitest/eslint/tsc under the hood but weren't matched by the direct-invocation patterns.
+
 ## [2.0.1] - 2026-06-25
 
 ### Added
