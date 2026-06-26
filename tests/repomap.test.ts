@@ -379,5 +379,24 @@ describe('repomap', () => {
       expect(result).toContain('typescript 2')
       expect(result).toContain('python 1')
     })
+
+    it('uses cwd option instead of process.cwd() for relative paths', () => {
+      const entries: RepoEntry[] = [
+        {
+          filePath: '/custom/base/src/index.ts',
+          language: 'typescript',
+          symbolCount: 1,
+          topSymbols: [],
+        },
+      ]
+
+      const result = formatMap(entries, { cwd: '/custom/base' })
+
+      // path.relative('/custom/base', '/custom/base/src/index.ts') = 'src/index.ts'
+      expect(result).toContain('src')
+      expect(result).toContain('index.ts')
+      // Should not show an absolute path when cwd matches the entry base
+      expect(result).not.toContain('/custom/base/src/index.ts')
+    })
   })
 })
