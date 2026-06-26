@@ -174,4 +174,71 @@ describe('token-goat CLI', () => {
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('write-file')
   })
+
+  it('write-file stdin writes exact bytes', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-stdin-${Date.now()}.txt`)
+    const content = 'stdin content with ```backticks``` and $VAR'
+    try {
+      const r = runCli(['write-file', tmp], content)
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(tmp, 'utf8')).toBe(content)
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file --b64 empty payload writes empty file', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-empty-${Date.now()}.txt`)
+    try {
+      const r = runCli(['write-file', tmp, '--b64', ''])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(tmp)).toHaveLength(0)
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file --b64 binary bytes round-trip', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-bin-${Date.now()}.bin`)
+    const bytes = Buffer.from([0x00, 0xff, 0x80, 0x1f, 0xfe, 0xd8])
+    const b64 = bytes.toString('base64')
+    try {
+      const r = runCli(['write-file', tmp, '--b64', b64])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(tmp)).toEqual(bytes)
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file --b64 with invalid base64 exits 1 with helpful message', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-bad-${Date.now()}.txt`)
+    try {
+      const r = runCli(['write-file', tmp, '--b64', 'not$valid!base64'])
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('non-base64')
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file --from missing source exits 1 with helpful message', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-dst-missing-${Date.now()}.txt`)
+    const r = runCli(['write-file', tmp, '--from', '/no/such/file/ever.txt'])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('not found')
+  })
+
+  it('write-file overwrites existing file', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-overwrite-${Date.now()}.txt`)
+    fs.writeFileSync(tmp, 'original content', 'utf8')
+    const b64 = Buffer.from('new content', 'utf8').toString('base64')
+    try {
+      const r = runCli(['write-file', tmp, '--b64', b64])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(tmp, 'utf8')).toBe('new content')
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
 })
