@@ -186,6 +186,7 @@ function parseBlamePortalain(raw: string, startLine: number): BlameEntry[] {
         date: currentMeta['date'] || '',
         content,
       })
+      currentLineNo++
       i++
       continue
     }

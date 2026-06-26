@@ -196,6 +196,37 @@ summary feat: add caching
 
       expect(entries).toEqual([])
     })
+
+    it('increments line numbers for consecutive lines from same commit', () => {
+      const mockOutput = `abc123def456abc123def456abc123def456abc1 1 10
+author Alice
+author-time 1687000000
+\tfirst line
+\tsecond line
+\tthird line
+def789abc012def789abc012def789abc012def7 4 13
+author Bob
+author-time 1686900000
+\tdifferent author`
+
+      vi.mocked(util.runGit).mockReturnValue({
+        stdout: mockOutput,
+        stderr: '',
+        exitCode: 0,
+      })
+
+      const entries = gitHistory.getBlame('src/foo.ts', 10, 13)
+
+      expect(entries).toHaveLength(4)
+      expect(entries[0].lineNo).toBe(10)
+      expect(entries[0].content).toBe('first line')
+      expect(entries[1].lineNo).toBe(11)
+      expect(entries[1].content).toBe('second line')
+      expect(entries[2].lineNo).toBe(12)
+      expect(entries[2].content).toBe('third line')
+      expect(entries[3].lineNo).toBe(13)
+      expect(entries[3].content).toBe('different author')
+    })
   })
 
   describe('formatHistory', () => {

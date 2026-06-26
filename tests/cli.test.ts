@@ -326,4 +326,77 @@ describe('token-goat CLI', () => {
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('stdin')
   })
+
+  it('write-file empty dest exits 1 with helpful message', () => {
+    const r = runCli(['write-file', '', '--b64', 'dGVzdA=='])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('empty')
+  })
+
+  it('write-file --b64 multi-line base64 (openssl-style) writes correctly', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-multiline-${Date.now()}.bin`)
+    const content = 'hello world from multiline base64'
+    // simulate openssl enc -base64 output: newline every 64 chars
+    const flat = Buffer.from(content, 'utf8').toString('base64')
+    const multiline = flat.match(/.{1,64}/g)!.join('\n')
+    try {
+      const r = runCli(['write-file', tmp, '--b64', multiline])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(tmp, 'utf8')).toBe(content)
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file stdin size limit exits 1 with helpful message', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-limit-${Date.now()}.bin`)
+    // 2 MB of data with 1 MB limit
+    const big = Buffer.alloc(2 * 1024 * 1024, 0x41)
+    try {
+      const env = { ...process.env, TOKEN_GOAT_MAX_STDIN_MB: '1' }
+      const r = spawnSync(process.execPath, ['--import', 'tsx', MAIN, 'write-file', tmp], {
+        input: big,
+        encoding: 'buffer',
+        env,
+      })
+      expect(r.status).toBe(1)
+      expect(r.stderr.toString()).toContain('exceeds size limit')
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file stdin rejects invalid TOKEN_GOAT_MAX_STDIN_MB', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-invalid-mb-${Date.now()}.txt`)
+    const data = Buffer.from('test')
+    try {
+      const env = { ...process.env, TOKEN_GOAT_MAX_STDIN_MB: 'not-a-number' }
+      const r = spawnSync(process.execPath, ['--import', 'tsx', MAIN, 'write-file', tmp], {
+        input: data,
+        encoding: 'buffer',
+        env,
+      })
+      expect(r.status).toBe(1)
+      expect(r.stderr.toString()).toContain('TOKEN_GOAT_MAX_STDIN_MB must be a positive integer')
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file stdin rejects zero or negative TOKEN_GOAT_MAX_STDIN_MB', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-zero-mb-${Date.now()}.txt`)
+    const data = Buffer.from('test')
+    try {
+      const env = { ...process.env, TOKEN_GOAT_MAX_STDIN_MB: '0' }
+      const r = spawnSync(process.execPath, ['--import', 'tsx', MAIN, 'write-file', tmp], {
+        input: data,
+        encoding: 'buffer',
+        env,
+      })
+      expect(r.status).toBe(1)
+      expect(r.stderr.toString()).toContain('TOKEN_GOAT_MAX_STDIN_MB must be a positive integer')
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
 })

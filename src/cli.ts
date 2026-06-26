@@ -419,14 +419,17 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   const rnd = Math.random().toString(36).slice(2, 8)
   const tmp = path.join(path.dirname(path.resolve(dest)), `.tmp.${process.pid}.${rnd}`)
   try {
-    fs.writeFileSync(tmp, data)
+    // mode 0o600: tmp is owner-read/write only until atomic rename, preventing other users
+    // from reading sensitive content on shared POSIX systems.
+    fs.writeFileSync(tmp, data, { mode: 0o600 })
     try {
       fs.renameSync(tmp, dest)
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
         fs.copyFileSync(tmp, dest)
-        // Orphaned tmp on unlink failure is benign — dest already has correct content.
-        try { fs.unlinkSync(tmp) } catch { /* ignore */ }
+        try { fs.unlinkSync(tmp) } catch (ue) {
+          process.stderr.write(`token-goat write-file: warning: could not remove temp file ${tmp}: ${(ue as NodeJS.ErrnoException).message}\n`)
+        }
       } else {
         throw e
       }
@@ -443,9 +446,12 @@ function mapFsError(e: unknown, src?: string, dest?: string): never {
     const errPath = fe.path ?? ''
     const isSource = src !== undefined && path.resolve(errPath) === path.resolve(src)
     if (isSource) throw new CliError(`source file not found: ${src}`)
-    // Show the destination directory, not the internal .tmp path
-    const destDir = dest ? path.dirname(path.resolve(dest)) : errPath
+    // Always show the destination directory, never the internal .tmp path
+    const destDir = dest ? path.dirname(path.resolve(dest)) : path.dirname(path.resolve(errPath || '.'))
     throw new CliError(`destination directory does not exist: ${destDir}`)
+  }
+  if (fe.code === 'ENOTDIR') {
+    throw new CliError(`destination path contains a file where a directory was expected: ${dest ?? fe.path ?? ''}`)
   }
   if (fe.code === 'EISDIR') {
     const errPath = fe.path ?? ''
@@ -468,6 +474,9 @@ function mapFsError(e: unknown, src?: string, dest?: string): never {
 }
 
 function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
+  if (!dest || !dest.trim()) {
+    throw new CliError('destination path cannot be empty')
+  }
   if (opts.from !== undefined && opts.b64 !== undefined) {
     throw new CliError('cannot use --from and --b64 together')
   }
@@ -480,7 +489,8 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     return
   }
   if (opts.b64 !== undefined) {
-    const normalized = opts.b64.replace(/-/g, '+').replace(/_/g, '/')
+    // Strip whitespace (newlines from openssl/base64 CLI output) before url-safe normalization
+    const normalized = opts.b64.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
       throw new CliError('--b64 payload contains non-base64 characters — check for shell expansion of $VAR or backticks')
     }
@@ -494,14 +504,30 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
   if (process.stdin.isTTY) {
     throw new CliError('stdin mode requires piped input; use --b64 or --from for interactive use')
   }
+  const maxMB = parseInt(process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512', 10)
+  if (!Number.isFinite(maxMB) || maxMB <= 0) {
+    throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got '${process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? ''}'`)
+  }
+  const maxBytes = maxMB * 1024 * 1024
   return new Promise<void>((resolve, reject) => {
     const chunks: Buffer[] = []
-    process.stdin.on('data', (chunk: Buffer) => chunks.push(chunk))
+    let totalBytes = 0
+    process.stdin.on('data', (chunk: Buffer) => {
+      totalBytes += chunk.length
+      if (totalBytes > maxBytes) {
+        process.stdin.destroy()
+        reject(new CliError(`stdin input exceeds size limit (${Math.round(maxBytes / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`))
+        return
+      }
+      chunks.push(chunk)
+    })
     process.stdin.on('end', () => {
       try { atomicWriteBuffer(dest, Buffer.concat(chunks)); resolve() }
       catch (e) { try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) } }
     })
-    process.stdin.on('error', reject)
+    process.stdin.on('error', (e) => {
+      try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) }
+    })
     process.stdin.resume()
   })
 }

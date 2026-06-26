@@ -143,6 +143,28 @@ More info.
       const sections = await gdrive.getDocSections('empty-id')
       expect(sections.length).toBe(0)
     })
+
+    it('calculates byteStart correctly with Windows line endings (CRLF)', async () => {
+      const docText = '# First\r\nContent\r\n\r\n# Second\r\nMore content'
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: async () => docText,
+      } as Response)
+
+      const sections = await gdrive.getDocSections('crlf-id')
+      expect(sections.length).toBe(2)
+
+      expect(sections[0].heading).toBe('First')
+      expect(sections[0].content).toBe('Content')
+      expect(sections[0].byteStart).toBe(0)
+
+      expect(sections[1].heading).toBe('Second')
+      expect(sections[1].content).toBe('More content')
+      const expected2ndStart = Buffer.byteLength('# First\r\nContent\r\n\r\n', 'utf8')
+      expect(sections[1].byteStart).toBe(expected2ndStart)
+    })
   })
 
   describe('formatSections', () => {
