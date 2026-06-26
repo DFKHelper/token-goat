@@ -31,6 +31,7 @@ import {
   extractChangelogVersionHint,
   MARKDOWN_SIZE_THRESHOLD,
 } from './hints/markdown_hints.js'
+import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -190,6 +191,28 @@ export function preReadHandler(event: HookEvent): HookOutput {
       'Note: ' + normalized + ' is large (' + kb + 'kb). ' +
         hint,
     )
+  }
+
+  // Universal file type handler (catch-all for non-code, non-markdown large files)
+  const fileTypeExt = path.extname(normalized).slice(1).toLowerCase()
+  const binaryExts = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'ott', 'odp'])
+  const textTypeExts = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv'])
+  const fileStatSize = size ?? statSize(normalized) ?? 0
+  const isKnownFileType = binaryExts.has(fileTypeExt) || textTypeExts.has(fileTypeExt)
+  if (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic) {
+    let ftContent = ''
+    if (!binaryExts.has(fileTypeExt)) {
+      try {
+        ftContent = fs.readFileSync(normalized, 'utf8')
+      } catch {
+        // best-effort — empty content will pass through
+      }
+    }
+    const ftResult = dispatchFileTypeHandler(normalized, ftContent, fileStatSize)
+    if (ftResult?.shouldBlock) {
+      recordFileRead(normalized)
+      return denyOutput(ftResult.message)
+    }
   }
 
   recordFileRead(normalized)
