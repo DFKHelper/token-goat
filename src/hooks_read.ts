@@ -176,6 +176,16 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
   }
 
+  // .env re-read: deny after first read (size thresholds never catch tiny env files)
+  if (/^\.env(\.\w+)?$/.test(basename) && wasFileReadThisSession(normalized)) {
+    recordFileRead(normalized)
+    recordStat('session_hint', 0, 0)
+    return denyOutput(
+      normalized + ' was already read this session. Environment files rarely change mid-session. ' +
+      'Use `token-goat config-get ' + normalized + ' KEY_NAME` to extract a specific variable.',
+    )
+  }
+
   if (wasFileReadThisSession(normalized)) {
     const entry = getSessionFiles().get(normalized)
     const reads = entry?.readCount ?? 1
@@ -186,7 +196,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
       : 'Use token-goat read/section/symbol to re-read surgically.'
     const rereadBytes = statSize(normalized) ?? 0
     recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
-    if (rereadBytes >= REREAD_DENY_BYTES) {
+    if (rereadBytes >= REREAD_DENY_BYTES || reads >= 2) {
       return denyOutput(
         normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
       )

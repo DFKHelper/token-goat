@@ -302,6 +302,53 @@ Some content that makes the file large enough`
     }
   })
 
+  it('gives context hint on 2nd read of a small file, deny on 3rd+', () => {
+    const p = makeTmpFile('x'.repeat(5 * 1024))
+
+    // First read: pass (never read before)
+    const r1 = preReadHandler(readEvent(p))
+    expect(r1.hookType).toBe('pass')
+
+    // Second read: context (readCount is 1 after first pass recorded it)
+    const r2 = preReadHandler(readEvent(p))
+    expect(r2.hookType).toBe('context')
+
+    // Third read: deny (readCount is now 2, so reads >= 2)
+    const r3 = preReadHandler(readEvent(p))
+    expect(r3.hookType).toBe('deny')
+    if (r3.hookType === 'deny') {
+      expect(r3.message).toContain('already read this session')
+    }
+  })
+
+  it('denies re-read of .env file after first read', () => {
+    const p = path.join(os.tmpdir(), `.env`)
+    fs.writeFileSync(p, 'SECRET=abc\nOTHER=xyz\n')
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('already read this session')
+      expect(result.message).toContain('config-get')
+    }
+  })
+
+  it('denies re-read of .env.local after first read', () => {
+    const p = path.join(os.tmpdir(), `.env.local`)
+    fs.writeFileSync(p, 'SECRET=abc\n')
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('already read this session')
+      expect(result.message).toContain('config-get')
+    }
+  })
+
   it('includes CHANGELOG version hint for large CHANGELOG.md files', () => {
     const changelogContent = `# Changelog
 
