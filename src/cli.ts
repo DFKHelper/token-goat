@@ -419,13 +419,13 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   const rnd = Math.random().toString(36).slice(2, 8)
   const tmp = path.join(path.dirname(path.resolve(dest)), `.tmp.${process.pid}.${rnd}`)
   try {
-    // mode 0o600: tmp is owner-read/write only until atomic rename, preventing other users
-    // from reading sensitive content on shared POSIX systems.
+    // mode 0o600 applies on POSIX only; on Windows Node.js ignores it and the tmp file inherits the default ACL.
     fs.writeFileSync(tmp, data, { mode: 0o600 })
     try {
       fs.renameSync(tmp, dest)
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
+        // copyFileSync is non-atomic; EXDEV should not occur normally (tmp is same-dir) but can appear on overlay/bind-mount filesystems.
         fs.copyFileSync(tmp, dest)
         try { fs.unlinkSync(tmp) } catch (ue) {
           process.stderr.write(`token-goat write-file: warning: could not remove temp file ${tmp}: ${(ue as NodeJS.ErrnoException).message}\n`)
@@ -470,17 +470,43 @@ function mapFsError(e: unknown, src?: string, dest?: string): never {
   if (fe.code === 'ENOSPC') {
     throw new CliError(`no space left on device writing to: ${dest ?? fe.path ?? ''}`)
   }
+  if (fe.code === 'ELOOP') {
+    throw new CliError(`too many levels of symbolic links resolving: ${dest ?? fe.path ?? ''}`)
+  }
+  if (fe.code === 'ENAMETOOLONG') {
+    throw new CliError(`path is too long: ${dest ?? fe.path ?? ''}`)
+  }
   throw e
 }
+
+// Windows reserved device names — writes to these are silently discarded or misrouted.
+const WIN_RESERVED = new Set(['CON','PRN','AUX','NUL','COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8','COM9','LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9'])
 
 function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
   if (!dest || !dest.trim()) {
     throw new CliError('destination path cannot be empty')
   }
+  if (process.platform === 'win32') {
+    const base = path.basename(dest)
+    const stem = base.replace(/\.[^.]*$/, '').toUpperCase()
+    if (WIN_RESERVED.has(stem)) {
+      throw new CliError(`destination '${base}' is a reserved Windows device name`)
+    }
+    if (base.endsWith('.') || base.endsWith(' ')) {
+      throw new CliError(`destination filename '${base}' ends with '${base.slice(-1)}' — Windows NTFS silently strips trailing dots and spaces, which would clobber a different file`)
+    }
+  }
   if (opts.from !== undefined && opts.b64 !== undefined) {
     throw new CliError('cannot use --from and --b64 together')
   }
   if (opts.from !== undefined) {
+    if (opts.from.includes('\0')) {
+      throw new CliError('--from path contains a null byte')
+    }
+    // On POSIX, /dev/stdin blocks forever when the process is attached to a TTY.
+    if (process.platform !== 'win32' && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(opts.from) && process.stdin.isTTY) {
+      throw new CliError('--from /dev/stdin requires piped input; use piped stdin mode or --b64 for interactive use')
+    }
     try {
       atomicWriteBuffer(dest, fs.readFileSync(opts.from))
     } catch (e) {
@@ -493,6 +519,10 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     const normalized = opts.b64.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
       throw new CliError('--b64 payload contains non-base64 characters — check for shell expansion of $VAR or backticks')
+    }
+    // A single trailing data character (length % 4 === 1 after stripping padding) is always invalid; Buffer.from silently drops it, producing a corrupt or empty file.
+    if (normalized.replace(/=+$/, '').length % 4 === 1) {
+      throw new CliError('--b64 payload length is invalid (trailing single base64 character cannot decode to any bytes — payload is likely truncated)')
     }
     try {
       atomicWriteBuffer(dest, Buffer.from(normalized, 'base64'))
