@@ -14,6 +14,7 @@ import { getBashOutputId, recordBashOutput } from './session.js'
 import { fingerprintContent } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput } from './bash_output_cache.js'
+import { recordStat } from './stats.js'
 
 /** Extract the command string from a Bash tool_input. */
 function extractCommand(event: HookEvent): string | undefined {
@@ -83,6 +84,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
     if (monOutputId !== null) {
       const catFile = extractCatSourceFile(cmd)
       if (catFile !== null) {
+        recordStat('bash_compress:recall')
         return contextOutput(
           'Prior output from `' + cmd + '` is cached. ' +
           'Use `token-goat bash-output ' + monOutputId + '` to recall the full file, or ' +
@@ -90,6 +92,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
         )
       }
       const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
+      recordStat('bash_compress:recall')
       return contextOutput(
         'Prior output from `' + cmdSummary + '` is cached.\n' +
         'Use `token-goat bash-output ' + monOutputId + ' ' + monitoringHint + '` to re-inspect without re-running.'
@@ -104,6 +107,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
   const outputId = getBashOutputId(cmdHash)
   if (outputId === null) return passOutput()
 
+  recordStat('bash_compress:recall')
   return contextOutput(buildRecallHint(cmd, outputId))
 }
 

@@ -363,4 +363,31 @@ author-time 1686900000
       expect(symbols).toEqual([])
     })
   })
+
+  describe('parseChangedSymbols (regression: +++ and --- content lines)', () => {
+    it('should not break hunk early when added/removed lines start with ++ or -- (regression for startsWith bug)', () => {
+      // A removed line whose content starts with "--" produces "---content" in diff output.
+      // An added line whose content starts with "++" produces "+++content" in diff output.
+      // These must NOT trigger the file-header break path — they are ordinary content lines.
+      const raw = [
+        'diff --git a/src/foo.ts b/src/foo.ts',
+        '--- a/src/foo.ts',
+        '+++ b/src/foo.ts',
+        '@@ -10,3 +10,4 @@ function myFunc() {',
+        '---separator (removed line whose content starts with --)',
+        '+++separator (added line whose content starts with ++)',
+        '+another added line',
+      ].join('\n')
+
+      const result = gitHistory.parseChangedSymbols(raw, 50)
+
+      expect(result).toHaveLength(1)
+      expect(result[0]).toEqual({
+        file: 'src/foo.ts',
+        symbol: 'myFunc',
+        linesAdded: 2,
+        linesRemoved: 1,
+      })
+    })
+  })
 })

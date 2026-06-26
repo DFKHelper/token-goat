@@ -7,6 +7,7 @@ import {
   summarize,
   renderStats as _renderStats,
   kindToSource,
+  recordStat,
   SOURCE_IMAGE,
   SOURCE_HINT,
   SOURCE_READ,
@@ -415,6 +416,41 @@ describe('stats', () => {
       expect(output).toContain('Tokens saved:   1500')
       expect(output).toContain('## By Source')
       expect(output).toContain('## By Command')
+    })
+  })
+
+  describe('recordStat', () => {
+    it('inserts a row into the stats table and summarize picks it up', () => {
+      const dbPath = path.join(tempDir, 'record-test.db')
+      const db = new Database(dbPath)
+      db.exec(`
+        CREATE TABLE stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          ts INTEGER NOT NULL,
+          kind TEXT NOT NULL,
+          tokens_saved INTEGER NOT NULL DEFAULT 0,
+          bytes_saved INTEGER NOT NULL DEFAULT 0,
+          detail TEXT
+        );
+        CREATE INDEX idx_stats_ts ON stats(ts);
+        CREATE INDEX idx_stats_kind ON stats(kind);
+      `)
+
+      recordStat('session_hint', 1024, 50, db)
+
+      const summary = summarize(30, db)
+      db.close()
+
+      expect(summary.total_events).toBe(1)
+      expect(summary.total_bytes_saved).toBe(1024)
+      expect(summary.total_tokens_saved).toBe(50)
+      expect(summary.by_kind['session_hint']).toMatchObject({ events: 1, bytes_saved: 1024, tokens_saved: 50 })
+      expect(summary.by_source[SOURCE_HINT]).toMatchObject({ events: 1 })
+    })
+
+    it('silently no-ops when the stats table is missing', () => {
+      // An in-memory DB with no stats table — recordStat must not throw.
+      expect(() => recordStat('session_hint', 0, 0, new Database(':memory:'))).not.toThrow()
     })
   })
 })
