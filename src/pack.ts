@@ -312,12 +312,14 @@ export function formatMarkdown(
     parts.push('>')
     parts.push('> | # | File | Lines | ~Tokens |')
     parts.push('> |---|------|-------|---------|')
+    let rowNum = 1
     for (let i = 0; i < result.files.length; i++) {
       const pf = result.files[i]
       if (!pf) continue
       parts.push(
-        `> | ${i + 1} | \`${pf.rel_path}\` | ${pf.lines.toLocaleString()} | ${pf.tokens.toLocaleString()} |`,
+        `> | ${rowNum} | \`${pf.rel_path}\` | ${pf.lines.toLocaleString()} | ${pf.tokens.toLocaleString()} |`,
       )
+      rowNum++
     }
     parts.push('')
   }
@@ -354,20 +356,22 @@ export function formatMarkdown(
 export function formatXml(result: PackResult, opts: { line_numbers?: boolean; instruction?: string } = {}): string {
   const parts: string[] = ['<documents>']
 
+  let docNum = 1
   for (let i = 0; i < result.files.length; i++) {
     const pf = result.files[i]
     if (!pf) continue
     const body = opts.line_numbers ? addLineNumbers(pf.content) : pf.content
     const escaped = body.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    parts.push(`<document index="${i + 1}">`)
+    parts.push(`<document index="${docNum}">`)
     const escSrc = pf.rel_path.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     parts.push(`<source>${escSrc}</source>`)
     parts.push(`<document_content>\n${escaped}\n</document_content>`)
     parts.push('</document>')
+    docNum++
   }
 
   if (opts.instruction) {
-    parts.push(`<document index="${result.files.length + 1}">`)
+    parts.push(`<document index="${docNum}">`)
     parts.push('<source>instructions</source>')
     const escInst = opts.instruction.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     parts.push(`<document_content>\n${escInst}\n</document_content>`)

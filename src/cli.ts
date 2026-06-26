@@ -232,8 +232,8 @@ function _applyFiltersAndPrint(
   }
 
   const lines = content.split(/\r?\n/)
-  const headN = opts.head ? Number.parseInt(opts.head, 10) : 30
-  const tailN = opts.tail ? Number.parseInt(opts.tail, 10) : 80
+  const headN = opts.head ? (() => { const n = Number.parseInt(opts.head, 10); return Number.isFinite(n) && n > 0 ? n : 30 })() : 30
+  const tailN = opts.tail ? (() => { const n = Number.parseInt(opts.tail, 10); return Number.isFinite(n) && n > 0 ? n : 80 })() : 80
 
   let result = lines
   if (opts.head === undefined && opts.tail === undefined && opts.grep === undefined) {

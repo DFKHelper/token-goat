@@ -161,7 +161,7 @@ export function pruneIndex(memoryDir: string, opts?: { dryRun?: boolean }): Prun
 
   // Sort by original line number and join.
   const sortedKeys = Array.from(lineMap.keys()).sort((a, b) => a - b)
-  let reconstructed = sortedKeys.map((k) => lineMap.get(k)).join('')
+  let reconstructed = sortedKeys.map((k) => lineMap.get(k) ?? '').join('')
 
   // Ensure trailing newline.
   if (reconstructed && !reconstructed.endsWith('\n')) {
