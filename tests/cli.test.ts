@@ -426,4 +426,46 @@ describe('token-goat CLI', () => {
       fs.rmSync(fifo, { force: true })
     }
   })
+
+  it('write-file --b64 single-char payload (length%4===1) exits 1', function () {
+    const tmp = path.join(os.tmpdir(), `tg-wf-b64trunc-${Date.now()}.txt`)
+    const r = runCli(['write-file', tmp, '--b64', 'd'])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('payload length is invalid')
+  })
+
+  it.skipIf(process.platform === 'win32')('write-file --from symlink-to-FIFO exits 1', function () {
+    const tmpDir = os.tmpdir()
+    const fifo = path.join(tmpDir, `tg-wf-fifo2-${Date.now()}.fifo`)
+    const link = path.join(tmpDir, `tg-wf-fifolink-${Date.now()}`)
+    execSync(`mkfifo ${fifo}`)
+    fs.symlinkSync(fifo, link)
+    try {
+      const r = runCli(['write-file', path.join(tmpDir, `tg-wf-fifo2-out-${Date.now()}.txt`), '--from', link])
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('special file')
+    } finally {
+      fs.rmSync(fifo, { force: true })
+      fs.rmSync(link, { force: true })
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('write-file replaces symlink at dest rather than writing through it', function () {
+    const tmpDir = os.tmpdir()
+    const target = path.join(tmpDir, `tg-wf-target-${Date.now()}.txt`)
+    const link = path.join(tmpDir, `tg-wf-link-${Date.now()}.txt`)
+    fs.writeFileSync(target, 'original', 'utf8')
+    fs.symlinkSync(target, link)
+    const b64 = Buffer.from('new content', 'utf8').toString('base64')
+    try {
+      const r = runCli(['write-file', link, '--b64', b64])
+      expect(r.status).toBe(0)
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(false)
+      expect(fs.readFileSync(link, 'utf8')).toBe('new content')
+      expect(fs.readFileSync(target, 'utf8')).toBe('original')
+    } finally {
+      fs.rmSync(link, { force: true })
+      fs.rmSync(target, { force: true })
+    }
+  })
 })
