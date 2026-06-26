@@ -175,7 +175,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
-    recordStat('session_hint')
+    const rereadBytes = statSize(normalized) ?? 0
+    recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
     return contextOutput(
       'Note: ' + normalized + ' was already read this session (' + reads + ' ' + plural + '). ' +
         hint,
@@ -189,7 +190,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Consider token-goat skeleton or token-goat section.'
-    recordStat('session_hint')
+    recordStat('session_hint', size, Math.round(size / 4))
     return contextOutput(
       'Note: ' + normalized + ' is large (' + kb + 'kb). ' +
         hint,
