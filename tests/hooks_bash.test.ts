@@ -267,4 +267,64 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(makeBashEvent('head -5 /proc/cpuinfo'))
     expect(result.hookType).toBe('pass')
   })
+
+  it('denies node -e with readFileSync reading a source file', () => {
+    const event = makeBashEvent(`node -e "const lines = require('fs').readFileSync('scripts/ads-orchestrator.js','utf8').split('\\n')"`)
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('readFileSync')
+    }
+  })
+
+  it('denies node -e with readFileSync reading a JSON file', () => {
+    const event = makeBashEvent(`node -e "const d = require('fs').readFileSync('memory/ads/action-hypotheses.json','utf8')"`)
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('readFileSync')
+    }
+  })
+
+  it('passes through node -e without readFileSync', () => {
+    const event = makeBashEvent(`node -e "require('./scripts/lib/organic-pin-miner-action'); console.log('ok')"`)
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('emits advisory context for tail command on source file', () => {
+    const event = makeBashEvent('tail -50 tests/unit/ai-creative-generator-action.test.js')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('tail')
+    }
+  })
+
+  it('passes through tail -f (follow mode)', () => {
+    const event = makeBashEvent('tail -f /tmp/orch-run.log')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through tail -10 (small N, already surgical)', () => {
+    const event = makeBashEvent('tail -10 scripts/lib/foo.js')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('cat of JSON file suggests config-get not symbol read', () => {
+    const event = makeBashEvent('cat memory/ads/keyword-opportunity-actions.json')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('config-get')
+    }
+  })
+
+  it('head -5 passes through (too small to advise)', () => {
+    const event = makeBashEvent('head -5 scripts/lib/hourly-roas-bid-modifier.js')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
 })
