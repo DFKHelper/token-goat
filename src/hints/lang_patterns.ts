@@ -319,6 +319,15 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   { pattern: /^(?:npx\s+)?prettier(?:\s|$)/, recallHint: '--grep "unchanged|reformatted|error"' },
   { pattern: /^ruff(?:\s|$)/, recallHint: '--grep "error|warning|Found"' },
   { pattern: /^(?:cargo\s+)?clippy/, recallHint: '--grep "error\\[|warning\\["' },
+
+  // git diff (full diff output — can be very large; excludes --stat which is small)
+  { pattern: /^git diff(?!\s+--stat)(?:\s+HEAD)?(?:\s|$)/, recallHint: '--grep "@@|\\+\\+\\+|---|diff --git"' },
+  { pattern: /^git diff\s+--cached(?!\s+--stat)/, recallHint: '--grep "@@|\\+\\+\\+|---|diff --git"' },
+
+  // npm run * wrappers (npm test is excluded — too generic; npm run test is explicit)
+  { pattern: /^npm run (?:test|spec)(?:\s|$)/, recallHint: '--grep "FAIL|PASS|Error|Tests:|✓|✗"' },
+  { pattern: /^npm run build(?:\s|$)/, recallHint: '--grep "error|Built|Failed|✓|✗"' },
+  { pattern: /^npm run (?:lint|typecheck|check|type-check)(?:\s|$)/, recallHint: '--grep "error|warning|✖|problems"' },
 ]
 
 /**

@@ -137,4 +137,44 @@ describe('getMonitoringRecallHint', () => {
   it('handles leading whitespace in command', () => {
     expect(getMonitoringRecallHint('  pytest tests/')).not.toBeNull()
   })
+
+  it.each([
+    'git diff HEAD',
+    'git diff HEAD src/foo.ts',
+    'git diff src/foo.ts',
+    'git diff',
+    'git diff --cached',
+    'git diff --cached src/foo.ts',
+  ])('matches git diff command "%s"', (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+  })
+
+  it.each([
+    'git diff --stat',
+    'git diff --stat HEAD',
+    'git diff --stat HEAD src/',
+  ])('does NOT match git diff --stat (small output) "%s"', (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).toBeNull()
+  })
+
+  it.each([
+    'npm run test',
+    'npm run test --reporter=verbose',
+    'npm run build',
+    'npm run lint',
+    'npm run typecheck',
+    'npm run check',
+    'npm run type-check',
+    'npm run spec',
+  ])('matches npm run script "%s"', (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+  })
+
+  it('git diff hint contains --grep', () => {
+    expect(getMonitoringRecallHint('git diff HEAD')).toContain('--grep')
+  })
+
+  it('npm run build hint contains --grep', () => {
+    expect(getMonitoringRecallHint('npm run build')).toContain('--grep')
+  })
 })
