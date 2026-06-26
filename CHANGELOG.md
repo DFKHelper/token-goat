@@ -4,6 +4,42 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.0.2-post] - 2026-06-26
+
+### Fixed
+
+- **`stripComments` treated backtick as a Python string delimiter instead of JS/TS.** The string-tracking branch in `code_compress.ts` had an inverted condition — `isPython && ch === '`'` — so backtick template literals in TypeScript/JavaScript were transparent to the comment stripper while Python (which has no backtick strings) got the tracking instead. Flipped to `!isPython` so JS/TS template literals are correctly treated as string boundaries.
+
+- **`embeddings.ts` discarded all but the first merged hit's text.** `mergeNearbyHits` accumulated hits into one entry but never joined the text fields, causing semantic search results that spanned merged chunks to return only the first chunk's content. All merged texts are now accumulated and joined with a newline separator.
+
+- **`gdrive.ts` used string `.length` for UTF-8 byte offsets.** `parseDocSections` computed byte offsets with `string.length` (UTF-8 code units), producing wrong offsets for any content containing non-ASCII characters. Replaced with `Buffer.byteLength`.
+
+- **`worker.ts` debounce leaked timers.** The dirty-queue flush debounce set a new `setTimeout` on every event without clearing the previous one, allowing multiple concurrent flush callbacks. The old timer is now cleared before setting the new one.
+
+- **`parser.ts` loaded tree-sitter-c grammar for C++ files.** The `cpp` branch in `loadGrammar` called `require('tree-sitter-c')` instead of `require('tree-sitter-cpp')`, causing all C++ source files to be parsed with the C grammar and missing C++-specific constructs (classes, templates, namespaces, lambda captures).
+
+- **`mcp_cache.ts` path traversal check missed Windows backslash paths.** The traversal guard only checked forward-slash sequences (`../`), allowing `..\` to bypass the check on Windows. Both separators are now rejected.
+
+- **`webfetch.ts` IP octet parsing skipped `Number.isFinite` validation.** `isPrivateIPv4` used `Number()` on split octets and applied range checks without first verifying the result was a finite number, so non-numeric segments (empty strings from malformed IPs) passed the integer range test.
+
+- **`cli.ts` ANSI truncation operated on stripped string but returned offsets into the raw line.** `overflow_guard.ts` stripped ANSI codes, truncated the stripped result, then used that truncation point on the original raw string, producing malformed escape sequences in output. Truncation now operates consistently on the stripped form.
+
+- **`skill_cache.ts` sliced at string code-unit boundaries, corrupting multi-byte characters.** Truncation used `string.slice`, which counts JavaScript code units not bytes. Replaced with `Buffer.slice` so the cut falls on valid UTF-8 byte boundaries.
+
+- **`git_history.ts` crashed on empty `runGit` stdout.** `getRecentCommits` did not guard against empty output from `runGit`, attempting to parse an empty string into commit entries. An early-return guard is now in place.
+
+- **`git_history.ts` used `indexOf(':')` for symbol separator, breaking filenames with colons.** The colon-split that separates a file path from its symbol used `indexOf`, picking the first colon in paths like `C:\Projects\...`. Changed to `lastIndexOf` so only the final colon (the actual separator) is used.
+
+- **`hints.ts` called `substring` on a `-1` return from `lastIndexOf`.** When a file path had no extension, `lastIndexOf('.')` returned `-1` and `substring(-1)` returned content from the end of the string. A guard now skips the extension check when no dot is found.
+
+- **`bash_compress.ts` off-by-one in tail output.** The `tailKeep` calculation caused the tail section to include one extra line, exceeding `maxLines` by one. Corrected the index arithmetic.
+
+- **`pack.ts` table and XML document index numbering.** `formatMarkdown` reset the row counter from the loop index rather than an independent counter, causing gaps when entries were falsy. `formatXml` hardcoded `result.files.length + 1` as the document index for the first file, always emitting index 1 regardless of previous entries.
+
+- **`cli.ts` `--head`/`--tail` NaN propagation.** Invalid or missing values from `parseInt` were used directly in array slicing without an `Number.isFinite` check, silently producing empty output when malformed values produced `NaN`.
+
+- **`memory_prune.ts` serialized `undefined` into reconstructed lines.** A missing nullish-coalescing guard caused `undefined` to be concatenated into the output string when a line segment was absent.
+
 ## [2.0.2] - 2026-06-26
 
 ### Added
