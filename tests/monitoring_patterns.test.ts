@@ -228,8 +228,8 @@ describe('getMonitoringRecallHint', () => {
     expect(getMonitoringRecallHint(cmd)).toBeNull()
   })
 
-  it('cat source file hint mentions token-goat read', () => {
+  it('cat source file hint contains --tail', () => {
     const hint = getMonitoringRecallHint('cat Foo.java')
-    expect(hint).toContain('token-goat read')
+    expect(hint).toContain('--tail')
   })
 })

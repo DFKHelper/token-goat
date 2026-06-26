@@ -333,8 +333,8 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   { pattern: /^codex(?:\s|$)/, recallHint: '--tail 100 --grep "error|suggestion|verdict|conclusion"' },
   { pattern: /^(?:~\/\.claude\/bin\/|\.claude\/bin\/)?glm\.sh(?:\s|$)/, recallHint: '--tail 100 --grep "error|verdict|conclusion|suggestion"' },
 
-  // cat of a single source file — output is the full file; token-goat read is better
-  { pattern: /^cat\s+\S+\.(java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj)\s*$/, recallHint: '--tail 50  # prefer: token-goat read \'<file>::SymbolName\' to extract only the symbol you need' },
+  // cat of a single source file — output is the full file; pre-bash emits a token-goat read suggestion
+  { pattern: /^cat\s+\S+\.(java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj)\s*$/, recallHint: '--tail 50' },
 ]
 
 /**

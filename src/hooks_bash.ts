@@ -21,6 +21,12 @@ function extractCommand(event: HookEvent): string | undefined {
   return typeof cmd === 'string' && cmd.trim() !== '' ? cmd.trim() : undefined
 }
 
+/** Extract the source file path from `cat <path>.<ext>`, or null if not that pattern. */
+function extractCatSourceFile(cmd: string): string | null {
+  const m = /^cat\s+(\S+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj))\s*$/.exec(cmd)
+  return m?.[1] ?? null
+}
+
 /** True when the command is a TypeScript compiler invocation. */
 function isTscCommand(cmd: string): boolean {
   return /^\s*tsc(\s|$)/i.test(cmd)
@@ -75,6 +81,14 @@ export function preBashHandler(event: HookEvent): HookOutput {
     const monCmdHash = fingerprintContent(cmd).slice(0, 16)
     const monOutputId = getBashOutputId(monCmdHash)
     if (monOutputId !== null) {
+      const catFile = extractCatSourceFile(cmd)
+      if (catFile !== null) {
+        return contextOutput(
+          'Prior output from `' + cmd + '` is cached. ' +
+          'Use `token-goat bash-output ' + monOutputId + '` to recall the full file, or ' +
+          '`token-goat read \'' + catFile + '::SymbolName\'` to extract only the symbol you need.'
+        )
+      }
       const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
       return contextOutput(
         'Prior output from `' + cmdSummary + '` is cached.\n' +
