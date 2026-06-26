@@ -242,6 +242,13 @@ describe('extractNamedSection', () => {
     expect(section).toContain('more text')
     expect(section).not.toContain('after')
   })
+
+  it('treats ordinal #0 as #1 (first occurrence)', () => {
+    const body = '## Item\nFirst\n## Item\nSecond'
+    const section = extractNamedSection(body, 'Item#0')
+    expect(section).toContain('First')
+    expect(section).not.toContain('Second')
+  })
 })
 
 describe('extractChecklistSection', () => {

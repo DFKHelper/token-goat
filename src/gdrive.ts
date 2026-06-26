@@ -62,13 +62,16 @@ export async function fetchDoc(fileId: string): Promise<string> {
 }
 
 function parseDocSections(text: string): GdriveSection[] {
-  const lines = text.split(/\r?\n/)
   const sections: GdriveSection[] = []
   let currentSection: GdriveSection | null = null
   let byteOffset = 0
+  let i = 0
 
-  for (const line of lines) {
-    const lineBytes = Buffer.byteLength(line, 'utf8') + 1
+  while (i < text.length) {
+    const newlineMatch = text.slice(i).match(/\r?\n/)
+    const lineEndPos = newlineMatch ? i + newlineMatch.index! : text.length
+    const line = text.slice(i, lineEndPos)
+    const newlineLen = newlineMatch ? newlineMatch[0].length : 0
 
     const match = line.match(/^(#{1,6})\s+(.+)$/)
     if (match) {
@@ -88,7 +91,8 @@ function parseDocSections(text: string): GdriveSection[] {
       currentSection.content += (currentSection.content ? '\n' : '') + line
     }
 
-    byteOffset += lineBytes
+    byteOffset += Buffer.byteLength(line, 'utf8') + newlineLen
+    i = lineEndPos + newlineLen
   }
 
   if (currentSection !== null) {
