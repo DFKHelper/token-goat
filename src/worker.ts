@@ -302,7 +302,7 @@ function workerEntry(): void {
   }
   if (process.argv.includes('--worker-daemon')) {
     const dir = process.env['TG_WORKER_DATA_DIR'] ?? dataDir()
-    const interval = parseInt(process.env['TG_WORKER_POLL_MS'] ?? '', 10)
+    const interval = parseInt(process.env['TG_WORKER_POLL_MS'] ?? '0', 10)
     const safeInterval = Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_POLL_INTERVAL_MS
     process.on('SIGTERM', () => process.exit(0))
     void runWorkerLoop(dir, safeInterval)

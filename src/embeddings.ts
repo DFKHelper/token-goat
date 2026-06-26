@@ -521,6 +521,7 @@ export function mergeNearbyHits(
     let curStart = current.startLine
     let curEnd = current.endLine
     let curDist = current.distance
+    const mergedTexts: string[] = [current.text]
 
     for (let i = 1; i < fileHits.length; i++) {
       const hit = fileHits[i]
@@ -531,9 +532,10 @@ export function mergeNearbyHits(
       const gap = hit.startLine - curEnd - 1
 
       if (gap <= proximity) {
-        // Merge: extend the range and keep best distance.
+        // Merge: extend the range and keep best distance, combine texts.
         curEnd = Math.max(curEnd, hit.endLine)
         curDist = Math.min(curDist, hit.distance)
+        mergedTexts.push(hit.text)
       } else {
         // Gap too large: flush current and start new.
         merged.push({
@@ -542,12 +544,14 @@ export function mergeNearbyHits(
           endLine: curEnd,
           kind: current.kind,
           distance: curDist,
-          text: current.text,
+          text: mergedTexts.join('\n---\n'),
         })
         current = hit
         curStart = hit.startLine
         curEnd = hit.endLine
         curDist = hit.distance
+        mergedTexts.length = 0
+        mergedTexts.push(hit.text)
       }
     }
 
@@ -558,7 +562,7 @@ export function mergeNearbyHits(
       endLine: curEnd,
       kind: current.kind,
       distance: curDist,
-      text: current.text,
+      text: mergedTexts.join('\n---\n'),
     })
   }
 
