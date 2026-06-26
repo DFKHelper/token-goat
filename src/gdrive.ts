@@ -68,7 +68,7 @@ function parseDocSections(text: string): GdriveSection[] {
   let byteOffset = 0
 
   for (const line of lines) {
-    const lineBytes = line.length + 1
+    const lineBytes = Buffer.byteLength(line, 'utf8') + 1
 
     const match = line.match(/^(#{1,6})\s+(.+)$/)
     if (match) {
