@@ -53,7 +53,7 @@ export function mcpHash(toolName: string, toolInput: Record<string, unknown>): s
  * Return the sidecar JSON metadata path for *outputId*.
  */
 export function sidecarMetaPath(outputId: string): string | null {
-  if (!outputId || outputId.includes('..') || outputId.includes('/')) {
+  if (!outputId || outputId.includes('..') || outputId.includes('/') || outputId.includes('\\')) {
     return null
   }
   const baseDir = resolve(dataDir(), 'mcp_outputs')
