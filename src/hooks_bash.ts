@@ -13,7 +13,7 @@ import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput } from './session.js'
 import { fingerprintContent } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
-import { storeBashOutput } from './bash_output_cache.js'
+import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 
 /** Extract the command string from a Bash tool_input. */
@@ -82,9 +82,11 @@ export function preBashHandler(event: HookEvent): HookOutput {
     const monCmdHash = fingerprintContent(cmd).slice(0, 16)
     const monOutputId = getBashOutputId(monCmdHash)
     if (monOutputId !== null) {
+      const monEntry = getBashOutput(monOutputId)
+      const monBytes = monEntry?.sizeBytes ?? 0
       const catFile = extractCatSourceFile(cmd)
       if (catFile !== null) {
-        recordStat('bash_compress:recall')
+        recordStat('bash_compress:recall', monBytes, Math.round(monBytes / 4))
         return contextOutput(
           'Prior output from `' + cmd + '` is cached. ' +
           'Use `token-goat bash-output ' + monOutputId + '` to recall the full file, or ' +
@@ -92,7 +94,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
         )
       }
       const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
-      recordStat('bash_compress:recall')
+      recordStat('bash_compress:recall', monBytes, Math.round(monBytes / 4))
       return contextOutput(
         'Prior output from `' + cmdSummary + '` is cached.\n' +
         'Use `token-goat bash-output ' + monOutputId + ' ' + monitoringHint + '` to re-inspect without re-running.'
@@ -107,7 +109,9 @@ export function preBashHandler(event: HookEvent): HookOutput {
   const outputId = getBashOutputId(cmdHash)
   if (outputId === null) return passOutput()
 
-  recordStat('bash_compress:recall')
+  const entry = getBashOutput(outputId)
+  const bytes = entry?.sizeBytes ?? 0
+  recordStat('bash_compress:recall', bytes, Math.round(bytes / 4))
   return contextOutput(buildRecallHint(cmd, outputId))
 }
 
