@@ -94,6 +94,25 @@ describe('isManifestFile', () => {
     expect(isManifestFile('CARGO.TOML')).toBe(true)
     expect(isManifestFile('makefile')).toBe(true)
   })
+
+  it.each([
+    'tsconfig.json',
+    'tsconfig.base.json',
+    'tsconfig.app.json',
+    'jsconfig.json',
+    'vite.config.ts',
+    'vite.config.js',
+    'webpack.config.js',
+    'webpack.config.ts',
+    'rollup.config.js',
+    'rollup.config.ts',
+    'esbuild.config.js',
+    'next.config.js',
+    'next.config.ts',
+    'nuxt.config.ts',
+  ])('recognises %s as a manifest file (TS/JS)', (name) => {
+    expect(isManifestFile(name)).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -186,6 +205,12 @@ describe('isGeneratedFile', () => {
   ])('does not flag %s as a generated file', (p) => {
     expect(isGeneratedFile(p)).toBe(false)
   })
+
+  it('detects .tsbuildinfo as always-generated regardless of location', () => {
+    expect(isGeneratedFile('/project/tsconfig.tsbuildinfo')).toBe(true)
+    expect(isGeneratedFile('/project/src/tsconfig.tsbuildinfo')).toBe(true)
+    expect(isGeneratedFile('tsconfig.tsbuildinfo')).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -241,6 +266,37 @@ describe('isBuildCommand', () => {
     'rake',
     'rake test',
   ])('recognises "%s" as a build command', (cmd) => {
+    expect(isBuildCommand(cmd)).toBe(true)
+  })
+
+  it.each([
+    // TypeScript compiler
+    'tsc',
+    'tsc --watch',
+    'tsc --noEmit',
+    'tsc -p tsconfig.json',
+    // Vite
+    'vite build',
+    'vite dev',
+    'vite preview',
+    // Next.js
+    'next build',
+    'next dev',
+    'next start',
+    // Nuxt
+    'nuxt build',
+    'nuxt dev',
+    // Webpack
+    'webpack',
+    'webpack --config webpack.config.js',
+    // esbuild
+    'esbuild src/index.ts --bundle',
+    // Rollup
+    'rollup -c',
+    // Turbo
+    'turbo build',
+    'turbo dev',
+  ])('recognises "%s" as a TS/JS build command', (cmd) => {
     expect(isBuildCommand(cmd)).toBe(true)
   })
 

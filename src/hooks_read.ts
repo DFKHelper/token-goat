@@ -25,6 +25,12 @@ import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
 import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 
+/** True when `basename` is a tsconfig or jsconfig file. */
+function isTsConfigFile(basename: string): boolean {
+  const lower = basename.toLowerCase()
+  return /^tsconfig(\..+)?\.json$/i.test(lower) || lower === 'jsconfig.json'
+}
+
 /** Size at or above which a read is nudged toward a surgical command. */
 const LARGE_FILE_BYTES = 100 * 1024
 
@@ -85,6 +91,12 @@ export function preReadHandler(event: HookEvent): HookOutput {
     )
   }
 
+  if (normalized.toLowerCase().endsWith('.tsbuildinfo')) {
+    return denyOutput(
+      'This is a TypeScript incremental build cache file. You don\'t need to read it directly.',
+    )
+  }
+
   if (isInBuildDir(normalized) || isGeneratedFile(normalized)) {
     return denyOutput(
       'Generated/build artifact — read the source file instead.',
@@ -95,6 +107,14 @@ export function preReadHandler(event: HookEvent): HookOutput {
   if (manifestHint) {
     recordFileRead(normalized)
     return contextOutput(manifestHint.text)
+  }
+
+  if (isTsConfigFile(basename) && wasFileReadThisSession(normalized)) {
+    recordFileRead(normalized)
+    return contextOutput(
+      'Already read ' + basename + '. Use `token-goat section "' + normalized + '::compilerOptions"` ' +
+      'to extract compiler options, or `token-goat config-get ' + normalized + ' compilerOptions.target` for a single value.',
+    )
   }
 
   if (isManifestFile(basename) && wasFileReadThisSession(normalized)) {
