@@ -22,21 +22,37 @@ function extractCommand(event: HookEvent): string | undefined {
   return typeof cmd === 'string' && cmd.trim() !== '' ? cmd.trim() : undefined
 }
 
+/** True when the path is a temp file (not indexed by token-goat). */
+function isTempPath(fp: string): boolean {
+  const norm = fp.replace(/\\/g, '/')
+  return (
+    /^\/tmp\//i.test(norm) ||
+    /\/var\/folders\//i.test(norm) ||
+    /AppData\/Local\/Temp\//i.test(norm) ||
+    (norm.startsWith('/c/Users/') && norm.includes('/AppData/Local/Temp/'))
+  )
+}
+
 /** Extract the source file path from `cat <path>.<ext>`, or null if not that pattern. */
 function extractCatSourceFile(cmd: string): string | null {
   const m = /^cat\s+(\S+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj))\s*$/.exec(cmd)
   return m?.[1] ?? null
 }
 
-/** Extracts the file path from a simple `cat <path>` command (quoted or unquoted), returning it and whether it is a doc file. Returns null for multi-file cat, piped cat, etc. */
-function extractCatFile(cmd: string): { filePath: string; isDoc: boolean } | null {
+/** Extracts the file path from a simple `cat <path>` command (quoted or unquoted), returning it and whether it is a doc or env file. Returns null for multi-file cat, piped cat, etc. */
+function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean } | null {
   const m = /^cat\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
   if (!m) return null
   const filePath = m[1] ?? m[2] ?? m[3]
   if (filePath === undefined) return null
-  if (!/\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties)$/i.test(filePath)) return null
-  const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-  return { filePath, isDoc }
+  if (isTempPath(filePath)) return null
+  const basename = filePath.includes('/') ? filePath.split('/').at(-1)! : filePath.split('\\').at(-1) ?? filePath
+  const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
+  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
+  if (!hasKnownExt && !isEnvFile) return null
+  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+  const isEnv = isEnvFile || /\.env$/i.test(filePath)
+  return { filePath, isDoc, isEnv }
 }
 
 /** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
@@ -63,6 +79,18 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
     }
   }
   return null
+}
+
+/** Extracts file path from `head -n X <path>` or `head -X <path>` commands. Returns null for unrecognized patterns or temp files. */
+function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean } | null {
+  const m = /^head(?:\s+-n\s+\d+|\s+-\d+)?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+  if (!m) return null
+  const filePath = m[1] ?? m[2] ?? m[3]
+  if (filePath === undefined) return null
+  if (isTempPath(filePath)) return null
+  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
+  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+  return { filePath, isDoc }
 }
 
 /** True when the command is a TypeScript compiler invocation. */
@@ -115,10 +143,12 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
   const catResult = extractCatFile(cmd)
   if (catResult !== null) {
-    const { filePath, isDoc } = catResult
-    const hint = isDoc
-      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-      : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
+    const { filePath, isDoc, isEnv } = catResult
+    const hint = isEnv
+      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` to read a specific variable.'
+      : isDoc
+        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+        : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
     recordStat('session_hint', 0, 0)
     return denyOutput('`cat` loads the entire file into context. ' + hint)
   }
@@ -131,6 +161,16 @@ export function preBashHandler(event: HookEvent): HookOutput {
       : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
     recordStat('session_hint', 0, 0)
     return denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
+  }
+
+  const headResult = extractHeadFile(cmd)
+  if (headResult !== null) {
+    const { filePath, isDoc } = headResult
+    const hint = isDoc
+      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+      : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+    recordStat('session_hint', 0, 0)
+    return contextOutput('`head` bypasses read hooks. ' + hint)
   }
 
   // Monitoring commands: always suggest recall if cached, even on a single prior run.
