@@ -131,14 +131,24 @@ describe('postBashHandler', () => {
   })
 })
 
+function makeBashEvent(command: string): HookEvent {
+  return {
+    eventName: 'pre_tool_use',
+    toolName: 'Bash',
+    toolInput: { command },
+    sessionId: 'test-session',
+    raw: {},
+  }
+}
+
 describe('preBashHandler — cat source file recall', () => {
   beforeEach(() => {
     clearModuleCaches()
   })
 
   it('emits token-goat read suggestion when cat output is cached', async () => {
-    const cmd = 'cat src/Auth.java'
-    const largeOutput = 'public class Auth {\n  // ...\n}\n'.repeat(50)
+    const cmd = 'pytest tests/'
+    const largeOutput = 'PASSED test_auth\nFAILED test_session\n'.repeat(50)
 
     // Post handler caches the output
     await postBashHandler({
@@ -160,20 +170,57 @@ describe('preBashHandler — cat source file recall', () => {
 
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read')
-      expect(result.context).toContain('src/Auth.java')
       expect(result.context).toContain('token-goat bash-output')
     }
   })
 
-  it('passes through on first cat call (not yet cached)', () => {
+  it('passes through on first call for a command with no cached output', () => {
     const result = preBashHandler({
       eventName: 'pre_tool_use',
       toolName: 'Bash',
-      toolInput: { command: 'cat Auth.java' },
+      toolInput: { command: 'echo hello' },
       sessionId: 's',
       raw: {},
     })
     expect(result.hookType).toBe('pass')
+  })
+
+  it('denies cat of a Java source file', () => {
+    const event = makeBashEvent('cat /c/Projects/repo/src/main/java/Foo.java')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('denies cat of a markdown file', () => {
+    const event = makeBashEvent('cat /c/Projects/report.md')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat section')
+    }
+  })
+
+  it('denies cat of a quoted markdown path', () => {
+    const event = makeBashEvent('cat "C:/Projects/yeswehack/report-07/report.md"')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('denies python -c with open() reading a source file', () => {
+    const event = makeBashEvent("python3 -c \"\nwith open('C:/Projects/foo/bar.java') as f: content = f.read()\n\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('denies python heredoc that reads a markdown file', () => {
+    const event = makeBashEvent("python3 - << 'PYEOF'\npath = 'C:/Projects/yeswehack/report-05/report.md'\nwith open(path, encoding='utf-8') as f: content = f.read()\nPYEOF")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat section')
+    }
   })
 })

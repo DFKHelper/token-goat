@@ -8,7 +8,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { contextOutput, passOutput } from './hooks_common.js'
+import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput } from './session.js'
 import { fingerprintContent } from './fingerprint.js'
@@ -26,6 +26,43 @@ function extractCommand(event: HookEvent): string | undefined {
 function extractCatSourceFile(cmd: string): string | null {
   const m = /^cat\s+(\S+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj))\s*$/.exec(cmd)
   return m?.[1] ?? null
+}
+
+/** Extracts the file path from a simple `cat <path>` command (quoted or unquoted), returning it and whether it is a doc file. Returns null for multi-file cat, piped cat, etc. */
+function extractCatFile(cmd: string): { filePath: string; isDoc: boolean } | null {
+  const m = /^cat\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+  if (!m) return null
+  const filePath = m[1] ?? m[2] ?? m[3]
+  if (filePath === undefined) return null
+  if (!/\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties)$/i.test(filePath)) return null
+  const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
+  return { filePath, isDoc }
+}
+
+/** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
+function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean } | null {
+  if (!/python3?/.test(cmd)) return null
+  const EXT = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties)/i
+  // Direct: open('path.ext') or open("path.ext")
+  const direct = /open\(['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(cmd)
+  if (direct) {
+    const filePath = direct[1] ?? ''
+    if (!filePath) return null
+    const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
+    return { filePath, isDoc }
+  }
+  // Indirect: open(var, ...) where a string literal with a known extension appears elsewhere in the cmd
+  if (/open\s*\(/.test(cmd)) {
+    const literal = /['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(cmd)
+    if (literal) {
+      const filePath = literal[1] ?? ''
+      if (filePath && EXT.test(filePath)) {
+        const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
+        return { filePath, isDoc }
+      }
+    }
+  }
+  return null
 }
 
 /** True when the command is a TypeScript compiler invocation. */
@@ -75,6 +112,26 @@ function buildRecallHint(cmd: string, outputId: string): string {
 export function preBashHandler(event: HookEvent): HookOutput {
   const cmd = extractCommand(event)
   if (cmd === undefined) return passOutput()
+
+  const catResult = extractCatFile(cmd)
+  if (catResult !== null) {
+    const { filePath, isDoc } = catResult
+    const hint = isDoc
+      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+      : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
+    recordStat('session_hint', 0, 0)
+    return denyOutput('`cat` loads the entire file into context. ' + hint)
+  }
+
+  const pyRead = extractPythonFileRead(cmd)
+  if (pyRead !== null) {
+    const { filePath, isDoc } = pyRead
+    const hint = isDoc
+      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+      : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
+    recordStat('session_hint', 0, 0)
+    return denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
+  }
 
   // Monitoring commands: always suggest recall if cached, even on a single prior run.
   const monitoringHint = getMonitoringRecallHint(cmd)
