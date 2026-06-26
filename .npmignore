@@ -1,0 +1,17 @@
+# Everything that should NOT be in the npm package
+src/
+tests/
+*.test.ts
+*.spec.ts
+node_modules/
+.claude/
+.vscode/
+esbuild.config.mjs
+tsconfig.json
+lefthook.yml
+vitest.config.ts
+*.log
+.env*
+sdist/
+*.tgz
+dist/.gitignore
