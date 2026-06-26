@@ -123,4 +123,21 @@ describe('token-goat CLI', () => {
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('provide an <id> or --file')
   }, 30000)
+
+  it('bash-output --head and --tail together applies elision', async () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-test-${Date.now()}.txt`)
+    const lines = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`)
+    fs.writeFileSync(tmpFile, lines.join('\n') + '\n')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--head', '5', '--tail', '10'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('line 1')
+      expect(r.stdout).toContain('line 5')
+      expect(r.stdout).toContain('...(elided)...')
+      expect(r.stdout).toContain('line 200')
+      expect(r.stdout).not.toContain('line 100')
+    } finally {
+      fs.unlinkSync(tmpFile)
+    }
+  }, 30000)
 })

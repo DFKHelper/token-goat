@@ -388,7 +388,12 @@ export async function storeOutput(
     const bodyBytes = Buffer.byteLength(body, 'utf-8')
     const truncated = bodyBytes > 256 * 1024
 
-    const storedBody = truncated ? body.slice(-262144) : body
+    let storedBody = body
+    if (truncated) {
+      const buf = Buffer.from(body, 'utf-8')
+      const truncBuf = buf.slice(Math.max(0, buf.length - 262144))
+      storedBody = truncBuf.toString('utf-8')
+    }
     await atomicWriteText(resolve(dir, `${outId}.txt`), storedBody)
 
     const meta: SkillMeta = {
