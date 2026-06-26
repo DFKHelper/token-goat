@@ -177,4 +177,32 @@ describe('getMonitoringRecallHint', () => {
   it('npm run build hint contains --grep', () => {
     expect(getMonitoringRecallHint('npm run build')).toContain('--grep')
   })
+
+  it.each([
+    'codex',
+    'codex --model gpt-4o prompt.md',
+    'codex review --output result.md',
+  ])('matches codex CLI command "%s"', (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+  })
+
+  it.each([
+    'glm.sh prompt.txt',
+    '~/.claude/bin/glm.sh prompt.txt',
+    '.claude/bin/glm.sh /tmp/prompt.txt',
+  ])('matches glm.sh AI CLI command "%s"', (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+  })
+
+  it('codex hint contains --tail and --grep', () => {
+    const hint = getMonitoringRecallHint('codex review.md')
+    expect(hint).toContain('--tail')
+    expect(hint).toContain('--grep')
+  })
+
+  it('glm.sh hint contains --tail and --grep', () => {
+    const hint = getMonitoringRecallHint('~/.claude/bin/glm.sh prompt.txt')
+    expect(hint).toContain('--tail')
+    expect(hint).toContain('--grep')
+  })
 })
