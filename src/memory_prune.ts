@@ -280,8 +280,15 @@ export async function findContentDuplicates(
     for (let j = i + 1; j < siblings.length; j++) {
       if (used.has(j)) continue
 
-      const sim = jaccard(snippets[i]!, snippets[j]!)
-      if (sim >= JACCARD_THRESHOLD) {
+      let isSimilarToAny = false
+      for (const gi of group) {
+        const sim = jaccard(snippets[gi]!, snippets[j]!)
+        if (sim >= JACCARD_THRESHOLD) {
+          isSimilarToAny = true
+          break
+        }
+      }
+      if (isSimilarToAny) {
         group.push(j)
       }
     }

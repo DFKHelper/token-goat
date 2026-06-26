@@ -257,7 +257,7 @@ export function collectFiles(
       }
 
       seen.add(p)
-      const lines = content.split('\n').length + (content && !content.endsWith('\n') ? 1 : 0)
+      const lines = content === '' ? 0 : content.split('\n').length - (content.endsWith('\n') ? 1 : 0)
       const tokens = estimateTokens(content)
       const pf: PackFile = {
         path: p,
