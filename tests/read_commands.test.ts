@@ -200,6 +200,18 @@ describe('read_commands', () => {
       expect(stdout).toContain('Skeleton')
       expect(stdout).toContain('2 symbols')
     })
+
+    it('reports correct total lines when filtering by minLines', () => {
+      const syms: MockSymbol[] = [
+        { name: 'tiny', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+        { name: 'large', kind: 'class', filePath: 'a.ts', lineStart: 10, lineEnd: 30, body: 'class {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runSkeleton({ file: 'a.ts', minLines: 10 }) })
+      expect(stdout).toContain('1 symbols')
+      expect(stdout).toContain('30 lines')
+    })
   })
 
   // ---- runOutline ---------------------------------------------------------
