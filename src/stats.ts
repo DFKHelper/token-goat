@@ -107,6 +107,14 @@ const COMMAND_KINDS: Record<string, Set<string>> = {
   refs: new Set(['symbol_read']),
   map: new Set(['map_lookup']),
   changed: new Set(['changed_lookup']),
+  npm: new Set([
+    'bash_compress:npm_install',
+    'bash_compress:npm_ci',
+    'bash_compress:npm_audit',
+    'bash_compress:npm_ls',
+    'bash_compress:npm_outdated',
+    'bash_compress:npx',
+  ]),
 }
 
 const OVERHEAD_SUFFIX = '_overhead'

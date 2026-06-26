@@ -22,10 +22,30 @@ function makeTmpFile(content = 'data'): string {
   return p
 }
 
+function _makeTmpMdFile(content = 'data'): string {
+  const p = path.join(
+    os.tmpdir(),
+    `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
+  )
+  fs.writeFileSync(p, content)
+  tmpFiles.push(p)
+  return p
+}
+
 function readEvent(filePath: string | undefined): HookEvent {
   return {
     eventName: 'pre_tool_use',
     toolName: 'Read',
+    toolInput: filePath === undefined ? {} : { file_path: filePath },
+    sessionId: 'test',
+    raw: {},
+  }
+}
+
+function grepEvent(filePath: string | undefined): HookEvent {
+  return {
+    eventName: 'pre_tool_use',
+    toolName: 'Grep',
     toolInput: filePath === undefined ? {} : { file_path: filePath },
     sessionId: 'test',
     raw: {},
@@ -102,4 +122,70 @@ describe('preReadHandler', () => {
     const result = preReadHandler(readEvent(undefined))
     expect(result.hookType).toBe('pass')
   })
+
+  it('blocks reads under node_modules/ with a deny output', () => {
+    const result = preReadHandler(readEvent('/project/node_modules/lodash/index.js'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('node_modules is typically noise')
+      expect(result.message).toContain('npm ls')
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('blocks reads under node_modules\\ (backslash) on all platforms', () => {
+    const result = preReadHandler(readEvent('C:\\project\\node_modules\\react\\index.js'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('node_modules is typically noise')
+    }
+  })
+
+  it('blocks node_modules paths case-insensitively on Windows', () => {
+    if (process.platform !== 'win32') {
+      // Skip on non-Windows since the behavior is intentionally case-sensitive there
+      expect(true).toBe(true)
+      return
+    }
+    const result = preReadHandler(readEvent('C:\\PROJECT\\NODE_MODULES\\foo.js'))
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('does not block paths with similar names outside node_modules', () => {
+    const result = preReadHandler(readEvent('/project/my_node_modules_backup/file.js'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('also blocks Grep calls on node_modules paths', () => {
+    const result = preReadHandler(grepEvent('/project/node_modules/package/file.js'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('node_modules is typically noise')
+    }
+  })
+
+  it('gives a section-only re-read hint for .md files', () => {
+    const p = _makeTmpMdFile()
+    recordFileRead(normalizePath(p))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+      expect(result.context).not.toContain('skeleton')
+      expect(result.context).not.toContain('read/section/symbol')
+    }
+  })
+
+  it('gives a section-only large-file hint for .md files', () => {
+    const p = _makeTmpMdFile('x'.repeat(150 * 1024))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+      expect(result.context).not.toContain('skeleton')
+    }
+  })
+
 })

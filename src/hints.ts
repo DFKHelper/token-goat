@@ -422,6 +422,46 @@ export function buildStructuredFileHint(options: {
   }
 }
 
+export function buildPackageManifestHint(options: {
+  file_path: string;
+  offset?: number | null;
+  limit?: number | null;
+}): HintItem | null {
+  try {
+    const hasOffset =
+      options.offset !== null && options.offset !== undefined && options.offset >= 0
+    const hasLimit =
+      options.limit !== null && options.limit !== undefined && options.limit > 0
+
+    if (hasOffset && hasLimit) {
+      return null;
+    }
+
+    const fname = _sanitizeHintPath(options.file_path.split(/[/\\]/).pop() ?? "");
+    const basenameLower = fname.toLowerCase();
+
+    if (basenameLower === "package.json") {
+      const text = `\`${fname}\` is a package manifest. Consider \`token-goat section package.json::dependencies\` or \`token-goat section package.json::devDependencies\` for focused reads.`;
+      return {
+        text,
+        hint_priority: HINT_PRIORITY_MEDIUM,
+      };
+    }
+
+    if (basenameLower === "package-lock.json") {
+      const text = `\`${fname}\` is a large lockfile. Consider \`npm ls\`, \`npm outdated\`, or \`npm audit\` instead for targeted info.`;
+      return {
+        text,
+        hint_priority: HINT_PRIORITY_MEDIUM,
+      };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function buildTestFileHint(
   testFilePath: string,
   sessionCache: SessionCache | undefined,

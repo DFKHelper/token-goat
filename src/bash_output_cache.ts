@@ -58,7 +58,11 @@ const GIT_DIFF_UNSCOPED_RE = /^\s*git\s+diff\b/i
 const GIT_DIFF_SCOPED_RE = /\s--\s+\S/
 const LS_CMD_RE = /^\s*(?:ls|eza|exa|dir|Get-ChildItem|gci)\b/i
 const DEP_LIST_RE = /^\s*(?:npm\s+(?:-\S+\s+)*(?:ls|list)\b|pip\s+(?:-\S+\s+)*(?:list|freeze)\b|uv\s+pip\s+(?:-\S+\s+)*(?:list|freeze)\b|pnpm\s+(?:-\S+\s+)*(?:list|ls)\b|yarn\s+(?:-\S+\s+)*(?:list)\b|cargo\s+(?:-\S+\s+)*tree\b|bundle\s+(?:-\S+\s+)*(?:list|show)\b|composer\s+(?:-\S+\s+)*show\b)/i
+const NPM_INSTALL_RE = /^\s*npm\s+(?:-\S+\s+)*(?:install|ci)\b/i
+const NPM_AUDIT_RE = /^\s*npm\s+(?:-\S+\s+)*audit\b(?!.*(?:--fix|fix)\b)/i
+const NPM_OUTDATED_RE = /^\s*npm\s+(?:-\S+\s+)*outdated\b/i
 const ENV_PROBE_RE = /^\s*(?:node\s+(?:-v|--version)|npm\s+(?:-v|--version)|python3?\s+(?:(?:-V)\b|--?version)|git\s+--version|uv\s+--version|go\s+version|rustc\s+--version|cargo\s+--version|java\s+--version|ruby\s+--version|gem\s+--version|php\s+--version|which\b|where\b)/i
+const NPX_RE = /^\s*npx\s+(?:--?yes\s+)?(?!.*\b(?:install|add|remove|uninstall|i|rm|update|upgrade|set|get|publish|link|ci|audit|shrinkwrap|dedupe|prune|rebuild)\b)/i
 
 const DEP_LOCKFILES: Record<string, string[]> = {
   npm: ['package-lock.json', 'yarn.lock'],
@@ -89,6 +93,22 @@ export function isEnvProbeCommand(cmd: string): boolean {
 
 export function isDepListCommand(cmd: string): boolean {
   return DEP_LIST_RE.test(cmd)
+}
+
+export function isNpmInstallCommand(cmd: string): boolean {
+  return NPM_INSTALL_RE.test(cmd)
+}
+
+export function isNpmAuditCommand(cmd: string): boolean {
+  return NPM_AUDIT_RE.test(cmd)
+}
+
+export function isNpmOutdatedCommand(cmd: string): boolean {
+  return NPM_OUTDATED_RE.test(cmd)
+}
+
+export function isNpxCommand(cmd: string): boolean {
+  return NPX_RE.test(cmd)
 }
 
 export function isUnscopedGitDiff(cmd: string): boolean {
@@ -190,6 +210,11 @@ export async function commandHash(command: string, cwd: string | null = null): P
   if (isDepListCommand(command)) {
     const fp = await depLockfileFingerprint(command, cwd)
     if (fp) key = `${key}\x00lockfile:${fp}`
+  }
+
+  if (cwd && isNpmInstallCommand(command)) {
+    const fp = await depLockfileFingerprint(command, cwd)
+    if (fp) key = `${key}\x00npm-install:${fp}`
   }
 
   return fingerprintContent(key).slice(0, 16)
