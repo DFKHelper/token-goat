@@ -294,6 +294,10 @@ export function getChangedSymbols(
 
 /**
  * Parse changed symbols from diff output.
+ *
+ * CRITICAL FIX: The hunk header @@ -L,N +L,N @@ contains N as the TOTAL number of lines
+ * in the hunk (including context lines), NOT the actual additions/deletions. We must parse
+ * the actual hunk body (lines prefixed with + or -) to get accurate counts.
  */
 function parseChangedSymbols(raw: string, limit: number): ChangedSymbolEntry[] {
   const fileRe = /^\+\+\+ b\/(.+)$/
@@ -303,40 +307,71 @@ function parseChangedSymbols(raw: string, limit: number): ChangedSymbolEntry[] {
   const keyOrder: string[] = []
 
   let currentFile: string | null = null
+  let currentSymbol: string | null
+  const lines = raw.split('\n')
 
-  for (const line of raw.split('\n')) {
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    if (line === undefined) { i++; continue }
+
     const mFile = fileRe.exec(line)
     if (mFile) {
       currentFile = mFile[1] || null
+      i++
       continue
     }
 
-    if (!currentFile) continue
+    if (!currentFile) {
+      i++
+      continue
+    }
 
     const mHunk = hunkRe.exec(line)
-    if (!mHunk) continue
+    if (mHunk) {
+      const context = mHunk[3] || ''
+      currentSymbol = parseSymbolFromContext(context)
+      i++
 
-    const removedStr = mHunk[1]
-    const addedStr = mHunk[2]
-    const context = mHunk[3] || ''
+      let linesAdded = 0
+      let linesRemoved = 0
 
-    const linesRemoved = removedStr ? parseInt(removedStr, 10) : 1
-    const linesAdded = addedStr ? parseInt(addedStr, 10) : 1
+      while (i < lines.length) {
+        const hunkLine = lines[i]
+        if (hunkLine === undefined || hunkLine === '') {
+          i++
+          continue
+        }
+        if (hunkLine.startsWith('@@')) break
+        if (hunkLine.startsWith('+++') || hunkLine.startsWith('---')) {
+          i++
+          break
+        }
+        if (hunkLine.startsWith('+')) {
+          linesAdded++
+        } else if (hunkLine.startsWith('-')) {
+          linesRemoved++
+        }
+        i++
+      }
 
-    const symbol = parseSymbolFromContext(context)
-    if (!symbol) continue
+      if (currentSymbol) {
+        const key = `${currentFile}:${currentSymbol}`
+        if (!counts.has(key)) {
+          counts.set(key, { linesAdded: 0, linesRemoved: 0 })
+          keyOrder.push(key)
+        }
 
-    const key = `${currentFile}:${symbol}`
-    if (!counts.has(key)) {
-      counts.set(key, { linesAdded: 0, linesRemoved: 0 })
-      keyOrder.push(key)
+        const entry = counts.get(key)
+        if (entry) {
+          entry.linesAdded += linesAdded
+          entry.linesRemoved += linesRemoved
+        }
+      }
+      continue
     }
 
-    const entry = counts.get(key)
-    if (entry) {
-      entry.linesAdded += linesAdded
-      entry.linesRemoved += linesRemoved
-    }
+    i++
   }
 
   const result: ChangedSymbolEntry[] = []

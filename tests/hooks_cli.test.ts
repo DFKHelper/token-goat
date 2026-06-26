@@ -203,4 +203,22 @@ describe('failSoft', () => {
     expect(result['continue']).toBe(true)
     expect(result['_tg_error']).toContain('type error')
   })
+
+  it('logs all error types, including TypeError and RangeError (regression: error logging bug)', () => {
+    const handlerTypeError = (): HookResponse => {
+      throw new TypeError('type error')
+    }
+    const wrappedTypeError = failSoft(handlerTypeError)
+    const resultTypeError = wrappedTypeError({})
+    expect(resultTypeError['continue']).toBe(true)
+    expect(resultTypeError['_tg_error']).toContain('type error')
+
+    const handlerRangeError = (): HookResponse => {
+      throw new RangeError('range error')
+    }
+    const wrappedRangeError = failSoft(handlerRangeError)
+    const resultRangeError = wrappedRangeError({})
+    expect(resultRangeError['continue']).toBe(true)
+    expect(resultRangeError['_tg_error']).toContain('range error')
+  })
 })
