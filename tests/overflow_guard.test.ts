@@ -81,5 +81,13 @@ describe('overflow_guard', () => {
       const result = trimToBudget(text, 50, 'unknown')
       expect(result).toContain('Narrow your query')
     })
+
+    it('truncates lines with ANSI codes without corrupting codes', () => {
+      const ansiLine = '\x1b[31mRed text\x1b[0m' + 'x'.repeat(200)
+      const text = ansiLine + '\nmore content'
+      const result = trimToBudget(text, 10)
+      expect(result).toContain('[token-goat: output capped at ~10 tokens')
+      expect(result).not.toContain('\x1b[31m\x1b[')
+    })
   })
 })

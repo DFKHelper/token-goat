@@ -72,9 +72,11 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   let used = 0
 
   for (const ln of lines) {
-    const cost = stripAnsiCodes(ln).length + 1
+    const stripped = stripAnsiCodes(ln)
+    const cost = stripped.length + 1
     if (kept.length === 0 && cost > charBudget) {
-      kept.push(ln.slice(0, charBudget))
+      const truncated = stripped.slice(0, charBudget)
+      kept.push(truncated)
       break
     }
     if (kept.length > 0 && used + cost > charBudget) {

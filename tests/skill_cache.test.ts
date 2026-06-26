@@ -317,6 +317,16 @@ describe('storeOutput and getCompact round trip', () => {
     expect(meta!.truncated).toBe(true)
   })
 
+  it('correctly truncates UTF-8 multi-byte characters when body exceeds 256KB', async () => {
+    const emoji = '🎉'
+    const largeBody = emoji.repeat(300 * 1024 / 4)
+    const meta = await storeOutput('sess123', 'emojiskill', largeBody)
+
+    expect(meta).not.toBeNull()
+    expect(meta!.truncated).toBe(true)
+    expect(meta!.bodyBytes).toBeGreaterThan(256 * 1024)
+  })
+
   it('cross-session dedup returns existing entry', async () => {
     const body = 'Shared skill body'
     const meta1 = await storeOutput('sess1', 'skill', body)
