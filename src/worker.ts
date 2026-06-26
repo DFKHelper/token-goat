@@ -294,9 +294,13 @@ function workerEntry(): void {
     const dir = wd.dataDir ?? dataDir()
     const interval = wd.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     let stop = false
-    parentPort?.on('message', (msg) => {
-      if (msg === 'stop') stop = true
-    })
+    const onStop = (msg: string) => {
+      if (msg === 'stop') {
+        stop = true
+        parentPort?.removeListener('message', onStop)
+      }
+    }
+    parentPort?.on('message', onStop)
     void runWorkerLoop(dir, interval, () => stop)
     return
   }
