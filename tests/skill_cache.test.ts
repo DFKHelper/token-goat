@@ -389,3 +389,24 @@ describe('getAllCachedSkills', () => {
     expect(new Set(names).size).toBe(names.length)
   })
 })
+
+describe('outputIdFor regression - colon handling', () => {
+  it('correctly detects character replacement and appends suffix only when replaced', () => {
+    const id1 = outputIdFor('session123456789', 'plugin:improve', 'sha')
+    const id2 = outputIdFor('session123456789', 'improve', 'sha')
+    expect(id1).toContain('plugin_improven-sha')
+    expect(id2).not.toContain('improven')
+    expect(id2).toContain('improve-sha')
+  })
+
+  it('handles multiple colons correctly', () => {
+    const id = outputIdFor('session123456789', 'org:plugin:skill', 'sha')
+    expect(id).toContain('org_plugin_skilln')
+  })
+
+  it('does not append suffix when no colon exists', () => {
+    const id = outputIdFor('session123456789', 'myskill', 'sha')
+    expect(id).not.toMatch(/mykilln/)
+    expect(id).toContain('myskill-sha')
+  })
+})

@@ -169,8 +169,13 @@ export function getDb(dbPath: string): BetterSqlite3Database {
   const existing = _connections.get(resolved)
   if (existing !== undefined) return existing
 
-  // Ensure the parent directory exists before SQLite tries to create the file.
-  fs.mkdirSync(path.dirname(resolved), { recursive: true })
+  // Ensure the parent directory exists before SQLite tries to create the file. Retry on Windows race conditions.
+  const dir = path.dirname(resolved)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
+  }
 
   const conn = new Database(resolved)
   initConnection(conn)

@@ -75,6 +75,20 @@ describe('getDb', () => {
     // better-sqlite3 ships FTS5 enabled, so this should be present.
     expect(names).toContain('symbols_fts')
   })
+
+  it('handles EEXIST errors gracefully on Windows mkdir race conditions', () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-db-race-'))
+    tmpDirs.push(baseDir)
+    const dbPath = path.join(baseDir, 'subdir', 'index.db')
+    try {
+      const db1 = getDb(dbPath)
+      expect(db1).toBeDefined()
+      const row = db1.prepare('SELECT 1 AS one').get() as { one: number }
+      expect(row.one).toBe(1)
+    } finally {
+      closeDb(dbPath)
+    }
+  })
 })
 
 describe('closeDb', () => {
