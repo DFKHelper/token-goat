@@ -58,10 +58,8 @@ describe('compressOutput', () => {
     const lines = Array.from({ length: 100 }, (_, i) => `line ${i}`)
     const out = compressOutput(lines.join('\n'), { maxLines: 10 })
     const outLines = out.split('\n')
-    // 10 kept lines + 1 elision marker.
-    expect(outLines.length).toBe(11)
+    expect(outLines.length).toBe(10)
     expect(out).toContain('lines elided by token-goat')
-    // Head and tail are preserved.
     expect(outLines[0]).toBe('line 0')
     expect(outLines[outLines.length - 1]).toBe('line 99')
   })

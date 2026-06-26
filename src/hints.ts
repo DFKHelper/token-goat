@@ -410,7 +410,8 @@ export function buildStructuredFileHint(options: {
     }
 
     const fname = _sanitizeHintPath(options.file_path.split(/[/\\]/).pop() ?? "");
-    const ext = fname.substring(fname.lastIndexOf(".")).toLowerCase();
+    const lastDot = fname.lastIndexOf(".");
+    const ext = lastDot === -1 ? "" : fname.substring(lastDot).toLowerCase();
 
     if (![".csv", ".tsv", ".json", ".xml", ".yaml", ".yml", ".toml"].includes(ext)) {
       return null;
