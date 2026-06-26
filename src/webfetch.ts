@@ -111,9 +111,9 @@ async function isSsrfSafe(url: string): Promise<boolean> {
 
 function isPrivateIPv4(ip: string): boolean {
   const octets = ip.split('.').map(Number);
-  if (octets.length !== 4) return false;
-  const a = octets[0] ?? 0;
-  const b = octets[1] ?? 0;
+  if (octets.length !== 4 || octets.some(o => !Number.isFinite(o))) return false;
+  const a = octets[0] as number;
+  const b = octets[1] as number;
   return (
     a === 127 || // 127.x.x.x
     a === 10 || // 10.x.x.x
@@ -330,7 +330,7 @@ export async function fetchUrl(
         const shrunkPath = cachePath.replace(/\.[^.]+$/, `.shrunk${ext}`);
         atomicWriteBytes(shrunkPath, shrinkResult.data);
         finalPath = shrunkPath;
-        if (contentSha && finalPath !== cachePath) {
+        if (finalPath !== cachePath) {
           extraMeta['shrunk_path'] = finalPath;
         }
       }
