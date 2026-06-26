@@ -87,7 +87,7 @@ function safeSkillName(skillName: string): string | null {
 
 export function outputIdFor(sessionId: string, skillName: string, contentSha: string): string {
   const safeSession = safeSessionFragment(sessionId)
-  let safeName = skillName.replace(':', '_')
+  let safeName = skillName.replace(/:/g, '_')
   if (skillName.includes(':')) {
     safeName += 'n'
   }
