@@ -141,6 +141,19 @@ describe('handleOfficeBinary', () => {
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('.odt')
   })
+
+  it('handles file with no extension gracefully', () => {
+    const result = handleOfficeBinary('/path/to/document')
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('Binary Office file')
+    expect(result.message).toContain('.bin')
+  })
+
+  it('handles file with only extension gracefully', () => {
+    const result = handleOfficeBinary('/path/to/.docx')
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('Binary Office file')
+  })
 })
 
 describe('handleCsv', () => {

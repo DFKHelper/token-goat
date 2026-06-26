@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { isImageUrl, isImageContentType, fetchUrl } from '../src/webfetch.js';
+import { isImageUrl, isImageContentType, fetchUrl, isPrivateIPv4 } from '../src/webfetch.js';
 import { resolve } from 'path';
 import { existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
@@ -76,6 +76,48 @@ describe('webfetch', () => {
     it('should return false for non-image types', () => {
       expect(isImageContentType('text/html')).toBe(false);
       expect(isImageContentType('application/json')).toBe(false);
+    });
+  });
+
+  describe('isPrivateIPv4', () => {
+    it('should recognize RFC1918 private ranges', () => {
+      expect(isPrivateIPv4('10.0.0.1')).toBe(true);
+      expect(isPrivateIPv4('10.255.255.255')).toBe(true);
+      expect(isPrivateIPv4('192.168.1.1')).toBe(true);
+      expect(isPrivateIPv4('192.168.0.0')).toBe(true);
+      expect(isPrivateIPv4('172.16.0.0')).toBe(true);
+      expect(isPrivateIPv4('172.31.255.255')).toBe(true);
+    });
+
+    it('should recognize loopback range', () => {
+      expect(isPrivateIPv4('127.0.0.1')).toBe(true);
+      expect(isPrivateIPv4('127.255.255.255')).toBe(true);
+    });
+
+    it('should recognize link-local range', () => {
+      expect(isPrivateIPv4('169.254.1.1')).toBe(true);
+      expect(isPrivateIPv4('169.254.255.255')).toBe(true);
+    });
+
+    it('should reject octets out of valid 0-255 range', () => {
+      expect(isPrivateIPv4('256.0.0.1')).toBe(false);
+      expect(isPrivateIPv4('10.300.0.1')).toBe(false);
+      expect(isPrivateIPv4('10.0.256.1')).toBe(false);
+      expect(isPrivateIPv4('10.0.0.256')).toBe(false);
+      expect(isPrivateIPv4('-1.0.0.1')).toBe(false);
+      expect(isPrivateIPv4('10.-5.0.1')).toBe(false);
+    });
+
+    it('should reject public IP addresses', () => {
+      expect(isPrivateIPv4('8.8.8.8')).toBe(false);
+      expect(isPrivateIPv4('1.1.1.1')).toBe(false);
+      expect(isPrivateIPv4('208.67.222.222')).toBe(false);
+    });
+
+    it('should reject invalid IP formats', () => {
+      expect(isPrivateIPv4('10.0.0')).toBe(false);
+      expect(isPrivateIPv4('10.0.0.1.1')).toBe(false);
+      expect(isPrivateIPv4('not.an.ip.addr')).toBe(false);
     });
   });
 

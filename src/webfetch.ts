@@ -109,10 +109,10 @@ async function isSsrfSafe(url: string): Promise<boolean> {
   }
 }
 
-function isPrivateIPv4(ip: string): boolean {
+export function isPrivateIPv4(ip: string): boolean {
   const octets = ip.split('.').map((s) => {
     const n = Number(s);
-    return s.length > 0 && Number.isFinite(n) ? n : NaN;
+    return s.length > 0 && Number.isFinite(n) && n >= 0 && n <= 255 ? n : NaN;
   });
   if (octets.length !== 4 || octets.some((o) => !Number.isFinite(o))) return false;
   const a = octets[0] as number;
