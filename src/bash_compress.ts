@@ -143,7 +143,7 @@ function truncateLine(line: string, maxLineLength: number): string {
 function truncateLines(lines: readonly string[], maxLines: number): string[] {
   if (lines.length <= maxLines) return [...lines]
   const headKeep = Math.floor(maxLines * 0.4)
-  const tailKeep = maxLines - headKeep
+  const tailKeep = maxLines - headKeep - 1
   const elided = lines.length - headKeep - tailKeep
   return [
     ...lines.slice(0, headKeep),

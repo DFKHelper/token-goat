@@ -338,9 +338,9 @@ function parseChangedSymbols(raw: string, limit: number): ChangedSymbolEntry[] {
   const result: ChangedSymbolEntry[] = []
   for (const key of keyOrder) {
     if (result.length >= limit) break
-    const parts = key.split(':')
-    const file = parts[0] || ''
-    const symbol = parts[1] || ''
+    const colonIdx = key.lastIndexOf(':')
+    const file = colonIdx === -1 ? key : key.slice(0, colonIdx)
+    const symbol = colonIdx === -1 ? '' : key.slice(colonIdx + 1)
     const countsEntry = counts.get(key)
     if (countsEntry) {
       result.push({
