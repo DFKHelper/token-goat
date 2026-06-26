@@ -474,6 +474,9 @@ function mapFsError(e: unknown, src?: string, dest?: string): never {
   if (fe.code === 'ENAMETOOLONG') {
     throw new CliError(`path is too long: ${dest ?? fe.path ?? ''}`)
   }
+  if (fe.code === 'EMFILE' || fe.code === 'ENFILE') {
+    throw new CliError(`too many open files; close other processes or raise the file-descriptor limit and retry`)
+  }
   throw e
 }
 
@@ -483,6 +486,9 @@ const WIN_RESERVED = new Set(['CON','PRN','AUX','NUL','COM1','COM2','COM3','COM4
 function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
   if (!dest || !dest.trim()) {
     throw new CliError('destination path cannot be empty')
+  }
+  if (dest.includes('\0')) {
+    throw new CliError('destination path contains a null byte')
   }
   if (process.platform === 'win32') {
     const base = path.basename(dest)
@@ -498,6 +504,9 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     throw new CliError('cannot use --from and --b64 together')
   }
   if (opts.from !== undefined) {
+    if (!opts.from.trim()) {
+      throw new CliError('--from path cannot be empty')
+    }
     if (opts.from.includes('\0')) {
       throw new CliError('--from path contains a null byte')
     }
@@ -506,8 +515,18 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
       throw new CliError('--from /dev/stdin requires piped input; use piped stdin mode or --b64 for interactive use')
     }
     try {
+      const st = fs.lstatSync(opts.from)
+      if (st.isFIFO() || st.isSocket()) {
+        throw new CliError(`--from '${opts.from}' is a special file (FIFO or socket) — only regular files are supported`)
+      }
+      const maxFromMB = parseInt(process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512', 10)
+      const maxFromBytes = (Number.isFinite(maxFromMB) && maxFromMB > 0 ? maxFromMB : 512) * 1024 * 1024
+      if (st.size > maxFromBytes) {
+        throw new CliError(`--from source exceeds size limit (${Math.round(st.size / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`)
+      }
       atomicWriteBuffer(dest, fs.readFileSync(opts.from))
     } catch (e) {
+      if (e instanceof CliError) throw e
       mapFsError(e, opts.from, dest)
     }
     return
@@ -515,6 +534,9 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
   if (opts.b64 !== undefined) {
     // Strip whitespace (newlines from openssl/base64 CLI output) before url-safe normalization
     const normalized = opts.b64.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
+    if (opts.b64 !== '' && normalized === '') {
+      throw new CliError('--b64 payload contains only whitespace — likely a shell expansion error; pass an empty string explicitly for a zero-byte file')
+    }
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
       throw new CliError('--b64 payload contains non-base64 characters — check for shell expansion of $VAR or backticks')
     }
@@ -540,20 +562,28 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
   return new Promise<void>((resolve, reject) => {
     const chunks: Buffer[] = []
     let totalBytes = 0
+    let settled = false
     process.stdin.on('data', (chunk: Buffer) => {
       totalBytes += chunk.length
       if (totalBytes > maxBytes) {
-        process.stdin.destroy()
-        reject(new CliError(`stdin input exceeds size limit (${Math.round(maxBytes / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`))
+        if (!settled) {
+          settled = true
+          process.stdin.destroy()
+          reject(new CliError(`stdin input exceeds size limit (${Math.round(maxBytes / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`))
+        }
         return
       }
       chunks.push(chunk)
     })
     process.stdin.on('end', () => {
+      if (settled) return
+      settled = true
       try { atomicWriteBuffer(dest, Buffer.concat(chunks)); resolve() }
       catch (e) { try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) } }
     })
     process.stdin.on('error', (e) => {
+      if (settled) return
+      settled = true
       try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) }
     })
     process.stdin.resume()

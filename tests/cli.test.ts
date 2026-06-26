@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { execSync, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -397,6 +397,33 @@ describe('token-goat CLI', () => {
       expect(r.stderr.toString()).toContain('TOKEN_GOAT_MAX_STDIN_MB must be a positive integer')
     } finally {
       fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file --from empty string exits 1', function () {
+    const tmp = path.join(os.tmpdir(), `tg-wf-fromempty-${Date.now()}.txt`)
+    const r = runCli(['write-file', tmp, '--from', ''])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('--from path cannot be empty')
+  })
+
+  it('write-file --b64 whitespace-only exits 1', function () {
+    const tmp = path.join(os.tmpdir(), `tg-wf-wsonly-${Date.now()}.txt`)
+    const r = runCli(['write-file', tmp, '--b64', '   '])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('whitespace')
+  })
+
+  it.skipIf(process.platform === 'win32')('write-file --from FIFO exits 1', function () {
+    const tmpDir = os.tmpdir()
+    const fifo = path.join(tmpDir, `tg-wf-fifo-${Date.now()}.fifo`)
+    execSync(`mkfifo ${fifo}`)
+    try {
+      const r = runCli(['write-file', path.join(tmpDir, `tg-wf-fifo-out-${Date.now()}.txt`), '--from', fifo])
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('special file')
+    } finally {
+      fs.rmSync(fifo, { force: true })
     }
   })
 })
