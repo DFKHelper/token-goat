@@ -296,10 +296,13 @@ export async function safeRun(
 function readStdin(): Promise<HookPayload> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = []
-    process.stdin.on('data', (chunk: Buffer) => {
+    const onData = (chunk: Buffer) => {
       chunks.push(chunk)
-    })
-    process.stdin.on('end', () => {
+    }
+    const onEnd = () => {
+      process.stdin.removeListener('data', onData)
+      process.stdin.removeListener('end', onEnd)
+      process.stdin.removeListener('error', onError)
       const raw = Buffer.concat(chunks).toString('utf8').trim()
       if (!raw) {
         resolve({})
@@ -311,9 +314,15 @@ function readStdin(): Promise<HookPayload> {
       } catch {
         resolve({})
       }
-    })
-    process.stdin.on('error', () => {
+    }
+    const onError = () => {
+      process.stdin.removeListener('data', onData)
+      process.stdin.removeListener('end', onEnd)
+      process.stdin.removeListener('error', onError)
       resolve({})
-    })
+    }
+    process.stdin.on('data', onData)
+    process.stdin.on('end', onEnd)
+    process.stdin.on('error', onError)
   })
 }

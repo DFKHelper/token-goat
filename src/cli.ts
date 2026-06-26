@@ -580,29 +580,40 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     const chunks: Buffer[] = []
     let totalBytes = 0
     let settled = false
-    process.stdin.on('data', (chunk: Buffer) => {
+    const onData = (chunk: Buffer) => {
       totalBytes += chunk.length
       if (totalBytes > maxBytes) {
         if (!settled) {
           settled = true
+          cleanup()
           process.stdin.destroy()
           reject(new CliError(`stdin input exceeds size limit (${Math.round(maxBytes / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`))
         }
         return
       }
       chunks.push(chunk)
-    })
-    process.stdin.on('end', () => {
+    }
+    const onEnd = () => {
       if (settled) return
       settled = true
+      cleanup()
       try { atomicWriteBuffer(dest, Buffer.concat(chunks)); resolve() }
       catch (e) { try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) } }
-    })
-    process.stdin.on('error', (e) => {
+    }
+    const onError = (e: Error) => {
       if (settled) return
       settled = true
+      cleanup()
       try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) }
-    })
+    }
+    const cleanup = () => {
+      process.stdin.removeListener('data', onData)
+      process.stdin.removeListener('end', onEnd)
+      process.stdin.removeListener('error', onError)
+    }
+    process.stdin.on('data', onData)
+    process.stdin.on('end', onEnd)
+    process.stdin.on('error', onError)
     process.stdin.resume()
   })
 }
