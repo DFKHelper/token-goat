@@ -328,6 +328,10 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   { pattern: /^npm run (?:test|spec)(?:\s|$)/, recallHint: '--grep "FAIL|PASS|Error|Tests:|✓|✗"' },
   { pattern: /^npm run build(?:\s|$)/, recallHint: '--grep "error|Built|Failed|✓|✗"' },
   { pattern: /^npm run (?:lint|typecheck|check|type-check)(?:\s|$)/, recallHint: '--grep "error|warning|✖|problems"' },
+
+  // External AI peer-review CLI tools (produce large outputs, run repeatedly per session)
+  { pattern: /^codex(?:\s|$)/, recallHint: '--tail 100 --grep "error|suggestion|verdict|conclusion"' },
+  { pattern: /^(?:~\/\.claude\/bin\/|\.claude\/bin\/)?glm\.sh(?:\s|$)/, recallHint: '--tail 100 --grep "error|verdict|conclusion|suggestion"' },
 ]
 
 /**
