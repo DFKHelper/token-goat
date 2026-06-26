@@ -4,6 +4,28 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-06-25
+
+### Added
+
+- **Language-agnostic read-suppression and build-tool recall pattern table.** `src/hints/lang_patterns.ts` adds a data-driven table covering 13 lock-file types (pre-read deny + section offer), 16 manifest/config types (section/config-get nudge on re-read), generated build-output directories (read suppression), and 12 build-tool stdout patterns (bash-output recall). The table is the single source of truth consumed by the pre-read and pre-bash hooks.
+
+- **npm-specific hook improvements.** `package-lock.json` triggers a pre-read deny with a `token-goat section` offer; `node_modules/` reads are suppressed; `package.json` re-reads emit a section/config-get nudge; `npm install`, `npm test`, `npm run`, `npm ci`, and `npm audit` stdout is cached and recalled via `bash-output --grep`.
+
+- **TypeScript and JavaScript hook patterns.** `tsconfig.json` section hint on re-read; `.d.ts` files in `dist/` suppressed; `tsc`/`tsc --watch` and Vite/esbuild/webpack build output cached; vitest/jest output cached with `--grep FAIL`; `dist/`, `out/`, `.next/`, `.nuxt/`, `build/` directories suppressed; `*.min.js` and `*.bundle.js` files suppressed.
+
+- **Process-monitoring command recall hints.** Pre-bash intercept for repeated monitoring commands: `gh run watch/view`, `gh run view --log`, `gh pr checks`, next dev/build, vite, nuxt dev, vitest/jest watch, pytest, cargo test, go test, docker logs, nodemon, air, cargo watch, watchexec, eslint, prettier, ruff, clippy. When a prior run is cached and its output exceeds 2 KB, a recall pointer is injected instead of re-running the command.
+
+- **Large markdown file interception with heading-tree hints.** Markdown files ≥ 8 KB with three or more headings are intercepted on pre-read (block: true). The hook extracts ATX H1–H3 headings (capped at 40), formats a heading tree with `#2`/`#3` disambiguation suffixes, and injects it with `token-goat section` shortcuts. Well-known files (README.md, CHANGELOG.md, CONTRIBUTING.md, CLAUDE.md, CLAUDE.arch.md) receive pre-populated section shortcuts. Post-edit on markdown files injects a `token-goat section` re-read suggestion.
+
+- **Universal large-file interception for PDF, HTML, TXT, Office, and CSV files.** `src/hints/file_type_handler.ts` dispatches on extension. PDF and Office binaries (.docx/.xlsx/.pptx/.odt/.ods) are fully blocked with pandoc/docx2txt extraction suggestions. HTML ≥ 50 KB is intercepted with title + heading index; minified HTML is flagged. TXT/log files ≥ 20 KB show line count plus first/last five lines with head/tail/grep offers. CSV/TSV ≥ 10 KB shows column headers, row count, and three sample rows with a DuckDB suggestion. Any file ≥ 100 KB hits a generic catch-all with byte/line count.
+
+### Fixed
+
+- **(921ffab) parseInt radix, YAML frontmatter close regex, ANSI strip scope.** `parseInt(env, 10)` in `ask.ts` prevents octal interpretation on leading-zero values. `memory_prune.ts` tightens the frontmatter closing delimiter from bare `indexOf('\n---')` to `/\n---(?:\n|$)/` so `\n---extra` lines no longer terminate frontmatter early. `overflow_guard.ts` replaces the SGR-only local `stripAnsi` with the full-coverage `stripAnsiCodes` from `bash_compress.ts`, which handles OSC, DCS, and cursor sequences.
+
+- **(a4caffe) Falsy-zero timeout, missing maxHints guard, and hint suppressor logic.** `ask.ts` `parseTimeoutSecs()` replaces `parseInt(env) || DEFAULT` so a timeout of `"0"` is honoured rather than treated as falsy. `hints.ts` adds an early-return guard for `maxHints <= 0`. `buildIndexOnlyFileHint`, `buildStructuredFileHint`, and `buildPackageManifestHint` change `hasOffset && hasLimit` to `hasOffset || hasLimit` so a read with only offset (or only limit) also suppresses the hint. Ten regression tests added.
+
 ## [2.0.0] - 2026-06-25
 
 ### Changed
