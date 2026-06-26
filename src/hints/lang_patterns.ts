@@ -51,6 +51,20 @@ const MANIFEST_FILE_NAMES: ReadonlySet<string> = new Set([
   'cmakelists.txt',
   'makefile',
   'project.clj',
+  // TypeScript / JavaScript project configs
+  'tsconfig.json',
+  'jsconfig.json',
+  // Bundler / framework configs
+  'vite.config.ts',
+  'vite.config.js',
+  'webpack.config.js',
+  'webpack.config.ts',
+  'rollup.config.js',
+  'rollup.config.ts',
+  'esbuild.config.js',
+  'next.config.js',
+  'next.config.ts',
+  'nuxt.config.ts',
 ])
 
 /**
@@ -60,6 +74,14 @@ const MANIFEST_FILE_NAMES: ReadonlySet<string> = new Set([
 const MANIFEST_EXTENSIONS: ReadonlySet<string> = new Set([
   '.cabal',
 ])
+
+/**
+ * Regex patterns for manifest files that cannot be expressed as exact
+ * basename matches (e.g. `tsconfig.*.json`).
+ */
+const MANIFEST_BASENAME_PATTERNS: ReadonlyArray<RegExp> = [
+  /^tsconfig(\..+)?\.json$/i,
+]
 
 /**
  * Build output directory segment names (lowercased).
@@ -101,6 +123,7 @@ const ALWAYS_GENERATED_EXTS: ReadonlySet<string> = new Set([
   '.so',
   '.dylib',
   '.dll',
+  '.tsbuildinfo',
 ])
 
 /**
@@ -145,6 +168,22 @@ export const BUILD_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   /^\s*cmake\s+--build\b/i,
   // Rake (Ruby)
   /^\s*rake\b/i,
+  // TypeScript compiler
+  /^\s*tsc\b/i,
+  // Vite
+  /^\s*vite\s+(build|dev|preview)\b/i,
+  // Next.js
+  /^\s*next\s+(build|dev|start)\b/i,
+  // Nuxt
+  /^\s*nuxt\s+(build|dev)\b/i,
+  // Webpack
+  /^\s*webpack\b/i,
+  // esbuild
+  /^\s*esbuild\b/i,
+  // Rollup
+  /^\s*rollup\b/i,
+  // Turbo
+  /^\s*turbo\s+(build|dev)\b/i,
 ]
 
 // ---------------------------------------------------------------------------
@@ -170,6 +209,7 @@ export function isManifestFile(basename: string): boolean {
   if (MANIFEST_FILE_NAMES.has(lower)) return true
   const dot = lower.lastIndexOf('.')
   if (dot !== -1 && MANIFEST_EXTENSIONS.has(lower.slice(dot))) return true
+  if (MANIFEST_BASENAME_PATTERNS.some((re) => re.test(basename))) return true
   return false
 }
 

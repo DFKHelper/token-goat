@@ -20,6 +20,44 @@ function extractCommand(event: HookEvent): string | undefined {
   return typeof cmd === 'string' && cmd.trim() !== '' ? cmd.trim() : undefined
 }
 
+/** True when the command is a TypeScript compiler invocation. */
+function isTscCommand(cmd: string): boolean {
+  return /^\s*tsc(\s|$)/i.test(cmd)
+}
+
+/** True when the command is a JS/TS dev server (vite dev, next dev, nuxt dev). */
+function isDevServerCommand(cmd: string): boolean {
+  return /^\s*(vite\s+dev|next\s+dev|nuxt\s+dev)\b/i.test(cmd)
+}
+
+/**
+ * Build the recall hint text for a cached build command output.
+ *
+ * Returns a hint tailored to the command type (tsc, dev server, or generic).
+ */
+function buildRecallHint(cmd: string, outputId: string): string {
+  const cmdPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
+  if (isTscCommand(cmd)) {
+    return (
+      'Output from a prior `' + cmdPreview + '` run is cached. ' +
+      'Use `token-goat bash-output ' + outputId + ' --grep "error TS"` to filter TypeScript errors, ' +
+      'or `--grep "Cannot find"` for missing module errors.'
+    )
+  }
+  if (isDevServerCommand(cmd)) {
+    return (
+      'Dev server output cached (`' + cmdPreview + '`). ' +
+      'Use `token-goat bash-output ' + outputId + ' --tail 20` to see the latest output, ' +
+      'or `--grep "error\\|warn"` to filter issues.'
+    )
+  }
+  return (
+    'Output from a prior `' + cmdPreview + '` run is cached. ' +
+    'Use `token-goat bash-output ' + outputId + '` (or `--tail 50`, `--grep ERROR`) ' +
+    'to re-inspect it without re-running.'
+  )
+}
+
 /**
  * pre_tool_use handler for the Bash tool.
  *
@@ -37,12 +75,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
   const outputId = getBashOutputId(cmdHash)
   if (outputId === null) return passOutput()
 
-  const cmdPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
-  return contextOutput(
-    'Output from a prior `' + cmdPreview + '` run is cached. ' +
-    'Use `token-goat bash-output ' + outputId + '` (or `--tail 50`, `--grep ERROR`) ' +
-    'to re-inspect it without re-running.',
-  )
+  return contextOutput(buildRecallHint(cmd, outputId))
 }
 
 registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
