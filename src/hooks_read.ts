@@ -43,6 +43,12 @@ function isTsConfigFile(basename: string): boolean {
 /** Size at or above which a read is nudged toward a surgical command. */
 const LARGE_FILE_BYTES = 100 * 1024
 
+/** Re-read deny threshold: files above this size that have already been read are denied rather than just hinted. */
+const REREAD_DENY_BYTES = 50 * 1024
+
+/** First-read deny threshold: files this large are denied even on the first read (too expensive to load). */
+const LARGE_FILE_DENY_BYTES = 500 * 1024
+
 /** Check if a path is under node_modules/. Case-insensitive on Windows, case-sensitive elsewhere. */
 function isNodeModulesPath(path: string): boolean {
   const isWindows = process.platform === 'win32'
@@ -177,6 +183,11 @@ export function preReadHandler(event: HookEvent): HookOutput {
       : 'Use token-goat read/section/symbol to re-read surgically.'
     const rereadBytes = statSize(normalized) ?? 0
     recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
+    if (rereadBytes >= REREAD_DENY_BYTES) {
+      return denyOutput(
+        normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
+      )
+    }
     return contextOutput(
       'Note: ' + normalized + ' was already read this session (' + reads + ' ' + plural + '). ' +
         hint,
@@ -191,6 +202,11 @@ export function preReadHandler(event: HookEvent): HookOutput {
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Consider token-goat skeleton or token-goat section.'
     recordStat('session_hint', size, Math.round(size / 4))
+    if (size >= LARGE_FILE_DENY_BYTES) {
+      return denyOutput(
+        normalized + ' is very large (' + kb + 'KB). ' + hint + ' Use Read with offset/limit to sample specific sections.',
+      )
+    }
     return contextOutput(
       'Note: ' + normalized + ' is large (' + kb + 'kb). ' +
         hint,

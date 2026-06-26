@@ -75,7 +75,7 @@ describe('preReadHandler', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('returns a re-read context hint when the file was already read', () => {
+  it('returns a re-read context hint when the file was already read (small file)', () => {
     const p = makeTmpFile()
     recordFileRead(normalizePath(p))
 
@@ -87,7 +87,19 @@ describe('preReadHandler', () => {
     }
   })
 
-  it('returns a large-file context hint for files >100KB', () => {
+  it('denies re-read of a large file (>50KB) that was already read this session', () => {
+    const p = makeTmpFile('x'.repeat(60 * 1024))
+    recordFileRead(normalizePath(p))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('already read this session')
+      expect(result.message).toContain('token-goat read/section/symbol')
+    }
+  })
+
+  it('returns a large-file context hint for files between 100KB and 500KB', () => {
     const p = makeTmpFile('x'.repeat(150 * 1024))
 
     const result = preReadHandler(readEvent(p))
@@ -95,6 +107,17 @@ describe('preReadHandler', () => {
     if (result.hookType === 'context') {
       expect(result.context).toContain('is large')
       expect(result.context).toContain('token-goat skeleton')
+    }
+  })
+
+  it('denies first read of very large files (>500KB)', () => {
+    const p = makeTmpFile('x'.repeat(600 * 1024))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is very large')
+      expect(result.message).toContain('token-goat skeleton')
     }
   })
 
