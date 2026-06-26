@@ -40,9 +40,10 @@ afterEach(() => {
 })
 
 describe('postEditHandler', () => {
-  it('always returns pass', () => {
+  it('returns pass for non-markdown files and context for markdown files', () => {
     expect(postEditHandler(editEvent('/a/file.ts')).hookType).toBe('pass')
     expect(postEditHandler(editEvent(undefined)).hookType).toBe('pass')
+    expect(postEditHandler(editEvent('/a/file.md')).hookType).toBe('context')
   })
 
   it('records the edit with the normalized path', () => {
@@ -70,5 +71,48 @@ describe('postEditHandler', () => {
     postEditHandler(editEvent('/a/w.ts', 'Write'))
     postEditHandler(editEvent('/a/e.ts', 'Edit'))
     expect(getDirtyPaths()).toEqual([normalizePath('/a/w.ts'), normalizePath('/a/e.ts')])
+  })
+
+  it('returns contextOutput with markdown hint when editing .md files', () => {
+    const result = postEditHandler(editEvent('/project/README.md'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('README.md')
+      expect(result.context).toContain('was edited')
+      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('HeadingName')
+    }
+  })
+
+  it('returns contextOutput with markdown hint when editing .mdx files', () => {
+    const result = postEditHandler(editEvent('/project/component.mdx'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('component.mdx')
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('returns contextOutput with markdown hint when editing .markdown files', () => {
+    const result = postEditHandler(editEvent('/project/guide.markdown'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('guide.markdown')
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('returns contextOutput with markdown hint when editing .rst files', () => {
+    const result = postEditHandler(editEvent('/project/docs.rst'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('docs.rst')
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('returns pass for non-markdown file edits', () => {
+    const result = postEditHandler(editEvent('/project/src/index.ts'))
+    expect(result.hookType).toBe('pass')
   })
 })

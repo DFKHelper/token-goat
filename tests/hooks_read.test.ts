@@ -188,4 +188,122 @@ describe('preReadHandler', () => {
     }
   })
 
+  it('intercepts markdown files >=8KB with >=3 headings and returns deny', () => {
+    const mdContent = `# Title
+Some content here
+
+## Installation
+Instructions here
+
+### Quick Start
+More details
+
+## Usage
+How to use this
+
+### Examples
+Examples here`
+
+    const p = _makeTmpMdFile(mdContent + 'x'.repeat(10000))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Large markdown file')
+      expect(result.message).toContain('# Title')
+      expect(result.message).toContain('## Installation')
+      expect(result.message).toContain('token-goat section')
+    }
+  })
+
+  it('allows small markdown files to pass through even with headings', () => {
+    const mdContent = `# Title
+## Section
+### Subsection`
+
+    const p = _makeTmpMdFile(mdContent)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('allows large markdown files with <3 headings to pass through', () => {
+    const mdContent = `# Title
+Some content that makes the file large enough`
+
+    const p = _makeTmpMdFile(mdContent + 'x'.repeat(10000))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('intercepts .mdx files with same rules as .md', () => {
+    const mdContent = `# React Component
+## Props
+### Configuration
+## Examples`
+
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.mdx`,
+    )
+    fs.writeFileSync(p, mdContent + 'x'.repeat(10000))
+    tmpFiles.push(p)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Large markdown file')
+    }
+  })
+
+  it('includes well-known sections in the deny output for README.md', () => {
+    const readmeContent = `# My Project
+## Installation
+## Usage
+## API
+## Configuration
+## Getting Started`
+
+    const p = path.join(
+      os.tmpdir(),
+      `README.md`,
+    )
+    fs.writeFileSync(p, readmeContent + 'x'.repeat(10000))
+    tmpFiles.push(p)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Quick access:')
+      expect(result.message).toContain('Installation')
+      expect(result.message).toContain('Usage')
+      expect(result.message).toContain('API')
+    }
+  })
+
+  it('includes CHANGELOG version hint for large CHANGELOG.md files', () => {
+    const changelogContent = `# Changelog
+
+## [Unreleased]
+
+## [2.1.0] - 2024-06-01
+
+### Added
+- New feature
+
+## [2.0.0] - 2024-01-01`
+
+    const p = path.join(
+      os.tmpdir(),
+      `CHANGELOG.md`,
+    )
+    fs.writeFileSync(p, changelogContent + 'x'.repeat(10000))
+    tmpFiles.push(p)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('[2.1.0]')
+      expect(result.message).toContain('token-goat section')
+    }
+  })
+
 })
