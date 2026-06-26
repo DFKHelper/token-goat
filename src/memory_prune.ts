@@ -204,11 +204,16 @@ function siblingSnippet(filePath: string): string {
     return ''
   }
 
-  // Strip YAML frontmatter (--- ... ---) to get the body.
+  // Strip YAML frontmatter (--- ... ---) to get the body. Match only a closing
+  // `\n---` that is followed by `\n` or end-of-file, not `\n---extra` lines.
   if (text.startsWith('---')) {
-    const end = text.indexOf('\n---', 3)
+    const closeRe = /\n---(?:\n|$)/g
+    closeRe.lastIndex = 3
+    const closeMatch = closeRe.exec(text)
+    const end = closeMatch ? closeMatch.index : -1
+    const closeLen = closeMatch ? closeMatch[0].length : 0
     if (end !== -1) {
-      const body = text.slice(end + 4).trimStart()
+      const body = text.slice(end + closeLen).trimStart()
       const fm = text.slice(3, end)
 
       let desc = ''
