@@ -144,7 +144,7 @@ function skipBraceBody(lines: string[], start: number, initialDepth: number, isJ
       const ch = line[j]!
 
       if (inBlockComment) {
-        if (ch === '*' && line[j + 1] === '/') {
+        if (ch === '*' && j + 1 < line.length && line[j + 1] === '/') {
           inBlockComment = false
           j += 2
         } else {
@@ -173,11 +173,11 @@ function skipBraceBody(lines: string[], start: number, initialDepth: number, isJ
         continue
       }
 
-      if (ch === '/' && line[j + 1] === '/') {
+      if (ch === '/' && j + 1 < line.length && line[j + 1] === '/') {
         break
       }
 
-      if (ch === '/' && line[j + 1] === '*') {
+      if (ch === '/' && j + 1 < line.length && line[j + 1] === '*') {
         inBlockComment = true
         j += 2
         continue
@@ -362,7 +362,7 @@ export function stripComments(code: string, language: string): string {
 
         if (isPython && ch === '#') {
           return line.slice(0, i).trimEnd()
-        } else if (!isPython && ch === '/' && line[i + 1] === '/') {
+        } else if (!isPython && ch === '/' && i + 1 < line.length && line[i + 1] === '/') {
           return line.slice(0, i).trimEnd()
         }
 
