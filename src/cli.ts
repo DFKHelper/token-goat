@@ -414,7 +414,10 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e
   }
-  const tmp = dest + '.tmp.' + process.pid
+  // Place tmp in same directory as dest so rename is always same-device (avoids EXDEV).
+  // Include random suffix to eliminate PID-reuse collisions.
+  const rnd = Math.random().toString(36).slice(2, 8)
+  const tmp = path.join(path.dirname(path.resolve(dest)), `.tmp.${process.pid}.${rnd}`)
   try {
     fs.writeFileSync(tmp, data)
     try {
@@ -422,7 +425,8 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
         fs.copyFileSync(tmp, dest)
-        fs.unlinkSync(tmp)
+        // Orphaned tmp on unlink failure is benign — dest already has correct content.
+        try { fs.unlinkSync(tmp) } catch { /* ignore */ }
       } else {
         throw e
       }
@@ -433,16 +437,32 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   }
 }
 
-function mapFsError(e: unknown, src?: string): never {
+function mapFsError(e: unknown, src?: string, dest?: string): never {
   const fe = e as NodeJS.ErrnoException
   if (fe.code === 'ENOENT') {
     const errPath = fe.path ?? ''
     const isSource = src !== undefined && path.resolve(errPath) === path.resolve(src)
     if (isSource) throw new CliError(`source file not found: ${src}`)
-    throw new CliError(`destination directory does not exist: ${errPath}`)
+    // Show the destination directory, not the internal .tmp path
+    const destDir = dest ? path.dirname(path.resolve(dest)) : errPath
+    throw new CliError(`destination directory does not exist: ${destDir}`)
   }
   if (fe.code === 'EISDIR') {
-    throw new CliError(`destination is a directory, not a file: ${fe.path ?? ''}`)
+    const errPath = fe.path ?? ''
+    // Windows: readFileSync on a directory yields e.path===undefined; atomicWriteBuffer always sets e.path=dest.
+    // Empty errPath with a src arg means the source was the directory.
+    const isSource = src !== undefined && (errPath === '' || path.resolve(errPath) === path.resolve(src))
+    if (isSource) throw new CliError(`source is a directory, not a file: ${src}`)
+    throw new CliError(`destination is a directory, not a file: ${dest ?? (errPath || '(unknown)')}`)
+  }
+  if (fe.code === 'EACCES' || fe.code === 'EPERM') {
+    throw new CliError(`permission denied writing to: ${dest ?? fe.path ?? ''}`)
+  }
+  if (fe.code === 'EROFS') {
+    throw new CliError(`filesystem is read-only: ${dest ?? fe.path ?? ''}`)
+  }
+  if (fe.code === 'ENOSPC') {
+    throw new CliError(`no space left on device writing to: ${dest ?? fe.path ?? ''}`)
   }
   throw e
 }
@@ -455,7 +475,7 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     try {
       atomicWriteBuffer(dest, fs.readFileSync(opts.from))
     } catch (e) {
-      mapFsError(e, opts.from)
+      mapFsError(e, opts.from, dest)
     }
     return
   }
@@ -467,16 +487,19 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     try {
       atomicWriteBuffer(dest, Buffer.from(normalized, 'base64'))
     } catch (e) {
-      mapFsError(e)
+      mapFsError(e, undefined, dest)
     }
     return
+  }
+  if (process.stdin.isTTY) {
+    throw new CliError('stdin mode requires piped input; use --b64 or --from for interactive use')
   }
   return new Promise<void>((resolve, reject) => {
     const chunks: Buffer[] = []
     process.stdin.on('data', (chunk: Buffer) => chunks.push(chunk))
     process.stdin.on('end', () => {
       try { atomicWriteBuffer(dest, Buffer.concat(chunks)); resolve() }
-      catch (e) { try { mapFsError(e) } catch (e2) { reject(e2) } }
+      catch (e) { try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) } }
     })
     process.stdin.on('error', reject)
     process.stdin.resume()
@@ -635,7 +658,7 @@ export function buildProgram(): Command {
 
   program
     .command('write-file <dest>')
-    .description('write exact bytes to a file — handles backticks, quotes, $vars, CRLF without escaping')
+    .description('write exact bytes to a file — handles backticks, quotes, $vars, CRLF without escaping\n\nModes: --b64 PAYLOAD (base64), --from SOURCE (copy file), or piped stdin')
     .option('--from <source>', 'copy bytes from this source file instead of stdin/base64')
     .option('--b64 <payload>', 'decode base64 payload and write to dest')
     .action(guard(cmdWriteFile))

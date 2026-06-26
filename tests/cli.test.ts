@@ -283,10 +283,47 @@ describe('token-goat CLI', () => {
     expect(r.stderr).toContain('directory')
   })
 
-  it('write-file --from where source is a directory exits 1', () => {
+  it('write-file --from where source is a directory exits 1 with "source" in message', () => {
     const dst = path.join(os.tmpdir(), `tg-wf-dst-isdir-${Date.now()}.txt`)
     const r = runCli(['write-file', dst, '--from', os.tmpdir()])
     expect(r.status).toBe(1)
+    expect(r.stderr).toContain('source')
     expect(r.stderr).toContain('directory')
+  })
+
+  it('write-file non-existent dest directory exits 1 without .tmp in message', () => {
+    const r = runCli(['write-file', '/nonexistent-dir-xyz/file.txt', '--b64', 'dGVzdA=='])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('nonexistent-dir-xyz')
+    expect(r.stderr).not.toContain('.tmp.')
+  })
+
+  it('write-file --from self-overwrite preserves content', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-self-${Date.now()}.txt`)
+    fs.writeFileSync(tmp, 'self-overwrite content', 'utf8')
+    try {
+      const r = runCli(['write-file', tmp, '--from', tmp])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(tmp, 'utf8')).toBe('self-overwrite content')
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file stdin empty write produces zero-byte file', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-stdin-empty-${Date.now()}.txt`)
+    try {
+      const r = runCli(['write-file', tmp], '')
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(tmp)).toHaveLength(0)
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file --help mentions stdin', () => {
+    const r = runCli(['write-file', '--help'])
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('stdin')
   })
 })
