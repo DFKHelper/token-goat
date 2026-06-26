@@ -12,7 +12,7 @@ import { contextOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId } from './session.js'
 import { fingerprintContent } from './fingerprint.js'
-import { isBuildCommand } from './hints/lang_patterns.js'
+import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 
 /** Extract the command string from a Bash tool_input. */
 function extractCommand(event: HookEvent): string | undefined {
@@ -67,6 +67,20 @@ function buildRecallHint(cmd: string, outputId: string): string {
 export function preBashHandler(event: HookEvent): HookOutput {
   const cmd = extractCommand(event)
   if (cmd === undefined) return passOutput()
+
+  // Monitoring commands: always suggest recall if cached, even on a single prior run.
+  const monitoringHint = getMonitoringRecallHint(cmd)
+  if (monitoringHint !== null) {
+    const monCmdHash = fingerprintContent(cmd).slice(0, 16)
+    const monOutputId = getBashOutputId(monCmdHash)
+    if (monOutputId !== null) {
+      const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
+      return contextOutput(
+        'Prior output from `' + cmdSummary + '` is cached.\n' +
+        'Use `token-goat bash-output ' + monOutputId + ' ' + monitoringHint + '` to re-inspect without re-running.'
+      )
+    }
+  }
 
   if (!isBuildCommand(cmd)) return passOutput()
 
