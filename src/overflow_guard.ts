@@ -75,7 +75,7 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
     const stripped = stripAnsiCodes(ln)
     const cost = stripped.length + 1
     if (kept.length === 0 && cost > charBudget) {
-      const truncated = stripped.slice(0, charBudget)
+      const truncated = ln.slice(0, charBudget)
       kept.push(truncated)
       break
     }

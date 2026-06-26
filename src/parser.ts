@@ -283,7 +283,7 @@ function stripPythonStringQuotes(raw: string): string {
   // Strip optional string prefix (r, b, f, u and combinations).
   s = s.replace(/^[A-Za-z]+/, '')
   for (const q of ['"""', "'''", '"', "'"]) {
-    if (s.startsWith(q) && s.endsWith(q) && s.length >= q.length * 2) {
+    if (s.startsWith(q) && s.endsWith(q) && s.length > q.length * 2) {
       return s.slice(q.length, s.length - q.length).trim()
     }
   }
