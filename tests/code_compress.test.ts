@@ -89,6 +89,36 @@ describe('code_compress', () => {
       const lines = result.split('\n')
       expect(lines[0]).toBe('x = 1')
     })
+
+    it('preserves # inside Python strings', () => {
+      const code = 's = "hello # world"  # comment'
+      const result = stripComments(code, 'py')
+      expect(result).toBe('s = "hello # world"')
+    })
+
+    it('preserves // inside JavaScript strings', () => {
+      const code = 'const url = "http://example.com"  // comment'
+      const result = stripComments(code, 'js')
+      expect(result).toBe('const url = "http://example.com"')
+    })
+
+    it('handles escaped quotes in strings', () => {
+      const code = 's = "say \\"#\\" here"  # comment'
+      const result = stripComments(code, 'py')
+      expect(result).toBe('s = "say \\"#\\" here"')
+    })
+
+    it('preserves // inside JS template literals', () => {
+      const code = 'const url = `http://example.com`  // comment'
+      const result = stripComments(code, 'ts')
+      expect(result).toBe('const url = `http://example.com`')
+    })
+
+    it('does not treat backtick as string delimiter in Python', () => {
+      const code = 'x = 1  # comment with ` backtick'
+      const result = stripComments(code, 'py')
+      expect(result).toBe('x = 1')
+    })
   })
 
   describe('deduplicateLines', () => {

@@ -326,20 +326,50 @@ function compressBraceLang(source: string, fileExt: string): string {
 /**
  * Strip comments from code (language-aware).
  * Handles: // for TS/JS/Go/Rust/Java, # for Python/Ruby.
+ * Respects string literals to avoid removing comment chars inside strings.
  */
 export function stripComments(code: string, language: string): string {
   const lines = code.split('\n')
-  const commentChar = ['py', 'ruby'].includes(language) ? '#' : '//'
+  const isPython = ['py', 'ruby'].includes(language)
 
   return lines
     .map((line) => {
-      if (commentChar === '#') {
-        const idx = line.indexOf('#')
-        return idx === -1 ? line : line.slice(0, idx).trimEnd()
-      } else {
-        const idx = line.indexOf('//')
-        return idx === -1 ? line : line.slice(0, idx).trimEnd()
+      let inString = false
+      let stringChar = ''
+      let i = 0
+
+      while (i < line.length) {
+        const ch = line[i]!
+
+        if (inString) {
+          if (ch === '\\' && i + 1 < line.length) {
+            i += 2
+            continue
+          }
+          if (ch === stringChar) {
+            inString = false
+          }
+          i++
+          continue
+        }
+
+        if (ch === '"' || ch === "'" || (!isPython && ch === '`')) {
+          inString = true
+          stringChar = ch
+          i++
+          continue
+        }
+
+        if (isPython && ch === '#') {
+          return line.slice(0, i).trimEnd()
+        } else if (!isPython && ch === '/' && line[i + 1] === '/') {
+          return line.slice(0, i).trimEnd()
+        }
+
+        i++
       }
+
+      return line
     })
     .join('\n')
 }
