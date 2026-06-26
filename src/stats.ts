@@ -15,6 +15,9 @@ import * as path from 'node:path'
 import type Database from 'better-sqlite3'
 import { getDb } from './db.js'
 import { dataDir } from './constants.js'
+import { VERSION } from './version.js'
+import { renderStats as richRenderStats } from './render/stats_renderer.js'
+import type { StatsData } from './render/types.js'
 
 interface StatsBucket {
   events: number
@@ -235,14 +238,7 @@ export function summarize(windowDays: number = 30, testDb?: Database.Database): 
   }
 }
 
-export function renderStats(opts?: { windowDays?: number }): void {
-  const summary = summarize(opts?.windowDays ?? 30)
-
-  if (summary.total_events === 0) {
-    console.log('No stats recorded yet.')
-    return
-  }
-
+function _plainTextStats(summary: StatsSummary): void {
   const fmtBytes = (n: number): string => {
     if (n < 1024) return `${n}B`
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`
@@ -288,4 +284,81 @@ export function renderStats(opts?: { windowDays?: number }): void {
   }
 
   console.log(lines.join('\n'))
+}
+
+export function renderStats(opts?: { windowDays?: number }): void {
+  const windowDays = opts?.windowDays ?? 30
+  const summary = summarize(windowDays)
+
+  if (summary.total_events === 0) {
+    console.log('No stats recorded yet.')
+    return
+  }
+
+  const useTty = process.stdout.isTTY === true && !process.env['NO_COLOR']
+  if (!useTty) {
+    _plainTextStats(summary)
+    return
+  }
+
+  const now = new Date()
+  const periodStart =
+    windowDays > 0 ? new Date(now.getTime() - windowDays * 24 * 60 * 60 * 1000) : new Date(0)
+
+  // Build sparklines from by_day (reverse from newest-first to oldest-first)
+  const sparkDays = [...summary.by_day].reverse().slice(-30)
+  const sparklines =
+    sparkDays.length > 1
+      ? {
+          events: sparkDays.map((d) => d.events),
+          bytes: sparkDays.map((d) => d.bytes_saved),
+          tokens: sparkDays.map((d) => d.tokens_saved),
+        }
+      : null
+
+  const statsData: StatsData = {
+    period_start: periodStart,
+    period_end: now,
+    version: VERSION,
+    window_label: windowDays > 0 ? `last ${windowDays} days` : 'all time',
+    totals: {
+      events: summary.total_events,
+      bytes: summary.total_bytes_saved,
+      tokens: summary.total_tokens_saved,
+      sparklines,
+    },
+    by_kind: Object.entries(summary.by_kind)
+      .map(([kind, bucket]) => ({
+        kind,
+        bytes: bucket.bytes_saved,
+        tokens: bucket.tokens_saved,
+        events: bucket.events,
+        bytes_mode_only: _BYTES_MODE_ONLY_KINDS.has(kind),
+      }))
+      .sort((a, b) => b.bytes - a.bytes),
+    by_day: summary.by_day.map((d) => ({
+      date: d.date,
+      bytes: d.bytes_saved,
+      tokens: d.tokens_saved,
+      events: d.events,
+    })),
+    by_project: [],
+    by_source: Object.entries(summary.by_source)
+      .filter(([, b]) => b.events > 0)
+      .map(([source, bucket]) => ({
+        source,
+        bytes: bucket.bytes_saved,
+        tokens: bucket.tokens_saved,
+        events: bucket.events,
+      }))
+      .sort((a, b) => b.bytes - a.bytes),
+    by_command: summary.by_command.map((c) => ({
+      command: c.command,
+      bytes: c.bytes_saved,
+      tokens: c.tokens_saved,
+      events: c.events,
+    })),
+  }
+
+  process.stdout.write(richRenderStats(statsData) + '\n')
 }
