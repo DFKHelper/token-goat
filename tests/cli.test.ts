@@ -140,4 +140,38 @@ describe('token-goat CLI', () => {
       fs.unlinkSync(tmpFile)
     }
   }, 30000)
+
+  it('write-file --b64 writes decoded bytes', () => {
+    const tmp = path.join(os.tmpdir(), `tg-wf-${Date.now()}.txt`)
+    const content = 'hello ```world``` and """quotes""" and $VAR'
+    const b64 = Buffer.from(content, 'utf8').toString('base64')
+    try {
+      const r = runCli(['write-file', tmp, '--b64', b64])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(tmp, 'utf8')).toBe(content)
+    } finally {
+      fs.rmSync(tmp, { force: true })
+    }
+  })
+
+  it('write-file --from copies source bytes exactly', () => {
+    const src = path.join(os.tmpdir(), `tg-wf-src-${Date.now()}.txt`)
+    const dst = path.join(os.tmpdir(), `tg-wf-dst-${Date.now()}.txt`)
+    const content = '#!/bin/sh\necho `date`\n'
+    fs.writeFileSync(src, content, 'utf8')
+    try {
+      const r = runCli(['write-file', dst, '--from', src])
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(dst, 'utf8')).toBe(content)
+    } finally {
+      fs.rmSync(src, { force: true })
+      fs.rmSync(dst, { force: true })
+    }
+  })
+
+  it('write-file --help exits 0', () => {
+    const r = runCli(['write-file', '--help'])
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('write-file')
+  })
 })

@@ -404,6 +404,19 @@ function cmdConfigGet(file: string, key: string): void {
   }
 }
 
+function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): void {
+  if (opts.from !== undefined) {
+    fs.copyFileSync(opts.from, dest)
+  } else if (opts.b64 !== undefined) {
+    fs.writeFileSync(dest, Buffer.from(opts.b64, 'base64'))
+  } else {
+    const chunks: Buffer[] = []
+    process.stdin.on('data', (chunk: Buffer) => chunks.push(chunk))
+    process.stdin.on('end', () => fs.writeFileSync(dest, Buffer.concat(chunks)))
+    process.stdin.resume()
+  }
+}
+
 async function cmdGdriveSections(fileId: string, opts: { heading?: string }): Promise<void> {
   if (opts.heading !== undefined) {
     const content = await getSectionContent(fileId, opts.heading)
@@ -553,6 +566,13 @@ export function buildProgram(): Command {
     .command('config-get <file> <key>')
     .description('read one value from a config file (TOML/JSON/YAML/INI)')
     .action(guard(cmdConfigGet))
+
+  program
+    .command('write-file <dest>')
+    .description('write exact bytes to a file — handles backticks, quotes, $vars, CRLF without escaping')
+    .option('--from <source>', 'copy bytes from this source file instead of stdin/base64')
+    .option('--b64 <payload>', 'decode base64 payload and write to dest')
+    .action(guard(cmdWriteFile))
 
   program
     .command('gdrive-sections <file-id>')
