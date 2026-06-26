@@ -205,4 +205,31 @@ describe('getMonitoringRecallHint', () => {
     expect(hint).toContain('--tail')
     expect(hint).toContain('--grep')
   })
+
+  it.each([
+    'cat Foo.java',
+    'cat src/main/java/SomeService.java',
+    'cat Auth.py',
+    'cat handler.ts',
+    'cat main.go',
+    'cat server.rs',
+    'cat Component.tsx',
+  ])('matches cat of a single source file "%s"', (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+  })
+
+  it.each([
+    'cat package.json',
+    'cat README.md',
+    'cat .env',
+    'cat file.txt',
+    'cat file1.java file2.java',
+  ])('does NOT match cat of non-source or multi-file "%s"', (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).toBeNull()
+  })
+
+  it('cat source file hint mentions token-goat read', () => {
+    const hint = getMonitoringRecallHint('cat Foo.java')
+    expect(hint).toContain('token-goat read')
+  })
 })
