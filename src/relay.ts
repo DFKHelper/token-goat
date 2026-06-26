@@ -29,6 +29,7 @@ import './hooks_compact.js'
 import './hooks_session.js'
 import './hooks_fetch.js'
 import './hooks_skill.js'
+import './hooks_bash.js'
 import './image_shrink.js'
 
 /** Default stdin read timeout: long enough for a piped payload, short enough

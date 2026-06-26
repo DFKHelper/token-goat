@@ -13,6 +13,7 @@
  */
 
 import * as fs from 'node:fs'
+import * as path from 'node:path'
 
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
@@ -22,6 +23,7 @@ import { recordFileRead, wasFileReadThisSession, getSessionFiles } from './sessi
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
+import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 
 /** Size at or above which a read is nudged toward a surgical command. */
 const LARGE_FILE_BYTES = 100 * 1024
@@ -74,10 +76,33 @@ export function preReadHandler(event: HookEvent): HookOutput {
     )
   }
 
+  const basename = path.basename(normalized)
+
+  if (isLockFile(basename)) {
+    return denyOutput(
+      'Lock files are rarely useful to read in full. Use `token-goat section "' + normalized + '::<section>"` ' +
+      'to extract a specific dependency, or read the relevant manifest instead.',
+    )
+  }
+
+  if (isInBuildDir(normalized) || isGeneratedFile(normalized)) {
+    return denyOutput(
+      'Generated/build artifact — read the source file instead.',
+    )
+  }
+
   const manifestHint = buildPackageManifestHint({ file_path: normalized })
   if (manifestHint) {
     recordFileRead(normalized)
     return contextOutput(manifestHint.text)
+  }
+
+  if (isManifestFile(basename) && wasFileReadThisSession(normalized)) {
+    recordFileRead(normalized)
+    return contextOutput(
+      'You\'ve already read ' + basename + '. Use `token-goat section "' + normalized + '::<field>"` ' +
+      'or `token-goat config-get ' + normalized + ' <key>` to extract just the value you need.',
+    )
   }
 
   if (wasFileReadThisSession(normalized)) {
