@@ -6,6 +6,7 @@ import {
   dedupHints,
   computeStaleThreshold,
   buildBashDedupHint,
+  buildPackageManifestHint,
   HINT_PRIORITY_CRITICAL,
   HINT_PRIORITY_HIGH,
   HINT_PRIORITY_MEDIUM,
@@ -96,6 +97,15 @@ describe("applyHintPriorityLimit", () => {
 
     const result = applyHintPriorityLimit(hints, 10, { tier: "hot" });
     expect(result[1]).not.toContain("Second paragraph");
+  });
+
+  it("returns empty array when maxHints is 0 (no out-of-bounds write)", () => {
+    const hints: HintItem[] = [
+      { text: "hint 1", hint_priority: HINT_PRIORITY_CRITICAL },
+      { text: "hint 2", hint_priority: HINT_PRIORITY_HIGH },
+    ];
+    const result = applyHintPriorityLimit(hints, 0);
+    expect(result).toEqual([]);
   });
 });
 
@@ -241,5 +251,27 @@ describe("buildBashDedupHint", () => {
       expect(result.length).toBeLessThan(longCmd.length);
       expect(result).toContain("…");
     }
+  });
+});
+
+describe("buildPackageManifestHint", () => {
+  it("returns a hint for package.json with no offset/limit", () => {
+    const result = buildPackageManifestHint({ file_path: "package.json" });
+    expect(result).not.toBeNull();
+  });
+
+  it("suppresses hint when offset alone is provided (|| fix)", () => {
+    const result = buildPackageManifestHint({ file_path: "package.json", offset: 0 });
+    expect(result).toBeNull();
+  });
+
+  it("suppresses hint when limit alone is provided (|| fix)", () => {
+    const result = buildPackageManifestHint({ file_path: "package.json", limit: 50 });
+    expect(result).toBeNull();
+  });
+
+  it("suppresses hint when both offset and limit are provided", () => {
+    const result = buildPackageManifestHint({ file_path: "package.json", offset: 10, limit: 50 });
+    expect(result).toBeNull();
   });
 });

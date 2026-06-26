@@ -18,7 +18,13 @@ export const MAX_ANSWER_CHARS = 4000
 export const DEFAULT_TIMEOUT_SECS = 30
 const ENV_MODEL = 'TOKEN_GOAT_ASK_MODEL'
 const ENV_CMD = 'TOKEN_GOAT_ASK_CMD'
-const ENV_TIMEOUT = 'TOKEN_GOAT_ASK_TIMEOUT_SECS'
+export const ENV_TIMEOUT = 'TOKEN_GOAT_ASK_TIMEOUT_SECS'
+
+/** Parse the timeout env var; returns DEFAULT_TIMEOUT_SECS when unset or not a number. Exported for testing. */
+export function parseTimeoutSecs(raw: string | undefined): number {
+  const parsed = parseInt(raw ?? '', 10)
+  return isNaN(parsed) ? DEFAULT_TIMEOUT_SECS : parsed
+}
 // Claude Code's cheapest tier.
 const CLAUDE_CHEAPEST = 'claude-haiku-4-5'
 
@@ -281,7 +287,7 @@ export async function runAsk(
   // Try synthesis
   if (backend) {
     const prompt = buildPrompt(question, slices, { maxWords: DEFAULT_ANSWER_WORDS })
-    const timeout = parseInt(process.env[ENV_TIMEOUT] ?? '', 10) || DEFAULT_TIMEOUT_SECS
+    const timeout = parseTimeoutSecs(process.env[ENV_TIMEOUT])
 
     let answer: string | null = null
     for (let attempt = 1; attempt <= 2; attempt++) {

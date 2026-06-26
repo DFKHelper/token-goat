@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Slice, cacheKey, buildPrompt } from '../src/ask.js'
+import { Slice, cacheKey, buildPrompt, parseTimeoutSecs, DEFAULT_TIMEOUT_SECS } from '../src/ask.js'
 
 describe('Slice', () => {
   it('creates a slice with correct properties', () => {
@@ -77,5 +77,27 @@ describe('buildPrompt', () => {
     const slices = [new Slice('src/main.ts', 100, 150, 'code', 0.1)]
     const prompt = buildPrompt('test', slices)
     expect(prompt).toContain('L:100-150')
+  })
+})
+
+describe('parseTimeoutSecs', () => {
+  it('returns DEFAULT_TIMEOUT_SECS when env is undefined', () => {
+    expect(parseTimeoutSecs(undefined)).toBe(DEFAULT_TIMEOUT_SECS)
+  })
+
+  it('returns DEFAULT_TIMEOUT_SECS when env is empty string', () => {
+    expect(parseTimeoutSecs('')).toBe(DEFAULT_TIMEOUT_SECS)
+  })
+
+  it('returns DEFAULT_TIMEOUT_SECS when env is not a number', () => {
+    expect(parseTimeoutSecs('abc')).toBe(DEFAULT_TIMEOUT_SECS)
+  })
+
+  it('returns 0 when env is "0" (was broken: 0 || default returned default)', () => {
+    expect(parseTimeoutSecs('0')).toBe(0)
+  })
+
+  it('returns numeric value for valid integer string', () => {
+    expect(parseTimeoutSecs('60')).toBe(60)
   })
 })
