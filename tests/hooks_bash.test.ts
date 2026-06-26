@@ -223,4 +223,48 @@ describe('preBashHandler — cat source file recall', () => {
       expect(result.message).toContain('token-goat section')
     }
   })
+
+  it('denies cat of a local.env file', () => {
+    const result = preBashHandler(makeBashEvent('cat C:/Projects/myapp/local.env'))
+    expect(result.hookType).toBe('deny')
+    expect(result.message).toContain('config-get')
+  })
+
+  it('denies cat of a .env.local file', () => {
+    const result = preBashHandler(makeBashEvent('cat /app/.env.local'))
+    expect(result.hookType).toBe('deny')
+    expect(result.message).toContain('config-get')
+  })
+
+  it('denies cat of a SQL migration file', () => {
+    const result = preBashHandler(makeBashEvent('cat supabase/migrations/0001_init.sql'))
+    expect(result.hookType).toBe('deny')
+    expect(result.message).toContain('token-goat section')
+  })
+
+  it('passes through cat of a /tmp/ temp file', () => {
+    const result = preBashHandler(makeBashEvent('cat /tmp/codex-verdict.md'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('emits advisory context for head command on source file', () => {
+    const result = preBashHandler(makeBashEvent('head -n 46 src/app/analytics/page.tsx'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('head')
+    }
+  })
+
+  it('emits advisory context for head command on SQL file', () => {
+    const result = preBashHandler(makeBashEvent('head -10 supabase/migrations/0001_init.sql'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('passes through head on unknown extension', () => {
+    const result = preBashHandler(makeBashEvent('head -5 /proc/cpuinfo'))
+    expect(result.hookType).toBe('pass')
+  })
 })
