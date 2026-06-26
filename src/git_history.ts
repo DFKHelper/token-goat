@@ -77,6 +77,9 @@ function parseCommitLog(raw: string): CommitEntry[] {
     }
 
     const ts = parseInt(tsStr, 10)
+    if (!isFinite(ts)) {
+      continue
+    }
 
     commits.push({
       commitShort: fullHash.slice(0, 12),
