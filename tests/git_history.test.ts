@@ -80,6 +80,27 @@ feat: long summary here
       expect(commits).toHaveLength(1)
       expect(commits[0].summary).toBe('feat: long summary here')
     })
+
+    it('should filter out commits with invalid timestamps (NaN protection)', () => {
+      const mockOutput = `abc123def456
+fix: improve performance
+invalid-ts
+def789abc012
+feat: add caching
+1686900000`
+
+      vi.mocked(util.runGit).mockReturnValue({
+        stdout: mockOutput,
+        stderr: '',
+        exitCode: 0,
+      })
+
+      const commits = gitHistory.getRecentCommits(2)
+
+      expect(commits).toHaveLength(1)
+      expect(commits[0].summary).toBe('feat: add caching')
+      expect(commits[0].authorTs).toBe(1686900000)
+    })
   })
 
   describe('getChangedFilesSince', () => {
