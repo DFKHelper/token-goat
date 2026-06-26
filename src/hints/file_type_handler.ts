@@ -102,7 +102,8 @@ export function handleTxt(filePath: string, content: string): FileTypeResult {
 export function handleOfficeBinary(filePath: string): FileTypeResult {
   const filename = filePath.split(/[\\/]/).pop() || '';
   const parts = filename.split('.');
-  const ext = parts.length > 1 ? (parts[parts.length - 1] ?? 'bin').toLowerCase() : 'bin';
+  const lastPart = parts[parts.length - 1];
+  const ext = (parts.length > 1 && lastPart) ? lastPart.toLowerCase() : 'bin';
   return {
     shouldBlock: true,
     message: [

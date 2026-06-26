@@ -477,11 +477,22 @@ function mapFsError(e: unknown, src?: string, dest?: string): never {
   if (fe.code === 'EMFILE' || fe.code === 'ENFILE') {
     throw new CliError(`too many open files; close other processes or raise the file-descriptor limit and retry`)
   }
+  if (fe.code === 'ETXTBSY') {
+    throw new CliError(`file is in use by a running process: ${dest ?? fe.path ?? ''}`)
+  }
+  if (fe.code === 'EDQUOT') {
+    throw new CliError(`disk quota exceeded writing to: ${dest ?? fe.path ?? ''}`)
+  }
   throw e
 }
 
 // Windows reserved device names — writes to these are silently discarded or misrouted.
-const WIN_RESERVED = new Set(['CON','PRN','AUX','NUL','COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8','COM9','LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9'])
+const WIN_RESERVED = new Set([
+  'CON','PRN','AUX','NUL',
+  'COM0','COM1','COM2','COM3','COM4','COM5','COM6','COM7','COM8','COM9',
+  'LPT0','LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9',
+  'CONIN$','CONOUT$',
+])
 
 function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
   if (!dest || !dest.trim()) {
@@ -515,7 +526,7 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
       throw new CliError('--from /dev/stdin requires piped input; use piped stdin mode or --b64 for interactive use')
     }
     try {
-      const st = fs.lstatSync(opts.from)
+      const st = fs.statSync(opts.from)
       if (st.isFIFO() || st.isSocket()) {
         throw new CliError(`--from '${opts.from}' is a special file (FIFO or socket) — only regular files are supported`)
       }
@@ -536,6 +547,12 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     const normalized = opts.b64.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
     if (opts.b64 !== '' && normalized === '') {
       throw new CliError('--b64 payload contains only whitespace — likely a shell expansion error; pass an empty string explicitly for a zero-byte file')
+    }
+    const maxB64MB = parseInt(process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512', 10)
+    const maxB64Bytes = (Number.isFinite(maxB64MB) && maxB64MB > 0 ? maxB64MB : 512) * 1024 * 1024
+    const decodedSize = Math.floor((normalized.replace(/=+$/, '').length * 3) / 4)
+    if (decodedSize > maxB64Bytes) {
+      throw new CliError(`--b64 payload would decode to ${Math.round(decodedSize / 1024 / 1024)} MB which exceeds size limit; set TOKEN_GOAT_MAX_STDIN_MB to override`)
     }
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
       throw new CliError('--b64 payload contains non-base64 characters — check for shell expansion of $VAR or backticks')

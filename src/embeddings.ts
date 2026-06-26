@@ -439,7 +439,7 @@ export async function searchSemantic(
   // Over-fetch candidates for re-ranking.
   const overFetchK = Math.min(
     _MAX_OVER_FETCH,
-    Math.max(topK, topK * _OVER_FETCH_FACTOR),
+    Math.ceil(topK * _OVER_FETCH_FACTOR),
   )
 
   // sqlite-vec KNN query: both MATCH (the query vector blob) and k (row limit)
