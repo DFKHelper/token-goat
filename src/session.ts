@@ -35,6 +35,8 @@ export interface FileEntry {
   readonly wasEdited: boolean
   /** File size in bytes captured at the last read (0 if unreadable). */
   readonly sizeBytes: number
+  /** True when a Read result contained a truncation marker ([Truncated:). */
+  readonly wasTruncated?: boolean
 }
 
 // path -> entry. The key is the normalized absolute path so a file referenced
@@ -90,10 +92,9 @@ export function recordFileRead(filePath: string): void {
     return
   }
   _files.set(key, {
-    path: key,
+    ...prev,
     readCount: prev.readCount + 1,
     lastReadAt: now,
-    wasEdited: prev.wasEdited,
     sizeBytes: size,
   })
 }
@@ -180,6 +181,36 @@ export function recordBashOutput(commandHash: string, outputId: string, _sizeByt
 /** Return the output id previously recorded for `commandHash`, or null. */
 export function getBashOutputId(commandHash: string): string | null {
   return _bashOutputs.get(commandHash) ?? null
+}
+
+/**
+ * Mark `filePath` as having been truncated during a Read this session.
+ *
+ * Called by the post_tool_use Read hook when the tool response contains a
+ * `[Truncated:` marker. The next pre_tool_use for the same file will deny
+ * with a skeleton/surgical-read hint instead of allowing another full read.
+ */
+export function markFileTruncated(filePath: string): void {
+  const key = normalizePath(filePath)
+  const prev = _files.get(key)
+  if (prev === undefined) {
+    _files.set(key, {
+      path: key,
+      readCount: 1,
+      lastReadAt: Date.now(),
+      wasEdited: false,
+      sizeBytes: fileSize(key),
+      wasTruncated: true,
+    })
+    return
+  }
+  _files.set(key, { ...prev, wasTruncated: true })
+}
+
+/** True if the file was truncated during a Read this session. */
+export function wasFileTruncatedThisSession(filePath: string): boolean {
+  const entry = _files.get(normalizePath(filePath))
+  return entry?.wasTruncated === true
 }
 
 /**
