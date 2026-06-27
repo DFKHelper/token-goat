@@ -4,6 +4,27 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+
+## [2.1.0] - 2026-06-26
+
+### Added
+
+- **Pre-bash file-read interception.** The bash hook now intercepts `cat`, `cat -n` (and other flags), `cat` via WSL paths, `python -c "..."`, `head`, `tail`, and `node -e "readFileSync()"` on source files. Each pattern rewrites the command to a `token-goat read` call. 8 pre-bash interceptors total.
+
+- **`rg` structural search hint.** When `rg` is run without content flags on a source directory, the bash hook redirects to `token-goat symbol` or `token-goat semantic`, cutting typical output by 90%+.
+
+- **Orchestrator state file exemption.** `.improve-state-*.json`, `.claude/` session files, and similar tool-internal state files are excluded from re-read denial.
+
+- **`src/filter_counts.ts` — maintainable count exports.** Exports `TOTAL_FILTER_COUNT` plus per-category counts for all hook types. Dynamic counts update automatically when source arrays grow; static counts carry comments pointing to the source module. `src/hints/lang_patterns.ts` now also exports four count constants (`LOCK_FILE_COUNT`, `MANIFEST_FILE_COUNT`, `BUILD_DIR_COUNT`, `GENERATED_EXT_COUNT`).
+
+### Fixed
+
+- **Re-read denial for small files.** Small source files (under 5 KB) are now denied on a 3rd+ access within the same session, preventing repeated micro-reads of shared utility modules.
+
+- **`.env` and SQL file reads denied after first access.** Credentials and schema files now deny on second access.
+
+- **Config file bash hints corrected.** Config files now suggest `token-goat section` rather than `token-goat read` in hint text.
+
 ## [2.0.3] - 2026-06-26
 
 ### Fixed

@@ -187,6 +187,17 @@ export const BUILD_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
 ]
 
 // ---------------------------------------------------------------------------
+// Count exports — keep these in sync with their source arrays above.
+// Dynamic sizes are computed from the live Sets/Arrays so they update
+// automatically when entries are added.
+// ---------------------------------------------------------------------------
+
+export const LOCK_FILE_COUNT = LOCK_FILE_NAMES.size
+export const MANIFEST_FILE_COUNT = MANIFEST_FILE_NAMES.size + MANIFEST_EXTENSIONS.size + MANIFEST_BASENAME_PATTERNS.length
+export const BUILD_DIR_COUNT = BUILD_DIR_NAMES.size
+export const GENERATED_EXT_COUNT = ALWAYS_GENERATED_EXTS.size + CONDITIONALLY_GENERATED_EXTS.size
+
+// ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
 
