@@ -48,6 +48,46 @@ function parseHeadingSpec(spec: string): { base: string; ordinal: number | null 
   return { base: spec.trim(), ordinal: null }
 }
 
+/**
+ * Normalise a heading string before comparison — "replacement" mode.
+ *
+ * Replaces em-dash (U+2014) and en-dash (U+2013) with a regular hyphen `-` so a
+ * query typed with a hyphen matches a stored heading that uses a typographic dash.
+ * Also strips trailing parentheticals and leading numeric prefixes.
+ *
+ * Apply to BOTH sides of the comparison.
+ */
+export function normalizeHeading(s: string): string {
+  // Replace em-dash and en-dash with a regular hyphen
+  let n = s.replace(/[—–]/g, '-')
+  // Strip trailing parenthetical, e.g. " (June 2026)" or " (deprecated)"
+  n = n.replace(/\s*\([^)]+\)\s*$/, '')
+  // Strip leading numeric prefix, e.g. "5. " or "12. "
+  n = n.replace(/^\d+\.\s+/, '')
+  // Collapse runs of whitespace; trim
+  return n.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Normalise a heading string — "subtitle strip" mode.
+ *
+ * Em-dash and en-dash often introduce a subtitle (`"Section Index — description"`).
+ * This variant strips the dash and everything that follows so a bare prefix query
+ * (`"Section Index"`) matches the full stored heading.
+ *
+ * Also strips trailing parentheticals and leading numeric prefixes.
+ * Apply to BOTH sides of the comparison.
+ */
+function normalizeHeadingStrip(s: string): string {
+  // Strip subtitle: everything from em-dash / en-dash onwards
+  let n = s.replace(/\s*[—–].*$/, '')
+  // Strip trailing parenthetical
+  n = n.replace(/\s*\([^)]+\)\s*$/, '')
+  // Strip leading numeric prefix
+  n = n.replace(/^\d+\.\s+/, '')
+  return n.replace(/\s+/g, ' ').trim()
+}
+
 const MARKDOWN_HEADER_RE = /^(#{1,6})\s+(.+?)\s*#*\s*$/
 const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*$/
 // A Python def/class header. Indentation = nesting; the name is the section key.
@@ -190,10 +230,19 @@ export function extractSection(text: string, headingSpec: string): SectionResult
   const lines = text.split('\n')
 
   const target = base.toLowerCase()
+  const normalizedTarget = normalizeHeading(base).toLowerCase()
+  const strippedTarget = normalizeHeadingStrip(base).toLowerCase()
   const matches: number[] = []
   for (let i = 0; i < headers.length; i++) {
     const h = headers[i]
-    if (h !== undefined && h.heading.toLowerCase() === target) matches.push(i)
+    if (h === undefined) continue
+    if (
+      h.heading.toLowerCase() === target ||
+      normalizeHeading(h.heading).toLowerCase() === normalizedTarget ||
+      normalizeHeadingStrip(h.heading).toLowerCase() === strippedTarget
+    ) {
+      matches.push(i)
+    }
   }
   if (matches.length === 0) return null
 
@@ -245,10 +294,19 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
   const lines = text.split('\n')
 
   const target = base.toLowerCase()
+  const normalizedTarget = normalizeHeading(base).toLowerCase()
+  const strippedTarget = normalizeHeadingStrip(base).toLowerCase()
   const matches: number[] = []
   for (let i = 0; i < headers.length; i++) {
     const h = headers[i]
-    if (h !== undefined && h.heading.toLowerCase() === target) matches.push(i)
+    if (h === undefined) continue
+    if (
+      h.heading.toLowerCase() === target ||
+      normalizeHeading(h.heading).toLowerCase() === normalizedTarget ||
+      normalizeHeadingStrip(h.heading).toLowerCase() === strippedTarget
+    ) {
+      matches.push(i)
+    }
   }
   if (matches.length === 0) return null
 
@@ -299,4 +357,24 @@ export function listSections(filePath: string): string[] {
   }
 
   return headers.filter((h) => h.level === minLevel).map((h) => h.heading)
+}
+
+/**
+ * List every section heading in a file at all nesting levels, in document order.
+ *
+ * Returns an empty array when the file cannot be read or has no recognisable
+ * sections. Unlike `listSections`, this includes all levels (## and ### etc.),
+ * so the caller can show the complete heading inventory when a lookup misses.
+ */
+export function listAllSections(filePath: string): string[] {
+  let text: string
+  try {
+    text = readFileSync(filePath, 'utf-8')
+  } catch {
+    return []
+  }
+
+  const language = detectLanguage(filePath)
+  const headers = findHeaders(text, language)
+  return headers.map((h) => h.heading)
 }
