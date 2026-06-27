@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
-import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch } from '../src/hooks_bash.js'
 import { getBashOutputId } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -236,10 +236,13 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.message).toContain('config-get')
   })
 
-  it('denies cat of a SQL migration file', () => {
+  it('emits advisory context for cat of a SQL migration file', () => {
     const result = preBashHandler(makeBashEvent('cat supabase/migrations/0001_init.sql'))
-    expect(result.hookType).toBe('deny')
-    expect(result.message).toContain('token-goat section')
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('CREATE TABLE')
+    }
   })
 
   it('passes through cat of a /tmp/ temp file', () => {
@@ -1052,6 +1055,136 @@ describe('preBashHandler — markdown heading grep hint', () => {
 
   it('passes through grep -n "^#" script.sh (not a markdown file)', () => {
     const result = preBashHandler(makeBashEvent('grep -n "^#" script.sh'))
+    expect(result.hookType).toBe('pass')
+  })
+})
+
+// Item 2 (nestpilot mining): rg/grep -n identifier on single source file → token-goat symbol hint
+describe('extractRgSymbolSearch', () => {
+  it('matches grep -n "ConversationState" src/types/domain.ts', () => {
+    const result = extractRgSymbolSearch('grep -n "ConversationState" src/types/domain.ts')
+    expect(result).not.toBeNull()
+    expect(result?.identifier).toBe('ConversationState')
+    expect(result?.filePath).toBe('src/types/domain.ts')
+  })
+
+  it('matches rg with |-joined identifiers and -n flag at end', () => {
+    const result = extractRgSymbolSearch('rg "DeveloperStatus|ContractStatus|CommissionStatus" src/types/domain.ts -n')
+    expect(result).not.toBeNull()
+    expect(result?.identifier).toBe('DeveloperStatus|ContractStatus|CommissionStatus')
+  })
+
+  it('does not fire without -n flag', () => {
+    const result = extractRgSymbolSearch('rg "class|function" src/types/domain.ts')
+    expect(result).toBeNull()
+  })
+
+  it('does not fire for directory target (not single file)', () => {
+    const result = extractRgSymbolSearch('rg "MyType" src/ -n')
+    expect(result).toBeNull()
+  })
+
+  it('does not fire for recursive grep', () => {
+    const result = extractRgSymbolSearch('grep -rn "MyType" .')
+    expect(result).toBeNull()
+  })
+
+  it('does not fire when pattern has regex metacharacters', () => {
+    const result = extractRgSymbolSearch('rg -n "My.*Type" src/types.ts')
+    expect(result).toBeNull()
+  })
+
+  it('does not fire for non-source extension (.md)', () => {
+    const result = extractRgSymbolSearch('rg -n "Section" docs/guide.md')
+    expect(result).toBeNull()
+  })
+})
+
+describe('preBashHandler — rg symbol search hint', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits symbol hint for grep -n "ConversationState" src/types/domain.ts', () => {
+    const result = preBashHandler(makeBashEvent('grep -n "ConversationState" src/types/domain.ts'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat symbol')
+      expect(result.context).toContain('ConversationState')
+    }
+  })
+
+  it('emits symbol hint for rg with |-joined identifiers', () => {
+    const result = preBashHandler(makeBashEvent('rg "DeveloperStatus|ContractStatus" src/types/domain.ts -n'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat symbol')
+    }
+  })
+
+  it('passes through rg without -n flag (no symbol hint)', () => {
+    const result = preBashHandler(makeBashEvent('rg "MyType" src/types/domain.ts'))
+    // No symbol hint fires — may still fire structural or pass
+    if (result.hookType === 'context') {
+      expect(result.context).not.toContain('token-goat symbol')
+    }
+  })
+})
+
+// Item 3 (nestpilot mining): python heredoc << 'PYEOF' form
+describe('preBashHandler — python heredoc file read', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('denies python heredoc that reads a .tsx file via direct open()', () => {
+    const cmd = "python3 - << 'PYEOF'\nwith open(r'src/analytics/page.tsx') as f:\n    print(f.read())\nPYEOF"
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('does not fire when heredoc body contains .write(', () => {
+    const cmd = "python3 - << 'PYEOF'\nwith open('src/output.ts', 'w') as f:\n    f.write('content')\nPYEOF"
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not fire when heredoc body contains .writelines(', () => {
+    const cmd = "python3 - << 'PYEOF'\nwith open('src/output.ts') as f:\n    f.writelines(['a', 'b'])\nPYEOF"
+    const result = preBashHandler(makeBashEvent(cmd))
+    // writelines is write intent — should not fire
+    expect(result.hookType).toBe('pass')
+  })
+})
+
+// Item 4 (nestpilot mining): .sql files in cat → contextOutput with SQL-specific hint
+describe('preBashHandler — SQL file cat hint', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits context hint (not deny) for cat of a SQL schema file', () => {
+    const result = preBashHandler(makeBashEvent('cat schema.sql'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('CREATE TABLE')
+    }
+  })
+
+  it('emits context hint for cat of a SQL migration file', () => {
+    const result = preBashHandler(makeBashEvent('cat migration.sql'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('does not fire for cat of a shell script', () => {
+    const result = preBashHandler(makeBashEvent('cat script.sh'))
     expect(result.hookType).toBe('pass')
   })
 })
