@@ -84,4 +84,44 @@ describe('compressOutput', () => {
     const out = compressOutput('a\r\nb\r\nc')
     expect(out).toBe('a\nb\nc')
   })
+
+  it('compresses a large git diff: adds summary header and truncates each file hunk', () => {
+    const lines = [
+      'diff --git a/src/file.ts b/src/file.ts',
+      '--- a/src/file.ts',
+      '+++ b/src/file.ts',
+    ]
+    for (let i = 0; i < 200; i++) lines.push(`+line ${i}`)
+    const out = compressOutput(lines.join('\n'))
+    expect(out).toContain('[Git diff:')
+    expect(out).toContain('truncated to 50 lines/file')
+    expect(out).toContain('more lines in')
+    expect(out.split('\n').length).toBeLessThan(lines.length)
+  })
+
+  it('leaves a small git diff (<= 200 lines) unchanged by the git fast-path', () => {
+    const lines = [
+      'diff --git a/file.ts b/file.ts',
+      '--- a/file.ts',
+      '+++ b/file.ts',
+      '+added line',
+    ]
+    const out = compressOutput(lines.join('\n'))
+    expect(out).not.toContain('[Git diff:')
+    expect(out).toContain('diff --git')
+  })
+
+  it('compresses multi-file git diff with per-file markers', () => {
+    const lines: string[] = []
+    for (let f = 0; f < 3; f++) {
+      lines.push(`diff --git a/file${f}.ts b/file${f}.ts`)
+      lines.push(`--- a/file${f}.ts`)
+      lines.push(`+++ b/file${f}.ts`)
+      for (let i = 0; i < 100; i++) lines.push(`+line ${i}`)
+    }
+    const out = compressOutput(lines.join('\n'))
+    expect(out).toContain('[Git diff: 3 files changed')
+    const markers = out.split('\n').filter(l => l.includes('more lines in'))
+    expect(markers.length).toBe(3)
+  })
 })

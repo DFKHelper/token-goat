@@ -156,16 +156,61 @@ function truncateLines(lines: readonly string[], maxLines: number): string[] {
 }
 
 /**
+ * Compress a large git diff output to keep the first 50 lines per file-diff hunk.
+ *
+ * Triggered when line count > 200 and the first line starts with `diff --git `
+ * or `--- a/`. Each per-file hunk is capped at 50 lines; the remainder is
+ * replaced by a single `[... N more lines in <name>]` marker. A summary
+ * header is prepended so the reader knows how many files changed.
+ */
+function compressGitDiff(lines: readonly string[]): string[] {
+  const fileHeaders = lines.filter(l => l.startsWith('diff --git '))
+  const nFiles = fileHeaders.length
+  const result: string[] = [
+    `[Git diff: ${nFiles} file${nFiles !== 1 ? 's' : ''} changed, truncated to 50 lines/file]`,
+  ]
+
+  let currentFileName = ''
+  let currentHunk: string[] = []
+
+  const flushHunk = (): void => {
+    if (currentHunk.length === 0) return
+    if (currentHunk.length <= 50) {
+      result.push(...currentHunk)
+    } else {
+      result.push(...currentHunk.slice(0, 50))
+      result.push(
+        `[... ${currentHunk.length - 50} more lines in ${currentFileName} — use \`token-goat bash-output <id> --grep PATTERN\` to search]`,
+      )
+    }
+    currentHunk = []
+  }
+
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) {
+      flushHunk()
+      currentFileName = line.slice('diff --git '.length)
+    }
+    currentHunk.push(line)
+  }
+  flushHunk()
+
+  return result
+}
+
+/**
  * Compress raw bash command output for low-token presentation.
  *
  * Pipeline order (each step assumes the previous ran):
  *   1. `\r`-progress collapse → final rendered state of each line.
  *   2. ANSI/VT escape stripping (when `stripAnsi`).
  *   3. CRLF/CR normalisation → `\n` line splitting.
- *   4. Per-line {@link FILTERS}: drop/replace noise lines.
- *   5. Per-line length truncation at `maxLineLength`.
- *   6. Consecutive-duplicate dedupe (when `dedupeConsecutive`).
- *   7. Total line-count cap at `maxLines` with a middle elision marker.
+ *   4. Git diff fast-path: if > 200 lines and output is a git diff, cap each
+ *      file hunk at 50 lines instead of the generic head/tail truncation.
+ *   5. Per-line {@link FILTERS}: drop/replace noise lines.
+ *   6. Per-line length truncation at `maxLineLength`.
+ *   7. Consecutive-duplicate dedupe (when `dedupeConsecutive`).
+ *   8. Total line-count cap at `maxLines` with a middle elision marker.
  *
  * Empty or whitespace-only input returns the empty string.
  */
@@ -183,6 +228,14 @@ export function compressOutput(output: string, opts: CompressOptions = {}): stri
 
   // Any remaining lone `\r` (rare) is treated as a line break for splitting.
   const rawLines = text.replace(/\r/g, '\n').split('\n')
+
+  // Git diff fast-path: large diffs get per-file truncation instead of head/tail.
+  if (rawLines.length > 200) {
+    const firstLine = rawLines[0] ?? ''
+    if (firstLine.startsWith('diff --git ') || firstLine.startsWith('--- a/')) {
+      return compressGitDiff(rawLines).join('\n')
+    }
+  }
 
   let lines: string[] = []
   for (const raw of rawLines) {
