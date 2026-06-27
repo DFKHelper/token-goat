@@ -62,6 +62,17 @@ function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv:
   return { filePath, isDoc, isEnv, isConfig }
 }
 
+/** Extracts the file path from `cat <file> | jq` commands restricted to structured config files. Returns null for non-config extensions, temp paths, or non-jq pipes. Emits a CONTEXT hint (not deny) so the jq pipeline still runs if the agent proceeds. */
+function extractCatJsonPipe(cmd: string): { filePath: string } | null {
+  const m = /^cat\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*\|\s*jq\b/.exec(cmd)
+  if (!m) return null
+  const filePath = m[1] ?? m[2] ?? m[3]
+  if (!filePath) return null
+  if (isTempPath(filePath)) return null
+  if (!/\.(?:json|yaml|yml|toml)$/i.test(filePath)) return null
+  return { filePath }
+}
+
 /** Extracts the file path from a WSL-proxied cat command like `wsl bash -c "cat /mnt/c/..."` or `wsl -d Ubuntu bash -c "cat /mnt/c/..."`. Converts /mnt/X/ paths to X:/ and applies the same filtering as extractCatFile. */
 function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean } | null {
   // Match: wsl [optional -d DISTRO] bash -c "cat [flags] /mnt/X/..."
@@ -379,6 +390,15 @@ export function preBashHandler(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     return contextOutput(
       'Use `token-goat section "<file>::HeadingName"` to read one section instead of a line range.',
+    )
+  }
+
+  const catJsonPipe = extractCatJsonPipe(cmd)
+  if (catJsonPipe !== null) {
+    const { filePath } = catJsonPipe
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      '`cat | jq` loads the whole file. Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to slice one value.',
     )
   }
 
