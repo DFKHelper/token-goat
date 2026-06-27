@@ -69,6 +69,17 @@ function _isDocFile(filePath: string): boolean {
   )
 }
 
+/**
+ * True when the path is a Claude session artifact file: a tasks output blob
+ * (`…/tasks/<id>.output`) or a tool-results file (`…/tool-results/<id>.txt`).
+ * Matches both forward-slash and backslash separators.
+ */
+function isSessionArtifactFile(filePath: string): boolean {
+  if (/[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(filePath)) return true
+  if (/[/\\]tool-results[/\\][a-z0-9]+\.txt$/i.test(filePath)) return true
+  return false
+}
+
 /** Best-effort file size in bytes, or null when the file cannot be stat'd. */
 function statSize(absPath: string): number | null {
   try {
@@ -264,6 +275,72 @@ export function preReadHandler(event: HookEvent): HookOutput {
     )
   }
 
+  // Session artifact re-read dedup: tasks/<id>.output and tool-results/<id>.txt
+  // On first read of tasks/*.output, emit a proactive hint toward --tail/--grep.
+  // On re-reads (either type), inject a diff or "unchanged" denial using the same
+  // snapshot logic as doc files.
+  if (isSessionArtifactFile(normalized)) {
+    if (wasFileReadThisSession(normalized)) {
+      if (wasFileTruncatedThisSession(normalized)) {
+        recordFileRead(normalized)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          'File was truncated on last read. Use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice.',
+        )
+      }
+      const artifactSessionId = getSessionId()
+      const oldArtifactSnap = snapshotLoad(artifactSessionId, normalized)
+      if (oldArtifactSnap !== null) {
+        try {
+          const sz = statSize(normalized)
+          if (sz !== null && sz <= 256 * 1024) {
+            const currentContent = fs.readFileSync(normalized, 'utf8')
+            const TRUNC_MARKER = '\n<snapshot truncated at '
+            const oldRaw = oldArtifactSnap.toString('utf8')
+            const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
+            const oldContent = truncIdx >= 0 ? oldRaw.slice(0, truncIdx) : oldRaw
+            if (oldContent === currentContent) {
+              recordFileRead(normalized)
+              recordStat('session_hint', 0, 0)
+              return denyOutput(
+                basename + ' is unchanged since last read. ' +
+                'Use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice.',
+              )
+            }
+            const diff = buildLineDiff(oldContent, currentContent, basename)
+            if (diff !== '') {
+              recordFileRead(normalized)
+              const savedBytes = Math.max(0, currentContent.length - diff.length)
+              recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
+              return denyOutput(
+                'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+                '```diff\n' + diff + '\n```\n\n' +
+                'Use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice.',
+              )
+            }
+          }
+        } catch {
+          // best-effort — fall through to generic deny
+        }
+      }
+      // No snapshot or file too large — generic re-read denial
+      recordFileRead(normalized)
+      recordStat('session_hint', 0, 0)
+      return denyOutput(
+        normalized + ' was already read this session. ' +
+        'Use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice.',
+      )
+    }
+    // First read of tasks/*.output — allow but emit a proactive hint
+    if (/[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(normalized)) {
+      recordFileRead(normalized)
+      return contextOutput(
+        'Session transcript: use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice instead of the full file.',
+      )
+    }
+    // First read of tool-results/*.txt — fall through to normal handling
+  }
+
   // Doc-file auto-diff on re-read: .md/.mdx/.rst/.txt files that have been read before
   // get a compact diff (or "unchanged") instead of a wasteful full re-read, provided a
   // snapshot was captured by postReadHandler on the first read.
@@ -437,7 +514,7 @@ export function postReadHandler(event: HookEvent): HookOutput {
 
   // Snapshot doc file content so the next re-read can inject a diff instead of the full file.
   const postBasename = path.basename(normalized)
-  if (/\.(md|mdx|rst|txt)$/i.test(postBasename)) {
+  if (/\.(md|mdx|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized)) {
     try {
       const sz = statSize(normalized)
       if (sz !== null && sz <= 256 * 1024) {
