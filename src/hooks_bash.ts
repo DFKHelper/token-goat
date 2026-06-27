@@ -157,6 +157,65 @@ function extractTailFile(cmd: string): { filePath: string; isDoc: boolean } | nu
 }
 
 /**
+ * Detects `cat` or `tail` commands on a tasks output path and returns the task
+ * ID so the caller can emit a `token-goat bash-output` recall hint.
+ *
+ * Tasks output files follow the pattern `…/tasks/<id>.output`. They are
+ * already cached by the bash-output cache so re-reading via cat/tail wastes
+ * tokens that `token-goat bash-output` returns surgically.
+ */
+function extractTasksOutput(cmd: string): { id: string; n?: number } | null {
+  const taskOutputRe = /[/\\]tasks[/\\]([a-z0-9]+)\.output$/
+
+  // cat command (same regex structure as extractCatFile, checked before isTempPath)
+  const catM = /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+  if (catM) {
+    const fp = catM[1] ?? catM[2] ?? catM[3]
+    if (fp) {
+      const m = taskOutputRe.exec(fp)
+      if (m) return { id: m[1]! }
+    }
+  }
+
+  // tail command (same guards as extractTailFile, checked before isTempPath)
+  if (!/-f\b/.test(cmd) && !/-c\b/.test(cmd) && !/-n\s*\+/.test(cmd)) {
+    const tailM = /^tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+    if (tailM) {
+      const fp = tailM[3] ?? tailM[4] ?? tailM[5]
+      if (fp) {
+        const m = taskOutputRe.exec(fp)
+        if (m) {
+          const nStr = tailM[1] ?? tailM[2]
+          const n = nStr !== undefined ? parseInt(nStr, 10) : undefined
+          return n !== undefined ? { id: m[1]!, n } : { id: m[1]! }
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Returns true when the command is a sed line-range extraction (`sed -n 'N,Mp'`).
+ * These are typically used as a substitute for `token-goat section`, which is cheaper.
+ */
+function extractSedLineRange(cmd: string): boolean {
+  return /^sed\s+-n\s+['"]?\d+,\d+p['"]?/.test(cmd)
+}
+
+/**
+ * Returns true when the command is a directory listing (eza --long or ls … | head)
+ * for which `token-goat map --compact` is a cheaper alternative.
+ */
+function extractDirectoryListing(cmd: string): boolean {
+  return (
+    /^eza\s+.*--long\s+\S+/.test(cmd) ||
+    /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*head/.test(cmd)
+  )
+}
+
+/**
  * Returns the file path when the command is an rg/grep structural definition search
  * on a single source file. Structural patterns are those that find function/class/import
  * definitions (^def, ^class, ^function, ^import, etc.) — the common "show me the structure
@@ -165,11 +224,12 @@ function extractTailFile(cmd: string): { filePath: string; isDoc: boolean } | nu
 function extractRgStructuralSearch(cmd: string): { filePath: string } | null {
   if (!/^(?:rg|grep)\s+/.test(cmd)) return null
 
-  // Must be a structural/definition search pattern
+  // Must be a structural/definition search pattern (including indented Python methods)
   const hasStructural = (
     /["']?\^?(?:def\s|class\s|function\s|func\s|fn\s|pub fn\s|import\s|from\s)/.test(cmd) ||
     /["']\^(?:def|class|function|func|import|from)["']/.test(cmd) ||
-    /\\bdef\\b|\\bclass\\b/.test(cmd)
+    /\\bdef\\b|\\bclass\\b/.test(cmd) ||
+    /["']?\^[ \t]+def\b/.test(cmd)
   )
   if (!hasStructural) return null
 
@@ -231,6 +291,33 @@ function buildRecallHint(cmd: string, outputId: string): string {
 export function preBashHandler(event: HookEvent): HookOutput {
   const cmd = extractCommand(event)
   if (cmd === undefined) return passOutput()
+
+  // Item 3: task output file — already cached, recall with bash-output
+  const taskOutput = extractTasksOutput(cmd)
+  if (taskOutput !== null) {
+    const { id } = taskOutput
+    recordStat('session_hint', 0, 0)
+    return denyOutput(
+      'Use `token-goat bash-output ' + id + '` to recall this task output (already cached). ' +
+      'Append `--tail <n>` or `--grep PATTERN` to slice it.',
+    )
+  }
+
+  // Item 7: directory listing — token-goat map is cheaper
+  if (extractDirectoryListing(cmd)) {
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      'Use `token-goat map --compact` (~300 tokens) for a repo overview, or `token-goat map <dir>` for a subdirectory.',
+    )
+  }
+
+  // Item 4b: sed line-range extraction
+  if (extractSedLineRange(cmd)) {
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      'Use `token-goat section "<file>::HeadingName"` to read one section instead of a line range.',
+    )
+  }
 
   const catResult = extractCatFile(cmd)
   if (catResult !== null) {
