@@ -119,6 +119,18 @@ describe('postBashHandler', () => {
     expect(getBashOutputId(simpleHash)).not.toBeNull()
   })
 
+  it('caches output for cd-prefixed tsc command and fires recall on repeat', async () => {
+    const bigOutput = 'src/auth.ts(12,5): error TS2345: ...\n'.repeat(50)
+    // Post side: store the output
+    await postBashHandler(makePostBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit', bigOutput))
+    // Pre side: second run should get a recall hint
+    const result = preBashHandler(makeBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('bash-output')
+    }
+  })
+
   it('never throws — swallows errors silently', async () => {
     const event: HookEvent = {
       eventName: 'post_tool_use',
@@ -140,6 +152,38 @@ function makeBashEvent(command: string): HookEvent {
     raw: {},
   }
 }
+
+describe('preBashHandler — cd-prefix stripping', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('intercepts cat through a cd prefix (absolute path)', () => {
+    const result = preBashHandler(makeBashEvent('cd /some/path && cat src/auth.ts'))
+    expect(result.hookType).not.toBe('pass')
+  })
+
+  it('intercepts cat through a quoted cd prefix', () => {
+    const result = preBashHandler(makeBashEvent('cd "C:/Projects/wellsent" && cat src/auth.ts'))
+    expect(result.hookType).not.toBe('pass')
+  })
+
+  it('intercepts through chained cd prefixes', () => {
+    const result = preBashHandler(makeBashEvent('cd /a && cd /b && cat src/auth.ts'))
+    expect(result.hookType).not.toBe('pass')
+  })
+
+  it('passes through normal commands without cd prefix', () => {
+    const result = preBashHandler(makeBashEvent('echo hello'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('emits contextOutput (not deny) for cd-prefixed cat of source file', () => {
+    const result = preBashHandler(makeBashEvent('cd /other/dir && cat src/auth.ts'))
+    // When cd prefix was stripped, path-sensitive denies become contextOutput
+    expect(result.hookType).toBe('context')
+  })
+})
 
 describe('preBashHandler — cat source file recall', () => {
   beforeEach(() => {
@@ -765,6 +809,24 @@ describe('preBashHandler — directory listing map hint', () => {
       expect(result.context).toContain('token-goat map')
     }
   })
+
+  it('fires for ls DIR | grep pattern', () => {
+    const result = preBashHandler(makeBashEvent('ls src/ | grep .ts'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map')
+    }
+  })
+
+  it('fires for ls DIR | wc -l', () => {
+    const result = preBashHandler(makeBashEvent('ls images/ | wc -l'))
+    expect(result.hookType).toBe('context')
+  })
+
+  it('does not fire for ls without a pipe', () => {
+    const result = preBashHandler(makeBashEvent('ls -la src/'))
+    expect(result.hookType).toBe('pass')
+  })
 })
 
 describe('preBashHandler — grep pipe chain hint', () => {
@@ -855,6 +917,30 @@ describe('preBashHandler — find command interception', () => {
 
   it('passes through non-find commands', () => {
     const result = preBashHandler(makeBashEvent('echo "find me"'))
+    expect(result.hookType).toBe('pass')
+  })
+})
+
+describe('preBashHandler — extractForLoopWcL', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('fires for for-loop wc -l size probe', () => {
+    const result = preBashHandler(makeBashEvent('for f in *.ts; do wc -l $f; done'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat outline')
+    }
+  })
+
+  it('fires for for-loop wc -l with files list', () => {
+    const result = preBashHandler(makeBashEvent('for f in src/auth.ts src/db.ts; do wc -l $f; done'))
+    expect(result.hookType).toBe('context')
+  })
+
+  it('does not fire for for-loop doing something other than wc', () => {
+    const result = preBashHandler(makeBashEvent('for f in *.ts; do echo $f; done'))
     expect(result.hookType).toBe('pass')
   })
 })

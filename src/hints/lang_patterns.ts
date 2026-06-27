@@ -168,8 +168,9 @@ export const BUILD_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   /^\s*cmake\s+--build\b/i,
   // Rake (Ruby)
   /^\s*rake\b/i,
-  // TypeScript compiler
-  /^\s*tsc\b/i,
+  // TypeScript compiler (direct and via npx)
+  /^\s*tsc(?:\s|$)/i,
+  /^\s*npx\s+tsc(?:\s|$)/i,
   // Vite
   /^\s*vite\s+(build|dev|preview)\b/i,
   // Next.js
@@ -328,6 +329,7 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   // Linters / formatters run repeatedly
   { pattern: /^(?:npx\s+)?eslint(?:\s|$)/, recallHint: '--grep "error|warning|✖|problems"' },
   { pattern: /^(?:npx\s+)?prettier(?:\s|$)/, recallHint: '--grep "unchanged|reformatted|error"' },
+  { pattern: /^npx\s+tsc(?:\s|$)/, recallHint: '--grep "error TS|Cannot find|Type "' },
   { pattern: /^ruff(?:\s|$)/, recallHint: '--grep "error|warning|Found"' },
   { pattern: /^(?:cargo\s+)?clippy/, recallHint: '--grep "error\\[|warning\\["' },
 
@@ -339,6 +341,9 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   { pattern: /^npm run (?:test|spec)(?:\s|$)/, recallHint: '--grep "FAIL|PASS|Error|Tests:|✓|✗"' },
   { pattern: /^npm run build(?:\s|$)/, recallHint: '--grep "error|Built|Failed|✓|✗"' },
   { pattern: /^npm run (?:lint|typecheck|check|type-check)(?:\s|$)/, recallHint: '--grep "error|warning|✖|problems"' },
+
+  // node scripts (migration runners, seed generators, etc. run repeatedly)
+  { pattern: /^node\s+(?:scripts|src\/scripts)\/\S+\.m?js\b/, recallHint: '--tail 50 --grep "error|Error|done|complete|inserted|migrated"' },
 
   // External AI peer-review CLI tools (produce large outputs, run repeatedly per session)
   { pattern: /^codex(?:\s|$)/, recallHint: '--tail 100 --grep "error|suggestion|verdict|conclusion"' },

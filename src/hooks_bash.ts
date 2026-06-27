@@ -16,6 +16,13 @@ import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.j
 import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 
+/** Strip one or more `cd <dir> &&` prefixes so interceptors match the actual command. */
+function stripCdPrefix(cmd: string): string {
+  // Handles: `cd /path && CMD`, `cd "path with spaces" && CMD`, `cd 'path' && CMD`
+  const stripped = cmd.replace(/^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*)+/, '')
+  return stripped.trim() || cmd
+}
+
 /** Extract the command string from a Bash tool_input. */
 function extractCommand(event: HookEvent): string | undefined {
   const cmd = event.toolInput['command']
@@ -319,8 +326,15 @@ function extractDirectoryListing(cmd: string): boolean {
     /^eza\s+.*--tree/.test(cmd) ||
     /^tree(\s|$)/.test(cmd) ||
     /^ls\s+.*-[a-zA-Z]*R/.test(cmd) ||
-    /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*head/.test(cmd)
+    /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*head/.test(cmd) ||
+    /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*grep/.test(cmd) ||
+    /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*wc/.test(cmd)
   )
+}
+
+/** Detects `for f in FILES; do wc -l $f; done` size-probing idioms. */
+function extractForLoopWcL(cmd: string): boolean {
+  return /^for\s+\w+\s+in\s+.*;\s*do\s+wc\s+-l/.test(cmd)
 }
 
 /**
@@ -507,8 +521,10 @@ function buildRecallHint(cmd: string, outputId: string): string {
  * was already captured this session. Passes through for all other commands.
  */
 export function preBashHandler(event: HookEvent): HookOutput {
-  const cmd = extractCommand(event)
-  if (cmd === undefined) return passOutput()
+  const rawCmd = extractCommand(event)
+  if (rawCmd === undefined) return passOutput()
+  const cmd = stripCdPrefix(rawCmd)
+  const cdStripped = cmd !== rawCmd
 
   // Item 3: task output file — already cached, recall with bash-output
   const taskOutput = extractTasksOutput(cmd)
@@ -549,6 +565,14 @@ export function preBashHandler(event: HookEvent): HookOutput {
     )
   }
 
+  // for-loop wc -l size probe — suggest outline instead
+  if (extractForLoopWcL(cmd)) {
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      'Use `token-goat outline <file>` to see symbol names and line counts without loading files.',
+    )
+  }
+
   // Item 4b: sed line-range extraction
   if (extractSedLineRange(cmd)) {
     recordStat('session_hint', 0, 0)
@@ -582,7 +606,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
         : isDoc
           ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
           : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
-    return denyOutput('`cat` loads the entire file into context. ' + hint)
+    return cdStripped ? contextOutput('`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
   }
 
   const wslCatResult = extractWslCatFile(cmd)
@@ -601,7 +625,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
         : isDoc
           ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
           : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
-    return denyOutput('`cat` loads the entire file into context. ' + hint)
+    return cdStripped ? contextOutput('`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
   }
 
   const pyRead = extractPythonFileRead(cmd)
@@ -611,7 +635,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
       ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
       : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
     recordStat('session_hint', 0, 0)
-    return denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
+    return cdStripped ? contextOutput('Python `open()` file reads bypass read hooks. ' + hint) : denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
   }
 
   const tailResult = extractTailFile(cmd)
@@ -645,7 +669,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
         ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
         : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
     recordStat('session_hint', 0, 0)
-    return denyOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint)
+    return cdStripped ? contextOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint) : denyOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint)
   }
 
   if (extractGrepPipeChain(cmd)) {
@@ -793,8 +817,9 @@ function extractBashOutput(raw: Record<string, unknown>): string {
  */
 export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   try {
-    const cmd = extractCommand(event)
-    if (cmd === undefined) return passOutput()
+    const rawCmd = extractCommand(event)
+    if (rawCmd === undefined) return passOutput()
+    const cmd = stripCdPrefix(rawCmd)
 
     // Item 2: record curl -o downloads by URL for cross-command dedup
     const curlDl = extractCurlDownload(cmd)
