@@ -143,6 +143,59 @@ describe('postBashHandler', () => {
   })
 })
 
+describe('pipe/redirect-insensitive cache keying', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('pipe variant hits cache: same jest command with different tail filter', async () => {
+    const baseCmd = 'npx jest tests/unit/foo.test.js --no-coverage 2>&1'
+    const firstCmd = baseCmd + ' | tail -40'
+    const secondCmd = baseCmd + ' | grep "PASS"'
+    const largeOutput = 'PASSED tests/unit/foo.test.js\n'.repeat(200)
+
+    // Post: run with first pipe variant
+    await postBashHandler(makePostBashEvent(firstCmd, largeOutput))
+
+    // Pre: run with different pipe variant — should hit cache
+    const result = preBashHandler(makeBashEvent(secondCmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
+  it('redirect-only variant hits cache: same tsc with different stdout+stderr combo', async () => {
+    const baseCmd = 'npx tsc tests/unit/foo.test.ts --noEmit'
+    const firstCmd = baseCmd + ' 2>&1'
+    const secondCmd = baseCmd + ' 2>&1 | tail -20'
+    const largeOutput = 'src/auth.ts(12,5): error TS2345: ...\n'.repeat(50)
+
+    // Post: run with redirect
+    await postBashHandler(makePostBashEvent(firstCmd, largeOutput))
+
+    // Pre: run with redirect + tail — should hit cache
+    const result = preBashHandler(makeBashEvent(secondCmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
+  it('different base command does NOT collide: jest on different test file', async () => {
+    const cmd1 = 'npx jest tests/unit/foo.test.js --no-coverage 2>&1 | tail -40'
+    const cmd2 = 'npx jest tests/unit/bar.test.js --no-coverage 2>&1 | tail -40'
+    const largeOutput = 'PASSED tests/unit/foo.test.js\n'.repeat(200)
+
+    // Post: run first test
+    await postBashHandler(makePostBashEvent(cmd1, largeOutput))
+
+    // Pre: run different test — should NOT hit cache
+    const result = preBashHandler(makeBashEvent(cmd2))
+    expect(result.hookType).toBe('pass')
+  })
+})
+
 function makeBashEvent(command: string): HookEvent {
   return {
     eventName: 'pre_tool_use',

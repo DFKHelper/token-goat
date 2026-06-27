@@ -23,6 +23,46 @@ function stripCdPrefix(cmd: string): string {
   return stripped.trim() || cmd
 }
 
+/**
+ * Strips a command's downstream pipeline and trailing redirections, returning the
+ * base command. Used to key the bash-output cache so that the same build/test
+ * command run with different downstream filters (`| tail -40` vs `| grep ERROR`)
+ * or redirects (`2>&1`) shares a single cache entry — mirroring how curl GET
+ * commands are keyed on their URL.
+ *
+ * Splits on the first top-level pipe operator (`|`), ignoring `|` inside single
+ * or double quotes and the `||` logical-OR operator, then removes trailing stream
+ * redirections (`2>&1`, `>/dev/null`, `2> file`, `&> file`, etc.).
+ */
+function stripOutputPipeline(cmd: string): string {
+  let inSingle = false
+  let inDouble = false
+  let cut = cmd.length
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle
+    } else if (ch === '"' && !inSingle) {
+      inDouble = !inDouble
+    } else if (ch === '|' && !inSingle && !inDouble) {
+      if (cmd[i + 1] === '|') {
+        i++ // skip the `||` logical-OR operator; keep scanning
+        continue
+      }
+      cut = i // first real pipe operator — base command ends here
+      break
+    }
+  }
+  let base = cmd.slice(0, cut)
+  // Strip trailing stream redirections, possibly several chained ones.
+  let prev: string
+  do {
+    prev = base
+    base = base.replace(/\s*(?:[0-9]*>&[0-9]+|[0-9&]*>>?\s*[^\s|]+)\s*$/, '')
+  } while (base !== prev)
+  return base.trim()
+}
+
 /** Extract the command string from a Bash tool_input. */
 function extractCommand(event: HookEvent): string | undefined {
   const cmd = event.toolInput['command']
@@ -716,7 +756,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
   // Monitoring commands: always suggest recall if cached, even on a single prior run.
   const monitoringHint = getMonitoringRecallHint(cmd)
   if (monitoringHint !== null) {
-    const monCmdHash = shortFingerprint(cmd)
+    const monCmdHash = shortFingerprint(stripOutputPipeline(cmd))
     const monOutputId = getBashOutputId(monCmdHash)
     if (monOutputId !== null) {
       const monEntry = getBashOutput(monOutputId)
@@ -777,7 +817,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (!isBuildCommand(cmd)) return passOutput()
 
   // Derive the same command hash used by the session store.
-  const cmdHash = shortFingerprint(cmd)
+  const cmdHash = shortFingerprint(stripOutputPipeline(cmd))
   const outputId = getBashOutputId(cmdHash)
   if (outputId === null) return passOutput()
 
@@ -837,7 +877,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
     // For curl GET commands, key the cache on the URL so that the same endpoint fetched
     // with different downstream pipes (| jq vs | python3) shares a single cache entry.
-    const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : cmd
+    const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : stripOutputPipeline(cmd)
     const simpleHash = shortFingerprint(cacheKey)
     const id = await storeBashOutput(cmd, output, 0, cwd)
     recordBashOutput(simpleHash, id, Buffer.byteLength(output, 'utf-8'))
