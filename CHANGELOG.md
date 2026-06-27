@@ -5,6 +5,69 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ## [Unreleased]
 
 
+## [2.2.0] - 2026-06-27
+
+### Added
+
+- **Count-based hard-deny for repeated source file reads.** On the 3rd or later read of the same `.ts`/`.tsx`/`.js`/`.jsx`/`.py`/`.go`/`.rs`/`.java`/`.rb`/`.php`/`.swift`/`.kt`/`.cpp`/`.c`/`.h` file in a session, the pre-read hook returns a hard deny with a message to use `token-goat read`, `skeleton`, or `outline` instead. First read is always allowed; second gets a soft context hint; third and beyond are hard-denied. Records a `read_count_deny` stat.
+
+- **Identifier grep on a single source file → `token-goat symbol` hint.** `extractRgSymbolSearch` detects `rg`/`grep -n "Identifier"` or `rg "Id1|Id2|Id3"` when targeting exactly one indexed source file (pattern must be a pure identifier or `|`-joined identifier alternation, no regex metacharacters). Emits a contextOutput suggesting `token-goat symbol <Identifier>` to jump straight to the definition.
+
+- **Python heredoc reads caught.** The `python3 - << 'HEREDOC'` form is now parsed by `extractPythonFileRead` — the heredoc body is scanned for `open(path)` calls, with the same write-mode exclusion (`.write()`/`.writelines()`) applied.
+
+- **`.sql` files intercepted in cat hooks.** `cat migration.sql` and WSL-proxied equivalents emit a contextOutput suggesting `token-goat section "file.sql::table_name"` to pull a single `CREATE TABLE`/`CREATE TYPE` block.
+
+- **Section heading normalization.** `token-goat section` now normalizes both the query and stored headings before matching: em/en-dashes to hyphen, trailing parentheticals stripped, leading `N. ` numeric prefixes stripped. On a miss, the complete ordered heading list is printed instead of a top-5 "Did you mean?".
+
+- **Markdown heading grep → `token-goat outline` hint.** `extractMarkdownHeadingGrep` detects `grep -n "^#"` / `rg -n "^#+"` on `.md` files and suggests `token-goat outline <file>` followed by `token-goat section "file::Heading"`. Wired before `extractRgStructuralSearch` so heading patterns do not misdirect to symbol search.
+
+- **Session artifact re-read dedup.** `tasks/<id>.output` and `tool-results/<id>.txt` files under `.claude/` and AppData session directories are tracked through the diff-or-deny path: first read snapshots content; re-read with changed content injects a unified diff; re-read unchanged denies with a one-line note. First reads of large artifacts hint `--tail`/`--grep` recall.
+
+- **`eza --tree`, bare `tree`, and `ls -R` → `token-goat map` hint.** `extractDirectoryListing` now covers three additional directory-tree idioms alongside the existing `eza --long` match.
+
+- **`grep | grep` double-filter chain hint.** `extractGrepPipeChain` detects `grep ... | grep ...` / `rg ... | grep ...` pipelines and suggests collapsing to `rg -e PAT1 -e PAT2`, or using `token-goat refs`/`semantic` for symbol discovery. Does not fire on `grep | wc`, `grep | head`, or other non-grep consumers.
+
+- **curl GET cache keyed on URL.** `curl -s <url> | jq '...'` and `curl -s <url> | python3 -c '...'` with the same URL now share a cache entry regardless of the downstream pipeline — the pipe is stripped before fingerprinting.
+
+- **Doc-file diff-on-reread.** When a previously-read `.md`/`.mdx`/`.rst`/`.txt` file has changed since the last read, the pre-read hook serves a compact unified diff rather than the full file. When unchanged, a one-line note is served.
+
+- **`curl -o <file>` download dedup.** `extractCurlDownload` records URL to saved-path after each file download; a repeat fetch of the same URL emits a recall hint pointing at the already-saved file, covering different temp-file names for the same URL.
+
+- **`cat <config>.json | jq` pipeline → `config-get`/`section` hint.** `extractCatJsonPipe` detects `cat *.json | jq` (and `bat`/`python`/`node` consumers) on JSON config files and suggests the appropriate surgical-read command.
+
+- **`node require('*.json')` inline reads intercepted.** `extractNodeFileRead` extended to match `require('path/config.json')` patterns in `node -e` evaluations.
+
+- **`cat *.css`/`*.scss`/`*.sass`/`*.less` intercepted.** CSS and preprocessor source files now trigger the surgical-read hint alongside JS/TS/Python/Go.
+
+- **`curl GET` response caching and recall.** Successful curl GET responses stored in the session store by URL; a repeat fetch emits a `token-goat bash-output <id>` recall hint.
+
+- **`.md` re-read denial.** All `.md` files are denied on 2nd+ access regardless of size, including a distinct path for files under `memory/` and `.claude/memory` directories.
+
+- **`find` command interception.** Bare `find . -name "*.ts"` and similar patterns redirect to `fd` or `token-goat symbol`.
+
+- **git diff compression.** `bash_compress.ts` caps large git diff outputs to 50 lines per file hunk.
+
+### Fixed
+
+- **Python write-mode false-deny.** `extractPythonFileRead` no longer intercepts scripts containing `open('file', 'w')`, `open(..., 'a')`, `.write(`, or `.writelines(`.
+
+- **tail -c byte-mode reads.** `tail -c 1024 tasks/foo.output` (byte-count mode) is now correctly intercepted.
+
+- **cat with flags.** `cat -n`, `cat -A`, and other flag variants recognized correctly.
+
+- **WSL-proxied cat reads.** `wsl -d Ubuntu -- cat /mnt/c/...` patterns resolve to the Windows path and trigger the appropriate interceptor.
+
+- **Security hardening.** Shell injection via unquoted path interpolation, path traversal through symlink resolution, and FIFO read-blocking vectors in hook handlers patched.
+
+- **Windows mkdirSync race.** `EEXIST` race condition on Windows guarded with retry + `path.exists()` fallback.
+
+- **Multiple CLI and embedding fixes.** Elision threshold off-by-one, compact slice direction, head default line count, write-file validation for `TOKEN_GOAT_MAX_STDIN_MB`, embedding chunks metadata, vector rowid correlation, `deleteFileEmbeddings`, CRLF in Windows chunks, null-guard fixes in `ask`, `capAnswer`, and `pack`.
+
+### Refactored (internal)
+
+- `shortFingerprint`, `ensureNewline`, `extractErrorMessage`, and `isCodeFenceDelimiter` extracted as shared helpers, eliminating call-site duplication.
+- Config defaults, command predicate functions, and platform detection consolidated.
+
 ## [2.1.0] - 2026-06-26
 
 ### Added
