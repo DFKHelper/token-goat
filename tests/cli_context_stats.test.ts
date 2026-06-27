@@ -139,6 +139,15 @@ describe('cli_context_stats', () => {
         .replace(/^-+|-+$/g, '')
       expect(expectedSlug).toBe(slug)
     })
+
+    it('does not fall back to other projects memory files', () => {
+      // This tests the fix for dead code in the fallback loop.
+      // findMemoryMd should NOT return memory files from other projects.
+      // If the exact slug match doesn't exist, it should return null.
+      const projectRoot = path.join(tempDir, 'no-memory-project')
+      fs.mkdirSync(projectRoot)
+      expect(findMemoryMd(projectRoot)).toBeNull()
+    })
   })
 
   // ---- runContextStats ----------------------------------------------------
