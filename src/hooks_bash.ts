@@ -45,8 +45,8 @@ function extractCatSourceFile(cmd: string): string | null {
   return m?.[1] ?? null
 }
 
-/** Extracts the file path from a simple `cat [flags] <path>` command (quoted or unquoted), returning it and whether it is a doc, env, or config file. Returns null for multi-file cat, piped cat, etc. */
-function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean } | null {
+/** Extracts the file path from a simple `cat [flags] <path>` command (quoted or unquoted), returning it and whether it is a doc, env, config, or sql file. Returns null for multi-file cat, piped cat, etc. */
+function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
   const m = /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
   if (!m) return null
   const filePath = m[1] ?? m[2] ?? m[3]
@@ -56,10 +56,43 @@ function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv:
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
   const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
   if (!hasKnownExt && !isEnvFile) return null
-  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+  const isSql = /\.sql$/i.test(filePath)
+  const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
   const isEnv = isEnvFile || /\.env$/i.test(filePath)
   const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
-  return { filePath, isDoc, isEnv, isConfig }
+  return { filePath, isDoc, isEnv, isConfig, isSql }
+}
+
+/**
+ * Returns identifier info when command is `rg`/`grep` with `-n` flag targeting a pure identifier
+ * (or `|`-joined identifiers) against exactly one source file. Used to suggest
+ * `token-goat symbol` as a cheaper alternative to scanning the file.
+ */
+export function extractRgSymbolSearch(cmd: string): { filePath: string; identifier: string } | null {
+  if (!/^(?:rg|grep)\s+/.test(cmd)) return null
+  if (!/-n\b/.test(cmd)) return null
+
+  // Extract the quoted or unquoted pattern (first string-like argument)
+  const patternMatch = /["']([^"']+)["']/.exec(cmd)
+  const pattern = patternMatch?.[1]
+  if (!pattern) return null
+
+  // Validate: pure identifier or |-joined identifiers only — no regex metacharacters
+  if (!/^[A-Za-z_][A-Za-z0-9_]*(\|[A-Za-z_][A-Za-z0-9_]*)*$/.test(pattern)) return null
+
+  // Must target exactly one file with a known source extension (not a directory).
+  // The file may be followed by whitespace (then more flags), a pipe, or end-of-string.
+  const fileMatch = /(?:^|\s)(?:"([^"]+\.(?:ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|cc|cxx|c|h))"|'([^']+\.(?:ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|cc|cxx|c|h))'|([^\s"'|<>]+\.(?:ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|cc|cxx|c|h)))(?:\s|$|\|)/i.exec(cmd)
+  if (!fileMatch) return null
+
+  const filePath = fileMatch[1] ?? fileMatch[2] ?? fileMatch[3]
+  if (!filePath) return null
+  if (isTempPath(filePath)) return null
+
+  // Exclude recursive flags — those search directories, not a single file
+  if (/-[a-zA-Z]*r[a-zA-Z]*\b/.test(cmd) || /--recursive\b/.test(cmd)) return null
+
+  return { filePath, identifier: pattern }
 }
 
 /** Extracts the file path from `cat <file> | jq` commands restricted to structured config files. Returns null for non-config extensions, temp paths, or non-jq pipes. Emits a CONTEXT hint (not deny) so the jq pipeline still runs if the agent proceeds. */
@@ -74,7 +107,7 @@ function extractCatJsonPipe(cmd: string): { filePath: string } | null {
 }
 
 /** Extracts the file path from a WSL-proxied cat command like `wsl bash -c "cat /mnt/c/..."` or `wsl -d Ubuntu bash -c "cat /mnt/c/..."`. Converts /mnt/X/ paths to X:/ and applies the same filtering as extractCatFile. */
-function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean } | null {
+function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
   // Match: wsl [optional -d DISTRO] bash -c "cat [flags] /mnt/X/..."
   const wslMatch = /^wsl(?:\s+-d\s+\S+)?\s+bash\s+-c\s+"cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+\/mnt\/([a-z])\/([^"]*)"/.exec(cmd)
   if (!wslMatch) return null
@@ -87,10 +120,11 @@ function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isE
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
   const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
   if (!hasKnownExt && !isEnvFile) return null
-  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+  const isSql = /\.sql$/i.test(filePath)
+  const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
   const isEnv = isEnvFile || /\.env$/i.test(filePath)
   const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
-  return { filePath, isDoc, isEnv, isConfig }
+  return { filePath, isDoc, isEnv, isConfig, isSql }
 }
 
 /** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
@@ -98,7 +132,42 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
   if (!/python3?/.test(cmd)) return null
   // Return null when the command shows write intent — these are edits, not reads
   if (/open\s*\([^)]*,\s*['"][wa]/i.test(cmd) || /\.write\s*\(/.test(cmd)) return null
-  const EXT = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties)/i
+
+  const OPEN_EXT = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties)/i
+
+  // Heredoc form: python3 - << 'PYEOF'\n...\nPYEOF
+  const heredocMatch = /^python3?\s+-\s+<<\s*'?(\w+)'?\s*\n([\s\S]*?)\n\1\s*$/.exec(cmd)
+  if (heredocMatch) {
+    const body = heredocMatch[2] ?? ''
+    // Write-mode exclusion in the heredoc body
+    if (
+      /open\s*\([^)]*,\s*['"][wa]/i.test(body) ||
+      /\.write\s*\(/.test(body) ||
+      /\.writelines\s*\(/.test(body)
+    ) return null
+    // Direct: open(r'path.ext') or open("path.ext") in body
+    const heredocOpen = /open\s*\(\s*r?['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(body)
+    if (heredocOpen?.[1]) {
+      const filePath = heredocOpen[1]
+      if (isOrchestratorStateFile(filePath)) return null
+      const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
+      return { filePath, isDoc }
+    }
+    // Indirect: open(var, ...) where a string literal with known ext appears in the body
+    if (/open\s*\(/.test(body)) {
+      const literal = /['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(body)
+      if (literal?.[1]) {
+        const filePath = literal[1]
+        if (isOrchestratorStateFile(filePath)) return null
+        if (OPEN_EXT.test(filePath)) {
+          const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
+          return { filePath, isDoc }
+        }
+      }
+    }
+    return null
+  }
+
   // Direct: open('path.ext') or open("path.ext")
   const direct = /open\(['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(cmd)
   if (direct) {
@@ -115,7 +184,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
       const filePath = literal[1] ?? ''
       if (filePath) {
         if (isOrchestratorStateFile(filePath)) return null
-        if (EXT.test(filePath)) {
+        if (OPEN_EXT.test(filePath)) {
           const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
           return { filePath, isDoc }
         }
@@ -499,7 +568,13 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
   const catResult = extractCatFile(cmd)
   if (catResult !== null) {
-    const { filePath, isDoc, isEnv, isConfig } = catResult
+    const { filePath, isDoc, isEnv, isConfig, isSql } = catResult
+    recordStat('session_hint', 0, 0)
+    if (isSql) {
+      return contextOutput(
+        '`cat` loads the entire file into context. Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
+      )
+    }
     const hint = isEnv
       ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` to read a specific variable.'
       : isConfig
@@ -507,13 +582,18 @@ export function preBashHandler(event: HookEvent): HookOutput {
         : isDoc
           ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
           : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
-    recordStat('session_hint', 0, 0)
     return denyOutput('`cat` loads the entire file into context. ' + hint)
   }
 
   const wslCatResult = extractWslCatFile(cmd)
   if (wslCatResult !== null) {
-    const { filePath, isDoc, isEnv, isConfig } = wslCatResult
+    const { filePath, isDoc, isEnv, isConfig, isSql } = wslCatResult
+    recordStat('session_hint', 0, 0)
+    if (isSql) {
+      return contextOutput(
+        '`cat` loads the entire file into context. Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
+      )
+    }
     const hint = isEnv
       ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` to read a specific variable.'
       : isConfig
@@ -521,7 +601,6 @@ export function preBashHandler(event: HookEvent): HookOutput {
         : isDoc
           ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
           : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
-    recordStat('session_hint', 0, 0)
     return denyOutput('`cat` loads the entire file into context. ' + hint)
   }
 
@@ -586,6 +665,16 @@ export function preBashHandler(event: HookEvent): HookOutput {
     return contextOutput(
       'Use `token-goat outline "' + filePath + '"` to get all headings with line ranges — ' +
       'then `token-goat section "' + filePath + '::Heading"` to read one section.',
+    )
+  }
+
+  // Bare identifier search on a single source file — symbol lookup is cheaper
+  const rgSymbol = extractRgSymbolSearch(cmd)
+  if (rgSymbol !== null) {
+    const { identifier } = rgSymbol
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      'Use `token-goat symbol ' + identifier + '` to jump directly to the definition without scanning the file.',
     )
   }
 
