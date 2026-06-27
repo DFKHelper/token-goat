@@ -399,6 +399,29 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
   })
+
+  it('denies cat of a CSS file', () => {
+    const result = preBashHandler(makeBashEvent('cat app/globals.css'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('denies cat of an SCSS file', () => {
+    const result = preBashHandler(makeBashEvent('cat src/styles/main.scss'))
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('denies cat of a LESS file', () => {
+    const result = preBashHandler(makeBashEvent('cat src/styles/theme.less'))
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('denies cat of a SASS file', () => {
+    const result = preBashHandler(makeBashEvent('cat src/styles/variables.sass'))
+    expect(result.hookType).toBe('deny')
+  })
 })
 
 describe('preBashHandler — rg structural search', () => {

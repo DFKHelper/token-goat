@@ -41,7 +41,7 @@ function isOrchestratorStateFile(filePath: string): boolean {
 
 /** Extract the source file path from `cat <path>.<ext>`, or null if not that pattern. */
 function extractCatSourceFile(cmd: string): string | null {
-  const m = /^cat\s+(\S+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj))\s*$/.exec(cmd)
+  const m = /^cat\s+(\S+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less))\s*$/.exec(cmd)
   return m?.[1] ?? null
 }
 
@@ -54,7 +54,7 @@ function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv:
   if (isTempPath(filePath)) return null
   const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
-  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
+  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
   if (!hasKnownExt && !isEnvFile) return null
   const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
   const isEnv = isEnvFile || /\.env$/i.test(filePath)
@@ -74,7 +74,7 @@ function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isE
   if (isTempPath(filePath)) return null
   const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
-  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
+  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
   if (!hasKnownExt && !isEnvFile) return null
   const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
   const isEnv = isEnvFile || /\.env$/i.test(filePath)
