@@ -514,4 +514,31 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('pass')
   })
 
+  it('denies 2nd read of any .md file under memory/ directory', () => {
+    const dir = path.join(os.tmpdir(), `tg-mem3-${process.pid}`)
+    fs.mkdirSync(dir, { recursive: true })
+    const p = path.join(dir, 'memory', 'project_findings.md')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, '# Findings\ncontent')
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('already read this session')
+      expect(result.message).toContain('token-goat section')
+    }
+  })
+
+  it('passes first read of memory/project_findings.md', () => {
+    const dir = path.join(os.tmpdir(), `tg-mem4-${process.pid}`)
+    fs.mkdirSync(dir, { recursive: true })
+    const p = path.join(dir, 'memory', 'project_findings.md')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, '# Findings\ncontent')
+    tmpFiles.push(p)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('pass')
+  })
+
 })

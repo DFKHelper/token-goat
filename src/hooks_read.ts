@@ -176,12 +176,20 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
   }
 
-  // Item 8: MEMORY.md re-read denial — content is already in the compact manifest
-  if (normalized.toLowerCase().includes('memory/memory.md') && wasFileReadThisSession(normalized)) {
+  // Item 8: MEMORY.md re-read denial — content is already in the compact manifest.
+  // Also generalised to any .md file under a memory/ directory (e.g. memory/project_findings.md).
+  const isMemoryMd = (
+    normalized.toLowerCase().includes('memory/memory.md') ||
+    /[/\\]memory[/\\][^/\\]+\.md$/i.test(normalized)
+  )
+  if (isMemoryMd && wasFileReadThisSession(normalized)) {
     recordFileRead(normalized)
     recordStat('session_hint', 0, 0)
+    const isMainMemory = basename.toLowerCase() === 'memory.md'
     return denyOutput(
-      "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'.",
+      isMainMemory
+        ? "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'."
+        : normalized + ' was already read this session. Memory files rarely change mid-session. Use `token-goat section "' + normalized + '::SectionHeading"` to extract one section.',
     )
   }
 
