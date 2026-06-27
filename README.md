@@ -61,7 +61,7 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 |--------------------|------------------|
 | 3.3 MB screenshot lands in model context | 84 KB compressed copy, 97.4% smaller |
 | Agent re-reads files from earlier in the session | "Already read this" reminder with narrow slice suggestion |
-| Agent re-reads a file edited mid-session | Unified diff injected as a hint — full Read avoided when the diff covers the change |
+| Agent re-reads a file edited mid-session | Unified diff injected as a hint — full Read avoided when the diff covers the change. Docs (`.md`/`.rst`/`.txt`) by default; source/style/data files (`.ts`/`.css`/`.json`/…) when `serve_diff_on_reread` is enabled |
 | Compaction forgets which files were edited | Structured session manifest injected before compact |
 | Same files re-read from scratch after `/compact` | Recovery hint at SessionStart lists cached snapshot + bash + WebFetch IDs |
 | Loaded skill body summarised away by compaction | `### Active Skills` manifest section + `**Skills**:` recovery block list every loaded skill; full body recoverable via `token-goat skill-body <name>` without re-invoking |

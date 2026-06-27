@@ -20,6 +20,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
 import { isWindows } from './util.js'
+import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId } from './session.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -86,6 +87,23 @@ function statSize(absPath: string): number | null {
     return fs.statSync(absPath).size
   } catch {
     return null
+  }
+}
+
+/** Source/style/data extensions eligible for diff-on-reread when serve_diff_on_reread is enabled. */
+const DIFFABLE_SOURCE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|css|scss|sass|less|json|jsonc|py|go|rs|java|rb|php|swift|kt|c|h|cpp|cc|cxx|hpp|cs|sql|yaml|yml|toml)$/i
+
+/** Generate extension-aware surgical-read hint for a file. */
+function surgicalHint(filePath: string, basename: string): string {
+  const isDocFile = /\.(md|mdx|rst|txt)$/i.test(basename)
+  const isSectionFile = /\.(json|jsonc|css|scss|sass|less|yaml|yml|toml)$/i.test(basename)
+
+  if (isDocFile) {
+    return 'Use `token-goat section "' + filePath + '::HeadingName"` to extract a part.'
+  } else if (isSectionFile) {
+    return 'Use `token-goat section "' + filePath + '::name"` to extract a part.'
+  } else {
+    return 'Use `token-goat read "' + filePath + '::SymbolName"` for one function or `token-goat skeleton "' + filePath + '"` for structure.'
   }
 }
 
@@ -344,9 +362,12 @@ export function preReadHandler(event: HookEvent): HookOutput {
   // Doc-file auto-diff on re-read: .md/.mdx/.rst/.txt files that have been read before
   // get a compact diff (or "unchanged") instead of a wasteful full re-read, provided a
   // snapshot was captured by postReadHandler on the first read.
+  // When serve_diff_on_reread is enabled, source/style/data files also get diffs.
   // Falls through to the generic wasFileReadThisSession block when no snapshot exists,
   // preserving existing context vs. deny behavior for un-snapshotted files.
-  if (/\.(md|mdx|rst|txt)$/i.test(basename) && wasFileReadThisSession(normalized)) {
+  const isDocDiffable = /\.(md|mdx|rst|txt)$/i.test(basename)
+  const isSourceDiffable = loadConfig().hints.serve_diff_on_reread && DIFFABLE_SOURCE_RE.test(basename)
+  if ((isDocDiffable || isSourceDiffable) && wasFileReadThisSession(normalized)) {
     // Truncation takes priority: redirect to skeleton/surgical reads.
     if (wasFileTruncatedThisSession(normalized)) {
       recordFileRead(normalized)
@@ -374,20 +395,25 @@ export function preReadHandler(event: HookEvent): HookOutput {
             recordStat('session_hint', 0, 0)
             return denyOutput(
               basename + ' is unchanged since last read. ' +
-              'Use `token-goat section "' + normalized + '::HeadingName"` to extract a part.',
+              surgicalHint(normalized, basename),
             )
           }
 
           const diff = buildLineDiff(oldContent, currentContent, basename)
           if (diff !== '') {
-            recordFileRead(normalized)
-            const savedBytes = Math.max(0, currentContent.length - diff.length)
-            recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
-            return denyOutput(
-              'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-              '```diff\n' + diff + '\n```\n\n' +
-              'Use `token-goat section "' + normalized + '::HeadingName"` to read a specific section.',
-            )
+            // Savings guard for non-doc files: only serve diff if it's meaningfully smaller than a full re-read
+            if (isSourceDiffable && !isDocDiffable && diff.length > currentContent.length * 0.6) {
+              // Diff is not a good savings — fall through to generic deny block below
+            } else {
+              recordFileRead(normalized)
+              const savedBytes = Math.max(0, currentContent.length - diff.length)
+              recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
+              return denyOutput(
+                'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+                '```diff\n' + diff + '\n```\n\n' +
+                surgicalHint(normalized, basename),
+              )
+            }
           }
         }
       } catch {
@@ -523,7 +549,8 @@ export function postReadHandler(event: HookEvent): HookOutput {
 
   // Snapshot doc file content so the next re-read can inject a diff instead of the full file.
   const postBasename = path.basename(normalized)
-  if (/\.(md|mdx|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized)) {
+  const diffSourcesEnabled = loadConfig().hints.serve_diff_on_reread
+  if (/\.(md|mdx|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized) || (diffSourcesEnabled && DIFFABLE_SOURCE_RE.test(postBasename))) {
     try {
       const sz = statSize(normalized)
       if (sz !== null && sz <= 256 * 1024) {
