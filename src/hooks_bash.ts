@@ -258,6 +258,23 @@ function extractRgStructuralSearch(cmd: string): { filePath: string } | null {
   return { filePath }
 }
 
+/**
+ * Returns true when the command is a `curl` GET request whose response is safe
+ * to cache (no -X POST/PUT/PATCH/DELETE, no request body flags, no auth credentials).
+ */
+function isCurlGetCommand(cmd: string): boolean {
+  if (!/^curl\b/.test(cmd)) return false
+  // Explicit non-GET method
+  if (/-X\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return false
+  if (/--request\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return false
+  // Request body (implies non-GET)
+  if (/\s(?:-d|--data(?:-raw|-binary|-urlencode)?|-F|--form)\b/.test(cmd)) return false
+  // Auth credentials — skip caching to avoid leaking tokens into the output store
+  if (/\s(?:-u|--user)\b/.test(cmd)) return false
+  if (/-H\s+['"]?Authorization/i.test(cmd)) return false
+  return true
+}
+
 /** True when the command is a TypeScript compiler invocation. */
 function isTscCommand(cmd: string): boolean {
   return /^\s*tsc(\s|$)/i.test(cmd)
@@ -460,6 +477,23 @@ export function preBashHandler(event: HookEvent): HookOutput {
     }
   }
 
+  // curl GET recall — emit a hint when the same URL was already fetched this session
+  if (isCurlGetCommand(cmd)) {
+    const curlHash = shortFingerprint(cmd)
+    const curlOutputId = getBashOutputId(curlHash)
+    if (curlOutputId !== null) {
+      const curlEntry = getBashOutput(curlOutputId)
+      const curlBytes = curlEntry?.sizeBytes ?? 0
+      recordStat('bash_compress:recall', curlBytes, Math.round(curlBytes / 4))
+      const curlPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
+      return contextOutput(
+        'curl response cached (`' + curlPreview + '`). ' +
+        'Use `token-goat bash-output ' + curlOutputId + '` to recall it. ' +
+        'Append `--grep PATTERN` to filter or `--section HeadingName` for a markdown section.',
+      )
+    }
+  }
+
   if (!isBuildCommand(cmd)) return passOutput()
 
   // Derive the same command hash used by the session store.
@@ -506,9 +540,9 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const cmd = extractCommand(event)
     if (cmd === undefined) return passOutput()
 
-    // Only cache monitoring and build commands — not generic shell commands.
+    // Only cache monitoring, build, and curl GET commands — not generic shell commands.
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
-    if (!isMonitoring && !isBuildCommand(cmd)) return passOutput()
+    if (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd)) return passOutput()
 
     const output = extractBashOutput(event.raw)
     if (Buffer.byteLength(output, 'utf-8') < MIN_CACHE_BYTES) return passOutput()
