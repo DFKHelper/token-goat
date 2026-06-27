@@ -176,3 +176,8 @@ export function stripLower(s: string): string {
 export function basename(p: string): string {
   return path.basename(p)
 }
+
+/** Ensure text ends with a newline; no-op if already present. Extracted from 5 call sites. */
+export function ensureNewline(text: string): string {
+  return text.endsWith('\n') ? text : text + '\n'
+}

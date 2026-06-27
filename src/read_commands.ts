@@ -11,7 +11,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { querySymbols, queryRefs, getFileEntry } from './index_reader.js'
 import { readSection, listSections, extractSection } from './section_reader.js'
-import { runGit } from './util.js'
+import { runGit, ensureNewline } from './util.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 
 // ---- constants --------------------------------------------------------------
@@ -39,11 +39,11 @@ function readFileText(p: string): string | null {
 }
 
 function emit(text: string): void {
-  process.stdout.write(text.endsWith('\n') ? text : text + '\n')
+  process.stdout.write(ensureNewline(text))
 }
 
 function emitErr(text: string): void {
-  process.stderr.write(text.endsWith('\n') ? text : text + '\n')
+  process.stderr.write(ensureNewline(text))
 }
 
 function didYouMean(candidates: string[]): string {

@@ -9,7 +9,7 @@
  * index. Cleared between tests via {@link registerReset}.
  */
 
-import { fingerprintContent } from './fingerprint.js'
+import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 
 // cacheId -> stored body.
@@ -27,7 +27,7 @@ let _urlIndex = new Map<string, string>()
  * the same id within and across sessions.
  */
 function cacheIdForUrl(url: string): string {
-  return fingerprintContent(url).slice(0, 16)
+  return shortFingerprint(url)
 }
 
 /**

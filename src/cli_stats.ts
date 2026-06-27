@@ -14,12 +14,13 @@ import * as os from 'node:os'
 import { summarize, renderStats } from './stats.js'
 import { dataDir } from './constants.js'
 import { getSessionFiles } from './session.js'
+import { ensureNewline } from './util.js'
 
 // ---- helpers ----------------------------------------------------------------
 
 /** Write ``text`` directly to stdout (no colorama buffering layer needed in TS). */
 export function writeRaw(text: string): void {
-  process.stdout.write(text.endsWith('\n') ? text : text + '\n')
+  process.stdout.write(ensureNewline(text))
 }
 
 /**
