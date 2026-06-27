@@ -9,6 +9,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Added
 
+- **Build/monitoring output cache keyed on base command, ignoring pipes and redirects.** Running the same jest/tsc/pytest/`gh run view` command a second time with a different trailing pipe (e.g., `| tail -40` vs `| grep "●"`) now hits the cache instead of re-executing. A `stripOutputPipeline` pass strips everything from the first top-level unquoted `|` and removes trailing stream redirections (`2>&1`, `>/dev/null`), quote-aware so `--testPathPattern="a|b"` and `||` are never misidentified as pipes. Applied at both the store site (`postBashHandler`) and all recall lookups. curl’s URL-based keying is unchanged.
 - **PowerShell system-query recall.** `Get-CimInstance`, `Get-Process`, `Get-Counter`, `Get-Service`, `Get-PSDrive`, and `Get-WmiObject` commands run via `powershell.exe`/`pwsh` are now registered as monitoring commands. Output is cached after the first run and a `token-goat bash-output <id> --tail 50` recall hint is emitted on repeats.
 - **`token-goat section`/`outline`/`symbol` repeat recall.** Running the same `token-goat section "FILE::Heading"`, `outline FILE`, or `symbol NAME` command a second time in a session now emits a bash-output recall hint instead of re-executing.
 
