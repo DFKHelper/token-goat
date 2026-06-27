@@ -327,6 +327,72 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('pass')
   })
+
+  it('denies cat -n file.ts (flag before filename)', () => {
+    const event = makeBashEvent('cat -n src/app/page.tsx')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('denies cat -nA file.py (combined flags)', () => {
+    const event = makeBashEvent('cat -nA scripts/build.py')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('denies cat --number file.ts (long flag)', () => {
+    const event = makeBashEvent('cat --number src/lib/utils.ts')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('passes through cat -n on temp file', () => {
+    const event = makeBashEvent('cat -n /tmp/staging.ts')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through cat -n with pipe (not a simple cat)', () => {
+    const event = makeBashEvent('cat -n file.ts | grep foo')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('denies wsl bash -c "cat /mnt/c/Projects/wellsent/lib/env.ts"', () => {
+    const event = makeBashEvent('wsl bash -c "cat /mnt/c/Projects/wellsent/lib/env.ts"')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('denies wsl -d Ubuntu bash -c "cat /mnt/c/Projects/wellsent/app/globals.ts"', () => {
+    const event = makeBashEvent('wsl -d Ubuntu bash -c "cat /mnt/c/Projects/wellsent/app/globals.ts"')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('passes through wsl bash -c "cat /mnt/c/.../Temp/foo.ts"', () => {
+    const event = makeBashEvent('wsl bash -c "cat /mnt/c/Users/zelys/AppData/Local/Temp/foo.ts"')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through wsl bash -c "cat /mnt/c/Projects/wellsent/nonexistent"', () => {
+    const event = makeBashEvent('wsl bash -c "cat /mnt/c/Projects/wellsent/nonexistent"')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('denies wsl bash -c "cat -n /mnt/d/Projects/file.py"', () => {
+    const event = makeBashEvent('wsl bash -c "cat -n /mnt/d/Projects/file.py"')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+  })
 })
 
 describe('preBashHandler — rg structural search', () => {

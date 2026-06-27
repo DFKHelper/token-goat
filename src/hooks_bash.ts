@@ -45,12 +45,32 @@ function extractCatSourceFile(cmd: string): string | null {
   return m?.[1] ?? null
 }
 
-/** Extracts the file path from a simple `cat <path>` command (quoted or unquoted), returning it and whether it is a doc, env, or config file. Returns null for multi-file cat, piped cat, etc. */
+/** Extracts the file path from a simple `cat [flags] <path>` command (quoted or unquoted), returning it and whether it is a doc, env, or config file. Returns null for multi-file cat, piped cat, etc. */
 function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean } | null {
-  const m = /^cat\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+  const m = /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
   if (!m) return null
   const filePath = m[1] ?? m[2] ?? m[3]
   if (filePath === undefined) return null
+  if (isTempPath(filePath)) return null
+  const basename = filePath.includes('/') ? filePath.split('/').at(-1)! : filePath.split('\\').at(-1) ?? filePath
+  const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
+  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
+  if (!hasKnownExt && !isEnvFile) return null
+  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+  const isEnv = isEnvFile || /\.env$/i.test(filePath)
+  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  return { filePath, isDoc, isEnv, isConfig }
+}
+
+/** Extracts the file path from a WSL-proxied cat command like `wsl bash -c "cat /mnt/c/..."` or `wsl -d Ubuntu bash -c "cat /mnt/c/..."`. Converts /mnt/X/ paths to X:/ and applies the same filtering as extractCatFile. */
+function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean } | null {
+  // Match: wsl [optional -d DISTRO] bash -c "cat [flags] /mnt/X/..."
+  const wslMatch = /^wsl(?:\s+-d\s+\S+)?\s+bash\s+-c\s+"cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+\/mnt\/([a-z])\/([^"]*)"/.exec(cmd)
+  if (!wslMatch) return null
+  const drive = wslMatch[1]?.toUpperCase()
+  const pathRest = wslMatch[2]
+  if (!drive || !pathRest) return null
+  const filePath = drive + ':/' + pathRest
   if (isTempPath(filePath)) return null
   const basename = filePath.includes('/') ? filePath.split('/').at(-1)! : filePath.split('\\').at(-1) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
@@ -215,6 +235,20 @@ export function preBashHandler(event: HookEvent): HookOutput {
   const catResult = extractCatFile(cmd)
   if (catResult !== null) {
     const { filePath, isDoc, isEnv, isConfig } = catResult
+    const hint = isEnv
+      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` to read a specific variable.'
+      : isConfig
+        ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+        : isDoc
+          ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+          : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
+    recordStat('session_hint', 0, 0)
+    return denyOutput('`cat` loads the entire file into context. ' + hint)
+  }
+
+  const wslCatResult = extractWslCatFile(cmd)
+  if (wslCatResult !== null) {
+    const { filePath, isDoc, isEnv, isConfig } = wslCatResult
     const hint = isEnv
       ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` to read a specific variable.'
       : isConfig
