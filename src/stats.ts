@@ -218,7 +218,9 @@ export function summarize(windowDays: number = 30, testDb?: Database.Database): 
     const bytesSaved = (row as { bytes_saved?: number }).bytes_saved ?? 0
     const tokensSaved = (row as { tokens_saved?: number }).tokens_saved ?? 0
     const kind = (row as { kind: string }).kind
-    const ts = (row as { ts: number }).ts
+    const tsRaw = (row as { ts?: number }).ts
+    if (tsRaw === undefined) continue
+    const ts = tsRaw
 
     totalEvents += 1
     totalBytes += bytesSaved
