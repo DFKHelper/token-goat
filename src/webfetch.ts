@@ -5,7 +5,7 @@ import { resolve, join } from 'path';
 import { URL } from 'url';
 import { promisify } from 'util';
 import { lookup as dnsLookup } from 'dns';
-import { atomicWriteBytes, atomicWriteText } from './util.js';
+import { atomicWriteBytes, atomicWriteText, extractErrorMessage } from './util.js';
 import { dataDir } from './constants.js';
 import { shrinkImage } from './image_shrink.js';
 
@@ -357,9 +357,7 @@ export async function fetchUrl(
       }
     }
     throw new Error(
-      `Network error fetching ${truncateUrl(url)}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
+      `Network error fetching ${truncateUrl(url)}: ${extractErrorMessage(err)}`,
       { cause: err },
     );
   }

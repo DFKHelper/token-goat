@@ -6,6 +6,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { extractErrorMessage } from './util.js';
 
 /**
  * Windows drive prefixes that resolve to the same NTFS location.
@@ -104,7 +105,7 @@ export function makeProjectAt(root: string | URL): Project {
     canonical = canonicalize(root);
   } catch (exc) {
     throw new Error(
-      `makeProjectAt: could not resolve path: ${exc instanceof Error ? exc.message : String(exc)}`,
+      `makeProjectAt: could not resolve path: ${extractErrorMessage(exc)}`,
       { cause: exc }
     );
   }
