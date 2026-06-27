@@ -303,7 +303,7 @@ export async function runAsk(
     if (answer) {
       const tokensIn = estTokens(prompt)
       const tokensOut = estTokens(answer)
-      const citations = slices.map((s) => s.citation())
+      const citations = slices.filter((s) => s).map((s) => s.citation())
 
       if (!opts.no_cache) {
         // NOTE: would call cachePut here
