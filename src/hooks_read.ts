@@ -219,10 +219,10 @@ export function preReadHandler(event: HookEvent): HookOutput {
       )
     }
 
-    // Item 2: large .md/.mdx files denied on 2nd read (not 3rd like general files)
-    if (/\.(md|mdx)$/i.test(basename) && rereadBytes >= 10 * 1024) {
+    // Item 2: any .md/.mdx already read this session is denied on 2nd+ read regardless of size
+    if (/\.(md|mdx)$/i.test(basename)) {
       return denyOutput(
-        'Large doc file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.',
+        'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.',
       )
     }
 
