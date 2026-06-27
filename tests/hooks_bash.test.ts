@@ -460,6 +460,45 @@ describe('preBashHandler — rg structural search', () => {
   })
 })
 
+describe('preBashHandler — python read-modify-write exemption', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('passes through python open with write mode w', () => {
+    const event = makeBashEvent("python3 -c \"with open('src/app/route.ts','r') as f: c=f.read(); open('src/app/route.ts','w').write(c.replace('old','new'))\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through python open with write mode w+', () => {
+    const event = makeBashEvent("python3 -c \"with open('config.json','w+') as f: f.write(json.dumps(d))\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through python open with append mode a', () => {
+    const event = makeBashEvent("python3 -c \"open('log.txt','a').write('entry')\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through python snippet with .write() call after reading', () => {
+    const event = makeBashEvent("python3 -c \"c=open('src/index.ts').read(); open('src/index.ts','w').write(c)\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('still denies pure python read with no write', () => {
+    const event = makeBashEvent("python3 -c \"with open('src/lib/auth.ts') as f: print(f.read())\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+})
+
 describe('preBashHandler — orchestrator state file exemption', () => {
   beforeEach(() => {
     clearModuleCaches()
