@@ -38,11 +38,11 @@ export const PATH_PATTERN_COUNT =
 /** File type intercept handlers — PDF, HTML, txt/log, office binary, CSV/TSV, generic large (src/hints/file_type_handler.ts). */
 export const FILE_TYPE_HANDLER_COUNT = 6
 
-/** Pre-bash read interceptors — cat, cat+flags, cat+WSL, python open(), head, node readFileSync, tail, rg structural (src/hooks_bash.ts). */
-export const BASH_INTERCEPTOR_COUNT = 8
+/** Pre-bash read interceptors — cat/cat+flags, cat+WSL, cat|jq, python open()/heredoc, head, node readFileSync/require, tail/tail-c, tasks output, sed line range, directory listing, find, markdown heading grep, rg structural, grep|grep chain, curl GET cache, curl -o dedup, rg symbol search (src/hooks_bash.ts). */
+export const BASH_INTERCEPTOR_COUNT = 17
 
 /** Distinct deny/context decision paths in the pre-read hook (src/hooks_read.ts). */
-export const READ_HOOK_CONDITION_COUNT = 14
+export const READ_HOOK_CONDITION_COUNT = 20
 
 /** Test-runner failure block extractors — pytest, jest, go, cargo (src/failures.ts). */
 export const FAILURE_RUNNER_COUNT = 4
