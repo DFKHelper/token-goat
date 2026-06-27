@@ -276,9 +276,9 @@ describe('compact', () => {
     })
 
     it('uses ~3 chars/token ratio so a long path exhausts budget quickly', () => {
-      // "src/foo/bar/baz.ts" = 18 chars → floor(18/3)=6 tokens. With a budget
-      // of 7 it fits; with a budget of 5 the loop breaks before adding it.
-      // With the old /10 divisor (floor(18/10)=1 token) both budgets would
+      // "src/foo/bar/baz.ts" = 18 chars → floor(18/3)+1=7 tokens. With a budget
+      // of 10 it fits; with a budget of 5 the loop breaks before adding it.
+      // With the old /10 divisor (floor(18/10)+1=2 tokens) both budgets would
       // have included the entry, silently exceeding the true token cost.
       const manifests = [
         {
@@ -288,12 +288,12 @@ describe('compact', () => {
           ],
         },
       ]
-      // Budget 7: "src/foo/bar/baz.ts" costs 6 tokens → fits; "a.ts" costs 1 token →
-      // running total 7 which equals the budget, so it fits too.
-      const resultFits = mergeSessionManifests(manifests as Record<string, unknown>[], 7)
+      // Budget 10: "src/foo/bar/baz.ts" (18 chars) costs floor(18/3)+1=7 tokens → fits;
+      // "a.ts" (4 chars) costs floor(4/3)+1=2 tokens → running total 9 which fits in 10.
+      const resultFits = mergeSessionManifests(manifests as Record<string, unknown>[], 10)
       expect(resultFits).toHaveLength(2)
 
-      // Budget 5: first entry costs 6 tokens > 5 → loop breaks immediately.
+      // Budget 5: first entry costs 7 tokens > 5 → loop breaks immediately.
       // With the old /10 divisor it would cost only 1 token and both entries would fit.
       const resultExceeds = mergeSessionManifests(manifests as Record<string, unknown>[], 5)
       expect(resultExceeds).toHaveLength(0)
@@ -314,6 +314,23 @@ describe('compact', () => {
       const result = mergeSessionManifests(manifests as Record<string, unknown>[], 1000)
       expect(result).toHaveLength(1)
       expect((result[0] as Record<string, unknown>).rel_path).toBe('a.ts')
+    })
+
+    it('token calculation in mergeSessionManifests must match estimateTokens +1 formula', () => {
+      const manifestPath = 'x'.repeat(300)
+      const manifests = [
+        {
+          files: [
+            { rel_path: manifestPath, hit_count: 100 },
+            { rel_path: 'a.ts', hit_count: 50 },
+          ],
+        },
+      ]
+      const estimatedViaFunc = estimateTokens(manifestPath)
+      const budget = estimatedViaFunc + 10
+      const result = mergeSessionManifests(manifests as Record<string, unknown>[], budget)
+      expect(result).toHaveLength(2)
+      expect((result[0] as Record<string, unknown>).rel_path).toBe(manifestPath)
     })
   })
 

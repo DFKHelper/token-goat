@@ -78,6 +78,19 @@ describe('buildPrompt', () => {
     const prompt = buildPrompt('test', slices)
     expect(prompt).toContain('L:100-150')
   })
+
+  it('handles falsy slices by skipping them in tags', () => {
+    const slices = [
+      new Slice('file1.ts', 5, 15, 'code1', 0.1),
+      null as unknown as Slice,
+      new Slice('file2.ts', 20, 25, 'code2', 0.2),
+    ]
+    const prompt = buildPrompt('test question', slices)
+    expect(prompt).toContain('[1]')
+    expect(prompt).toContain('file1.ts')
+    expect(prompt).toContain('[3]')
+    expect(prompt).toContain('file2.ts')
+  })
 })
 
 describe('parseTimeoutSecs', () => {
