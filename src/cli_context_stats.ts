@@ -73,10 +73,6 @@ export function findMemoryMd(projectRoot: string): string | null {
     const candidate = path.join(projectsDir, expectedSlug, 'memory', 'MEMORY.md')
     if (fs.existsSync(candidate)) return candidate
 
-    for (const entry of fs.readdirSync(projectsDir)) {
-      const mem = path.join(projectsDir, entry, 'memory', 'MEMORY.md')
-      if (entry === expectedSlug && fs.existsSync(mem)) return mem
-    }
     return null
   } catch {
     return null
