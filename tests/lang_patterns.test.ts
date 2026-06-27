@@ -6,6 +6,7 @@ import {
   isInBuildDir,
   isGeneratedFile,
   isBuildCommand,
+  getMonitoringRecallHint,
 } from '../src/hints/lang_patterns.js'
 
 // ---------------------------------------------------------------------------
@@ -275,6 +276,8 @@ describe('isBuildCommand', () => {
     'tsc --watch',
     'tsc --noEmit',
     'tsc -p tsconfig.json',
+    'npx tsc',
+    'npx tsc --noEmit',
     // Vite
     'vite build',
     'vite dev',
@@ -309,6 +312,8 @@ describe('isBuildCommand', () => {
     'cat package.json',
     'rg "pattern" src/',
     'node index.js',
+    'tsc-watch',
+    'npx tsc-watch',
   ])('does not flag "%s" as a build command', (cmd) => {
     expect(isBuildCommand(cmd)).toBe(false)
   })
@@ -316,5 +321,31 @@ describe('isBuildCommand', () => {
   it('handles leading whitespace', () => {
     expect(isBuildCommand('  cargo build')).toBe(true)
     expect(isBuildCommand('  make all')).toBe(true)
+  })
+})
+
+describe('getMonitoringRecallHint', () => {
+  it('returns hint for node scripts/*.mjs', () => {
+    expect(getMonitoringRecallHint('node scripts/run-migration.mjs')).not.toBeNull()
+  })
+
+  it('returns hint for node src/scripts/*.js', () => {
+    expect(getMonitoringRecallHint('node src/scripts/seed.js')).not.toBeNull()
+  })
+
+  it('does not fire for node with non-scripts path', () => {
+    expect(getMonitoringRecallHint('node src/main.ts')).toBeNull()
+  })
+
+  it('does not fire for node scripts/*.json', () => {
+    expect(getMonitoringRecallHint('node scripts/config.json')).toBeNull()
+  })
+
+  it('returns hint for npx tsc', () => {
+    expect(getMonitoringRecallHint('npx tsc --noEmit')).not.toBeNull()
+  })
+
+  it('does not return hint for npx tsc-watch', () => {
+    expect(getMonitoringRecallHint('npx tsc-watch')).toBeNull()
   })
 })
