@@ -714,6 +714,96 @@ describe('preBashHandler — directory listing map hint', () => {
     const result = preBashHandler(makeBashEvent('eza src/'))
     expect(result.hookType).toBe('pass')
   })
+
+  it('emits map hint for eza --tree', () => {
+    const result = preBashHandler(makeBashEvent('eza --tree --level=2 src/'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map')
+    }
+  })
+
+  it('emits map hint for bare tree command', () => {
+    const result = preBashHandler(makeBashEvent('tree src/'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map')
+    }
+  })
+
+  it('emits map hint for ls -R', () => {
+    const result = preBashHandler(makeBashEvent('ls -R src/'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map')
+    }
+  })
+
+  it('emits map hint for ls -lR', () => {
+    const result = preBashHandler(makeBashEvent('ls -lR src/'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map')
+    }
+  })
+
+  it('emits map hint for ls -laR', () => {
+    const result = preBashHandler(makeBashEvent('ls -laR'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map')
+    }
+  })
+
+  it('still fires for eza --long (existing path)', () => {
+    const result = preBashHandler(makeBashEvent('eza --git --long src/'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map')
+    }
+  })
+})
+
+describe('preBashHandler — grep pipe chain hint', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits hint for grep | grep double filter', () => {
+    const result = preBashHandler(makeBashEvent('grep -rn "foo" . | grep "bar"'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('rg -e')
+    }
+  })
+
+  it('emits hint for rg | grep chain', () => {
+    const result = preBashHandler(makeBashEvent('rg "foo" | grep "bar"'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('rg -e')
+    }
+  })
+
+  it('does not fire for grep | wc', () => {
+    const result = preBashHandler(makeBashEvent('grep "foo" file.txt | wc -l'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not fire for grep | head', () => {
+    const result = preBashHandler(makeBashEvent('grep "foo" file.txt | head -20'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not fire for grep | sort', () => {
+    const result = preBashHandler(makeBashEvent('grep "foo" file.txt | sort'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not fire for grep | awk', () => {
+    const result = preBashHandler(makeBashEvent('grep "foo" file.txt | awk \'{print $1}\''))
+    expect(result.hookType).toBe('pass')
+  })
 })
 
 describe('preBashHandler — find command interception', () => {
@@ -813,6 +903,21 @@ describe('preBashHandler — curl GET recall', () => {
     await postBashHandler(makePostBashEvent(cmd, largeOutput))
     const result = preBashHandler(makeBashEvent(cmd))
     expect(result.hookType).toBe('pass')
+  })
+
+  it('emits recall hint for same URL fetched with a different downstream pipe', async () => {
+    const url = 'https://api.example.com/data'
+    const firstCmd = 'curl -s ' + url + ' | jq .items'
+    const secondCmd = 'curl -s ' + url + ' | python3 -c "import sys,json; print(json.load(sys.stdin))"'
+    const largeOutput = JSON.stringify({ items: new Array(200).fill({ id: 1, name: 'foo' }) })
+
+    await postBashHandler(makePostBashEvent(firstCmd, largeOutput))
+
+    const result = preBashHandler(makeBashEvent(secondCmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat bash-output')
+    }
   })
 })
 
