@@ -375,21 +375,35 @@ export async function upsertChunks(
   const embeddings = await embedTexts(texts)
 
   // Insert chunks into the database.
-  const insertStmt = db.prepare(`
-    INSERT INTO chunk_vectors (embedding)
-    VALUES (?)
-    ON CONFLICT DO NOTHING
+  const chunkInsertStmt = db.prepare(`
+    INSERT INTO chunks (file_path, start_line, end_line, text, kind)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+
+  // Explicit rowid ties the vector row to its chunk metadata row so searchSemantic
+  // can JOIN by rowid without a separate foreign-key column.
+  const vectorInsertStmt = db.prepare(`
+    INSERT INTO chunk_vectors (rowid, embedding)
+    VALUES (?, ?)
   `)
 
   const tx = db.transaction(() => {
     for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i]
       const embedding = embeddings[i]
-      if (!embedding) {
+      if (!chunk || !embedding) {
         continue
       }
 
+      const chunkResult = chunkInsertStmt.run(
+        chunk.filePath,
+        chunk.startLine,
+        chunk.endLine,
+        chunk.text,
+        chunk.kind,
+      )
       const packed = packVec(embedding)
-      insertStmt.run(packed)
+      vectorInsertStmt.run(chunkResult.lastInsertRowid, packed)
     }
   })
 
@@ -458,6 +472,11 @@ export async function searchSemantic(
     return []
   }
 
+  // Fetch chunk metadata from the chunks table.
+  const chunkStmt = db.prepare(`
+    SELECT file_path, start_line, end_line, text, kind FROM chunks WHERE id = ?
+  `)
+
   // Build hits from rows and apply re-ranking.
   const hits: SearchHit[] = []
   for (const row of rows) {
@@ -465,14 +484,17 @@ export async function searchSemantic(
       continue
     }
     if (row.distance <= maxDistance) {
-      hits.push({
-        filePath: `file_${row.rowid}`, // Placeholder; normally would join symbols table.
-        startLine: 1,
-        endLine: 1,
-        kind: 'window',
-        distance: row.distance,
-        text: '',
-      })
+      const chunk = chunkStmt.get(row.rowid) as { file_path: string; start_line: number; end_line: number; text: string; kind: string } | null | undefined
+      if (chunk) {
+        hits.push({
+          filePath: chunk.file_path,
+          startLine: chunk.start_line,
+          endLine: chunk.end_line,
+          kind: chunk.kind,
+          distance: row.distance,
+          text: chunk.text,
+        })
+      }
     }
   }
 
@@ -599,13 +621,17 @@ export async function indexFile(
  * @param _filePath - Relative path to the file.
  */
 export function deleteFileEmbeddings(
-  _db: BetterSqlite3Database,
-  _filePath: string,
+  db: BetterSqlite3Database,
+  filePath: string,
 ): void {
-  // This is a placeholder implementation. In the full version, we'd track
-  // chunk-to-file mappings and delete by file_path.
-  // For now, since the chunk_vectors table is just (rowid, embedding),
-  // we'd need to add a file_path column or join with a metadata table.
+  const rows = db.prepare(`SELECT id FROM chunks WHERE file_path = ?`).all(filePath) as Array<{
+    id: number
+  }>
+  if (rows.length === 0) return
+  const ids = rows.map((r) => r.id)
+  const placeholders = ids.map(() => '?').join(', ')
+  db.prepare(`DELETE FROM chunk_vectors WHERE rowid IN (${placeholders})`).run(...ids)
+  db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath)
 }
 
 // ============================================================================
@@ -637,7 +663,7 @@ function _extractQueryTokens(query: string): Set<string> {
  * @returns True if any segment is a known generated directory.
  */
 function _isGeneratedPath(filePath: string): boolean {
-  const segments = filePath.split('/')
+  const segments = filePath.split(/[/\\]+/)
   for (const seg of segments) {
     if (_GENERATED_PATH_SEGMENTS.has(seg)) {
       return true

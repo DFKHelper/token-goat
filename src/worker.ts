@@ -107,7 +107,7 @@ export function processDirtyBatch(
 ): number {
   let indexed = 0
   for (const p of paths) {
-    if (!fs.existsSync(p)) continue
+    if (!p || !fs.existsSync(p)) continue
     const sha = fingerprintFile(p)
     if (sha === null) continue
     index(p, sha)

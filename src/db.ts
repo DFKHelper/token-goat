@@ -34,6 +34,7 @@ const _connections = new Map<string, BetterSqlite3Database>()
  *   - files   — one row per indexed source file.
  *   - symbols — extracted definitions (functions, classes, types, ...).
  *   - refs    — references/usages of names, for caller lookups.
+ *   - chunks  — semantic search chunk metadata (filePath, startLine, endLine, text, kind).
  *   - symbols_fts — FTS5 mirror of symbols for full-text name/body search.
  *
  * The FTS5 table is content-linked to `symbols` (external-content) so the row
@@ -72,6 +73,16 @@ CREATE TABLE IF NOT EXISTS refs (
 );
 CREATE INDEX IF NOT EXISTS idx_refs_name ON refs(name);
 CREATE INDEX IF NOT EXISTS idx_refs_file ON refs(file_path);
+
+CREATE TABLE IF NOT EXISTS chunks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  file_path TEXT,
+  start_line INTEGER,
+  end_line INTEGER,
+  text TEXT,
+  kind TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
 `
 
 // FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with
