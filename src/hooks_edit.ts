@@ -40,10 +40,11 @@ export function postEditHandler(event: HookEvent): HookOutput {
 
   const editedBasename = path.basename(normalized)
   if (/\.(md|mdx|markdown|rst)$/i.test(editedBasename)) {
+    const escapedPath = normalized.replace(/`/g, '\\`')
     return contextOutput(
       editedBasename +
         ' was edited. Use `token-goat section "' +
-        normalized +
+        escapedPath +
         '::HeadingName"` to re-read a specific section rather than the full file.',
     )
   }
