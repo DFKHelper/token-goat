@@ -85,6 +85,8 @@ function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isE
 /** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
 function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean } | null {
   if (!/python3?/.test(cmd)) return null
+  // Return null when the command shows write intent — these are edits, not reads
+  if (/open\s*\([^)]*,\s*['"][wa]/i.test(cmd) || /\.write\s*\(/.test(cmd)) return null
   const EXT = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties)/i
   // Direct: open('path.ext') or open("path.ext")
   const direct = /open\(['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(cmd)
