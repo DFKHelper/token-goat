@@ -421,6 +421,15 @@ export function preReadHandler(event: HookEvent): HookOutput {
       )
     }
 
+    // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
+    const isSourceExt = /\.(ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|c|h)$/i.test(basename)
+    if (isSourceExt && reads >= 2) {
+      recordStat('read_count_deny', rereadBytes, Math.round(rereadBytes / 4))
+      return denyOutput(
+        'Read this file ' + reads + ' times already — use `token-goat read "' + normalized + '::Symbol"`, `token-goat skeleton ' + normalized + '`, or `token-goat outline ' + normalized + '` to pull just the part you need.',
+      )
+    }
+
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'

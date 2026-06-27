@@ -321,6 +321,67 @@ Some content that makes the file large enough`
     }
   })
 
+  // Count-based deny: 3rd+ read of source files (Item 1 — nestpilot mining)
+  it('passes first read of a .ts source file', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+    fs.writeFileSync(p, 'export function foo() {}')
+    tmpFiles.push(p)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('gives context hint on 2nd read of a small .ts source file', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+    fs.writeFileSync(p, 'export function foo() {}')
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('context')
+  })
+
+  it('hard-denies 3rd read of a small .ts source file with count-based message', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+    fs.writeFileSync(p, 'export function foo() {}')
+    tmpFiles.push(p)
+    // Simulate 2 prior reads
+    recordFileRead(normalizePath(p))
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Read this file')
+      expect(result.message).toContain('times already')
+      expect(result.message).toContain('token-goat skeleton')
+      expect(result.message).toContain('token-goat outline')
+    }
+  })
+
+  it('hard-denies 4th read of a .tsx source file', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.tsx`)
+    fs.writeFileSync(p, 'export const App = () => <div/>')
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+    recordFileRead(normalizePath(p))
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat skeleton')
+    }
+  })
+
+  it('does NOT apply count-based deny to .txt files (not a source extension)', () => {
+    // .txt uses the existing generic logic, which emits context on 2nd read when small
+    const p = makeTmpFile('plain text')
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    // Should be context (small file, 2nd read) — NOT the count-based deny
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).not.toContain('Read this file')
+    }
+  })
+
   it('denies re-read of .env file after first read', () => {
     const p = path.join(os.tmpdir(), `.env`)
     fs.writeFileSync(p, 'SECRET=abc\nOTHER=xyz\n')
