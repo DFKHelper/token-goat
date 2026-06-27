@@ -187,16 +187,16 @@ describe('preReadHandler', () => {
     }
   })
 
-  it('gives a section-only re-read hint for .md files', () => {
+  it('denies 2nd read of any .md file regardless of size', () => {
     const p = _makeTmpMdFile()
     recordFileRead(normalizePath(p))
 
     const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
-      expect(result.context).not.toContain('skeleton')
-      expect(result.context).not.toContain('read/section/symbol')
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat section')
+      expect(result.message).not.toContain('skeleton')
+      expect(result.message).not.toContain('read/section/symbol')
     }
   })
 
@@ -430,27 +430,30 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('pass')
   })
 
-  // Item 2: large doc file early denial
-  it('denies 2nd read of a .md file >=10KB', () => {
+  // Item 2: all .md/.mdx files denied on 2nd+ read regardless of size
+  it('denies 2nd read of a large .md file', () => {
     const p = _makeTmpMdFile('# Title\n\ncontent\n'.padEnd(15 * 1024, 'x'))
     recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('Large doc file already read')
+      expect(result.message).toContain('already read this session')
       expect(result.message).toContain('token-goat section')
     }
   })
 
-  it('does not early-deny 2nd read of a .md file <10KB', () => {
+  it('denies 2nd read of a small .md file', () => {
     const p = _makeTmpMdFile('# Small\ncontent')
     recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
-    // Should get contextOutput (not deny) because file is small
-    expect(result.hookType).toBe('context')
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('already read this session')
+      expect(result.message).toContain('token-goat section')
+    }
   })
 
-  it('denies 2nd read of a .mdx file >=10KB', () => {
+  it('denies 2nd read of a .mdx file', () => {
     const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.mdx`)
     fs.writeFileSync(p, '# Component\n\ncontent\n'.padEnd(15 * 1024, 'x'))
     tmpFiles.push(p)
@@ -458,7 +461,7 @@ Some content that makes the file large enough`
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('Large doc file already read')
+      expect(result.message).toContain('already read this session')
     }
   })
 
