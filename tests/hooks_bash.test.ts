@@ -328,3 +328,57 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 })
+
+describe('preBashHandler — rg structural search', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits advisory context for rg searching for def in a single Python file', () => {
+    const event = makeBashEvent('rg "^def" src/token_goat/hooks_read.py')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('skeleton')
+    }
+  })
+
+  it('emits advisory context for grep "class " targeting a single TS file', () => {
+    const event = makeBashEvent('grep "class " src/hooks_bash.ts')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('skeleton')
+    }
+  })
+
+  it('passes through rg searching for a non-structural pattern', () => {
+    const event = makeBashEvent('rg "TODO" src/token_goat/compact.py')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through rg structural search on a directory (not a single file)', () => {
+    const event = makeBashEvent('rg "^def" src/token_goat/')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+})
+
+describe('preBashHandler — orchestrator state file exemption', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('passes through python open() reading an improve-state JSON', () => {
+    const event = makeBashEvent('python3 -c "import json; d = json.load(open(\'.improve-state-bugfixing.json\')); print(d)"')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through node readFileSync reading an improve-state JSON', () => {
+    const event = makeBashEvent('node -e "const fs = require(\'fs\'); const d = JSON.parse(fs.readFileSync(\'.improve-state-foo.json\', \'utf8\')); console.log(d)"')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+})

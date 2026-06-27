@@ -33,6 +33,12 @@ function isTempPath(fp: string): boolean {
   )
 }
 
+/** True for ephemeral orchestration state files (improve-skill state, etc.) that are not source files. */
+function isOrchestratorStateFile(filePath: string): boolean {
+  const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
+  return /^\.improve-state-/.test(basename)
+}
+
 /** Extract the source file path from `cat <path>.<ext>`, or null if not that pattern. */
 function extractCatSourceFile(cmd: string): string | null {
   const m = /^cat\s+(\S+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj))\s*$/.exec(cmd)
@@ -65,6 +71,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
   if (direct) {
     const filePath = direct[1] ?? ''
     if (!filePath) return null
+    if (isOrchestratorStateFile(filePath)) return null
     const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
     return { filePath, isDoc }
   }
@@ -73,9 +80,12 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
     const literal = /['"]([^'"]+\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties))['"]/i.exec(cmd)
     if (literal) {
       const filePath = literal[1] ?? ''
-      if (filePath && EXT.test(filePath)) {
-        const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-        return { filePath, isDoc }
+      if (filePath) {
+        if (isOrchestratorStateFile(filePath)) return null
+        if (EXT.test(filePath)) {
+          const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
+          return { filePath, isDoc }
+        }
       }
     }
   }
@@ -103,6 +113,7 @@ function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boolean } 
   const m = /readFileSync\(['"]([^'"]+\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql))['"]/i.exec(cmd)
   if (!m || !m[1]) return null
   const filePath = m[1]
+  if (isOrchestratorStateFile(filePath)) return null
   if (isTempPath(filePath)) return null
   const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
   return { filePath, isDoc }
@@ -123,6 +134,34 @@ function extractTailFile(cmd: string): { filePath: string; isDoc: boolean } | nu
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
   const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
   return { filePath, isDoc }
+}
+
+/**
+ * Returns the file path when the command is an rg/grep structural definition search
+ * on a single source file. Structural patterns are those that find function/class/import
+ * definitions (^def, ^class, ^function, ^import, etc.) — the common "show me the structure
+ * of this file" idiom that token-goat skeleton does better.
+ */
+function extractRgStructuralSearch(cmd: string): { filePath: string } | null {
+  if (!/^(?:rg|grep)\s+/.test(cmd)) return null
+
+  // Must be a structural/definition search pattern
+  const hasStructural = (
+    /["']?\^?(?:def\s|class\s|function\s|func\s|fn\s|pub fn\s|import\s|from\s)/.test(cmd) ||
+    /["']\^(?:def|class|function|func|import|from)["']/.test(cmd) ||
+    /\\bdef\\b|\\bclass\\b/.test(cmd)
+  )
+  if (!hasStructural) return null
+
+  // Must end with a single source file (has a known code extension) — not a directory
+  const fileMatch = /(?:^|\s)(?:"([^"]+\.(?:py|ts|tsx|js|jsx|go|rs|rb|cs|java|cpp|cc|cxx|c|h|sh|bash))"|('([^']+\.(?:py|ts|tsx|js|jsx|go|rs|rb|cs|java|cpp|cc|cxx|c|h|sh|bash))')|([^\s"']+\.(?:py|ts|tsx|js|jsx|go|rs|rb|cs|java|cpp|cc|cxx|c|h|sh|bash)))\s*$/.exec(cmd)
+  if (!fileMatch) return null
+
+  const filePath = fileMatch[1] ?? fileMatch[3] ?? fileMatch[4]
+  if (!filePath) return null
+  if (isTempPath(filePath)) return null
+
+  return { filePath }
 }
 
 /** True when the command is a TypeScript compiler invocation. */
@@ -227,6 +266,17 @@ export function preBashHandler(event: HookEvent): HookOutput {
       : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
     recordStat('session_hint', 0, 0)
     return denyOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint)
+  }
+
+  const rgStructural = extractRgStructuralSearch(cmd)
+  if (rgStructural !== null) {
+    const { filePath } = rgStructural
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      'Searching for code definitions with `rg`/`grep` is slower than surgical reads. ' +
+      'Use `token-goat skeleton "' + filePath + '"` to see all symbols with line numbers, ' +
+      'or `token-goat outline "' + filePath + '"` for symbols with docstrings and line ranges.'
+    )
   }
 
   // Monitoring commands: always suggest recall if cached, even on a single prior run.
