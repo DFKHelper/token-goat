@@ -36,7 +36,12 @@ export function dirtyQueuePath(): string {
  */
 export function appendDirtyPath(normalizedPath: string): void {
   const queuePath = dirtyQueuePath()
-  fs.mkdirSync(path.dirname(queuePath), { recursive: true })
+  const dir = path.dirname(queuePath)
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
+  }
   fs.appendFileSync(queuePath, `${normalizedPath}\n`)
 }
 
