@@ -351,6 +351,12 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
 
   // cat of a single source file — output is the full file; pre-bash emits a token-goat read suggestion
   { pattern: /^cat\s+\S+\.(java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj)\s*$/, recallHint: '--tail 50' },
+
+  // PowerShell read-only system-state queries (stable over 60-120s)
+  {
+    pattern: /^(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+(?:-\w+\s+)*-Command\s+["']?Get-(?:CimInstance|Process|Counter|Service|PSDrive|WmiObject)\b/i,
+    recallHint: '--tail 50',
+  },
 ]
 
 /**

@@ -348,4 +348,28 @@ describe('getMonitoringRecallHint', () => {
   it('does not return hint for npx tsc-watch', () => {
     expect(getMonitoringRecallHint('npx tsc-watch')).toBeNull()
   })
+
+  it('returns hint for powershell.exe Get-CimInstance', () => {
+    expect(getMonitoringRecallHint('powershell.exe -NoProfile -Command "Get-CimInstance Win32_ComputerSystem"')).not.toBeNull()
+  })
+
+  it('returns hint for powershell Get-Process', () => {
+    expect(getMonitoringRecallHint('powershell -NoProfile -Command "Get-Process | Select-Object Name, CPU"')).not.toBeNull()
+  })
+
+  it('returns hint for pwsh Get-Counter', () => {
+    expect(getMonitoringRecallHint('pwsh -NonInteractive -Command Get-Counter')).not.toBeNull()
+  })
+
+  it('returns hint for pwsh.exe Get-Service', () => {
+    expect(getMonitoringRecallHint('pwsh.exe -Command "Get-Service"')).not.toBeNull()
+  })
+
+  it('does not fire for powershell Set-* commands', () => {
+    expect(getMonitoringRecallHint('powershell -Command "Set-Item env:FOO bar"')).toBeNull()
+  })
+
+  it('does not fire for bare powershell without -Command', () => {
+    expect(getMonitoringRecallHint('powershell -NoProfile')).toBeNull()
+  })
 })
