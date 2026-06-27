@@ -357,6 +357,10 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
     pattern: /^(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+(?:-\w+\s+)*-Command\s+["']?Get-(?:CimInstance|Process|Counter|Service|PSDrive|WmiObject)\b/i,
     recallHint: '--tail 50',
   },
+  // token-goat section/outline/symbol repeat calls — output is stable until the file changes
+  { pattern: /^token-goat\s+section\s+["'][^"']+["']/, recallHint: '' },
+  { pattern: /^token-goat\s+outline\s+\S+/, recallHint: '' },
+  { pattern: /^token-goat\s+symbol\s+\S+/, recallHint: '' },
 ]
 
 /**
