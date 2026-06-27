@@ -19,6 +19,7 @@ import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
+import { isWindows } from './util.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession } from './session.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
@@ -50,9 +51,8 @@ const REREAD_DENY_BYTES = 50 * 1024
 const LARGE_FILE_DENY_BYTES = 500 * 1024
 
 /** Check if a path is under node_modules/. Case-insensitive on Windows, case-sensitive elsewhere. */
-function isNodeModulesPath(path: string): boolean {
-  const isWindows = process.platform === 'win32'
-  const check = isWindows ? path.toLowerCase() : path
+function isNodeModulesPath(p: string): boolean {
+  const check = isWindows() ? p.toLowerCase() : p
   // Match both forward slashes (normalized) and backslashes (Windows).
   return check.includes('/node_modules/') || check.includes('\\node_modules\\')
 }

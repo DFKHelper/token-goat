@@ -30,9 +30,14 @@ export function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
+/** Check if running on Windows. */
+export function isWindows(): boolean {
+  return process.platform === 'win32'
+}
+
 /** Windows creation flags for suppressing console windows (CREATE_NO_WINDOW). */
 export function noWindowCreationFlags(): number {
-  return process.platform === 'win32' ? 0x08000000 : 0
+  return isWindows() ? 0x08000000 : 0
 }
 
 /**

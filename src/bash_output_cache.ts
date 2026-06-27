@@ -52,17 +52,19 @@ let _globsByKey = new Map<string, string>()
 let _grepsByKey = new Map<string, string>()
 
 
-const GIT_MUTABLE_RE = /^\s*git\s+(diff|status)\b/i
-const GIT_IMMUTABLE_RE = /^\s*git\s+show\s+[0-9a-f]{40}\b/i
-const GIT_DIFF_UNSCOPED_RE = /^\s*git\s+diff\b/i
-const GIT_DIFF_SCOPED_RE = /\s--\s+\S/
-const LS_CMD_RE = /^\s*(?:ls|eza|exa|dir|Get-ChildItem|gci)\b/i
-const DEP_LIST_RE = /^\s*(?:npm\s+(?:-\S+\s+)*(?:ls|list)\b|pip\s+(?:-\S+\s+)*(?:list|freeze)\b|uv\s+pip\s+(?:-\S+\s+)*(?:list|freeze)\b|pnpm\s+(?:-\S+\s+)*(?:list|ls)\b|yarn\s+(?:-\S+\s+)*(?:list)\b|cargo\s+(?:-\S+\s+)*tree\b|bundle\s+(?:-\S+\s+)*(?:list|show)\b|composer\s+(?:-\S+\s+)*show\b)/i
-const NPM_INSTALL_RE = /^\s*npm\s+(?:-\S+\s+)*(?:install|ci)\b/i
-const NPM_AUDIT_RE = /^\s*npm\s+(?:-\S+\s+)*audit\b(?!.*(?:--fix|fix)\b)/i
-const NPM_OUTDATED_RE = /^\s*npm\s+(?:-\S+\s+)*outdated\b/i
-const ENV_PROBE_RE = /^\s*(?:node\s+(?:-v|--version)|npm\s+(?:-v|--version)|python3?\s+(?:(?:-V)\b|--?version)|git\s+--version|uv\s+--version|go\s+version|rustc\s+--version|cargo\s+--version|java\s+--version|ruby\s+--version|gem\s+--version|php\s+--version|which\b|where\b)/i
-const NPX_RE = /^\s*npx\s+(?:--?yes\s+)?(?!.*\b(?:install|add|remove|uninstall|i|rm|update|upgrade|set|get|publish|link|ci|audit|shrinkwrap|dedupe|prune|rebuild)\b)/i
+const COMMAND_PATTERNS: Record<string, RegExp> = {
+  gitMutable: /^\s*git\s+(diff|status)\b/i,
+  gitImmutable: /^\s*git\s+show\s+[0-9a-f]{40}\b/i,
+  gitDiffUnscoped: /^\s*git\s+diff\b/i,
+  gitDiffScoped: /\s--\s+\S/,
+  dirListing: /^\s*(?:ls|eza|exa|dir|Get-ChildItem|gci)\b/i,
+  depList: /^\s*(?:npm\s+(?:-\S+\s+)*(?:ls|list)\b|pip\s+(?:-\S+\s+)*(?:list|freeze)\b|uv\s+pip\s+(?:-\S+\s+)*(?:list|freeze)\b|pnpm\s+(?:-\S+\s+)*(?:list|ls)\b|yarn\s+(?:-\S+\s+)*(?:list)\b|cargo\s+(?:-\S+\s+)*tree\b|bundle\s+(?:-\S+\s+)*(?:list|show)\b|composer\s+(?:-\S+\s+)*show\b)/i,
+  npmInstall: /^\s*npm\s+(?:-\S+\s+)*(?:install|ci)\b/i,
+  npmAudit: /^\s*npm\s+(?:-\S+\s+)*audit\b(?!.*(?:--fix|fix)\b)/i,
+  npmOutdated: /^\s*npm\s+(?:-\S+\s+)*outdated\b/i,
+  envProbe: /^\s*(?:node\s+(?:-v|--version)|npm\s+(?:-v|--version)|python3?\s+(?:(?:-V)\b|--?version)|git\s+--version|uv\s+--version|go\s+version|rustc\s+--version|cargo\s+--version|java\s+--version|ruby\s+--version|gem\s+--version|php\s+--version|which\b|where\b)/i,
+  npx: /^\s*npx\s+(?:--?yes\s+)?(?!.*\b(?:install|add|remove|uninstall|i|rm|update|upgrade|set|get|publish|link|ci|audit|shrinkwrap|dedupe|prune|rebuild)\b)/i,
+}
 
 const DEP_LOCKFILES: Record<string, string[]> = {
   npm: ['package-lock.json', 'yarn.lock'],
@@ -75,45 +77,25 @@ const DEP_LOCKFILES: Record<string, string[]> = {
   composer: ['composer.lock'],
 }
 
-export function isGitMutableCommand(cmd: string): boolean {
-  return GIT_MUTABLE_RE.test(cmd)
+export function isCommandOfType(cmd: string, type: keyof typeof COMMAND_PATTERNS): boolean {
+  const pattern = COMMAND_PATTERNS[type]
+  return pattern?.test(cmd) ?? false
 }
 
-export function isGitImmutableCommand(cmd: string): boolean {
-  return GIT_IMMUTABLE_RE.test(cmd)
-}
-
-export function isDirListingCommand(cmd: string): boolean {
-  return LS_CMD_RE.test(cmd)
-}
-
-export function isEnvProbeCommand(cmd: string): boolean {
-  return ENV_PROBE_RE.test(cmd)
-}
-
-export function isDepListCommand(cmd: string): boolean {
-  return DEP_LIST_RE.test(cmd)
-}
-
-export function isNpmInstallCommand(cmd: string): boolean {
-  return NPM_INSTALL_RE.test(cmd)
-}
-
-export function isNpmAuditCommand(cmd: string): boolean {
-  return NPM_AUDIT_RE.test(cmd)
-}
-
-export function isNpmOutdatedCommand(cmd: string): boolean {
-  return NPM_OUTDATED_RE.test(cmd)
-}
-
-export function isNpxCommand(cmd: string): boolean {
-  return NPX_RE.test(cmd)
-}
+// Backward-compat aliases for predicate functions
+export const isGitMutableCommand = (cmd: string) => isCommandOfType(cmd, 'gitMutable')
+export const isGitImmutableCommand = (cmd: string) => isCommandOfType(cmd, 'gitImmutable')
+export const isDirListingCommand = (cmd: string) => isCommandOfType(cmd, 'dirListing')
+export const isEnvProbeCommand = (cmd: string) => isCommandOfType(cmd, 'envProbe')
+export const isDepListCommand = (cmd: string) => isCommandOfType(cmd, 'depList')
+export const isNpmInstallCommand = (cmd: string) => isCommandOfType(cmd, 'npmInstall')
+export const isNpmAuditCommand = (cmd: string) => isCommandOfType(cmd, 'npmAudit')
+export const isNpmOutdatedCommand = (cmd: string) => isCommandOfType(cmd, 'npmOutdated')
+export const isNpxCommand = (cmd: string) => isCommandOfType(cmd, 'npx')
 
 export function isUnscopedGitDiff(cmd: string): boolean {
-  if (!GIT_DIFF_UNSCOPED_RE.test(cmd)) return false
-  return !GIT_DIFF_SCOPED_RE.test(cmd)
+  if (!isCommandOfType(cmd, 'gitDiffUnscoped')) return false
+  return !isCommandOfType(cmd, 'gitDiffScoped')
 }
 
 export async function gitStateFingerprint(cwd: string): Promise<string | null> {

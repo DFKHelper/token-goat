@@ -204,8 +204,8 @@ export interface Config {
 // Default factories
 // ---------------------------------------------------------------------------
 
-export function defaultCompactAssistConfig(): CompactAssistConfig {
-  return {
+const CONFIG_DEFAULTS: Record<string, object> = {
+  compact_assist: {
     enabled: true,
     triggers: ['manual', 'auto'],
     min_events: 3,
@@ -220,11 +220,8 @@ export function defaultCompactAssistConfig(): CompactAssistConfig {
     lazy_skill_injection: true,
     max_manifest_chars: 1600,
     harness: 'auto',
-  }
-}
-
-export function defaultBashCompressConfig(): BashCompressConfig {
-  return {
+  },
+  bash_compress: {
     enabled: true,
     disabled_filters: [],
     max_lines: 1000,
@@ -234,37 +231,22 @@ export function defaultBashCompressConfig(): BashCompressConfig {
     cache_max_file_count: 4096,
     cache_max_bytes: 16 * 1024 * 1024,
     cache_max_bytes_per_output: 50 * 1024 * 1024,
-  }
-}
-
-export function defaultBashDiffConfig(): BashDiffConfig {
-  return {
+  },
+  bash_diff: {
     max_hunks_per_file: 10,
     hunk_density_cap: true,
-  }
-}
-
-export function defaultSeverityLogConfig(): SeverityLogConfig {
-  return {
+  },
+  bash_severity_log: {
     context_lines: 3,
     score_threshold: 0.5,
-  }
-}
-
-export function defaultCodeCompressConfig(): CodeCompressConfig {
-  return {
+  },
+  post_read_code_compress: {
     min_lines: 200,
-  }
-}
-
-export function defaultSessionBriefConfig(): SessionBriefConfig {
-  return {
+  },
+  session_brief: {
     enabled: true,
-  }
-}
-
-export function defaultSkillPreservationConfig(): SkillPreservationConfig {
-  return {
+  },
+  skill_preservation: {
     enabled: true,
     max_cache_bytes: 5 * 1024 * 1024,
     orphan_sweep_enabled: true,
@@ -276,28 +258,19 @@ export function defaultSkillPreservationConfig(): SkillPreservationConfig {
     pre_skill_enabled: true,
     first_load_compact: false,
     post_compact_full_loads: false,
-  }
-}
-
-export function defaultCuratorConfig(): CuratorConfig {
-  return {
+  },
+  curator: {
     enabled: true,
     min_samples: 10,
     threshold_pct: 20,
-  }
-}
-
-export function defaultHintBudgetConfig(): HintBudgetConfig {
-  return {
+  },
+  hint_budget: {
     enabled: true,
     max_per_session: 100,
     max_structured_per_session: 30,
     max_index_only_per_session: 30,
-  }
-}
-
-export function defaultImageShrinkConfig(): ImageShrinkConfig {
-  return {
+  },
+  image_shrink: {
     prefer_avif: true,
     avif_quality: 60,
     jpeg_quality: 75,
@@ -305,31 +278,19 @@ export function defaultImageShrinkConfig(): ImageShrinkConfig {
     orphan_sweep_enabled: true,
     orphan_age_secs: 604800,
     screenshot_redirect: true,
-  }
-}
-
-export function defaultRepomapConfig(): RepomapConfig {
-  return {
+  },
+  repomap: {
     compact_file_threshold: 50,
     exclude_tests: true,
-  }
-}
-
-export function defaultOverflowGuardConfig(): OverflowGuardConfig {
-  return {
+  },
+  overflow_guard: {
     enabled: true,
     max_tokens: 25000,
-  }
-}
-
-export function defaultStatsConfig(): StatsConfig {
-  return {
+  },
+  stats: {
     record_zero_savings: false,
-  }
-}
-
-export function defaultHintsConfig(): HintsConfig {
-  return {
+  },
+  hints: {
     suppress_after_ignored: 5,
     quiet_hours: '',
     json_sidecar: false,
@@ -353,83 +314,66 @@ export function defaultHintsConfig(): HintsConfig {
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
     prompt_triggers: [],
-  }
-}
-
-export function defaultHooksConfig(): HooksConfig {
-  return {
+  },
+  hooks: {
     watchdog_ms: 700,
-  }
-}
-
-export function defaultWebFetchConfig(): WebFetchConfig {
-  return {
+  },
+  webfetch: {
     allow: [],
     deny: [],
     max_file_count: 4096,
     max_bytes: 32 * 1024 * 1024,
     compress_bodies: true,
     compress_min_bytes: 16 * 1024,
-  }
-}
-
-export function defaultWorkerConfig(): WorkerConfig {
-  return {
+  },
+  worker: {
     watchdog_enabled: true,
     max_pool_workers: 4,
     blocked_roots: [],
-  }
-}
-
-export function defaultIndexingConfig(): IndexingConfig {
-  return {
+  },
+  indexing: {
     large_file_symbol_only_kb: 500,
     large_file_skip_kb: 2048,
     skip_dirs: [],
-  }
-}
-
-export function defaultCompressionConfig(): CompressionConfig {
-  return {
+  },
+  compression: {
     profile: 'auto',
-  }
-}
-
-export function defaultContextConfig(): ContextConfig {
-  return {
+  },
+  context: {
     model_window_tokens: 200_000,
-  }
+  },
+  injection: {
+    enabled: true,
+  },
 }
 
-export function defaultInjectionConfig(): InjectionConfig {
-  return {
-    enabled: true,
-  }
+export function getDefaultConfig(section: string): object {
+  return structuredClone(CONFIG_DEFAULTS[section] ?? {})
 }
 
 export function defaultConfig(): Config {
   return {
-    compact_assist: defaultCompactAssistConfig(),
-    bash_compress: defaultBashCompressConfig(),
-    bash_diff: defaultBashDiffConfig(),
-    bash_severity_log: defaultSeverityLogConfig(),
-    post_read_code_compress: defaultCodeCompressConfig(),
-    session_brief: defaultSessionBriefConfig(),
-    skill_preservation: defaultSkillPreservationConfig(),
-    curator: defaultCuratorConfig(),
-    hint_budget: defaultHintBudgetConfig(),
-    image_shrink: defaultImageShrinkConfig(),
-    repomap: defaultRepomapConfig(),
-    overflow_guard: defaultOverflowGuardConfig(),
-    stats: defaultStatsConfig(),
-    hints: defaultHintsConfig(),
-    hooks: defaultHooksConfig(),
-    webfetch: defaultWebFetchConfig(),
-    worker: defaultWorkerConfig(),
-    indexing: defaultIndexingConfig(),
-    compression: defaultCompressionConfig(),
-    context: defaultContextConfig(),
-    injection: defaultInjectionConfig(),
+    compact_assist: getDefaultConfig('compact_assist') as CompactAssistConfig,
+    bash_compress: getDefaultConfig('bash_compress') as BashCompressConfig,
+    bash_diff: getDefaultConfig('bash_diff') as BashDiffConfig,
+    bash_severity_log: getDefaultConfig('bash_severity_log') as SeverityLogConfig,
+    post_read_code_compress: getDefaultConfig('post_read_code_compress') as CodeCompressConfig,
+    session_brief: getDefaultConfig('session_brief') as SessionBriefConfig,
+    skill_preservation: getDefaultConfig('skill_preservation') as SkillPreservationConfig,
+    curator: getDefaultConfig('curator') as CuratorConfig,
+    hint_budget: getDefaultConfig('hint_budget') as HintBudgetConfig,
+    image_shrink: getDefaultConfig('image_shrink') as ImageShrinkConfig,
+    repomap: getDefaultConfig('repomap') as RepomapConfig,
+    overflow_guard: getDefaultConfig('overflow_guard') as OverflowGuardConfig,
+    stats: getDefaultConfig('stats') as StatsConfig,
+    hints: getDefaultConfig('hints') as HintsConfig,
+    hooks: getDefaultConfig('hooks') as HooksConfig,
+    webfetch: getDefaultConfig('webfetch') as WebFetchConfig,
+    worker: getDefaultConfig('worker') as WorkerConfig,
+    indexing: getDefaultConfig('indexing') as IndexingConfig,
+    compression: getDefaultConfig('compression') as CompressionConfig,
+    context: getDefaultConfig('context') as ContextConfig,
+    injection: getDefaultConfig('injection') as InjectionConfig,
   }
 }
 
@@ -567,7 +511,7 @@ export function invalidateConfigCache(): void {
 
 function _buildConfig(raw: Record<string, unknown>): Config {
   const ca_raw = section(raw, 'compact_assist')
-  const ca = defaultCompactAssistConfig()
+  const ca = getDefaultConfig('compact_assist') as CompactAssistConfig
   ca.enabled = validatedBool(ca_raw['enabled'], ca.enabled)
   ca.triggers = validatedStrList(ca_raw['triggers'], ca.triggers)
   ca.min_events = validatedInt(ca_raw['min_events'], ca.min_events, 0, 1000)
@@ -587,7 +531,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   ca.lazy_skill_injection = envBool('TOKEN_GOAT_LAZY_SKILL_INJECTION', ca.lazy_skill_injection)
 
   const bc_raw = section(raw, 'bash_compress')
-  const bc = defaultBashCompressConfig()
+  const bc = getDefaultConfig('bash_compress') as BashCompressConfig
   bc.enabled = validatedBool(bc_raw['enabled'], bc.enabled)
   bc.disabled_filters = validatedStrList(bc_raw['disabled_filters'], bc.disabled_filters)
   bc.max_lines = validatedInt(bc_raw['max_lines'], bc.max_lines, 50, 100_000)
@@ -604,26 +548,26 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   bc.cache_max_bytes_per_output = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT', bc.cache_max_bytes_per_output)
 
   const bd_raw = section(raw, 'bash_diff')
-  const bd = defaultBashDiffConfig()
+  const bd = getDefaultConfig('bash_diff') as BashDiffConfig
   bd.max_hunks_per_file = validatedInt(bd_raw['max_hunks_per_file'], bd.max_hunks_per_file, 1, 10000)
   bd.hunk_density_cap = validatedBool(bd_raw['hunk_density_cap'], bd.hunk_density_cap)
 
   const sl_raw = section(raw, 'bash_severity_log')
-  const sl = defaultSeverityLogConfig()
+  const sl = getDefaultConfig('bash_severity_log') as SeverityLogConfig
   sl.context_lines = validatedInt(sl_raw['context_lines'], sl.context_lines, 0, 100)
   sl.score_threshold = validatedFloat(sl_raw['score_threshold'], sl.score_threshold, 0.0, 1.0)
 
   const cc_raw = section(raw, 'post_read_code_compress')
-  const cc = defaultCodeCompressConfig()
+  const cc = getDefaultConfig('post_read_code_compress') as CodeCompressConfig
   cc.min_lines = validatedInt(cc_raw['min_lines'], cc.min_lines, 0, 1_000_000)
 
   const sb_raw = section(raw, 'session_brief')
-  const sb = defaultSessionBriefConfig()
+  const sb = getDefaultConfig('session_brief') as SessionBriefConfig
   sb.enabled = validatedBool(sb_raw['enabled'], sb.enabled)
   sb.enabled = envBool('TOKEN_GOAT_SESSION_BRIEF', sb.enabled)
 
   const sp_raw = section(raw, 'skill_preservation')
-  const sp = defaultSkillPreservationConfig()
+  const sp = getDefaultConfig('skill_preservation') as SkillPreservationConfig
   sp.enabled = validatedBool(sp_raw['enabled'], sp.enabled)
   sp.max_cache_bytes = validatedInt(sp_raw['max_cache_bytes'], sp.max_cache_bytes, 64 * 1024, 512 * 1024 * 1024)
   sp.orphan_sweep_enabled = validatedBool(sp_raw['orphan_sweep_enabled'], sp.orphan_sweep_enabled)
@@ -641,7 +585,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   sp.orphan_sweep_enabled = envBool('TOKEN_GOAT_ORPHAN_SWEEP', sp.orphan_sweep_enabled)
 
   const is_raw = section(raw, 'image_shrink')
-  const is_cfg = defaultImageShrinkConfig()
+  const is_cfg = getDefaultConfig('image_shrink') as ImageShrinkConfig
   is_cfg.prefer_avif = validatedBool(is_raw['prefer_avif'], is_cfg.prefer_avif)
   is_cfg.avif_quality = validatedInt(is_raw['avif_quality'], is_cfg.avif_quality, 1, 100)
   is_cfg.jpeg_quality = validatedInt(is_raw['jpeg_quality'], is_cfg.jpeg_quality, 1, 100)
@@ -653,14 +597,14 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels)
 
   const cur_raw = section(raw, 'curator')
-  const cur = defaultCuratorConfig()
+  const cur = getDefaultConfig('curator') as CuratorConfig
   cur.enabled = validatedBool(cur_raw['enabled'], cur.enabled)
   cur.min_samples = validatedInt(cur_raw['min_samples'], cur.min_samples, 0, 10000)
   cur.threshold_pct = validatedInt(cur_raw['threshold_pct'], cur.threshold_pct, 0, 100)
   cur.enabled = envBool('TOKEN_GOAT_CURATOR', cur.enabled)
 
   const hb_raw = section(raw, 'hint_budget')
-  const hb = defaultHintBudgetConfig()
+  const hb = getDefaultConfig('hint_budget') as HintBudgetConfig
   hb.enabled = validatedBool(hb_raw['enabled'], hb.enabled)
   hb.max_per_session = validatedInt(hb_raw['max_per_session'], hb.max_per_session, 0, 1_000_000)
   hb.max_structured_per_session = validatedInt(hb_raw['max_structured_per_session'], hb.max_structured_per_session, 0, 1_000_000)
@@ -668,23 +612,23 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hb.enabled = envBool('TOKEN_GOAT_HINT_BUDGET', hb.enabled)
 
   const rm_raw = section(raw, 'repomap')
-  const rm = defaultRepomapConfig()
+  const rm = getDefaultConfig('repomap') as RepomapConfig
   rm.compact_file_threshold = validatedInt(rm_raw['compact_file_threshold'], rm.compact_file_threshold, 0, 100_000)
   rm.exclude_tests = validatedBool(rm_raw['exclude_tests'], rm.exclude_tests)
   rm.compact_file_threshold = envInt('TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD', rm.compact_file_threshold)
   rm.exclude_tests = envBool('TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS', rm.exclude_tests)
 
   const og_raw = section(raw, 'overflow_guard')
-  const og = defaultOverflowGuardConfig()
+  const og = getDefaultConfig('overflow_guard') as OverflowGuardConfig
   og.enabled = validatedBool(og_raw['enabled'], og.enabled)
   og.max_tokens = validatedInt(og_raw['max_tokens'], og.max_tokens, 1000, 1_000_000)
 
   const st_raw = section(raw, 'stats')
-  const st = defaultStatsConfig()
+  const st = getDefaultConfig('stats') as StatsConfig
   st.record_zero_savings = validatedBool(st_raw['record_zero_savings'], st.record_zero_savings)
 
   const hi_raw = section(raw, 'hints')
-  const hi = defaultHintsConfig()
+  const hi = getDefaultConfig('hints') as HintsConfig
   hi.suppress_after_ignored = validatedInt(hi_raw['suppress_after_ignored'], hi.suppress_after_ignored, 0, 1000)
   hi.quiet_hours = validatedStr(hi_raw['quiet_hours'], hi.quiet_hours)
   hi.json_sidecar = validatedBool(hi_raw['json_sidecar'], hi.json_sidecar)
@@ -722,12 +666,12 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   }
 
   const hk_raw = section(raw, 'hooks')
-  const hk = defaultHooksConfig()
+  const hk = getDefaultConfig('hooks') as HooksConfig
   hk.watchdog_ms = validatedInt(hk_raw['watchdog_ms'], hk.watchdog_ms, 100, 30000)
   hk.watchdog_ms = envInt('TOKEN_GOAT_HOOK_WATCHDOG_MS', hk.watchdog_ms)
 
   const wf_raw = section(raw, 'webfetch')
-  const wf = defaultWebFetchConfig()
+  const wf = getDefaultConfig('webfetch') as WebFetchConfig
   wf.allow = validatedStrList(wf_raw['allow'], wf.allow)
   wf.deny = validatedStrList(wf_raw['deny'], wf.deny)
   wf.max_file_count = validatedInt(wf_raw['max_file_count'], wf.max_file_count, 0, 10_000_000)
@@ -737,7 +681,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   wf.compress_bodies = envBool('TOKEN_GOAT_WEB_COMPRESS', wf.compress_bodies)
 
   const wk_raw = section(raw, 'worker')
-  const wk = defaultWorkerConfig()
+  const wk = getDefaultConfig('worker') as WorkerConfig
   wk.watchdog_enabled = validatedBool(wk_raw['watchdog_enabled'], wk.watchdog_enabled)
   wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, 1, 8)
   wk.blocked_roots = validatedStrList(wk_raw['blocked_roots'], wk.blocked_roots)
@@ -745,23 +689,23 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   wk.max_pool_workers = envInt('TOKEN_GOAT_WORKER_MAX_POOL', wk.max_pool_workers)
 
   const ix_raw = section(raw, 'indexing')
-  const ix = defaultIndexingConfig()
+  const ix = getDefaultConfig('indexing') as IndexingConfig
   ix.large_file_symbol_only_kb = validatedInt(ix_raw['large_file_symbol_only_kb'], ix.large_file_symbol_only_kb, 1, 1048576)
   ix.large_file_skip_kb = validatedInt(ix_raw['large_file_skip_kb'], ix.large_file_skip_kb, 1, 1048576)
   ix.skip_dirs = validatedStrList(ix_raw['skip_dirs'], ix.skip_dirs)
 
   const cpr_raw = section(raw, 'compression')
-  const cpr = defaultCompressionConfig()
+  const cpr = getDefaultConfig('compression') as CompressionConfig
   cpr.profile = validatedStr(cpr_raw['profile'], cpr.profile)
   cpr.profile = envStr('TOKEN_GOAT_COMPRESS_PROFILE', cpr.profile)
 
   const ctx_raw = section(raw, 'context')
-  const ctx = defaultContextConfig()
+  const ctx = getDefaultConfig('context') as ContextConfig
   ctx.model_window_tokens = validatedInt(ctx_raw['model_window_tokens'], ctx.model_window_tokens, 10_000, 10_000_000)
   ctx.model_window_tokens = envInt('TOKEN_GOAT_MODEL_WINDOW_TOKENS', ctx.model_window_tokens)
 
   const inj_raw = section(raw, 'injection')
-  const inj = defaultInjectionConfig()
+  const inj = getDefaultConfig('injection') as InjectionConfig
   inj.enabled = validatedBool(inj_raw['enabled'], inj.enabled)
   inj.enabled = envBool('TOKEN_GOAT_INJECTION_ENABLED', inj.enabled)
 
