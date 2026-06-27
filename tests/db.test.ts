@@ -123,4 +123,10 @@ describe('closeAllDbs', () => {
     clearModuleCaches()
     expect(() => db.prepare('SELECT 1')).toThrow()
   })
+
+  it('rejects a bare dbPath containing a colon (Windows NTFS stream guard)', () => {
+    // A bare filename like "index.db:evil" would open an NTFS Alternate Data Stream
+    // on Windows rather than a regular file. safeJoin in resolveDbPath rejects it.
+    expect(() => getDb('index.db:evil')).toThrow(/colon/)
+  })
 })

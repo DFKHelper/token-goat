@@ -257,10 +257,21 @@ function cmdBashOutput(
   opts: { head?: string; tail?: string; grep?: string; section?: string; file?: string },
 ): void {
   if (opts.file !== undefined) {
+    if (opts.file.includes('\0')) {
+      throw new CliError('--file path contains a null byte')
+    }
+    if (!isWindows() && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(opts.file) && process.stdin.isTTY) {
+      throw new CliError('--file /dev/stdin requires piped input; redirect a file instead')
+    }
     let content: string
     try {
+      const st = fs.statSync(opts.file)
+      if (st.isFIFO() || st.isSocket()) {
+        throw new CliError(`--file '${opts.file}' is a special file (FIFO or socket) — only regular files are supported`)
+      }
       content = fs.readFileSync(opts.file, 'utf-8')
-    } catch {
+    } catch (e) {
+      if (e instanceof CliError) throw e
       throw new CliError(`cannot read file: ${opts.file}`)
     }
     _applyFiltersAndPrint(content, opts)

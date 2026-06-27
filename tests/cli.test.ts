@@ -141,6 +141,23 @@ describe('token-goat CLI', () => {
     expect(r.stderr).toContain('provide an <id> or --file')
   }, 30000)
 
+  it.skipIf(process.platform === 'win32')('bash-output --file rejects a FIFO (special file)', () => {
+    const tmpDir = os.tmpdir()
+    const fifo = path.join(tmpDir, `tg-bo-fifo-${Date.now()}`)
+    try {
+      execSync(`mkfifo ${JSON.stringify(fifo)}`)
+    } catch {
+      return
+    }
+    try {
+      const r = runCli(['bash-output', '--file', fifo])
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('special file')
+    } finally {
+      fs.rmSync(fifo, { force: true })
+    }
+  }, 30000)
+
   it('bash-output --head and --tail together applies elision', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-test-${Date.now()}.txt`)
     const lines = Array.from({ length: 200 }, (_, i) => `line ${i + 1}`)

@@ -17,6 +17,7 @@ import Database from 'better-sqlite3'
 import type { Database as BetterSqlite3Database } from 'better-sqlite3'
 
 import { dataDir } from './constants.js'
+import { safeJoin } from './paths.js'
 import { registerReset } from './reset.js'
 
 // ESM has no `require`; build one so we can probe for the optional sqlite-vec
@@ -164,7 +165,7 @@ function initConnection(conn: BetterSqlite3Database): void {
 function resolveDbPath(dbPath: string): string {
   if (path.isAbsolute(dbPath)) return dbPath
   if (dbPath.includes('/') || dbPath.includes('\\')) return path.resolve(dbPath)
-  return path.join(dataDir(), dbPath)
+  return safeJoin(dataDir(), dbPath)
 }
 
 /**
