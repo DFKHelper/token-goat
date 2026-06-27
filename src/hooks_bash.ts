@@ -216,6 +216,20 @@ function extractDirectoryListing(cmd: string): boolean {
 }
 
 /**
+ * Returns a parsed find command descriptor when the command is a `find` invocation.
+ * - `extGlob`: the glob pattern from `-name "*.ext"`, or null when absent.
+ * - `isXargsGrepL`: true when the pipeline ends with `| xargs grep -l` (symbol search anti-pattern).
+ * Returns null when the command does not start with `find`.
+ */
+function extractFindCommand(cmd: string): { extGlob: string | null; isXargsGrepL: boolean } | null {
+  if (!/^find\b/.test(cmd)) return null
+  const isXargsGrepL = /[|]\s*xargs\s+(?:grep|rg)\s+.*-l\b/.test(cmd) || /[|]\s*xargs\s+grep\s+-l\b/.test(cmd)
+  const nameMatch = /-name\s+['"]([^'"]+)['"]/i.exec(cmd)
+  const extGlob = nameMatch ? (nameMatch[1] ?? null) : null
+  return { extGlob, isXargsGrepL }
+}
+
+/**
  * Returns the file path when the command is an rg/grep structural definition search
  * on a single source file. Structural patterns are those that find function/class/import
  * definitions (^def, ^class, ^function, ^import, etc.) — the common "show me the structure
@@ -300,6 +314,26 @@ export function preBashHandler(event: HookEvent): HookOutput {
     return denyOutput(
       'Use `token-goat bash-output ' + id + '` to recall this task output (already cached). ' +
       'Append `--tail <n>` or `--grep PATTERN` to slice it.',
+    )
+  }
+
+  // find interception — fd is faster and .gitignore-aware; xargs grep -l is a symbol-search anti-pattern
+  const findResult = extractFindCommand(cmd)
+  if (findResult !== null) {
+    const { extGlob, isXargsGrepL } = findResult
+    recordStat('session_hint', 0, 0)
+    if (isXargsGrepL) {
+      return denyOutput(
+        '`find | xargs grep -l` is a slow symbol search. ' +
+        'Use `token-goat refs <symbol>` or `rg -l <symbol>` for faster symbol-file discovery.',
+      )
+    }
+    const fdHint = extGlob
+      ? 'Use `fd \'' + extGlob + '\'` for faster file discovery (respects .gitignore).'
+      : 'Use `fd` for faster file discovery (respects .gitignore).'
+    return contextOutput(
+      '`find` is slow and ignores .gitignore. ' + fdHint +
+      ' For symbol definitions, use `token-goat symbol <Name>`.',
     )
   }
 
