@@ -460,6 +460,47 @@ describe('preBashHandler — rg structural search', () => {
   })
 })
 
+describe('preBashHandler — cat | jq pipe interception', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits context hint for cat package.json | jq', () => {
+    const result = preBashHandler(makeBashEvent("cat package.json | jq '.dependencies | keys'"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('config-get')
+      expect(result.context).toContain('package.json')
+    }
+  })
+
+  it('emits context hint for cat tsconfig.json | jq .', () => {
+    const result = preBashHandler(makeBashEvent('cat tsconfig.json | jq .'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('config-get')
+    }
+  })
+
+  it('emits context hint for cat quoted path | jq', () => {
+    const result = preBashHandler(makeBashEvent('cat "C:/Projects/app/package.json" | jq \'.version\''))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('config-get')
+    }
+  })
+
+  it('passes through cat non-config file | jq (e.g. .ts)', () => {
+    const result = preBashHandler(makeBashEvent('cat src/types.ts | jq .'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through cat temp json | jq', () => {
+    const result = preBashHandler(makeBashEvent('cat /tmp/output.json | jq .'))
+    expect(result.hookType).toBe('pass')
+  })
+})
+
 describe('preBashHandler — python read-modify-write exemption', () => {
   beforeEach(() => {
     clearModuleCaches()
