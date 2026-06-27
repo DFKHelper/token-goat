@@ -616,3 +616,53 @@ describe('preBashHandler — find command interception', () => {
     expect(result.hookType).toBe('pass')
   })
 })
+
+describe('preBashHandler — curl GET recall', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits recall hint when same curl GET was already run this session', async () => {
+    const cmd = 'curl -s https://api.example.com/data'
+    const largeOutput = JSON.stringify({ items: new Array(200).fill({ id: 1, name: 'foo' }) })
+
+    await postBashHandler(makePostBashEvent(cmd, largeOutput))
+
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat bash-output')
+      expect(result.context).toContain('--grep')
+    }
+  })
+
+  it('passes through first curl GET (nothing cached yet)', () => {
+    const result = preBashHandler(makeBashEvent('curl -s https://api.example.com/data'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not cache curl POST', async () => {
+    const cmd = 'curl -X POST -d \'{"key":"val"}\' https://api.example.com/create'
+    const largeOutput = '{"id":1}'.repeat(200)
+    await postBashHandler(makePostBashEvent(cmd, largeOutput))
+    // POST should not be cached, so pre-handler passes
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not cache curl with auth headers', async () => {
+    const cmd = "curl -s -H 'Authorization: Bearer token123' https://api.example.com/me"
+    const largeOutput = '{"user":"me"}'.repeat(200)
+    await postBashHandler(makePostBashEvent(cmd, largeOutput))
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not cache curl with -u credentials', async () => {
+    const cmd = 'curl -s -u admin:password https://api.example.com/admin'
+    const largeOutput = '{"admin":true}'.repeat(200)
+    await postBashHandler(makePostBashEvent(cmd, largeOutput))
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('pass')
+  })
+})
