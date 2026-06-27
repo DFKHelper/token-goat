@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { HookEvent } from '../src/hook_registry.js'
-import { preReadHandler } from '../src/hooks_read.js'
+import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead, wasFileReadThisSession } from '../src/session.js'
@@ -374,6 +374,141 @@ Some content that makes the file large enough`
       expect(result.message).toContain('[2.1.0]')
       expect(result.message).toContain('token-goat section')
     }
+  })
+
+  // Item 1: post-read truncation detection
+  it('postReadHandler marks a file as truncated when response contains [Truncated:', () => {
+    const p = makeTmpFile('some content')
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: 'content here [Truncated: file too large, showing first 33K tokens]' },
+    }
+    postReadHandler(postEvent)
+
+    // Next pre-read should be denied with skeleton hint
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('truncated on last read')
+      expect(result.message).toContain('token-goat skeleton')
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('postReadHandler marks file truncated on PARTIAL view marker', () => {
+    const p = makeTmpFile('content')
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: 'first chunk Truncated: PARTIAL view of file' },
+    }
+    postReadHandler(postEvent)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('truncated on last read')
+    }
+  })
+
+  it('postReadHandler does not mark file truncated when response has no marker', () => {
+    const p = makeTmpFile('content')
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: 'complete content with no truncation marker' },
+    }
+    postReadHandler(postEvent)
+    // First pre-read should pass (not yet read)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('pass')
+  })
+
+  // Item 2: large doc file early denial
+  it('denies 2nd read of a .md file >=10KB', () => {
+    const p = _makeTmpMdFile('# Title\n\ncontent\n'.padEnd(15 * 1024, 'x'))
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Large doc file already read')
+      expect(result.message).toContain('token-goat section')
+    }
+  })
+
+  it('does not early-deny 2nd read of a .md file <10KB', () => {
+    const p = _makeTmpMdFile('# Small\ncontent')
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    // Should get contextOutput (not deny) because file is small
+    expect(result.hookType).toBe('context')
+  })
+
+  it('denies 2nd read of a .mdx file >=10KB', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.mdx`)
+    fs.writeFileSync(p, '# Component\n\ncontent\n'.padEnd(15 * 1024, 'x'))
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Large doc file already read')
+    }
+  })
+
+  // Item 5: .improve-state-*.json re-read denial
+  it('denies 2nd read of .improve-state-*.json', () => {
+    const p = path.join(os.tmpdir(), '.improve-state-bugfixing.json')
+    fs.writeFileSync(p, JSON.stringify({ phase: 'bugfixing' }))
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Orchestrator state already read')
+    }
+  })
+
+  it('passes first read of .improve-state-*.json', () => {
+    const p = path.join(os.tmpdir(), '.improve-state-foo.json')
+    fs.writeFileSync(p, JSON.stringify({ phase: 'foo' }))
+    tmpFiles.push(p)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('pass')
+  })
+
+  // Item 8: MEMORY.md re-read denial
+  it('denies 2nd read of memory/MEMORY.md', () => {
+    const dir = path.join(os.tmpdir(), `tg-mem-${process.pid}`)
+    fs.mkdirSync(dir, { recursive: true })
+    const p = path.join(dir, 'memory', 'MEMORY.md')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, '# Memory\ncontent')
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('MEMORY.md was read this session')
+      expect(result.message).toContain('compact manifest')
+    }
+  })
+
+  it('passes first read of memory/MEMORY.md', () => {
+    const dir = path.join(os.tmpdir(), `tg-mem2-${process.pid}`)
+    fs.mkdirSync(dir, { recursive: true })
+    const p = path.join(dir, 'memory', 'MEMORY.md')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(p, '# Memory\ncontent')
+    tmpFiles.push(p)
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('pass')
   })
 
 })

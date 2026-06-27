@@ -19,7 +19,7 @@ import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
-import { recordFileRead, wasFileReadThisSession, getSessionFiles } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession } from './session.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
@@ -176,6 +176,24 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
   }
 
+  // Item 8: MEMORY.md re-read denial — content is already in the compact manifest
+  if (normalized.toLowerCase().includes('memory/memory.md') && wasFileReadThisSession(normalized)) {
+    recordFileRead(normalized)
+    recordStat('session_hint', 0, 0)
+    return denyOutput(
+      "MEMORY.md was read this session. Its content is in the compact manifest as 'session memory'.",
+    )
+  }
+
+  // Item 5: .improve-state-*.json re-read denial
+  if (/^\.improve-state-.*\.json$/.test(basename) && wasFileReadThisSession(normalized)) {
+    recordFileRead(normalized)
+    recordStat('session_hint', 0, 0)
+    return denyOutput(
+      'Orchestrator state already read this session. Use `token-goat bash-output <id>` or recall it from the compact manifest.',
+    )
+  }
+
   // .env re-read: deny after first read (size thresholds never catch tiny env files)
   if (/^\.env(\.\w+)?$/.test(basename) && wasFileReadThisSession(normalized)) {
     recordFileRead(normalized)
@@ -191,11 +209,26 @@ export function preReadHandler(event: HookEvent): HookOutput {
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
     recordFileRead(normalized)
+    const rereadBytes = statSize(normalized) ?? 0
+    recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
+
+    // Item 1: file was truncated on last read — surgical reads only
+    if (wasFileTruncatedThisSession(normalized)) {
+      return denyOutput(
+        'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.',
+      )
+    }
+
+    // Item 2: large .md/.mdx files denied on 2nd read (not 3rd like general files)
+    if (/\.(md|mdx)$/i.test(basename) && rereadBytes >= 10 * 1024) {
+      return denyOutput(
+        'Large doc file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.',
+      )
+    }
+
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Use token-goat read/section/symbol to re-read surgically.'
-    const rereadBytes = statSize(normalized) ?? 0
-    recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
     if (rereadBytes >= REREAD_DENY_BYTES || reads >= 2) {
       return denyOutput(
         normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
@@ -254,3 +287,36 @@ export function preReadHandler(event: HookEvent): HookOutput {
 
 registerHook('pre_tool_use', preReadHandler, { toolName: 'Read' })
 registerHook('pre_tool_use', preReadHandler, { toolName: 'Grep' })
+
+/** Extract tool response text from a post_tool_use Read event. */
+function extractReadOutput(raw: Record<string, unknown>): string {
+  const resp = raw['tool_response']
+  if (typeof resp === 'string') return resp
+  if (resp !== null && typeof resp === 'object') {
+    const r = resp as Record<string, unknown>
+    for (const key of ['output', 'content', 'text', 'body']) {
+      if (typeof r[key] === 'string') return r[key] as string
+    }
+  }
+  return ''
+}
+
+/**
+ * post_tool_use handler for the Read tool.
+ *
+ * Detects truncation markers in the tool response and flags the file so the
+ * next pre_tool_use for the same file returns an immediate deny with a
+ * surgical-read hint instead of allowing another full (and expensive) read.
+ */
+export function postReadHandler(event: HookEvent): HookOutput {
+  const filePath = getFilePath(event)
+  if (filePath === undefined) return passOutput()
+  const normalized = normalizePath(filePath)
+  const respText = extractReadOutput(event.raw)
+  if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) {
+    markFileTruncated(normalized)
+  }
+  return passOutput()
+}
+
+registerHook('post_tool_use', postReadHandler, { toolName: 'Read' })
