@@ -231,7 +231,11 @@ export function startWorker(opts?: WorkerOptions): WorkerHandle {
 export function startDetachedWorker(opts?: WorkerOptions): number {
   const pollIntervalMs = opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const dir = opts?.dataDir ?? dataDir()
-  fs.mkdirSync(dir, { recursive: true })
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
+  }
 
   const child: ChildProcess = spawn(
     process.execPath,
