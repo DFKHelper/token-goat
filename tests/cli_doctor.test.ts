@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { checkDbExists, checkConfigValid, checkInstall, runDoctor } from '../src/cli_doctor.js'
+import { checkDbExists, checkConfigValid, checkInstall, checkDiskSpace, runDoctor } from '../src/cli_doctor.js'
 
 describe('cli_doctor', () => {
   let tempDir: string
@@ -88,6 +88,30 @@ describe('cli_doctor', () => {
       const result = checkInstall()
       expect(result.message).toBeTruthy()
       expect(result.message.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe('checkDiskSpace', () => {
+    it('returns a result with Disk Space name', () => {
+      const result = checkDiskSpace(tempDir)
+      expect(result.name).toBe('Disk Space')
+    })
+
+    it('returns ok or warn status', () => {
+      const result = checkDiskSpace(tempDir)
+      expect(['ok', 'warn']).toContain(result.status)
+    })
+
+    it('includes message text', () => {
+      const result = checkDiskSpace(tempDir)
+      expect(result.message).toBeTruthy()
+      expect(result.message.length).toBeGreaterThan(0)
+    })
+
+    it('handles invalid paths gracefully', () => {
+      const result = checkDiskSpace('/nonexistent/path/xyz/abc/def')
+      expect(result.name).toBe('Disk Space')
+      expect(['ok', 'warn']).toContain(result.status)
     })
   })
 

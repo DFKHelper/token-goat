@@ -106,7 +106,7 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
     if (lines.length < 2) {
       return { name: 'Disk Space', status: 'warn', message: 'could not determine' }
     }
-    const parts = lines[1]!.split(/\s+/)
+    const parts = lines[1]!.trim().split(/\s+/)
     const available = parts[3] || 'unknown'
     return { name: 'Disk Space', status: 'ok', message: `${available} available` }
   } catch {
