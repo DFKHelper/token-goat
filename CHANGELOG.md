@@ -4,6 +4,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **Wired `serve_diff_on_reread` for source, style, and data files.** The opt-in flag (`TOKEN_GOAT_SERVE_DIFF_ON_REREAD=1` or `[hints] serve_diff_on_reread = true`) previously affected only docs, despite being advertised for changed files generally. It now extends diff-on-reread to `.ts`, `.tsx`, `.js`, `.jsx`, `.css`, `.scss`, `.json`, `.py`, `.go`, `.rs`, `.yaml`, `.toml`, and 15+ other source/style/data extensions: a re-read of a changed file injects a compact unified diff (with an extension-aware surgical-read hint — `token-goat read ::Symbol` for code, `token-goat section` for structured files) instead of the full file, and an unchanged file returns a one-line note. A savings guard skips the diff when it would exceed 60% of the file (e.g. minified single-line JS/CSS/JSON), falling through to the existing re-read denial. Files over 256 KB are never snapshotted. Default remains OFF, preserving the flat-deny behavior for anyone who has not opted in; docs (`.md`/`.mdx`/`.rst`/`.txt`) continue to diff by default.
 
 ## [2.2.2] - 2026-06-27
 

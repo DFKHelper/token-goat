@@ -714,6 +714,127 @@ Some content that makes the file large enough`
     expect(() => postReadHandler(postEvent)).not.toThrow()
   })
 
+  // Source-file auto-diff on re-read (gated by serve_diff_on_reread)
+  // Helper: run a fn with the flag forced on/off, restoring the prior value.
+  function withDiffFlag<T>(on: boolean, fn: () => T): T {
+    const oldEnv = process.env.TOKEN_GOAT_SERVE_DIFF_ON_REREAD
+    if (on) process.env.TOKEN_GOAT_SERVE_DIFF_ON_REREAD = '1'
+    else delete process.env.TOKEN_GOAT_SERVE_DIFF_ON_REREAD
+    try {
+      return fn()
+    } finally {
+      if (oldEnv === undefined) delete process.env.TOKEN_GOAT_SERVE_DIFF_ON_REREAD
+      else process.env.TOKEN_GOAT_SERVE_DIFF_ON_REREAD = oldEnv
+    }
+  }
+
+  // Build a multi-line source file large enough that a 1-line change diffs well under the savings cap.
+  function bigSource(varValue: number): string {
+    const lines = Array.from({ length: 30 }, (_, i) => `  const x${i} = ${i === 5 ? varValue : i}`).join('\n')
+    return `export function big() {\n${lines}\n  return 0\n}\n`
+  }
+
+  function tmpFileExt(content: string, ext: string): string {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}${ext}`)
+    fs.writeFileSync(p, content)
+    tmpFiles.push(p)
+    return p
+  }
+
+  function snapshotFirstRead(p: string, content: string): void {
+    postReadHandler({
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content },
+    })
+    recordFileRead(normalizePath(p))
+  }
+
+  it('flag ON: serves a diff (with symbol hint) on re-read of a changed .tsx', () => {
+    withDiffFlag(true, () => {
+      const content1 = bigSource(5)
+      const p = tmpFileExt(content1, '.tsx')
+      snapshotFirstRead(p, content1)
+      fs.writeFileSync(p, bigSource(555)) // one line changed
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('Content changed since last read')
+        expect(result.message).toContain('```diff')
+        // Real unified-diff body, not just a substring of the new content.
+        expect(result.message).toContain('-  const x5 = 5')
+        expect(result.message).toContain('+  const x5 = 555')
+        // .tsx is symbol-style: hint must point to `token-goat read ::Symbol`, not section
+        expect(result.message).toContain('token-goat read')
+      }
+    })
+  })
+
+  it('flag ON: serves "unchanged" with a section hint on re-read of an unchanged .css', () => {
+    withDiffFlag(true, () => {
+      const content = '.hero {\n  color: red;\n}\n.footer {\n  color: blue;\n}\n'
+      const p = tmpFileExt(content, '.css')
+      snapshotFirstRead(p, content)
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('unchanged since last read')
+        // .css is section-style
+        expect(result.message).toContain('token-goat section')
+      }
+    })
+  })
+
+  it('flag OFF (default): re-read of a changed .tsx serves NO diff (preserves deny behavior)', () => {
+    withDiffFlag(false, () => {
+      const content1 = bigSource(5)
+      const p = tmpFileExt(content1, '.tsx')
+      snapshotFirstRead(p, content1) // flag off → no snapshot stored for .tsx
+      fs.writeFileSync(p, bigSource(555))
+
+      const result = preReadHandler(readEvent(p))
+      // No diff is ever served when the flag is off — this is the key default-unchanged regression.
+      expect(result.message ?? '').not.toContain('```diff')
+    })
+  })
+
+  it('flag ON: savings guard — a minified single-line .json change falls through to deny (no diff)', () => {
+    withDiffFlag(true, () => {
+      const pairs1 = Array.from({ length: 40 }, (_, i) => `"k${i}":"v${i}"`).join(',')
+      const pairs2 = Array.from({ length: 40 }, (_, i) => `"k${i}":"${i === 20 ? 'CHANGED' : 'v' + i}"`).join(',')
+      const content1 = `{${pairs1}}`
+      const content2 = `{${pairs2}}`
+      const p = tmpFileExt(content1, '.json')
+      snapshotFirstRead(p, content1)
+      fs.writeFileSync(p, content2)
+
+      const result = preReadHandler(readEvent(p))
+      // Single-line file: the "diff" is ~2x the file, exceeding the 0.6 savings cap, so no diff is served.
+      expect(result.message ?? '').not.toContain('```diff')
+    })
+  })
+
+  it('flag ON: .yaml (in DIFFABLE_SOURCE_RE) gets the section-style hint on unchanged re-read', () => {
+    withDiffFlag(true, () => {
+      const content = 'name: app\nversion: 1\nsteps:\n  - build\n  - test\n'
+      const p = tmpFileExt(content, '.yaml')
+      snapshotFirstRead(p, content)
+
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('unchanged since last read')
+        // .yaml is section-style, not symbol-style
+        expect(result.message).toContain('token-goat section')
+        expect(result.message).not.toContain('token-goat read')
+      }
+    })
+  })
+
 })
 
 describe('preReadHandler — session artifact re-read dedup', () => {
