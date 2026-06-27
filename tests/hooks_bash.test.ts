@@ -292,6 +292,30 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  it('denies node -e with require of a project JSON file', () => {
+    const event = makeBashEvent(`node -e "console.log(require('./package.json').version)"`)
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('config-get')
+    }
+  })
+
+  it('passes through node -e requiring a node_modules JSON', () => {
+    const event = makeBashEvent(`node -e "console.log(require('node_modules/next/package.json').version)"`)
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('denies node -e requiring a nested config JSON', () => {
+    const event = makeBashEvent(`node -e "const v=require('.claude/config.json'); console.log(v.model)"`)
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('config-get')
+    }
+  })
+
   it('emits advisory context for tail command on source file', () => {
     const event = makeBashEvent('tail -50 tests/unit/ai-creative-generator-action.test.js')
     const result = preBashHandler(event)
