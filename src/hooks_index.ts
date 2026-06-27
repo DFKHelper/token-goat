@@ -95,10 +95,10 @@ export function preCompactIndexHandler(_event: HookEvent): HookOutput {
     try {
       fs.mkdirSync(path.dirname(sidecar), { recursive: true })
       atomicWriteBytes(sidecar, Buffer.from(`${paths.join('\n')}\n`, 'utf8'))
+      clearDirtyQueue()
     } catch {
-      // best-effort snapshot; clearing below is the load-bearing step
+      // best-effort snapshot; if write fails, keep queue for retry on next compact
     }
-    clearDirtyQueue()
   }
   return passOutput()
 }

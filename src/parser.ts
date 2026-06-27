@@ -278,12 +278,12 @@ function pythonDocstring(node: TsNode): string {
   return stripPythonStringQuotes(str.text)
 }
 
-function stripPythonStringQuotes(raw: string): string {
+export function stripPythonStringQuotes(raw: string): string {
   let s = raw.trim()
   // Strip optional string prefix (r, b, f, u and combinations).
   s = s.replace(/^[A-Za-z]+/, '')
   for (const q of ['"""', "'''", '"', "'"]) {
-    if (s.startsWith(q) && s.endsWith(q) && s.length > q.length * 2) {
+    if (s.startsWith(q) && s.endsWith(q) && s.length >= q.length * 2) {
       return s.slice(q.length, s.length - q.length).trim()
     }
   }
@@ -618,7 +618,7 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
     const line = lines[i]
     if (line === undefined) continue
 
-    const match = /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT)\s+(.+)/.exec(
+    const match = /^\s*(FROM|RUN|COPY|ADD|EXPOSE|ENV|WORKDIR|CMD|ENTRYPOINT)\s+(.+)/i.exec(
       line,
     )
     if (match !== null && match[1] !== undefined) {

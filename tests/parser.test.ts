@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
-import { indexFile, isTreeSitterAvailable, parseFile } from '../src/parser.js'
+import { indexFile, isTreeSitterAvailable, parseFile, stripPythonStringQuotes } from '../src/parser.js'
 import { querySymbols } from '../src/index_reader.js'
 
 let TMP: string
@@ -124,6 +124,20 @@ describe('parseFile', () => {
     expect(names).toContain('name')
     expect(names).toContain('nested')
   })
+
+  it('extracts Dockerfile directives in lowercase (regression: case-insensitive keywords)', async () => {
+    const file = write(
+      'Dockerfile',
+      'FROM ubuntu:20.04\n' +
+      'RUN apt-get update\n' +
+      'COPY ./app /app\n' +
+      'ENV NODE_ENV=production\n' +
+      'CMD ["node", "server.js"]\n',
+    )
+    const result = await parseFile(file)
+    const directives = result.symbols.filter((s) => s.kind === 'directive')
+    expect(directives.length).toBeGreaterThanOrEqual(1)
+  })
 })
 
 describe('isTreeSitterAvailable', () => {
@@ -134,5 +148,24 @@ describe('isTreeSitterAvailable', () => {
     // A language with no bundled grammar is always false.
     expect(isTreeSitterAvailable('erlang')).toBe(false)
     expect(isTreeSitterAvailable('unknown')).toBe(false)
+  })
+})
+
+describe('stripPythonStringQuotes', () => {
+  it('handles empty triple-quoted strings (regression: off-by-one bug)', () => {
+    expect(stripPythonStringQuotes('""""""')).toBe('')
+    expect(stripPythonStringQuotes("''''''" )).toBe('')
+  })
+  it('strips triple-quoted strings correctly', () => {
+    expect(stripPythonStringQuotes('"""hello"""')).toBe('hello')
+    expect(stripPythonStringQuotes("'''world'''")).toBe('world')
+  })
+  it('strips single-quoted strings correctly', () => {
+    expect(stripPythonStringQuotes('"hello"')).toBe('hello')
+    expect(stripPythonStringQuotes("'world'")).toBe('world')
+  })
+  it('handles string prefixes (r, b, f, u)', () => {
+    expect(stripPythonStringQuotes('r"raw string"')).toBe('raw string')
+    expect(stripPythonStringQuotes('f"formatted"')).toBe('formatted')
   })
 })

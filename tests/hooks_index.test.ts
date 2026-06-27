@@ -15,6 +15,14 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   return { ...actual, dataDir: () => DATA_DIR }
 })
 
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    atomicWriteBytes: vi.fn(actual.atomicWriteBytes),
+  }
+})
+
 const { appendDirtyPath, clearDirtyQueue, dirtyQueuePath, getDirtyPaths, preCompactIndexHandler } =
   await import('../src/hooks_index.js')
 const { clearModuleCaches } = await import('../src/reset.js')
@@ -98,5 +106,29 @@ describe('preCompactIndexHandler', () => {
       raw: {},
     })
     expect(result.hookType).toBe('pass')
+  })
+
+  it('preserves queue when sidecar write fails (regression: silent queue loss)', async () => {
+    appendDirtyPath('/a/one.ts')
+    appendDirtyPath('/a/two.ts')
+    const queueBefore = getDirtyPaths()
+
+    const { atomicWriteBytes } = await import('../src/util.js')
+    vi.mocked(atomicWriteBytes).mockImplementation(() => {
+      throw new Error('write failed')
+    })
+
+    const result = preCompactIndexHandler({
+      eventName: 'pre_compact',
+      toolName: undefined,
+      toolInput: {},
+      sessionId: 'test',
+      raw: {},
+    })
+
+    expect(result.hookType).toBe('pass')
+    const queueAfter = getDirtyPaths()
+    expect(queueAfter).toEqual(queueBefore)
+    expect(queueAfter.length).toBeGreaterThan(0)
   })
 })
