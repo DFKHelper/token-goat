@@ -117,7 +117,7 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   const m = /^head(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
   if (!m) return null
   const n = parseInt(m[1] ?? m[2] ?? '0', 10)
-  if (n > 0 && n < 10) return null // already surgical, no need to advise
+  if (n < 10) return null // already surgical, no need to advise (0 means default 10 lines, 1-9 also surgical)
   const filePath = m[3] ?? m[4] ?? m[5]
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
