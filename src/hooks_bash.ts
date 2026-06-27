@@ -52,7 +52,7 @@ function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv:
   const filePath = m[1] ?? m[2] ?? m[3]
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
-  const basename = filePath.includes('/') ? filePath.split('/').at(-1)! : filePath.split('\\').at(-1) ?? filePath
+  const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
   const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
   if (!hasKnownExt && !isEnvFile) return null
@@ -72,7 +72,7 @@ function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isE
   if (!drive || !pathRest) return null
   const filePath = drive + ':/' + pathRest
   if (isTempPath(filePath)) return null
-  const basename = filePath.includes('/') ? filePath.split('/').at(-1)! : filePath.split('\\').at(-1) ?? filePath
+  const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
   const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
   if (!hasKnownExt && !isEnvFile) return null

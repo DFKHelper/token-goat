@@ -236,7 +236,8 @@ function capAnswer(answer: string): string {
   if (answer.length <= MAX_ANSWER_CHARS) {
     return answer
   }
-  return answer.slice(0, MAX_ANSWER_CHARS).trimEnd() + '\n… [truncated]'
+  const truncSuffix = '\n… [truncated]'
+  return answer.slice(0, MAX_ANSWER_CHARS - truncSuffix.length).trimEnd() + truncSuffix
 }
 
 export async function runAsk(
