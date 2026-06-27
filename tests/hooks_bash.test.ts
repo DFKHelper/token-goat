@@ -328,6 +328,12 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  it('head file.ts passes through (no line count defaults to 10, already surgical)', () => {
+    const event = makeBashEvent('head src/hooks_bash.ts')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
   it('denies cat -n file.ts (flag before filename)', () => {
     const event = makeBashEvent('cat -n src/app/page.tsx')
     const result = preBashHandler(event)

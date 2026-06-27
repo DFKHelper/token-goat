@@ -158,6 +158,21 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
+  it('bash-output --head and --tail does not apply elision when output size would not shrink', () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-test-edge-${Date.now()}.txt`)
+    const lines = Array.from({ length: 16 }, (_, i) => `line ${i + 1}`)
+    fs.writeFileSync(tmpFile, lines.join('\n'))
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--head', '5', '--tail', '10'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).not.toContain('...(elided)...')
+      expect(r.stdout).toContain('line 1')
+      expect(r.stdout).toContain('line 16')
+    } finally {
+      fs.unlinkSync(tmpFile)
+    }
+  }, 30000)
+
   it('write-file --b64 writes decoded bytes', () => {
     const tmp = path.join(os.tmpdir(), `tg-wf-${Date.now()}.txt`)
     const content = 'hello ```world``` and """quotes""" and $VAR'
