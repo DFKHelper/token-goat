@@ -16,7 +16,7 @@ import * as fs from 'fs/promises'
 import { createHash } from 'crypto'
 import { resolve } from 'path'
 import { dataDir } from './constants.js'
-import { atomicWriteText } from './util.js'
+import { atomicWriteText, isCodeFenceDelimiter } from './util.js'
 import { registerReset } from './reset.js'
 
 const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
@@ -105,7 +105,7 @@ export function extractCompactFromMarker(body: string): string | null {
   for (let i = 0; i < lines.length; i++) {
     const stripped = lines[i]!.trim()
 
-    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+    if (isCodeFenceDelimiter(stripped)) {
       inCodeBlock = !inCodeBlock
       continue
     }
@@ -130,7 +130,7 @@ export function extractH2Headings(body: string): string[] {
   for (const line of body.split('\n')) {
     const stripped = line.trim()
 
-    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+    if (isCodeFenceDelimiter(stripped)) {
       inCodeBlock = !inCodeBlock
     } else if (!inCodeBlock && stripped.startsWith('## ') && stripped.length > 3) {
       headings.push(stripped.slice(3).trim())
@@ -149,7 +149,7 @@ export function extractAllHeadings(body: string, maxLevel: number = 3): Array<[l
   for (const line of body.split('\n')) {
     const stripped = line.trim()
 
-    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+    if (isCodeFenceDelimiter(stripped)) {
       inCodeBlock = !inCodeBlock
       continue
     }
@@ -200,7 +200,7 @@ export function extractNamedSection(body: string, heading: string): string | nul
   for (let i = 0; i < n; i++) {
     const stripped = lines[i]!.trim()
 
-    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+    if (isCodeFenceDelimiter(stripped)) {
       inCodeBlock = !inCodeBlock
       continue
     }
@@ -226,7 +226,7 @@ export function extractNamedSection(body: string, heading: string): string | nul
   for (let j = startIdx; j < n; j++) {
     const stripped = lines[j]!.trim()
 
-    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+    if (isCodeFenceDelimiter(stripped)) {
       inBodyCodeBlock = !inBodyCodeBlock
     }
 
@@ -255,7 +255,7 @@ export function extractChecklistSection(body: string): string | null {
   for (let i = 0; i < n; i++) {
     const stripped = lines[i]!.trim()
 
-    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+    if (isCodeFenceDelimiter(stripped)) {
       inCodeBlock = !inCodeBlock
       continue
     }
@@ -282,7 +282,7 @@ export function extractChecklistSection(body: string): string | null {
   let inBodyCodeBlock = false
   for (let j = bestStart + 1; j < n; j++) {
     const stripped = lines[j]!.trim()
-    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+    if (isCodeFenceDelimiter(stripped)) {
       inBodyCodeBlock = !inBodyCodeBlock
     }
     if (!inBodyCodeBlock && stripped.startsWith('## ')) break

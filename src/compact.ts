@@ -7,8 +7,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { dataDir } from './constants.js'
-import { normalizePath } from './paths.js'
-import { atomicWriteText } from './util.js'
+import { atomicWriteText, normalizePathForwardSlash } from './util.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -332,7 +331,7 @@ export function isNoisePath(inputPath: string): boolean {
     return false
   }
 
-  const p = normalizePath(inputPath).toLowerCase().replace(/\\/g, '/')
+  const p = normalizePathForwardSlash(inputPath, true)
 
   for (const segment of NOISE_SEGMENTS) {
     if (p.includes(segment)) {
@@ -628,7 +627,7 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     let sectionTokens = estimateTokens('## Edited files\n')
     for (const fpath of editedFiles) {
       if (sectionTokens > budgetRemaining * 0.4) break
-      const cleanPath = normalizePath(fpath).replace(/\\/g, '/')
+      const cleanPath = normalizePathForwardSlash(fpath)
       if (!isNoisePath(cleanPath)) {
         lines.push(`- ${cleanPath}`)
         sectionTokens += estimateTokens(`- ${cleanPath}\n`)
@@ -650,7 +649,7 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     })
     for (const fpath of sortedRead.slice(0, 15)) {
       if (sectionTokens > budgetRemaining * 0.3) break
-      const cleanPath = normalizePath(fpath).replace(/\\/g, '/')
+      const cleanPath = normalizePathForwardSlash(fpath)
       if (!isNoisePath(cleanPath)) {
         lines.push(`- ${cleanPath}`)
         sectionTokens += estimateTokens(`- ${cleanPath}\n`)

@@ -7,6 +7,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { execSync } from 'child_process'
+import { extractErrorMessage } from './util.js'
 
 /**
  * Result of a single doctor check.
@@ -91,7 +92,7 @@ export function checkConfigValid(configPath: string): DoctorResult {
     return {
       name: 'Config',
       status: 'fail',
-      message: `config invalid: ${err instanceof Error ? err.message : 'unknown error'}`,
+      message: `config invalid: ${extractErrorMessage(err, 'unknown error')}`,
     }
   }
 }

@@ -29,7 +29,7 @@ import { isWorkerRunning, startDetachedWorker, stopWorker } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getSkillFilePath, listSkills, storeCompact } from './skill_cache.js'
 import { loadConfig } from './config.js'
-import { runGit, isWindows, ensureNewline } from './util.js'
+import { runGit, isWindows, ensureNewline, extractErrorMessage } from './util.js'
 import { renderStats } from './stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -657,7 +657,7 @@ export function buildProgram(): Command {
         await fn(...(args as never[]))
         process.exitCode = 0
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e)
+        const msg = extractErrorMessage(e)
         err(`token-goat: ${msg}`)
         process.exitCode = 1
       }
@@ -822,7 +822,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
       process.exitCode = 1
       return
     }
-    const msg = e instanceof Error ? e.message : String(e)
+    const msg = extractErrorMessage(e)
     err(`token-goat: ${msg}`)
     process.exitCode = 1
   }

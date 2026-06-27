@@ -6,6 +6,7 @@
  */
 
 import { runHook } from './hook_registry.js'
+import { extractErrorMessage } from './util.js'
 
 const _LOG = {
   warn: (msg: string, ...args: unknown[]) => console.warn(`[hooks_cli] ${msg}`, ...args),
@@ -227,7 +228,7 @@ export function failSoft(
 
       return {
         continue: true,
-        _tg_error: err instanceof Error ? err.message : String(err),
+        _tg_error: extractErrorMessage(err),
         _tg_handler: handler.name || 'unknown',
       }
     }

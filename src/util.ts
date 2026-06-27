@@ -181,3 +181,21 @@ export function basename(p: string): string {
 export function ensureNewline(text: string): string {
   return text.endsWith('\n') ? text : text + '\n'
 }
+
+/** Extract readable message string from unknown error type. Extracted from 6 call sites. */
+export function extractErrorMessage(err: unknown, fallback: string = ''): string {
+  return err instanceof Error ? err.message : (fallback || String(err))
+}
+
+/** Check if a line is a code fence delimiter (``` or ~~~). Extracted from 7 call sites in skill_cache.ts. */
+export function isCodeFenceDelimiter(line: string): boolean {
+  const s = line.trim()
+  return s.startsWith('```') || s.startsWith('~~~')
+}
+
+/** Normalize path and convert backslashes to forward slashes. Extracted from 3 call sites in compact.ts. */
+export function normalizePathForwardSlash(p: string, toLowerCase?: boolean): string {
+  let result = normalizePath(p).replace(/\\/g, '/')
+  if (toLowerCase) result = result.toLowerCase()
+  return result
+}
