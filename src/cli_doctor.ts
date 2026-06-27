@@ -6,7 +6,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
-import { execSync } from 'child_process'
+import { execSync, spawnSync } from 'child_process'
 import { extractErrorMessage } from './util.js'
 
 /**
@@ -102,8 +102,13 @@ export function checkConfigValid(configPath: string): DoctorResult {
  */
 export function checkDiskSpace(dataDir: string): DoctorResult {
   try {
-    const statSync = execSync(`df -h ${dataDir}`, { encoding: 'utf-8' })
-    const lines = statSync.trim().split('\n')
+    // Use spawnSync with an array argv so dataDir cannot inject shell metacharacters.
+    const result = spawnSync('df', ['-h', dataDir], { encoding: 'utf-8' })
+    const stdout = typeof result.stdout === 'string' ? result.stdout : ''
+    if (result.error !== undefined || result.status !== 0 || !stdout) {
+      return { name: 'Disk Space', status: 'warn', message: 'could not determine' }
+    }
+    const lines = stdout.trim().split('\n')
     if (lines.length < 2) {
       return { name: 'Disk Space', status: 'warn', message: 'could not determine' }
     }
