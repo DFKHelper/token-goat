@@ -489,6 +489,28 @@ describe('preBashHandler — task output file interception', () => {
     const result = preBashHandler(makeBashEvent('cat /tmp/somefile.output'))
     expect(result.hookType).toBe('pass')
   })
+
+  it('denies tail -c byte-mode on a tasks output path', () => {
+    const result = preBashHandler(makeBashEvent('tail -c 1500 /home/user/.claude/tasks/abc123def456.output'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output abc123def456')
+      expect(result.message).toContain('already cached')
+    }
+  })
+
+  it('denies tail -c on a Windows-style tasks output path', () => {
+    const result = preBashHandler(makeBashEvent('tail -c 2000 C:\\Users\\user\\.claude\\tasks\\bb9912.output'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output bb9912')
+    }
+  })
+
+  it('passes through tail -c on a non-tasks output file', () => {
+    const result = preBashHandler(makeBashEvent('tail -c 1500 /tmp/build.output'))
+    expect(result.hookType).toBe('pass')
+  })
 })
 
 describe('preBashHandler — sed line-range interception', () => {

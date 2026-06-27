@@ -177,8 +177,9 @@ function extractTasksOutput(cmd: string): { id: string; n?: number } | null {
     }
   }
 
-  // tail command (same guards as extractTailFile, checked before isTempPath)
-  if (!/-f\b/.test(cmd) && !/-c\b/.test(cmd) && !/-n\s*\+/.test(cmd)) {
+  // tail command — handles -n (line-count) and -c (byte-count) modes; excludes -f follow and +N offset
+  if (!/-f\b/.test(cmd) && !/-n\s*\+/.test(cmd)) {
+    // Standard line-count tail: -n N or -N or no count
     const tailM = /^tail(?:\s+-n\s+(\d+)|\s+-(\d+))?\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
     if (tailM) {
       const fp = tailM[3] ?? tailM[4] ?? tailM[5]
@@ -189,6 +190,15 @@ function extractTasksOutput(cmd: string): { id: string; n?: number } | null {
           const n = nStr !== undefined ? parseInt(nStr, 10) : undefined
           return n !== undefined ? { id: m[1]!, n } : { id: m[1]! }
         }
+      }
+    }
+    // Byte-mode tail: -c N (common in session mining: `tail -c 1500 <id>.output`)
+    const byteTailM = /^tail\s+-c\s+\d+\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+    if (byteTailM) {
+      const fp = byteTailM[1] ?? byteTailM[2] ?? byteTailM[3]
+      if (fp) {
+        const m = taskOutputRe.exec(fp)
+        if (m) return { id: m[1]! }
       }
     }
   }
