@@ -34,6 +34,14 @@ export function fingerprintContent(content: string | Buffer): string {
  * collapses to `null` so callers on the hot hook path can branch without a
  * try/catch.
  */
+/**
+ * Return the first 16 hex chars of the SHA-256 of `content`, used for short
+ * cache keys. Extracted from ≥11 call sites that all use `.slice(0, 16)`.
+ */
+export function shortFingerprint(content: string | Buffer): string {
+  return fingerprintContent(content).slice(0, 16)
+}
+
 export function fingerprintFile(filePath: string): string | null {
   let data: Buffer
   try {

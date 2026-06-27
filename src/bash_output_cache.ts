@@ -14,7 +14,7 @@
 import * as fs from 'fs/promises'
 import { resolve } from 'path'
 import { normalizePath } from './paths.js'
-import { fingerprintContent } from './fingerprint.js'
+import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
 
@@ -113,7 +113,7 @@ export async function gitStateFingerprint(cwd: string): Promise<string | null> {
     }
 
     const key = `${headSha}\x00${indexMtime}`
-    return fingerprintContent(key).slice(0, 16)
+    return shortFingerprint(key)
   } catch {
     return null
   }
@@ -123,7 +123,7 @@ export async function dirStateFingerprint(path: string): Promise<string | null> 
   try {
     const stat = await fs.stat(path)
     if (!stat.isDirectory()) return null
-    return fingerprintContent(stat.mtimeMs.toString()).slice(0, 16)
+    return shortFingerprint(stat.mtimeMs.toString())
   } catch {
     return null
   }
@@ -140,7 +140,7 @@ export async function depLockfileFingerprint(cmd: string, cwd: string | null): P
   for (const lockfile of candidates) {
     try {
       const content = await fs.readFile(resolve(cwd, lockfile))
-      return fingerprintContent(content).slice(0, 16)
+      return shortFingerprint(content)
     } catch {
       continue
     }
@@ -200,7 +200,7 @@ export async function commandHash(command: string, cwd: string | null = null): P
     if (fp) key = `${key}\x00npm-install:${fp}`
   }
 
-  return fingerprintContent(key).slice(0, 16)
+  return shortFingerprint(key)
 }
 
 function extractLsTarget(cmd: string, cwd: string): string | null {
@@ -218,12 +218,12 @@ function extractLsTarget(cmd: string, cwd: string): string | null {
  * command with surrounding whitespace trimmed (no cwd scoping).
  */
 export function hashCommand(command: string): string {
-  return fingerprintContent(command.trim()).slice(0, 16)
+  return shortFingerprint(command.trim())
 }
 
 export function globHash(pattern: string, path: string | null): string {
   const canonical = `${pattern}\x00${path || ''}`
-  return fingerprintContent(canonical).slice(0, 16)
+  return shortFingerprint(canonical)
 }
 
 export function storeGlobResult(sessionId: string, pattern: string, path: string | null, resultText: string): string {

@@ -29,7 +29,7 @@ import { isWorkerRunning, startDetachedWorker, stopWorker } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getSkillFilePath, listSkills, storeCompact } from './skill_cache.js'
 import { loadConfig } from './config.js'
-import { runGit, isWindows } from './util.js'
+import { runGit, isWindows, ensureNewline } from './util.js'
 import { renderStats } from './stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -38,11 +38,11 @@ import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
 class CliError extends Error {}
 
 function out(text: string): void {
-  process.stdout.write(text.endsWith('\n') ? text : `${text}\n`)
+  process.stdout.write(ensureNewline(text))
 }
 
 function err(text: string): void {
-  process.stderr.write(text.endsWith('\n') ? text : `${text}\n`)
+  process.stderr.write(ensureNewline(text))
 }
 
 /** First `n` lines of a body, for the symbol-search preview. */

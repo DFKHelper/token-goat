@@ -4,7 +4,7 @@
 
 import * as fs from 'fs/promises'
 import { resolve } from 'path'
-import { fingerprintContent } from './fingerprint.js'
+import { shortFingerprint } from './fingerprint.js'
 import { dataDir } from './constants.js'
 
 export const MCP_DEFAULT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
@@ -46,7 +46,7 @@ export function mcpHash(toolName: string, toolInput: Record<string, unknown>): s
     sortedInput[key] = toolInput[key]
   }
   const canonical = JSON.stringify({ tool: toolName, input: sortedInput })
-  return fingerprintContent(canonical).slice(0, 16)
+  return shortFingerprint(canonical)
 }
 
 /**

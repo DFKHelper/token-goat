@@ -11,7 +11,7 @@ import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput } from './session.js'
-import { fingerprintContent } from './fingerprint.js'
+import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
@@ -403,7 +403,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
   // Monitoring commands: always suggest recall if cached, even on a single prior run.
   const monitoringHint = getMonitoringRecallHint(cmd)
   if (monitoringHint !== null) {
-    const monCmdHash = fingerprintContent(cmd).slice(0, 16)
+    const monCmdHash = shortFingerprint(cmd)
     const monOutputId = getBashOutputId(monCmdHash)
     if (monOutputId !== null) {
       const monEntry = getBashOutput(monOutputId)
@@ -429,7 +429,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (!isBuildCommand(cmd)) return passOutput()
 
   // Derive the same command hash used by the session store.
-  const cmdHash = fingerprintContent(cmd).slice(0, 16)
+  const cmdHash = shortFingerprint(cmd)
   const outputId = getBashOutputId(cmdHash)
   if (outputId === null) return passOutput()
 
@@ -480,7 +480,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (Buffer.byteLength(output, 'utf-8') < MIN_CACHE_BYTES) return passOutput()
 
     const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
-    const simpleHash = fingerprintContent(cmd).slice(0, 16)
+    const simpleHash = shortFingerprint(cmd)
     const id = await storeBashOutput(cmd, output, 0, cwd)
     recordBashOutput(simpleHash, id, Buffer.byteLength(output, 'utf-8'))
   } catch {
