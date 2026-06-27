@@ -29,7 +29,7 @@ import { isWorkerRunning, startDetachedWorker, stopWorker } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getSkillFilePath, listSkills, storeCompact } from './skill_cache.js'
 import { loadConfig } from './config.js'
-import { runGit } from './util.js'
+import { runGit, isWindows } from './util.js'
 import { renderStats } from './stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -501,7 +501,7 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
   if (dest.includes('\0')) {
     throw new CliError('destination path contains a null byte')
   }
-  if (process.platform === 'win32') {
+  if (isWindows()) {
     const base = path.basename(dest)
     const stem = base.replace(/\.[^.]*$/, '').toUpperCase()
     if (WIN_RESERVED.has(stem)) {
@@ -522,7 +522,7 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
       throw new CliError('--from path contains a null byte')
     }
     // On POSIX, /dev/stdin blocks forever when the process is attached to a TTY.
-    if (process.platform !== 'win32' && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(opts.from) && process.stdin.isTTY) {
+    if (!isWindows() && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(opts.from) && process.stdin.isTTY) {
       throw new CliError('--from /dev/stdin requires piped input; use piped stdin mode or --b64 for interactive use')
     }
     try {
