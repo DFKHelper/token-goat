@@ -72,6 +72,23 @@ describe('token-goat CLI', () => {
     expect(r.stderr).toContain('not found')
   }, 30000)
 
+  it('write-file --from validates TOKEN_GOAT_MAX_STDIN_MB', () => {
+    const srcFile = path.join(os.tmpdir(), `tg-src-${Date.now()}.txt`)
+    const destFile = path.join(os.tmpdir(), `tg-dest-${Date.now()}.txt`)
+    fs.writeFileSync(srcFile, 'test content')
+    try {
+      const res = spawnSync(process.execPath, ['--import', 'tsx', MAIN, 'write-file', destFile, '--from', srcFile], {
+        env: { ...process.env, TOKEN_GOAT_MAX_STDIN_MB: 'invalid' },
+        encoding: 'utf8',
+      })
+      expect(res.status).not.toBe(0)
+      expect((res.stderr ?? '').toLowerCase()).toContain('positive integer')
+    } finally {
+      try { fs.unlinkSync(srcFile) } catch { /* ok */ }
+      try { fs.unlinkSync(destFile) } catch { /* ok */ }
+    }
+  }, 30000)
+
   it('changed --help exits 0', () => {
     const r = runCli(['changed', '--help'])
     expect(r.status).toBe(0)

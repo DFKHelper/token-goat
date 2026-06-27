@@ -531,7 +531,10 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
         throw new CliError(`--from '${opts.from}' is a special file (FIFO or socket) — only regular files are supported`)
       }
       const maxFromMB = parseInt(process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512', 10)
-      const maxFromBytes = (Number.isFinite(maxFromMB) && maxFromMB > 0 ? maxFromMB : 512) * 1024 * 1024
+      if (!Number.isFinite(maxFromMB) || maxFromMB <= 0) {
+        throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got '${process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? ''}'`)
+      }
+      const maxFromBytes = maxFromMB * 1024 * 1024
       if (st.size > maxFromBytes) {
         throw new CliError(`--from source exceeds size limit (${Math.round(st.size / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`)
       }
@@ -549,7 +552,10 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
       throw new CliError('--b64 payload contains only whitespace — likely a shell expansion error; pass an empty string explicitly for a zero-byte file')
     }
     const maxB64MB = parseInt(process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512', 10)
-    const maxB64Bytes = (Number.isFinite(maxB64MB) && maxB64MB > 0 ? maxB64MB : 512) * 1024 * 1024
+    if (!Number.isFinite(maxB64MB) || maxB64MB <= 0) {
+      throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got '${process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? ''}'`)
+    }
+    const maxB64Bytes = maxB64MB * 1024 * 1024
     const decodedSize = Math.floor((normalized.replace(/=+$/, '').length * 3) / 4)
     if (decodedSize > maxB64Bytes) {
       throw new CliError(`--b64 payload would decode to ${Math.round(decodedSize / 1024 / 1024)} MB which exceeds size limit; set TOKEN_GOAT_MAX_STDIN_MB to override`)
