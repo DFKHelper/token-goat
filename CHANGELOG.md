@@ -5,6 +5,30 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ## [Unreleased]
 
 
+## [2.2.2] - 2026-06-27
+
+### Added
+
+- **PowerShell system-query recall.** `Get-CimInstance`, `Get-Process`, `Get-Counter`, `Get-Service`, `Get-PSDrive`, and `Get-WmiObject` commands run via `powershell.exe`/`pwsh` are now registered as monitoring commands. Output is cached after the first run and a `token-goat bash-output <id> --tail 50` recall hint is emitted on repeats.
+- **`token-goat section`/`outline`/`symbol` repeat recall.** Running the same `token-goat section "FILE::Heading"`, `outline FILE`, or `symbol NAME` command a second time in a session now emits a bash-output recall hint instead of re-executing.
+
+## [2.2.1] - 2026-06-27
+
+### Added
+
+- **`cd DIR && CMD` prefix stripping for all pre-bash interceptors.** Strips one or more leading `cd <dir> &&` prefixes before routing, so commands like `cd /projects/app && cat src/auth.ts` are correctly intercepted. Previously the `^`-anchored regexes never matched cd-prefixed commands.
+- **`cd`-prefixed build command recall.** `postBashHandler` now applies the same prefix strip before storing cached output, so commands like `cd C:/projects/app && npx tsc --noEmit` produce recall hints on repeat runs.
+- **`npx tsc` build and monitoring recall.** `BUILD_COMMAND_PATTERNS` now matches `npx tsc` in addition to bare `tsc`, and a `MONITORING_COMMAND_PATTERNS` entry emits a targeted `--grep` recall hint for TypeScript compiler output.
+- **`ls DIR | grep`/`| wc -l` → `token-goat map` hint.** Piped directory listing patterns now trigger the map hint.
+- **`for f in ...; do wc -l` → `token-goat outline` hint.** For-loop file-size probes redirect to `token-goat outline` for symbol names and line counts.
+- **`node scripts/*.mjs`/`node src/scripts/*.js` monitoring recall.** Node.js script runner invocations register as monitoring commands with targeted recall hints.
+
+### Fixed
+
+- **`tsc-watch` false positive.** `BUILD_COMMAND_PATTERNS` used `\b` after `tsc` which matched `tsc-watch`. Fixed to `(?:\s|$)`.
+- **Path hints for cd-prefixed source file reads.** When a `cd DIR &&` prefix is stripped, path-sensitive hints (cat, WSL cat, python open, node readFileSync) now emit `contextOutput` instead of `denyOutput` to avoid suggesting paths relative to the wrong directory.
+- **`npx tsc` recallHint trailing space and unbalanced quote** cleaned up.
+
 ## [2.2.0] - 2026-06-27
 
 ### Added
