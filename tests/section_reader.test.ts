@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { extractSection, listSections, readSection } from '../src/section_reader.js'
+import { extractSection, listSections, listAllSections, normalizeHeading, readSection } from '../src/section_reader.js'
 
 const tmpDirs: string[] = []
 
@@ -112,6 +112,84 @@ describe('listSections', () => {
 
   it('returns an empty array for an unreadable file', () => {
     expect(listSections('/no/such/path/nope.md')).toEqual([])
+  })
+})
+
+describe('normalizeHeading', () => {
+  it('replaces em-dash with hyphen (replacement mode)', () => {
+    expect(normalizeHeading('Section Index — load on demand')).toBe('Section Index - load on demand')
+  })
+
+  it('replaces en-dash with hyphen (replacement mode)', () => {
+    expect(normalizeHeading('Section Index – load on demand')).toBe('Section Index - load on demand')
+  })
+
+  it('strips trailing parenthetical', () => {
+    expect(normalizeHeading('Priority Matrix (June 2026)')).toBe('Priority Matrix')
+  })
+
+  it('strips leading numeric prefix', () => {
+    expect(normalizeHeading('5. Chain Recipes')).toBe('Chain Recipes')
+  })
+
+  it('collapses multiple spaces', () => {
+    expect(normalizeHeading('  Foo   Bar  ')).toBe('Foo Bar')
+  })
+
+  it('leaves normal headings unchanged', () => {
+    expect(normalizeHeading('Installation')).toBe('Installation')
+  })
+})
+
+describe('extractSection — normalized heading matching', () => {
+  const MD_DASHES = [
+    '# Doc',
+    '',
+    '## Section Index — load on demand',
+    'content here',
+    '',
+    '## Priority Matrix (June 2026)',
+    'matrix content',
+    '',
+    '## 5. Chain Recipes',
+    'recipe content',
+    '',
+  ].join('\n')
+
+  it('matches heading with em-dash when queried without it', () => {
+    const result = extractSection(MD_DASHES, 'Section Index')
+    expect(result).not.toBeNull()
+    expect(result?.content).toContain('content here')
+  })
+
+  it('matches heading with em-dash when queried with a hyphen', () => {
+    const result = extractSection(MD_DASHES, 'Section Index - load on demand')
+    expect(result).not.toBeNull()
+  })
+
+  it('matches heading with trailing parenthetical when queried without it', () => {
+    const result = extractSection(MD_DASHES, 'Priority Matrix')
+    expect(result).not.toBeNull()
+    expect(result?.content).toContain('matrix content')
+  })
+
+  it('matches heading with numeric prefix when queried without it', () => {
+    const result = extractSection(MD_DASHES, 'Chain Recipes')
+    expect(result).not.toBeNull()
+    expect(result?.content).toContain('recipe content')
+  })
+})
+
+describe('listAllSections', () => {
+  it('returns all headings at all nesting levels', () => {
+    const content = ['# Title', '## Sub A', '### Deep A1', '## Sub B'].join('\n')
+    const file = tmpFile('nested.md', content)
+    const sections = listAllSections(file)
+    expect(sections).toEqual(['Title', 'Sub A', 'Deep A1', 'Sub B'])
+  })
+
+  it('returns an empty array for an unreadable file', () => {
+    expect(listAllSections('/no/such/path/nope.md')).toEqual([])
   })
 })
 

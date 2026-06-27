@@ -10,7 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { querySymbols, queryRefs, getFileEntry } from './index_reader.js'
-import { readSection, listSections, extractSection } from './section_reader.js'
+import { readSection, listSections, extractSection, listAllSections } from './section_reader.js'
 import { runGit, ensureNewline } from './util.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 
@@ -186,8 +186,14 @@ export function runSection(opts: SectionOptions): number {
   const result = readSection(filePath, heading)
   if (result === null) {
     emitErr(`Section '${heading}' not found in '${filePath}'`)
-    const available = listSections(filePath)
-    if (available.length > 0) emitErr(didYouMean(available))
+    const available = listAllSections(filePath)
+    if (available.length > 0) {
+      const lines = ['Available sections:']
+      for (const s of available) {
+        lines.push(`  - ${s}`)
+      }
+      emitErr(lines.join('\n'))
+    }
     return 1
   }
 
@@ -668,4 +674,4 @@ export function runImports(opts: ImportsExportsOptions): number {
 // ---- re-export underlying layers -------------------------------------------
 
 export type { SymbolEntry, RefEntry }
-export { querySymbols, queryRefs, readSection, listSections, extractSection }
+export { querySymbols, queryRefs, readSection, listSections, extractSection, listAllSections }

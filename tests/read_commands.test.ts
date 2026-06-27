@@ -13,6 +13,7 @@ vi.mock('../src/index_reader.js', () => ({
 vi.mock('../src/section_reader.js', () => ({
   readSection: vi.fn(() => null),
   listSections: vi.fn(() => []),
+  listAllSections: vi.fn(() => []),
   extractSection: vi.fn(() => null),
 }))
 
@@ -29,11 +30,12 @@ import {
   runExports,
 } from '../src/read_commands.js'
 import { querySymbols } from '../src/index_reader.js'
-import { readSection, listSections } from '../src/section_reader.js'
+import { readSection, listSections, listAllSections } from '../src/section_reader.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
 const mockReadSection = vi.mocked(readSection)
 const mockListSections = vi.mocked(listSections)
+const mockListAllSections = vi.mocked(listAllSections)
 
 /** Capture stdout/stderr for a function call. */
 function capture(fn: () => void): { stdout: string; stderr: string } {
@@ -159,9 +161,19 @@ describe('read_commands', () => {
 
     it('returns 1 when section not found', () => {
       mockReadSection.mockReturnValue(null)
-      mockListSections.mockReturnValue(['Other'])
+      mockListAllSections.mockReturnValue(['Other'])
       const { stderr } = capture(() => { runSection({ spec: 'README.md::Install' }) })
       expect(stderr).toContain('Install')
+    })
+
+    it('shows full heading list on section miss', () => {
+      mockReadSection.mockReturnValue(null)
+      mockListAllSections.mockReturnValue(['Title', 'Introduction', 'Installation', 'Usage', 'API Reference', 'Contributing'])
+      const { stderr } = capture(() => { runSection({ spec: 'README.md::Nonexistent' }) })
+      expect(stderr).toContain('Available sections')
+      expect(stderr).toContain('Introduction')
+      expect(stderr).toContain('API Reference')
+      expect(stderr).toContain('Contributing')
     })
 
     it('prints section content when found', () => {
