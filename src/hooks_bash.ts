@@ -269,6 +269,40 @@ function extractFindCommand(cmd: string): { extGlob: string | null; isXargsGrepL
 }
 
 /**
+ * Returns the file path when the command is a grep/rg -n heading-anchor search on a
+ * markdown file (`.md` or `.markdown`). These are used as a hand-rolled "show me the
+ * table of contents" idiom; `token-goat outline` is cheaper and gives line ranges.
+ *
+ * Triggers on patterns like: `^#`, `^##`, `^###`, `^#+`, `^## |^### `, `^#\+`.
+ * Does NOT trigger for non-markdown files (e.g. `.sh`, `.ts`) or patterns that are
+ * not heading anchors.
+ */
+export function extractMarkdownHeadingGrep(cmd: string): { filePath: string } | null {
+  if (!/^(?:rg|grep)\s+/.test(cmd)) return null
+
+  // Must have the -n (line-number) flag
+  if (!/-n\b/.test(cmd)) return null
+
+  // Pattern must be a markdown heading anchor: starts with ^# in some form.
+  // Allow: "^#", '^##', "^#+" , "^#+", "^## |^### ", /^#/ variants, '^#\+'
+  const hasHeadingPattern = (
+    /["']?\^#{1,6}["']?/.test(cmd) ||
+    /["']?\^#\+["']?/.test(cmd) ||
+    /["']?\^#\\+["']?/.test(cmd)
+  )
+  if (!hasHeadingPattern) return null
+
+  // Target must be a single markdown file (not a directory or non-md extension)
+  const fileMatch = /(?:^|\s)(?:"([^"]+\.(?:md|markdown))"|'([^']+\.(?:md|markdown))'|([^\s"'|<>]+\.(?:md|markdown)))\s*(?:\||$)/.exec(cmd)
+  if (!fileMatch) return null
+
+  const filePath = fileMatch[1] ?? fileMatch[2] ?? fileMatch[3]
+  if (!filePath) return null
+
+  return { filePath }
+}
+
+/**
  * Returns the file path when the command is an rg/grep structural definition search
  * on a single source file. Structural patterns are those that find function/class/import
  * definitions (^def, ^class, ^function, ^import, etc.) — the common "show me the structure
@@ -540,6 +574,18 @@ export function preBashHandler(event: HookEvent): HookOutput {
     return contextOutput(
       'Collapse `grep | grep` into `rg -e PAT1 -e PAT2` (single pass). ' +
       'For symbol discovery: `token-goat refs <symbol>` or `token-goat semantic`.',
+    )
+  }
+
+  // Markdown heading grep: `grep -n "^#" SKILL.md` → outline hint (before structural search
+  // so .md heading patterns don't get misrouted to the symbol-search advice)
+  const mdHeadingGrep = extractMarkdownHeadingGrep(cmd)
+  if (mdHeadingGrep !== null) {
+    const { filePath } = mdHeadingGrep
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      'Use `token-goat outline "' + filePath + '"` to get all headings with line ranges — ' +
+      'then `token-goat section "' + filePath + '::Heading"` to read one section.',
     )
   }
 

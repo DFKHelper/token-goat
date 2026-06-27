@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
-import { postBashHandler, preBashHandler, extractCurlDownload } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep } from '../src/hooks_bash.js'
 import { getBashOutputId } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -983,5 +983,75 @@ describe('preBashHandler — curl download dedup', () => {
     await postBashHandler(makePostBashEvent(cmd, ''))
     const result = preBashHandler(makeBashEvent(cmd))
     expect(result.hookType).toBe('deny')
+  })
+})
+
+describe('extractMarkdownHeadingGrep', () => {
+  it('matches grep -n "^#" SKILL.md', () => {
+    const result = extractMarkdownHeadingGrep('grep -n "^#" SKILL.md')
+    expect(result).not.toBeNull()
+    expect(result?.filePath).toBe('SKILL.md')
+  })
+
+  it('matches grep -n "^## |^### " superman/SKILL.md | head -80', () => {
+    const result = extractMarkdownHeadingGrep('grep -n "^## |^### " superman/SKILL.md | head -80')
+    expect(result).not.toBeNull()
+    expect(result?.filePath).toBe('superman/SKILL.md')
+  })
+
+  it('matches rg -n "^### Pattern" SKILL.md', () => {
+    const result = extractMarkdownHeadingGrep('rg -n "^###" SKILL.md')
+    expect(result).not.toBeNull()
+  })
+
+  it('does not fire for rg -n "class" types.ts (not a markdown file)', () => {
+    const result = extractMarkdownHeadingGrep('rg -n "class" types.ts')
+    expect(result).toBeNull()
+  })
+
+  it('does not fire for grep -n "^#" script.sh (not a .md file)', () => {
+    const result = extractMarkdownHeadingGrep('grep -n "^#" script.sh')
+    expect(result).toBeNull()
+  })
+
+  it('does not fire without -n flag', () => {
+    const result = extractMarkdownHeadingGrep('grep "^#" README.md')
+    expect(result).toBeNull()
+  })
+})
+
+describe('preBashHandler — markdown heading grep hint', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits outline hint for grep -n "^#" SKILL.md', () => {
+    const result = preBashHandler(makeBashEvent('grep -n "^#" SKILL.md'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat outline')
+      expect(result.context).toContain('SKILL.md')
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('emits outline hint for rg -n "^##" README.md | head -120', () => {
+    const result = preBashHandler(makeBashEvent('rg -n "^##" README.md | head -120'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat outline')
+    }
+  })
+
+  it('passes through rg -n "class" types.ts (structural search, not markdown heading)', () => {
+    const result = preBashHandler(makeBashEvent('rg -n "class " types.ts'))
+    // Should still fire the structural search hint for .ts, not the markdown heading hint
+    // The key thing is it does NOT return pass for this pattern:
+    expect(result.hookType).not.toBe('pass')
+  })
+
+  it('passes through grep -n "^#" script.sh (not a markdown file)', () => {
+    const result = preBashHandler(makeBashEvent('grep -n "^#" script.sh'))
+    expect(result.hookType).toBe('pass')
   })
 })
