@@ -454,3 +454,115 @@ describe('preBashHandler — orchestrator state file exemption', () => {
     expect(result.hookType).toBe('pass')
   })
 })
+
+describe('preBashHandler — task output file interception', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('denies cat of a tasks output path and emits bash-output hint', () => {
+    const result = preBashHandler(makeBashEvent('cat /home/user/.claude/tasks/abc123def456.output'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output abc123def456')
+      expect(result.message).toContain('already cached')
+    }
+  })
+
+  it('denies tail on a tasks output path and emits bash-output hint', () => {
+    const result = preBashHandler(makeBashEvent('tail -n 50 /home/user/.claude/tasks/abc123def456.output'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output abc123def456')
+    }
+  })
+
+  it('denies cat with Windows-style backslash tasks path', () => {
+    const result = preBashHandler(makeBashEvent('cat C:\\Users\\user\\.claude\\tasks\\def789.output'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output def789')
+    }
+  })
+
+  it('passes through cat on a non-tasks temp file', () => {
+    const result = preBashHandler(makeBashEvent('cat /tmp/somefile.output'))
+    expect(result.hookType).toBe('pass')
+  })
+})
+
+describe('preBashHandler — sed line-range interception', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits section hint for sed -n line range extraction', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,50p' src/hooks_read.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('emits section hint for sed -n with double-quoted range', () => {
+    const result = preBashHandler(makeBashEvent('sed -n "100,200p" README.md'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('passes through sed without -n flag', () => {
+    const result = preBashHandler(makeBashEvent("sed 's/foo/bar/g' file.ts"))
+    expect(result.hookType).toBe('pass')
+  })
+})
+
+describe('preBashHandler — rg indented def patterns', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits skeleton hint for rg "^    def" (4-space indent) on a Python file', () => {
+    const result = preBashHandler(makeBashEvent('rg "^    def" src/token_goat/parser.py'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('skeleton')
+    }
+  })
+
+  it('emits skeleton hint for rg "^  def" (2-space indent) on a Python file', () => {
+    const result = preBashHandler(makeBashEvent("rg '^  def' src/token_goat/hooks.py"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('skeleton')
+    }
+  })
+})
+
+describe('preBashHandler — directory listing map hint', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits map hint for eza --long on a path', () => {
+    const result = preBashHandler(makeBashEvent('eza --git --long src/'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map')
+    }
+  })
+
+  it('emits map hint for ls -la piped to head', () => {
+    const result = preBashHandler(makeBashEvent('ls -la src/ | head -20'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat map')
+    }
+  })
+
+  it('passes through plain eza without --long flag', () => {
+    const result = preBashHandler(makeBashEvent('eza src/'))
+    expect(result.hookType).toBe('pass')
+  })
+})
