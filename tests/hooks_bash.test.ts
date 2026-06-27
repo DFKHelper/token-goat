@@ -566,3 +566,53 @@ describe('preBashHandler — directory listing map hint', () => {
     expect(result.hookType).toBe('pass')
   })
 })
+
+describe('preBashHandler — find command interception', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits fd hint for simple find -name pattern', () => {
+    const result = preBashHandler(makeBashEvent('find src/ -name "*.ts"'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('fd')
+      expect(result.context).toContain('*.ts')
+    }
+  })
+
+  it('emits fd hint for find without -name', () => {
+    const result = preBashHandler(makeBashEvent('find . -type f'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('fd')
+    }
+  })
+
+  it('denies find | xargs grep -l (symbol-search anti-pattern)', () => {
+    const result = preBashHandler(makeBashEvent('find src/ -name "*.ts" | xargs grep -l "MyClass"'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('rg -l')
+      expect(result.message).toContain('token-goat refs')
+    }
+  })
+
+  it('denies find | xargs rg -l', () => {
+    const result = preBashHandler(makeBashEvent('find . -name "*.js" | xargs rg -l "fetchUser"'))
+    expect(result.hookType).toBe('deny')
+  })
+
+  it('emits context for find piped to head (non-symbol use)', () => {
+    const result = preBashHandler(makeBashEvent('find . -name "*.py" | head -20'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('fd')
+    }
+  })
+
+  it('passes through non-find commands', () => {
+    const result = preBashHandler(makeBashEvent('echo "find me"'))
+    expect(result.hookType).toBe('pass')
+  })
+})
