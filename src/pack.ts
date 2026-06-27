@@ -501,7 +501,9 @@ export function estimateBudget(
       let tokens: number
       try {
         const data = fs.readFileSync(p)
-        lines = (data.toString('utf8', 0, Math.min(1000, data.length)).match(/\n/g) || []).length + 1
+        const sampleSize = Math.min(1000, data.length)
+        const sampleLines = (data.toString('utf8', 0, sampleSize).match(/\n/g) || []).length
+        lines = data.length > sampleSize ? Math.ceil(sampleLines * (data.length / sampleSize)) : sampleLines + 1
         const text = data.toString('utf8', 0, Math.min(100000, data.length))
         tokens = estimateTokens(text)
       } catch {

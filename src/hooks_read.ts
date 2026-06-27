@@ -221,7 +221,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
       )
     }
     return contextOutput(
-      'Note: ' + normalized + ' is large (' + kb + 'kb). ' +
+      'Note: ' + normalized + ' is large (' + kb + 'KB). ' +
         hint,
     )
   }
