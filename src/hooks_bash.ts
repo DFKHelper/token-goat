@@ -247,6 +247,9 @@ function extractSedLineRange(cmd: string): boolean {
 function extractDirectoryListing(cmd: string): boolean {
   return (
     /^eza\s+.*--long\s+\S+/.test(cmd) ||
+    /^eza\s+.*--tree/.test(cmd) ||
+    /^tree(\s|$)/.test(cmd) ||
+    /^ls\s+.*-[a-zA-Z]*R/.test(cmd) ||
     /^ls\s+(?:-[la]+\s+)?(\S+)\s*[|]\s*head/.test(cmd)
   )
 }
@@ -292,6 +295,25 @@ function extractRgStructuralSearch(cmd: string): { filePath: string } | null {
   if (isTempPath(filePath)) return null
 
   return { filePath }
+}
+
+/**
+ * Returns true when a command chains two grep/rg stages together (e.g. `grep … | grep …`).
+ * Only matches when BOTH pipeline stages are grep or rg — does not fire for `grep | wc`,
+ * `grep | head`, `grep | sort`, `grep | awk`, etc.
+ */
+function extractGrepPipeChain(cmd: string): boolean {
+  return /^(?:rg|grep)\b.*\|\s*(?:rg|grep)\b/.test(cmd)
+}
+
+/**
+ * Returns the first https?:// URL found in a curl command, or null when none is present.
+ * Used to key the bash-output cache on the URL rather than the full command string so that
+ * `curl -s <url> | jq …` and `curl -s <url> | python3 …` share the same cache entry.
+ */
+function extractCurlUrl(cmd: string): string | null {
+  const m = /(https?:\/\/[^\s'"]+)/.exec(cmd)
+  return m?.[1] ?? null
 }
 
 /**
@@ -513,6 +535,14 @@ export function preBashHandler(event: HookEvent): HookOutput {
     return denyOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint)
   }
 
+  if (extractGrepPipeChain(cmd)) {
+    recordStat('session_hint', 0, 0)
+    return contextOutput(
+      'Collapse `grep | grep` into `rg -e PAT1 -e PAT2` (single pass). ' +
+      'For symbol discovery: `token-goat refs <symbol>` or `token-goat semantic`.',
+    )
+  }
+
   const rgStructural = extractRgStructuralSearch(cmd)
   if (rgStructural !== null) {
     const { filePath } = rgStructural
@@ -565,9 +595,12 @@ export function preBashHandler(event: HookEvent): HookOutput {
     }
   }
 
-  // curl GET recall — emit a hint when the same URL was already fetched this session
+  // curl GET recall — emit a hint when the same URL was already fetched this session.
+  // Key on URL only (not the full command) so `curl <url> | jq …` and `curl <url> | python3 …`
+  // share the same cache entry.
   if (isCurlGetCommand(cmd)) {
-    const curlHash = shortFingerprint(cmd)
+    const curlCacheKey = extractCurlUrl(cmd) ?? cmd
+    const curlHash = shortFingerprint(curlCacheKey)
     const curlOutputId = getBashOutputId(curlHash)
     if (curlOutputId !== null) {
       const curlEntry = getBashOutput(curlOutputId)
@@ -642,7 +675,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (Buffer.byteLength(output, 'utf-8') < MIN_CACHE_BYTES) return passOutput()
 
     const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
-    const simpleHash = shortFingerprint(cmd)
+    // For curl GET commands, key the cache on the URL so that the same endpoint fetched
+    // with different downstream pipes (| jq vs | python3) shares a single cache entry.
+    const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : cmd
+    const simpleHash = shortFingerprint(cacheKey)
     const id = await storeBashOutput(cmd, output, 0, cwd)
     recordBashOutput(simpleHash, id, Buffer.byteLength(output, 'utf-8'))
   } catch {
