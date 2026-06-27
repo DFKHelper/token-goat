@@ -20,7 +20,8 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
 import { isWindows } from './util.js'
-import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId } from './session.js'
+import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { buildPackageManifestHint } from './hints.js'
@@ -75,6 +76,57 @@ function statSize(absPath: string): number | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Compute a compact unified-style diff between two versions of a doc file.
+ *
+ * Strips the common prefix/suffix to isolate the changed region, then formats
+ * it as a truncated unified diff (at most 50 changed lines). Returns '' when
+ * the contents are identical.
+ */
+function buildLineDiff(oldContent: string, newContent: string, label: string): string {
+  const oldLines = oldContent.split('\n')
+  const newLines = newContent.split('\n')
+
+  // Common prefix
+  let prefix = 0
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
+    prefix++
+  }
+
+  // Common suffix (not overlapping the prefix region)
+  let oldSuffix = oldLines.length
+  let newSuffix = newLines.length
+  while (oldSuffix > prefix && newSuffix > prefix && oldLines[oldSuffix - 1] === newLines[newSuffix - 1]) {
+    oldSuffix--
+    newSuffix--
+  }
+
+  if (prefix === oldLines.length && prefix === newLines.length) return ''
+
+  const changedOld = oldLines.slice(prefix, oldSuffix)
+  const changedNew = newLines.slice(prefix, newSuffix)
+
+  const MAX_LINES = 50
+  const out: string[] = [
+    `--- ${label} (prev)`,
+    `+++ ${label} (current)`,
+    `@@ -${prefix + 1},${changedOld.length} +${prefix + 1},${changedNew.length} @@`,
+  ]
+
+  const removedLines = changedOld.map(l => `-${l}`)
+  const addedLines = changedNew.map(l => `+${l}`)
+  const allChanges = [...removedLines, ...addedLines]
+
+  if (allChanges.length <= MAX_LINES) {
+    out.push(...allChanges)
+  } else {
+    out.push(...allChanges.slice(0, MAX_LINES))
+    out.push(`... (${allChanges.length - MAX_LINES} more changed lines)`)
+  }
+
+  return out.join('\n')
 }
 
 /**
@@ -212,6 +264,64 @@ export function preReadHandler(event: HookEvent): HookOutput {
     )
   }
 
+  // Doc-file auto-diff on re-read: .md/.mdx/.rst/.txt files that have been read before
+  // get a compact diff (or "unchanged") instead of a wasteful full re-read, provided a
+  // snapshot was captured by postReadHandler on the first read.
+  // Falls through to the generic wasFileReadThisSession block when no snapshot exists,
+  // preserving existing context vs. deny behavior for un-snapshotted files.
+  if (/\.(md|mdx|rst|txt)$/i.test(basename) && wasFileReadThisSession(normalized)) {
+    // Truncation takes priority: redirect to skeleton/surgical reads.
+    if (wasFileTruncatedThisSession(normalized)) {
+      recordFileRead(normalized)
+      recordStat('session_hint', 0, 0)
+      return denyOutput(
+        'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.',
+      )
+    }
+
+    const sessionId = getSessionId()
+    const oldSnap = snapshotLoad(sessionId, normalized)
+
+    if (oldSnap !== null) {
+      try {
+        const sz = statSize(normalized)
+        if (sz !== null && sz <= 256 * 1024) {
+          const currentContent = fs.readFileSync(normalized, 'utf8')
+          const TRUNC_MARKER = '\n<snapshot truncated at '
+          const oldRaw = oldSnap.toString('utf8')
+          const truncIdx = oldRaw.indexOf(TRUNC_MARKER)
+          const oldContent = truncIdx >= 0 ? oldRaw.slice(0, truncIdx) : oldRaw
+
+          if (oldContent === currentContent) {
+            recordFileRead(normalized)
+            recordStat('session_hint', 0, 0)
+            return denyOutput(
+              basename + ' is unchanged since last read. ' +
+              'Use `token-goat section "' + normalized + '::HeadingName"` to extract a part.',
+            )
+          }
+
+          const diff = buildLineDiff(oldContent, currentContent, basename)
+          if (diff !== '') {
+            recordFileRead(normalized)
+            const savedBytes = Math.max(0, currentContent.length - diff.length)
+            recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
+            return denyOutput(
+              'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
+              '```diff\n' + diff + '\n```\n\n' +
+              'Use `token-goat section "' + normalized + '::HeadingName"` to read a specific section.',
+            )
+          }
+        }
+      } catch {
+        // best-effort — fall through to generic wasFileReadThisSession logic
+      }
+    }
+
+    // No snapshot yet or file too large — fall through to generic wasFileReadThisSession
+    // logic below, which uses readCount and file size to pick context vs. deny.
+  }
+
   if (wasFileReadThisSession(normalized)) {
     const entry = getSessionFiles().get(normalized)
     const reads = entry?.readCount ?? 1
@@ -324,6 +434,21 @@ export function postReadHandler(event: HookEvent): HookOutput {
   if (respText.includes('[Truncated:') || respText.includes('Truncated: PARTIAL view')) {
     markFileTruncated(normalized)
   }
+
+  // Snapshot doc file content so the next re-read can inject a diff instead of the full file.
+  const postBasename = path.basename(normalized)
+  if (/\.(md|mdx|rst|txt)$/i.test(postBasename)) {
+    try {
+      const sz = statSize(normalized)
+      if (sz !== null && sz <= 256 * 1024) {
+        const content = fs.readFileSync(normalized)
+        snapshotStore(getSessionId(), normalized, content)
+      }
+    } catch {
+      // best-effort; never block the hook
+    }
+  }
+
   return passOutput()
 }
 

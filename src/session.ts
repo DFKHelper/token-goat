@@ -53,6 +53,9 @@ let _webFetches = new Map<string, string>()
 // commandHash -> outputId index for bash-output dedup.
 let _bashOutputs = new Map<string, string>()
 
+// url -> saved file path for curl -o download dedup (Item 2).
+let _curlDownloads = new Map<string, string>()
+
 // Resolved once per process: env-provided session id or a generated one.
 let _sessionId: string | null = null
 
@@ -183,6 +186,16 @@ export function getBashOutputId(commandHash: string): string | null {
   return _bashOutputs.get(commandHash) ?? null
 }
 
+/** Record that a curl -o download saved `url` to `savedPath` this session. */
+export function recordCurlDownload(url: string, savedPath: string): void {
+  _curlDownloads.set(url, savedPath)
+}
+
+/** Return the file path where `url` was saved this session via curl -o, or null. */
+export function getCurlDownloadPath(url: string): string | null {
+  return _curlDownloads.get(url) ?? null
+}
+
 /**
  * Mark `filePath` as having been truncated during a Read this session.
  *
@@ -245,5 +258,6 @@ registerReset(() => {
   _hintsShown = new Set()
   _webFetches = new Map()
   _bashOutputs = new Map()
+  _curlDownloads = new Map()
   _sessionId = null
 })

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
-import { postBashHandler, preBashHandler } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler, extractCurlDownload } from '../src/hooks_bash.js'
 import { getBashOutputId } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -813,5 +813,70 @@ describe('preBashHandler — curl GET recall', () => {
     await postBashHandler(makePostBashEvent(cmd, largeOutput))
     const result = preBashHandler(makeBashEvent(cmd))
     expect(result.hookType).toBe('pass')
+  })
+})
+
+describe('extractCurlDownload', () => {
+  it('extracts url and output path from curl -o', () => {
+    const result = extractCurlDownload('curl https://example.com/file.json -o /tmp/file.json')
+    expect(result).not.toBeNull()
+    expect(result?.url).toBe('https://example.com/file.json')
+    expect(result?.outputPath).toBe('/tmp/file.json')
+  })
+
+  it('extracts from curl --output variant', () => {
+    const result = extractCurlDownload('curl -sSL https://example.com/data.json --output /tmp/data.json')
+    expect(result).not.toBeNull()
+    expect(result?.url).toBe('https://example.com/data.json')
+    expect(result?.outputPath).toBe('/tmp/data.json')
+  })
+
+  it('returns null for non-curl command', () => {
+    expect(extractCurlDownload('wget https://example.com -O /tmp/file')).toBeNull()
+  })
+
+  it('returns null when no -o flag', () => {
+    expect(extractCurlDownload('curl -s https://example.com/api')).toBeNull()
+  })
+
+  it('returns null for POST with -o', () => {
+    expect(extractCurlDownload('curl -X POST https://example.com -o /tmp/out.json')).toBeNull()
+  })
+
+  it('returns null for curl with auth and -o', () => {
+    expect(extractCurlDownload('curl -H "Authorization: Bearer tok" https://example.com -o /tmp/out')).toBeNull()
+  })
+})
+
+describe('preBashHandler — curl download dedup', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('denies re-download of the same URL to a different temp path', async () => {
+    const url = 'https://example.com/report.json'
+    const firstCmd = `curl ${url} -o /tmp/report-v1.json`
+    await postBashHandler(makePostBashEvent(firstCmd, ''))
+
+    const secondCmd = `curl ${url} -o /tmp/report-v2.json`
+    const result = preBashHandler(makeBashEvent(secondCmd))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('/tmp/report-v1.json')
+      expect(result.message).toContain('rg')
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('passes through first curl -o download (not yet recorded)', () => {
+    const result = preBashHandler(makeBashEvent('curl https://example.com/data.json -o /tmp/data.json'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('denies re-download of same URL with identical output path', async () => {
+    const cmd = 'curl https://example.com/script.sh -o /tmp/script.sh'
+    await postBashHandler(makePostBashEvent(cmd, ''))
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('deny')
   })
 })
