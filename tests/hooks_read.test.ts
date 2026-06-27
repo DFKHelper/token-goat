@@ -654,3 +654,78 @@ Some content that makes the file large enough`
   })
 
 })
+
+describe('preReadHandler — session artifact re-read dedup', () => {
+  function makeTasksOutputFile(content = 'task output data'): string {
+    const sessionDir = path.join(os.tmpdir(), `tg-session-${process.pid}-${Math.random().toString(36).slice(2)}`)
+    const tasksDir = path.join(sessionDir, 'tasks')
+    fs.mkdirSync(tasksDir, { recursive: true })
+    const p = path.join(tasksDir, 'w9lh32xe0.output')
+    fs.writeFileSync(p, content)
+    tmpFiles.push(p)
+    return p
+  }
+
+  it('emits context hint with bash-output suggestion on first read of tasks/*.output', () => {
+    const p = makeTasksOutputFile()
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat bash-output')
+      expect(result.context).toContain('--tail')
+      expect(result.context).toContain('--grep')
+    }
+  })
+
+  it('denies re-read of tasks/*.output when content unchanged since last read', () => {
+    const content = 'task output data\nline two\n'
+    const p = makeTasksOutputFile(content)
+    const normalized = normalizePath(p)
+
+    // Simulate: first read (context output fires, then postReadHandler captures snapshot)
+    preReadHandler(readEvent(p))
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content },
+    }
+    postReadHandler(postEvent)
+    recordFileRead(normalized)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('unchanged since last read')
+      expect(result.message).toContain('--tail')
+    }
+  })
+
+  it('injects diff in deny when tasks/*.output content changed since last read', () => {
+    const content1 = 'task output line 1\ntask output line 2\n'
+    const content2 = 'task output line 1\ntask output line 2\ntask output line 3 (new)\n'
+    const p = makeTasksOutputFile(content1)
+    const normalized = normalizePath(p)
+
+    preReadHandler(readEvent(p))
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content1 },
+    }
+    postReadHandler(postEvent)
+    recordFileRead(normalized)
+
+    fs.writeFileSync(p, content2)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Content changed since last read')
+      expect(result.message).toContain('```diff')
+    }
+  })
+})
