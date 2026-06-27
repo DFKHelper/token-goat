@@ -140,16 +140,29 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   return { filePath, isDoc, isConfig }
 }
 
-/** Extracts file path from `node -e "fs.readFileSync(...)"` patterns. Returns null if not this pattern or if temp file. */
-function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boolean } | null {
+/** Extracts file path from `node -e "fs.readFileSync(...)"` or `node -e "require('....json')"` patterns. Returns null if not this pattern or if temp file. */
+function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
   if (!/^node\s+-e/.test(cmd)) return null
-  const m = /readFileSync\(['"]([^'"]+\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql))['"]/i.exec(cmd)
-  if (!m || !m[1]) return null
-  const filePath = m[1]
-  if (isOrchestratorStateFile(filePath)) return null
-  if (isTempPath(filePath)) return null
-  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
-  return { filePath, isDoc }
+  const readSync = /readFileSync\(['"]([^'"]+\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql))['"]/i.exec(cmd)
+  if (readSync?.[1]) {
+    const filePath = readSync[1]
+    if (isOrchestratorStateFile(filePath)) return null
+    if (isTempPath(filePath)) return null
+    const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+    const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+    return { filePath, isDoc, isConfig }
+  }
+  // Also catch require('path/to/file.json') — common for one-liner version lookups
+  const requireM = /require\(['"]([^'"]+\.json)['"]\)/i.exec(cmd)
+  if (requireM?.[1]) {
+    const filePath = requireM[1]
+    // Only intercept project files — node_modules paths are resolved internally
+    if (filePath.includes('node_modules')) return null
+    if (isOrchestratorStateFile(filePath)) return null
+    if (isTempPath(filePath)) return null
+    return { filePath, isDoc: false, isConfig: true }
+  }
+  return null
 }
 
 /** Extracts file path from `tail -n X <path>` or `tail -X <path>` commands on source files. Excludes -f (follow), -c (byte mode), and +N (offset). */
@@ -464,10 +477,12 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
   const nodeRead = extractNodeFileRead(cmd)
   if (nodeRead !== null) {
-    const { filePath, isDoc } = nodeRead
+    const { filePath, isDoc, isConfig } = nodeRead
     const hint = isDoc
       ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-      : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
+      : isConfig
+        ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+        : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
     recordStat('session_hint', 0, 0)
     return denyOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint)
   }
