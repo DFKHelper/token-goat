@@ -541,4 +541,116 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('pass')
   })
 
+  // Doc-file auto-diff on re-read
+  it('injects diff in deny when .md file content changed since last read', () => {
+    const content1 = '# Title\n\nOriginal content here.\n'
+    const content2 = '# Title\n\nOriginal content here.\n\n## New Section\n\nAdded content.\n'
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
+    )
+    fs.writeFileSync(p, content1)
+    tmpFiles.push(p)
+
+    // Simulate a successful Read: postReadHandler stores the snapshot
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content1 },
+    }
+    postReadHandler(postEvent)
+    recordFileRead(normalizePath(p))
+
+    // File changes between reads
+    fs.writeFileSync(p, content2)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Content changed since last read')
+      expect(result.message).toContain('```diff')
+      expect(result.message).toContain('New Section')
+      expect(result.message).toContain('token-goat section')
+    }
+  })
+
+  it('returns unchanged deny when .md file content is same as at last read', () => {
+    const content = '# Title\n\nSome content.\n'
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
+    )
+    fs.writeFileSync(p, content)
+    tmpFiles.push(p)
+
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content },
+    }
+    postReadHandler(postEvent)
+    recordFileRead(normalizePath(p))
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('unchanged since last read')
+      expect(result.message).toContain('token-goat section')
+    }
+  })
+
+  it('injects diff for .rst file that changed since last read', () => {
+    const content1 = 'Title\n=====\n\nOriginal.\n'
+    const content2 = 'Title\n=====\n\nOriginal.\n\nNew Section\n-----------\n\nAdded.\n'
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.rst`,
+    )
+    fs.writeFileSync(p, content1)
+    tmpFiles.push(p)
+
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content1 },
+    }
+    postReadHandler(postEvent)
+    recordFileRead(normalizePath(p))
+
+    fs.writeFileSync(p, content2)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Content changed since last read')
+      expect(result.message).toContain('```diff')
+    }
+  })
+
+  it('postReadHandler stores snapshot for .md files (enables future diff)', () => {
+    const content = '# Doc\n\nContent.\n'
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.md`,
+    )
+    fs.writeFileSync(p, content)
+    tmpFiles.push(p)
+
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content },
+    }
+    // postReadHandler should complete without throwing
+    expect(() => postReadHandler(postEvent)).not.toThrow()
+  })
+
 })

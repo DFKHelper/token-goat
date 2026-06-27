@@ -10,7 +10,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput } from './session.js'
+import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
@@ -311,6 +311,32 @@ function isCurlGetCommand(cmd: string): boolean {
   return true
 }
 
+/**
+ * Extracts {url, outputPath} from a `curl -o <file> <url>` download command.
+ * Returns null for non-curl commands, commands without `-o`/`--output`, or
+ * commands with auth/POST/body flags that should not be cached.
+ */
+export function extractCurlDownload(cmd: string): { url: string; outputPath: string } | null {
+  if (!/^curl\b/.test(cmd)) return null
+  // Must have -o / --output flag
+  const outputMatch = /(?:^|\s)(?:-o|--output)\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(cmd)
+  if (!outputMatch) return null
+  const outputPath = outputMatch[1] ?? outputMatch[2] ?? outputMatch[3]
+  if (!outputPath) return null
+  // Exclude explicit non-GET methods
+  if (/-X\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return null
+  if (/--request\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)/i.test(cmd)) return null
+  // Exclude request body flags
+  if (/(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|-F|--form)\b/.test(cmd)) return null
+  // Exclude auth credentials
+  if (/(?:^|\s)(?:-u|--user)\b/.test(cmd)) return null
+  if (/-H\s+['"]?Authorization/i.test(cmd)) return null
+  // Extract URL (first https?:// argument)
+  const urlMatch = /(https?:\/\/[^\s'"]+)/.exec(cmd)
+  if (!urlMatch?.[1]) return null
+  return { url: urlMatch[1], outputPath }
+}
+
 /** True when the command is a TypeScript compiler invocation. */
 function isTscCommand(cmd: string): boolean {
   return /^\s*tsc(\s|$)/i.test(cmd)
@@ -524,6 +550,21 @@ export function preBashHandler(event: HookEvent): HookOutput {
     }
   }
 
+  // Item 2: curl -o download recall — keyed by URL so a re-download to a different temp
+  // path still gets a recall hint pointing to the previously saved file.
+  const curlDl = extractCurlDownload(cmd)
+  if (curlDl !== null) {
+    const prevPath = getCurlDownloadPath(curlDl.url)
+    if (prevPath !== null) {
+      recordStat('session_hint', 0, 0)
+      return denyOutput(
+        'Already downloaded to ' + prevPath + ' earlier this session. ' +
+        'Use `rg \'<pattern>\' ' + prevPath + '` to search it, or ' +
+        '`token-goat read "' + prevPath + '::SectionName"` to read a part of it.',
+      )
+    }
+  }
+
   // curl GET recall — emit a hint when the same URL was already fetched this session
   if (isCurlGetCommand(cmd)) {
     const curlHash = shortFingerprint(cmd)
@@ -586,6 +627,12 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const cmd = extractCommand(event)
     if (cmd === undefined) return passOutput()
+
+    // Item 2: record curl -o downloads by URL for cross-command dedup
+    const curlDl = extractCurlDownload(cmd)
+    if (curlDl !== null) {
+      recordCurlDownload(curlDl.url, curlDl.outputPath)
+    }
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
