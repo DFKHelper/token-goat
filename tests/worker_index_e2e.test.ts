@@ -1,0 +1,84 @@
+/**
+ * End-to-end smoke test against the BUILT bundle (dist/token-goat.mjs).
+ *
+ * The indexer regression in worker.test.ts runs against the TypeScript source.
+ * That can never catch a parser that gets tree-shaken out of the esbuild
+ * bundle — which is exactly what happened when nothing reachable called the
+ * real indexer: `parseFile` and every language extractor vanished from the
+ * shipped artifact. This test builds the real bundle, runs `index` over a tiny
+ * git fixture with an isolated data dir, then runs `symbol` and asserts a known
+ * symbol resolves from the shipped binary.
+ */
+
+import { execFileSync, spawnSync } from 'node:child_process'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+const ROOT = path.join(HERE, '..')
+const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
+
+let repo: string
+let dataBase: string
+
+/** Redirect the data dir into a temp base so the e2e never touches the real index. */
+function tgEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase }
+}
+
+function runBundle(args: string[]): { status: number | null; stdout: string; stderr: string } {
+  const res = spawnSync(process.execPath, [BUNDLE, ...args], {
+    cwd: repo,
+    env: tgEnv(),
+    encoding: 'utf8',
+  })
+  return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+}
+
+beforeAll(() => {
+  // Build the real shipping artifact so this test fails if the parser/indexer
+  // is missing from the bundle.
+  execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
+
+  dataBase = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-e2e-data-'))
+  repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-e2e-repo-'))
+  fs.writeFileSync(
+    path.join(repo, 'sample.ts'),
+    'export function knownBundleSymbol(): number {\n  return 7\n}\n',
+  )
+  // `git ls-files` lists staged files, so init + add is enough — no commit
+  // (avoids user config and any global commit hooks firing in the test).
+  const git = (args: string[]): void => {
+    execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
+  }
+  git(['init'])
+  git(['add', '.'])
+}, 120000)
+
+afterAll(() => {
+  if (dataBase) fs.rmSync(dataBase, { recursive: true, force: true })
+  if (repo) fs.rmSync(repo, { recursive: true, force: true })
+})
+
+describe('built bundle end-to-end indexing', () => {
+  it('builds a bundle that actually contains the indexer', () => {
+    const bundle = fs.readFileSync(BUNDLE, 'utf8')
+    // The real indexer's write path must survive bundling; the old stub must not.
+    expect(bundle).toContain('DELETE FROM symbols WHERE file_path')
+    expect(bundle).not.toContain('would index')
+  })
+
+  it('index then symbol resolves a known symbol from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+    expect(idx.stdout).toMatch(/Indexed \d+ files/)
+
+    const sym = runBundle(['symbol', 'knownBundleSymbol'])
+    expect(sym.status).toBe(0)
+    expect(sym.stdout).toContain('knownBundleSymbol')
+  }, 60000)
+})

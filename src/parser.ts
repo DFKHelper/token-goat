@@ -783,14 +783,14 @@ function parseContent(content: string, filePath: string, language: Language): Sy
 }
 
 /**
- * Index one file into the SQLite DB: parse it, then replace its rows.
+ * Write a parsed result's rows into the index DB, replacing any prior rows for
+ * the file in a single transaction (DELETE + INSERT, matching the Python
+ * bulk-replace strategy) so a re-index never leaves stale symbols behind.
  *
- * Old `symbols`/`refs`/`files` rows for the path are deleted and re-inserted in
- * a single transaction (DELETE + INSERT, matching the Python bulk-replace
- * strategy) so a re-index never leaves stale symbols behind.
+ * Shared by the async {@link indexFile} and the synchronous {@link
+ * indexFileSync} the worker drain loop calls.
  */
-export async function indexFile(filePath: string, dbPath: string = globalDbPath()): Promise<void> {
-  const result = await parseFile(filePath)
+function writeParseResult(filePath: string, result: ParseResult, dbPath: string): void {
   const db = getDb(dbPath)
 
   const sha = safeSha(filePath)
@@ -825,6 +825,35 @@ export async function indexFile(filePath: string, dbPath: string = globalDbPath(
   })
 
   writeAll()
+}
+
+/**
+ * Index one file into the SQLite DB: parse it, then replace its rows.
+ */
+export async function indexFile(filePath: string, dbPath: string = globalDbPath()): Promise<void> {
+  const result = await parseFile(filePath)
+  writeParseResult(filePath, result, dbPath)
+}
+
+/**
+ * Synchronous index: read, parse, and write one file's rows in a single call.
+ *
+ * The worker drain loop runs synchronously — it clears the dirty queue only
+ * after the batch has been written — so it needs a sync entry point rather than
+ * the Promise-returning {@link indexFile}. Reads with `readFileSync`, runs the
+ * same `parseContent` extractor, and shares {@link writeParseResult}. An
+ * unreadable file is skipped (never throws).
+ */
+export function indexFileSync(filePath: string, dbPath: string = globalDbPath()): void {
+  const language = detectLanguage(filePath)
+  let content: string
+  try {
+    content = fs.readFileSync(filePath, 'utf8')
+  } catch {
+    return
+  }
+  const symbols = parseContent(content, filePath, language)
+  writeParseResult(filePath, { symbols, refs: [], language, duration: 0 }, dbPath)
 }
 
 /**
