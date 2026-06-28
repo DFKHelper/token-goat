@@ -62,9 +62,9 @@ function stripOutputPipeline(cmd: string): string {
   do {
     prev = base
     const masked = base
-      .replace(/"([^"]*)"/g, (_m, inner: string) => '"' + ' '.repeat(inner.length) + '"')
+      .replace(/"((?:[^"\\]|\\.)*)"/g, (_m, inner: string) => '"' + ' '.repeat(inner.length) + '"')
       .replace(/'([^']*)'/g, (_m, inner: string) => "'" + ' '.repeat(inner.length) + "'")
-    const newMasked = masked.replace(/\s*(?:[0-9]*>&[0-9]+|[0-9&]*>>?\s*[^\s|]+)\s*$/, '')
+    const newMasked = masked.replace(/\s*(?:[0-9]*>&[0-9]+|[0-9&]*>>?\s*(?:"[^"]*"|'[^']*'|[^\s|]+))\s*$/, '')
     if (newMasked.length < masked.length) {
       base = base.slice(0, newMasked.length)
     }
