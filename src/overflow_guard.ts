@@ -75,7 +75,8 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
     const stripped = stripAnsiCodes(ln)
     const cost = stripped.length + 1
     if (kept.length === 0 && cost > charBudget) {
-      const truncated = ln.slice(0, charBudget)
+      // Slice the stripped string so the budget is measured and cut on visible characters; avoids ANSI bytes silently consuming budget and eliminates dangling escape sequences from a mid-code cut.
+      const truncated = stripped.slice(0, charBudget)
       kept.push(truncated)
       break
     }

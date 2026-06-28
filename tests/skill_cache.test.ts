@@ -390,6 +390,54 @@ describe('getAllCachedSkills', () => {
   })
 })
 
+describe('suite-named skill compact round-trip (colon in name)', () => {
+  it('storeCompact and getCompact agree on path for a suite-named skill', async () => {
+    // 'commit-commands:commit' has a colon. Pre-fix: storeCompact wrote '<session>-commit-commands:commit-compact' (invalid on Windows, colon in filename) while listSkills looked for '<session>-commit-commands_commit-compact'. They disagreed, so listSkills always showed compactLen=0.
+    const sessionId = 'sess123456789012'
+    const skillName = 'commit-commands:commit'
+    const compactText = 'Compact body for suite skill'
+
+    await storeCompact(sessionId, skillName, compactText)
+    const retrieved = await getCompact(sessionId, skillName)
+
+    // store -> get must round-trip successfully.
+    expect(retrieved).not.toBeNull()
+    expect(retrieved).toContain('Compact body for suite skill')
+  })
+
+  it('listSkills shows non-zero compactLen after storeCompact for a suite-named skill', async () => {
+    const sessionId = 'sess123456789012'
+    const skillName = 'commit-commands:commit'
+    const body = 'Body for commit-commands:commit skill'
+    const compactText = 'Compact for suite skill'
+
+    await storeOutput(sessionId, skillName, body)
+    await storeCompact(sessionId, skillName, compactText)
+
+    const skills = await getAllCachedSkills(sessionId)
+    const entry = skills.find((s) => s.name === 'commit-commands:commit')
+
+    // Pre-fix: listSkills used .replace(':', '_') (no /g, only first colon) while storeCompact kept colons, so compactLen was always 0.
+    expect(entry).toBeDefined()
+    expect(entry!.compactLen).toBeGreaterThan(0)
+  })
+
+  it('compact filename written by storeCompact contains no colon', async () => {
+    const sessionId = 'sess123456789012'
+    const skillName = 'org:plugin:skill'
+    const compactText = 'Some compact'
+
+    await storeCompact(sessionId, skillName, compactText)
+
+    // Read the skills dir and confirm no file with a colon was created.
+    const files = await import('fs/promises').then((m) => m.readdir(tempDir))
+    const compactFiles = files.filter((f) => f.endsWith('-compact'))
+    for (const f of compactFiles) {
+      expect(f).not.toContain(':')
+    }
+  })
+})
+
 describe('outputIdFor regression - colon handling', () => {
   it('correctly detects character replacement and appends suffix only when replaced', () => {
     const id1 = outputIdFor('session123456789', 'plugin:improve', 'sha')
