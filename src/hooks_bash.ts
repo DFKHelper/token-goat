@@ -54,11 +54,20 @@ function stripOutputPipeline(cmd: string): string {
     }
   }
   let base = cmd.slice(0, cut)
-  // Strip trailing stream redirections, possibly several chained ones.
+  // Strip trailing stream redirections (possibly chained), honoring quotes.
+  // Mask quoted content with same-length spaces so the redirect regex cannot
+  // match characters inside a string literal (e.g. 'pytest -k "value > 0"').
+  // String length is preserved, so slicing back to newMasked.length is exact.
   let prev: string
   do {
     prev = base
-    base = base.replace(/\s*(?:[0-9]*>&[0-9]+|[0-9&]*>>?\s*[^\s|]+)\s*$/, '')
+    const masked = base
+      .replace(/"([^"]*)"/g, (_m, inner: string) => '"' + ' '.repeat(inner.length) + '"')
+      .replace(/'([^']*)'/g, (_m, inner: string) => "'" + ' '.repeat(inner.length) + "'")
+    const newMasked = masked.replace(/\s*(?:[0-9]*>&[0-9]+|[0-9&]*>>?\s*[^\s|]+)\s*$/, '')
+    if (newMasked.length < masked.length) {
+      base = base.slice(0, newMasked.length)
+    }
   } while (base !== prev)
   return base.trim()
 }
