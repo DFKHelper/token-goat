@@ -12,7 +12,7 @@ import {
   stopWorker,
   workerPidPath,
 } from '../src/worker.js'
-import { querySymbols } from '../src/index_reader.js'
+import { querySymbols, queryRefs } from '../src/index_reader.js'
 import { closeDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 
@@ -131,6 +131,30 @@ describe('drainOnce', () => {
       expect(found[0]?.name).toBe('knownWorkerSymbol')
     } finally {
       // Release the better-sqlite3 handle so afterEach can remove DIR on Windows.
+      closeDb(projectDb)
+    }
+  })
+
+  // Companion to the symbols regression above, for the refs table. The default drain path must populate refs (it was hard-coded to [] in the parser), with the enclosing caller in `context`, so `refs --callers` can resolve callers.
+  it('default path populates the refs table from drained files (no injected callback)', () => {
+    const src = path.join(DIR, 'callers.ts')
+    fs.writeFileSync(
+      src,
+      'function knownCallee(): number {\n  return 1\n}\n' +
+        'export function knownCaller(): number {\n  return knownCallee()\n}\n',
+    )
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+
+    const count = drainOnce(DIR)
+    expect(count).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      const refs = queryRefs({ name: 'knownCallee' }, projectDb)
+      expect(refs.length).toBeGreaterThan(0)
+      expect(refs[0]?.context).toBe('knownCaller')
+    } finally {
       closeDb(projectDb)
     }
   })
