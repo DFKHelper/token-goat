@@ -8,6 +8,14 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Wired `serve_diff_on_reread` for source, style, and data files.** The opt-in flag (`TOKEN_GOAT_SERVE_DIFF_ON_REREAD=1` or `[hints] serve_diff_on_reread = true`) previously affected only docs, despite being advertised for changed files generally. It now extends diff-on-reread to `.ts`, `.tsx`, `.js`, `.jsx`, `.css`, `.scss`, `.json`, `.py`, `.go`, `.rs`, `.yaml`, `.toml`, and 15+ other source/style/data extensions: a re-read of a changed file injects a compact unified diff (with an extension-aware surgical-read hint — `token-goat read ::Symbol` for code, `token-goat section` for structured files) instead of the full file, and an unchanged file returns a one-line note. A savings guard skips the diff when it would exceed 60% of the file (e.g. minified single-line JS/CSS/JSON), falling through to the existing re-read denial. Files over 256 KB are never snapshotted. Default remains OFF, preserving the flat-deny behavior for anyone who has not opted in; docs (`.md`/`.mdx`/`.rst`/`.txt`) continue to diff by default.
 
+### Fixed
+
+- **YAML and TOML kebab-case keys are now indexed.** The symbol extractors used `[a-zA-Z_]\w*`, which excludes hyphens, so common kebab-case keys (`runs-on:` in CI YAML, `my-key = 1` as a TOML bare key) were never indexed and `token-goat section "file.yml::runs-on"` returned nothing. The key pattern now accepts hyphens after the first character, so these keys resolve; YAML list items (`- foo:`) and document markers (`---`) are still correctly ignored.
+
+- **`token-goat read` resolves 3+ part dotted symbols to the leaf.** A spec like `file::Outer.Inner.method` split on `.` and looked up the middle segment (`Inner`), resolving to the inner class instead of the method and returning the wrong symbol body. The lookup now uses the last dotted segment, so the method is found; the common two-part `Class.method` case is unchanged.
+
+- **Git-diff truncation marker names the file cleanly.** When a large `git diff` was capped at 50 lines per file, the `[... N more lines in <name>]` marker showed the doubled header tail (`a/src/file.ts b/src/file.ts`) as the filename. It now shows the path once (`src/file.ts`), parsed by splitting on ` b/` so paths containing spaces survive.
+
 ## [2.2.2] - 2026-06-27
 
 ### Added

@@ -530,7 +530,7 @@ function extractYamlSymbols(content: string, filePath: string): SymbolEntry[] {
     const line = lines[i]
     if (line === undefined) continue
 
-    const match = /^([a-zA-Z_]\w*)\s*:/.exec(line)
+    const match = /^([a-zA-Z_][\w-]*)\s*:/.exec(line)
     if (match !== null && match[1] !== undefined) {
       out.push({
         filePath,
@@ -568,7 +568,7 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
       })
     }
 
-    const keyMatch = /^\s*([a-zA-Z_]\w*)\s*=/.exec(line)
+    const keyMatch = /^\s*([a-zA-Z_][\w-]*)\s*=/.exec(line)
     if (keyMatch !== null && keyMatch[1] !== undefined) {
       out.push({
         filePath,

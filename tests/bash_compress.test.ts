@@ -95,8 +95,18 @@ describe('compressOutput', () => {
     const out = compressOutput(lines.join('\n'))
     expect(out).toContain('[Git diff:')
     expect(out).toContain('truncated to 50 lines/file')
-    expect(out).toContain('more lines in')
+    // The truncation marker names the file once and cleanly. Pre-fix it read
+    // "more lines in a/src/file.ts b/src/file.ts" (the doubled header tail), so
+    // this exact substring is absent unless the filename is parsed correctly.
+    expect(out).toContain('more lines in src/file.ts —')
     expect(out.split('\n').length).toBeLessThan(lines.length)
+  })
+
+  it('names a file with spaces correctly in the git-diff truncation marker', () => {
+    const lines = ['diff --git a/my dir/my file.ts b/my dir/my file.ts']
+    for (let i = 0; i < 200; i++) lines.push(`+line ${i}`)
+    const out = compressOutput(lines.join('\n'))
+    expect(out).toContain('more lines in my dir/my file.ts')
   })
 
   it('leaves a small git diff (<= 200 lines) unchanged by the git fast-path', () => {
