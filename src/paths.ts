@@ -55,6 +55,27 @@ export function normalizePath(p: string): string {
 }
 
 /**
+ * Resolve a user-supplied path to the canonical key form the symbol index uses.
+ *
+ * Every symbol/ref/file row is keyed by `normalizePath(absolutePath)` (see
+ * `indexFileSync` in parser.ts and `cmdIndex` in cli.ts). Index-backed read
+ * commands receive paths exactly as the user typed them ("src/worker.ts",
+ * "./src/worker.ts", "SRC\\worker.ts") or as `git diff --name-only` emits them
+ * (repo-root-relative). The DB lookup is exact equality (`file_path = ?`), so a
+ * raw relative or backslash path never matches an absolute, forward-slashed,
+ * lowercase-drive key and the query silently returns nothing. Routing every
+ * query site through this one helper guarantees the lookup key matches the
+ * write key byte-for-byte across platforms.
+ *
+ * @param file  Path as typed by the user or emitted by git.
+ * @param base  Directory to resolve `file` against. Defaults to the process
+ *              working directory; `changed` passes its own repo root.
+ */
+export function resolveIndexPath(file: string, base: string = process.cwd()): string {
+  return normalizePath(path.resolve(base, file))
+}
+
+/**
  * Join `base` with one or more path parts, rejecting any part that could
  * escape the base directory via a Windows drive-letter or NTFS stream.
  *
