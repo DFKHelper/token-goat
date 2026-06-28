@@ -10,6 +10,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { querySymbols, queryRefs, getFileEntry } from './index_reader.js'
+import { resolveIndexPath } from './paths.js'
 import { readSection, listSections, extractSection, listAllSections } from './section_reader.js'
 import { runGit, ensureNewline } from './util.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
@@ -82,7 +83,7 @@ export interface SymbolOptions {
 export function runSymbol(opts: SymbolOptions): number {
   const queryOpts: Parameters<typeof querySymbols>[0] = {}
   if (opts.name !== undefined) queryOpts.name = opts.name
-  if (opts.file !== undefined) queryOpts.filePath = opts.file
+  if (opts.file !== undefined) queryOpts.filePath = resolveIndexPath(opts.file)
   if (opts.kind !== undefined) queryOpts.kind = opts.kind
   if (opts.limit !== undefined) queryOpts.limit = opts.limit
 
@@ -147,13 +148,14 @@ export function runRead(opts: ReadOptions): number {
   // methodName among those results always fails because all returned symbols have
   // name === symBase, never name === methodName.
   const lookupName = methodName ?? symBase
-  const candidates = querySymbols({ name: lookupName, filePath: file, limit: 10 })
+  const resolved = resolveIndexPath(file)
+  const candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
 
   const match = candidates[0]
 
   if (match === undefined) {
     emitErr(`Symbol '${symbol}' not found in '${file}'`)
-    const closes = querySymbols({ filePath: file, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
+    const closes = querySymbols({ filePath: resolved, limit: DIDYOUMEAN_LIMIT }).map((s) => s.name)
     if (closes.length > 0) emitErr(didYouMean(closes))
     return 1
   }
@@ -227,7 +229,7 @@ export function runRefs(opts: RefsOptions): number {
   const symName = symbol ?? file
 
   const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
-  if (symbol !== undefined) queryOpts.filePath = file
+  if (symbol !== undefined) queryOpts.filePath = resolveIndexPath(file)
   if (opts.limit !== undefined) queryOpts.limit = opts.limit
 
   const results = queryRefs(queryOpts)
@@ -280,7 +282,7 @@ export interface SkeletonOptions {
 
 /** Handle ``token-goat skeleton file``. */
 export function runSkeleton(opts: SkeletonOptions): number {
-  const symbols = querySymbols({ filePath: opts.file, limit: 500 })
+  const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
 
   if (symbols.length === 0) {
     emitErr(`No indexed symbols found in '${opts.file}'`)
@@ -327,7 +329,7 @@ export interface OutlineOptions {
 
 /** Handle ``token-goat outline file``. */
 export function runOutline(opts: OutlineOptions): number {
-  const symbols = querySymbols({ filePath: opts.file, limit: 500 })
+  const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
 
   if (symbols.length === 0) {
     emitErr(`No indexed symbols found in '${opts.file}'`)
@@ -446,7 +448,7 @@ export function runChanged(opts: ChangedOptions = {}): number {
   const results: Array<{ file: string; symbols: string[] }> = []
 
   for (const f of changedFiles) {
-    const abs = path.resolve(projectRoot, f)
+    const abs = resolveIndexPath(f, projectRoot)
     const syms = querySymbols({ filePath: abs, limit: 200 })
     if (syms.length > 0) {
       results.push({ file: f, symbols: syms.map((s) => s.name) })
@@ -631,7 +633,7 @@ export interface ImportsExportsOptions {
 
 /** Handle ``token-goat exports file``. */
 export function runExports(opts: ImportsExportsOptions): number {
-  const symbols = querySymbols({ filePath: opts.file, limit: 500 })
+  const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
   // Heuristic: exported symbols start with an uppercase letter in many TS files,
   // or are declared with `export` keyword (captured in body prefix).
   const exported = symbols.filter((s) => s.body.trimStart().startsWith('export'))
@@ -654,10 +656,11 @@ export function runExports(opts: ImportsExportsOptions): number {
 
 /** Handle ``token-goat imports file``. */
 export function runImports(opts: ImportsExportsOptions): number {
-  const symbols = querySymbols({ filePath: opts.file, kind: 'import', limit: 500 })
+  const resolved = resolveIndexPath(opts.file)
+  const symbols = querySymbols({ filePath: resolved, kind: 'import', limit: 500 })
 
   if (symbols.length === 0) {
-    const fileEntry = getFileEntry(opts.file)
+    const fileEntry = getFileEntry(resolved)
     if (fileEntry === null) {
       emitErr(`File not indexed: ${opts.file}`)
       return 1

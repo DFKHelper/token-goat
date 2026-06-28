@@ -30,6 +30,7 @@ import {
   runExports,
 } from '../src/read_commands.js'
 import { querySymbols } from '../src/index_reader.js'
+import { resolveIndexPath } from '../src/paths.js'
 import { readSection, listSections, listAllSections } from '../src/section_reader.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
@@ -105,10 +106,17 @@ describe('read_commands', () => {
       expect(Array.isArray(parsed)).toBe(true)
     })
 
-    it('passes filePath filter through to querySymbols', () => {
+    it('resolves the filePath filter to the index key before querying', () => {
       mockQuerySymbols.mockReturnValue([])
       runSymbol({ name: 'x', file: 'src/bar.ts' })
-      expect(mockQuerySymbols).toHaveBeenCalledWith(expect.objectContaining({ filePath: 'src/bar.ts' }))
+      // The index is keyed by normalizePath(absolute); a raw relative path would
+      // never match an exact `file_path = ?` lookup, so the command must resolve.
+      expect(mockQuerySymbols).toHaveBeenCalledWith(
+        expect.objectContaining({ filePath: resolveIndexPath('src/bar.ts') }),
+      )
+      const arg = mockQuerySymbols.mock.calls[0]?.[0] as { filePath?: string }
+      expect(arg.filePath).not.toBe('src/bar.ts')
+      expect(path.isAbsolute(arg.filePath ?? '')).toBe(true)
     })
   })
 

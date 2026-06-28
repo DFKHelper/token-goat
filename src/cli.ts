@@ -22,7 +22,7 @@ import { getSessionFiles } from './session.js'
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
 import { indexFileSync } from './parser.js'
 import { detectLanguage } from './parser_types.js'
-import { normalizePath } from './paths.js'
+import { normalizePath, resolveIndexPath } from './paths.js'
 import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import { readSection } from './section_reader.js'
@@ -92,8 +92,15 @@ function cmdRead(spec: string): void {
   const bare = member.includes('.') ? member.slice(member.lastIndexOf('.') + 1) : member
 
   const candidates = querySymbols({ name: bare, limit: 50 })
+  // Primary match is the resolved index key (handles relative and backslash
+  // input on Windows); the endsWith fallbacks keep partial-path lookups working.
+  const resolved = resolveIndexPath(file)
   const inFile = candidates.filter(
-    (s) => s.filePath === file || s.filePath.endsWith(file) || file.endsWith(s.filePath),
+    (s) =>
+      s.filePath === resolved ||
+      s.filePath === file ||
+      s.filePath.endsWith(file) ||
+      file.endsWith(s.filePath),
   )
   const pick = inFile[0] ?? candidates[0]
 
@@ -124,7 +131,7 @@ function cmdSemantic(query: string, opts: { limit?: string }): void {
 }
 
 function cmdSkeleton(file: string): void {
-  const symbols = querySymbols({ filePath: file, limit: 1000 })
+  const symbols = querySymbols({ filePath: resolveIndexPath(file), limit: 1000 })
   if (symbols.length === 0) {
     throw new CliError(`no indexed symbols for '${file}' (is it indexed?)`)
   }
@@ -139,7 +146,7 @@ function cmdSkeleton(file: string): void {
 }
 
 function cmdOutline(file: string): void {
-  const symbols = querySymbols({ filePath: file, limit: 1000 })
+  const symbols = querySymbols({ filePath: resolveIndexPath(file), limit: 1000 })
   if (symbols.length === 0) {
     throw new CliError(`no indexed symbols for '${file}' (is it indexed?)`)
   }
@@ -397,7 +404,7 @@ function cmdChanged(opts: { since?: string; symbol?: boolean }): void {
   if (opts.symbol === true) {
     const allSymbols: SymbolEntry[] = []
     for (const file of files) {
-      const symbols = querySymbols({ filePath: file, limit: 1000 })
+      const symbols = querySymbols({ filePath: resolveIndexPath(file), limit: 1000 })
       allSymbols.push(...symbols)
     }
 

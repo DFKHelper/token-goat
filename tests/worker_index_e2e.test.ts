@@ -50,6 +50,13 @@ beforeAll(() => {
     path.join(repo, 'sample.ts'),
     'export function knownBundleSymbol(): number {\n  return 7\n}\n',
   )
+  // A nested file so relative ("src/mod.ts") and backslash ("src\\mod.ts")
+  // inputs are meaningfully distinct from the stored absolute key.
+  fs.mkdirSync(path.join(repo, 'src'))
+  fs.writeFileSync(
+    path.join(repo, 'src', 'mod.ts'),
+    'export function alphaSym(): number {\n  return 1\n}\nexport function betaSym(): number {\n  return 2\n}\n',
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit
   // (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
@@ -81,4 +88,40 @@ describe('built bundle end-to-end indexing', () => {
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('knownBundleSymbol')
   }, 60000)
+})
+
+describe('built bundle resolves relative reader paths (regression for path keying)', () => {
+  // The index is keyed by the absolute normalized path; before the resolver was
+  // wired in, skeleton/outline used exact equality against the user-typed
+  // relative path and silently returned "not indexed". These run the SHIPPED
+  // binary from the repo root with a relative path and a Windows backslash path.
+  beforeAll(() => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+  }, 60000)
+
+  it('skeleton resolves a relative path to indexed symbols', () => {
+    const res = runBundle(['skeleton', 'src/mod.ts'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('alphaSym')
+    expect(res.stdout).toContain('betaSym')
+  }, 30000)
+
+  it('outline resolves a relative path to indexed symbols', () => {
+    const res = runBundle(['outline', 'src/mod.ts'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('alphaSym')
+  }, 30000)
+
+  it('read resolves a relative file::symbol spec', () => {
+    const res = runBundle(['read', 'src/mod.ts::alphaSym'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('alphaSym')
+  }, 30000)
+
+  it('skeleton resolves a Windows-style backslash path', () => {
+    const res = runBundle(['skeleton', 'src\\mod.ts'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('alphaSym')
+  }, 30000)
 })
