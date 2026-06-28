@@ -1,6 +1,6 @@
 # Contributing
 
-Dev environment notes specific to this repo. Most of the project conventions live in `CLAUDE.md`; this file collects the rough edges around the local toolchain.
+Dev environment notes specific to this repo. Shared conventions for agents and contributors live in [`AGENTS.md`](AGENTS.md); this file collects the rough edges around the local toolchain.
 
 ## Setup
 
