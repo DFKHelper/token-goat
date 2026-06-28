@@ -15,22 +15,15 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-import { buildProgram } from '../src/cli.js'
+import { buildProgram } from '../../src/cli.js'
+import { allCommandNames } from '../registry.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const CLI_SRC = fs.readFileSync(path.join(HERE, '..', 'src', 'cli.ts'), 'utf8')
+const CLI_SRC = fs.readFileSync(path.join(HERE, '..', '..', 'src', 'cli.ts'), 'utf8')
 
 /** Names of every registered command and subcommand in the program. */
 function registeredCommandNames(): Set<string> {
-  const names = new Set<string>()
-  const program = buildProgram()
-  for (const cmd of program.commands) {
-    names.add(cmd.name())
-    for (const sub of cmd.commands) {
-      names.add(`${cmd.name()} ${sub.name()}`)
-    }
-  }
-  return names
+  return new Set(allCommandNames())
 }
 
 /** Every `function cmd<Name>(` handler declared in cli.ts. */

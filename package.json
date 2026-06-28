@@ -19,6 +19,7 @@
     "build": "node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:guards": "vitest run tests/guards",
     "test:watch": "vitest",
     "lint": "eslint src tests",
     "dev": "tsx src/main.ts"

@@ -1,10 +1,20 @@
 pre-commit:
   commands:
+    # Fast structural gate: lint + typecheck, then the I/O-free guard suite
+    # (tests/guards) which catches implemented-but-unregistered/unfunctional
+    # commands before the commit lands. priority orders them lint -> typecheck
+    # -> guards; the full suite and built-bundle matrix stay on pre-push/CI.
+    ts-lint:
+      priority: 1
+      run: npm run lint
+      glob: "**/*.ts"
     ts-typecheck:
+      priority: 2
       run: npm run typecheck
       glob: "**/*.ts"
-    ts-lint:
-      run: npm run lint
+    fast-guards:
+      priority: 3
+      run: npm run test:guards
       glob: "**/*.ts"
 
 pre-push:
