@@ -30,6 +30,8 @@ import { installHooks, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
 import { isWorkerRunning, startDetachedWorker, stopWorker } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
+import { getWebOutput } from './web_cache.js'
+import { runExports, runImports, runFind, runGrep } from './read_commands.js'
 import { getSkillFilePath, listSkills, storeCompact } from './skill_cache.js'
 import { loadConfig } from './config.js'
 import { runGit, isWindows, ensureNewline, extractErrorMessage } from './util.js'
@@ -364,6 +366,35 @@ function cmdBashOutput(
   }
 
   _applyFiltersAndPrint(entry.output, opts)
+}
+
+function cmdWebOutput(
+  id: string | undefined,
+  opts: { head?: string; tail?: string; grep?: string; section?: string },
+): void {
+  if (id === undefined) {
+    throw new CliError('provide a web cache <id>')
+  }
+  const content = getWebOutput(id)
+  if (content === null) {
+    throw new CliError(`no cached web output for id: ${id}`)
+  }
+  _applyFiltersAndPrint(content, opts)
+}
+
+/**
+ * Adapter for read_commands `run*` handlers, which print their own output and
+ * return an exit code (0 ok, 1 handled error) rather than throwing a CliError.
+ * Maps the return code onto `process.exitCode`; an unexpected throw still maps
+ * to a stderr line + exit 1, matching the `guard` contract.
+ */
+function runExit(fn: () => number): void {
+  try {
+    process.exitCode = fn()
+  } catch (e) {
+    err(`token-goat: ${extractErrorMessage(e)}`)
+    process.exitCode = 1
+  }
 }
 
 async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<void> {
@@ -836,6 +867,63 @@ export function buildProgram(): Command {
     .option('--grep <pattern>', 'filter lines matching regex')
     .option('--file <path>', 'read from raw output file instead of cache')
     .action(guard(cmdBashOutput))
+
+  program
+    .command('web-output [id]')
+    .description('retrieve a cached WebFetch response body by ID')
+    .option('--head <n>', 'show first N lines')
+    .option('--tail <n>', 'show last N lines')
+    .option('--grep <pattern>', 'filter lines matching regex')
+    .action(guard(cmdWebOutput))
+
+  program
+    .command('exports <file>')
+    .description('list exported (public) symbols in a file')
+    .option('-j, --json', 'output as JSON')
+    .action((file: string, opts: { json?: boolean }) =>
+      runExit(() => runExports({ file, ...(opts.json === true ? { json: true } : {}) })),
+    )
+
+  program
+    .command('imports <file>')
+    .description('list the modules a file imports')
+    .option('-j, --json', 'output as JSON')
+    .action((file: string, opts: { json?: boolean }) =>
+      runExit(() => runImports({ file, ...(opts.json === true ? { json: true } : {}) })),
+    )
+
+  program
+    .command('find <pattern>')
+    .description('find files containing a symbol matching a pattern')
+    .option('-j, --json', 'output as JSON')
+    .option('-l, --limit <n>', 'max results')
+    .action((pattern: string, opts: { json?: boolean; limit?: string }) =>
+      runExit(() =>
+        runFind({
+          pattern,
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.limit !== undefined ? { limit: Number.parseInt(opts.limit, 10) } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('grep <pattern> [path]')
+    .description('regex search over files, caching nothing (session-aware grep)')
+    .option('-j, --json', 'output as JSON')
+    .option('--max-lines <n>', 'max matching lines to print')
+    .option('--no-recursive', 'do not descend into subdirectories')
+    .action((pattern: string, pathArg: string | undefined, opts: { json?: boolean; maxLines?: string; recursive?: boolean }) =>
+      runExit(() =>
+        runGrep({
+          pattern,
+          ...(pathArg !== undefined ? { path: pathArg } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.maxLines !== undefined ? { maxLines: Number.parseInt(opts.maxLines, 10) } : {}),
+          ...(opts.recursive === false ? { recursive: false } : {}),
+        }),
+      ),
+    )
 
   program
     .command('skill-body <name>')
