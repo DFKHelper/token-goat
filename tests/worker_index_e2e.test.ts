@@ -16,7 +16,10 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import Database from 'better-sqlite3'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+
+import { normalizePath } from '../src/paths.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(HERE, '..')
@@ -142,5 +145,94 @@ describe('built bundle resolves relative reader paths (regression for path keyin
     const res = runBundle(['skeleton', 'src\\mod.ts'])
     expect(res.status).toBe(0)
     expect(res.stdout).toContain('alphaSym')
+  }, 30000)
+})
+
+/**
+ * Regression for the relative-root index keying bug. `token-goat index .` (a
+ * relative root) used to store relative file_path keys, while every reader
+ * resolves to the absolute-normalized key — so a relative-root index was
+ * unqueryable. This runs the SHIPPED bundle from inside the repo with `.` as the
+ * root, then (a) inspects the DB to prove the stored key is absolute-normalized,
+ * and (b) proves a reader query resolves non-empty. Both fail on pre-fix code.
+ */
+describe('built bundle keys a relative-root index on the absolute path', () => {
+  let relRepo: string
+  let relData: string
+
+  function relEnv(): NodeJS.ProcessEnv {
+    return { ...process.env, LOCALAPPDATA: relData, XDG_DATA_HOME: relData }
+  }
+
+  function runRel(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const res = spawnSync(process.execPath, [BUNDLE, ...args], {
+      cwd: relRepo,
+      env: relEnv(),
+      encoding: 'utf8',
+    })
+    return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+  }
+
+  // Mirror constants.ts::defaultDataDir so the test can open the same global DB
+  // the bundle wrote to under the redirected data dir.
+  function globalDbFor(base: string): string {
+    if (process.platform === 'win32') return path.join(base, 'dfk-helper', 'token-goat', 'global.db')
+    return path.join(base, 'token-goat', 'global.db')
+  }
+
+  beforeAll(() => {
+    relData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-relroot-data-'))
+    relRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-relroot-repo-'))
+    fs.mkdirSync(path.join(relRepo, 'src'))
+    fs.writeFileSync(
+      path.join(relRepo, 'src', 'mod.ts'),
+      'export function relRootSym(): number {\n  return 9\n}\n',
+    )
+    const git = (args: string[]): void => {
+      execFileSync('git', args, { cwd: relRepo, stdio: 'ignore' })
+    }
+    git(['init'])
+    git(['add', '.'])
+
+    const idx = runRel(['index', '.'])
+    expect(idx.status).toBe(0)
+    expect(idx.stdout).toMatch(/Indexed \d+ files/)
+  }, 60000)
+
+  afterAll(() => {
+    if (relData) fs.rmSync(relData, { recursive: true, force: true })
+    if (relRepo) fs.rmSync(relRepo, { recursive: true, force: true })
+  })
+
+  // The darwin data dir ignores LOCALAPPDATA/XDG_DATA_HOME, so the DB would live
+  // in the real home dir; skip the direct-DB probe there. CI runs Windows.
+  it.skipIf(process.platform === 'darwin')(
+    'stores the symbol file_path as the absolute-normalized key',
+    () => {
+      const dbPath = globalDbFor(relData)
+      expect(fs.existsSync(dbPath)).toBe(true)
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const rows = db
+          .prepare('SELECT DISTINCT file_path FROM symbols')
+          .all() as Array<{ file_path: string }>
+        expect(rows.length).toBeGreaterThan(0)
+        const expectedKey = normalizePath(path.resolve(relRepo, 'src', 'mod.ts'))
+        const keys = rows.map((r) => r.file_path)
+        // The pre-fix bug stored the relative 'src/mod.ts'; the fix stores the
+        // absolute-normalized key that every reader resolves to.
+        expect(keys).toContain(expectedKey)
+        expect(keys).not.toContain('src/mod.ts')
+      } finally {
+        db.close()
+      }
+    },
+    30000,
+  )
+
+  it('resolves a relative reader query against the relative-root index', () => {
+    const res = runRel(['skeleton', 'src/mod.ts'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('relRootSym')
   }, 30000)
 })

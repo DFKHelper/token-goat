@@ -22,7 +22,7 @@ import { getSessionFiles } from './session.js'
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
 import { indexFileSync } from './parser.js'
 import { detectLanguage } from './parser_types.js'
-import { normalizePath, resolveIndexPath } from './paths.js'
+import { resolveIndexPath } from './paths.js'
 import type { RefEntry, SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import { readSection } from './section_reader.js'
@@ -214,9 +214,13 @@ function cmdIndex(pathArg?: string): void {
   }
   let indexed = 0
   for (const f of files) {
-    const norm = normalizePath(f)
-    if (detectLanguage(norm) === 'unknown') continue
-    indexFileSync(norm)
+    // Key on the same canonical absolute-normalized path every reader resolves
+    // to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so
+    // a relative root (the natural `token-goat index .`) yields relative paths;
+    // normalizePath alone would store a relative key that no reader can match.
+    const key = resolveIndexPath(f)
+    if (detectLanguage(key) === 'unknown') continue
+    indexFileSync(key)
     indexed += 1
   }
   out(`Indexed ${indexed} files into the symbol index.`)
