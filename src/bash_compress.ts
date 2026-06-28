@@ -189,7 +189,9 @@ function compressGitDiff(lines: readonly string[]): string[] {
   for (const line of lines) {
     if (line.startsWith('diff --git ')) {
       flushHunk()
-      currentFileName = line.slice('diff --git '.length)
+      // A "diff --git a/<path> b/<path>" header repeats the path; show it once.
+      // Split on " b/" (not on a bare space) so paths containing spaces survive.
+      currentFileName = line.slice('diff --git '.length).split(' b/')[0]?.replace(/^a\//, '') ?? ''
     }
     currentHunk.push(line)
   }

@@ -132,9 +132,15 @@ export function runRead(opts: ReadOptions): number {
     return 0
   }
 
-  const [symBase, methodName] = symbol.includes('.')
-    ? [symbol.split('.')[0] ?? symbol, symbol.split('.')[1]]
-    : [symbol, undefined]
+  // For a dotted path (e.g. "Session.refresh" or "Outer.Inner.refresh"), the symbol
+  // we want is the leaf — the LAST segment — since methods are indexed by their bare
+  // name. Using split('.')[1] would pick the middle segment of a 3+ part path and
+  // resolve to the wrong symbol (e.g. the inner class instead of its method).
+  const dotParts = symbol.split('.')
+  const [symBase, methodName] =
+    dotParts.length > 1
+      ? [dotParts[0] ?? symbol, dotParts[dotParts.length - 1]]
+      : [symbol, undefined]
 
   // When a method name is given (e.g. "Session.refresh"), query for the method
   // name directly. Querying for symBase (the class name) and then searching for

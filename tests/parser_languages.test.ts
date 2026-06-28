@@ -84,6 +84,30 @@ config:
 
       fs.rmSync(tmpDir, { recursive: true })
     })
+
+    it('extracts kebab-case keys and ignores list-item lines', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const yamlFile = path.join(tmpDir, 'ci.yaml')
+
+      const content = `name: build
+runs-on: ubuntu-latest
+on-failure: retry
+steps:
+- uses: actions/checkout
+`
+
+      fs.writeFileSync(yamlFile, content)
+      const result = await parseFile(yamlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('runs-on')
+      expect(names).toContain('on-failure')
+      // A sequence item ("- uses: ...") must not be captured as a key named "uses" or "-".
+      expect(names).not.toContain('uses')
+      expect(names).not.toContain('-')
+
+      fs.rmSync(tmpDir, { recursive: true })
+    })
   })
 
   describe('toml symbols', () => {
@@ -106,6 +130,25 @@ testpaths = ["tests"]
       expect(result.symbols.length).toBeGreaterThan(0)
       const names = result.symbols.map((s) => s.name)
       expect(names).toContain('project')
+
+      fs.rmSync(tmpDir, { recursive: true })
+    })
+
+    it('extracts kebab-case bare keys', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const tomlFile = path.join(tmpDir, 'config.toml')
+
+      const content = `[hints]
+serve-diff-on-reread = true
+max-bytes = 1024
+`
+
+      fs.writeFileSync(tomlFile, content)
+      const result = await parseFile(tomlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('serve-diff-on-reread')
+      expect(names).toContain('max-bytes')
 
       fs.rmSync(tmpDir, { recursive: true })
     })

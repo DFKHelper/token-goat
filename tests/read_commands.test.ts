@@ -149,6 +149,21 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runRead({ spec: 'src/foo.ts::myFn' }) })
       expect(stdout).toContain('# 6 lines')
     })
+
+    it('looks up the leaf segment for a two-part dotted symbol', () => {
+      mockQuerySymbols.mockReturnValue([])
+      runRead({ spec: 'src/foo.ts::Session.refresh' })
+      expect(mockQuerySymbols).toHaveBeenCalledWith(expect.objectContaining({ name: 'refresh' }))
+    })
+
+    it('looks up the LAST segment (not the middle) for a 3+ part dotted symbol', () => {
+      // Methods are indexed by bare leaf name; "Outer.Inner.refresh" must resolve to
+      // the method `refresh`, never the middle class `Inner`.
+      mockQuerySymbols.mockReturnValue([])
+      runRead({ spec: 'src/foo.ts::Outer.Inner.refresh' })
+      expect(mockQuerySymbols).toHaveBeenCalledWith(expect.objectContaining({ name: 'refresh' }))
+      expect(mockQuerySymbols).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Inner' }))
+    })
   })
 
   // ---- runSection ---------------------------------------------------------
