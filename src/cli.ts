@@ -16,10 +16,13 @@ import * as fs from 'fs'
 import * as path from 'path'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
-import { buildCompactMap, formatMap } from './repomap.js'
+import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { VERSION } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
+import { indexFileSync } from './parser.js'
+import { detectLanguage } from './parser_types.js'
+import { normalizePath } from './paths.js'
 import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import { readSection } from './section_reader.js'
@@ -148,6 +151,22 @@ function cmdOutline(file: string): void {
     return `${span} ${kind} ${s.name}${doc}`
   })
   out(lines.join('\n'))
+}
+
+function cmdIndex(pathArg?: string): void {
+  const root = pathArg ?? process.cwd()
+  const files = getTrackedFiles(root)
+  if (files.length === 0) {
+    throw new CliError(`no tracked files found under '${root}' (is it a git repo?)`)
+  }
+  let indexed = 0
+  for (const f of files) {
+    const norm = normalizePath(f)
+    if (detectLanguage(norm) === 'unknown') continue
+    indexFileSync(norm)
+    indexed += 1
+  }
+  out(`Indexed ${indexed} files into the symbol index.`)
 }
 
 function cmdMap(opts: { compact?: boolean }): void {
@@ -707,6 +726,11 @@ export function buildProgram(): Command {
     .command('outline <file>')
     .description('list symbols with line ranges and docstrings')
     .action(guard(cmdOutline))
+
+  program
+    .command('index [path]')
+    .description('parse all git-tracked files and (re)build the symbol index')
+    .action(guard(cmdIndex))
 
   program
     .command('map')

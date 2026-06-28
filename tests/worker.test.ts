@@ -12,6 +12,9 @@ import {
   stopWorker,
   workerPidPath,
 } from '../src/worker.js'
+import { querySymbols } from '../src/index_reader.js'
+import { closeDb } from '../src/db.js'
+import { normalizePath } from '../src/paths.js'
 
 let DIR: string
 
@@ -99,5 +102,36 @@ describe('drainOnce', () => {
 
   it('is a no-op (returns 0) when the queue is empty', () => {
     expect(drainOnce(DIR)).toBe(0)
+  })
+
+  // Regression: the shipping path is `runWorkerLoop -> drainOnce(dir)` with NO
+  // injected index callback. Before the fix, the default callback was a stub
+  // that wrote "would index" to stderr and never touched the DB, so every
+  // surgical-read command silently returned an empty index. This test drives
+  // the real default path (no callback) end-to-end and asserts the symbols
+  // table is actually populated — it fails against the stub (0 rows) and passes
+  // once the real indexer is wired in. The existing drainOnce/processDirtyBatch
+  // tests inject their own callback, so they never exercised this path.
+  it('default path indexes drained files into global.db (no injected callback)', () => {
+    const src = path.join(DIR, 'sample.ts')
+    fs.writeFileSync(src, 'export function knownWorkerSymbol(): number {\n  return 42\n}\n')
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+
+    // Real shipping path: drain with no index callback.
+    const count = drainOnce(DIR)
+    expect(count).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      const all = querySymbols({ limit: 1000 }, projectDb)
+      expect(all.length).toBeGreaterThan(0)
+      const found = querySymbols({ name: 'knownWorkerSymbol', limit: 10 }, projectDb)
+      expect(found.length).toBeGreaterThan(0)
+      expect(found[0]?.name).toBe('knownWorkerSymbol')
+    } finally {
+      // Release the better-sqlite3 handle so afterEach can remove DIR on Windows.
+      closeDb(projectDb)
+    }
   })
 })

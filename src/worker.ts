@@ -11,10 +11,9 @@
  *     pid file so a later {@link stopWorker} / {@link isWorkerRunning} can find
  *     it.
  *
- * The loop itself: read `{dataDir}/queue/dirty.txt`, SHA-check each path, and
- * (eventually) re-index changed files — the indexer call is a stub here, as the
- * Layer-6 scope is the daemon plumbing, not the indexer. Processed entries are
- * cleared from the queue before sleeping `pollIntervalMs`.
+ * The loop itself: read `{dataDir}/queue/dirty.txt`, parse each changed path,
+ * and write its symbol/ref rows into the index DB via {@link indexFileSync}.
+ * Processed entries are cleared from the queue before sleeping `pollIntervalMs`.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
@@ -23,8 +22,9 @@ import * as path from 'node:path'
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
 import { fileURLToPath } from 'node:url'
 
-import { dataDir } from './constants.js'
+import { dataDir, globalDbPath } from './constants.js'
 import { fingerprintFile } from './fingerprint.js'
+import { indexFileSync } from './parser.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
 export interface WorkerOptions {
@@ -91,19 +91,34 @@ function clearDirtyQueueFor(dir: string): void {
 }
 
 /**
+ * Build the index callback the drain loop uses by default: parse each changed
+ * file and write its symbol/ref rows into the index DB at `dbPath`. A parse or
+ * read failure on one file is swallowed so a single bad file never aborts the
+ * batch or crashes the drain loop.
+ */
+function makeIndexer(dbPath: string): (absPath: string, sha: string) => void {
+  return (absPath) => {
+    try {
+      indexFileSync(absPath, dbPath)
+    } catch {
+      // One bad file must not abort the rest of the batch.
+    }
+  }
+}
+
+/**
  * Process one batch of dirty paths.
  *
  * For each path: skip if the file no longer exists or cannot be fingerprinted,
- * otherwise (in the real indexer) re-index it. Here the index step is a stub
- * that logs intent. Returns the number of paths that would have been indexed.
+ * otherwise re-index it. The default `index` callback parses the file and
+ * writes its rows into the global index DB; tests inject their own callback to
+ * observe the plumbing in isolation. Returns the number of paths indexed.
  *
  * Exported for unit tests so the drain logic can be exercised without a thread.
  */
 export function processDirtyBatch(
   paths: string[],
-  index: (absPath: string, sha: string) => void = (absPath) => {
-    process.stderr.write(`token-goat worker: would index: ${absPath}\n`)
-  },
+  index: (absPath: string, sha: string) => void = makeIndexer(globalDbPath()),
 ): number {
   let indexed = 0
   for (const p of paths) {
@@ -120,12 +135,15 @@ export function processDirtyBatch(
  * Run one drain cycle for `dir`: snapshot the queue, process it, clear it.
  *
  * Returns the number of paths processed. Clears the queue only when it held
- * entries, so an empty poll leaves the (absent) file untouched.
+ * entries, so an empty poll leaves the (absent) file untouched. When no `index`
+ * callback is injected, files are indexed into `dir`'s `global.db` (the real
+ * shipping path); in production `dir` is the data dir, so this is
+ * {@link globalDbPath}.
  */
 export function drainOnce(dir: string, index?: (absPath: string, sha: string) => void): number {
   const paths = getDirtyPathsFor(dir)
   if (paths.length === 0) return 0
-  const indexed = processDirtyBatch(paths, index)
+  const indexed = processDirtyBatch(paths, index ?? makeIndexer(path.join(dir, 'global.db')))
   clearDirtyQueueFor(dir)
   return indexed
 }
