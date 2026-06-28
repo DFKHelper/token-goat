@@ -1299,6 +1299,34 @@ describe('preBashHandler — python heredoc file read', () => {
   })
 })
 
+// Regression: stripOutputPipeline must not strip content inside quoted strings
+describe('postBashHandler — quoted > in command is not treated as a redirect', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('stores cache entry under the full command hash when > appears inside quotes', async () => {
+    // Bug: redirect-stripping regex lacked quote awareness, so
+    // 'pytest -- -k "test_count > 0"' was truncated to 'pytest -- -k "test_count'
+    // and stored under the wrong (shorter) hash. On the second run the lookup
+    // used the same wrong hash so recall "worked", but any unrelated command
+    // that happened to hash to the same truncated key got a false cache hit.
+    const cmd = 'pytest -- -k "test_count > 0"'
+    const largeOutput = 'PASSED test_count_positive\nPASSED test_count_zero\n'.repeat(60)
+    await postBashHandler(makePostBashEvent(cmd, largeOutput))
+
+    const { fingerprintContent } = await import('../src/fingerprint.js')
+
+    // Must be stored under the full, untruncated command.
+    const correctHash = fingerprintContent(cmd).slice(0, 16)
+    expect(getBashOutputId(correctHash)).not.toBeNull()
+
+    // Must NOT be stored under the incorrectly-truncated key.
+    const wrongHash = fingerprintContent('pytest -- -k "test_count').slice(0, 16)
+    expect(getBashOutputId(wrongHash)).toBeNull()
+  })
+})
+
 // Item 4 (nestpilot mining): .sql files in cat → contextOutput with SQL-specific hint
 describe('preBashHandler — SQL file cat hint', () => {
   beforeEach(() => {
