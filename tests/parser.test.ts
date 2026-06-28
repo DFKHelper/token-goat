@@ -140,6 +140,93 @@ describe('parseFile', () => {
   })
 })
 
+describe('parseFile reference extraction', () => {
+  it('extracts call-site refs with the enclosing caller in context (.ts)', async () => {
+    const file = write(
+      'callers.ts',
+      'function helper(): number {\n' +
+        '  return 1\n' +
+        '}\n' +
+        'export function driver(): number {\n' +
+        '  return helper() + helper()\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    // The defect: refs was hard-coded to []. With extraction wired in, the call to `helper` inside `driver` must be captured, attributed to `driver`.
+    expect(result.refs.length).toBeGreaterThan(0)
+    const helperRef = result.refs.find((r) => r.name === 'helper')
+    expect(helperRef).toBeDefined()
+    expect(helperRef?.context).toBe('driver')
+    expect(helperRef?.filePath).toBe(file)
+    expect(helperRef?.line).toBe(5)
+  })
+
+  it('attributes a method call to its enclosing method name (.ts)', async () => {
+    const file = write(
+      'klass.ts',
+      'class Service {\n' +
+        '  run(): void {\n' +
+        '    this.helper()\n' +
+        '  }\n' +
+        '  helper(): void {}\n' +
+        '}\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'helper')
+    expect(ref?.context).toBe('run')
+  })
+
+  it('extracts call-site refs from a .py file with the enclosing def in context', async () => {
+    const file = write(
+      'callers.py',
+      'def helper():\n' +
+        '    return 1\n' +
+        'def driver():\n' +
+        '    return helper()\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'helper')
+    expect(ref?.context).toBe('driver')
+  })
+
+  it('resolves the enclosing function for a C call (name lives in a declarator chain)', async () => {
+    const file = write(
+      'callers.c',
+      'int helper(){ return 1; }\n' +
+        'int* driver(){ return helper(); }\n',
+    )
+    const result = await parseFile(file)
+    const ref = result.refs.find((r) => r.name === 'helper')
+    expect(ref).toBeDefined()
+    expect(ref?.context).toBe('driver')
+  })
+
+  it('yields no refs for a language without a tree-sitter grammar', async () => {
+    const file = write('notes.md', '# Title\n\nsome prose calling foo()\n')
+    const result = await parseFile(file)
+    expect(result.refs).toEqual([])
+  })
+})
+
+describe('indexFile reference extraction (real write path)', () => {
+  it('populates the refs table so queryRefs resolves a caller', async () => {
+    const file = write(
+      'svc.ts',
+      'function helper() { return 2 }\n' +
+        'export function driver() { return helper() }\n',
+    )
+    const db = path.join(TMP, 'index.db')
+    await indexFile(file, db)
+
+    const conn = (await import('../src/db.js')).getDb(db)
+    const rows = conn.prepare('SELECT name, context FROM refs').all() as Array<{
+      name: string
+      context: string
+    }>
+    expect(rows.some((r) => r.name === 'helper' && r.context === 'driver')).toBe(true)
+  })
+})
+
 describe('isTreeSitterAvailable', () => {
   it('returns a boolean without throwing for every language case', () => {
     expect(typeof isTreeSitterAvailable('typescript')).toBe('boolean')

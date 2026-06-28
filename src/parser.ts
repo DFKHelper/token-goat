@@ -436,6 +436,304 @@ function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   return out
 }
 
+// --- Reference (call-site) extraction via tree-sitter ----------------------
+
+// Languages whose tree-sitter grammar we walk for call-site references. Each reference row records the callee name, the line/column of the call, and the enclosing function/method/class symbol (stored in `context`) so that `refs --callers` can group usages by the symbol that contains them.
+const REF_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
+  'typescript',
+  'javascript',
+  'python',
+  'go',
+  'rust',
+  'java',
+  'c',
+  'cpp',
+  'ruby',
+])
+
+// Node types that introduce a named enclosing scope, per language. The walker pushes the node's `name` onto a stack while descending its children so each reference resolves to its innermost enclosing symbol.
+const SCOPE_TYPES_BY_LANG: ReadonlyMap<Language, ReadonlySet<string>> = new Map([
+  [
+    'typescript',
+    new Set([
+      'function_declaration',
+      'generator_function_declaration',
+      'class_declaration',
+      'abstract_class_declaration',
+      'method_definition',
+    ]),
+  ],
+  [
+    'javascript',
+    new Set([
+      'function_declaration',
+      'generator_function_declaration',
+      'class_declaration',
+      'method_definition',
+    ]),
+  ],
+  ['python', new Set(['function_definition', 'class_definition'])],
+  ['go', new Set(['function_declaration', 'method_declaration'])],
+  ['rust', new Set(['function_item'])],
+  [
+    'java',
+    new Set(['method_declaration', 'constructor_declaration', 'class_declaration']),
+  ],
+  ['c', new Set(['function_definition'])],
+  ['cpp', new Set(['function_definition'])],
+  ['ruby', new Set(['method', 'singleton_method', 'class', 'module'])],
+])
+
+// Node types that represent a call site, per language.
+const CALL_TYPES_BY_LANG: ReadonlyMap<Language, ReadonlySet<string>> = new Map([
+  ['typescript', new Set(['call_expression', 'new_expression'])],
+  ['javascript', new Set(['call_expression', 'new_expression'])],
+  ['python', new Set(['call'])],
+  ['go', new Set(['call_expression'])],
+  ['rust', new Set(['call_expression', 'macro_invocation'])],
+  ['java', new Set(['method_invocation', 'object_creation_expression'])],
+  ['c', new Set(['call_expression'])],
+  ['cpp', new Set(['call_expression'])],
+  ['ruby', new Set(['call'])],
+])
+
+// Builtins / globals that carry no useful "who calls X" signal. Filtered out of the refs index to keep `refs --callers` focused on project symbols. Method calls (`obj.foo()`) are captured by their property name (`foo`), so these only suppress bare-identifier calls to language builtins.
+const REF_NOISE_BY_LANG: ReadonlyMap<Language, ReadonlySet<string>> = new Map([
+  [
+    'typescript',
+    new Set([
+      'require',
+      'Boolean',
+      'Number',
+      'String',
+      'Array',
+      'Object',
+      'Symbol',
+      'BigInt',
+      'parseInt',
+      'parseFloat',
+      'isNaN',
+      'isFinite',
+      'setTimeout',
+      'setInterval',
+      'clearTimeout',
+      'clearInterval',
+    ]),
+  ],
+  [
+    'python',
+    new Set([
+      'print',
+      'len',
+      'range',
+      'str',
+      'int',
+      'float',
+      'bool',
+      'list',
+      'dict',
+      'set',
+      'tuple',
+      'type',
+      'isinstance',
+      'issubclass',
+      'hasattr',
+      'getattr',
+      'setattr',
+      'enumerate',
+      'zip',
+      'sorted',
+      'reversed',
+      'min',
+      'max',
+      'sum',
+      'abs',
+      'open',
+      'repr',
+      'super',
+    ]),
+  ],
+])
+
+// JavaScript reuses the TypeScript noise set.
+const JS_NOISE = REF_NOISE_BY_LANG.get('typescript') ?? new Set<string>()
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set<string>()
+
+/** Last `::`- or `.`-separated segment of a path expression text. */
+function lastSegment(text: string): string {
+  const parts = text.split(/::|\./)
+  return parts[parts.length - 1] ?? text
+}
+
+/**
+ * Resolve the name of the enclosing symbol a `node` introduces, or `null` if it
+ * does not introduce a named scope. Handles TS/JS `const f = () => {}` arrow and
+ * function-expression bindings as named scopes in addition to the declaration
+ * node types in {@link SCOPE_TYPES_BY_LANG}.
+ */
+function scopeName(node: TsNode, language: Language): string | null {
+  if (
+    (language === 'typescript' || language === 'javascript') &&
+    node.type === 'variable_declarator'
+  ) {
+    const value = node.childForFieldName('value')
+    if (
+      value !== null &&
+      (value.type === 'arrow_function' ||
+        value.type === 'function_expression' ||
+        value.type === 'function')
+    ) {
+      return node.childForFieldName('name')?.text ?? null
+    }
+    return null
+  }
+  const scopeTypes = SCOPE_TYPES_BY_LANG.get(language)
+  if (scopeTypes !== undefined && scopeTypes.has(node.type)) {
+    // C/C++ name a function via a nested `declarator` chain rather than a `name`
+    // field (e.g. `int* f()` wraps a pointer_declarator around the identifier).
+    if ((language === 'c' || language === 'cpp') && node.type === 'function_definition') {
+      return cFunctionName(node)
+    }
+    return node.childForFieldName('name')?.text ?? null
+  }
+  return null
+}
+
+/** Descend a C/C++ function_definition's `declarator` chain to its identifier. */
+function cFunctionName(node: TsNode): string | null {
+  let cur: TsNode | null = node.childForFieldName('declarator')
+  // Bound the walk so a malformed/unexpected tree can never loop forever.
+  for (let i = 0; cur !== null && i < 16; i++) {
+    if (cur.type === 'identifier' || cur.type === 'field_identifier') return cur.text
+    cur = cur.childForFieldName('declarator')
+  }
+  return null
+}
+
+/**
+ * Resolve the callee name of a call-site `node` for `language`.
+ *
+ * Returns the bare identifier for plain calls (`foo()`), the property/field for
+ * member or selector calls (`obj.foo()` → `foo`, `pkg.Fn()` → `Fn`), the macro
+ * name for Rust macro invocations, and the constructor name for `new` / object
+ * creation expressions. Returns `null` for shapes with no resolvable name.
+ */
+function calleeName(call: TsNode, language: Language): string | null {
+  switch (language) {
+    case 'typescript':
+    case 'javascript': {
+      if (call.type === 'new_expression') {
+        const c = call.childForFieldName('constructor')
+        if (c === null) return null
+        if (c.type === 'identifier') return c.text
+        if (c.type === 'member_expression') return c.childForFieldName('property')?.text ?? null
+        return null
+      }
+      const fn = call.childForFieldName('function')
+      if (fn === null) return null
+      if (fn.type === 'identifier') return fn.text
+      if (fn.type === 'member_expression') return fn.childForFieldName('property')?.text ?? null
+      return null
+    }
+    case 'python': {
+      const fn = call.childForFieldName('function')
+      if (fn === null) return null
+      if (fn.type === 'identifier') return fn.text
+      if (fn.type === 'attribute') return fn.childForFieldName('attribute')?.text ?? null
+      return null
+    }
+    case 'go': {
+      const fn = call.childForFieldName('function')
+      if (fn === null) return null
+      if (fn.type === 'identifier') return fn.text
+      if (fn.type === 'selector_expression') return fn.childForFieldName('field')?.text ?? null
+      return null
+    }
+    case 'rust': {
+      if (call.type === 'macro_invocation') {
+        const m = call.childForFieldName('macro')
+        return m !== null ? lastSegment(m.text) : null
+      }
+      const fn = call.childForFieldName('function')
+      if (fn === null) return null
+      if (fn.type === 'identifier') return fn.text
+      if (fn.type === 'field_expression') return fn.childForFieldName('field')?.text ?? null
+      if (fn.type === 'scoped_identifier') {
+        return fn.childForFieldName('name')?.text ?? lastSegment(fn.text)
+      }
+      return null
+    }
+    case 'java': {
+      // method_invocation and object_creation_expression both expose `name`/`type`.
+      const n = call.childForFieldName('name') ?? call.childForFieldName('type')
+      return n !== null ? lastSegment(n.text) : null
+    }
+    case 'c':
+    case 'cpp': {
+      const fn = call.childForFieldName('function')
+      if (fn === null) return null
+      if (fn.type === 'identifier') return fn.text
+      if (fn.type === 'field_expression') return fn.childForFieldName('field')?.text ?? null
+      return null
+    }
+    case 'ruby': {
+      const m = call.childForFieldName('method')
+      return m?.text ?? null
+    }
+    default:
+      return null
+  }
+}
+
+/**
+ * Walk a tree-sitter tree collecting call-site references.
+ *
+ * Maintains a stack of enclosing scope names (functions / methods / classes) so
+ * each reference records its innermost enclosing symbol in `context` — the data
+ * `refs --callers` groups on. References are deduplicated per (name, line) and
+ * single-character / builtin callees are dropped to keep the index focused.
+ */
+function extractRefs(root: TsNode, filePath: string, language: Language): RefEntry[] {
+  const out: RefEntry[] = []
+  const seen = new Set<string>()
+  const callTypes = CALL_TYPES_BY_LANG.get(language) ?? EMPTY_STRING_SET
+  const noise =
+    language === 'javascript'
+      ? JS_NOISE
+      : (REF_NOISE_BY_LANG.get(language) ?? EMPTY_STRING_SET)
+  const stack: string[] = []
+
+  const visit = (node: TsNode): void => {
+    const enclosing = scopeName(node, language)
+    if (enclosing !== null && enclosing !== '') stack.push(enclosing)
+
+    if (callTypes.has(node.type)) {
+      const callee = calleeName(node, language)
+      if (callee !== null && callee.length > 1 && !noise.has(callee)) {
+        const line = node.startPosition.row + 1
+        const key = `${callee} ${line}`
+        if (!seen.has(key)) {
+          seen.add(key)
+          out.push({
+            filePath,
+            name: callee,
+            line,
+            col: node.startPosition.column,
+            context: stack.length > 0 ? (stack[stack.length - 1] ?? '') : '',
+          })
+        }
+      }
+    }
+
+    for (const child of node.namedChildren) visit(child)
+
+    if (enclosing !== null && enclosing !== '') stack.pop()
+  }
+
+  visit(root)
+  return out
+}
+
 // --- Regex extractors for languages without tree-sitter ---
 
 function extractMarkdownSymbols(content: string, filePath: string): SymbolEntry[] {
@@ -709,8 +1007,9 @@ function extractWithRegex(content: string, filePath: string): SymbolEntry[] {
  *
  * Dispatches to the tree-sitter extractor when a grammar is available for the
  * detected language, otherwise falls back to regex. Unknown languages and
- * unreadable files yield an empty symbol list (never throws). Refs are not
- * extracted in this port — the field is present for parity and always `[]`.
+ * unreadable files yield empty symbol/ref lists (never throws). Call-site refs
+ * are extracted for the tree-sitter languages in {@link REF_LANGUAGES}; the
+ * regex-fallback and structured-config languages yield no refs.
  */
 export async function parseFile(filePath: string): Promise<ParseResult> {
   const start = Date.now()
@@ -723,12 +1022,18 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
     return { symbols: [], refs: [], language, duration: Date.now() - start }
   }
 
-  const symbols = parseContent(content, filePath, language)
-  return { symbols, refs: [], language, duration: Date.now() - start }
+  const { symbols, refs } = parseContent(content, filePath, language)
+  return { symbols, refs, language, duration: Date.now() - start }
+}
+
+/** Symbols + refs extracted from one file's content. */
+interface ParseContentResult {
+  readonly symbols: SymbolEntry[]
+  readonly refs: RefEntry[]
 }
 
 /** Shared sync core: pick an extractor for `language` and run it on `content`. */
-function parseContent(content: string, filePath: string, language: Language): SymbolEntry[] {
+function parseContent(content: string, filePath: string, language: Language): ParseContentResult {
   if (isTreeSitterAvailable(language)) {
     try {
       const Ctor = loadParserCtor()
@@ -737,20 +1042,25 @@ function parseContent(content: string, filePath: string, language: Language): Sy
         const parser = new Ctor()
         parser.setLanguage(grammar)
         const tree = parser.parse(content)
+        const root = tree.rootNode
+        let symbols: SymbolEntry[]
         if (language === 'python') {
-          return extractPythonSymbols(tree.rootNode, filePath)
+          symbols = extractPythonSymbols(root, filePath)
         } else if (language === 'go') {
-          return extractGoSymbols(tree.rootNode, filePath)
+          symbols = extractGoSymbols(root, filePath)
         } else if (language === 'rust') {
-          return extractRustSymbols(tree.rootNode, filePath)
+          symbols = extractRustSymbols(root, filePath)
         } else if (language === 'ruby') {
-          return extractRubySymbols(tree.rootNode, filePath)
+          symbols = extractRubySymbols(root, filePath)
         } else if (language === 'java') {
-          return extractJavaSymbols(tree.rootNode, filePath)
+          symbols = extractJavaSymbols(root, filePath)
         } else if (language === 'cpp' || language === 'c') {
-          return extractCppSymbols(tree.rootNode, filePath)
+          symbols = extractCppSymbols(root, filePath)
+        } else {
+          symbols = extractTsJsSymbols(root, filePath)
         }
-        return extractTsJsSymbols(tree.rootNode, filePath)
+        const refs = REF_LANGUAGES.has(language) ? extractRefs(root, filePath, language) : []
+        return { symbols, refs }
       }
     } catch {
       // Parser threw on this input — fall through to the regex pass below.
@@ -758,6 +1068,18 @@ function parseContent(content: string, filePath: string, language: Language): Sy
   }
 
   // Regex-based extractors for languages without tree-sitter
+  return { symbols: extractSymbolsNoTreeSitter(content, filePath, language), refs: [] }
+}
+
+/**
+ * Symbol extraction for languages with no tree-sitter grammar: the regex and
+ * structured-config adapters. Returns an empty list for `unknown`.
+ */
+function extractSymbolsNoTreeSitter(
+  content: string,
+  filePath: string,
+  language: Language,
+): SymbolEntry[] {
   if (language === 'markdown') return extractMarkdownSymbols(content, filePath)
   if (language === 'json') return extractJsonSymbols(content, filePath)
   if (language === 'yaml') return extractYamlSymbols(content, filePath)
@@ -852,8 +1174,8 @@ export function indexFileSync(filePath: string, dbPath: string = globalDbPath())
   } catch {
     return
   }
-  const symbols = parseContent(content, filePath, language)
-  writeParseResult(filePath, { symbols, refs: [], language, duration: 0 }, dbPath)
+  const { symbols, refs } = parseContent(content, filePath, language)
+  writeParseResult(filePath, { symbols, refs, language, duration: 0 }, dbPath)
 }
 
 /**

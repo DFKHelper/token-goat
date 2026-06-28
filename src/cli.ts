@@ -19,11 +19,11 @@ import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { VERSION } from './constants.js'
 import { getSessionFiles } from './session.js'
-import { querySymbols, searchSymbolsFts } from './index_reader.js'
+import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
 import { indexFileSync } from './parser.js'
 import { detectLanguage } from './parser_types.js'
 import { normalizePath, resolveIndexPath } from './paths.js'
-import type { SymbolEntry } from './parser_types.js'
+import type { RefEntry, SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import { readSection } from './section_reader.js'
 import { installHooks, uninstallHooks } from './install.js'
@@ -158,6 +158,52 @@ function cmdOutline(file: string): void {
     return `${span} ${kind} ${s.name}${doc}`
   })
   out(lines.join('\n'))
+}
+
+function cmdRefs(spec: string, opts: { callers?: boolean; limit?: string }): void {
+  // Spec is either "file::symbol" (references to `symbol` occurring in `file`) or a bare "symbol" (references to `symbol` anywhere in the index). This matches read_commands.runRefs: a `::file` scopes the lookup to that file.
+  const idx = spec.indexOf('::')
+  const file = idx === -1 ? undefined : spec.slice(0, idx)
+  const name = idx === -1 ? spec : spec.slice(idx + 2)
+  if (name === '') {
+    throw new CliError(`expected a symbol name, got: ${spec}`)
+  }
+
+  const limit = opts.limit !== undefined ? Number.parseInt(opts.limit, 10) : 100
+  const query: Parameters<typeof queryRefs>[0] = {
+    name,
+    limit: Number.isFinite(limit) ? limit : 100,
+  }
+  if (file !== undefined) query.filePath = resolveIndexPath(file)
+
+  const results = queryRefs(query)
+  if (results.length === 0) {
+    throw new CliError(`no references to '${name}'${file !== undefined ? ` in '${file}'` : ''} in the index`)
+  }
+
+  if (opts.callers === true) {
+    out(formatCallerGroups(results))
+  } else {
+    out(results.map((r) => `${r.filePath}:${r.line}: ${r.context}`).join('\n'))
+  }
+}
+
+/** Group refs by file and render each with its enclosing caller symbol. */
+function formatCallerGroups(refs: RefEntry[]): string {
+  const byFile = new Map<string, RefEntry[]>()
+  for (const ref of refs) {
+    const bucket = byFile.get(ref.filePath)
+    if (bucket !== undefined) bucket.push(ref)
+    else byFile.set(ref.filePath, [ref])
+  }
+  const blocks: string[] = []
+  for (const [file, fileRefs] of byFile) {
+    const lines = fileRefs.map(
+      (r) => `  :${r.line}  ${r.context !== '' ? r.context : '(module scope)'}`,
+    )
+    blocks.push(`${file}:\n${lines.join('\n')}`)
+  }
+  return blocks.join('\n')
 }
 
 function cmdIndex(pathArg?: string): void {
@@ -733,6 +779,13 @@ export function buildProgram(): Command {
     .command('outline <file>')
     .description('list symbols with line ranges and docstrings')
     .action(guard(cmdOutline))
+
+  program
+    .command('refs <spec>')
+    .description('find references to a symbol (spec: file::symbol or symbol)')
+    .option('--callers', 'group references by their enclosing caller symbol')
+    .option('-l, --limit <n>', 'max results')
+    .action(guard(cmdRefs))
 
   program
     .command('index [path]')

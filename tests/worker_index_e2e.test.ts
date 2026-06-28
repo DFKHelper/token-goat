@@ -57,6 +57,12 @@ beforeAll(() => {
     path.join(repo, 'src', 'mod.ts'),
     'export function alphaSym(): number {\n  return 1\n}\nexport function betaSym(): number {\n  return 2\n}\n',
   )
+  // A file whose exported symbol is called within the same file, so the refs index has a resolvable caller for the `refs --callers` smoke test.
+  fs.writeFileSync(
+    path.join(repo, 'caller.ts'),
+    'export function refHelper(): number {\n  return 1\n}\n' +
+      'export function refDriver(): number {\n  return refHelper() + refHelper()\n}\n',
+  )
   // `git ls-files` lists staged files, so init + add is enough — no commit
   // (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
@@ -77,6 +83,8 @@ describe('built bundle end-to-end indexing', () => {
     // The real indexer's write path must survive bundling; the old stub must not.
     expect(bundle).toContain('DELETE FROM symbols WHERE file_path')
     expect(bundle).not.toContain('would index')
+    // The call-site ref walker must also survive tree-shaking.
+    expect(bundle).toContain('CALL_TYPES_BY_LANG')
   })
 
   it('index then symbol resolves a known symbol from the built bundle', () => {
@@ -87,6 +95,17 @@ describe('built bundle end-to-end indexing', () => {
     const sym = runBundle(['symbol', 'knownBundleSymbol'])
     expect(sym.status).toBe(0)
     expect(sym.stdout).toContain('knownBundleSymbol')
+  }, 60000)
+
+  // Ref extraction must survive bundling too: a build that tree-shakes the ref walker out would leave the refs table empty and this would return exit 1.
+  it('refs --callers resolves a caller from the built bundle', () => {
+    const idx = runBundle(['index', repo])
+    expect(idx.status).toBe(0)
+
+    const refs = runBundle(['refs', 'caller.ts::refHelper', '--callers'])
+    expect(refs.status).toBe(0)
+    expect(refs.stdout).toContain('refDriver')
+    expect(refs.stdout).toContain('caller.ts')
   }, 60000)
 })
 
