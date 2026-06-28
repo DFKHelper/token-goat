@@ -19,22 +19,33 @@ import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { VERSION } from './constants.js'
 import { getSessionFiles } from './session.js'
-import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
+import { searchSymbolsFts } from './index_reader.js'
 import { indexFileSync } from './parser.js'
 import { detectLanguage } from './parser_types.js'
 import { resolveIndexPath } from './paths.js'
-import type { RefEntry, SymbolEntry } from './parser_types.js'
+import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
-import { readSection } from './section_reader.js'
 import { installHooks, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
 import { isWorkerRunning, startDetachedWorker, stopWorker } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getWebOutput } from './web_cache.js'
-import { runExports, runImports, runFind, runGrep } from './read_commands.js'
+import {
+  runSymbol,
+  runRead,
+  runSection,
+  runRefs,
+  runSkeleton,
+  runOutline,
+  runChanged,
+  runConfigGet,
+  runExports,
+  runImports,
+  runFind,
+  runGrep,
+} from './read_commands.js'
 import { getSkillFilePath, listSkills, storeCompact } from './skill_cache.js'
-import { loadConfig } from './config.js'
-import { runGit, isWindows, ensureNewline, extractErrorMessage } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage } from './util.js'
 import { renderStats } from './stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -60,66 +71,7 @@ function symbolHeader(s: SymbolEntry): string {
   return `# ${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}-${s.lineEnd}`
 }
 
-/** Split a `file::symbol` (or `file::Class.method`) spec into its two halves. */
-function splitFileSpec(spec: string): { file: string; member: string } {
-  const idx = spec.indexOf('::')
-  if (idx === -1) {
-    throw new CliError(`expected '<file>::<name>', got: ${spec}`)
-  }
-  return { file: spec.slice(0, idx), member: spec.slice(idx + 2) }
-}
-
 // --- Command handlers -------------------------------------------------------
-
-function cmdSymbol(name: string, opts: { limit?: string; file?: string; kind?: string }): void {
-  const limit = opts.limit !== undefined ? Number.parseInt(opts.limit, 10) : 20
-  const results = querySymbols({
-    name,
-    ...(opts.file !== undefined ? { filePath: opts.file } : {}),
-    ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
-    limit: Number.isFinite(limit) ? limit : 20,
-  })
-
-  if (results.length === 0) {
-    throw new CliError(`no symbol named '${name}' in the index`)
-  }
-
-  const blocks = results.map((s) => `${symbolHeader(s)}\n${previewLines(s.body, 5)}`)
-  out(blocks.join('\n\n'))
-}
-
-function cmdRead(spec: string): void {
-  const { file, member } = splitFileSpec(spec)
-  // Match on bare name or trailing member (`Class.method` → `method`).
-  const bare = member.includes('.') ? member.slice(member.lastIndexOf('.') + 1) : member
-
-  const candidates = querySymbols({ name: bare, limit: 50 })
-  // Primary match is the resolved index key (handles relative and backslash
-  // input on Windows); the endsWith fallbacks keep partial-path lookups working.
-  const resolved = resolveIndexPath(file)
-  const inFile = candidates.filter(
-    (s) =>
-      s.filePath === resolved ||
-      s.filePath === file ||
-      s.filePath.endsWith(file) ||
-      file.endsWith(s.filePath),
-  )
-  const pick = inFile[0] ?? candidates[0]
-
-  if (pick === undefined) {
-    throw new CliError(`symbol '${member}' not found in '${file}'`)
-  }
-  out(`${symbolHeader(pick)}\n${pick.body}`)
-}
-
-function cmdSection(spec: string): void {
-  const { file, member } = splitFileSpec(spec)
-  const result = readSection(file, member)
-  if (result === null) {
-    throw new CliError(`section '${member}' not found in '${file}'`)
-  }
-  out(`# ${result.heading} — ${file}:${result.lineStart}-${result.lineEnd}\n${result.content}`)
-}
 
 function cmdSemantic(query: string, opts: { limit?: string }): void {
   const limit = opts.limit !== undefined ? Number.parseInt(opts.limit, 10) : 20
@@ -130,82 +82,6 @@ function cmdSemantic(query: string, opts: { limit?: string }): void {
   }
   const blocks = results.map((s) => `${symbolHeader(s)}\n${previewLines(s.body, 3)}`)
   out(blocks.join('\n\n'))
-}
-
-function cmdSkeleton(file: string): void {
-  const symbols = querySymbols({ filePath: resolveIndexPath(file), limit: 1000 })
-  if (symbols.length === 0) {
-    throw new CliError(`no indexed symbols for '${file}' (is it indexed?)`)
-  }
-  const ordered = [...symbols].sort((a, b) => a.lineStart - b.lineStart)
-  const lines = ordered.map((s) => {
-    const lineNo = String(s.lineStart).padStart(6)
-    const kind = s.kind.padEnd(10)
-    const sig = previewLines(s.body, 1).trim()
-    return `${lineNo}  ${kind}  ${s.name}  ${sig}`
-  })
-  out(lines.join('\n'))
-}
-
-function cmdOutline(file: string): void {
-  const symbols = querySymbols({ filePath: resolveIndexPath(file), limit: 1000 })
-  if (symbols.length === 0) {
-    throw new CliError(`no indexed symbols for '${file}' (is it indexed?)`)
-  }
-  const ordered = [...symbols].sort((a, b) => a.lineStart - b.lineStart)
-  const lines = ordered.map((s) => {
-    const span = `${s.lineStart}-${s.lineEnd}`.padEnd(11)
-    const kind = s.kind.padEnd(10)
-    const doc = s.docstring !== '' ? `  # ${previewLines(s.docstring, 1).trim()}` : ''
-    return `${span} ${kind} ${s.name}${doc}`
-  })
-  out(lines.join('\n'))
-}
-
-function cmdRefs(spec: string, opts: { callers?: boolean; limit?: string }): void {
-  // Spec is either "file::symbol" (references to `symbol` occurring in `file`) or a bare "symbol" (references to `symbol` anywhere in the index). This matches read_commands.runRefs: a `::file` scopes the lookup to that file.
-  const idx = spec.indexOf('::')
-  const file = idx === -1 ? undefined : spec.slice(0, idx)
-  const name = idx === -1 ? spec : spec.slice(idx + 2)
-  if (name === '') {
-    throw new CliError(`expected a symbol name, got: ${spec}`)
-  }
-
-  const limit = opts.limit !== undefined ? Number.parseInt(opts.limit, 10) : 100
-  const query: Parameters<typeof queryRefs>[0] = {
-    name,
-    limit: Number.isFinite(limit) ? limit : 100,
-  }
-  if (file !== undefined) query.filePath = resolveIndexPath(file)
-
-  const results = queryRefs(query)
-  if (results.length === 0) {
-    throw new CliError(`no references to '${name}'${file !== undefined ? ` in '${file}'` : ''} in the index`)
-  }
-
-  if (opts.callers === true) {
-    out(formatCallerGroups(results))
-  } else {
-    out(results.map((r) => `${r.filePath}:${r.line}: ${r.context}`).join('\n'))
-  }
-}
-
-/** Group refs by file and render each with its enclosing caller symbol. */
-function formatCallerGroups(refs: RefEntry[]): string {
-  const byFile = new Map<string, RefEntry[]>()
-  for (const ref of refs) {
-    const bucket = byFile.get(ref.filePath)
-    if (bucket !== undefined) bucket.push(ref)
-    else byFile.set(ref.filePath, [ref])
-  }
-  const blocks: string[] = []
-  for (const [file, fileRefs] of byFile) {
-    const lines = fileRefs.map(
-      (r) => `  :${r.line}  ${r.context !== '' ? r.context : '(module scope)'}`,
-    )
-    blocks.push(`${file}:\n${lines.join('\n')}`)
-  }
-  return blocks.join('\n')
 }
 
 function cmdIndex(pathArg?: string): void {
@@ -463,64 +339,6 @@ async function cmdSkillSize(opts: { sessionId?: string }): Promise<void> {
     `Compact: ${totalCompact} bytes`,
   ]
   out(lines.join('\n'))
-}
-
-function cmdChanged(opts: { since?: string; symbol?: boolean }): void {
-  const since = opts.since ?? 'HEAD~5'
-  const result = runGit(['diff', since, '--name-only'])
-
-  if (result.exitCode !== 0) {
-    throw new CliError(`git diff failed: ${result.stderr}`)
-  }
-
-  const files = result.stdout
-    .trim()
-    .split(/\r?\n/)
-    .filter(Boolean)
-  if (files.length === 0) {
-    out('No files changed.')
-    return
-  }
-
-  if (opts.symbol === true) {
-    const allSymbols: SymbolEntry[] = []
-    for (const file of files) {
-      const symbols = querySymbols({ filePath: resolveIndexPath(file), limit: 1000 })
-      allSymbols.push(...symbols)
-    }
-
-    if (allSymbols.length === 0) {
-      out('No symbols changed.')
-      return
-    }
-
-    const lines = allSymbols.map((s) => `${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}`)
-    out(lines.join('\n'))
-  } else {
-    out(files.join('\n'))
-  }
-}
-
-function cmdConfigGet(file: string, key: string): void {
-  const config = loadConfig()
-  const keys = key.split('.')
-  let value: unknown = config
-
-  for (const k of keys) {
-    if (typeof value === 'object' && value !== null && k in value) {
-      value = (value as Record<string, unknown>)[k]
-    } else {
-      throw new CliError(`key '${key}' not found in '${file}'`)
-    }
-  }
-
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    out(String(value))
-  } else if (typeof value === 'object') {
-    out(JSON.stringify(value, null, 2))
-  } else {
-    out(String(value))
-  }
 }
 
 function atomicWriteBuffer(dest: string, data: Buffer): void {
@@ -787,17 +605,34 @@ export function buildProgram(): Command {
     .option('-l, --limit <n>', 'max results')
     .option('-f, --file <path>', 'restrict to one file')
     .option('-k, --kind <kind>', 'restrict to one kind (function, class, ...)')
-    .action(guard(cmdSymbol))
+    .option('-j, --json', 'output as JSON')
+    .action((name: string, opts: { limit?: string; file?: string; kind?: string; json?: boolean }) =>
+      runExit(() =>
+        runSymbol({
+          name,
+          limit: opts.limit !== undefined ? Number.parseInt(opts.limit, 10) : 20,
+          ...(opts.file !== undefined ? { file: opts.file } : {}),
+          ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
 
   program
     .command('read <spec>')
     .description("read one symbol's full body (spec: file::symbol)")
-    .action(guard(cmdRead))
+    .option('-j, --json', 'output as JSON')
+    .action((spec: string, opts: { json?: boolean }) =>
+      runExit(() => runRead({ spec, ...(opts.json === true ? { json: true } : {}) })),
+    )
 
   program
     .command('section <spec>')
     .description('read one section from a file (spec: file::heading)')
-    .action(guard(cmdSection))
+    .option('-j, --json', 'output as JSON')
+    .action((spec: string, opts: { json?: boolean }) =>
+      runExit(() => runSection({ spec, ...(opts.json === true ? { json: true } : {}) })),
+    )
 
   program
     .command('semantic <query>')
@@ -808,19 +643,49 @@ export function buildProgram(): Command {
   program
     .command('skeleton <file>')
     .description('list all symbols in a file without bodies')
-    .action(guard(cmdSkeleton))
+    .option('-j, --json', 'output as JSON')
+    .option('--min-lines <n>', 'only show symbols at least N lines long')
+    .action((file: string, opts: { json?: boolean; minLines?: string }) =>
+      runExit(() =>
+        runSkeleton({
+          file,
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
+        }),
+      ),
+    )
 
   program
     .command('outline <file>')
     .description('list symbols with line ranges and docstrings')
-    .action(guard(cmdOutline))
+    .option('-j, --json', 'output as JSON')
+    .option('--min-lines <n>', 'only show symbols at least N lines long')
+    .action((file: string, opts: { json?: boolean; minLines?: string }) =>
+      runExit(() =>
+        runOutline({
+          file,
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.minLines !== undefined ? { minLines: Number.parseInt(opts.minLines, 10) } : {}),
+        }),
+      ),
+    )
 
   program
     .command('refs <spec>')
     .description('find references to a symbol (spec: file::symbol or symbol)')
     .option('--callers', 'group references by their enclosing caller symbol')
     .option('-l, --limit <n>', 'max results')
-    .action(guard(cmdRefs))
+    .option('-j, --json', 'output as JSON')
+    .action((spec: string, opts: { callers?: boolean; limit?: string; json?: boolean }) =>
+      runExit(() =>
+        runRefs({
+          spec,
+          ...(opts.callers === true ? { callers: true } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.limit !== undefined ? { limit: Number.parseInt(opts.limit, 10) } : {}),
+        }),
+      ),
+    )
 
   program
     .command('index [path]')
@@ -954,12 +819,21 @@ export function buildProgram(): Command {
     .description('list files or symbols changed since a git ref')
     .option('--since <ref>', 'git ref to compare against (default: HEAD~5)')
     .option('--symbol', 'list symbols instead of files')
-    .action(guard(cmdChanged))
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { since?: string; symbol?: boolean; json?: boolean }) =>
+      runExit(() =>
+        runChanged({
+          ref: opts.since ?? 'HEAD~5',
+          ...(opts.symbol === true ? { symbolMode: true } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
 
   program
     .command('config-get <file> <key>')
     .description('read one value from a config file (TOML/JSON/YAML/INI)')
-    .action(guard(cmdConfigGet))
+    .action((file: string, key: string) => runExit(() => runConfigGet({ file, key })))
 
   program
     .command('write-file <dest>')

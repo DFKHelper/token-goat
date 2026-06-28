@@ -17,6 +17,13 @@ vi.mock('../src/section_reader.js', () => ({
   extractSection: vi.fn(() => null),
 }))
 
+// Partial-mock util so runGit is controllable while ensureNewline (used by emit)
+// keeps its real behavior.
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+  return { ...actual, runGit: vi.fn() }
+})
+
 import {
   runSymbol,
   runRead,
@@ -28,10 +35,12 @@ import {
   runGrep,
   runConfigGet,
   runExports,
+  runChanged,
   extractImports,
   extractExportNames,
 } from '../src/read_commands.js'
 import { querySymbols } from '../src/index_reader.js'
+import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { readSection, listSections, listAllSections } from '../src/section_reader.js'
 
@@ -484,6 +493,51 @@ describe('read_commands', () => {
     it('extracts Rust pub items', () => {
       const src = 'pub fn f() {}\npub struct S {}\nfn private() {}'
       expect(extractExportNames(src, '.rs')).toEqual(['f', 'S'])
+    })
+  })
+
+  // ---- runChanged -----------------------------------------------------------
+
+  describe('runChanged', () => {
+    const mockRunGit = vi.mocked(runGit)
+
+    function gitOk(stdout: string): void {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockRunGit.mockReturnValue({ exitCode: 0, stdout, stderr: '' } as any)
+    }
+
+    it('lists changed files in plain mode', () => {
+      gitOk('a.ts\nb.ts\n')
+      const { stdout } = capture(() => { runChanged({ ref: 'HEAD~1' }) })
+      expect(stdout).toContain('a.ts')
+      expect(stdout).toContain('b.ts')
+    })
+
+    it('reports when nothing changed', () => {
+      gitOk('')
+      const { stdout } = capture(() => { runChanged({}) })
+      expect(stdout).toContain('No files changed')
+    })
+
+    it('lists changed symbols with kind and location in symbol mode', () => {
+      gitOk('a.ts\n')
+      const syms: MockSymbol[] = [
+        { name: 'changedFn', kind: 'function', filePath: 'a.ts', lineStart: 7, lineEnd: 9, body: 'function changedFn() {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runChanged({ symbolMode: true }) })
+      expect(stdout).toContain('changedFn (function)')
+      expect(stdout).toContain('a.ts:7')
+    })
+
+    it('returns 1 when git diff fails', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockRunGit.mockReturnValue({ exitCode: 128, stdout: '', stderr: 'bad ref' } as any)
+      const { stderr } = capture(() => {
+        expect(runChanged({ ref: 'nope' })).toBe(1)
+      })
+      expect(stderr).toContain('git diff failed')
     })
   })
 })

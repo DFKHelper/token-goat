@@ -99,9 +99,14 @@ export function runSymbol(opts: SymbolOptions): number {
     return 0
   }
 
-  for (const sym of results) {
-    emit(`${sym.filePath}:${sym.lineStart}: ${sym.kind}  ${sym.name}`)
-  }
+  // Header + short body preview per match (mirrors the richer surface that the
+  // native CLI handler used before the two read surfaces were consolidated).
+  const blocks = results.map((sym) => {
+    const header = `# ${sym.name} (${sym.kind}) — ${sym.filePath}:${sym.lineStart}-${sym.lineEnd}`
+    const preview = sym.body.split(/\r?\n/).slice(0, 5).join('\n')
+    return preview.trim() !== '' ? `${header}\n${preview}` : header
+  })
+  emit(blocks.join('\n\n'))
   return 0
 }
 
@@ -149,7 +154,14 @@ export function runRead(opts: ReadOptions): number {
   // name === symBase, never name === methodName.
   const lookupName = methodName ?? symBase
   const resolved = resolveIndexPath(file)
-  const candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
+  let candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
+  if (candidates.length === 0) {
+    // Partial-path fallback: resolve `worker.ts::foo` against an index keyed by
+    // `src/worker.ts` by matching on a path suffix when the exact key misses.
+    candidates = querySymbols({ name: lookupName, limit: 50 }).filter(
+      (s) => s.filePath === file || s.filePath.endsWith(file) || file.endsWith(s.filePath),
+    )
+  }
 
   const match = candidates[0]
 
@@ -210,7 +222,7 @@ export function runSection(opts: SectionOptions): number {
     return 0
   }
 
-  emit(result.content)
+  emit(`# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}\n${result.content}`)
   return 0
 }
 
@@ -267,7 +279,7 @@ function emitCallerGroups(refs: RefEntry[]): void {
   for (const [file, fileRefs] of byFile) {
     emit(`${file}:`)
     for (const ref of fileRefs) {
-      emit(`  :${ref.line}  ${ref.context}`)
+      emit(`  :${ref.line}  ${ref.context !== '' ? ref.context : '(module scope)'}`)
     }
   }
 }
@@ -422,57 +434,54 @@ export interface ChangedOptions {
   projectRoot?: string
 }
 
-/** Handle ``token-goat changed``. */
+/** Handle ``token-goat changed`` (plain file list, or `--symbol` for changed symbols). */
 export function runChanged(opts: ChangedOptions = {}): number {
-  const ref = opts.ref ?? 'HEAD'
+  const ref = opts.ref ?? 'HEAD~5'
   const projectRoot = opts.projectRoot ?? process.cwd()
 
   let changedFiles: string[]
   try {
-    const result = runGit(['diff', '--name-only', ref], { cwd: projectRoot })
+    const result = runGit(['diff', ref, '--name-only'], { cwd: projectRoot })
     if (result.exitCode !== 0) {
-      emitErr(`Could not run git diff against '${ref}': ${result.stderr}`)
+      emitErr(`git diff failed: ${result.stderr}`)
       return 1
     }
-    changedFiles = result.stdout.trim().split('\n').filter(Boolean)
+    changedFiles = result.stdout.trim().split(/\r?\n/).filter(Boolean)
   } catch {
     emitErr(`Could not run git diff against '${ref}'`)
     return 1
   }
 
   if (changedFiles.length === 0) {
-    emit('No changed files.')
-    return 0
-  }
-
-  const results: Array<{ file: string; symbols: string[] }> = []
-
-  for (const f of changedFiles) {
-    const abs = resolveIndexPath(f, projectRoot)
-    const syms = querySymbols({ filePath: abs, limit: 200 })
-    if (syms.length > 0) {
-      results.push({ file: f, symbols: syms.map((s) => s.name) })
-    }
-  }
-
-  if (opts.json === true) {
-    emit(JSON.stringify(results, null, 2))
+    emit('No files changed.')
     return 0
   }
 
   if (opts.symbolMode === true) {
-    for (const r of results) {
-      for (const sym of r.symbols) {
-        emit(sym)
-      }
+    const allSymbols: SymbolEntry[] = []
+    for (const f of changedFiles) {
+      allSymbols.push(...querySymbols({ filePath: resolveIndexPath(f, projectRoot), limit: 1000 }))
     }
-  } else {
-    for (const r of results) {
-      emit(`${r.file}:`)
-      for (const sym of r.symbols) {
-        emit(`  ${sym}`)
-      }
+    if (allSymbols.length === 0) {
+      emit('No symbols changed.')
+      return 0
     }
+    if (opts.json === true) {
+      emit(JSON.stringify(allSymbols, null, 2))
+      return 0
+    }
+    for (const s of allSymbols) {
+      emit(`${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}`)
+    }
+    return 0
+  }
+
+  if (opts.json === true) {
+    emit(JSON.stringify(changedFiles, null, 2))
+    return 0
+  }
+  for (const f of changedFiles) {
+    emit(f)
   }
   return 0
 }
