@@ -9,7 +9,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { querySymbols, queryRefs, getFileEntry } from './index_reader.js'
+import { querySymbols, queryRefs } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { readSection, listSections, extractSection, listAllSections } from './section_reader.js'
 import { runGit, ensureNewline } from './util.js'
@@ -631,51 +631,188 @@ export interface ImportsExportsOptions {
   json?: boolean
 }
 
+/**
+ * Extract exported symbol names from source text. The tree-sitter indexer
+ * stores a symbol's body starting at the inner declaration (e.g. `function`),
+ * not the `export` modifier on its parent statement, so a body-prefix heuristic
+ * misses real exports — this scans the source so `exports` is functional for the
+ * flagship TS/JS case as well as Python, Rust, and Java.
+ */
+export function extractExportNames(text: string, ext: string): string[] {
+  const names: string[] = []
+  const push = (s: string | undefined): void => {
+    let v = (s ?? '').trim()
+    if (v.includes(' as ')) v = v.split(/\s+as\s+/).pop()?.trim() ?? v
+    if (v !== '' && v !== 'default' && !names.includes(v)) names.push(v)
+  }
+  const e = ext.toLowerCase()
+  const lines = text.split(/\r?\n/)
+
+  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(e)) {
+    const declRe = /\bexport\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\*?|class|const|let|var|interface|type|enum|namespace)\s+([A-Za-z_$][\w$]*)/g
+    const defaultRe = /\bexport\s+default\s+([A-Za-z_$][\w$]*)\s*(?:;|$)/g
+    const namedRe = /\bexport\s+(?:type\s+)?\{([^}]*)\}/g
+    let m: RegExpExecArray | null
+    while ((m = declRe.exec(text)) !== null) push(m[1])
+    while ((m = defaultRe.exec(text)) !== null) push(m[1])
+    while ((m = namedRe.exec(text)) !== null) {
+      for (const part of (m[1] ?? '').split(',')) push(part)
+    }
+  } else if (e === '.py') {
+    for (const line of lines) {
+      const m = /^(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/.exec(line)
+      if (m && !(m[1] ?? '').startsWith('_')) push(m[1])
+    }
+  } else if (e === '.rs') {
+    for (const line of lines) {
+      const m = /^\s*pub(?:\s*\([^)]*\))?\s+(?:async\s+)?(?:fn|struct|enum|trait|type|const|mod|static)\s+([A-Za-z_]\w*)/.exec(line)
+      if (m) push(m[1])
+    }
+  } else if (e === '.java') {
+    for (const line of lines) {
+      const m = /\bpublic\s+(?:static\s+|final\s+|abstract\s+)*(?:class|interface|enum|record)\s+([A-Za-z_]\w*)/.exec(line)
+      if (m) push(m[1])
+    }
+  }
+  return names
+}
+
 /** Handle ``token-goat exports file``. */
 export function runExports(opts: ImportsExportsOptions): number {
   const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
-  // Heuristic: exported symbols start with an uppercase letter in many TS files,
-  // or are declared with `export` keyword (captured in body prefix).
-  const exported = symbols.filter((s) => s.body.trimStart().startsWith('export'))
+  const kindOf = (name: string): string => symbols.find((s) => s.name === name)?.kind ?? 'export'
 
-  if (exported.length === 0) {
+  // Index-side heuristic: catches languages whose stored body keeps the
+  // `export`/`pub`/`public` modifier, and the mocked unit tests.
+  const names: string[] = []
+  for (const s of symbols) {
+    if (/^(?:export|pub\b|public\b)/.test(s.body.trimStart()) && !names.includes(s.name)) {
+      names.push(s.name)
+    }
+  }
+  const ext = path.extname(opts.file).toLowerCase()
+  // Source scan: catches tree-sitter languages whose body omits the modifier.
+  const text = readFileText(opts.file)
+  if (text !== null) {
+    if (ext === '.go') {
+      for (const s of symbols) if (/^[A-Z]/.test(s.name) && !names.includes(s.name)) names.push(s.name)
+    }
+    for (const n of extractExportNames(text, ext)) if (!names.includes(n)) names.push(n)
+  }
+
+  if (names.length === 0) {
     emit(`No exported symbols found in '${opts.file}'`)
     return 0
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(exported, null, 2))
+    emit(JSON.stringify(names.map((n) => ({ name: n, kind: kindOf(n) })), null, 2))
     return 0
   }
 
-  for (const sym of exported) {
-    emit(`${sym.kind.padEnd(10)} ${sym.name}`)
+  for (const n of names) {
+    emit(`${kindOf(n).padEnd(10)} ${n}`)
   }
   return 0
 }
 
+/**
+ * Extract import/include module specifiers from source text, covering the
+ * bundled tree-sitter languages plus a few common extras. Returns one entry per
+ * import in source order, de-duplicated. This is deliberately index-independent:
+ * the symbol index does not store import statements as rows for the tree-sitter
+ * languages, so a query-only `imports` returned nothing for TS/JS/Python/etc.
+ */
+export function extractImports(text: string, ext: string): string[] {
+  const found: string[] = []
+  const push = (s: string | undefined): void => {
+    const v = (s ?? '').trim()
+    if (v !== '' && !found.includes(v)) found.push(v)
+  }
+  const e = ext.toLowerCase()
+  const lines = text.split(/\r?\n/)
+
+  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'].includes(e)) {
+    for (const line of lines) {
+      const from = /(?:import|export)\b[^'"]*?\bfrom\s*['"]([^'"]+)['"]/.exec(line)
+      if (from) { push(from[1]); continue }
+      const bare = /^\s*import\s*['"]([^'"]+)['"]/.exec(line)
+      if (bare) { push(bare[1]); continue }
+      const req = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(line)
+      if (req) { push(req[1]); continue }
+      const dyn = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/.exec(line)
+      if (dyn) push(dyn[1])
+    }
+  } else if (e === '.py') {
+    for (const line of lines) {
+      const from = /^\s*from\s+([.\w]+)\s+import\b/.exec(line)
+      if (from) { push(from[1]); continue }
+      const imp = /^\s*import\s+(.+)$/.exec(line)
+      if (imp) for (const part of (imp[1] ?? '').split(',')) push(part.trim().split(/\s+as\s+/)[0])
+    }
+  } else if (e === '.go') {
+    let inBlock = false
+    for (const line of lines) {
+      if (/^\s*import\s*\(/.test(line)) { inBlock = true; continue }
+      if (inBlock) {
+        if (/^\s*\)/.test(line)) { inBlock = false; continue }
+        const m = /['"]([^'"]+)['"]/.exec(line)
+        if (m) push(m[1])
+        continue
+      }
+      const single = /^\s*import\s+(?:[\w.]+\s+)?['"]([^'"]+)['"]/.exec(line)
+      if (single) push(single[1])
+    }
+  } else if (e === '.rs') {
+    for (const line of lines) {
+      const m = /^\s*(?:pub\s+)?use\s+([^;{]+)/.exec(line)
+      if (m) push(m[1])
+    }
+  } else if (e === '.java') {
+    for (const line of lines) {
+      const m = /^\s*import\s+(?:static\s+)?([\w.*]+)\s*;/.exec(line)
+      if (m) push(m[1])
+    }
+  } else if (e === '.rb') {
+    for (const line of lines) {
+      const m = /^\s*require(?:_relative)?\s+['"]([^'"]+)['"]/.exec(line)
+      if (m) push(m[1])
+    }
+  } else if (['.c', '.h', '.cpp', '.hpp', '.cc', '.cxx'].includes(e)) {
+    for (const line of lines) {
+      const m = /^\s*#\s*include\s+[<"]([^>"]+)[>"]/.exec(line)
+      if (m) push(m[1])
+    }
+  } else {
+    for (const line of lines) {
+      const m = /(?:import|require|use|#include)\s+['"<]?([^'">;]+)/.exec(line)
+      if (m) push(m[1])
+    }
+  }
+  return found
+}
+
 /** Handle ``token-goat imports file``. */
 export function runImports(opts: ImportsExportsOptions): number {
-  const resolved = resolveIndexPath(opts.file)
-  const symbols = querySymbols({ filePath: resolved, kind: 'import', limit: 500 })
+  const text = readFileText(opts.file)
+  if (text === null) {
+    emitErr(`Could not read: ${opts.file}`)
+    return 1
+  }
+  const imports = extractImports(text, path.extname(opts.file))
 
-  if (symbols.length === 0) {
-    const fileEntry = getFileEntry(resolved)
-    if (fileEntry === null) {
-      emitErr(`File not indexed: ${opts.file}`)
-      return 1
-    }
+  if (imports.length === 0) {
     emit(`No imports found in '${opts.file}'`)
     return 0
   }
 
   if (opts.json === true) {
-    emit(JSON.stringify(symbols, null, 2))
+    emit(JSON.stringify(imports, null, 2))
     return 0
   }
 
-  for (const sym of symbols) {
-    emit(`import  ${sym.name}`)
+  for (const imp of imports) {
+    emit(`import  ${imp}`)
   }
   return 0
 }

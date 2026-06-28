@@ -236,3 +236,74 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
     expect(res.stdout).toContain('relRootSym')
   }, 30000)
 })
+
+/**
+ * Smoke the newly-registered commands against the shipped bundle. exports,
+ * imports, find, and web-output were implemented (or partly implemented) but not
+ * reachable; these prove they run from dist and return the expected output.
+ */
+describe('built bundle exposes exports / imports / find / web-output', () => {
+  let cmdRepo: string
+  let cmdData: string
+
+  function run(args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const res = spawnSync(process.execPath, [BUNDLE, ...args], {
+      cwd: cmdRepo,
+      env: { ...process.env, LOCALAPPDATA: cmdData, XDG_DATA_HOME: cmdData },
+      encoding: 'utf8',
+    })
+    return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+  }
+
+  beforeAll(() => {
+    cmdData = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmd-data-'))
+    cmdRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmd-repo-'))
+    fs.writeFileSync(
+      path.join(cmdRepo, 'mod.ts'),
+      "import { helper } from './helper'\n" +
+        "import defaultThing from 'pkg'\n" +
+        'export function exportedFn(): number {\n  return helper()\n}\n' +
+        'export class ExportedClass {}\n' +
+        'function privateFn(): number {\n  return defaultThing\n}\n',
+    )
+    const git = (args: string[]): void => {
+      execFileSync('git', args, { cwd: cmdRepo, stdio: 'ignore' })
+    }
+    git(['init'])
+    git(['add', '.'])
+    const idx = run(['index', '.'])
+    expect(idx.status).toBe(0)
+  }, 60000)
+
+  afterAll(() => {
+    if (cmdData) fs.rmSync(cmdData, { recursive: true, force: true })
+    if (cmdRepo) fs.rmSync(cmdRepo, { recursive: true, force: true })
+  })
+
+  it('exports lists exported symbols whose stored body omits the export keyword', () => {
+    const res = run(['exports', 'mod.ts'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('exportedFn')
+    expect(res.stdout).toContain('ExportedClass')
+    expect(res.stdout).not.toContain('privateFn')
+  }, 30000)
+
+  it('imports lists the modules a file imports', () => {
+    const res = run(['imports', 'mod.ts'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('./helper')
+    expect(res.stdout).toContain('pkg')
+  }, 30000)
+
+  it('find resolves a symbol name to its file', () => {
+    const res = run(['find', 'exportedFn'])
+    expect(res.status).toBe(0)
+    expect(res.stdout).toContain('mod.ts')
+  }, 30000)
+
+  it('web-output exits 1 with a clear message for an unknown id', () => {
+    const res = run(['web-output', 'no-such-id'])
+    expect(res.status).toBe(1)
+    expect(res.stderr).toContain('no cached web output')
+  }, 30000)
+})

@@ -28,6 +28,8 @@ import {
   runGrep,
   runConfigGet,
   runExports,
+  extractImports,
+  extractExportNames,
 } from '../src/read_commands.js'
 import { querySymbols } from '../src/index_reader.js'
 import { resolveIndexPath } from '../src/paths.js'
@@ -408,6 +410,80 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue(syms as any)
       const { stdout } = capture(() => { runExports({ file: 'a.ts' }) })
       expect(stdout).toContain('pubFn')
+    })
+  })
+
+  // ---- extractImports -------------------------------------------------------
+
+  describe('extractImports', () => {
+    it('extracts TS/JS imports (from, bare, require, dynamic)', () => {
+      const src = [
+        "import { a } from './mod'",
+        "import 'side-effect'",
+        "const x = require('cjs-pkg')",
+        "const y = await import('dyn-pkg')",
+        "export { z } from './reexport'",
+      ].join('\n')
+      expect(extractImports(src, '.ts')).toEqual([
+        './mod', 'side-effect', 'cjs-pkg', 'dyn-pkg', './reexport',
+      ])
+    })
+
+    it('extracts Python imports', () => {
+      const src = 'import os, sys\nfrom collections import OrderedDict\nimport json as j'
+      expect(extractImports(src, '.py')).toEqual(['os', 'sys', 'collections', 'json'])
+    })
+
+    it('extracts Go block and single imports', () => {
+      const src = 'import (\n  "fmt"\n  "os"\n)\nimport "strings"'
+      expect(extractImports(src, '.go')).toEqual(['fmt', 'os', 'strings'])
+    })
+
+    it('extracts Rust use and C include', () => {
+      expect(extractImports('pub use std::fmt;\nuse crate::thing;', '.rs')).toEqual([
+        'std::fmt', 'crate::thing',
+      ])
+      expect(extractImports('#include <stdio.h>\n#include "local.h"', '.c')).toEqual([
+        'stdio.h', 'local.h',
+      ])
+    })
+
+    it('de-duplicates repeated specifiers', () => {
+      expect(extractImports("import a from 'x'\nimport b from 'x'", '.ts')).toEqual(['x'])
+    })
+  })
+
+  // ---- extractExportNames ---------------------------------------------------
+
+  describe('extractExportNames', () => {
+    it('extracts TS declarations, named, and default exports', () => {
+      const src = [
+        'export function fn() {}',
+        'export class Cls {}',
+        'export const c = 1',
+        'export interface Iface {}',
+        'export { hidden as shown }',
+        'function localDefault() {}',
+        'export default localDefault',
+      ].join('\n')
+      const names = extractExportNames(src, '.ts')
+      expect(names).toContain('fn')
+      expect(names).toContain('Cls')
+      expect(names).toContain('c')
+      expect(names).toContain('Iface')
+      expect(names).toContain('shown')
+      expect(names).toContain('localDefault')
+      expect(names).not.toContain('default')
+    })
+
+    it('extracts public Python defs/classes and skips dunder/private', () => {
+      const src = 'def public_fn(): pass\nclass PublicCls: pass\ndef _private(): pass'
+      expect(extractExportNames(src, '.py')).toEqual(['public_fn', 'PublicCls'])
+    })
+
+    it('extracts Rust pub items', () => {
+      const src = 'pub fn f() {}\npub struct S {}\nfn private() {}'
+      expect(extractExportNames(src, '.rs')).toEqual(['f', 'S'])
     })
   })
 })
