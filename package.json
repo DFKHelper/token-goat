@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:guards": "vitest run tests/guards",
+    "test:matrix": "vitest run tests/command_matrix_e2e.test.ts",
     "test:watch": "vitest",
     "lint": "eslint src tests",
     "dev": "tsx src/main.ts"

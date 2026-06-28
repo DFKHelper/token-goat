@@ -12,6 +12,7 @@ token-goat is a Claude Code / Codex CLI companion, written in TypeScript and bun
 npm install
 npm test            # full test suite
 npm run test:guards # fast I/O-free structural guards (tests/guards)
+npm run test:matrix # built-bundle command matrix (slow, pre-push/CI tier)
 npm run typecheck   # tsc --noEmit
 npm run lint        # ESLint
 ```
