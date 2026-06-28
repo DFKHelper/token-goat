@@ -85,6 +85,11 @@ function safeSkillName(skillName: string): string | null {
   return skillName.replace(/[^a-zA-Z0-9_:-]/g, '_')
 }
 
+/** Return a filename-safe version of a skill name: colons are invalid on Windows and must be replaced. Used for all on-disk compact file paths so store/get/list always agree. */
+function sanitizeSkillId(name: string): string {
+  return name.replace(/:/g, '_')
+}
+
 export function outputIdFor(sessionId: string, skillName: string, contentSha: string): string {
   const safeSession = safeSessionFragment(sessionId)
   let safeName = skillName.replace(/:/g, '_')
@@ -427,7 +432,7 @@ export async function storeCompact(
     if (!name) return
 
     const safeSession = safeSessionFragment(sessionId)
-    const fileId = `${safeSession}-${name}-compact`
+    const fileId = `${safeSession}-${sanitizeSkillId(name)}-compact`
     const dir = skillOutputsDir()
 
     let text = compactText
@@ -447,7 +452,7 @@ export async function getCompact(sessionId: string, skillName: string): Promise<
     if (!name) return null
 
     const safeSession = safeSessionFragment(sessionId)
-    const fileId = `${safeSession}-${name}-compact`
+    const fileId = `${safeSession}-${sanitizeSkillId(name)}-compact`
     const dir = skillOutputsDir()
     const path = resolve(dir, fileId)
 
@@ -472,7 +477,7 @@ export async function getCompactAnySession(skillName: string): Promise<string | 
 
     for (const entry of entries) {
       if (!entry.isFile() || !entry.name.endsWith('-compact')) continue
-      if (!entry.name.includes(`${name}-compact`)) continue
+      if (!entry.name.includes(`${sanitizeSkillId(name)}-compact`)) continue
 
       try {
         const text = await fs.readFile(resolve(dir, entry.name), 'utf-8')
@@ -504,7 +509,7 @@ export async function listSkills(sessionId?: string): Promise<CachedSkillInfo[]>
 
       const dir = skillOutputsDir()
       const safeSession = safeSessionFragment(meta.outputId.split('-')[0]!)
-      const compactFileId = `${safeSession}-${meta.skillName.replace(':', '_')}-compact`
+      const compactFileId = `${safeSession}-${sanitizeSkillId(meta.skillName)}-compact`
 
       let compactLen = 0
       try {

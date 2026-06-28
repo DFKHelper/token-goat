@@ -89,5 +89,46 @@ describe('overflow_guard', () => {
       expect(result).toContain('[token-goat: output capped at ~10 tokens')
       expect(result).not.toContain('\x1b[31m\x1b[')
     })
+
+    it('trims the first oversized ANSI line to visible chars, not raw bytes', () => {
+      // Build a line where ANSI escape bytes appear before position charBudget in the raw string.
+      // charBudget = (budgetTokens - 64) * 3. With budgetTokens=70 bodyBudget=6 charBudget=18.
+      // Raw ANSI prefix '\x1b[31m' (5 bytes) + 'x'.repeat(200). Visible: 200 x's.
+      // Pre-fix: ln.slice(0,18) = '\x1b[31mxxxxxxxxxxxxx' (5 ANSI + 13 visible) — dangling open code, wrong length.
+      // Post-fix: stripped.slice(0,18) = 'xxxxxxxxxxxxxxxxxx' (18 visible x's) — correct, no ANSI.
+      const budgetTokens = 70
+      const charBudget = (budgetTokens - 64) * 3 // 18
+      const ansiLine = '\x1b[31m' + 'x'.repeat(200)
+      const text = ansiLine + '\nmore content'
+
+      const result = trimToBudget(text, budgetTokens)
+
+      // The first kept line must not start with an ANSI escape sequence (no dangling code).
+      const firstLine = result.split('\n')[0]!
+      // Must not start with an ANSI escape sequence (no dangling code). toBe below proves no ANSI either way.
+      expect(firstLine.startsWith('\x1b[')).toBe(false)
+      // The visible portion must be exactly charBudget visible characters.
+      expect(firstLine).toBe('x'.repeat(charBudget))
+    })
+
+    it('ANSI escape bytes do not silently consume visible character budget', () => {
+      // A line starting with a long ANSI prefix: if raw-sliced, fewer visible chars fit in the budget.
+      // Post-fix the budget is measured on stripped chars, so visible output == charBudget x's.
+      const budgetTokens = 70
+      const charBudget = (budgetTokens - 64) * 3 // 18
+      // Put an 11-byte ANSI sequence at the start so raw slice would lose 10 visible chars vs the budget.
+      const ansiPrefix = '\x1b[38;5;200m' // 11 bytes, 0 visible chars
+      // Use enough y's that stripped.length > budgetTokens*3 to trigger the overflow path.
+      const ansiLine = ansiPrefix + 'y'.repeat(300)
+      const text = ansiLine
+
+      const result = trimToBudget(text, budgetTokens)
+
+      const firstLine = result.split('\n')[0]!
+      // Must not contain any ANSI escape byte. The toBe below is definitive; this is an extra signal.
+      expect(firstLine.includes('\x1b')).toBe(false)
+      // Must contain exactly charBudget visible characters.
+      expect(firstLine).toBe('y'.repeat(charBudget))
+    })
   })
 })
