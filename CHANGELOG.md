@@ -38,6 +38,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Git-diff truncation marker names the file cleanly.** When a large `git diff` was capped at 50 lines per file, the `[... N more lines in <name>]` marker showed the doubled header tail (`a/src/file.ts b/src/file.ts`) as the filename. It now shows the path once (`src/file.ts`), parsed by splitting on ` b/` so paths containing spaces survive.
 
+### Docs
+
+- Rewrote [CLAUDE.arch.md](CLAUDE.arch.md) to accurately describe the current TypeScript codebase (all Python references removed; new Data Flow and Adding a New Command sections added).
+
 ## [2.2.2] - 2026-06-27
 
 ### Added
