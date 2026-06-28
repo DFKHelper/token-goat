@@ -1355,3 +1355,70 @@ describe('preBashHandler — SQL file cat hint', () => {
     expect(result.hookType).toBe('pass')
   })
 })
+
+// Regression (e3fb46e): redirect to a quoted filename must be stripped for cache keying
+describe('postBashHandler — redirect to quoted filename is stripped for cache keying', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('hits cache when command is rerun with a double-quoted redirect target added', async () => {
+    // Bug: the masked quoted filename "       " has spaces inside, so [^\s|]+ failed
+    // to match it as a redirect target, leaving "> \"tsc.log\"" in the cache key.
+    // Commands with and without a quoted redirect must share a single cache entry.
+    const baseCmd = 'npx tsc --noEmit'
+    const withRedirect = baseCmd + ' > "tsc.log"'
+    const largeOutput = 'src/auth.ts(12,5): error TS2345: ...\n'.repeat(50)
+
+    // Post: run with quoted redirect — must be stored under the base command key.
+    await postBashHandler(makePostBashEvent(withRedirect, largeOutput))
+
+    // Pre: same base command without redirect — must hit cache.
+    const result = preBashHandler(makeBashEvent(baseCmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
+  it('hits cache when command is rerun with a single-quoted redirect target added', async () => {
+    const baseCmd = 'npx tsc --noEmit'
+    const withRedirect = baseCmd + " > 'tsc.log'"
+    const largeOutput = 'src/auth.ts(12,5): error TS2345: ...\n'.repeat(50)
+
+    await postBashHandler(makePostBashEvent(withRedirect, largeOutput))
+
+    const result = preBashHandler(makeBashEvent(baseCmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+})
+
+// Regression: backslash-escaped quotes inside a quoted arg must not expose interior >
+describe('postBashHandler — escaped quote inside quoted arg does not expose interior >', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('stores cache entry under the full command when escaped quote precedes > inside quotes', async () => {
+    // Bug: "([^"]*)" treats \" as a closing quote, mis-pairing the string so that
+    // the interior > after \" is exposed to the redirect regex and truncates the key.
+    // e.g. pytest -k "x != \"skip and count > 0" was truncated to
+    //      pytest -k "x != \"skip and count
+    const cmd = 'pytest -k "x != \\"skip and count > 0"'
+    const largeOutput = 'PASSED test_skipme\n'.repeat(60)
+    await postBashHandler(makePostBashEvent(cmd, largeOutput))
+
+    const { fingerprintContent } = await import('../src/fingerprint.js')
+
+    // Must be stored under the full, untruncated command.
+    const correctHash = fingerprintContent(cmd).slice(0, 16)
+    expect(getBashOutputId(correctHash)).not.toBeNull()
+
+    // Must NOT be stored under the incorrectly-truncated key.
+    const wrongHash = fingerprintContent('pytest -k "x != \\"skip and count').slice(0, 16)
+    expect(getBashOutputId(wrongHash)).toBeNull()
+  })
+})
