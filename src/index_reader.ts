@@ -178,10 +178,13 @@ export function searchSymbolsFts(
   dbPath: string = globalDbPath(),
 ): SymbolEntry[] {
   const db = getDb(dbPath)
+  // FTS5's MATCH operator and bm25() must name the FTS table directly — a table
+  // alias resolves as a bare column reference ("no such column: f"), which the
+  // catch below would silently swallow, leaving `semantic` permanently empty.
   const sql =
     `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring ` +
-    `FROM symbols_fts f JOIN symbols s ON s.id = f.rowid ` +
-    `WHERE f MATCH ? ORDER BY bm25(f) LIMIT ?`
+    `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
+    `WHERE symbols_fts MATCH ? ORDER BY bm25(symbols_fts) LIMIT ?`
   try {
     const rows = db.prepare(sql).all(query, limit) as SymbolRow[]
     return rows.map(toSymbolEntry)

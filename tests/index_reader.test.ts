@@ -139,10 +139,23 @@ describe('index_reader round-trips inserted rows', () => {
     ).run('src/auth.ts', 'authenticate', 'function', 1, 5, 'body', 'docs')
 
     const hits = searchSymbolsFts('authenticate', 10, dbPath)
-    // FTS5 may be unavailable in some SQLite builds; tolerate that by only
-    // asserting correctness when the search returns rows.
-    if (hits.length > 0) {
+    // When the FTS5 mirror exists (better-sqlite3 ships FTS5, so it does here)
+    // the search MUST return the symbol. Gating only on `hits.length > 0` made
+    // this test pass vacuously while a broken MATCH clause left `semantic`
+    // permanently empty — assert against the real table presence instead.
+    const ftsExists =
+      (
+        db
+          .prepare(
+            "SELECT count(*) AS c FROM sqlite_master WHERE type = 'table' AND name = 'symbols_fts'",
+          )
+          .get() as { c: number }
+      ).c > 0
+    if (ftsExists) {
+      expect(hits.length).toBeGreaterThan(0)
       expect(hits[0]?.name).toBe('authenticate')
+    } else {
+      expect(hits).toEqual([])
     }
   })
 })
