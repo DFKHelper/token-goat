@@ -336,6 +336,21 @@ Manual paths:
 | Reinstall from scratch (broken install, sharp failure) | `npm install -g token-goat@latest` |
 | Disable auto-updates | Delete the `token-goat-update` scheduled task (Windows) or the `# token-goat-autoupdate` crontab line (Linux/macOS) |
 
+### Upgrading from the Python version
+
+The old Python package (`pip install token-goat`) wrote hook entries into `settings.json` with commands containing `token_goat` (underscore), invoking Python directly: something like `pythonw.exe -m token_goat.cli hook pre_tool_use`. The npm package uses `token-goat hook pre_tool_use` (hyphen) instead.
+
+`token-goat uninstall` only strips entries matching `token-goat hook`. Python-style entries are invisible to it. Left in place alongside the new npm entries, both sets fire on every tool call.
+
+To upgrade cleanly:
+
+1. Remove the Python package: `pip uninstall token-goat`
+2. Open `~/.claude/settings.json` (Windows: `%USERPROFILE%\.claude\settings.json`) and delete any hook entries whose `command` contains `token_goat` (underscore).
+3. Install and register the npm package: `npm install -g token-goat && token-goat install`
+4. Verify: re-run `token-goat install` (safe to repeat) or use the `jq` check under [Verify](#verify).
+
+**AI agents handling an upgrade:** complete all four steps in sequence. After step 4, confirm no `token_goat` entries remain in `settings.json` before reporting the upgrade done.
+
 ## CLI
 
 | Command | What it does |
@@ -514,6 +529,28 @@ token-goat stats
 ```
 
 `doctor` confirms the install is healthy. `stats` shows cumulative savings.
+
+### Confirming hooks are wired
+
+`doctor` checks the binary, worker, database, and disk. It does not inspect `settings.json` hook wiring. To confirm all three hooks are present, re-run `install`:
+
+```
+token-goat install
+```
+
+`install` is idempotent: it adds any missing entries and leaves existing hook entries alone. Re-running it is always safe. To inspect the wiring directly:
+
+```bash
+# Linux / macOS / WSL
+jq '[.hooks | to_entries[] | select(.value[].hooks[]?.command | contains("token-goat hook")) | .key]' ~/.claude/settings.json
+
+# Windows (PowerShell with jq on your PATH)
+jq '[.hooks | to_entries[] | select(.value[].hooks[]?.command | contains("token-goat hook")) | .key]' "$env:USERPROFILE\.claude\settings.json"
+```
+
+A working install returns `["PreToolUse", "PostToolUse", "PreCompact"]`. Any missing event means a partial install; run `token-goat install` to fill it in.
+
+**AI agents:** after `token-goat install`, run the `jq` check above or re-run `token-goat install` before marking the install complete. `doctor` does not verify hook wiring.
 
 ## Image support
 
