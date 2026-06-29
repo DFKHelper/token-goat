@@ -41,6 +41,12 @@ export function normalizePath(p: string): string {
     s = `${driveLetter}:/${restStripped}`
   }
 
+  // Step 2b: Git Bash / MSYS mount form /<drive>/rest -> <drive>:/rest, Windows only. On Linux/macOS `/c/foo` is a real path and must not be rewritten. Single letter only so a real `/cab/` dir is untouched; bare `/c` becomes `c:/`.
+  if (process.platform === 'win32') {
+    const g = /^\/([a-zA-Z])(\/.*)?$/.exec(s)
+    if (g) s = `${(g[1] as string).toLowerCase()}:${g[2] ?? '/'}`
+  }
+
   // Step 3: lowercase the drive-letter prefix (C: -> c:) on all platforms.
   // WSL processes emit Windows-format paths on Linux; both must produce the
   // same cache key, so lowercasing is unconditional.
