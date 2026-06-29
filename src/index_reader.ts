@@ -172,6 +172,18 @@ export function getFileEntry(
   }
 }
 
+// Quote each whitespace-separated term as an FTS5 string literal so that
+// characters FTS5 treats as query operators (`:` `(` `)` `*`, AND/OR/NOT)
+// in a natural-language query are matched literally instead of throwing a
+// syntax error that the catch below would swallow into an empty result.
+function sanitizeFtsQuery(query: string): string {
+  return query
+    .split(/\s+/)
+    .filter((t) => t.length > 0)
+    .map((t) => '"' + t.replace(/"/g, '""') + '"')
+    .join(' ')
+}
+
 /**
  * Full-text symbol search over the `symbols_fts` mirror.
  *
@@ -184,6 +196,9 @@ export function searchSymbolsFts(
   limit = 50,
   dbPath: string = globalDbPath(),
 ): SymbolEntry[] {
+  const match = sanitizeFtsQuery(query)
+  if (match === '') return []
+
   const db = getDb(dbPath)
   // FTS5's MATCH operator and bm25() must name the FTS table directly — a table
   // alias resolves as a bare column reference ("no such column: f"), which the
@@ -193,7 +208,7 @@ export function searchSymbolsFts(
     `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
     `WHERE symbols_fts MATCH ? ORDER BY bm25(symbols_fts) LIMIT ?`
   try {
-    const rows = db.prepare(sql).all(query, limit) as SymbolRow[]
+    const rows = db.prepare(sql).all(match, limit) as SymbolRow[]
     return rows.map(toSymbolEntry)
   } catch {
     // FTS5 missing or a syntactically invalid MATCH query — degrade to empty.
