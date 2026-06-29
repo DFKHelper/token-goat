@@ -191,6 +191,18 @@ const cases: Record<string, () => void> = {
     expect(all.length).toBeGreaterThan(0)
     expect(all).not.toMatch(/unknown command|is not a function|Cannot find package/)
   },
+  compress: () => {
+    // Real output: the generic filter collapses the 6 identical lines to one.
+    const r = run([
+      'compress',
+      '--filter',
+      'generic',
+      '--cmd',
+      `"${process.execPath}" -e "for (let i = 0; i < 6; i++) console.log('compiling...')"`,
+    ])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('×6')
+  },
   stats: () => {
     const r = run(['stats'])
     expect(r.status, r.stderr).toBe(0)

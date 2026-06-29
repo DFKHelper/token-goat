@@ -31,6 +31,7 @@ import type { HookScope } from './install.js'
 import { isWorkerRunning, startDetachedWorker, stopWorker } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getWebOutput } from './web_cache.js'
+import * as bashRunner from './bash_runner.js'
 import {
   runSymbol,
   runRead,
@@ -279,6 +280,42 @@ function runExit(fn: () => number): void {
     err(`token-goat: ${extractErrorMessage(e)}`)
     process.exitCode = 1
   }
+}
+
+// Sets process.exitCode to the wrapped command's exit code (NOT via `guard`,
+// which forces 0 on success — compress must propagate the real code so shell
+// chaining still sees the original failure/success signal).
+function cmdCompress(opts: {
+  cmd: string
+  filter?: string
+  timeout?: string
+  compress?: boolean
+  profile?: string
+  maxTokens?: string
+}): void {
+  try {
+    if (opts.compress === false) {
+      // Commander maps `--no-compress` to `opts.compress === false`.
+      process.exitCode = bashRunner.runRaw(opts.cmd, parseTimeout(opts.timeout))
+      return
+    }
+    const maxTokens = opts.maxTokens ? parseInt(opts.maxTokens, 10) || 0 : 0
+    process.exitCode = bashRunner.run(opts.cmd, {
+      filterName: opts.filter,
+      timeout: parseTimeout(opts.timeout),
+      maxTokens,
+      ...(opts.profile !== undefined ? { compressionProfile: opts.profile } : {}),
+    })
+  } catch (e) {
+    err(`token-goat: ${extractErrorMessage(e)}`)
+    process.exitCode = 1
+  }
+}
+
+/** Resolve the --timeout flag (seconds): 0/absent/invalid → the built-in default. */
+function parseTimeout(raw: string | undefined): number {
+  const sec = raw ? parseInt(raw, 10) : 0
+  return Number.isFinite(sec) && sec > 0 ? sec : bashRunner.DEFAULT_TIMEOUT_SECONDS
 }
 
 async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<void> {
@@ -856,6 +893,17 @@ export function buildProgram(): Command {
     .description('fetch and list sections from a public Google Doc')
     .option('--heading <name>', 'get content of one named section')
     .action(guard(cmdGdriveSections))
+
+  program
+    .command('compress')
+    .description('run a shell command and emit a compressed view of its output')
+    .requiredOption('-c, --cmd <command>', 'the shell command to run, as one string')
+    .option('-f, --filter <name>', 'filter name (auto-detected from the command when omitted)')
+    .option('--timeout <seconds>', 'wall-clock timeout in seconds (0 = built-in default)')
+    .option('--no-compress', 'stream output raw without compression (debug the wrapper)')
+    .option('--profile <name>', 'compression profile: aggressive | balanced | minimal')
+    .option('--max-tokens <n>', 'post-compress token cap (0 = no cap)')
+    .action(cmdCompress)
 
   program
     .command('version')
