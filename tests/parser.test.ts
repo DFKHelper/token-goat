@@ -146,6 +146,38 @@ describe('parseFile', () => {
     expect(names).toContain('Widget')
     expect(names).toContain('Drawable')
   })
+
+  it('indexes Ruby classes, modules, methods, and singleton methods', async () => {
+    const rubyFile = write(
+      'sym.rb',
+      [
+        'class Widget',
+        '  def area',
+        '    42',
+        '  end',
+        '  def self.build',
+        '    new',
+        '  end',
+        'end',
+        '',
+        'module Helpers',
+        '  def run; end',
+        'end',
+        '',
+        'def free_method; end',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rubyFile)
+    expect(result.language).toBe('ruby')
+    const names = result.symbols.map((s) => s.name)
+    expect(names).toContain('Widget') // class
+    expect(names).toContain('Helpers') // module
+    expect(names).toContain('area') // method
+    expect(names).toContain('build') // singleton_method (def self.build)
+    expect(names).toContain('run') // method inside module
+    expect(names).toContain('free_method') // top-level method
+  })
 })
 
 describe('indexFile', () => {

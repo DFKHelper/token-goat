@@ -398,15 +398,16 @@ function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
 }
 
 const RUBY_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
-  ['method_definition', 'method'],
-  ['class_definition', 'class'],
-  ['module_definition', 'module'],
+  ['method', 'method'],
+  ['singleton_method', 'method'],
+  ['class', 'class'],
+  ['module', 'module'],
 ])
 
 function extractRubySymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
-  const visit = (node: TsNode, insideClass: boolean): void => {
+  const visit = (node: TsNode): void => {
     const kind = RUBY_KIND_BY_TYPE.get(node.type)
     if (kind !== undefined) {
       const name = nodeName(node)
@@ -415,14 +416,12 @@ function extractRubySymbols(root: TsNode, filePath: string): SymbolEntry[] {
       }
     }
 
-    const nowInsideClass =
-      node.type === 'class_definition' || node.type === 'module_definition'
     for (const child of node.namedChildren) {
-      visit(child, nowInsideClass || insideClass)
+      visit(child)
     }
   }
 
-  visit(root, false)
+  visit(root)
   return out
 }
 
