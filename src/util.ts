@@ -40,6 +40,21 @@ export function noWindowCreationFlags(): number {
   return isWindows() ? 0x08000000 : 0
 }
 
+// Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same
+// path; normalizePath only lowercases the drive letter, so path-equality and dedup
+// comparisons must fold the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0')
+// overrides the platform default for deterministic cross-platform tests.
+export function isCaseInsensitiveFs(): boolean {
+  const o = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+  if (o === '1') return true
+  if (o === '0') return false
+  return process.platform === 'win32' || process.platform === 'darwin'
+}
+
+export function foldPath(p: string): string {
+  return isCaseInsensitiveFs() ? p.toLowerCase() : p
+}
+
 /**
  * Run git and return its captured output.
  *

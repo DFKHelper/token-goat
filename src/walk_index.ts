@@ -15,7 +15,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { MAX_FILES_SCANNED, walkProject } from './baseline.js'
-import { normalizePath } from './paths.js'
+import { foldPath, normalizePath } from './util.js'
 
 /**
  * Files excluded from a non-git walk even when their extension is a known
@@ -40,16 +40,14 @@ function isWalkExcluded(file: string): boolean {
 export function assertWalkableRoot(root: string): void {
   const resolved = path.resolve(root)
   // On case-insensitive filesystems (Windows, macOS) C:\Users and C:\USERS are the same directory, but normalizePath only lowercases the drive letter — fold the whole path for these comparisons or a case variant slips the guard.
-  const fold = (p: string): string =>
-    process.platform === 'win32' || process.platform === 'darwin' ? p.toLowerCase() : p
-  const norm = fold(normalizePath(resolved))
-  const fsRoot = fold(normalizePath(path.parse(resolved).root))
+  const norm = foldPath(normalizePath(resolved))
+  const fsRoot = foldPath(normalizePath(path.parse(resolved).root))
   if (norm === fsRoot) {
     throw new Error(`refusing to walk-index a filesystem root: ${resolved}`)
   }
   const home = os.homedir()
   if (home) {
-    const normHome = fold(normalizePath(path.resolve(home)))
+    const normHome = foldPath(normalizePath(path.resolve(home)))
     if (norm === normHome) {
       throw new Error(`refusing to walk-index the home directory: ${resolved}`)
     }
