@@ -650,6 +650,15 @@ export async function indexFile(
   return chunks.length
 }
 
+// Does the optional sqlite-vec `chunk_vectors` virtual table exist on this connection? It is created only when the sqlite-vec extension loads (see db.ts), so on a platform without the prebuilt binary it is absent and any reference to it throws "no such table". A vec0 table registers in sqlite_master as a plain `table` row under its exact name (verified), so this name+type probe detects it without matching vec0's shadow tables (chunk_vectors_chunks, chunk_vectors_rowids, ...).
+function chunkVectorsTableExists(db: BetterSqlite3Database): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'chunk_vectors'")
+      .get() !== undefined
+  )
+}
+
 /**
  * Delete all embeddings for a file.
  *
@@ -662,8 +671,10 @@ export function deleteFileEmbeddings(
   db: BetterSqlite3Database,
   filePath: string,
 ): void {
-  // Delete the file's vectors via a correlated subquery over chunks rather than an expanded `IN (?, ?, ...)` list: a file with more than SQLITE_MAX_VARIABLE_NUMBER (32766) chunks would overflow SQLite's bound-parameter limit and throw "too many SQL variables". The chunk_vectors delete MUST run before the chunks delete because its subquery reads chunks; deleting chunks first would leave the vectors orphaned.
-  db.prepare(`DELETE FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE ${pathEqClause('file_path')})`).run(filePath)
+  // Skip the vector delete when chunk_vectors is absent (sqlite-vec not installed): the table never exists on such installs, so an unconditional DELETE FROM chunk_vectors throws "no such table" and the chunks delete below would never run, leaking the file's chunk rows. The chunks table always exists and must always be cleared. When the vector table IS present, delete its rows first via a correlated subquery (binds zero id params, avoiding the 32766 SQL-variable limit) - the subquery reads chunks, so vectors must go before chunks.
+  if (chunkVectorsTableExists(db)) {
+    db.prepare(`DELETE FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE ${pathEqClause('file_path')})`).run(filePath)
+  }
   db.prepare(`DELETE FROM chunks WHERE ${pathEqClause('file_path')}`).run(filePath)
 }
 
