@@ -13,7 +13,7 @@
 // short-circuits dropping. Covers Bundler and Pub, which share this structure.
 
 import { ToolFilter } from './base.js'
-import { ERROR_SIGNAL_RE, maybeNote } from './helpers.js'
+import { ERROR_SIGNAL_RE, maybeNote, squeezeBlankLines } from './helpers.js'
 
 /** `''` for a count of 1, otherwise the plural suffix (default `'s'`). */
 export function plural(n: number, suffix = 's'): string {
@@ -141,6 +141,136 @@ export function makePackageManagerFilter(cfg: PackageManagerFilterConfig): ToolF
 // ---------------------------------------------------------------------------
 // Node test-runner family
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Linter filter family
+// ---------------------------------------------------------------------------
+
+/**
+ * Configuration for a single-binary linter filter produced by
+ * {@link makeLinterFilter}. Covers linters whose output is a stream of
+ * per-file violation lines, optional progress/noise to drop, and an optional
+ * summary line(s) to hold until the end. Each violation is parsed by
+ * `parseDiagnostic` to extract its severity and a stable rule identifier;
+ * lines that do not match are passed through verbatim.
+ *
+ * Currently used by: SwiftLintFilter.
+ */
+export interface LinterFilterConfig {
+  /** Filter name, e.g. `'swiftlint'`. */
+  readonly name: string
+  /** Command basenames this filter handles. */
+  readonly binaries: readonly string[]
+  /**
+   * Called for each output line. Returns `{ severity, ruleId }` when the line
+   * is a violation, or `null` to pass the line through unchanged.
+   */
+  readonly parseDiagnostic: (line: string) => { severity: string; ruleId: string } | null
+  /**
+   * Lines matching this regex are set aside and emitted after the per-rule
+   * collapse notes (e.g. the "Done linting!" summary).
+   */
+  readonly summaryLast?: RegExp
+  /** Lines matching this regex are counted and dropped (progress noise). */
+  readonly dropRe?: RegExp
+  /** Produces the note text for the dropped-lines count. */
+  readonly dropLabel?: (count: number) => string
+  /** Number of violations to keep per rule before collapsing. Default 3. */
+  readonly keepPerRule?: number
+  /**
+   * Severity values that are always kept regardless of the per-rule cap
+   * (e.g. `['error', 'serious']`).
+   */
+  readonly alwaysKeepSeverities?: readonly string[]
+  /**
+   * Produces the per-rule collapse note injected after the last kept violation
+   * for that rule. Called with the rule ID and the number of elided violations.
+   */
+  readonly collapseNote?: (ruleId: string, extra: number) => string
+}
+
+/**
+ * Build a {@link ToolFilter} for a linter that emits per-violation lines with
+ * an extractable rule ID and severity. The factory loop: (1) drop progress noise
+ * counted via `dropRe`; (2) hold summary lines via `summaryLast`; (3) parse each
+ * remaining line via `parseDiagnostic`; (4) always keep lines whose severity is
+ * in `alwaysKeepSeverities`; (5) keep the first `keepPerRule` violations per rule,
+ * then emit a `collapseNote` for the remainder; (6) append held summary lines and
+ * notes last.
+ *
+ * Currently used by: SwiftLintFilter.
+ */
+export function makeLinterFilter(cfg: LinterFilterConfig): ToolFilter {
+  const keepPerRule = cfg.keepPerRule ?? 3
+  const alwaysKeep = new Set(cfg.alwaysKeepSeverities ?? [])
+
+  return new (class extends ToolFilter {
+    readonly name = cfg.name
+    override readonly binaries = new Set(cfg.binaries)
+
+    override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
+      const merged = this.combineOutput(stdout, stderr)
+      const lines = merged.split('\n')
+      const kept: string[] = []
+      const summaryLines: string[] = []
+      const ruleCounts = new Map<string, number>()
+      let droppedProgress = 0
+
+      for (const line of lines) {
+        if (cfg.summaryLast?.test(line)) {
+          summaryLines.push(line)
+          continue
+        }
+        if (cfg.dropRe?.test(line)) {
+          droppedProgress++
+          continue
+        }
+        const parsed = cfg.parseDiagnostic(line)
+        if (!parsed) {
+          kept.push(line)
+          continue
+        }
+        const { severity, ruleId } = parsed
+        if (alwaysKeep.has(severity)) {
+          kept.push(line)
+          continue
+        }
+        const count = (ruleCounts.get(ruleId) ?? 0) + 1
+        ruleCounts.set(ruleId, count)
+        if (count <= keepPerRule) {
+          kept.push(line)
+        } else if (count === keepPerRule + 1 && cfg.collapseNote) {
+          // Placeholder replaced after we know the final count
+          kept.push(`__COLLAPSE__${ruleId}__`)
+        }
+      }
+
+      // Resolve placeholders now that all counts are final
+      const final: string[] = []
+      for (const line of kept) {
+        if (line.startsWith('__COLLAPSE__') && line.endsWith('__')) {
+          const ruleId = line.slice('__COLLAPSE__'.length, -2)
+          const total = ruleCounts.get(ruleId) ?? keepPerRule + 1
+          const extra = total - keepPerRule
+          if (extra > 0 && cfg.collapseNote) {
+            final.push(cfg.collapseNote(ruleId, extra))
+          }
+        } else {
+          final.push(line)
+        }
+      }
+
+      final.push(...summaryLines)
+
+      const notes: string[] = []
+      if (droppedProgress && cfg.dropLabel) {
+        notes.push(cfg.dropLabel(droppedProgress))
+      }
+      this.emitNotes(final, notes)
+      return squeezeBlankLines(final.join('\n'))
+    }
+  })()
+}
 
 /**
  * Build a {@link ToolFilter} for a Node test runner from `cfg`. The returned

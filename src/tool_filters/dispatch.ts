@@ -12,6 +12,7 @@ import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, shlexSplit, stripPrefixes } from './helpers.js'
+import { LINTER_FILTERS } from './linters.js'
 import { PACKAGE_MANAGER_FILTERS } from './package_managers.js'
 import { pytestFilter } from './pytest.js'
 import { TEST_RUNNER_FILTERS } from './test_runners.js'
@@ -36,7 +37,13 @@ export const TOOL_FILTERS: ToolFilter[] = [
   // subcommands. DepListFilter is last: it matches a subset of binaries already
   // claimed by pip/uv/poetry filters, triggered only on list/freeze/tree/show/ls.
   ...PACKAGE_MANAGER_FILTERS,
-  // Batches append here: linters · vcs · build · containers ·
+  // Batch C — linters. PylintFilter precedes the generic LinterFilter (which also
+  // declares 'pylint') to ensure the structured dedup path runs for pylint output.
+  // PrettierFilter and BiomeFilter precede any future npm/npx-wrapper handler that
+  // might match 'npx prettier'. All other linters are single-binary and order only
+  // matters within the group to preserve the Python FILTERS registration precedence.
+  ...LINTER_FILTERS,
+  // Batches append here: vcs · build · containers ·
   // cloud/iac · ci · ai-clis · shell/file · lang.
 ]
 

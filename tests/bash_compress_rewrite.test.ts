@@ -298,4 +298,22 @@ describe('compression rewrite (built-bundle e2e)', () => {
       "token-goat compress -f pip -c 'pip install requests'",
     )
   })
+
+  it('rewrites eslint to the eslint filter (batch C linter filter)', () => {
+    // Verifies the batch-C linter filters survive esbuild: the eslint filter is
+    // registered in LINTER_FILTERS -> spread into TOOL_FILTERS.
+    const out = runHook({
+      session_id: 'e2e-compress-eslint',
+      tool_name: 'Bash',
+      tool_input: { command: 'eslint src/' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f eslint -c 'eslint src/'",
+    )
+  })
+
 })
