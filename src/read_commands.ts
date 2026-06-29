@@ -617,11 +617,34 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     }
   }
 
-  // For TOML/YAML/INI: naive line-based extraction as fallback
-  const leafKey = opts.key.split('.').at(-1) ?? opts.key
+  // For TOML/YAML/INI: section-aware line-based extraction
+  // Split the key into section path and leaf key: "tool.ruff.line-length" -> ["tool.ruff"] + "line-length"
+  const keyParts = opts.key.split('.')
+  const leafKey = keyParts.at(-1) ?? opts.key
+  const sectionPath = keyParts.length > 1 ? keyParts.slice(0, -1).join('.') : null
   const lines = text.split('\n')
+
+  // Build the expected section header(s) for TOML-style [section] or [section.subsection]
+  // For a key like "tool.ruff.line-length", look for [tool.ruff] or [tool] followed by [ruff]
+  let currentSection = ''
   for (const line of lines) {
     const trimmed = line.trim()
+
+    // Check for section header like [tool.ruff] or [tool]
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      currentSection = trimmed.slice(1, -1)
+      continue
+    }
+
+    // Check if we're in the right section (if a section path is specified)
+    if (sectionPath !== null) {
+      // For a nested path like "tool.ruff.line-length", the section should be "tool.ruff"
+      if (currentSection !== sectionPath) {
+        continue
+      }
+    }
+
+    // Look for the leaf key in a key=value line
     if (trimmed.startsWith(`${leafKey} =`) || trimmed.startsWith(`${leafKey}=`)) {
       const eqIdx = trimmed.indexOf('=')
       emit(trimmed.slice(eqIdx + 1).trim().replace(/^["']|["']$/g, ''))
