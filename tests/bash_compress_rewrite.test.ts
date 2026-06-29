@@ -384,6 +384,24 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  it('rewrites gh run view --log to the gh-run-log filter (batch H CI filter)', () => {
+    // Verifies GhRunLogFilter survives esbuild bundling and dispatch produces
+    // the correct -f gh-run-log rewrite — specifically confirming GhRunLogFilter
+    // precedes GhFilter in TOOL_FILTERS so --log commands reach the right handler.
+    const out = runHook({
+      session_id: 'e2e-compress-gh-run-log',
+      tool_name: 'Bash',
+      tool_input: { command: 'gh run view 1234 --log' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f gh-run-log -c 'gh run view 1234 --log'",
+    )
+  })
+
   it('rewrites terraform plan to the terraform filter (batch G cloud/IaC filter)', () => {
     // Verifies TerraformFilter survives esbuild bundling and dispatch produces
     // the correct -f terraform rewrite for the built bundle.

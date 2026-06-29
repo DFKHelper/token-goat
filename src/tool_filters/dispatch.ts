@@ -13,6 +13,7 @@ import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, shlexSplit, stripPrefixes } from './helpers.js'
 import { BUILD_FILTERS } from './build.js'
+import { CI_FILTERS } from './ci.js'
 import { CLOUD_FILTERS } from './cloud.js'
 import { CONTAINER_FILTERS } from './containers.js'
 import { GIT_FILTERS } from './git.js'
@@ -64,7 +65,11 @@ export const TOOL_FILTERS: ToolFilter[] = [
   // `aws`/`aws2`; AwsCliFilter owns the CFN/S3 routing; AwsFilter is the
   // simpler JSON-array fallback). See cloud.ts ordering comment.
   ...CLOUD_FILTERS,
-  // Batches append here: ci · ai-clis · shell/file · lang.
+  // Batch H — CI runners, security scanners, and the keyword-based generic
+  // CI log filter. GhRunLogFilter precedes GhFilter (both match `gh`);
+  // GenericCIFilter is last (keyword-only, not binary-gated).
+  ...CI_FILTERS,
+  // Batches append here: ai-clis · shell/file · lang.
 ]
 
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */
