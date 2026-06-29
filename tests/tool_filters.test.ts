@@ -1,0 +1,266 @@
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { CompressedOutput, ToolFilter } from '../src/tool_filters/base.js'
+import {
+  detectFromCommand,
+  compressOutput,
+  filterByName,
+  selectFilter,
+  TOOL_FILTERS,
+  tryWrapCompoundSegments,
+} from '../src/tool_filters/dispatch.js'
+import { GenericFilter } from '../src/tool_filters/generic.js'
+import {
+  byteLength,
+  capBytes,
+  dedupeConsecutive,
+  dedupeNumericRuns,
+  hasHighEntropyToken,
+  normalise,
+  preserveStderrOnError,
+  safeDecode,
+  sanitizeControlChars,
+  shlexSplit,
+  squeezeBlankLines,
+  stripPrefixes,
+  stripProgress,
+  truncateMiddle,
+  truncateMiddleSmart,
+} from '../src/tool_filters/helpers.js'
+
+const NUL = String.fromCharCode(0)
+const ESC = String.fromCharCode(27)
+
+describe('helpers: encoding + normalisation', () => {
+  it('safeDecode strips null bytes', () => {
+    expect(safeDecode(`a${NUL}b${NUL}c`)).toBe('abc')
+    expect(safeDecode('clean')).toBe('clean')
+  })
+
+  it('sanitizeControlChars removes C0/C1 controls but keeps tab/newline', () => {
+    const input = `keep\ttab\nnewline${String.fromCharCode(7)}${String.fromCharCode(1)}drop`
+    expect(sanitizeControlChars(input)).toBe('keep\ttab\nnewlinedrop')
+  })
+
+  it('stripProgress keeps only the segment after the last carriage return', () => {
+    expect(stripProgress('10%\r50%\r100%')).toBe('100%')
+    expect(stripProgress('a\nb')).toBe('a\nb')
+  })
+
+  it('normalise collapses CRLF, strips ANSI, and collapses progress', () => {
+    const input = `done\r\n${ESC}[32mgreen${ESC}[0m\r\nstep1\rstep2`
+    const out = normalise(input)
+    expect(out).toBe('done\ngreen\nstep2')
+    expect(out).not.toContain(ESC)
+  })
+
+  it('normalise can skip progress collapsing', () => {
+    expect(normalise('a\rb', { skipProgress: true })).toBe('a\rb')
+  })
+})
+
+describe('helpers: entropy + dedupe', () => {
+  it('hasHighEntropyToken flags UUIDs, long hex, and JWTs', () => {
+    expect(hasHighEntropyToken('id 550e8400-e29b-41d4-a716-446655440000 ok')).toBe(true)
+    expect(hasHighEntropyToken('sha 0123456789abcdef0123456789abcdef0123')).toBe(true)
+    expect(hasHighEntropyToken('eyJhbGciOi.eyJzdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4f')).toBe(true)
+    expect(hasHighEntropyToken('a normal log line')).toBe(false)
+  })
+
+  it('dedupeConsecutive collapses runs >= minRun and leaves short runs intact', () => {
+    expect(dedupeConsecutive(['x', 'x', 'x', 'y'])).toEqual(['x  (×3)', 'y'])
+    expect(dedupeConsecutive(['x', 'y'])).toEqual(['x', 'y'])
+  })
+
+  it('dedupeConsecutive entropyBypass emits high-entropy lines verbatim', () => {
+    const uuid = 'req 550e8400-e29b-41d4-a716-446655440000'
+    const out = dedupeConsecutive([uuid, uuid, uuid], { entropyBypass: true })
+    expect(out).toEqual([uuid, uuid, uuid])
+  })
+
+  it('dedupeNumericRuns collapses lines differing only in digits', () => {
+    const out = dedupeNumericRuns(['line 1', 'line 2', 'line 3'], { minRun: 2 })
+    expect(out[0]).toBe('line 1')
+    expect(out[1]).toContain('similar lines collapsed')
+  })
+})
+
+describe('helpers: capping', () => {
+  it('truncateMiddle keeps head + marker + tail', () => {
+    const lines = Array.from({ length: 100 }, (_, i) => `L${i}`)
+    const out = truncateMiddle(lines, 10)
+    expect(out.length).toBe(11) // 10 + marker
+    expect(out[0]).toBe('L0')
+    expect(out[out.length - 1]).toBe('L99')
+    expect(out.some((l) => l.includes('elided by token-goat'))).toBe(true)
+  })
+
+  it('truncateMiddleSmart preserves an error-signal line from the middle', () => {
+    const lines = Array.from({ length: 200 }, (_, i) => (i === 120 ? 'fatal: boom' : `progress ${i}`))
+    const out = truncateMiddleSmart(lines, 40)
+    expect(out.join('\n')).toContain('fatal: boom')
+  })
+
+  it('capBytes truncates oversized text at a line boundary with a marker', () => {
+    const text = Array.from({ length: 50 }, (_, i) => `line-${i}`).join('\n')
+    const out = capBytes(text, 60)
+    expect(byteLength(out)).toBeLessThanOrEqual(60)
+    expect(out).toContain('bytes elided by token-goat')
+  })
+
+  it('capBytes leaves text within budget unchanged', () => {
+    expect(capBytes('short', 1000)).toBe('short')
+  })
+
+  it('squeezeBlankLines collapses 3+ blank lines to one', () => {
+    expect(squeezeBlankLines('a\n\n\n\nb')).toBe('a\n\nb')
+  })
+
+  it('preserveStderrOnError returns combined output only on non-zero exit with stderr', () => {
+    expect(preserveStderrOnError('out', 'err', 1)).toBe('out\n---\nerr')
+    expect(preserveStderrOnError('out', 'err', 0)).toBeNull()
+    expect(preserveStderrOnError('out', '', 1)).toBeNull()
+  })
+})
+
+describe('helpers: command parsing', () => {
+  it('shlexSplit honours quotes and escapes', () => {
+    expect(shlexSplit('git commit -m "hello world"')).toEqual(['git', 'commit', '-m', 'hello world'])
+    expect(shlexSplit("echo 'a b' c")).toEqual(['echo', 'a b', 'c'])
+  })
+
+  it('shlexSplit throws on an unterminated quote', () => {
+    expect(() => shlexSplit('echo "unterminated')).toThrow()
+  })
+
+  it('stripPrefixes resolves pass-through wrappers and multi-token launchers', () => {
+    expect(stripPrefixes(['sudo', 'time', 'pytest', '-q'])).toEqual(['pytest', '-q'])
+    expect(stripPrefixes(['python', '-m', 'pytest'])).toEqual(['pytest'])
+    expect(stripPrefixes(['uv', 'run', 'ruff', 'check'])).toEqual(['ruff', 'check'])
+    expect(stripPrefixes(['npx', 'jest'])).toEqual(['jest'])
+    expect(stripPrefixes(['FOO=bar', 'eslint', '.'])).toEqual(['eslint', '.'])
+  })
+})
+
+describe('CompressedOutput', () => {
+  it('computes savings, tokens, and percentage', () => {
+    const co = new CompressedOutput('out', 100, 25, 'demo')
+    expect(co.bytesSaved).toBe(75)
+    expect(co.tokensSaved).toBe(Math.floor(75 / 3) + 1)
+    expect(co.percentSaved).toBeCloseTo(75)
+  })
+
+  it('clamps savings at zero when output grew', () => {
+    const co = new CompressedOutput('xxxx', 2, 4, 'demo')
+    expect(co.bytesSaved).toBe(0)
+    expect(co.tokensSaved).toBe(0)
+    expect(co.withMarker()).toBe('xxxx') // no marker on a no-op
+  })
+
+  it('appends a marker that names the filter and the opt-out env var', () => {
+    const co = new CompressedOutput('body', 1000, 100, 'generic')
+    const marked = co.withMarker()
+    expect(marked).toContain('generic filter -')
+    expect(marked).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
+  })
+})
+
+describe('GenericFilter (golden)', () => {
+  it('strips ANSI/progress and dedupes consecutive lines', () => {
+    const norm = normalise(`${ESC}[32mok${ESC}[0m\ndup\ndup\ndup\ndup`)
+    const body = new GenericFilter().compress(norm, '', 0, [])
+    expect(body).toContain('ok')
+    expect(body).toContain('×4')
+    expect(body).not.toContain(ESC)
+  })
+
+  it('apply() produces a smaller output with a marker for noisy input', () => {
+    const raw = [`${ESC}[1mBuild${ESC}[0m`, ...Array.from({ length: 30 }, () => 'compiling...')].join('\n')
+    const result = new GenericFilter().apply(raw, '', 0, [])
+    expect(result.compressedBytes).toBeLessThan(result.originalBytes)
+    expect(result.withMarker()).toContain('disable via TOKEN_GOAT_BASH_COMPRESS')
+    expect(result.text).toContain('×')
+  })
+
+  it('apply() returns empty output for empty input', () => {
+    const result = new GenericFilter().apply('', '', 0, [])
+    expect(result.text).toBe('')
+    expect(result.originalBytes).toBe(0)
+  })
+})
+
+describe('error-passthrough filters', () => {
+  class PassthroughFilter extends ToolFilter {
+    readonly name = 'passthrough'
+    override readonly errorPassthrough = true
+  }
+
+  it('returns raw combined output on non-zero exit with stderr', () => {
+    const f = new PassthroughFilter()
+    const body = f.compress('partial', 'boom: failed', 1, [])
+    expect(body).toBe('partial\n---\nboom: failed')
+  })
+
+  it('compresses normally on a clean exit', () => {
+    const f = new PassthroughFilter()
+    const body = f.compress('clean output', '', 0, [])
+    expect(body).toBe('clean output')
+  })
+})
+
+describe('dispatch: detection + compound handling', () => {
+  class EchoFilter extends ToolFilter {
+    readonly name = 'echo-test'
+    override readonly binaries = new Set(['mytool'])
+  }
+
+  afterEach(() => {
+    // Drop any test filters registered during a case.
+    while (TOOL_FILTERS.length) TOOL_FILTERS.pop()
+  })
+
+  it('selectFilter returns a registered match after prefix stripping', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(selectFilter(['sudo', 'mytool', '-x'])?.name).toBe('echo-test')
+    expect(selectFilter(['othertool'])).toBeNull()
+  })
+
+  it('detectFromCommand rejects compound and redirected commands', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(detectFromCommand('mytool a && mytool b')).toBeNull()
+    expect(detectFromCommand('mytool a | grep x')).toBeNull()
+    expect(detectFromCommand('mytool a ; mytool b')).toBeNull()
+    expect(detectFromCommand('mytool a > out.txt')).toBeNull()
+    expect(detectFromCommand('mytool $(date)')).toBeNull()
+  })
+
+  it('detectFromCommand resolves a simple recognised command', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    const det = detectFromCommand('python -m mytool run')
+    expect(det?.filter.name).toBe('echo-test')
+    expect(det?.argv).toEqual(['mytool', 'run'])
+  })
+
+  it('tryWrapCompoundSegments wraps each recognised && segment', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    const out = tryWrapCompoundSegments('mytool a && echo done', (name, seg) => `wrap[${name}](${seg})`)
+    expect(out).toBe('wrap[echo-test](mytool a) && echo done')
+  })
+
+  it('tryWrapCompoundSegments returns null when no segment matches', () => {
+    expect(tryWrapCompoundSegments('echo a && echo b', () => 'x')).toBeNull()
+  })
+})
+
+describe('dispatch: filterByName + profiles', () => {
+  it('filterByName resolves the generic fallback and rejects unknowns', () => {
+    expect(filterByName('generic')).toBeInstanceOf(GenericFilter)
+    expect(filterByName('does-not-exist')).toBeNull()
+  })
+
+  it('compressOutput honours the aggressive profile line cap', () => {
+    const raw = Array.from({ length: 400 }, (_, i) => `unique-line-${i}`).join('\n')
+    const result = compressOutput(new GenericFilter(), raw, '', 0, [], { compressionProfile: 'aggressive' })
+    expect(result.text.split('\n').length).toBeLessThanOrEqual(51) // 50 + marker line
+  })
+})
