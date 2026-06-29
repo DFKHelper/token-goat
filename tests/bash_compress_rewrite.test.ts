@@ -367,4 +367,21 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  it('rewrites docker build to the docker filter (batch F container filter)', () => {
+    // Verifies DockerFilter survives esbuild bundling and dispatch produces
+    // the correct -f docker rewrite for the built bundle.
+    const out = runHook({
+      session_id: 'e2e-compress-docker',
+      tool_name: 'Bash',
+      tool_input: { command: 'docker build .' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f docker -c 'docker build .'",
+    )
+  })
+
 })

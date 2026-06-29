@@ -13,6 +13,7 @@ import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, shlexSplit, stripPrefixes } from './helpers.js'
 import { BUILD_FILTERS } from './build.js'
+import { CONTAINER_FILTERS } from './containers.js'
 import { GIT_FILTERS } from './git.js'
 import { LINTER_FILTERS } from './linters.js'
 import { PACKAGE_MANAGER_FILTERS } from './package_managers.js'
@@ -54,8 +55,11 @@ export const TOOL_FILTERS: ToolFilter[] = [
   // NxFilter/TurboFilter match npx/pnpx so they must follow the package-manager
   // batch but their own subcommand check prevents false positives.
   ...BUILD_FILTERS,
-  // Batches append here: containers ·
-  // cloud/iac · ci · ai-clis · shell/file · lang.
+  // Batch F — containers / kubernetes. KubectlLogsFilter must precede
+  // KubectlFilter (both match `kubectl`/`k`); DockerComposeFilter must precede
+  // DockerFilter (both match `docker`). See containers.ts ordering comment.
+  ...CONTAINER_FILTERS,
+  // Batches append here: cloud/iac · ci · ai-clis · shell/file · lang.
 ]
 
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */
