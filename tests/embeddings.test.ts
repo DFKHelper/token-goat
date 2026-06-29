@@ -144,6 +144,25 @@ describe('embeddings module', () => {
         expect(lfText).not.toContain('\r')
       }
     })
+
+    it('does not count a trailing newline as an extra line in endLine', () => {
+      // 5 real lines, each long enough that the whole block exceeds MIN_CHUNK_CHARS (50)
+      // but stays well under MAX_CHUNK_CHARS (8000) so it forms exactly ONE final window chunk.
+      const body =
+        ['line one padding xx', 'line two padding xx', 'line three padding', 'line four padding x', 'line five padding x'].join('\n') + '\n'
+      const chunks = embeddings.chunkFile('f.ts', body)
+      expect(chunks.length).toBe(1)
+      expect(chunks[0].startLine).toBe(1)
+      expect(chunks[0].endLine).toBe(5) // pre-fix: 6 (phantom trailing line counted) -> FAILS; post-fix: 5 -> PASSES
+    })
+
+    it('reports the correct endLine when content has no trailing newline', () => {
+      const body =
+        ['line one padding xx', 'line two padding xx', 'line three padding', 'line four padding x', 'line five padding x'].join('\n') // no trailing \n
+      const chunks = embeddings.chunkFile('f.ts', body)
+      expect(chunks.length).toBe(1)
+      expect(chunks[0].endLine).toBe(5) // correct both pre- and post-fix
+    })
   })
 
   describe('mergeNearbyHits()', () => {
