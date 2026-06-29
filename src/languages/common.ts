@@ -121,14 +121,18 @@ export function makeSymbolEmitter(
 /**
  * Assign `endLine` to each section in a sorted flat list.
  * Each section ends at the line before the next section starts, or at
- * `totalLines` for the last one.
+ * `totalLines` for the last one. When two sections share a start line (e.g. an
+ * HTML heading and its inline id anchor, or two `CREATE TABLE`s on one line),
+ * `next.line - 1` would fall below the section's own start, so the end is
+ * floored at `s.line` to keep the range non-inverted (a point section).
  */
 export function assignFlatEndLines(sections: MiniSection[], totalLines: number): void {
   for (let i = 0; i < sections.length; i++) {
     const next = sections[i + 1]
     const s = sections[i]
     if (s === undefined) continue
-    s.endLine = next !== undefined ? next.line - 1 : totalLines
+    const end = next !== undefined ? next.line - 1 : totalLines
+    s.endLine = end < s.line ? s.line : end
   }
 }
 
