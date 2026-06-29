@@ -97,6 +97,23 @@ describe('parseFile', () => {
     expect(cppResult.symbols.map((s) => s.name)).toContain('Widget')
   })
 
+  it('indexes C++ out-of-line method definitions (qualified_identifier declarator)', async () => {
+    const cppFile = write(
+      'methods.cpp',
+      [
+        'struct S { int x; };',
+        'void S::doThing() {}',
+        'int S::compute() { return 0; }',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(cppFile)
+    expect(result.language).toBe('cpp')
+    const symNames = result.symbols.map((s) => s.name)
+    expect(symNames).toContain('doThing') // out-of-line method — dropped pre-fix
+    expect(symNames).toContain('compute') // out-of-line method — dropped pre-fix
+  })
+
   it('indexes Go type, const, var, and method symbols (names live on *_spec nodes)', async () => {
     const goFile = write(
       'sym.go',
