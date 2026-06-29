@@ -1,6 +1,6 @@
 import * as path from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { normalizePath, safeJoin } from '../src/paths.js'
 
@@ -54,5 +54,34 @@ describe('normalizePath', () => {
 
   it('normalizes mixed-separator WSL paths fully', () => {
     expect(normalizePath('/mnt/c/foo\\bar')).toBe('c:/foo/bar')
+  })
+
+  describe('Git Bash /<drive>/ mount form (win32-gated)', () => {
+    const realPlatform = process.platform
+    const setPlatform = (p: string): void => {
+      Object.defineProperty(process, 'platform', { value: p, configurable: true })
+    }
+    afterEach(() => setPlatform(realPlatform))
+
+    it('rewrites /c/Projects/x to c:/Projects/x on win32', () => {
+      setPlatform('win32')
+      expect(normalizePath('/c/Projects/x')).toBe('c:/Projects/x')
+    })
+
+    it('lowercases the drive and handles a bare /C root on win32', () => {
+      setPlatform('win32')
+      expect(normalizePath('/C/Foo')).toBe('c:/Foo')
+      expect(normalizePath('/c')).toBe('c:/')
+    })
+
+    it('leaves a multi-letter /cab/ directory untouched on win32', () => {
+      setPlatform('win32')
+      expect(normalizePath('/cab/x')).toBe('/cab/x')
+    })
+
+    it('leaves /c/foo unchanged on non-win32 (a real POSIX path)', () => {
+      setPlatform('linux')
+      expect(normalizePath('/c/foo')).toBe('/c/foo')
+    })
   })
 })
