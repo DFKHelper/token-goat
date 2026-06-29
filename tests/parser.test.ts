@@ -138,6 +138,29 @@ describe('parseFile', () => {
     const directives = result.symbols.filter((s) => s.kind === 'directive')
     expect(directives.length).toBeGreaterThanOrEqual(1)
   })
+
+  it('extracts individual bindings from destructuring declarations (not a junk pattern-named symbol)', async () => {
+    const file = write(
+      'destructure.ts',
+      'const { alpha, beta } = obj;\nconst [first, second] = arr;\nconst { a: b } = obj;\nconst plain = 5;\nconst fn = () => {};\n',
+    )
+    const result = await parseFile(file)
+    const names = result.symbols.map((s) => s.name)
+    // Real bindings are indexed:
+    expect(names).toContain('alpha')
+    expect(names).toContain('beta')
+    expect(names).toContain('first')
+    expect(names).toContain('second')
+    expect(names).toContain('b')        // `const { a: b }` binds the value `b`
+    expect(names).not.toContain('a')    // ...not the key `a`
+    // Junk pattern-named symbols are gone:
+    expect(names).not.toContain('{ alpha, beta }')
+    expect(names).not.toContain('[first, second]')
+    // Controls (unchanged behavior):
+    expect(names).toContain('plain')
+    const fnSym = result.symbols.find((s) => s.name === 'fn')
+    expect(fnSym?.kind).toBe('function')   // arrow bound to a single identifier stays a 'function'
+  })
 })
 
 describe('parseFile reference extraction', () => {
