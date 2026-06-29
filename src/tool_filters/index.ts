@@ -103,6 +103,27 @@ export {
 } from './languages.js'
 export type { LangDedupeRule, LanguageFilterConfig } from './families.js'
 export {
+  MISC_FILTERS,
+  PlaywrightFilter, playwrightFilter,
+  CypressFilter, cypressFilter,
+  PsqlFilter, psqlFilter,
+  MySQLFilter, mySQLFilter,
+  Sqlite3Filter, sqlite3Filter,
+  RedisCLIFilter, redisCLIFilter,
+  SysPackageFilter, sysPackageFilter,
+  ProtocFilter, protocFilter,
+  SassFilter, sassFilter,
+  ToxFilter, toxFilter,
+  NoxFilter, noxFilter,
+  WasmPackFilter, wasmPackFilter,
+  NgFilter, ngFilter,
+  DotenvFilter, dotenvFilter,
+  EnvFilter, envFilter,
+  JsonArrayFilter, jsonArrayFilter,
+  SeverityLogFilter, severityLogFilter,
+  TailTruncFilter, tailTruncFilter,
+} from './misc.js'
+export {
   TOOL_FILTERS,
   selectFilter,
   detectFromCommand,

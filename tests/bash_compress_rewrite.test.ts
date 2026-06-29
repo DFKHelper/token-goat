@@ -474,5 +474,40 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  it('rewrites psql to the psql filter (batch K2 misc filter)', () => {
+    // Authoritative dispatch coverage: PsqlFilter survives esbuild bundling
+    // and MISC_FILTERS is wired through the built bundle.
+    const out = runHook({
+      session_id: 'e2e-compress-psql',
+      tool_name: 'Bash',
+      tool_input: { command: 'psql -U postgres' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f psql -c 'psql -U postgres'",
+    )
+  })
+
+  it('rewrites playwright test to the playwright filter (batch K2, before bunFilter)', () => {
+    // Authoritative dispatch coverage: PlaywrightFilter is registered before
+    // BunFilter in TOOL_FILTERS — verified in the built bundle so a registration
+    // order mistake would show up here.
+    const out = runHook({
+      session_id: 'e2e-compress-playwright',
+      tool_name: 'Bash',
+      tool_input: { command: 'playwright test' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f playwright -c 'playwright test'",
+    )
+  })
+
 
 })
