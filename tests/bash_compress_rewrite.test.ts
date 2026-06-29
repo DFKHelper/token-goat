@@ -437,4 +437,22 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  it('rewrites rg to the rg filter (batch J shell/file filter)', () => {
+    // Verifies RgFilter survives esbuild bundling and dispatch produces
+    // the correct -f rg rewrite — authoritative coverage that the shell/file
+    // batch (SHELL_FILE_FILTERS) is wired through the built bundle.
+    const out = runHook({
+      session_id: 'e2e-compress-rg',
+      tool_name: 'Bash',
+      tool_input: { command: 'rg -C 3 TODO src/' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f rg -c 'rg -C 3 TODO src/'",
+    )
+  })
+
 })

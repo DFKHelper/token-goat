@@ -571,16 +571,18 @@ describe('preBashHandler — rg structural search', () => {
     }
   })
 
-  it('passes through rg searching for a non-structural pattern', () => {
+  it('wraps rg searching for a non-structural pattern (RgFilter registered in SHELL_FILE_FILTERS)', () => {
     const event = makeBashEvent('rg "TODO" src/token_goat/compact.py')
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // RgFilter is now registered; pre-Bash wraps rg for output compression instead of passing through.
+    expect(result.hookType).toBe('rewriteInput')
   })
 
-  it('passes through rg structural search on a directory (not a single file)', () => {
+  it('wraps rg structural search on a directory (RgFilter registered in SHELL_FILE_FILTERS)', () => {
     const event = makeBashEvent('rg "^def" src/token_goat/')
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // RgFilter is now registered; pre-Bash wraps rg for output compression instead of passing through.
+    expect(result.hookType).toBe('rewriteInput')
   })
 })
 
@@ -815,9 +817,10 @@ describe('preBashHandler — directory listing map hint', () => {
     }
   })
 
-  it('passes through plain eza without --long flag', () => {
+  it('wraps plain eza (LsFilter registered in SHELL_FILE_FILTERS matches eza)', () => {
     const result = preBashHandler(makeBashEvent('eza src/'))
-    expect(result.hookType).toBe('pass')
+    // LsFilter now matches eza; pre-Bash wraps it for output compression.
+    expect(result.hookType).toBe('rewriteInput')
   })
 
   it('emits map hint for eza --tree', () => {
@@ -881,9 +884,10 @@ describe('preBashHandler — directory listing map hint', () => {
     expect(result.hookType).toBe('context')
   })
 
-  it('does not fire for ls without a pipe', () => {
+  it('wraps ls without a pipe (LsFilter registered in SHELL_FILE_FILTERS)', () => {
     const result = preBashHandler(makeBashEvent('ls -la src/'))
-    expect(result.hookType).toBe('pass')
+    // LsFilter is now registered; pre-Bash wraps ls for output compression.
+    expect(result.hookType).toBe('rewriteInput')
   })
 })
 
@@ -1022,34 +1026,35 @@ describe('preBashHandler — curl GET recall', () => {
     }
   })
 
-  it('passes through first curl GET (nothing cached yet)', () => {
+  it('wraps first curl GET (CurlFilter registered in SHELL_FILE_FILTERS)', () => {
     const result = preBashHandler(makeBashEvent('curl -s https://api.example.com/data'))
-    expect(result.hookType).toBe('pass')
+    // CurlFilter is now registered; pre-Bash wraps curl for output compression.
+    expect(result.hookType).toBe('rewriteInput')
   })
 
-  it('does not cache curl POST', async () => {
+  it('wraps curl POST (CurlFilter matches regardless of method)', async () => {
     const cmd = 'curl -X POST -d \'{"key":"val"}\' https://api.example.com/create'
     const largeOutput = '{"id":1}'.repeat(200)
     await postBashHandler(makePostBashEvent(cmd, largeOutput))
-    // POST should not be cached, so pre-handler passes
+    // CurlFilter is now registered; wraps for compression regardless of caching.
     const result = preBashHandler(makeBashEvent(cmd))
-    expect(result.hookType).toBe('pass')
+    expect(result.hookType).toBe('rewriteInput')
   })
 
-  it('does not cache curl with auth headers', async () => {
+  it('wraps curl with auth headers (CurlFilter registered)', async () => {
     const cmd = "curl -s -H 'Authorization: Bearer token123' https://api.example.com/me"
     const largeOutput = '{"user":"me"}'.repeat(200)
     await postBashHandler(makePostBashEvent(cmd, largeOutput))
     const result = preBashHandler(makeBashEvent(cmd))
-    expect(result.hookType).toBe('pass')
+    expect(result.hookType).toBe('rewriteInput')
   })
 
-  it('does not cache curl with -u credentials', async () => {
+  it('wraps curl with -u credentials (CurlFilter registered)', async () => {
     const cmd = 'curl -s -u admin:password https://api.example.com/admin'
     const largeOutput = '{"admin":true}'.repeat(200)
     await postBashHandler(makePostBashEvent(cmd, largeOutput))
     const result = preBashHandler(makeBashEvent(cmd))
-    expect(result.hookType).toBe('pass')
+    expect(result.hookType).toBe('rewriteInput')
   })
 
   it('emits recall hint for same URL fetched with a different downstream pipe', async () => {
@@ -1120,9 +1125,10 @@ describe('preBashHandler — curl download dedup', () => {
     }
   })
 
-  it('passes through first curl -o download (not yet recorded)', () => {
+  it('wraps curl -o download (CurlFilter registered in SHELL_FILE_FILTERS)', () => {
     const result = preBashHandler(makeBashEvent('curl https://example.com/data.json -o /tmp/data.json'))
-    expect(result.hookType).toBe('pass')
+    // CurlFilter is now registered; pre-Bash wraps curl for output compression.
+    expect(result.hookType).toBe('rewriteInput')
   })
 
   it('denies re-download of same URL with identical output path', async () => {
@@ -1197,9 +1203,11 @@ describe('preBashHandler — markdown heading grep hint', () => {
     expect(result.hookType).not.toBe('pass')
   })
 
-  it('passes through grep -n "^#" script.sh (not a markdown file)', () => {
+  it('wraps grep (RgFilter registered in SHELL_FILE_FILTERS matches grep)', () => {
     const result = preBashHandler(makeBashEvent('grep -n "^#" script.sh'))
-    expect(result.hookType).toBe('pass')
+    // RgFilter now matches grep; pre-Bash wraps it for output compression.
+    // The markdown-heading hint no longer fires because wrapping takes precedence.
+    expect(result.hookType).toBe('rewriteInput')
   })
 })
 
