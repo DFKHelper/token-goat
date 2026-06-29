@@ -10,6 +10,8 @@ import { createRequire } from 'node:module'
 
 import type { Database as BetterSqlite3Database } from 'better-sqlite3'
 
+import { pathEqClause } from './sql_path.js'
+
 const _require = createRequire(import.meta.url)
 
 // Optional transformer import; catches both missing package and load failures.
@@ -658,14 +660,14 @@ export function deleteFileEmbeddings(
   db: BetterSqlite3Database,
   filePath: string,
 ): void {
-  const rows = db.prepare(`SELECT id FROM chunks WHERE file_path = ?`).all(filePath) as Array<{
+  const rows = db.prepare(`SELECT id FROM chunks WHERE ${pathEqClause('file_path')}`).all(filePath) as Array<{
     id: number
   }>
   if (rows.length === 0) return
   const ids = rows.map((r) => r.id)
   const placeholders = ids.map(() => '?').join(', ')
   db.prepare(`DELETE FROM chunk_vectors WHERE rowid IN (${placeholders})`).run(...ids)
-  db.prepare(`DELETE FROM chunks WHERE file_path = ?`).run(filePath)
+  db.prepare(`DELETE FROM chunks WHERE ${pathEqClause('file_path')}`).run(filePath)
 }
 
 // ============================================================================
