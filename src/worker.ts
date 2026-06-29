@@ -174,16 +174,24 @@ export function drainOnce(dir: string, index?: (absPath: string, sha: string) =>
   if (fs.existsSync(draining)) {
     try {
       rawSnapshot += fs.readFileSync(draining, 'utf8')
-      fs.rmSync(draining, { force: true })
     } catch {
-      // Unreadable: quarantine so the claim-rename below cannot silently
-      // overwrite it, then skip this cycle.
+      // Genuinely unreadable: quarantine so stage (b)'s claim-rename cannot clobber it, then skip this cycle.
       try {
         fs.renameSync(draining, `${draining}.corrupt-${Date.now()}`)
       } catch {
         // best effort
       }
       return 0
+    }
+    // Read succeeded; lines are safely in rawSnapshot. Best-effort remove so they are not reprocessed; if removal fails (e.g. a Windows sharing violation) quarantine the file out of stage (b)'s way but do NOT discard the data already read.
+    try {
+      fs.rmSync(draining, { force: true })
+    } catch {
+      try {
+        fs.renameSync(draining, `${draining}.corrupt-${Date.now()}`)
+      } catch {
+        // best effort
+      }
     }
   }
 
