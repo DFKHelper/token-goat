@@ -172,6 +172,25 @@ describe('pytest filter', () => {
 })
 
 describe('go-test filter', () => {
+  it('preserves the panicking subtest identity when no --- FAIL: line is printed', () => {
+    // A panic aborts the test binary before Go prints `--- FAIL:`, so the
+    // `=== RUN` line naming the subtest is the only marker of which case blew
+    // up. The stack shows only the parent test func, so that line must survive.
+    const out = [
+      '=== RUN   TestTable',
+      '=== RUN   TestTable/case_3',
+      'panic: runtime error: index out of range [5] with length 3',
+      '',
+      'goroutine 7 [running]:',
+      'pkg.TestTable.func1(0xc0001)',
+      '\t/src/pkg/table_test.go:42 +0x1a5',
+      'FAIL\tpkg\t0.012s',
+    ].join('\n')
+    const result = goTestFilter.apply(out, '', 1, ['go', 'test'])
+    expect(result.text).toContain('TestTable/case_3')
+    expect(result.text).toContain('panic: runtime error')
+  })
+
   it('collapses passing testcases to a count, keeps the package summary', () => {
     const lines: string[] = []
     for (let i = 0; i < 15; i++) {
