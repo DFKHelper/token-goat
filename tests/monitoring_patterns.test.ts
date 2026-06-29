@@ -232,4 +232,64 @@ describe('getMonitoringRecallHint', () => {
     const hint = getMonitoringRecallHint('cat Foo.java')
     expect(hint).toContain('--tail')
   })
+
+  // Multiline PowerShell -Command blocks with read-only system queries
+  it('matches multiline PS -Command block with Get-PSDrive and Get-CimInstance', () => {
+    const cmd = [
+      'powershell -NoProfile -Command "',
+      '# Disk usage',
+      'Get-PSDrive C | Select-Object @{N=\'Used_GB\';E={[math]::Round($_.Used/1GB,1)}}',
+      '$os = Get-CimInstance Win32_OperatingSystem',
+      '[PSCustomObject]@{ Total_GB = [math]::Round($os.TotalVisibleMemorySize/1MB,1) } | Format-List',
+      '"',
+    ].join('\n')
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+    expect(getMonitoringRecallHint(cmd)).toContain('--tail')
+  })
+
+  it('matches multiline PS -Command block with Get-Process and Write-Host', () => {
+    const cmd = [
+      'powershell -NoProfile -Command "',
+      'Write-Host "=== CPU ===" -ForegroundColor Cyan',
+      'Get-Process | Sort-Object CPU -Descending | Select-Object -First 20 Name,CPU | Format-Table',
+      '"',
+    ].join('\n')
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+  })
+
+  it('does NOT match multiline PS -Command block containing Remove- (destructive)', () => {
+    const cmd = [
+      'powershell -NoProfile -Command "',
+      'Get-Process EoAExperiences',
+      'Remove-Item $tempPath -Recurse -Force',
+      '"',
+    ].join('\n')
+    expect(getMonitoringRecallHint(cmd)).toBeNull()
+  })
+
+  it('does NOT match multiline PS -Command block containing Stop-Process (destructive)', () => {
+    const cmd = [
+      'powershell -NoProfile -Command "',
+      '$p = Get-Process EoAExperiences',
+      'Stop-Process -Id $p.Id -Force',
+      '"',
+    ].join('\n')
+    expect(getMonitoringRecallHint(cmd)).toBeNull()
+  })
+
+  it('does NOT match multiline PS -Command block without Get-* monitoring cmdlets', () => {
+    const cmd = [
+      'powershell -NoProfile -Command "',
+      'Write-Host "Hello"',
+      '$x = 1 + 1',
+      '"',
+    ].join('\n')
+    expect(getMonitoringRecallHint(cmd)).toBeNull()
+  })
+
+  it('does NOT reclassify the single-line PS form via isPsMultilineSystemQuery (already handled by MONITORING_COMMAND_PATTERNS)', () => {
+    // Single-line form should match via existing pattern, not fall through to multiline check
+    const cmd = 'powershell -NoProfile -Command "Get-Process | Select-Object Name, CPU"'
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+  })
 })
