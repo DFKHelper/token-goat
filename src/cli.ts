@@ -18,10 +18,11 @@ import * as path from 'path'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
-import { VERSION } from './constants.js'
+import { globalDbPath, VERSION } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { searchSymbolsFts } from './index_reader.js'
 import { indexFileSync } from './parser.js'
+import { pruneDeletedFiles } from './index_prune.js'
 import { detectLanguage } from './parser_types.js'
 import { resolveIndexPath } from './paths.js'
 import type { SymbolEntry } from './parser_types.js'
@@ -86,8 +87,9 @@ function cmdSemantic(query: string, opts: { limit?: string }): void {
   out(blocks.join('\n\n'))
 }
 
-function cmdIndex(pathArg?: string, opts: { walk?: boolean } = {}): void {
+export function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?: string } = {}): void {
   const root = pathArg ?? process.cwd()
+  const dbPath = opts.dbPath ?? globalDbPath()
   let files = getTrackedFiles(root)
   if (files.length === 0) {
     if (opts.walk !== true) {
@@ -104,10 +106,11 @@ function cmdIndex(pathArg?: string, opts: { walk?: boolean } = {}): void {
     // Key on the same canonical absolute-normalized path every reader resolves to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so a relative root (the natural `token-goat index .`) yields relative paths; normalizePath alone would store a relative key that no reader can match.
     const key = resolveIndexPath(f)
     if (detectLanguage(key) === 'unknown') continue
-    indexFileSync(key)
+    indexFileSync(key, dbPath)
     indexed += 1
   }
-  out(`Indexed ${indexed} files into the symbol index.`)
+  const pruned = pruneDeletedFiles(resolveIndexPath(root), dbPath)
+  out(`Indexed ${indexed} files into the symbol index.${pruned > 0 ? ` Pruned ${pruned} deleted file(s).` : ''}`)
 }
 
 function cmdMap(opts: { compact?: boolean }): void {
