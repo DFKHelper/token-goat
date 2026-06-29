@@ -6,6 +6,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **chunkFile endLine off-by-one on newline-terminated files.** The `split(/\r?\n/)` method yields a phantom trailing empty string when splitting newline-terminated content (e.g., `"a\nb\n".split(/\r?\n/)` → `["a","b",""]`). This inflated the final chunk's `endLine` by one and appended a stray newline. The fix mirrors Python's `splitlines()` behavior by popping a single trailing empty element if present, ensuring `endLine` reflects the file's actual line count. See [src/embeddings.ts](src/embeddings.ts).
+
 - **drainOnce lost-update race in the dirty queue.** The drain loop in [src/worker.ts](src/worker.ts) was vulnerable to a lost-update race: a file appended to the queue by `appendDirtyPath` (from a concurrent hook) between the queue snapshot and the whole-file delete would be dropped without being indexed. The fix ports the Python original's atomic rename-to-claim pattern: the drain atomically renames the live `dirty.txt` to `dirty.txt.draining` so concurrent appends either land before the rename (and travel with it) or recreate a fresh queue after it (next poll). Also adds crash recovery: if a drain process crashes, the next drain absorbs the abandoned `.draining` file and indexes its contents. Windows rename contention (EPERM/EBUSY when the file is open for append) is handled via a retry loop with 50ms sleeps. Two regression tests verify the fix: "does not drop paths appended during a drain" and "recovers from abandoned .draining file".
 
 ### Added

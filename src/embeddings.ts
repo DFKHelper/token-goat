@@ -299,6 +299,9 @@ export function chunkFile(
   overlap: number = 200,
 ): Chunk[] {
   const lines = content.split(/\r?\n/)
+  // splitlines() parity: a trailing newline must not introduce a phantom empty
+  // final line (it would inflate endLine by one and append a stray blank line).
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
   const chunks: Chunk[] = []
 
   let currentChunk = ''
