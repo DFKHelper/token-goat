@@ -197,6 +197,47 @@ describe('parseFile', () => {
     expect(names).toContain('helper')
     expect(names).toContain('Method')
   })
+    it('excludes function-local var/const/type declarations from the Go index', async () => {
+    const goFile = write(
+      'locals.go',
+      [
+        'package main',
+        '',
+        'var topVar int',
+        'const TopConst = 1',
+        'type TopType struct{ a int }',
+        '',
+        'func foo() {',
+        '\tvar localVar int',
+        '\tconst localConst = 2',
+        '\ttype localType struct{ b int }',
+        '\t_ = localVar',
+        '\t_ = localConst',
+        '}',
+        '',
+        'var handler = func() {',
+        '\tvar closureVar int',
+        '\t_ = closureVar',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(goFile)
+    const names = result.symbols.map((s) => s.name)
+    // Package-level declarations are still indexed.
+    expect(names).toContain('topVar')
+    expect(names).toContain('TopConst')
+    expect(names).toContain('TopType')
+    expect(names).toContain('foo')
+    expect(names).toContain('handler')
+    // Function-local and closure-local declarations are NOT indexed.
+    expect(names).not.toContain('localVar')
+    expect(names).not.toContain('localConst')
+    expect(names).not.toContain('localType')
+    expect(names).not.toContain('closureVar')
+  })
+
+
   it('indexes Rust impl blocks by their implemented type (name lives on the type field)', async () => {
     const rustFile = write(
       'sym.rs',
