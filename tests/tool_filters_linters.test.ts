@@ -412,9 +412,36 @@ describe('LinterFilter (generic)', () => {
       (_, i) => `  src/x.ts:${i + 1} - error: Type 'string' is not assignable to type 'number'. (reportArgumentType)`,
     )
     const result = linterFilter.apply(lines.join('\n'), '', 1, ['pyright', 'src/'])
-    // Should keep ~3 per error key and collapse the rest
+    // Keeps first 3 per diagnostic key and collapses the rest to a count
     expect(result.text).toContain('src/x.ts:1')
     expect(result.text).toContain('src/x.ts:3')
+    expect(result.text).not.toContain('src/x.ts:4')
+    expect(result.text).not.toContain('src/x.ts:5')
+    expect(result.text).toContain('+2 more matching error')
+  })
+
+  it('stanza path (stylelint/rome): emits each file header exactly once across a mid-stanza non-issue line', () => {
+    // Regression: the earlier port pushed the file header both when flushing
+    // accumulated rules at a non-issue line AND again at end-of-stanza, so a
+    // stanza with issues -> separator -> more issues duplicated the header.
+    // Python's _compress_eslint_stanza emits the header exactly once.
+    // The stanza header must match _ESLINT_FILE_RE (js/ts/jsx/tsx/...), so use
+    // a .tsx path even though stylelint also runs on CSS — the stanza format is
+    // keyed on the JS/TS-style file header line, matching the Python original.
+    const input = [
+      'src/component.tsx',
+      '  1:1  error  Expected indentation of 2 spaces  indentation',
+      '  2:5  error  Expected indentation of 2 spaces  indentation',
+      '  --- separator (non-issue) ---',
+      '  3:1  warning  Unexpected unknown unit  unit-no-unknown',
+    ].join('\n')
+    const result = linterFilter.apply(input, '', 1, ['stylelint', 'src/'])
+    const headerCount = (result.text.match(/src\/component\.tsx/g) ?? []).length
+    expect(headerCount).toBe(1)
+    // The non-issue separator line is preserved (kept in place, not dropped).
+    expect(result.text).toContain('--- separator (non-issue) ---')
+    // Both rules survive (each under its keep-3 cap).
+    expect(result.text).toContain('unit-no-unknown')
   })
 })
 
