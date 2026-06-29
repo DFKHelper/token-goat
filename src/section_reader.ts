@@ -100,12 +100,28 @@ const KEYVALUE_HEADER_RE = /^([A-Za-z_][\w.-]*)\s*(?:=|:)/
  *
  * Level is the count of leading `#`. The header text is the trimmed remainder
  * with any trailing closing `#` run (ATX-closed headings) removed.
+ *
+ * Skips lines inside fenced code blocks so a `#`-comment line inside a fence
+ * (common in shell snippets, e.g. `# install deps`) is not mistaken for a header
+ * and does not truncate the enclosing section.
  */
 function findMarkdownHeaders(lines: readonly string[]): SectionHeader[] {
   const headers: SectionHeader[] = []
+  // Track fenced-code-block state. `fence` holds the marker char (backtick or
+  // tilde) while inside a block; a fence closes only on the same marker char
+  // so a ``` block isn't closed by a ~~~ line.
+  let fence: string | null = null
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (line === undefined) continue
+    const fm = /^\s*(`{3,}|~{3,})/.exec(line)
+    if (fm !== null && fm[1] !== undefined) {
+      const ch = fm[1][0] ?? null
+      if (fence === null) fence = ch
+      else if (fence === ch) fence = null
+      continue
+    }
+    if (fence !== null) continue
     const m = MARKDOWN_HEADER_RE.exec(line)
     if (m === null || m[1] === undefined || m[2] === undefined) continue
     headers.push({ heading: m[2].trim(), level: m[1].length, index: i })

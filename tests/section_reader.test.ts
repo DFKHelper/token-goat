@@ -78,6 +78,36 @@ describe('extractSection', () => {
     expect(extractSection(MD, 'Install#5')).toBeNull()
   })
 
+  it('does not treat a #-comment inside a fenced code block as a header', () => {
+    const md = [
+      '# Title',
+      '',
+      '## Install',
+      '',
+      'Run the installer:',
+      '',
+      '```bash',
+      '# install dependencies',
+      'npm install -g token-goat',
+      '```',
+      '',
+      'More install notes here.',
+      '',
+      '## Usage',
+      '',
+      'Usage text.',
+    ].join('\n')
+
+    const result = extractSection(md, 'Install')
+    expect(result).not.toBeNull()
+    // The whole Install section must be returned, not truncated at the fenced
+    // `# install dependencies` comment line.
+    expect(result?.content).toContain('npm install -g token-goat')
+    expect(result?.content).toContain('More install notes here.')
+    // The fenced comment must not become a selectable section of its own.
+    expect(extractSection(md, 'install dependencies')).toBeNull()
+  })
+
   it('extracts a TOML [section] table', () => {
     const toml = [
       '[project]',
