@@ -868,6 +868,60 @@ function extractBashOutput(raw: Record<string, unknown>): string {
   return ''
 }
 
+/** Best-effort exit code from a Bash tool_response (absent on many harnesses). */
+function extractExitCode(raw: Record<string, unknown>): number | null {
+  const resp = raw['tool_response']
+  if (resp !== null && typeof resp === 'object') {
+    const r = resp as Record<string, unknown>
+    for (const key of ['exit_code', 'exitCode', 'returncode', 'code']) {
+      if (typeof r[key] === 'number') return r[key] as number
+    }
+  }
+  return null
+}
+
+// `gh api` endpoints that require an elevated token scope the default lacks.
+const GH_SECURITY_PATHS = ['/security_advisories', '/advisories', 'security_events'] as const
+// Phrases GitHub returns when the token lacks the scope/permission for a call.
+const GH_SCOPE_PHRASES = ['Must have push access', 'Resource not accessible by integration', 'Must be an admin'] as const
+
+/**
+ * Advisory hints for `gh api` commands: a scope/permission nudge when the call hits a permission
+ * wall, and a token-savings nudge when the JSON response is wide enough that a `--jq` projection
+ * would meaningfully shrink it. Returns the joined hint text, or null when nothing applies.
+ *
+ * The scope hint is accumulated before the response is parsed, so a non-JSON or malformed body
+ * still surfaces it — unlike the original Python, where a `json.loads` failure discarded an
+ * already-detected scope hint. Never throws.
+ */
+function buildGhApiHint(cmd: string, stdout: string, exitCode: number | null): string | null {
+  if (stdout === '' || !cmd.startsWith('gh api')) return null
+  const hints: string[] = []
+  const isSecurityPath = GH_SECURITY_PATHS.some((p) => cmd.includes(p))
+  const hasScopePhrase = GH_SCOPE_PHRASES.some((p) => stdout.includes(p))
+  const failedSecurityCall = exitCode !== null && exitCode !== 0 && isSecurityPath
+  if (hasScopePhrase || failedSecurityCall) {
+    hints.push('[token-goat] GitHub API scope issue: try gh auth refresh -s security_events')
+  }
+  // Large-response nudge: only a JSON object can carry the 15+ boilerplate fields this targets,
+  // so skip the parse entirely unless the body looks like one (avoids parsing huge non-JSON logs).
+  const trimmed = stdout.trimStart()
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(stdout)
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const keyCount = Object.keys(parsed as Record<string, unknown>).length
+        if (keyCount >= 15) {
+          hints.push(`[token-goat] Large API response (${keyCount} keys). Filter with --jq '.key1,.key2' to reduce tokens.`)
+        }
+      }
+    } catch {
+      // Malformed JSON: keep any scope hint already accumulated, skip the large-response nudge.
+    }
+  }
+  return hints.length > 0 ? hints.join(' ') : null
+}
+
 /**
  * post_tool_use handler for the Bash tool.
  *
@@ -885,6 +939,14 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const curlDl = extractCurlDownload(cmd)
     if (curlDl !== null) {
       recordCurlDownload(curlDl.url, curlDl.outputPath)
+    }
+
+    // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands
+    // are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
+    const ghHint = buildGhApiHint(cmd, extractBashOutput(event.raw), extractExitCode(event.raw))
+    if (ghHint !== null) {
+      recordStat('session_hint', 0, 0)
+      return contextOutput(ghHint)
     }
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.

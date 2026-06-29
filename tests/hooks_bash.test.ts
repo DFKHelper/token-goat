@@ -1427,3 +1427,84 @@ describe('postBashHandler — escaped quote inside quoted arg does not expose in
     expect(getBashOutputId(wrongHash)).toBeNull()
   })
 })
+
+describe('postBashHandler — gh api advisory hints', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  function ghEvent(command: string, response: unknown): HookEvent {
+    return {
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command },
+      sessionId: 'test-session',
+      raw: { tool_name: 'Bash', tool_input: { command }, tool_response: response },
+    }
+  }
+
+  // Build a JSON object string with exactly `n` keys.
+  function wideJson(n: number): string {
+    const obj: Record<string, number> = {}
+    for (let i = 0; i < n; i++) obj['k' + i] = i
+    return JSON.stringify(obj)
+  }
+
+  it('emits a scope hint when the response carries a permission-error phrase', async () => {
+    const body = '{"message": "Resource not accessible by integration", "documentation_url": "https://docs"}'
+    const result = await postBashHandler(ghEvent('gh api /repos/o/r/security_advisories', body))
+    expect(result.hookType).toBe('context')
+    expect(result.context).toContain('gh auth refresh -s security_events')
+  })
+
+  it('emits a large-response hint when a gh api JSON object has 15+ keys', async () => {
+    const result = await postBashHandler(ghEvent('gh api /user', wideJson(15)))
+    expect(result.hookType).toBe('context')
+    expect(result.context).toContain('Large API response (15 keys)')
+    expect(result.context).toContain("--jq '.key1,.key2'")
+  })
+
+  it('joins both hints when a wide response also carries a scope phrase', async () => {
+    const obj: Record<string, string> = { message: 'Must have push access' }
+    for (let i = 0; i < 20; i++) obj['k' + i] = String(i)
+    const result = await postBashHandler(ghEvent('gh api /repos/o/r/advisories', JSON.stringify(obj)))
+    expect(result.hookType).toBe('context')
+    expect(result.context).toContain('gh auth refresh -s security_events')
+    expect(result.context).toContain('Large API response (21 keys)')
+  })
+
+  it('passes through for a small gh api response with no scope phrase', async () => {
+    const result = await postBashHandler(ghEvent('gh api /user', '{"login": "octocat", "id": 1}'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('emits a scope hint for a failed security-path call even without a known phrase', async () => {
+    const result = await postBashHandler(
+      ghEvent('gh api /repos/o/r/security_advisories', { output: '{"message": "Not Found"}', exit_code: 1 }),
+    )
+    expect(result.hookType).toBe('context')
+    expect(result.context).toContain('gh auth refresh -s security_events')
+  })
+
+  it('still surfaces the scope hint when the body is not valid JSON', async () => {
+    // Regression guard against the original Python behavior, where a json parse failure
+    // discarded an already-detected scope hint.
+    const result = await postBashHandler(
+      ghEvent('gh api /repos/o/r/advisories', 'gh: Resource not accessible by integration (HTTP 403)'),
+    )
+    expect(result.hookType).toBe('context')
+    expect(result.context).toContain('gh auth refresh -s security_events')
+  })
+
+  it('does not fire on a non-gh command with a wide JSON payload', async () => {
+    const result = await postBashHandler(ghEvent('curl https://example.com/api', wideJson(20)))
+    // curl GET output of this size routes through caching, not the gh hint path.
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not emit a large-response hint for a JSON array', async () => {
+    const arr = JSON.stringify(Array.from({ length: 20 }, (_, i) => ({ id: i })))
+    const result = await postBashHandler(ghEvent('gh api /repos/o/r/issues', arr))
+    expect(result.hookType).toBe('pass')
+  })
+})
