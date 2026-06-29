@@ -364,12 +364,41 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
 ]
 
 /**
+ * Returns true when a PowerShell -Command block is a multiline read-only system diagnostic
+ * (contains Get-CimInstance/Get-Process/etc. with no destructive cmdlets like Remove-/Set-/Stop-Process).
+ *
+ * The existing single-line pattern handles `-Command "Get-*"` where Get-* is the first token.
+ * This covers the multiline form:
+ *   powershell -Command "
+ *   # Disk usage
+ *   Get-PSDrive C | ...
+ *   $os = Get-CimInstance Win32_OperatingSystem
+ *   ..."
+ */
+function isPsMultilineSystemQuery(cmd: string): boolean {
+  if (!/^(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+/i.test(cmd)) return false
+  const cmdIdx = cmd.search(/-Command\b/i)
+  if (cmdIdx === -1) return false
+  const afterCmd = cmd.slice(cmdIdx + '-Command'.length).trimStart()
+  if (!/^["']/.test(afterCmd)) return false
+  const body = afterCmd.slice(1) // strip leading quote
+  if (!body.includes('\n')) return false // single-line form is already covered by MONITORING_COMMAND_PATTERNS
+  if (!/\bGet-(?:CimInstance|Process|Counter|Service|PSDrive|WmiObject)\b/i.test(body)) return false
+  // Exclude blocks containing destructive or state-changing PS cmdlets
+  if (/\b(?:Remove|Set|New|Restart|Install|Uninstall|Enable|Disable|Grant|Revoke|Invoke-(?:Expression|Command)|Register|Unregister|Clear-(?:Content|EventLog|Item))-/i.test(body)) return false
+  if (/\bStop-(?:Process|Service|Computer)\b/i.test(body)) return false
+  return true
+}
+
+/**
  * Returns the recall hint string for `cmd` if it matches a known monitoring
  * command pattern, otherwise returns `null`.
  */
 export function getMonitoringRecallHint(cmd: string): string | null {
+  const trimmed = cmd.trim()
   for (const { pattern, recallHint } of MONITORING_COMMAND_PATTERNS) {
-    if (pattern.test(cmd.trim())) return recallHint
+    if (pattern.test(trimmed)) return recallHint
   }
+  if (isPsMultilineSystemQuery(trimmed)) return '--tail 50'
   return null
 }
