@@ -328,9 +328,17 @@ export function stripPythonStringQuotes(raw: string): string {
 
 const GO_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['function_declaration', 'function'],
-  ['type_declaration', 'type'],
-  ['const_declaration', 'const'],
-  ['var_declaration', 'variable'],
+  ['method_declaration', 'method'],
+  // Go type/const/var names live on the nested *_spec node, not the
+  // *_declaration wrapper (which exposes no `name` field). A grouped
+  // `type (...)` / `const (...)` / `var (...)` block holds several specs, each
+  // reached by the namedChildren recursion in extractGoSymbols, so keying on
+  // the spec node yields one symbol per declared name. `type X = Y` parses as
+  // type_alias, which also carries the name field.
+  ['type_spec', 'type'],
+  ['type_alias', 'type'],
+  ['const_spec', 'const'],
+  ['var_spec', 'variable'],
 ])
 
 function extractGoSymbols(root: TsNode, filePath: string): SymbolEntry[] {
