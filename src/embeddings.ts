@@ -501,7 +501,36 @@ export async function searchSemantic(
     }
   }
 
-  return hits.slice(0, topK)
+  return rerankHits(hits, query, topK)
+}
+
+/**
+ * Re-rank semantic hits by verbatim-token overlap and a generated-path penalty,
+ * then truncate to `topK`. Distance is a cosine distance (smaller = closer), so
+ * lower adjusted score ranks higher: a chunk whose text contains query
+ * identifiers is pulled up by a bounded boost; a chunk under a generated/build
+ * directory is pushed down. Each returned hit keeps its raw `distance` — only
+ * ordering and truncation change. This is what searchSemantic's over-fetch is for.
+ */
+export function rerankHits(hits: SearchHit[], query: string, topK: number): SearchHit[] {
+  const queryTokens = _extractQueryTokens(query)
+  const scored = hits.map((hit, index) => {
+    let boost = 0
+    if (queryTokens.size > 0) {
+      const hitTokens = _extractQueryTokens(hit.text)
+      let matches = 0
+      for (const token of queryTokens) {
+        if (hitTokens.has(token)) {
+          matches++
+        }
+      }
+      boost = Math.min(matches * _VERBATIM_TOKEN_BOOST, _MAX_VERBATIM_BOOST)
+    }
+    const penalty = _isGeneratedPath(hit.filePath) ? _GENERATED_PATH_PENALTY : 0
+    return { hit, index, adjusted: hit.distance - boost + penalty }
+  })
+  scored.sort((a, b) => a.adjusted - b.adjusted || a.index - b.index)
+  return scored.slice(0, topK).map((entry) => entry.hit)
 }
 
 /**
