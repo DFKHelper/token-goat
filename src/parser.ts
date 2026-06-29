@@ -852,49 +852,61 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
 
   try {
     const lines = content.split(/\r?\n/)
-    let braceDepth = 0
+    let depth = 0
     let inString = false
     let escaping = false
+    let strChars: string[] = []
+    let strStartLine = 1
+    let depthWhenStringOpened = 0
+    let line = 1
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      if (line === undefined) continue
-
-      const depthAtLineStart = braceDepth
-
-      for (let j = 0; j < line.length; j++) {
-        const ch = line[j]
-        if (escaping) {
-          escaping = false
-          continue
-        }
-        if (ch === '\\' && inString) {
-          escaping = true
-          continue
-        }
-        if (ch === '"' && !escaping) {
-          inString = !inString
-        } else if ((ch === '{' || ch === '[') && !inString) {
-          braceDepth++
-        } else if ((ch === '}' || ch === ']') && !inString) {
-          braceDepth--
-        }
+    for (let i = 0; i < content.length; i++) {
+      const ch = content[i]
+      if (ch === undefined) continue
+      if (ch === '\n') line++
+      if (escaping) {
+        escaping = false
+        if (inString) strChars.push(ch)
+        continue
       }
-
-      if (depthAtLineStart === 1 && !inString) {
-        const keyMatch = /^\s*"([^"]+)"\s*:/.exec(line)
-        if (keyMatch !== null && keyMatch[1] !== undefined) {
-          out.push({
-            filePath,
-            name: keyMatch[1],
-            kind: 'property',
-            lineStart: i + 1,
-            lineEnd: i + 1,
-            body: line.trim(),
-            docstring: '',
-          })
-        }
+      if (ch === '\\' && inString) {
+        escaping = true
+        continue
       }
+      if (ch === '"') {
+        if (!inString) {
+          inString = true
+          strChars = []
+          strStartLine = line
+          depthWhenStringOpened = depth
+        } else {
+          inString = false
+          // A string is a top-level key iff it opened at object depth 1 and its next
+          // non-whitespace char is ':'. This rule is layout-independent, so it captures
+          // keys in single-line/minified JSON and keys that share a line with '{', which
+          // the previous line-oriented scan missed (it emitted zero symbols for minified JSON).
+          let k = i + 1
+          while (k < content.length && /\s/.test(content[k] ?? '')) k++
+          if (content[k] === ':' && depthWhenStringOpened === 1) {
+            out.push({
+              filePath,
+              name: strChars.join(''),
+              kind: 'property',
+              lineStart: strStartLine,
+              lineEnd: strStartLine,
+              body: (lines[strStartLine - 1] ?? '').trim(),
+              docstring: '',
+            })
+          }
+        }
+        continue
+      }
+      if (inString) {
+        strChars.push(ch)
+        continue
+      }
+      if (ch === '{' || ch === '[') depth++
+      else if (ch === '}' || ch === ']') depth--
     }
   } catch {
     // Silently fall through
