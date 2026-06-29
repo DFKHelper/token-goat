@@ -401,10 +401,12 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
-  it('passes through node -e requiring a node_modules JSON', () => {
+  it('wraps node -e requiring a node_modules JSON in compress (NodeFilter; not denied)', () => {
     const event = makeBashEvent(`node -e "console.log(require('node_modules/next/package.json').version)"`)
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // NodeFilter now matches node -e; the command is wrapped for output compression,
+    // not denied — node_modules JSON requires are still allowed.
+    expect(result.hookType).toBe('rewriteInput')
   })
 
   it('denies node -e requiring a nested config JSON', () => {
@@ -638,16 +640,20 @@ describe('preBashHandler — python read-modify-write exemption', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('passes through python open with write mode w+', () => {
+  it('wraps python open with write mode w+ in compress (PythonFilter; not denied)', () => {
     const event = makeBashEvent("python3 -c \"with open('config.json','w+') as f: f.write(json.dumps(d))\"")
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // PythonFilter matches python3 -c; write-mode open bypasses the read-deny check,
+    // so the command is wrapped for output compression, not denied.
+    expect(result.hookType).toBe('rewriteInput')
   })
 
-  it('passes through python open with append mode a', () => {
+  it('wraps python open with append mode a in compress (PythonFilter; not denied)', () => {
     const event = makeBashEvent("python3 -c \"open('log.txt','a').write('entry')\"")
     const result = preBashHandler(event)
-    expect(result.hookType).toBe('pass')
+    // PythonFilter matches python3 -c; append-mode open bypasses the read-deny check,
+    // so the command is wrapped for output compression, not denied.
+    expect(result.hookType).toBe('rewriteInput')
   })
 
   it('passes through python snippet with .write() call after reading', () => {

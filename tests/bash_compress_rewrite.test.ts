@@ -455,4 +455,24 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+
+  it('rewrites python script.py to the python filter (batch K1 language filter)', () => {
+    // Verifies PythonFilter survives esbuild bundling and dispatch produces
+    // the correct -f python rewrite — authoritative coverage that the
+    // language-runtime batch (LANGUAGE_FILTERS) is wired through the built bundle.
+    const out = runHook({
+      session_id: 'e2e-compress-python',
+      tool_name: 'Bash',
+      tool_input: { command: 'python3 train.py' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f python -c 'python3 train.py'",
+    )
+  })
+
+
 })
