@@ -794,7 +794,7 @@ function extractRefs(root: TsNode, filePath: string, language: Language): RefEnt
       const callee = calleeName(node, language)
       if (callee !== null && callee.length > 1 && !noise.has(callee)) {
         const line = node.startPosition.row + 1
-        const key = `${callee} ${line}`
+        const key = `${callee}\0${line}`
         if (!seen.has(key)) {
           seen.add(key)
           out.push({
