@@ -152,6 +152,31 @@ max-bytes = 1024
 
       fs.rmSync(tmpDir, { recursive: true })
     })
+
+    it('extracts array-of-tables section names without the leading bracket', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const tomlFile = path.join(tmpDir, 'Cargo.toml')
+
+      const content = `[package]
+name = "myapp"
+
+[[bin]]
+name = "cli"
+
+[[tool.metadata.x]]
+value = 1
+`
+
+      fs.writeFileSync(tomlFile, content)
+      const result = await parseFile(tomlFile)
+
+      const names = result.symbols.map((s) => s.name)
+      expect(names).toContain('bin')
+      expect(names).toContain('tool.metadata.x')
+      expect(names).not.toContain('[bin')
+
+      fs.rmSync(tmpDir, { recursive: true })
+    })
   })
 
   describe('css symbols', () => {
