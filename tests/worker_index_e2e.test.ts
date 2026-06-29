@@ -80,8 +80,8 @@ afterAll(() => {
 describe('built bundle end-to-end indexing', () => {
   it('builds a bundle that actually contains the indexer', () => {
     const bundle = fs.readFileSync(BUNDLE, 'utf8')
-    // The real indexer's write path must survive bundling; the old stub must not.
-    expect(bundle).toContain('DELETE FROM symbols WHERE file_path')
+    // The real indexer's write path must survive bundling; the old stub must not. The SQL is built as `DELETE FROM symbols WHERE ${pathEqClause('file_path')}`, so assert the static prefix that survives the interpolation — it vanishes if deleteFileRows is ever stubbed out.
+    expect(bundle).toContain('DELETE FROM symbols WHERE ')
     expect(bundle).not.toContain('would index')
     // The call-site ref walker must also survive tree-shaking.
     expect(bundle).toContain('CALL_TYPES_BY_LANG')
