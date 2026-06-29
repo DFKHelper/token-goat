@@ -384,4 +384,21 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  it('rewrites terraform plan to the terraform filter (batch G cloud/IaC filter)', () => {
+    // Verifies TerraformFilter survives esbuild bundling and dispatch produces
+    // the correct -f terraform rewrite for the built bundle.
+    const out = runHook({
+      session_id: 'e2e-compress-terraform',
+      tool_name: 'Bash',
+      tool_input: { command: 'terraform plan' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f terraform -c 'terraform plan'",
+    )
+  })
+
 })

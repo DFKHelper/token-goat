@@ -27,6 +27,15 @@ export {
   dockerFilter, dockerComposeFilter, kubectlFilter, kubectlLogsFilter, helmFilter,
 } from './containers.js'
 export {
+  CLOUD_FILTERS,
+  TerraformFilter, AwsFilter, AwsCliFilter, GcloudFilter, AzureCliFilter,
+  AnsibleFilter, PulumiFilter, CdkFilter, VaultFilter, PackerFilter,
+  NixFilter, WranglerFilter, HardhatFilter, ServerlessFilter, FlyFilter, ForgeFilter,
+  terraformFilter, awsFilter, awsCliFilter, gcloudFilter, azureCliFilter,
+  ansibleFilter, pulumiFilter, cdkFilter, vaultFilter, packerFilter,
+  nixFilter, wranglerFilter, hardhatFilter, serverlessFilter, flyFilter, forgeFilter,
+} from './cloud.js'
+export {
   TOOL_FILTERS,
   selectFilter,
   detectFromCommand,

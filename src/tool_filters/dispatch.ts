@@ -13,6 +13,7 @@ import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, shlexSplit, stripPrefixes } from './helpers.js'
 import { BUILD_FILTERS } from './build.js'
+import { CLOUD_FILTERS } from './cloud.js'
 import { CONTAINER_FILTERS } from './containers.js'
 import { GIT_FILTERS } from './git.js'
 import { LINTER_FILTERS } from './linters.js'
@@ -59,7 +60,11 @@ export const TOOL_FILTERS: ToolFilter[] = [
   // KubectlFilter (both match `kubectl`/`k`); DockerComposeFilter must precede
   // DockerFilter (both match `docker`). See containers.ts ordering comment.
   ...CONTAINER_FILTERS,
-  // Batches append here: cloud/iac · ci · ai-clis · shell/file · lang.
+  // Batch G — cloud / IaC. AwsCliFilter must precede AwsFilter (both match
+  // `aws`/`aws2`; AwsCliFilter owns the CFN/S3 routing; AwsFilter is the
+  // simpler JSON-array fallback). See cloud.ts ordering comment.
+  ...CLOUD_FILTERS,
+  // Batches append here: ci · ai-clis · shell/file · lang.
 ]
 
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */
