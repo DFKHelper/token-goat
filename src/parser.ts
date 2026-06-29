@@ -182,6 +182,23 @@ function makeSymbol(filePath: string, name: string, kind: string, node: TsNode):
   }
 }
 
+// Collect the bound local identifiers from a destructuring pattern node
+// (object_pattern / array_pattern, including nested patterns, rest elements,
+// defaults, and renames). A renamed key (`{ a: b }`) binds the value `b`; the
+// key `a` is a property_identifier and is intentionally skipped.
+function collectPatternBindings(node: TsNode): string[] {
+  const names: string[] = []
+  const walk = (n: TsNode): void => {
+    if (n.type === 'identifier' || n.type === 'shorthand_property_identifier_pattern') {
+      if (n.text !== '') names.push(n.text)
+      return
+    }
+    for (const child of n.namedChildren) walk(child)
+  }
+  walk(node)
+  return names
+}
+
 /**
  * Walk a TS/JS tree collecting symbols. Descends into export statements (so
  * `export function f` is captured) and class bodies (for methods), and unwraps
@@ -210,12 +227,21 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
         const name = child.childForFieldName('name')
         const value = child.childForFieldName('value')
         if (name === null) continue
-        const isFn =
-          value !== null &&
-          (value.type === 'arrow_function' ||
-            value.type === 'function_expression' ||
-            value.type === 'function')
-        out.push(makeSymbol(filePath, name.text, isFn ? 'function' : 'variable', child))
+        if (name.type === 'identifier') {
+          // Simple binding: `const f = () => {}` is a function, otherwise a variable.
+          const isFn =
+            value !== null &&
+            (value.type === 'arrow_function' ||
+              value.type === 'function_expression' ||
+              value.type === 'function')
+          out.push(makeSymbol(filePath, name.text, isFn ? 'function' : 'variable', child))
+        } else {
+          // Destructuring pattern: emit one variable symbol per bound identifier
+          // (not a single junk symbol named after the whole `{ ... }` / `[ ... ]`).
+          for (const bound of collectPatternBindings(name)) {
+            out.push(makeSymbol(filePath, bound, 'variable', child))
+          }
+        }
       }
     }
 
