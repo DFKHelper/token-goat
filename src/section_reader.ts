@@ -204,6 +204,13 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   if (language === 'markdown') return { headers: findMarkdownHeaders(lines), kind: 'markdown' }
   if (language === 'toml') return { headers: findTableHeaders(lines), kind: 'table' }
   if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
+  // INI groups under [section] headers like TOML; route to the table finder so a
+  // leading `#`/`;` comment line is not mistaken for a markdown heading.
+  if (language === 'ini') return { headers: findTableHeaders(lines), kind: 'table' }
+  // YAML and .env are key/value; their `#` comment lines must not be sniffed as
+  // markdown headings (which would hide every real key), so route explicitly.
+  if (language === 'yaml' || language === 'env_file')
+    return { headers: findKeyValueHeaders(lines), kind: 'keyvalue' }
 
   // Unknown / other: sniff. Prefer markdown headings, then tables, then a
   // key-value fallback so generic config files still yield sections.
