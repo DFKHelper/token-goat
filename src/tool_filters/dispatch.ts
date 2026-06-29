@@ -11,15 +11,20 @@
 import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { GenericFilter } from './generic.js'
 import { REDIRECT_TOKEN_RE, shlexSplit, stripPrefixes } from './helpers.js'
+import { TEST_RUNNER_FILTERS } from './test_runners.js'
 
 /**
- * Ordered per-tool filter registry. Empty until the first batch lands;
- * `selectFilter` returns null (and the hook leaves the command unwrapped) for
- * anything no entry matches. Append batch filters here in dependency order.
+ * Ordered per-tool filter registry. Filled batch by batch; `selectFilter`
+ * returns null (and the hook leaves the command unwrapped) for anything no entry
+ * matches. Order matters: more specific filters must precede the generic
+ * package-manager handlers they overlap with — each batch documents its placement.
  */
 export const TOOL_FILTERS: ToolFilter[] = [
-  // Batches append here: test-runners · package-managers · linters · vcs ·
-  // build · containers · cloud/iac · ci · ai-clis · shell/file · lang.
+  // Batch A — test runners (jest/mocha/ava/tap, vitest). No overlap with later
+  // batches; safe at the head.
+  ...TEST_RUNNER_FILTERS,
+  // Batches append here: package-managers · linters · vcs · build · containers ·
+  // cloud/iac · ci · ai-clis · shell/file · lang.
 ]
 
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */

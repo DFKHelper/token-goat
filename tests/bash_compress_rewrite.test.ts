@@ -236,6 +236,24 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  it('rewrites a registered test-runner command to its specific filter (batch A)', () => {
+    // `npx vitest run` must select the registered `vitest` filter, not the
+    // `generic` fallback — proving the batch-A registration survives esbuild
+    // bundling and detectFromCommand prefers the specific filter.
+    const out = runHook({
+      session_id: 'e2e-compress-runner',
+      tool_name: 'Bash',
+      tool_input: { command: 'npx vitest run' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f vitest -c 'npx vitest run'",
+    )
+  })
+
   it('does not rewrite a non-build command (passes through)', () => {
     const out = runHook({
       session_id: 'e2e-compress',
