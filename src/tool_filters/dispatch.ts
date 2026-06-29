@@ -16,6 +16,7 @@ import { AI_CLI_FILTERS } from './ai_clis.js'
 import { BUILD_FILTERS } from './build.js'
 import { CI_FILTERS } from './ci.js'
 import { CLOUD_FILTERS } from './cloud.js'
+import { SHELL_FILE_FILTERS } from './shell_file.js'
 import { CONTAINER_FILTERS } from './containers.js'
 import { GIT_FILTERS } from './git.js'
 import { LINTER_FILTERS } from './linters.js'
@@ -75,7 +76,8 @@ export const TOOL_FILTERS: ToolFilter[] = [
   // CI log filter. GhRunLogFilter precedes GhFilter (both match `gh`);
   // GenericCIFilter is last (keyword-only, not binary-gated).
   ...CI_FILTERS,
-  // Batches append here: shell/file · lang.
+  ...SHELL_FILE_FILTERS,
+  // Batches append here: lang.
 ]
 
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */
