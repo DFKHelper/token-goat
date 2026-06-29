@@ -19,6 +19,7 @@ import { createRequire } from 'node:module'
 
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
+import { isCaseInsensitiveFs } from './util.js'
 import { fingerprintFile } from './fingerprint.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
@@ -1208,6 +1209,19 @@ function extractSymbolsNoTreeSitter(
  * Shared by the async {@link indexFile} and the synchronous {@link
  * indexFileSync} the worker drain loop calls.
  */
+/**
+ * Delete every index row (symbols, refs, files) for one file. On a
+ * case-insensitive filesystem the path match folds case — mirroring
+ * index_reader's pathEq — so rows written under a different path casing by a
+ * prior reindex are removed rather than orphaned as case-variant duplicates.
+ */
+export function deleteFileRows(db: ReturnType<typeof getDb>, filePath: string): void {
+  const eq = isCaseInsensitiveFs() ? '= ? COLLATE NOCASE' : '= ?'
+  db.prepare(`DELETE FROM symbols WHERE file_path ${eq}`).run(filePath)
+  db.prepare(`DELETE FROM refs WHERE file_path ${eq}`).run(filePath)
+  db.prepare(`DELETE FROM files WHERE path ${eq}`).run(filePath)
+}
+
 function writeParseResult(filePath: string, result: ParseResult, dbPath: string): void {
   const db = getDb(dbPath)
 
@@ -1216,9 +1230,7 @@ function writeParseResult(filePath: string, result: ParseResult, dbPath: string)
   const now = Date.now() / 1000
 
   const writeAll = db.transaction(() => {
-    db.prepare('DELETE FROM symbols WHERE file_path = ?').run(filePath)
-    db.prepare('DELETE FROM refs WHERE file_path = ?').run(filePath)
-    db.prepare('DELETE FROM files WHERE path = ?').run(filePath)
+    deleteFileRows(db, filePath)
 
     db.prepare(
       'INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)',
