@@ -29,6 +29,10 @@ const SKIP_RE = /^\s*--- SKIP:\s/
 const GOROUTINE_HEADER_RE = /^(?:Goroutine \d+|Previous|Current)\s/
 const OK_PKG_RE = /^ok\s+\S+\s+\d/
 const FAIL_PKG_RE = /^FAIL\t\S+/
+// A panic or runtime fatal aborts the test binary before any `--- FAIL:` line,
+// so the most recent `=== RUN/NAME` line is the only marker of which (sub)test
+// was executing. Emit that buffered line ahead of the panic so it survives.
+const PANIC_RE = /^(?:panic:|fatal error:)/
 
 const MAX_RACE_GOROUTINE_FRAMES = 5
 
@@ -55,6 +59,7 @@ export class GoTestFilter extends ToolFilter {
     let passCount = 0
     let skipCount = 0
     let inFailBlock = false
+    let lastRunLine: string | null = null
     let droppedRun = 0
     let droppedDownload = 0
     // Race-detector state: a block spans `==========` (before WARNING) through
@@ -151,33 +156,52 @@ export class GoTestFilter extends ToolFilter {
         continue
       }
 
-      // Suppress RUN/PAUSE/CONT both outside and inside fail blocks.
+      // A panic/fatal aborts before any `--- FAIL:`; surface the buffered
+      // `=== RUN/NAME` line first so the panicking (sub)test is identifiable.
+      if (PANIC_RE.test(line)) {
+        if (lastRunLine !== null) {
+          kept.push(lastRunLine)
+          droppedRun = Math.max(0, droppedRun - 1)
+          lastRunLine = null
+        }
+        inFailBlock = false
+        kept.push(line)
+        continue
+      }
+      // Suppress RUN/PAUSE/CONT both outside and inside fail blocks, but
+      // remember the most recent one in case a panic follows.
       if (TEST_RPC_RE.test(line)) {
+        lastRunLine = line
         droppedRun += 1
         continue
       }
       // FAIL opens a multi-line block preserved until the next testcase.
       if (TEST_FAIL_RE.test(line)) {
         inFailBlock = true
+        lastRunLine = null
         kept.push(line)
         continue
       }
       if (TEST_PASS_RE.test(line)) {
         inFailBlock = false
+        lastRunLine = null
         passCount += 1
         continue
       }
       // SKIP lines — not failures, not passes; count separately.
       if (SKIP_RE.test(line)) {
+        lastRunLine = null
         skipCount += 1
         continue
       }
       if (TEST_RUN_RE.test(line)) {
         // `=== RUN/PAUSE/CONT/NAME` inside a FAIL block closes it (keep for
-        // structure); outside a FAIL block, drop entirely.
+        // structure); outside a FAIL block, drop entirely (but remember it in
+        // case a panic follows).
         if (inFailBlock) {
           inFailBlock = false
         } else {
+          lastRunLine = line
           droppedRun += 1
           continue
         }
