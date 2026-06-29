@@ -150,6 +150,17 @@ describe('PythonFilter compress: warning dedup', () => {
     const out = compress(pythonFilter, lines.join('\n'), ['python', 'x.py'])
     expect(out).toContain('3 repeated warning(s) suppressed')
   })
+
+  it('keeps a distinct warning that shares a long leading substring with another', () => {
+    // A and B are DIFFERENT DeprecationWarnings that agree for >60 chars after
+    // the class name. A fills the 3-keep quota; a truncated key would collide
+    // with B and drop it (mislabelled as a repeat). The full-message key keeps both.
+    const A = 'a.py:1: DeprecationWarning: numpy.core.umath_tests is an internal NumPy module alpha'
+    const B = 'b.py:9: DeprecationWarning: numpy.core.umath_tests is an internal NumPy module BETA-DIFFERENT'
+    const out = compress(pythonFilter, [A, A, A, B].join('\n'), ['python', 'x.py'])
+    expect(out).toContain('alpha')
+    expect(out).toContain('BETA-DIFFERENT')
+  })
 })
 
 // ===========================================================================
