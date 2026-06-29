@@ -110,6 +110,9 @@ registerReset(clearHooks)
  * - `deny`    → `{"decision":"block","reason":"<message>"}`
  * - `context` → `{"context":"<content>"}`
  * - `update`  → `{"updatedInput":{"content":"<content>"}}`
+ * - `rewriteInput` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
+ *   "permissionDecision":"allow","updatedInput":<obj>}}` — the `PreToolUse`
+ *   shape that replaces the whole tool input and lets the call proceed.
  * - `pass`    → `{}` (no-op; the call proceeds unchanged)
  *
  * The `switch` is exhaustive over the `hookType` union; adding a variant to
@@ -123,6 +126,14 @@ export function serializeOutput(output: HookOutput): string {
       return JSON.stringify({ context: output.context })
     case 'update':
       return JSON.stringify({ updatedInput: { content: output.content } })
+    case 'rewriteInput':
+      return JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'allow',
+          updatedInput: output.updatedInput,
+        },
+      })
     case 'pass':
       return JSON.stringify({})
   }

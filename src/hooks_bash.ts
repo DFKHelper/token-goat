@@ -15,6 +15,8 @@ import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
+import { loadConfig } from './config.js'
+import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
 
 /** Strip one or more `cd <dir> &&` prefixes so interceptors match the actual command. */
 function stripCdPrefix(cmd: string): string {
@@ -572,6 +574,87 @@ function buildRecallHint(cmd: string, outputId: string): string {
  * Emits a recall hint when the command is a known build tool and its output
  * was already captured this session. Passes through for all other commands.
  */
+/** Single-quote a string as one POSIX shell argument (escapes embedded quotes). */
+function shellQuoteSingle(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * True when `cmd` is a single command with no shell control operators — the same
+ * shape {@link detectFromCommand} requires. Gates the generic-filter fallback so
+ * a pipeline / compound / command-substitution / redirect is never wrapped (its
+ * `&&`/`|`/`>` would confuse both the outer shell and the `compress -c` arg).
+ */
+function isCompressibleSingleCommand(cmd: string): boolean {
+  if (!cmd || cmd.length > 65536) return false
+  if (['&&', '||', '$(', '`'].some((op) => cmd.includes(op))) return false
+  if (cmd.includes('|') || cmd.includes(';')) return false
+  if (/[<>]/.test(cmd)) return false
+  return true
+}
+
+/**
+ * Wrap a recognized command in `token-goat compress` so its output is
+ * structurally compressed on this run. Returns a `rewriteInput` HookOutput that
+ * replaces the Bash tool input wholesale (preserving description/timeout), or
+ * null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config),
+ * the command is unsuitable, or the chosen filter is disabled.
+ *
+ * @param event  hook event; its toolInput is preserved verbatim except `command`
+ * @param rawCmd original command INCLUDING any `cd … &&` prefix (run by compress)
+ * @param cmd    the cd-stripped command, used only to pick the filter
+ */
+function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): HookOutput | null {
+  if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
+  let cfg: { enabled: boolean; disabled_filters: string[] }
+  try {
+    cfg = loadConfig().bash_compress
+  } catch {
+    return null
+  }
+  if (!cfg.enabled) return null
+
+  // A specific filter (once the framework recognizes the command) wins over the
+  // generic catch-all. Either way the command must be a single pipe/redirect-free
+  // invocation: detectFromCommand enforces that for specific filters; the generic
+  // path requires it explicitly.
+  const detected = detectFromCommand(cmd)
+  let filterName: string
+  if (detected !== null) {
+    filterName = detected.filter.name
+  } else if (isCompressibleSingleCommand(cmd)) {
+    filterName = 'generic'
+  } else {
+    return null
+  }
+  if (cfg.disabled_filters.includes(filterName)) return null
+
+  const wrapped = `token-goat compress -f ${filterName} -c ${shellQuoteSingle(rawCmd)}`
+  return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: wrapped } }
+}
+
+/**
+ * Recover the original command from a `token-goat compress … -c <cmd>` wrapper
+ * (the rewrite emitted by {@link maybeCompressRewrite}) so the post-hook keys its
+ * output cache on the original command — identical to the hash the pre-hook
+ * computed before the rewrite. Returns null for any non-wrapper command.
+ */
+function unwrapCompressCommand(executed: string): string | null {
+  const t = executed.trim()
+  if (!/^token-goat\s+compress\b/.test(t)) return null
+  let argv: string[]
+  try {
+    argv = shlexSplit(t)
+  } catch {
+    return null
+  }
+  for (let i = 0; i + 1 < argv.length; i++) {
+    const tok = argv[i]
+    if (tok === '-c' || tok === '--cmd') return argv[i + 1] ?? null
+  }
+  return null
+}
+
 export function preBashHandler(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined) return passOutput()
@@ -831,20 +914,26 @@ export function preBashHandler(event: HookEvent): HookOutput {
     }
   }
 
-  if (!isBuildCommand(cmd)) return passOutput()
+  // Recognized command: recall a cached prior run, else compress this run.
+  // detectFromCommand matches a specific filter (none until the filters land);
+  // isBuildCommand is the generic-filter gate for build/test tools.
+  if (!isBuildCommand(cmd) && detectFromCommand(cmd) === null) return passOutput()
 
   // Derive the same command hash used by the session store.
   const cmdHash = shortFingerprint(stripOutputPipeline(cmd))
   const outputId = getBashOutputId(cmdHash)
-  if (outputId === null) return passOutput()
+  // A cached prior run wins: recall it instead of re-running (and re-compressing).
+  // Guard on the content blob too — a pruned id would make `bash-output <id>` error.
+  const entry = outputId !== null ? getBashOutput(outputId) : null
+  if (outputId !== null && entry !== null) {
+    const bytes = entry.sizeBytes
+    recordStat('bash_compress:recall', bytes, Math.round(bytes / 4))
+    return contextOutput(buildRecallHint(cmd, outputId))
+  }
 
-  // The index named an id, but only emit the recall hint if its content blob
-  // still exists; a pruned/missing entry would make `bash-output <id>` error.
-  const entry = getBashOutput(outputId)
-  if (entry === null) return passOutput()
-  const bytes = entry.sizeBytes
-  recordStat('bash_compress:recall', bytes, Math.round(bytes / 4))
-  return contextOutput(buildRecallHint(cmd, outputId))
+  // First run of a recognized command → transparently wrap it in the compressor
+  // so its output is structurally compressed before it reaches the model.
+  return maybeCompressRewrite(event, rawCmd, cmd) ?? passOutput()
 }
 
 registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
@@ -931,8 +1020,11 @@ function buildGhApiHint(cmd: string, stdout: string, exitCode: number | null): s
  */
 export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   try {
-    const rawCmd = extractCommand(event)
-    if (rawCmd === undefined) return passOutput()
+    const rawCmdRaw = extractCommand(event)
+    if (rawCmdRaw === undefined) return passOutput()
+    // If the pre-hook rewrote this into a `token-goat compress` wrapper, recover
+    // the original command so the cache keys on it (matching the pre-hook hash).
+    const rawCmd = unwrapCompressCommand(rawCmdRaw) ?? rawCmdRaw
     const cmd = stripCdPrefix(rawCmd)
 
     // Item 2: record curl -o downloads by URL for cross-command dedup
