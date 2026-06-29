@@ -52,25 +52,8 @@ function dirtyQueuePathFor(dir: string): string {
   return path.join(dir, 'queue', 'dirty.txt')
 }
 
-/** Absolute path to the worker pid file for `dir`. */
-export function workerPidPath(dir: string = dataDir()): string {
-  return path.join(dir, 'worker.pid')
-}
-
-/**
- * Read every queued dirty path for `dir`, deduplicated, in insertion order.
- *
- * Mirrors `hooks_index.getDirtyPaths` but is parameterised on the data dir so
- * the detached worker (which may run with a different cwd) reads the same file.
- * Returns `[]` when the queue file is absent.
- */
-export function getDirtyPathsFor(dir: string): string[] {
-  let raw: string
-  try {
-    raw = fs.readFileSync(dirtyQueuePathFor(dir), 'utf8')
-  } catch {
-    return []
-  }
+/** Parse and deduplicate dirty queue lines. Used by both getDirtyPathsFor and the rename-to-claim drain logic. */
+function parseDirtyQueueLines(raw: string): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   for (const line of raw.split('\n')) {
@@ -90,14 +73,28 @@ export function getDirtyPathsFor(dir: string): string[] {
   return out
 }
 
-/** Remove the dirty queue file for `dir` (idempotent). */
-function clearDirtyQueueFor(dir: string): void {
-  try {
-    fs.rmSync(dirtyQueuePathFor(dir), { force: true })
-  } catch {
-    // best-effort: a locked/already-removed queue must not crash the loop
-  }
+/** Absolute path to the worker pid file for `dir`. */
+export function workerPidPath(dir: string = dataDir()): string {
+  return path.join(dir, 'worker.pid')
 }
+
+/**
+ * Read every queued dirty path for `dir`, deduplicated, in insertion order.
+ *
+ * Mirrors `hooks_index.getDirtyPaths` but is parameterised on the data dir so
+ * the detached worker (which may run with a different cwd) reads the same file.
+ * Returns `[]` when the queue file is absent.
+ */
+export function getDirtyPathsFor(dir: string): string[] {
+  let raw: string
+  try {
+    raw = fs.readFileSync(dirtyQueuePathFor(dir), 'utf8')
+  } catch {
+    return []
+  }
+  return parseDirtyQueueLines(raw)
+}
+
 
 /**
  * Build the index callback the drain loop uses by default: parse each changed
@@ -140,21 +137,84 @@ export function processDirtyBatch(
   return indexed
 }
 
+/** Synchronous 50ms sleep for the Windows rename-retry loop (mirrors Python's time.sleep(0.05)). Uses Atomics.wait on a SharedArrayBuffer to block without spinning; silently skips on platforms where SAB is unavailable. */
+function sleepSyncMs(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  } catch {
+    // SAB unavailable or other atomics error: skip sleep
+  }
+}
+
 /**
- * Run one drain cycle for `dir`: snapshot the queue, process it, clear it.
+ * Run one drain cycle for `dir`: atomically claim the dirty queue, process it.
  *
- * Returns the number of paths processed. Clears the queue only when it held
- * entries, so an empty poll leaves the (absent) file untouched. When no `index`
- * callback is injected, files are indexed into `dir`'s `global.db` (the real
- * shipping path); in production `dir` is the data dir, so this is
- * {@link globalDbPath}.
+ * Atomically renames the live queue to a .draining file so that concurrent
+ * appendDirtyPath calls either land before the rename (and travel with it) or
+ * recreate a fresh queue after it (picked up on the next poll). This is the
+ * Python original's rename-to-claim pattern, preventing lost updates.
+ *
+ * Recovers from crashes by absorbing an abandoned .draining file at startup.
+ * On Windows, rename can fail with EPERM if the file is open for append; the
+ * loop retries 5 times with 50ms sleeps before deferring (returning 0).
+ *
+ * Returns the number of paths processed. When no `index` callback is injected,
+ * files are indexed into `dir`'s `global.db` (the real shipping path); in
+ * production `dir` is the data dir, so this is {@link globalDbPath}.
  */
 export function drainOnce(dir: string, index?: (absPath: string, sha: string) => void): number {
-  const paths = getDirtyPathsFor(dir)
-  if (paths.length === 0) return 0
-  const indexed = processDirtyBatch(paths, index ?? makeIndexer(path.join(dir, 'global.db')))
-  clearDirtyQueueFor(dir)
-  return indexed
+  const queuePath = dirtyQueuePathFor(dir)
+  const draining = `${queuePath}.draining`
+  let rawSnapshot = ''
+
+  // (a) Crash recovery: absorb a .draining file abandoned by a previous crashed drain.
+  if (fs.existsSync(draining)) {
+    try {
+      rawSnapshot += fs.readFileSync(draining, 'utf8')
+      fs.rmSync(draining, { force: true })
+    } catch {
+      // Unreadable: quarantine so the claim-rename below cannot silently
+      // overwrite it, then skip this cycle.
+      try {
+        fs.renameSync(draining, `${draining}.corrupt-${Date.now()}`)
+      } catch {
+        // best effort
+      }
+      return 0
+    }
+  }
+
+  // (b) Atomically claim the live queue. A concurrent appendDirtyPath either
+  // landed before the rename (its line travels in .draining) or recreates a
+  // fresh dirty.txt after it (next cycle) — it can never be deleted unindexed.
+  // On Windows a concurrent open-for-append can make rename fail with EPERM/
+  // EBUSY/EEXIST; retry a few times, then defer (return 0 = retry next poll).
+  if (fs.existsSync(queuePath)) {
+    let claimed = false
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        fs.renameSync(queuePath, draining)
+        claimed = true
+        break
+      } catch {
+        sleepSyncMs(50)
+      }
+    }
+    if (claimed) {
+      try {
+        rawSnapshot += fs.readFileSync(draining, 'utf8')
+        fs.rmSync(draining, { force: true })
+      } catch {
+        // read/clear failure is fail-soft
+      }
+    } else if (rawSnapshot === '') {
+      return 0 // queue busy and nothing recovered; retry next poll
+    }
+  }
+
+  if (rawSnapshot.trim() === '') return 0
+  const paths = parseDirtyQueueLines(rawSnapshot)
+  return processDirtyBatch(paths, index ?? makeIndexer(path.join(dir, 'global.db')))
 }
 
 /** Is `pid` a live process? Uses signal 0 (probe) — no signal is delivered. */
