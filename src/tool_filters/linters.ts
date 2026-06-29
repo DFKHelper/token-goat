@@ -45,17 +45,15 @@ function _compressEslintStanza(text: string): string {
     if (!currentFile.length) return
     const header = currentFile[0]!
     const body = currentFile.slice(1)
-    const perRule = new Map<string, string[]>()
-    const nonIssues: string[] = []
+    let perRule = new Map<string, string[]>()
     for (const line of body) {
       if (!_ESLINT_LOC_RE.test(line)) {
-        // Not an issue line; flush accumulated rules then keep
+        // Not an issue line; flush accumulated rules then keep in place
         if (perRule.size) {
-          out.push(header)
           out.push(..._emitEslintRules(perRule))
-          perRule.clear()
+          perRule = new Map()
         }
-        nonIssues.push(line)
+        out.push(line)
         continue
       }
       const rule = line.trimEnd().split(/\s+/).pop() ?? '__unknown__'
@@ -63,11 +61,8 @@ function _compressEslintStanza(text: string): string {
       bucket.push(line)
       perRule.set(rule, bucket)
     }
-    if (perRule.size) {
-      out.push(header)
-      out.push(..._emitEslintRules(perRule))
-    }
-    out.push(...nonIssues)
+    out.push(header)
+    out.push(..._emitEslintRules(perRule))
     currentFile = []
   }
 
