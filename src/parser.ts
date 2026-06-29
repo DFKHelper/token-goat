@@ -21,6 +21,7 @@ import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { fingerprintFile } from './fingerprint.js'
 import { pathEqClause } from './sql_path.js'
+import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
 import { extractCsharp } from './languages/csharp.js'
@@ -824,10 +825,7 @@ function extractMarkdownSymbols(content: string, filePath: string): SymbolEntry[
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (line === undefined) continue
-
+  for (const [i, line] of eachUnfencedLine(lines)) {
     const atxMatch = /^(#{1,6})\s+(.+?)(?:\s*#+\s*)?$/.exec(line)
     if (atxMatch !== null && atxMatch[2] !== undefined) {
       const name = atxMatch[2].trim()
