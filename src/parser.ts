@@ -455,7 +455,10 @@ function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const visit = (node: TsNode): void => {
     const kind = CPP_KIND_BY_TYPE.get(node.type)
     if (kind !== undefined) {
-      const name = nodeName(node)
+      // C/C++ function names live in a nested `declarator` chain, not a `name`
+      // field, so reuse the refs helper that descends it; other specifiers
+      // (class/struct/enum) do expose a `name` field.
+      const name = node.type === 'function_definition' ? cFunctionName(node) : nodeName(node)
       if (name !== null && name !== '') {
         out.push(makeSymbol(filePath, name, kind, node))
       }
