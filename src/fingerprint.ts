@@ -47,8 +47,7 @@ export function fingerprintFile(filePath: string): string | null {
   try {
     data = fs.readFileSync(filePath)
   } catch {
-    // Missing file, permission error, directory, or transient lock — the
-    // caller treats "no fingerprint" the same regardless of the cause.
+    // Missing file, permission error, directory, or transient lock — the caller treats "no fingerprint" the same regardless of the cause.
     return null
   }
   return fingerprintContent(data)

@@ -43,8 +43,7 @@ function runBundle(args: string[]): { status: number | null; stdout: string; std
 }
 
 beforeAll(() => {
-  // Build the real shipping artifact so this test fails if the parser/indexer
-  // is missing from the bundle.
+  // Build the real shipping artifact so this test fails if the parser/indexer is missing from the bundle.
   execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
 
   dataBase = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-e2e-data-'))
@@ -53,8 +52,7 @@ beforeAll(() => {
     path.join(repo, 'sample.ts'),
     'export function knownBundleSymbol(): number {\n  return 7\n}\n',
   )
-  // A nested file so relative ("src/mod.ts") and backslash ("src\\mod.ts")
-  // inputs are meaningfully distinct from the stored absolute key.
+  // A nested file so relative ("src/mod.ts") and backslash ("src\\mod.ts") inputs are meaningfully distinct from the stored absolute key.
   fs.mkdirSync(path.join(repo, 'src'))
   fs.writeFileSync(
     path.join(repo, 'src', 'mod.ts'),
@@ -66,8 +64,7 @@ beforeAll(() => {
     'export function refHelper(): number {\n  return 1\n}\n' +
       'export function refDriver(): number {\n  return refHelper() + refHelper()\n}\n',
   )
-  // `git ls-files` lists staged files, so init + add is enough — no commit
-  // (avoids user config and any global commit hooks firing in the test).
+  // `git ls-files` lists staged files, so init + add is enough — no commit (avoids user config and any global commit hooks firing in the test).
   const git = (args: string[]): void => {
     execFileSync('git', args, { cwd: repo, stdio: 'ignore' })
   }
@@ -136,8 +133,7 @@ describe('built bundle non-git walk-index (--walk)', () => {
       expect(sym.status).toBe(0)
       expect(sym.stdout).toContain('walkE2ESymbol')
 
-      // The .env key must never have entered the index: a miss exits 1 with the
-      // "No matches" notice on stderr (and nothing on stdout).
+      // The .env key must never have entered the index: a miss exits 1 with the "No matches" notice on stderr (and nothing on stdout).
       const secret = runBundle(['symbol', 'WALK_E2E_SECRET'])
       expect(secret.status).toBe(1)
       expect(secret.stderr).toMatch(/No matches/i)
@@ -148,10 +144,7 @@ describe('built bundle non-git walk-index (--walk)', () => {
 })
 
 describe('built bundle resolves relative reader paths (regression for path keying)', () => {
-  // The index is keyed by the absolute normalized path; before the resolver was
-  // wired in, skeleton/outline used exact equality against the user-typed
-  // relative path and silently returned "not indexed". These run the SHIPPED
-  // binary from the repo root with a relative path and a Windows backslash path.
+  // The index is keyed by the absolute normalized path; before the resolver was wired in, skeleton/outline used exact equality against the user-typed relative path and silently returned "not indexed". These run the SHIPPED binary from the repo root with a relative path and a Windows backslash path.
   beforeAll(() => {
     const idx = runBundle(['index', repo])
     expect(idx.status).toBe(0)
@@ -208,8 +201,7 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
     return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
   }
 
-  // Mirror constants.ts::defaultDataDir so the test can open the same global DB
-  // the bundle wrote to under the redirected data dir.
+  // Mirror constants.ts::defaultDataDir so the test can open the same global DB the bundle wrote to under the redirected data dir.
   function globalDbFor(base: string): string {
     if (process.platform === 'win32') return path.join(base, 'dfk-helper', 'token-goat', 'global.db')
     return path.join(base, 'token-goat', 'global.db')
@@ -239,8 +231,7 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
     if (relRepo) fs.rmSync(relRepo, { recursive: true, force: true })
   })
 
-  // The darwin data dir ignores LOCALAPPDATA/XDG_DATA_HOME, so the DB would live
-  // in the real home dir; skip the direct-DB probe there. CI runs Windows.
+  // The darwin data dir ignores LOCALAPPDATA/XDG_DATA_HOME, so the DB would live in the real home dir; skip the direct-DB probe there. CI runs Windows.
   it.skipIf(process.platform === 'darwin')(
     'stores the symbol file_path as the absolute-normalized key',
     () => {
@@ -254,8 +245,7 @@ describe('built bundle keys a relative-root index on the absolute path', () => {
         expect(rows.length).toBeGreaterThan(0)
         const expectedKey = normalizePath(path.resolve(relRepo, 'src', 'mod.ts'))
         const keys = rows.map((r) => r.file_path)
-        // The pre-fix bug stored the relative 'src/mod.ts'; the fix stores the
-        // absolute-normalized key that every reader resolves to.
+        // The pre-fix bug stored the relative 'src/mod.ts'; the fix stores the absolute-normalized key that every reader resolves to.
         expect(keys).toContain(expectedKey)
         expect(keys).not.toContain('src/mod.ts')
       } finally {

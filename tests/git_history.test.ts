@@ -366,9 +366,7 @@ author-time 1686900000
 
   describe('parseChangedSymbols (regression: +++ and --- content lines)', () => {
     it('should not break hunk early when added/removed lines start with ++ or -- (regression for startsWith bug)', () => {
-      // A removed line whose content starts with "--" produces "---content" in diff output.
-      // An added line whose content starts with "++" produces "+++content" in diff output.
-      // These must NOT trigger the file-header break path — they are ordinary content lines.
+      // A removed line whose content starts with "--" produces "---content" in diff output. An added line whose content starts with "++" produces "+++content" in diff output. These must NOT trigger the file-header break path — they are ordinary content lines.
       const raw = [
         'diff --git a/src/foo.ts b/src/foo.ts',
         '--- a/src/foo.ts',

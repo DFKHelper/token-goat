@@ -99,8 +99,7 @@ export function runSymbol(opts: SymbolOptions): number {
     return 0
   }
 
-  // Header + short body preview per match (mirrors the richer surface that the
-  // native CLI handler used before the two read surfaces were consolidated).
+  // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
   const blocks = results.map((sym) => {
     const header = `# ${sym.name} (${sym.kind}) — ${sym.filePath}:${sym.lineStart}-${sym.lineEnd}`
     const preview = sym.body.split(/\r?\n/).slice(0, 5).join('\n')
@@ -138,26 +137,19 @@ export function runRead(opts: ReadOptions): number {
     return 0
   }
 
-  // For a dotted path (e.g. "Session.refresh" or "Outer.Inner.refresh"), the symbol
-  // we want is the leaf — the LAST segment — since methods are indexed by their bare
-  // name. Using split('.')[1] would pick the middle segment of a 3+ part path and
-  // resolve to the wrong symbol (e.g. the inner class instead of its method).
+  // For a dotted path (e.g. "Session.refresh" or "Outer.Inner.refresh"), the symbol we want is the leaf — the LAST segment — since methods are indexed by their bare name. Using split('.')[1] would pick the middle segment of a 3+ part path and resolve to the wrong symbol (e.g. the inner class instead of its method).
   const dotParts = symbol.split('.')
   const [symBase, methodName] =
     dotParts.length > 1
       ? [dotParts[0] ?? symbol, dotParts[dotParts.length - 1]]
       : [symbol, undefined]
 
-  // When a method name is given (e.g. "Session.refresh"), query for the method
-  // name directly. Querying for symBase (the class name) and then searching for
-  // methodName among those results always fails because all returned symbols have
-  // name === symBase, never name === methodName.
+  // When a method name is given (e.g. "Session.refresh"), query for the method name directly. Querying for symBase (the class name) and then searching for methodName among those results always fails because all returned symbols have name === symBase, never name === methodName.
   const lookupName = methodName ?? symBase
   const resolved = resolveIndexPath(file)
   let candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
   if (candidates.length === 0) {
-    // Partial-path fallback: resolve `worker.ts::foo` against an index keyed by
-    // `src/worker.ts` by matching on a path suffix when the exact key misses.
+    // Partial-path fallback: resolve `worker.ts::foo` against an index keyed by `src/worker.ts` by matching on a path suffix when the exact key misses.
     candidates = querySymbols({ name: lookupName, limit: 50 }).filter(
       (s) => s.filePath === file || s.filePath.endsWith(file) || file.endsWith(s.filePath),
     )
@@ -663,15 +655,13 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     return 0
   }
 
-  // For TOML/INI: section-aware line-based extraction
-  // Split the key into section path and leaf key: "tool.ruff.line-length" -> ["tool.ruff"] + "line-length"
+  // For TOML/INI: section-aware line-based extraction Split the key into section path and leaf key: "tool.ruff.line-length" -> ["tool.ruff"] + "line-length"
   const keyParts = opts.key.split('.')
   const leafKey = keyParts.at(-1) ?? opts.key
   const sectionPath = keyParts.length > 1 ? keyParts.slice(0, -1).join('.') : null
   const lines = text.split('\n')
 
-  // Build the expected section header(s) for TOML-style [section] or [section.subsection]
-  // For a key like "tool.ruff.line-length", look for [tool.ruff] or [tool] followed by [ruff]
+  // Build the expected section header(s) for TOML-style [section] or [section.subsection] For a key like "tool.ruff.line-length", look for [tool.ruff] or [tool] followed by [ruff]
   let currentSection = ''
   for (const line of lines) {
     const trimmed = line.trim()
@@ -760,8 +750,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   const symbols = querySymbols({ filePath: resolveIndexPath(opts.file), limit: 500 })
   const kindOf = (name: string): string => symbols.find((s) => s.name === name)?.kind ?? 'export'
 
-  // Index-side heuristic: catches languages whose stored body keeps the
-  // `export`/`pub`/`public` modifier, and the mocked unit tests.
+  // Index-side heuristic: catches languages whose stored body keeps the `export`/`pub`/`public` modifier, and the mocked unit tests.
   const names: string[] = []
   for (const s of symbols) {
     if (/^(?:export|pub\b|public\b)/.test(s.body.trimStart()) && !names.includes(s.name)) {

@@ -87,8 +87,7 @@ export function formatHeadingTree(headings: MarkdownHeading[], filePath: string)
 
   let headingsAdded = 0
   for (const h of dedupedHeadings) {
-    // Check if adding this heading would exceed the limit
-    // Account for the 5 lines of header + this line
+    // Check if adding this heading would exceed the limit Account for the 5 lines of header + this line
     if (lines.length + 1 >= MAX_OUTPUT_LINES) {
       const remaining = dedupedHeadings.length - headingsAdded
       lines.push(`  ... (${remaining} more headings)`)

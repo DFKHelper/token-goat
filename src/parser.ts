@@ -47,9 +47,7 @@ export interface ParseResult {
 
 // --- Tree-sitter grammar loading (optional, cached) -------------------------
 
-// Minimal structural typings for the node-tree-sitter API surface we touch.
-// The packages ship no first-class .d.ts under this resolution, so we model
-// only the members used here rather than pulling `any` through the module.
+// Minimal structural typings for the node-tree-sitter API surface we touch. The packages ship no first-class .d.ts under this resolution, so we model only the members used here rather than pulling `any` through the module.
 interface TsPoint {
   readonly row: number
   readonly column: number
@@ -76,9 +74,7 @@ interface TsParserCtor {
 /** Grammar object handed to `parser.setLanguage`. Opaque to us. */
 type Grammar = unknown
 
-// Cache the Parser constructor and each resolved grammar across calls so the
-// native binding is loaded at most once per process. `null` means "tried and
-// unavailable"; `undefined` means "not yet attempted".
+// Cache the Parser constructor and each resolved grammar across calls so the native binding is loaded at most once per process. `null` means "tried and unavailable"; `undefined` means "not yet attempted".
 let _parserCtor: TsParserCtor | null | undefined
 const _grammarCache = new Map<Language, Grammar | null>()
 
@@ -153,8 +149,7 @@ export function isTreeSitterAvailable(lang: Language): boolean {
 
 // --- Symbol extraction via tree-sitter --------------------------------------
 
-// TS/JS node types that name a top-level or nested definition, mapped to the
-// `kind` stored in the index.
+// TS/JS node types that name a top-level or nested definition, mapped to the `kind` stored in the index.
 const TSJS_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['function_declaration', 'function'],
   ['generator_function_declaration', 'function'],
@@ -184,10 +179,7 @@ function makeSymbol(filePath: string, name: string, kind: string, node: TsNode):
   }
 }
 
-// Collect the bound local identifiers from a destructuring pattern node
-// (object_pattern / array_pattern, including nested patterns, rest elements,
-// defaults, and renames). A renamed key (`{ a: b }`) binds the value `b`; the
-// key `a` is a property_identifier and is intentionally skipped.
+// Collect the bound local identifiers from a destructuring pattern node (object_pattern / array_pattern, including nested patterns, rest elements, defaults, and renames). A renamed key (`{ a: b }`) binds the value `b`; the key `a` is a property_identifier and is intentionally skipped.
 function collectPatternBindings(node: TsNode): string[] {
   const names: string[] = []
   const walk = (n: TsNode): void => {
@@ -226,11 +218,7 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       // Methods live inside class bodies; descend to find nested classes too.
     }
 
-    // Variable/const declarations bound to a function or arrow → 'function'.
-    // Only at module/class scope: a declaration inside a function/method/arrow
-    // body is a local (loop counter, temporary) and must NOT be indexed —
-    // locals pollute outline/skeleton and global `symbol` search and bloat the
-    // index. (Mirrors extractPythonSymbols threading scope through the walk.)
+    // Variable/const declarations bound to a function or arrow → 'function'. Only at module/class scope: a declaration inside a function/method/arrow body is a local (loop counter, temporary) and must NOT be indexed — locals pollute outline/skeleton and global `symbol` search and bloat the index. (Mirrors extractPythonSymbols threading scope through the walk.)
     if (
       !insideFunction &&
       (node.type === 'lexical_declaration' ||
@@ -250,18 +238,14 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
               value.type === 'function')
           out.push(makeSymbol(filePath, name.text, isFn ? 'function' : 'variable', child))
         } else {
-          // Destructuring pattern: emit one variable symbol per bound identifier
-          // (not a single junk symbol named after the whole `{ ... }` / `[ ... ]`).
+          // Destructuring pattern: emit one variable symbol per bound identifier (not a single junk symbol named after the whole `{ ... }` / `[ ... ]`).
           for (const bound of collectPatternBindings(name)) {
             out.push(makeSymbol(filePath, bound, 'variable', child))
           }
         }
       }
     }
-    // Class fields bound to a function/arrow are method-equivalent members
-    // (auto-bound handlers); index them as 'method'. Data fields are skipped,
-    // matching the no-member-indexing convention. TS exposes the field name on
-    // `name`, JS on `property`.
+    // Class fields bound to a function/arrow are method-equivalent members (auto-bound handlers); index them as 'method'. Data fields are skipped, matching the no-member-indexing convention. TS exposes the field name on `name`, JS on `property`.
     if (node.type === 'public_field_definition' || node.type === 'field_definition') {
       const fieldName = node.childForFieldName('name') ?? node.childForFieldName('property')
       const value = node.childForFieldName('value')
@@ -315,10 +299,7 @@ function extractPythonSymbols(root: TsNode, filePath: string): SymbolEntry[] {
     }
 
     for (const child of node.namedChildren) {
-      // A def's method-ness is set by its nearest enclosing *definition*: a class
-      // body makes children class-scoped; entering a function body resets it; any
-      // other node (block, if/try/for/while/with) inherits the current scope, so a
-      // method defined inside a control-flow block in a class body is still a method.
+      // A def's method-ness is set by its nearest enclosing *definition*: a class body makes children class-scoped; entering a function body resets it; any other node (block, if/try/for/while/with) inherits the current scope, so a method defined inside a control-flow block in a class body is still a method.
       const childInsideClass =
         node.type === 'class_definition'
           ? true
@@ -361,12 +342,7 @@ export function stripPythonStringQuotes(raw: string): string {
 const GO_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['function_declaration', 'function'],
   ['method_declaration', 'method'],
-  // Go type/const/var names live on the nested *_spec node, not the
-  // *_declaration wrapper (which exposes no `name` field). A grouped
-  // `type (...)` / `const (...)` / `var (...)` block holds several specs, each
-  // reached by the namedChildren recursion in extractGoSymbols, so keying on
-  // the spec node yields one symbol per declared name. `type X = Y` parses as
-  // type_alias, which also carries the name field.
+  // Go type/const/var names live on the nested *_spec node, not the *_declaration wrapper (which exposes no `name` field). A grouped `type (...)` / `const (...)` / `var (...)` block holds several specs, each reached by the namedChildren recursion in extractGoSymbols, so keying on the spec node yields one symbol per declared name. `type X = Y` parses as type_alias, which also carries the name field.
   ['type_spec', 'type'],
   ['type_alias', 'type'],
   ['const_spec', 'const'],
@@ -410,9 +386,7 @@ function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const visit = (node: TsNode): void => {
     const kind = RUST_KIND_BY_TYPE.get(node.type)
     if (kind !== undefined) {
-      // An `impl` block has no `name` field; the implemented type lives in a
-      // `type` field (e.g. `impl Widget` or `impl Trait for Widget`), so resolve
-      // it there. All other Rust items expose their name on the `name` field.
+      // An `impl` block has no `name` field; the implemented type lives in a `type` field (e.g. `impl Widget` or `impl Trait for Widget`), so resolve it there. All other Rust items expose their name on the `name` field.
       const name =
         node.type === 'impl_item' ? (node.childForFieldName('type')?.text ?? null) : nodeName(node)
       if (name !== null && name !== '') {
@@ -501,9 +475,7 @@ function extractCppSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const visit = (node: TsNode): void => {
     const kind = CPP_KIND_BY_TYPE.get(node.type)
     if (kind !== undefined) {
-      // C/C++ function names live in a nested `declarator` chain, not a `name`
-      // field, so reuse the refs helper that descends it; other specifiers
-      // (class/struct/enum) do expose a `name` field.
+      // C/C++ function names live in a nested `declarator` chain, not a `name` field, so reuse the refs helper that descends it; other specifiers (class/struct/enum) do expose a `name` field.
       const name = node.type === 'function_definition' ? cFunctionName(node) : nodeName(node)
       if (name !== null && name !== '') {
         out.push(makeSymbol(filePath, name, kind, node))
@@ -672,8 +644,7 @@ function scopeName(node: TsNode, language: Language): string | null {
   }
   const scopeTypes = SCOPE_TYPES_BY_LANG.get(language)
   if (scopeTypes !== undefined && scopeTypes.has(node.type)) {
-    // C/C++ name a function via a nested `declarator` chain rather than a `name`
-    // field (e.g. `int* f()` wraps a pointer_declarator around the identifier).
+    // C/C++ name a function via a nested `declarator` chain rather than a `name` field (e.g. `int* f()` wraps a pointer_declarator around the identifier).
     if ((language === 'c' || language === 'cpp') && node.type === 'function_definition') {
       return cFunctionName(node)
     }
@@ -880,10 +851,7 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
           depthWhenStringOpened = depth
         } else {
           inString = false
-          // A string is a top-level key iff it opened at object depth 1 and its next
-          // non-whitespace char is ':'. This rule is layout-independent, so it captures
-          // keys in single-line/minified JSON and keys that share a line with '{', which
-          // the previous line-oriented scan missed (it emitted zero symbols for minified JSON).
+          // A string is a top-level key iff it opened at object depth 1 and its next non-whitespace char is ':'. This rule is layout-independent, so it captures keys in single-line/minified JSON and keys that share a line with '{', which the previous line-oriented scan missed (it emitted zero symbols for minified JSON).
           let k = i + 1
           while (k < content.length && /\s/.test(content[k] ?? '')) k++
           if (content[k] === ':' && depthWhenStringOpened === 1) {
@@ -1035,8 +1003,7 @@ function extractDockerfileSymbols(content: string, filePath: string): SymbolEntr
 
 // --- Regex fallback ---------------------------------------------------------
 
-// Top-level function/class patterns for the languages we lack a grammar for
-// (and as a safety net when a native grammar fails to load mid-run).
+// Top-level function/class patterns for the languages we lack a grammar for (and as a safety net when a native grammar fails to load mid-run).
 const FALLBACK_PATTERNS: ReadonlyArray<{ re: RegExp; kind: string }> = [
   // Python
   { re: /^[ \t]*(?:async\s+)?def\s+([A-Za-z_]\w*)/, kind: 'function' },

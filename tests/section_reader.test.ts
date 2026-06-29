@@ -108,8 +108,7 @@ describe('extractSection', () => {
 
     const result = extractSection(md, 'Install')
     expect(result).not.toBeNull()
-    // The whole Install section must be returned, not truncated at the fenced
-    // `# install dependencies` comment line.
+    // The whole Install section must be returned, not truncated at the fenced `# install dependencies` comment line.
     expect(result?.content).toContain('npm install -g token-goat')
     expect(result?.content).toContain('More install notes here.')
     // The fenced comment must not become a selectable section of its own.
@@ -159,8 +158,7 @@ describe('listSections', () => {
   it('returns all top-level headings from a real file', () => {
     const file = tmpFile('doc.md', MD)
     const sections = listSections(file)
-    // Top level here is the shallowest present (## sections under one # title).
-    // The single # Title is the shallowest, so only it is top-level.
+    // Top level here is the shallowest present (## sections under one # title). The single # Title is the shallowest, so only it is top-level.
     expect(sections).toEqual(['Title'])
   })
 

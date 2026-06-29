@@ -39,12 +39,10 @@ export interface FileEntry {
   readonly wasTruncated?: boolean
 }
 
-// path -> entry. The key is the normalized absolute path so a file referenced
-// via different relative strings collapses to one entry.
+// path -> entry. The key is the normalized absolute path so a file referenced via different relative strings collapses to one entry.
 let _files = new Map<string, FileEntry>()
 
-// Hint fingerprints already emitted this session (dedup, matches
-// session.py mark_hint_seen / has_hint_fingerprint).
+// Hint fingerprints already emitted this session (dedup, matches session.py mark_hint_seen / has_hint_fingerprint).
 let _hintsShown = new Set<string>()
 
 // url -> cacheId index for web-fetch dedup.

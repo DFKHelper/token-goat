@@ -479,8 +479,7 @@ describe('SassFilter compression', () => {
 // ---------------------------------------------------------------------------
 
 describe('ToxFilter dispatch', () => {
-  // Note: `tox -e py312` is stripped by TWO_TOKEN_PREFIXES (tox: Set(['-e']));
-  // use bare `tox` or flags that don't match prefix-strip.
+  // Note: `tox -e py312` is stripped by TWO_TOKEN_PREFIXES (tox: Set(['-e'])); use bare `tox` or flags that don't match prefix-strip.
   it('selectFilter routes tox', () => expect(selectFilter(['tox'])).toBeInstanceOf(ToxFilter))
   it('selectFilter routes tox --parallel', () => expect(selectFilter(['tox', '--parallel'])).toBeInstanceOf(ToxFilter))
 })
@@ -728,8 +727,7 @@ describe('JsonArrayFilter compression', () => {
   })
 
   it('truncates large arrays to 50 items when items are structurally distinct', () => {
-    // Use structurally distinct objects (different key names per item) so dedup
-    // does not fire and truncation is the active reduction path.
+    // Use structurally distinct objects (different key names per item) so dedup does not fire and truncation is the active reduction path.
     const arr = Array.from({ length: 60 }, (_, i) => ({ id: i, [`unique_${i}`]: true }))
     const out = apply(jsonArrayFilter, JSON.stringify(arr), ['json'])
     expect(out).toContain('10 more items not shown')
@@ -821,9 +819,7 @@ describe('SeverityLogFilter compression', () => {
 
 describe('TailTruncFilter', () => {
   it('matches() returns false (content-based, not auto-dispatched by command name)', () => {
-    // TailTruncFilter is applied explicitly (via filterByName) rather than auto-matched:
-    // the TS pre-bash hook rewrites commands before they execute, making a universal
-    // catch-all prohibitively expensive for trivial outputs (echo, ls, head, etc.).
+    // TailTruncFilter is applied explicitly (via filterByName) rather than auto-matched: the TS pre-bash hook rewrites commands before they execute, making a universal catch-all prohibitively expensive for trivial outputs (echo, ls, head, etc.).
     expect(tailTruncFilter.matches(['anything'])).toBe(false)
     expect(tailTruncFilter.matches([])).toBe(false)
   })

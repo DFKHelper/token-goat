@@ -1,5 +1,4 @@
-// Per-session content snapshots for diff-aware re-read hints.
-// When a file is read, a snapshot is captured. If edited later, a diff is computed.
+// Per-session content snapshots for diff-aware re-read hints. When a file is read, a snapshot is captured. If edited later, a diff is computed.
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'

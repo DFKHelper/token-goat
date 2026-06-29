@@ -1,12 +1,6 @@
-// Build-tool filter family (Batch E): make/cmake/gradle/maven/ant/bazel/meson/
-// msbuild/dotnet/sbt/javac/cargo/go/nx/lerna/turbo/webpack.
+// Build-tool filter family (Batch E): make/cmake/gradle/maven/ant/bazel/meson/ msbuild/dotnet/sbt/javac/cargo/go/nx/lerna/turbo/webpack.
 //
-// Each class is a faithful TypeScript port of its Python counterpart in
-// bash_compress.py.  Dispatch ordering note: GoFilter must be listed AFTER
-// goTestFilter (which is registered in Batch A) because both match `go`, and
-// goTestFilter's check on the `test` subcommand wins only when it appears
-// first.  Within BUILD_FILTERS the ordering is: cargo (all subcommands), go,
-// then the rest.
+// Each class is a faithful TypeScript port of its Python counterpart in bash_compress.py. Dispatch ordering note: GoFilter must be listed AFTER goTestFilter (which is registered in Batch A) because both match `go`, and goTestFilter's check on the `test` subcommand wins only when it appears first. Within BUILD_FILTERS the ordering is: cargo (all subcommands), go, then the rest.
 
 import { ToolFilter } from './base.js'
 import {

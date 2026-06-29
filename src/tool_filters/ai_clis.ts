@@ -1,19 +1,8 @@
-// AI-CLI streaming assistant filter family (Batch I): AiderFilter,
-// GhCopilotFilter, CopilotFilter, GeminiCliFilter, ClaudeCliFilter,
-// CursorFilter, WindsurfFilter, OpenCodeFilter, ContinueFilter,
-// ClineFilter, CodexExecFilter.
+// AI-CLI streaming assistant filter family (Batch I): AiderFilter, GhCopilotFilter, CopilotFilter, GeminiCliFilter, ClaudeCliFilter, CursorFilter, WindsurfFilter, OpenCodeFilter, ContinueFilter, ClineFilter, CodexExecFilter.
 //
-// Faithfully ported from the Python bash_compress.py AI-CLI family
-// (git ref 2098981^).  All filters use the makeAiCliFilter factory except
-// CodexExecFilter, which has a completely different structural algorithm
-// (two-separator header extraction + role-label transcript parsing) and
-// is therefore a bespoke ToolFilter subclass.
+// Faithfully ported from the Python bash_compress.py AI-CLI family (git ref 2098981^). All filters use the makeAiCliFilter factory except CodexExecFilter, which has a completely different structural algorithm (two-separator header extraction + role-label transcript parsing) and is therefore a bespoke ToolFilter subclass.
 //
-// DISPATCH ORDERING: GhCopilotFilter must precede GhRunLogFilter and
-// GhFilter (all three match the `gh` binary, but GhCopilotFilter only fires
-// for `gh copilot explain/suggest`).  AI_CLI_FILTERS is therefore spread
-// BEFORE CI_FILTERS in dispatch.ts, overriding the naive "append at end"
-// placement.
+// DISPATCH ORDERING: GhCopilotFilter must precede GhRunLogFilter and GhFilter (all three match the `gh` binary, but GhCopilotFilter only fires for `gh copilot explain/suggest`). AI_CLI_FILTERS is therefore spread BEFORE CI_FILTERS in dispatch.ts, overriding the naive "append at end" placement.
 
 import { ToolFilter } from './base.js'
 import { makeAiCliFilter } from './families.js'
@@ -134,8 +123,7 @@ export const ghCopilotFilter = makeAiCliFilter({
   binaries: ['gh'],
   dropRules: [_GH_COPILOT_SPINNER_RE, _GH_COPILOT_BANNER_RE, _GH_COPILOT_DISCLAIMER_RE],
   droppedNoiseNote: (n) => `dropped ${n} boilerplate/disclaimer line(s)`,
-  // GhCopilotFilter only fires for `gh copilot explain/suggest`; the broader
-  // GhFilter in CI_FILTERS claims all other `gh` commands.
+  // GhCopilotFilter only fires for `gh copilot explain/suggest`; the broader GhFilter in CI_FILTERS claims all other `gh` commands.
   customMatches: (argv: string[]): boolean => {
     if (!argv.length) return false
     const first = argv[0]!
@@ -315,16 +303,7 @@ export const clineFilter = makeAiCliFilter({
 // ---------------------------------------------------------------------------
 // CodexExecFilter — bespoke structural algorithm
 //
-// Codex output has a distinctive two-separator header block followed by a
-// role-labelled transcript. The algorithm:
-//   1. Scan the first 20 lines for two `--------` separators.
-//   2. Bail (passthrough) if fewer than two separators are found.
-//   3. Extract the model name from the config block between the separators.
-//   4. Find the last "codex" role label after the second separator.
-//   5. Scan backward (last 6 lines from the last codex label) for a
-//      "tokens used" footer and capture the count on the next non-blank line.
-//   6. Extract the answer body between the last codex label and the footer.
-//   7. Emit `[codex: model=X, tokens=Y]` followed by the answer body.
+// Codex output has a distinctive two-separator header block followed by a role-labelled transcript. The algorithm: 1. Scan the first 20 lines for two `--------` separators. 2. Bail (passthrough) if fewer than two separators are found. 3. Extract the model name from the config block between the separators. 4. Find the last "codex" role label after the second separator. 5. Scan backward (last 6 lines from the last codex label) for a "tokens used" footer and capture the count on the next non-blank line. 6. Extract the answer body between the last codex label and the footer. 7. Emit `[codex: model=X, tokens=Y]` followed by the answer body.
 // ---------------------------------------------------------------------------
 
 export class CodexExecFilter extends ToolFilter {
@@ -412,8 +391,7 @@ export const codexExecFilter = new CodexExecFilter()
  * precedence over the broader GhFilter that claims all `gh` commands.
  */
 export const AI_CLI_FILTERS: ToolFilter[] = [
-  // GhCopilotFilter and CopilotFilter co-located; GhCopilotFilter MUST precede
-  // GhRunLogFilter and GhFilter in TOOL_FILTERS (see dispatch.ts comment).
+  // GhCopilotFilter and CopilotFilter co-located; GhCopilotFilter MUST precede GhRunLogFilter and GhFilter in TOOL_FILTERS (see dispatch.ts comment).
   ghCopilotFilter,
   copilotFilter,
   aiderFilter,
@@ -427,6 +405,5 @@ export const AI_CLI_FILTERS: ToolFilter[] = [
   codexExecFilter,
 ]
 
-// Re-export ERROR_SIGNAL_RE so consumers can reference the same constant
-// without importing helpers directly.
+// Re-export ERROR_SIGNAL_RE so consumers can reference the same constant without importing helpers directly.
 export { ERROR_SIGNAL_RE }

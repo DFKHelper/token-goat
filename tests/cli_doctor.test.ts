@@ -156,9 +156,7 @@ describe('cli_doctor', () => {
 
   describe('checkDiskSpace shell safety', () => {
     it('returns warn rather than executing injected shell commands via dataDir', () => {
-      // A path containing shell metacharacters must not cause command execution.
-      // With the spawnSync fix, the argument is passed verbatim to df — the shell
-      // never interprets it, so we get at most a warn (df can't find the path).
+      // A path containing shell metacharacters must not cause command execution. With the spawnSync fix, the argument is passed verbatim to df — the shell never interprets it, so we get at most a warn (df can't find the path).
       const injectedPath = tempDir + '; echo INJECTED'
       const result = checkDiskSpace(injectedPath)
       expect(result.name).toBe('Disk Space')

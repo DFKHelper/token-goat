@@ -20,12 +20,10 @@ import { dataDir } from './constants.js'
 import { safeJoin } from './paths.js'
 import { registerReset } from './reset.js'
 
-// ESM has no `require`; build one so we can probe for the optional sqlite-vec
-// package without making it a hard module-resolution dependency.
+// ESM has no `require`; build one so we can probe for the optional sqlite-vec package without making it a hard module-resolution dependency.
 const _require = createRequire(import.meta.url)
 
-// One Database handle per absolute db path. Keyed by the resolved path so two
-// callers naming the same file via different relative strings share a handle.
+// One Database handle per absolute db path. Keyed by the resolved path so two callers naming the same file via different relative strings share a handle.
 const _connections = new Map<string, BetterSqlite3Database>()
 
 /**
@@ -86,9 +84,7 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
 `
 
-// FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with
-// it enabled, but wrap creation so a build without FTS5 still yields a usable
-// (search-degraded) index DB rather than throwing on open.
+// FTS5 is a compile-time-optional SQLite extension. better-sqlite3 ships with it enabled, but wrap creation so a build without FTS5 still yields a usable (search-degraded) index DB rather than throwing on open.
 const FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
   name,
@@ -133,13 +129,10 @@ function initConnection(conn: BetterSqlite3Database): void {
   try {
     conn.exec(FTS_SQL)
   } catch {
-    // FTS5 unavailable in this SQLite build — search falls back to LIKE in
-    // higher layers. The base tables are still usable.
+    // FTS5 unavailable in this SQLite build — search falls back to LIKE in higher layers. The base tables are still usable.
   }
 
-  // sqlite-vec is an optional dependency; the vec0 virtual table only exists
-  // when the package is installed and its extension can be loaded. Wrap the
-  // entire load+create so a missing package or load failure is non-fatal.
+  // sqlite-vec is an optional dependency; the vec0 virtual table only exists when the package is installed and its extension can be loaded. Wrap the entire load+create so a missing package or load failure is non-fatal.
   try {
     // Dynamic require so a missing package does not break module resolution.
     const sqliteVec = _require('sqlite-vec') as { load: (db: BetterSqlite3Database) => void }
@@ -150,8 +143,7 @@ function initConnection(conn: BetterSqlite3Database): void {
        );`,
     )
   } catch {
-    // sqlite-vec not installed or extension load failed — semantic search is
-    // disabled but every other index feature works.
+    // sqlite-vec not installed or extension load failed — semantic search is disabled but every other index feature works.
   }
 }
 
@@ -205,8 +197,7 @@ export function closeDb(dbPath: string): void {
   try {
     conn.close()
   } catch {
-    // Already closed or close raced with another caller — the handle is gone
-    // either way, so dropping it from the map is the only thing that matters.
+    // Already closed or close raced with another caller — the handle is gone either way, so dropping it from the map is the only thing that matters.
   }
   _connections.delete(resolved)
 }

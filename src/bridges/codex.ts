@@ -26,9 +26,7 @@ import type { BridgeConfig } from './types.js'
  * On any error the shim prints `{}` so the tool call proceeds unchanged.
  */
 export const CODEX_HOOK_SCRIPT = `#!/usr/bin/env node
-// token-goat Codex hook shim. Forwards the hook payload to
-// \`token-goat hook <event>\`, then strips _tg_* keys and injects hookEventName
-// so the response satisfies Codex's strict (additionalProperties:false) schema.
+// token-goat Codex hook shim. Forwards the hook payload to \`token-goat hook <event>\`, then strips _tg_* keys and injects hookEventName so the response satisfies Codex's strict (additionalProperties:false) schema.
 'use strict'
 const { spawnSync } = require('node:child_process')
 

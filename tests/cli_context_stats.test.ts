@@ -89,17 +89,14 @@ describe('cli_context_stats', () => {
     it('returns empty array when no CLAUDE.md exists in subtree', () => {
       const project = path.join(tempDir, 'clean')
       fs.mkdirSync(project)
-      // findClaudeMdFiles will still check ~/.claude/CLAUDE.md; only assert
-      // the tempDir file is not found
+      // findClaudeMdFiles will still check ~/.claude/CLAUDE.md; only assert the tempDir file is not found
       const found = findClaudeMdFiles(project)
       const inTemp = found.filter((f) => f.startsWith(tempDir))
       expect(inTemp).toHaveLength(0)
     })
 
     it('deduplicates the global ~/.claude/CLAUDE.md', () => {
-      // If ~/.claude/CLAUDE.md happened to be on the walk-up path, ensure it
-      // appears only once (hard to reproduce deterministically, so we just
-      // verify uniqueness in a controlled tree).
+      // If ~/.claude/CLAUDE.md happened to be on the walk-up path, ensure it appears only once (hard to reproduce deterministically, so we just verify uniqueness in a controlled tree).
       const project = path.join(tempDir, 'proj')
       fs.mkdirSync(project)
       const found = findClaudeMdFiles(project)
@@ -132,8 +129,7 @@ describe('cli_context_stats', () => {
       const memFile = path.join(memDir, 'MEMORY.md')
       fs.writeFileSync(memFile, '# Memory')
 
-      // findMemoryMd uses os.homedir() so we can't inject the dir directly.
-      // Just verify the slug generation logic is consistent.
+      // findMemoryMd uses os.homedir() so we can't inject the dir directly. Just verify the slug generation logic is consistent.
       const expectedSlug = path.resolve(projectRoot)
         .replace(/[^A-Za-z0-9]/g, '-')
         .replace(/^-+|-+$/g, '')
@@ -141,9 +137,7 @@ describe('cli_context_stats', () => {
     })
 
     it('does not fall back to other projects memory files', () => {
-      // This tests the fix for dead code in the fallback loop.
-      // findMemoryMd should NOT return memory files from other projects.
-      // If the exact slug match doesn't exist, it should return null.
+      // This tests the fix for dead code in the fallback loop. findMemoryMd should NOT return memory files from other projects. If the exact slug match doesn't exist, it should return null.
       const projectRoot = path.join(tempDir, 'no-memory-project')
       fs.mkdirSync(projectRoot)
       expect(findMemoryMd(projectRoot)).toBeNull()

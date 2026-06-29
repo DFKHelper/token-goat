@@ -29,8 +29,7 @@ import type { BridgeConfig } from './types.js'
  * settings.json command appends the event name as the last argument.
  */
 export const CLAUDECODE_HOOK_SCRIPT = `#!/usr/bin/env node
-// token-goat Claude Code hook shim. Reads the hook payload on stdin, forwards
-// it to \`token-goat hook <event>\`, and relays the response on stdout.
+// token-goat Claude Code hook shim. Reads the hook payload on stdin, forwards it to \`token-goat hook <event>\`, and relays the response on stdout.
 'use strict'
 const { spawnSync } = require('node:child_process')
 

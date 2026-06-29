@@ -166,10 +166,7 @@ export function getFileEntry(
   }
 }
 
-// Quote each whitespace-separated term as an FTS5 string literal so that
-// characters FTS5 treats as query operators (`:` `(` `)` `*`, AND/OR/NOT)
-// in a natural-language query are matched literally instead of throwing a
-// syntax error that the catch below would swallow into an empty result.
+// Quote each whitespace-separated term as an FTS5 string literal so that characters FTS5 treats as query operators (`:` `(` `)` `*`, AND/OR/NOT) in a natural-language query are matched literally instead of throwing a syntax error that the catch below would swallow into an empty result.
 function sanitizeFtsQuery(query: string): string {
   return query
     .split(/\s+/)
@@ -194,9 +191,7 @@ export function searchSymbolsFts(
   if (match === '') return []
 
   const db = getDb(dbPath)
-  // FTS5's MATCH operator and bm25() must name the FTS table directly — a table
-  // alias resolves as a bare column reference ("no such column: f"), which the
-  // catch below would silently swallow, leaving `semantic` permanently empty.
+  // FTS5's MATCH operator and bm25() must name the FTS table directly — a table alias resolves as a bare column reference ("no such column: f"), which the catch below would silently swallow, leaving `semantic` permanently empty.
   const sql =
     `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring ` +
     `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +

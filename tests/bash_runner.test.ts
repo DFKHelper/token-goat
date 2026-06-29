@@ -33,8 +33,7 @@ const _savedXdg = process.env['XDG_DATA_HOME']
 process.env['LOCALAPPDATA'] = DATA_DIR_TMP
 process.env['XDG_DATA_HOME'] = DATA_DIR_TMP
 const { run, runRaw } = await import('../src/bash_runner.js')
-// DATA_DIR is now frozen to the temp dir; restore env to avoid leaking the
-// override into sibling test modules that run in the same worker.
+// DATA_DIR is now frozen to the temp dir; restore env to avoid leaking the override into sibling test modules that run in the same worker.
 if (_savedLocal === undefined) delete process.env['LOCALAPPDATA']
 else process.env['LOCALAPPDATA'] = _savedLocal
 if (_savedXdg === undefined) delete process.env['XDG_DATA_HOME']
@@ -64,8 +63,7 @@ beforeAll(() => {
 })
 
 afterAll(() => {
-  // Best-effort: on Windows the still-open better-sqlite3 handle on the temp
-  // global.db keeps the dir locked (EPERM); the OS reclaims it later.
+  // Best-effort: on Windows the still-open better-sqlite3 handle on the temp global.db keeps the dir locked (EPERM); the OS reclaims it later.
   for (const dir of [scriptDir, DATA_DIR_TMP]) {
     try {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -102,8 +100,7 @@ describe('bash_runner.run (in-process)', () => {
   })
 
   it('streams a command through untouched when no filter matches', () => {
-    // `exit` is a shell builtin that no tool filter will ever claim, so this
-    // exercises the filter===null passthrough branch and its exit-code mapping.
+    // `exit` is a shell builtin that no tool filter will ever claim, so this exercises the filter===null passthrough branch and its exit-code mapping.
     expect(run('exit 9')).toBe(9)
   })
 
@@ -116,8 +113,7 @@ describe('compress command (built-bundle e2e)', () => {
   let dataBase: string
 
   beforeAll(() => {
-    // Build the real shipping artifact so this fails if `compress` is missing
-    // from the bundle's command registry or tree-shaken out.
+    // Build the real shipping artifact so this fails if `compress` is missing from the bundle's command registry or tree-shaken out.
     execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
     dataBase = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-br-e2e-data-'))
   })

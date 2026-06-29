@@ -67,9 +67,7 @@ describe('reset', () => {
   it('clearModuleCaches clears the in-memory maps', () => {
     storeWebOutput('https://example.com/e', 'gone')
     clearModuleCaches()
-    // In-memory-only views are cleared: the URL index no longer knows the URL,
-    // and the session no longer counts it as fetched. (getWebOutput intentionally
-    // reads through to the persisted blob — covered in content_cache_disk.test.ts.)
+    // In-memory-only views are cleared: the URL index no longer knows the URL, and the session no longer counts it as fetched. (getWebOutput intentionally reads through to the persisted blob — covered in content_cache_disk.test.ts.)
     expect(getWebOutputByUrl('https://example.com/e')).toBeNull()
     expect(wasUrlFetchedThisSession('https://example.com/e')).toBe(false)
   })

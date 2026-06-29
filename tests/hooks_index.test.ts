@@ -6,8 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConstantsModule from '../src/constants.js'
 
-// A per-run data dir so the dirty queue never touches the real one. Created
-// before the mocked dataDir() is read; the vi.mock factory below returns it.
+// A per-run data dir so the dirty queue never touches the real one. Created before the mocked dataDir() is read; the vi.mock factory below returns it.
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-idx-'))
 
 vi.mock('../src/constants.js', async (importOriginal) => {

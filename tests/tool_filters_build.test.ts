@@ -1,5 +1,4 @@
-// Tests for the build-tool filter family (Batch E):
-// make/cmake/gradle/maven/ant/bazel/meson/msbuild/dotnet/sbt/javac/cargo/go/nx/lerna/turbo/webpack
+// Tests for the build-tool filter family (Batch E): make/cmake/gradle/maven/ant/bazel/meson/msbuild/dotnet/sbt/javac/cargo/go/nx/lerna/turbo/webpack
 
 import { describe, expect, it } from 'vitest'
 import {

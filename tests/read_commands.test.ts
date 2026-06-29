@@ -17,8 +17,7 @@ vi.mock('../src/section_reader.js', () => ({
   extractSection: vi.fn(() => null),
 }))
 
-// Partial-mock util so runGit is controllable while ensureNewline (used by emit)
-// keeps its real behavior.
+// Partial-mock util so runGit is controllable while ensureNewline (used by emit) keeps its real behavior.
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
   return { ...actual, runGit: vi.fn() }
@@ -120,8 +119,7 @@ describe('read_commands', () => {
     it('resolves the filePath filter to the index key before querying', () => {
       mockQuerySymbols.mockReturnValue([])
       runSymbol({ name: 'x', file: 'src/bar.ts' })
-      // The index is keyed by normalizePath(absolute); a raw relative path would
-      // never match an exact `file_path = ?` lookup, so the command must resolve.
+      // The index is keyed by normalizePath(absolute); a raw relative path would never match an exact `file_path = ?` lookup, so the command must resolve.
       expect(mockQuerySymbols).toHaveBeenCalledWith(
         expect.objectContaining({ filePath: resolveIndexPath('src/bar.ts') }),
       )
@@ -176,8 +174,7 @@ describe('read_commands', () => {
     })
 
     it('looks up the LAST segment (not the middle) for a 3+ part dotted symbol', () => {
-      // Methods are indexed by bare leaf name; "Outer.Inner.refresh" must resolve to
-      // the method `refresh`, never the middle class `Inner`.
+      // Methods are indexed by bare leaf name; "Outer.Inner.refresh" must resolve to the method `refresh`, never the middle class `Inner`.
       mockQuerySymbols.mockReturnValue([])
       runRead({ spec: 'src/foo.ts::Outer.Inner.refresh' })
       expect(mockQuerySymbols).toHaveBeenCalledWith(expect.objectContaining({ name: 'refresh' }))
@@ -336,8 +333,7 @@ describe('read_commands', () => {
     })
 
     it('returns 1 and does not emit undefined when leaf key is missing from an existing parent', () => {
-      // Regression: before fix, obj traversal would produce undefined for the
-      // leaf and emit JSON.stringify(undefined) = "undefined" while returning 0.
+      // Regression: before fix, obj traversal would produce undefined for the leaf and emit JSON.stringify(undefined) = "undefined" while returning 0.
       const f = path.join(tempDir, 'leaf-missing.json')
       fs.writeFileSync(f, JSON.stringify({ project: { name: 'foo' } }))
       const { stdout } = capture(() => { runConfigGet({ file: f, key: 'project.missing' }) })

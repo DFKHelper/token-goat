@@ -1,12 +1,6 @@
-// Batch B — package-manager filters. Faithful port of the Python
-// NpmInstallFilter, PnpmFilter, YarnFilter, PipFilter, UvFilter, CondaFilter,
-// GemFilter, BundlerFilter, ComposerFilter, NuGetFilter, PubFilter,
-// ConanFilter, VcpkgFilter, NodePackageFilter, and DepListFilter from
-// bash_compress.py (git ref 2098981^).
+// Batch B — package-manager filters. Faithful port of the Python NpmInstallFilter, PnpmFilter, YarnFilter, PipFilter, UvFilter, CondaFilter, GemFilter, BundlerFilter, ComposerFilter, NuGetFilter, PubFilter, ConanFilter, VcpkgFilter, NodePackageFilter, and DepListFilter from bash_compress.py (git ref 2098981^).
 //
-// Each filter subclasses ToolFilter and lives in the PACKAGE_MANAGER_FILTERS
-// export array, which dispatch.ts spreads into TOOL_FILTERS after the Batch-A
-// test-runner filters.
+// Each filter subclasses ToolFilter and lives in the PACKAGE_MANAGER_FILTERS export array, which dispatch.ts spreads into TOOL_FILTERS after the Batch-A test-runner filters.
 
 import { ToolFilter } from './base.js'
 import { makePackageManagerFilter } from './families.js'
@@ -875,8 +869,7 @@ class ConanFilter extends ToolFilter {
   override readonly errorPassthrough = true
 
   override compress(stdout: string, stderr: string, exitCode: number, argv: string[]): string {
-    // errorPassthrough handled by base class — we override compress to also
-    // call the body (base calls compressBody via compress when no error).
+    // errorPassthrough handled by base class — we override compress to also call the body (base calls compressBody via compress when no error).
     return super.compress(stdout, stderr, exitCode, argv)
   }
 

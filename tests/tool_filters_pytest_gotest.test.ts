@@ -1,9 +1,4 @@
-// Batch A increment 2 golden tests — bespoke runners pytest + go-test.
-// Ported faithfully from the Python suite (tests/test_bash_compress.py:
-// TestPytestFilter, TestGoTestFilter). These are the regression spec for
-// src/tool_filters/pytest.ts and src/tool_filters/go_test.ts. They mirror the
-// Python tests' choice of `.compress()` (raw string) vs `.apply()` (full
-// pipeline) call sites exactly, so any divergence flags a port infidelity.
+// Batch A increment 2 golden tests — bespoke runners pytest + go-test. Ported faithfully from the Python suite (tests/test_bash_compress.py: TestPytestFilter, TestGoTestFilter). These are the regression spec for src/tool_filters/pytest.ts and src/tool_filters/go_test.ts. They mirror the Python tests' choice of `.compress()` (raw string) vs `.apply()` (full pipeline) call sites exactly, so any divergence flags a port infidelity.
 
 import { describe, expect, it } from 'vitest'
 
@@ -173,9 +168,7 @@ describe('pytest filter', () => {
 
 describe('go-test filter', () => {
   it('preserves the panicking subtest identity when no --- FAIL: line is printed', () => {
-    // A panic aborts the test binary before Go prints `--- FAIL:`, so the
-    // `=== RUN` line naming the subtest is the only marker of which case blew
-    // up. The stack shows only the parent test func, so that line must survive.
+    // A panic aborts the test binary before Go prints `--- FAIL:`, so the `=== RUN` line naming the subtest is the only marker of which case blew up. The stack shows only the parent test func, so that line must survive.
     const out = [
       '=== RUN   TestTable',
       '=== RUN   TestTable/case_3',

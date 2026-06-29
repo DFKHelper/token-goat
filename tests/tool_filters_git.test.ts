@@ -1,7 +1,4 @@
-// Batch D golden tests — git filter family.
-// Faithfully ported from the Python suite (test_bash_compress_git.py and
-// test_bash_compress_git_commit_push.py).
-// These are the regression spec for the 7 filters in src/tool_filters/git.ts.
+// Batch D golden tests — git filter family. Faithfully ported from the Python suite (test_bash_compress_git.py and test_bash_compress_git_commit_push.py). These are the regression spec for the 7 filters in src/tool_filters/git.ts.
 
 import { describe, expect, it } from 'vitest'
 

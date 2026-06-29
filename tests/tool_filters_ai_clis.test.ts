@@ -458,8 +458,7 @@ const _CURSOR_STARTUP_VERBOSE = [
   'Starting debug adapter',
   'Telemetry is disabled',
   'Crash reporter: enabled',
-  // "Opening folder..." (bare dots) matches the startup regex; a path like
-  // "Opening folder /projects/myapp..." does NOT — that is kept intentionally.
+  // "Opening folder..." (bare dots) matches the startup regex; a path like "Opening folder /projects/myapp..." does NOT — that is kept intentionally.
   'Opening folder...',
   '',
   '> Your project is loaded successfully.',

@@ -183,8 +183,7 @@ const cases: Record<string, () => void> = {
     expect(r.stdout).toContain('3.2.1')
   },
   'web-output': () => {
-    // Reachability: process-local cache is always empty in a fresh process, so a
-    // bogus id is a graceful miss (exit 1), not an "unknown command" / crash.
+    // Reachability: process-local cache is always empty in a fresh process, so a bogus id is a graceful miss (exit 1), not an "unknown command" / crash.
     const r = run(['web-output', 'no-such-id'])
     expect(r.status).not.toBe(0)
     const all = r.stdout + r.stderr
@@ -210,8 +209,7 @@ const cases: Record<string, () => void> = {
   },
   doctor: () => {
     const r = run(['doctor'])
-    // doctor is informational; it may exit non-zero when something is unhealthy,
-    // but it must run and print diagnostics, not be unreachable.
+    // doctor is informational; it may exit non-zero when something is unhealthy, but it must run and print diagnostics, not be unreachable.
     expect(r.status).not.toBeNull()
     expect(r.stdout.length).toBeGreaterThan(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
@@ -241,8 +239,7 @@ const cases: Record<string, () => void> = {
     expect(fs.existsSync(path.join(proj, '.claude', 'settings.json'))).toBe(true)
   },
   uninstall: () => {
-    // Install first so uninstall has something to remove and emits the
-    // "Removed ..." path rather than the no-op message.
+    // Install first so uninstall has something to remove and emits the "Removed ..." path rather than the no-op message.
     const proj = mkIsolated('tg-matrix-uninstall-')
     const installed = run(['install', '--project'], { cwd: proj })
     expect(installed.status, installed.stderr).toBe(0)
@@ -251,8 +248,7 @@ const cases: Record<string, () => void> = {
     expect(r.stdout).toMatch(/Removed token-goat hooks \(project\)\./)
   },
   worker: () => {
-    // Parent command with subcommands and no own action: prints usage listing
-    // its subcommands. Reachable and lists start/stop/status.
+    // Parent command with subcommands and no own action: prints usage listing its subcommands. Reachable and lists start/stop/status.
     const r = run(['worker', '--help'])
     expect(r.stdout + r.stderr).toMatch(/start[\s\S]*stop[\s\S]*status/)
   },
@@ -297,9 +293,7 @@ const cases: Record<string, () => void> = {
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
   },
   'gdrive-sections': () => {
-    // Reachability only: needs network + a live public doc. A bogus id must fail
-    // gracefully (non-zero) without an "unknown command" or tree-shaken module
-    // crash — that is what proves the command is wired into the shipped bundle.
+    // Reachability only: needs network + a live public doc. A bogus id must fail gracefully (non-zero) without an "unknown command" or tree-shaken module crash — that is what proves the command is wired into the shipped bundle.
     const r = run(['gdrive-sections', 'not-a-real-doc-id'])
     expect(r.status).not.toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function|Cannot find package/)

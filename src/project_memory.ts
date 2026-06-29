@@ -42,8 +42,7 @@ function parseTOML(content: string): Record<string, string> {
     if (match) {
       const [, key, value] = match;
       if (key && value !== undefined) {
-        // Unescape TOML string escapes in a single pass to avoid
-        // sequential-replace interference (e.g. "a\\nb" → "a\nb" not "a\<NL>b").
+        // Unescape TOML string escapes in a single pass to avoid sequential-replace interference (e.g. "a\\nb" → "a\nb" not "a\<NL>b").
         const unescaped = value.replace(/\\([\\nrt"])/g, (_, c: string) => {
           switch (c) {
             case '\\': return '\\'

@@ -1,12 +1,6 @@
-// Shell / file-tool filter family (Batch H): grep/rg, ls/eza/tree/fd, wc, bat, delta,
-// fzf, lazygit, jq, yq, curl/wget, rsync, diff, ffmpeg, xxd/hexdump, file, ps/top.
+// Shell / file-tool filter family (Batch H): grep/rg, ls/eza/tree/fd, wc, bat, delta, fzf, lazygit, jq, yq, curl/wget, rsync, diff, ffmpeg, xxd/hexdump, file, ps/top.
 //
-// Ported faithfully from the Python bash_compress.py shell/file family.
-// Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep`
-// but RgFilter is registered first to handle context-line stripping; GrepFilter is
-// the catch-all for ag/ack/egrep/fgrep and git grep.  LsFilter must precede EzaFilter
-// — both claim `ls` and `eza` but LsFilter applies simpler truncation while EzaFilter
-// provides richer tree/column-aware compression.
+// Ported faithfully from the Python bash_compress.py shell/file family. Dispatch ordering note: RgFilter must precede GrepFilter — both claim `rg`/`grep` but RgFilter is registered first to handle context-line stripping; GrepFilter is the catch-all for ag/ack/egrep/fgrep and git grep. LsFilter must precede EzaFilter — both claim `ls` and `eza` but LsFilter applies simpler truncation while EzaFilter provides richer tree/column-aware compression.
 
 import { ToolFilter } from './base.js'
 import {
@@ -1312,10 +1306,7 @@ export const fileTypeFilter = new FileTypeFilter()
 export const psFilter = new PsFilter()
 
 // ---------------------------------------------------------------------------
-// SHELL_FILE_FILTERS — ordered to match Python FILTERS registry:
-//   RgFilter before GrepFilter (both claim rg/grep; RgFilter handles context-line stripping),
-//   LsFilter before EzaFilter (both claim ls/eza; LsFilter applies simpler truncation),
-//   DiffFilter before LsFilter (per Python ordering).
+// SHELL_FILE_FILTERS — ordered to match Python FILTERS registry: RgFilter before GrepFilter (both claim rg/grep; RgFilter handles context-line stripping), LsFilter before EzaFilter (both claim ls/eza; LsFilter applies simpler truncation), DiffFilter before LsFilter (per Python ordering).
 // ---------------------------------------------------------------------------
 
 export const SHELL_FILE_FILTERS: ToolFilter[] = [

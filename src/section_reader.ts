@@ -191,16 +191,13 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
   if (language === 'markdown') return { headers: findMarkdownHeaders(lines), kind: 'markdown' }
   if (language === 'toml') return { headers: findTableHeaders(lines), kind: 'table' }
   if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
-  // INI groups under [section] headers like TOML; route to the table finder so a
-  // leading `#`/`;` comment line is not mistaken for a markdown heading.
+  // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading.
   if (language === 'ini') return { headers: findTableHeaders(lines), kind: 'table' }
-  // YAML and .env are key/value; their `#` comment lines must not be sniffed as
-  // markdown headings (which would hide every real key), so route explicitly.
+  // YAML and .env are key/value; their `#` comment lines must not be sniffed as markdown headings (which would hide every real key), so route explicitly.
   if (language === 'yaml' || language === 'env_file')
     return { headers: findKeyValueHeaders(lines), kind: 'keyvalue' }
 
-  // Unknown / other: sniff. Prefer markdown headings, then tables, then a
-  // key-value fallback so generic config files still yield sections.
+  // Unknown / other: sniff. Prefer markdown headings, then tables, then a key-value fallback so generic config files still yield sections.
   const md = findMarkdownHeaders(lines)
   if (md.length > 0) return { headers: md, kind: 'markdown' }
   const tbl = findTableHeaders(lines)
@@ -298,8 +295,7 @@ export function extractSection(text: string, headingSpec: string): SectionResult
     kind === 'table'
       ? tableSectionEndIndex(headers, headerPos, lines.length)
       : sectionEndIndex(headers, headerPos, lines.length)
-  // Trim a single trailing blank line so adjacent sections don't accrue the
-  // separator line into the earlier section's body.
+  // Trim a single trailing blank line so adjacent sections don't accrue the separator line into the earlier section's body.
   let endExclusive = endIndex
   while (endExclusive > header.index + 1 && lines[endExclusive - 1] === '') {
     endExclusive--

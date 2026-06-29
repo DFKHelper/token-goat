@@ -146,8 +146,7 @@ describe('embeddings module', () => {
     })
 
     it('does not count a trailing newline as an extra line in endLine', () => {
-      // 5 real lines, each long enough that the whole block exceeds MIN_CHUNK_CHARS (50)
-      // but stays well under MAX_CHUNK_CHARS (8000) so it forms exactly ONE final window chunk.
+      // 5 real lines, each long enough that the whole block exceeds MIN_CHUNK_CHARS (50) but stays well under MAX_CHUNK_CHARS (8000) so it forms exactly ONE final window chunk.
       const body =
         ['line one padding xx', 'line two padding xx', 'line three padding', 'line four padding x', 'line five padding x'].join('\n') + '\n'
       const chunks = embeddings.chunkFile('f.ts', body)
@@ -422,8 +421,7 @@ describe('embeddings module', () => {
       if (!embeddings.isAvailable()) {
         return
       }
-      // Verify the query issued to sqlite uses the embedded vector (MATCH ?)
-      // rather than a bare ORDER BY with no WHERE clause.
+      // Verify the query issued to sqlite uses the embedded vector (MATCH ?) rather than a bare ORDER BY with no WHERE clause.
       const preparedStatements: string[] = []
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mockDb: any = {

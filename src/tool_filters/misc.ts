@@ -1,16 +1,6 @@
 // Miscellaneous compression filter family (Batch K2).
 //
-// Faithful TypeScript port of the Python bash_compress.py db-client, runner,
-// CSS-preprocessor, system-package, util, and generic catch-all sub-families.
-// Dispatch note:
-//   - PlaywrightFilter and CypressFilter are exported individually and must be
-//     registered in dispatch.ts BEFORE BunFilter so that `bunx playwright test`
-//     and `bunx cypress run` route here rather than to the generic bun handler.
-//   - MISC_FILTERS (all other 14 filters) spreads AFTER LANGUAGE_FILTERS.
-//   - The five generic catch-alls (DotenvFilter, EnvFilter, JsonArrayFilter,
-//     SeverityLogFilter, TailTruncFilter) are at the tail of MISC_FILTERS.
-//   - TailTruncFilter MUST be the very last entry: its matches() returns true
-//     for every command so it must be a fallback of last resort.
+// Faithful TypeScript port of the Python bash_compress.py db-client, runner, CSS-preprocessor, system-package, util, and generic catch-all sub-families. Dispatch note: - PlaywrightFilter and CypressFilter are exported individually and must be registered in dispatch.ts BEFORE BunFilter so that `bunx playwright test` and `bunx cypress run` route here rather than to the generic bun handler. - MISC_FILTERS (all other 14 filters) spreads AFTER LANGUAGE_FILTERS. - The five generic catch-alls (DotenvFilter, EnvFilter, JsonArrayFilter, SeverityLogFilter, TailTruncFilter) are at the tail of MISC_FILTERS. - TailTruncFilter MUST be the very last entry: its matches() returns true for every command so it must be a fallback of last resort.
 
 import { ToolFilter } from './base.js'
 import {
@@ -51,8 +41,7 @@ export class PlaywrightFilter extends ToolFilter {
     return false
   }
 
-  // Override compress() directly — Playwright does NOT use errorPassthrough;
-  // it concatenates stdout+stderr itself (matching Python's behavior).
+  // Override compress() directly — Playwright does NOT use errorPassthrough; it concatenates stdout+stderr itself (matching Python's behavior).
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     const lines = (stdout + stderr).split('\n')
     const kept: string[] = []
@@ -1226,11 +1215,7 @@ export class TailTruncFilter extends ToolFilter {
   readonly name = 'tail-trunc'
   override readonly binaries: ReadonlySet<string> = new Set()
 
-  // Returns false: like SeverityLogFilter, this is content-based and applied
-  // explicitly (via filterByName or post-execution paths), not auto-matched by
-  // command. In Python's post-execution model matches()=true is fine; in TS the
-  // pre-bash hook rewrites commands before they run, making a catch-all
-  // prohibitively expensive for trivial commands (echo, ls, head, etc.).
+  // Returns false: like SeverityLogFilter, this is content-based and applied explicitly (via filterByName or post-execution paths), not auto-matched by command. In Python's post-execution model matches()=true is fine; in TS the pre-bash hook rewrites commands before they run, making a catch-all prohibitively expensive for trivial commands (echo, ls, head, etc.).
   override matches(_argv: string[]): boolean { return false }
 
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
@@ -1248,9 +1233,7 @@ export const tailTruncFilter = new TailTruncFilter()
 // ===========================================================================
 // MISC_FILTERS registry
 // ===========================================================================
-// NOTE: PlaywrightFilter and CypressFilter are NOT in this array — they are
-// registered individually in dispatch.ts BEFORE BunFilter.
-// TailTruncFilter is LAST: its matches() returns true for every command.
+// NOTE: PlaywrightFilter and CypressFilter are NOT in this array — they are registered individually in dispatch.ts BEFORE BunFilter. TailTruncFilter is LAST: its matches() returns true for every command.
 export const MISC_FILTERS: ToolFilter[] = [
   psqlFilter,
   mySQLFilter,

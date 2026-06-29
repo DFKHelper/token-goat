@@ -1,11 +1,6 @@
-// Filter framework base: `CompressedOutput` result type + the `ToolFilter`
-// base class with the universal `apply()` pipeline every per-tool filter runs.
+// Filter framework base: `CompressedOutput` result type + the `ToolFilter` base class with the universal `apply()` pipeline every per-tool filter runs.
 //
-// Ported faithfully from the Python `bash_compress.py` `Filter` / `apply`
-// contract. Per-tool filters (and the family factories) subclass `ToolFilter`,
-// declare `binaries` / `subcommands`, and override `compressBody` (or
-// `compress` for filters that handle non-zero exits structurally). The base
-// pipeline owns normalisation, input/line/byte caps, and the trailing marker.
+// Ported faithfully from the Python `bash_compress.py` `Filter` / `apply` contract. Per-tool filters (and the family factories) subclass `ToolFilter`, declare `binaries` / `subcommands`, and override `compressBody` (or `compress` for filters that handle non-zero exits structurally). The base pipeline owns normalisation, input/line/byte caps, and the trailing marker.
 
 import {
   DEFAULT_MAX_BYTES,
@@ -195,8 +190,7 @@ export abstract class ToolFilter {
     let so = safeDecode(stdout)
     let se = safeDecode(stderr)
 
-    // Step 2: pre-filter input cap, applied per-stream before normalisation so
-    // even normalisation stays O(capped_bytes).
+    // Step 2: pre-filter input cap, applied per-stream before normalisation so even normalisation stays O(capped_bytes).
     const maxInput = getMaxInputBytes()
     const notes: string[] = []
     const soBytes = Buffer.from(so, 'utf8')
@@ -227,8 +221,7 @@ export abstract class ToolFilter {
       const normErr = this.postNormalise(normalise(se, { skipProgress }))
       const normBytes = byteLength(normOut) + byteLength(normErr)
 
-      // Step 6a: normalisation alone achieved ≥40% reduction — skip the
-      // expensive per-tool filter and use simple dedupe.
+      // Step 6a: normalisation alone achieved ≥40% reduction — skip the expensive per-tool filter and use simple dedupe.
       if (originalBytes > 0 && normBytes <= originalBytes * 0.6) {
         body = compressBashOutput(normOut, normErr)
         notes.push('early-exit: normalisation alone sufficient')

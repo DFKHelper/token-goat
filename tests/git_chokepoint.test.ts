@@ -21,8 +21,7 @@ function collectTsFiles(dir: string): string[] {
   return out
 }
 
-// Bare git-spawn patterns. runGit in util.ts is the single sanctioned site;
-// anything matching these outside util.ts is a chokepoint violation.
+// Bare git-spawn patterns. runGit in util.ts is the single sanctioned site; anything matching these outside util.ts is a chokepoint violation.
 const GIT_SPAWN_PATTERNS: RegExp[] = [
   /\bexec\(\s*['"`]git\b/,
   /\bspawn\(\s*['"`]git\b/,

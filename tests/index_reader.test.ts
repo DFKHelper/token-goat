@@ -139,10 +139,7 @@ describe('index_reader round-trips inserted rows', () => {
     ).run('src/auth.ts', 'authenticate', 'function', 1, 5, 'body', 'docs')
 
     const hits = searchSymbolsFts('authenticate', 10, dbPath)
-    // When the FTS5 mirror exists (better-sqlite3 ships FTS5, so it does here)
-    // the search MUST return the symbol. Gating only on `hits.length > 0` made
-    // this test pass vacuously while a broken MATCH clause left `semantic`
-    // permanently empty — assert against the real table presence instead.
+    // When the FTS5 mirror exists (better-sqlite3 ships FTS5, so it does here) the search MUST return the symbol. Gating only on `hits.length > 0` made this test pass vacuously while a broken MATCH clause left `semantic` permanently empty — assert against the real table presence instead.
     const ftsExists =
       (
         db
@@ -177,10 +174,7 @@ describe('index_reader round-trips inserted rows', () => {
       ).c > 0
     if (!ftsExists) return // FTS5 unavailable — sibling test covers the no-op path
 
-    // Pre-fix: the raw query `error: parse` parses as an FTS5 column filter
-    // (`error:`), throwing "no such column: error" → caught → []. A query with
-    // a paren (`note (later)`) throws a syntax error the same way. Both must
-    // now resolve to the inserted row.
+    // Pre-fix: the raw query `error: parse` parses as an FTS5 column filter (`error:`), throwing "no such column: error" → caught → []. A query with a paren (`note (later)`) throws a syntax error the same way. Both must now resolve to the inserted row.
     const colon = searchSymbolsFts('error: parse', 10, dbPath)
     expect(colon.map((s) => s.name)).toContain('parseNote')
 

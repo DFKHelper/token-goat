@@ -44,16 +44,14 @@ const DROP = (): null => null
  */
 export const FILTERS: readonly Filter[] = [
   {
-    // git fetch/clone progress: "remote: Counting objects:  73% (8/11)",
-    // "Receiving objects: 100% (11/11), done.", "Resolving deltas: ...".
+    // git fetch/clone progress: "remote: Counting objects: 73% (8/11)", "Receiving objects: 100% (11/11), done.", "Resolving deltas: ...".
     name: 'git-progress',
     pattern:
       /^(remote:\s+)?(Counting objects|Compressing objects|Receiving objects|Resolving deltas|Unpacking objects|Enumerating objects|Writing objects):/i,
     replacer: DROP,
   },
   {
-    // npm install summary chatter: "added 142 packages in 3s",
-    // "changed 5 packages", "audited 200 packages in 1s".
+    // npm install summary chatter: "added 142 packages in 3s", "changed 5 packages", "audited 200 packages in 1s".
     name: 'npm-summary',
     pattern: /^\s*(added|removed|changed|audited)\s+\d+\s+packages?\b/i,
     replacer: DROP,
@@ -65,23 +63,19 @@ export const FILTERS: readonly Filter[] = [
     replacer: DROP,
   },
   {
-    // pip download progress: "Downloading foo-1.2.3-py3-none-any.whl (1.2 MB)"
-    // and the "  |████████| 1.2 MB 5.0 MB/s" meter lines.
+    // pip download progress: "Downloading foo-1.2.3-py3-none-any.whl (1.2 MB)" and the " |████████| 1.2 MB 5.0 MB/s" meter lines.
     name: 'pip-download',
     pattern: /^\s*(Downloading|Collecting|Using cached|Requirement already satisfied)\b/i,
     replacer: DROP,
   },
   {
-    // A progress meter line built from Unicode box-drawing/block glyphs, e.g.
-    // "████████░░░░ 60%". Restricted to those glyphs (not ASCII #/=/-) so an
-    // ASCII final state like "Building [####] 100%" is preserved as real output.
+    // A progress meter line built from Unicode box-drawing/block glyphs, e.g. "████████░░░░ 60%". Restricted to those glyphs (not ASCII #/=/-) so an ASCII final state like "Building [####] 100%" is preserved as real output.
     name: 'progress-bar',
     pattern: /[█▉▊▋▌▍▎▏▓▒░]{3,}/,
     replacer: DROP,
   },
   {
-    // Docker layer pull progress: "abc123: Pulling fs layer",
-    // "abc123: Download complete", "abc123: Pull complete".
+    // Docker layer pull progress: "abc123: Pulling fs layer", "abc123: Download complete", "abc123: Pull complete".
     name: 'docker-pull',
     pattern: /^[0-9a-f]{6,}:\s+(Pulling|Waiting|Downloading|Verifying|Extracting|Download complete|Pull complete|Already exists)\b/i,
     replacer: DROP,
@@ -93,15 +87,13 @@ export const FILTERS: readonly Filter[] = [
     replacer: DROP,
   },
   {
-    // Webpack/bundler asset rows are voluminous; keep the build result lines
-    // (errors, warnings, "compiled") by only dropping plain asset size rows.
+    // Webpack/bundler asset rows are voluminous; keep the build result lines (errors, warnings, "compiled") by only dropping plain asset size rows.
     name: 'webpack-asset',
     pattern: /^\s*(asset|chunk)\s+\S+\s+[\d.]+\s*(KiB|MiB|bytes)\b/i,
     replacer: DROP,
   },
   {
-    // A binary-content marker line: any line carrying a NUL byte is treated as
-    // non-text and collapsed to a single readable marker.
+    // A binary-content marker line: any line carrying a NUL byte is treated as non-text and collapsed to a single readable marker.
     name: 'binary-content',
     // eslint-disable-next-line no-control-regex -- intentionally matches the NUL control byte that signals binary content
     pattern: /\x00/,

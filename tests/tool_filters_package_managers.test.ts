@@ -1,7 +1,4 @@
-// Batch B golden tests — package-manager filters.
-// Faithfully ported from the Python suites (py_test_pkgmgr.py and
-// the relevant TestXxx classes in test_bash_compress.py). These are the
-// regression spec for the 15 filters in src/tool_filters/package_managers.ts.
+// Batch B golden tests — package-manager filters. Faithfully ported from the Python suites (py_test_pkgmgr.py and the relevant TestXxx classes in test_bash_compress.py). These are the regression spec for the 15 filters in src/tool_filters/package_managers.ts.
 
 import { describe, expect, it } from 'vitest'
 

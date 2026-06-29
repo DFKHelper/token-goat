@@ -1,14 +1,8 @@
 // Batch C — linter filters.
 //
-// Faithfully ported from the Python `bash_compress.py` linter family.
-// Filter dispatch order matches the Python FILTERS list (see CLAUDE.arch.md):
-// tsc → ruff → mypy → pylint → oxlint → eslint → biome → linter (generic) →
-// golangci-lint → phpstan → swiftlint → black-isort → prettier → ktlint →
-// cppcheck → clang-tidy.
+// Faithfully ported from the Python `bash_compress.py` linter family. Filter dispatch order matches the Python FILTERS list (see CLAUDE.arch.md): tsc → ruff → mypy → pylint → oxlint → eslint → biome → linter (generic) → golangci-lint → phpstan → swiftlint → black-isort → prettier → ktlint → cppcheck → clang-tidy.
 //
-// `swiftlintFilter` is produced by the `makeLinterFilter` factory in
-// families.ts — it shares the simple "per-rule warning dedup + always-keep
-// error" loop with any future filter that fits that model.
+// `swiftlintFilter` is produced by the `makeLinterFilter` factory in families.ts — it shares the simple "per-rule warning dedup + always-keep error" loop with any future filter that fits that model.
 
 import { ToolFilter } from './base.js'
 import { makeLinterFilter } from './families.js'

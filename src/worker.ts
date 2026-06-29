@@ -61,10 +61,7 @@ function parseDirtyQueueLines(raw: string): string[] {
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
     if (trimmed === '') continue
-    // On case-insensitive filesystems (Windows/macOS), deduplicate by
-    // case-folded form so "C:\Projects\file.ts" and "c:\projects\file.ts"
-    // are recognized as the same entry. normalizePath only lowercases the
-    // drive letter, so we fold the entire normalized path for dedup.
+    // On case-insensitive filesystems (Windows/macOS), deduplicate by case-folded form so "C:\Projects\file.ts" and "c:\projects\file.ts" are recognized as the same entry. normalizePath only lowercases the drive letter, so we fold the entire normalized path for dedup.
     const normalized = normalizePath(trimmed)
     const dedupeKey = foldPath(normalized)
     if (seen.has(dedupeKey)) continue
@@ -195,11 +192,7 @@ export function drainOnce(dir: string, index?: (absPath: string, sha: string) =>
     }
   }
 
-  // (b) Atomically claim the live queue. A concurrent appendDirtyPath either
-  // landed before the rename (its line travels in .draining) or recreates a
-  // fresh dirty.txt after it (next cycle) — it can never be deleted unindexed.
-  // On Windows a concurrent open-for-append can make rename fail with EPERM/
-  // EBUSY/EEXIST; retry a few times, then defer (return 0 = retry next poll).
+  // (b) Atomically claim the live queue. A concurrent appendDirtyPath either landed before the rename (its line travels in .draining) or recreates a fresh dirty.txt after it (next cycle) — it can never be deleted unindexed. On Windows a concurrent open-for-append can make rename fail with EPERM/ EBUSY/EEXIST; retry a few times, then defer (return 0 = retry next poll).
   if (fs.existsSync(queuePath)) {
     let claimed = false
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -279,8 +272,7 @@ export function stopWorker(dir: string = dataDir()): boolean {
     try {
       process.kill(pid)
     } catch {
-      // Race: process exited between the check and the kill. Fall through to
-      // pid-file cleanup; report whatever liveness we observed.
+      // Race: process exited between the check and the kill. Fall through to pid-file cleanup; report whatever liveness we observed.
     }
   }
   try {

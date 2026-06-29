@@ -24,14 +24,11 @@ try {
   _transformerError = e instanceof Error ? e : new Error(String(e))
 }
 
-// BAAI/bge-small-en-v1.5 is the smallest BGE model for code retrieval.
-// The 384-dimensional output is native to this checkpoint; do not change DEFAULT_DIM
-// without re-creating all chunk_vectors tables.
+// BAAI/bge-small-en-v1.5 is the smallest BGE model for code retrieval. The 384-dimensional output is native to this checkpoint; do not change DEFAULT_DIM without re-creating all chunk_vectors tables.
 export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
 export const DEFAULT_DIM = 384
 
-// Chunk size constraints (chars). MIN_CHUNK_CHARS filters trivial symbols.
-// MAX_CHUNK_CHARS caps before embedding: bge-small has ~512-token context window.
+// Chunk size constraints (chars). MIN_CHUNK_CHARS filters trivial symbols. MAX_CHUNK_CHARS caps before embedding: bge-small has ~512-token context window.
 export const MIN_CHUNK_CHARS = 50
 export const MAX_CHUNK_CHARS = 8000
 
@@ -301,8 +298,7 @@ export function chunkFile(
   overlap: number = 200,
 ): Chunk[] {
   const lines = content.split(/\r?\n/)
-  // splitlines() parity: a trailing newline must not introduce a phantom empty
-  // final line (it would inflate endLine by one and append a stray blank line).
+  // splitlines() parity: a trailing newline must not introduce a phantom empty final line (it would inflate endLine by one and append a stray blank line).
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
   const chunks: Chunk[] = []
 
@@ -385,8 +381,7 @@ export async function upsertChunks(
     VALUES (?, ?, ?, ?, ?)
   `)
 
-  // Explicit rowid ties the vector row to its chunk metadata row so searchSemantic
-  // can JOIN by rowid without a separate foreign-key column.
+  // Explicit rowid ties the vector row to its chunk metadata row so searchSemantic can JOIN by rowid without a separate foreign-key column.
   const vectorInsertStmt = db.prepare(`
     INSERT INTO chunk_vectors (rowid, embedding)
     VALUES (?, ?)
@@ -461,9 +456,7 @@ export async function searchSemantic(
     Math.ceil(topK * _OVER_FETCH_FACTOR),
   )
 
-  // sqlite-vec KNN query: both MATCH (the query vector blob) and k (row limit)
-  // must appear as WHERE constraints for the virtual table to run an ANN scan.
-  // Omitting either causes a full-table scan or an error.
+  // sqlite-vec KNN query: both MATCH (the query vector blob) and k (row limit) must appear as WHERE constraints for the virtual table to run an ANN scan. Omitting either causes a full-table scan or an error.
   const stmt = db.prepare(`
     SELECT rowid, distance FROM chunk_vectors
     WHERE embedding MATCH ?

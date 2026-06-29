@@ -129,11 +129,7 @@ function applyFilters(line: string): string | null {
 /** Truncate one line to `maxLineLength`, appending a count of elided chars. */
 function truncateLine(line: string, maxLineLength: number): string {
   if (line.length <= maxLineLength) return line
-  // The elided count itself sits in the message, and its digit width affects how
-  // much content fits. Reserve digits for the worst case (eliding the whole line)
-  // so the rendered message never overflows maxLineLength, then report the exact
-  // number of characters actually dropped (line.length - contentLength) — larger
-  // than the naive line.length - maxLineLength, since the message also costs budget.
+  // The elided count itself sits in the message, and its digit width affects how much content fits. Reserve digits for the worst case (eliding the whole line) so the rendered message never overflows maxLineLength, then report the exact number of characters actually dropped (line.length - contentLength) — larger than the naive line.length - maxLineLength, since the message also costs budget.
   const reservedMessageLen = `… [${'9'.repeat(String(line.length).length)} chars truncated]`.length
 
   // If even the message alone can't fit, hard-slice (rare edge case).
@@ -202,8 +198,7 @@ function compressGitDiff(lines: readonly string[]): string[] {
   for (const line of lines) {
     if (line.startsWith('diff --git ')) {
       flushHunk()
-      // A "diff --git a/<path> b/<path>" header repeats the path; show it once.
-      // Split on " b/" (not on a bare space) so paths containing spaces survive.
+      // A "diff --git a/<path> b/<path>" header repeats the path; show it once. Split on " b/" (not on a bare space) so paths containing spaces survive.
       currentFileName = line.slice('diff --git '.length).split(' b/')[0]?.replace(/^a\//, '') ?? ''
     }
     currentHunk.push(line)
@@ -234,9 +229,7 @@ export function compressOutput(output: string, opts: CompressOptions = {}): stri
 
   const cfg: Required<CompressOptions> = { ...DEFAULTS, ...opts }
 
-  // Normalise CRLF → LF FIRST so a trailing `\r` from a Windows line ending is
-  // not mistaken for a carriage-return overwrite. After this, the only `\r`
-  // left is a true mid-stream overwrite, which stripProgress collapses.
+  // Normalise CRLF → LF FIRST so a trailing `\r` from a Windows line ending is not mistaken for a carriage-return overwrite. After this, the only `\r` left is a true mid-stream overwrite, which stripProgress collapses.
   let text = output.replace(/\r\n/g, '\n')
   text = stripProgress(text)
   if (cfg.stripAnsi) text = stripAnsiCodes(text)

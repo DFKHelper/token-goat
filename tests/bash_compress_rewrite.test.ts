@@ -72,8 +72,7 @@ beforeEach(() => {
   } catch {
     // no config file → defaults (enabled, no disabled filters)
   }
-  // Ensure compression is on by default for these tests, regardless of the
-  // ambient shell (the dev may run the suite with the opt-out exported).
+  // Ensure compression is on by default for these tests, regardless of the ambient shell (the dev may run the suite with the opt-out exported).
   delete process.env['TOKEN_GOAT_BASH_COMPRESS']
   invalidateConfigCache()
 })
@@ -172,13 +171,11 @@ describe('rewrite ↔ recall interaction', () => {
   it('post-hook unwraps the compress wrapper so recall keys on the original command', async () => {
     const original = 'cargo build'
     const wrapped = "token-goat compress -f generic -c 'cargo build'"
-    // Simulate the harness running the *rewritten* command and the post-hook
-    // seeing the wrapper with the compressed output.
+    // Simulate the harness running the *rewritten* command and the post-hook seeing the wrapper with the compressed output.
     const compressedOutput = 'Compiling foo v0.1.0\n' + 'x'.repeat(800) + '\n'
     await postBashHandler(postEvent(wrapped, compressedOutput))
 
-    // A later run of the ORIGINAL command must find the cached output and recall
-    // it — proving the post-hook keyed on `cargo build`, not the wrapper.
+    // A later run of the ORIGINAL command must find the cached output and recall it — proving the post-hook keyed on `cargo build`, not the wrapper.
     const result = preBashHandler(preEvent({ command: original }))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
@@ -214,8 +211,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   }
 
   it('rewrites a build command to the compress wrapper with the correct wire shape', () => {
-    // `go build ./...` is a recognized build command not cached by any other test
-    // in this file, so the bundle's pre-hook produces a rewrite.
+    // `go build ./...` is a recognized build command not cached by any other test in this file, so the bundle's pre-hook produces a rewrite.
     const out = runHook({
       session_id: 'e2e-compress',
       tool_name: 'Bash',
@@ -237,9 +233,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites a registered test-runner command to its specific filter (batch A)', () => {
-    // `npx vitest run` must select the registered `vitest` filter, not the
-    // `generic` fallback — proving the batch-A registration survives esbuild
-    // bundling and detectFromCommand prefers the specific filter.
+    // `npx vitest run` must select the registered `vitest` filter, not the `generic` fallback — proving the batch-A registration survives esbuild bundling and detectFromCommand prefers the specific filter.
     const out = runHook({
       session_id: 'e2e-compress-runner',
       tool_name: 'Bash',
@@ -255,9 +249,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites a wrapped pytest invocation to the bespoke pytest filter (batch A)', () => {
-    // `python -m pytest tests/` must resolve through stripPrefixes to the
-    // registered `pytest` filter — proving the batch-A-increment-2 bespoke
-    // filter survives esbuild and that two-token launcher prefixes are handled.
+    // `python -m pytest tests/` must resolve through stripPrefixes to the registered `pytest` filter — proving the batch-A-increment-2 bespoke filter survives esbuild and that two-token launcher prefixes are handled.
     const out = runHook({
       session_id: 'e2e-compress-pytest',
       tool_name: 'Bash',
@@ -283,8 +275,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites pip install to the pip filter (batch B package-manager filter)', () => {
-    // Verifies the batch-B package-manager filters survive esbuild: the pip
-    // filter is registered in PACKAGE_MANAGER_FILTERS → spread into TOOL_FILTERS.
+    // Verifies the batch-B package-manager filters survive esbuild: the pip filter is registered in PACKAGE_MANAGER_FILTERS → spread into TOOL_FILTERS.
     const out = runHook({
       session_id: 'e2e-compress-pip',
       tool_name: 'Bash',
@@ -300,8 +291,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites eslint to the eslint filter (batch C linter filter)', () => {
-    // Verifies the batch-C linter filters survive esbuild: the eslint filter is
-    // registered in LINTER_FILTERS -> spread into TOOL_FILTERS.
+    // Verifies the batch-C linter filters survive esbuild: the eslint filter is registered in LINTER_FILTERS -> spread into TOOL_FILTERS.
     const out = runHook({
       session_id: 'e2e-compress-eslint',
       tool_name: 'Bash',
@@ -317,8 +307,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites git diff to the git-diff filter (batch D vcs filter)', () => {
-    // Verifies the batch-D vcs git filters survive esbuild: GitDiffFilter is
-    // registered in GIT_FILTERS -> spread into TOOL_FILTERS.
+    // Verifies the batch-D vcs git filters survive esbuild: GitDiffFilter is registered in GIT_FILTERS -> spread into TOOL_FILTERS.
     const out = runHook({
       session_id: 'e2e-compress-git-diff',
       tool_name: 'Bash',
@@ -334,8 +323,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites make to the make filter (batch E build-tool filter)', () => {
-    // Verifies the batch-E build filters survive esbuild bundling: MakeFilter
-    // is registered in BUILD_FILTERS -> spread into TOOL_FILTERS.
+    // Verifies the batch-E build filters survive esbuild bundling: MakeFilter is registered in BUILD_FILTERS -> spread into TOOL_FILTERS.
     const out = runHook({
       session_id: 'e2e-compress-make',
       tool_name: 'Bash',
@@ -351,8 +339,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites cargo build to the cargo filter (batch E build-tool filter)', () => {
-    // Verifies CargoFilter specifically survives esbuild and dispatch correctly
-    // prefers -f cargo over -f generic for cargo subcommands.
+    // Verifies CargoFilter specifically survives esbuild and dispatch correctly prefers -f cargo over -f generic for cargo subcommands.
     const out = runHook({
       session_id: 'e2e-compress-cargo',
       tool_name: 'Bash',
@@ -368,8 +355,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites docker build to the docker filter (batch F container filter)', () => {
-    // Verifies DockerFilter survives esbuild bundling and dispatch produces
-    // the correct -f docker rewrite for the built bundle.
+    // Verifies DockerFilter survives esbuild bundling and dispatch produces the correct -f docker rewrite for the built bundle.
     const out = runHook({
       session_id: 'e2e-compress-docker',
       tool_name: 'Bash',
@@ -385,9 +371,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites gh run view --log to the gh-run-log filter (batch H CI filter)', () => {
-    // Verifies GhRunLogFilter survives esbuild bundling and dispatch produces
-    // the correct -f gh-run-log rewrite — specifically confirming GhRunLogFilter
-    // precedes GhFilter in TOOL_FILTERS so --log commands reach the right handler.
+    // Verifies GhRunLogFilter survives esbuild bundling and dispatch produces the correct -f gh-run-log rewrite — specifically confirming GhRunLogFilter precedes GhFilter in TOOL_FILTERS so --log commands reach the right handler.
     const out = runHook({
       session_id: 'e2e-compress-gh-run-log',
       tool_name: 'Bash',
@@ -403,8 +387,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites terraform plan to the terraform filter (batch G cloud/IaC filter)', () => {
-    // Verifies TerraformFilter survives esbuild bundling and dispatch produces
-    // the correct -f terraform rewrite for the built bundle.
+    // Verifies TerraformFilter survives esbuild bundling and dispatch produces the correct -f terraform rewrite for the built bundle.
     const out = runHook({
       session_id: 'e2e-compress-terraform',
       tool_name: 'Bash',
@@ -420,9 +403,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites aider to the aider filter (batch I AI-CLI filter)', () => {
-    // Verifies AiderFilter survives esbuild bundling and dispatch produces
-    // the correct -f aider rewrite — the authoritative coverage that the
-    // AI-CLI batch is wired through the built bundle.
+    // Verifies AiderFilter survives esbuild bundling and dispatch produces the correct -f aider rewrite — the authoritative coverage that the AI-CLI batch is wired through the built bundle.
     const out = runHook({
       session_id: 'e2e-compress-aider',
       tool_name: 'Bash',
@@ -438,9 +419,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites rg to the rg filter (batch J shell/file filter)', () => {
-    // Verifies RgFilter survives esbuild bundling and dispatch produces
-    // the correct -f rg rewrite — authoritative coverage that the shell/file
-    // batch (SHELL_FILE_FILTERS) is wired through the built bundle.
+    // Verifies RgFilter survives esbuild bundling and dispatch produces the correct -f rg rewrite — authoritative coverage that the shell/file batch (SHELL_FILE_FILTERS) is wired through the built bundle.
     const out = runHook({
       session_id: 'e2e-compress-rg',
       tool_name: 'Bash',
@@ -457,9 +436,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
 
 
   it('rewrites python script.py to the python filter (batch K1 language filter)', () => {
-    // Verifies PythonFilter survives esbuild bundling and dispatch produces
-    // the correct -f python rewrite — authoritative coverage that the
-    // language-runtime batch (LANGUAGE_FILTERS) is wired through the built bundle.
+    // Verifies PythonFilter survives esbuild bundling and dispatch produces the correct -f python rewrite — authoritative coverage that the language-runtime batch (LANGUAGE_FILTERS) is wired through the built bundle.
     const out = runHook({
       session_id: 'e2e-compress-python',
       tool_name: 'Bash',
@@ -475,8 +452,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites psql to the psql filter (batch K2 misc filter)', () => {
-    // Authoritative dispatch coverage: PsqlFilter survives esbuild bundling
-    // and MISC_FILTERS is wired through the built bundle.
+    // Authoritative dispatch coverage: PsqlFilter survives esbuild bundling and MISC_FILTERS is wired through the built bundle.
     const out = runHook({
       session_id: 'e2e-compress-psql',
       tool_name: 'Bash',
@@ -492,9 +468,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
   })
 
   it('rewrites playwright test to the playwright filter (batch K2, before bunFilter)', () => {
-    // Authoritative dispatch coverage: PlaywrightFilter is registered before
-    // BunFilter in TOOL_FILTERS — verified in the built bundle so a registration
-    // order mistake would show up here.
+    // Authoritative dispatch coverage: PlaywrightFilter is registered before BunFilter in TOOL_FILTERS — verified in the built bundle so a registration order mistake would show up here.
     const out = runHook({
       session_id: 'e2e-compress-playwright',
       tool_name: 'Bash',

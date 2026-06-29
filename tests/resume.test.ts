@@ -13,8 +13,7 @@ describe('buildResumePacket', () => {
   })
 
   it('includes session id in header when successful', () => {
-    // This test would require mocking session loading
-    // For now, just verify the function handles the case
+    // This test would require mocking session loading For now, just verify the function handles the case
     const packet = buildResumePacket('abc123')
     expect(typeof packet).toBe('string')
   })

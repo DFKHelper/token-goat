@@ -115,16 +115,14 @@ describe('project_memory', () => {
     });
 
     it('should round-trip values containing backslashes without corruption', () => {
-      // "C:\\Users\\name" contains backslash+n; a sequential unescape would
-      // incorrectly convert the escaped "\\n" to a newline before removing "\\".
+      // "C:\\Users\\name" contains backslash+n; a sequential unescape would incorrectly convert the escaped "\\n" to a newline before removing "\\".
       setEntry('test', 'path', 'C:\\Users\\name');
       const entries = loadEntries('test');
       expect(entries['path']).toBe('C:\\Users\\name');
     });
 
     it('should round-trip a literal backslash followed by n without treating it as a newline', () => {
-      // The TOML file will contain "a\\nb"; a sequential parser converts \n first
-      // and produces "a\<newline>b" instead of the correct "a\nb".
+      // The TOML file will contain "a\\nb"; a sequential parser converts \n first and produces "a\<newline>b" instead of the correct "a\nb".
       setEntry('test', 'escaped', 'a\\nb');
       const entries = loadEntries('test');
       expect(entries['escaped']).toBe('a\\nb');

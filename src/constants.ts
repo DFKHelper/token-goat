@@ -64,8 +64,7 @@ function defaultDataDir(): string {
   return path.join(os.homedir(), '.local', 'share', 'token-goat')
 }
 
-// Computed once at module load: the data directory never changes within a
-// process lifetime, so caching avoids repeated env reads on the hot hook path.
+// Computed once at module load: the data directory never changes within a process lifetime, so caching avoids repeated env reads on the hot hook path.
 const DATA_DIR: string = defaultDataDir()
 
 /** token-goat data directory (cached for the process lifetime). */

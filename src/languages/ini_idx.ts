@@ -13,8 +13,7 @@ const MAX_SECTIONS = 200
 const MAX_HEADING_LEN = 200
 const MAX_ENV_KEYS = 200
 
-// Column-0-anchored [name] header. Allows letters, digits, underscores, hyphens,
-// dots, colons, slashes — covers [tool.black], [mysqld:replica], [group/sub].
+// Column-0-anchored [name] header. Allows letters, digits, underscores, hyphens, dots, colons, slashes — covers [tool.black], [mysqld:replica], [group/sub].
 const HEADER_RE = /^\[([A-Za-z0-9_\-.:/]+)\]\s*(?:[;#].*)?$/
 
 // Column-0 KEY= or KEY: assignment (dotenv / envrc).

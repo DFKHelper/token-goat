@@ -38,10 +38,7 @@ describe('configGet section scoping bug', () => {
 
     const f = tmpFile('pyproject.toml', content)
 
-    // When looking for `project.version`, we want the value from the [project]
-    // section, not the value from [tool.ruff]. However, the naive line-based
-    // search finds the FIRST line with "version =", which is in [tool.ruff],
-    // returning "0.1" instead of "2.0.0".
+    // When looking for `project.version`, we want the value from the [project] section, not the value from [tool.ruff]. However, the naive line-based search finds the FIRST line with "version =", which is in [tool.ruff], returning "0.1" instead of "2.0.0".
     let stdout = ''
     let stderr = ''
     // Capture output
@@ -55,8 +52,7 @@ describe('configGet section scoping bug', () => {
     process.stdout.write = oldWrite
     process.stderr.write = oldErrWrite
 
-    // This test will FAIL on the current (buggy) implementation because it
-    // returns "0.1" from [tool.ruff], but we expect "2.0.0" from [project]
+    // This test will FAIL on the current (buggy) implementation because it returns "0.1" from [tool.ruff], but we expect "2.0.0" from [project]
     console.log('stdout:', stdout);
     console.log('stderr:', stderr);
     expect(stdout.trim()).toBe('2.0.0')

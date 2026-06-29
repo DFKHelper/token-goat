@@ -91,11 +91,7 @@ describe('overflow_guard', () => {
     })
 
     it('trims the first oversized ANSI line to visible chars, not raw bytes', () => {
-      // Build a line where ANSI escape bytes appear before position charBudget in the raw string.
-      // charBudget = (budgetTokens - 64) * 3. With budgetTokens=70 bodyBudget=6 charBudget=18.
-      // Raw ANSI prefix '\x1b[31m' (5 bytes) + 'x'.repeat(200). Visible: 200 x's.
-      // Pre-fix: ln.slice(0,18) = '\x1b[31mxxxxxxxxxxxxx' (5 ANSI + 13 visible) — dangling open code, wrong length.
-      // Post-fix: stripped.slice(0,18) = 'xxxxxxxxxxxxxxxxxx' (18 visible x's) — correct, no ANSI.
+      // Build a line where ANSI escape bytes appear before position charBudget in the raw string. charBudget = (budgetTokens - 64) * 3. With budgetTokens=70 bodyBudget=6 charBudget=18. Raw ANSI prefix '\x1b[31m' (5 bytes) + 'x'.repeat(200). Visible: 200 x's. Pre-fix: ln.slice(0,18) = '\x1b[31mxxxxxxxxxxxxx' (5 ANSI + 13 visible) — dangling open code, wrong length. Post-fix: stripped.slice(0,18) = 'xxxxxxxxxxxxxxxxxx' (18 visible x's) — correct, no ANSI.
       const budgetTokens = 70
       const charBudget = (budgetTokens - 64) * 3 // 18
       const ansiLine = '\x1b[31m' + 'x'.repeat(200)
@@ -112,8 +108,7 @@ describe('overflow_guard', () => {
     })
 
     it('ANSI escape bytes do not silently consume visible character budget', () => {
-      // A line starting with a long ANSI prefix: if raw-sliced, fewer visible chars fit in the budget.
-      // Post-fix the budget is measured on stripped chars, so visible output == charBudget x's.
+      // A line starting with a long ANSI prefix: if raw-sliced, fewer visible chars fit in the budget. Post-fix the budget is measured on stripped chars, so visible output == charBudget x's.
       const budgetTokens = 70
       const charBudget = (budgetTokens - 64) * 3 // 18
       // Put an 11-byte ANSI sequence at the start so raw slice would lose 10 visible chars vs the budget.

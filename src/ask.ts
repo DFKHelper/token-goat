@@ -1,7 +1,4 @@
-// Experimental token-goat ask command: out-of-band codebase Q&A.
-// The idea: retrieve and synthesize in token-goat's own process and return only
-// a short, cited answer. The primary model pays for the answer plus citations,
-// not for slice bodies.
+// Experimental token-goat ask command: out-of-band codebase Q&A. The idea: retrieve and synthesize in token-goat's own process and return only a short, cited answer. The primary model pays for the answer plus citations, not for slice bodies.
 
 import * as os from 'node:os'
 import * as crypto from 'node:crypto'
@@ -66,8 +63,7 @@ export function retrieve(
   _question: string,
   _opts: { scope?: string | null; budget: number; top: number },
 ): Slice[] {
-  // NOTE: semantic search would be imported from embeddings.ts
-  // For now, return empty list to degrade gracefully
+  // NOTE: semantic search would be imported from embeddings.ts For now, return empty list to degrade gracefully
   return []
 }
 
@@ -109,8 +105,7 @@ export interface CachedAnswer {
 }
 
 export function _cacheGet(_projectHash: string, _key: string): CachedAnswer | null {
-  // NOTE: would use db.openProjectReadonly to fetch from ask_cache table
-  // For now, return null (miss)
+  // NOTE: would use db.openProjectReadonly to fetch from ask_cache table For now, return null (miss)
   return null
 }
 
@@ -126,8 +121,7 @@ export function _cachePut(
     tokens_out: number
   },
 ): void {
-  // NOTE: would use db.openProject to insert into ask_cache table
-  // For now, no-op
+  // NOTE: would use db.openProject to insert into ask_cache table For now, no-op
 }
 
 export class Backend {

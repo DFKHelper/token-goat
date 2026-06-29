@@ -50,11 +50,7 @@ describe('atomic writes', () => {
   })
 
   it('leaves no orphaned .tmp files after a successful write', () => {
-    // Regression guard: the cleanup condition in atomicWriteCore was
-    // `wrote && !renamed`, which would skip cleanup when writeSync threw
-    // before `wrote = true` (the temp file is created before the write attempt
-    // so it always needs cleanup on any non-rename path).  On a successful
-    // write, this verifies no extra .tmp files accumulate alongside the dest.
+    // Regression guard: the cleanup condition in atomicWriteCore was `wrote && !renamed`, which would skip cleanup when writeSync threw before `wrote = true` (the temp file is created before the write attempt so it always needs cleanup on any non-rename path). On a successful write, this verifies no extra .tmp files accumulate alongside the dest.
     const target = path.join(dir, 'multi.txt')
     atomicWriteText(target, 'first')
     atomicWriteText(target, 'second')

@@ -12,8 +12,7 @@ let origCwd: string
 beforeEach(() => {
   TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-install-'))
   origCwd = process.cwd()
-  // Project scope resolves against process.cwd(); chdir into the temp dir so
-  // installs write to {TMP}/.claude/settings.json, never the real project.
+  // Project scope resolves against process.cwd(); chdir into the temp dir so installs write to {TMP}/.claude/settings.json, never the real project.
   process.chdir(TMP)
 })
 

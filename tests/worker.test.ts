@@ -75,15 +75,10 @@ describe('getDirtyPathsFor', () => {
   })
 
   it('deduplicates paths with different case on case-insensitive systems', () => {
-    // Regression: on Windows/macOS, queue entries that differ only in case should be
-    // deduplicated since NTFS and HFS+ are case-insensitive. Before the fix,
-    // getDirtyPathsFor would return both "c:/projects/File.ts" and
-    // "C:/PROJECTS/file.ts" as separate entries.
-    // Test with paths that will normalize but differ in case after normalization.
+    // Regression: on Windows/macOS, queue entries that differ only in case should be deduplicated since NTFS and HFS+ are case-insensitive. Before the fix, getDirtyPathsFor would return both "c:/projects/File.ts" and "C:/PROJECTS/file.ts" as separate entries. Test with paths that will normalize but differ in case after normalization.
     const isCaseInsensitive = process.platform === 'win32' || process.platform === 'darwin'
     if (!isCaseInsensitive) {
-      // On case-sensitive filesystems, paths with different case are different.
-      // Skip this test on non-Windows, non-macOS systems.
+      // On case-sensitive filesystems, paths with different case are different. Skip this test on non-Windows, non-macOS systems.
       expect(true).toBe(true)
       return
     }
@@ -123,14 +118,7 @@ describe('drainOnce', () => {
     expect(drainOnce(DIR)).toBe(0)
   })
 
-  // Regression: the shipping path is `runWorkerLoop -> drainOnce(dir)` with NO
-  // injected index callback. Before the fix, the default callback was a stub
-  // that wrote "would index" to stderr and never touched the DB, so every
-  // surgical-read command silently returned an empty index. This test drives
-  // the real default path (no callback) end-to-end and asserts the symbols
-  // table is actually populated — it fails against the stub (0 rows) and passes
-  // once the real indexer is wired in. The existing drainOnce/processDirtyBatch
-  // tests inject their own callback, so they never exercised this path.
+  // Regression: the shipping path is `runWorkerLoop -> drainOnce(dir)` with NO injected index callback. Before the fix, the default callback was a stub that wrote "would index" to stderr and never touched the DB, so every surgical-read command silently returned an empty index. This test drives the real default path (no callback) end-to-end and asserts the symbols table is actually populated — it fails against the stub (0 rows) and passes once the real indexer is wired in. The existing drainOnce/processDirtyBatch tests inject their own callback, so they never exercised this path.
   it('default path indexes drained files into global.db (no injected callback)', () => {
     const src = path.join(DIR, 'sample.ts')
     fs.writeFileSync(src, 'export function knownWorkerSymbol(): number {\n  return 42\n}\n')
@@ -204,9 +192,7 @@ describe('drainOnce', () => {
 
   describe('drainOnce atomic rename-to-claim (lost-update regression)', () => {
     it('does not drop paths appended during a drain', () => {
-      // Regression: drainOnce must not delete the entire queue without first claiming it atomically.
-      // A path appended by a concurrent appendDirtyPath during processDirtyBatch would be deleted
-      // without being indexed. The atomic rename-to-claim pattern fixes this.
+      // Regression: drainOnce must not delete the entire queue without first claiming it atomically. A path appended by a concurrent appendDirtyPath during processDirtyBatch would be deleted without being indexed. The atomic rename-to-claim pattern fixes this.
       const A = path.join(DIR, 'a.ts')
       const B = path.join(DIR, 'b.ts')
       fs.writeFileSync(A, 'export const a = 1\n')
@@ -215,8 +201,7 @@ describe('drainOnce', () => {
       // Seed the queue with just A.
       writeQueue(DIR, [A])
 
-      // The callback simulates concurrent appendDirtyPath calls that land during processDirtyBatch.
-      // When we process A, we append B to the queue to simulate a race.
+      // The callback simulates concurrent appendDirtyPath calls that land during processDirtyBatch. When we process A, we append B to the queue to simulate a race.
       const indexedPaths: string[] = []
       drainOnce(DIR, (p) => {
         indexedPaths.push(p)
@@ -226,16 +211,13 @@ describe('drainOnce', () => {
         }
       })
 
-      // After the drain, B should still be in the queue (was not deleted).
-      // Pre-fix: B would be deleted without being indexed.
-      // Post-fix: B is preserved in the fresh queue created after the rename.
+      // After the drain, B should still be in the queue (was not deleted). Pre-fix: B would be deleted without being indexed. Post-fix: B is preserved in the fresh queue created after the rename.
       const remaining = getDirtyPathsFor(DIR)
       expect(remaining).toContain(B)
     })
 
     it('recovers from abandoned .draining file', () => {
-      // Regression: if a previous drain process crashed, its .draining file would be abandoned.
-      // drainOnce must recover by reading and indexing it, so those paths are not lost.
+      // Regression: if a previous drain process crashed, its .draining file would be abandoned. drainOnce must recover by reading and indexing it, so those paths are not lost.
       const C = path.join(DIR, 'c.ts')
       fs.writeFileSync(C, 'export const c = 3\n')
 

@@ -18,8 +18,7 @@ import {
 const MAX_SYMBOLS = 500
 const MAX_HEADING_LEN = 128
 
-// SQL identifier: bare, double-quoted, backtick-quoted, or bracket-quoted.
-// Schema-qualified names (schema.name) captured as a single token.
+// SQL identifier: bare, double-quoted, backtick-quoted, or bracket-quoted. Schema-qualified names (schema.name) captured as a single token.
 const BARE = '[A-Za-z_][A-Za-z0-9_$]*'
 const QUOTED = '"[^"]{1,128}"|`[^`]{1,128}`|\\[[^\\]]{1,128}\\]'
 const NAME_PAT = `(?:${QUOTED}|${BARE})(?:\\.(?:${QUOTED}|${BARE}))?`

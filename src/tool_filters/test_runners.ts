@@ -1,9 +1,6 @@
-// Batch A — test-runner filters. Each is a thin config over the shared Node
-// test-runner family (see families.ts); the loop lives there once. Faithful port
-// of the Python `JestFilter` / `VitestFilter`.
+// Batch A — test-runner filters. Each is a thin config over the shared Node test-runner family (see families.ts); the loop lives there once. Faithful port of the Python `JestFilter` / `VitestFilter`.
 //
-// Jest's binary set also covers Mocha / Ava / Tap — their reporters share Jest's
-// PASS/FAIL header + summary shape, so one config serves all four.
+// Jest's binary set also covers Mocha / Ava / Tap — their reporters share Jest's PASS/FAIL header + summary shape, so one config serves all four.
 
 import type { ToolFilter } from './base.js'
 import { makeNodeTestRunnerFilter } from './families.js'

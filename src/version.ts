@@ -9,8 +9,7 @@
 
 import { createRequire } from 'node:module'
 
-// Injected by esbuild's `define`. Declared so tsc accepts the reference; at
-// runtime under tsx/vitest it is undefined and we fall back below.
+// Injected by esbuild's `define`. Declared so tsc accepts the reference; at runtime under tsx/vitest it is undefined and we fall back below.
 declare const __TG_VERSION__: string | undefined
 
 function resolveVersion(): string {
