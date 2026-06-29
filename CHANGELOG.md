@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **Bash-output compression: 15 package-manager filters (batch B).** The complete Python `NpmInstallFilter`, `PnpmFilter`, `YarnFilter`, `PipFilter`, `UvFilter`, `CondaFilter`, `GemFilter`, `BundlerFilter`, `ComposerFilter`, `NuGetFilter`, `PubFilter`, `ConanFilter`, `VcpkgFilter`, `NodePackageFilter`, and `DepListFilter` are now ported to TypeScript and registered in `TOOL_FILTERS` ([src/tool_filters/package_managers.ts](src/tool_filters/package_managers.ts)). Two filters use the new `makePackageManagerFilter` factory in [`src/tool_filters/families.ts`](src/tool_filters/families.ts) (BundlerFilter and PubFilter — a single keep/drop loop with per-rule note counts); the remaining 13 subclass `ToolFilter` directly with richer structural logic (multi-phase install pipelines, freeze/list truncation, dedup, error passthrough). Dispatch order places the install-specific filters before the general `NodePackageFilter` so `pnpm run dev` and `yarn add` route to their dedicated handlers. `ConanFilter` and `VcpkgFilter` use `errorPassthrough = true` and override `compressBody`; `DepListFilter` uses a custom `matches()` that fires only on listing subcommands (list/freeze/tree/show/ls) and a PKG_MGR_STEMS set (npm/pnpm/yarn/cargo) to avoid conflicting with the dedicated install filters. Covered by 132 golden tests ([tests/tool_filters_package_managers.test.ts](tests/tool_filters_package_managers.test.ts)) and a built-bundle e2e asserting `pip install requests` rewrites to `token-goat compress -f pip` ([tests/bash_compress_rewrite.test.ts](tests/bash_compress_rewrite.test.ts)).
+
 ## [2.2.4] - 2026-06-29
 
 ### Added
