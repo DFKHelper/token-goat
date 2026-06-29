@@ -282,10 +282,18 @@ function extractPythonSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       }
     }
 
-    const nowInsideClass = node.type === 'class_definition'
     for (const child of node.namedChildren) {
-      // The block of a class body marks its children as class-scoped.
-      visit(child, nowInsideClass || (insideClass && node.type === 'block'))
+      // A def's method-ness is set by its nearest enclosing *definition*: a class
+      // body makes children class-scoped; entering a function body resets it; any
+      // other node (block, if/try/for/while/with) inherits the current scope, so a
+      // method defined inside a control-flow block in a class body is still a method.
+      const childInsideClass =
+        node.type === 'class_definition'
+          ? true
+          : node.type === 'function_definition'
+            ? false
+            : insideClass
+      visit(child, childInsideClass)
     }
   }
 

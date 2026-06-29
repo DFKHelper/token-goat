@@ -52,6 +52,21 @@ describe('parseFile', () => {
     expect(method?.kind).toBe('method')
   })
 
+  it('labels a method defined inside a control-flow block in a class as a method', async () => {
+    const file = write(
+      'c.py',
+      'class Widget:\n' +
+        '    if True:\n' +
+        '        def render(self):\n' +
+        '            return 1\n',
+    )
+    const result = await parseFile(file)
+    expect(result.language).toBe('python')
+    const method = result.symbols.find((s) => s.name === 'render')
+    // `render` is inside an `if` block inside the class body — still a method.
+    expect(method?.kind).toBe('method')
+  })
+
   it('returns empty symbols for an unknown extension', async () => {
     const file = write('notes.unknownext', 'just some text\nnot code at all\n')
     const result = await parseFile(file)
