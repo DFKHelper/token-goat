@@ -79,6 +79,23 @@ describe('parseFile', () => {
     expect(result.symbols).toEqual([])
     expect(typeof result.duration).toBe('number')
   })
+
+  it('indexes C and C++ function symbols (names live in a declarator chain)', async () => {
+    const cFile = write('sym.c', 'int helper(){ return 1; }\nint* driver(){ return helper(); }\n')
+    const cResult = await parseFile(cFile)
+    expect(cResult.language).toBe('c')
+    expect(cResult.symbols.map((s) => s.name)).toContain('helper')
+    expect(cResult.symbols.map((s) => s.name)).toContain('driver')
+
+    const cppFile = write('sym.cpp', 'class Widget {\npublic:\n  int area() { return 4; }\n};\nvoid run(){ return; }\n')
+    const cppResult = await parseFile(cppFile)
+    expect(cppResult.language).toBe('cpp')
+    // The free function and the method are both function_definition nodes.
+    expect(cppResult.symbols.map((s) => s.name)).toContain('run')
+    expect(cppResult.symbols.map((s) => s.name)).toContain('area')
+    // The class itself still resolves via its name field.
+    expect(cppResult.symbols.map((s) => s.name)).toContain('Widget')
+  })
 })
 
 describe('indexFile', () => {
