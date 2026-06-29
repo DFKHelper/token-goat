@@ -244,6 +244,23 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
         }
       }
     }
+    // Class fields bound to a function/arrow are method-equivalent members
+    // (auto-bound handlers); index them as 'method'. Data fields are skipped,
+    // matching the no-member-indexing convention. TS exposes the field name on
+    // `name`, JS on `property`.
+    if (node.type === 'public_field_definition' || node.type === 'field_definition') {
+      const fieldName = node.childForFieldName('name') ?? node.childForFieldName('property')
+      const value = node.childForFieldName('value')
+      if (
+        fieldName !== null &&
+        value !== null &&
+        (value.type === 'arrow_function' ||
+          value.type === 'function_expression' ||
+          value.type === 'function')
+      ) {
+        out.push(makeSymbol(filePath, fieldName.text, 'method', node))
+      }
+    }
 
     for (const child of node.namedChildren) {
       visit(child)

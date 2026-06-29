@@ -41,6 +41,34 @@ describe('parseFile', () => {
     expect(names).toContain('bar')
   })
 
+  it('indexes TS/JS class fields initialized with arrow functions, not data fields', async () => {
+    const tsFile = write(
+      'widget.ts',
+      [
+        'class Widget {',
+        '  count = 0;',
+        '  handleClick = () => { this.count++; };',
+        '  render() { return null; }',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const tsResult = await parseFile(tsFile)
+    const tsNames = tsResult.symbols.map((s) => s.name)
+    expect(tsNames).toContain('handleClick') // arrow class field — dropped pre-fix
+    expect(tsNames).toContain('render') // regular method — already worked
+    expect(tsNames).not.toContain('count') // plain data field — must stay unindexed
+
+    const jsFile = write(
+      'widget.js',
+      ['class W {', '  onClick = () => {};', '  data = 5;', '}', ''].join('\n'),
+    )
+    const jsResult = await parseFile(jsFile)
+    const jsNames = jsResult.symbols.map((s) => s.name)
+    expect(jsNames).toContain('onClick') // JS field_definition arrow — dropped pre-fix
+    expect(jsNames).not.toContain('data') // plain data field — must stay unindexed
+  })
+
   it('extracts class definitions from a .py file', async () => {
     const file = write('b.py', 'class Widget:\n    def render(self):\n        pass\n')
     const result = await parseFile(file)
