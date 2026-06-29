@@ -129,8 +129,21 @@ function applyFilters(line: string): string | null {
 /** Truncate one line to `maxLineLength`, appending a count of elided chars. */
 function truncateLine(line: string, maxLineLength: number): string {
   if (line.length <= maxLineLength) return line
-  const elided = line.length - maxLineLength
-  return `${line.slice(0, maxLineLength)}… [${elided} chars truncated]`
+  // The elided count itself sits in the message, and its digit width affects how
+  // much content fits. Reserve digits for the worst case (eliding the whole line)
+  // so the rendered message never overflows maxLineLength, then report the exact
+  // number of characters actually dropped (line.length - contentLength) — larger
+  // than the naive line.length - maxLineLength, since the message also costs budget.
+  const reservedMessageLen = `… [${'9'.repeat(String(line.length).length)} chars truncated]`.length
+
+  // If even the message alone can't fit, hard-slice (rare edge case).
+  if (reservedMessageLen >= maxLineLength) {
+    return line.slice(0, maxLineLength)
+  }
+
+  const contentLength = maxLineLength - reservedMessageLen
+  const elided = line.length - contentLength
+  return `${line.slice(0, contentLength)}… [${elided} chars truncated]`
 }
 
 /**
