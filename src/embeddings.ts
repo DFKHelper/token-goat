@@ -638,6 +638,8 @@ export async function indexFile(
   content: string,
 ): Promise<number> {
   const chunks = chunkFile(filePath, content)
+  // Replace, do not append: drop the file's prior chunks (and their vectors) before inserting, so a reindex - or an edit that empties the file - leaves no stale rows behind.
+  deleteFileEmbeddings(db, filePath)
   if (chunks.length > 0) {
     await upsertChunks(db, chunks)
   }
