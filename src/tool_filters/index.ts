@@ -81,6 +81,28 @@ export {
   PsFilter, psFilter,
 } from './shell_file.js'
 export {
+  LANGUAGE_FILTERS,
+  NodeFilter, nodeFilter,
+  PythonFilter, pythonFilter,
+  RubyFilter, rubyFilter,
+  BunFilter, bunFilter,
+  DenoFilter, denoFilter,
+  FlutterFilter, flutterFilter,
+  DartFilter, dartFilter,
+  SwiftFilter, swiftFilter,
+  XcodeFilter, xcodeFilter,
+  MixFilter, mixFilter,
+  ZigFilter, zigFilter,
+  RCmdFilter, rCmdFilter,
+  erlangFilter,
+  crystalFilter,
+  haskellFilter,
+  elmFilter,
+  juliaFilter,
+  powerShellFilter,
+} from './languages.js'
+export type { LangDedupeRule, LanguageFilterConfig } from './families.js'
+export {
   TOOL_FILTERS,
   selectFilter,
   detectFromCommand,

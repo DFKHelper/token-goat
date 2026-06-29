@@ -17,6 +17,7 @@ import { BUILD_FILTERS } from './build.js'
 import { CI_FILTERS } from './ci.js'
 import { CLOUD_FILTERS } from './cloud.js'
 import { SHELL_FILE_FILTERS } from './shell_file.js'
+import { LANGUAGE_FILTERS, bunFilter } from './languages.js'
 import { CONTAINER_FILTERS } from './containers.js'
 import { GIT_FILTERS } from './git.js'
 import { LINTER_FILTERS } from './linters.js'
@@ -39,6 +40,10 @@ export const TOOL_FILTERS: ToolFilter[] = [
   ...TEST_RUNNER_FILTERS,
   pytestFilter,
   goTestFilter,
+  // BunFilter must precede the package-manager batch: NodePackageFilter also
+  // claims 'bun', and first-match wins. BunFilter's routing (test/build/run)
+  // is richer than the generic npm-family handler.
+  bunFilter,
   // Batch B — package managers. NpmInstallFilter / PnpmFilter / YarnFilter must
   // precede the general NodePackageFilter that handles `npm audit` and other
   // subcommands. DepListFilter is last: it matches a subset of binaries already
@@ -77,7 +82,8 @@ export const TOOL_FILTERS: ToolFilter[] = [
   // GenericCIFilter is last (keyword-only, not binary-gated).
   ...CI_FILTERS,
   ...SHELL_FILE_FILTERS,
-  // Batches append here: lang.
+  // Batch K1 — language runtimes and compilers.
+  ...LANGUAGE_FILTERS,
 ]
 
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */

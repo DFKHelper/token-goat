@@ -558,3 +558,157 @@ export function makeAiCliFilter(cfg: AiCliFilterConfig): ToolFilter {
     }
   })()
 }
+
+// ---------------------------------------------------------------------------
+// Language-runtime filter family (Batch K1)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single deduplication rule for {@link makeLanguageFilter}.
+ *
+ * Lines matching `re` are deduplicated: up to `maxPerKey` (default 3)
+ * occurrences of each distinct `line.slice(0, keyLen)` key are kept verbatim;
+ * additional occurrences are silently elided and counted. The total elided
+ * count is emitted as a trailing `[token-goat: …]` inner note via `note`.
+ */
+export interface LangDedupeRule {
+  /** Matches lines subject to deduplication (e.g. WARNING: lines). */
+  re: RegExp
+  /** Max occurrences of the same key kept verbatim. Default 3. */
+  maxPerKey?: number
+  /** Character count used as the dedup key. Default 40. */
+  keyLen?: number
+  /** Trailing note inner text for the total elided count. */
+  note: (count: number) => string
+}
+
+/**
+ * Configuration for {@link makeLanguageFilter}.
+ *
+ * Filters configured here share the same loop skeleton: merge stdout+stderr,
+ * walk lines applying always-keep → count-rules → dedup-rules → drop-rules,
+ * then assemble prepend-notes + kept body + append/trailing notes.
+ *
+ * Reuses {@link AiCliCountedRule} for count-and-drop rules so the same
+ * `position: 'prepend' | 'append' | 'note'` convention applies.
+ */
+export interface LanguageFilterConfig {
+  name: string
+  binaries: string[]
+  subcommands?: string[]
+  /** When true, pass raw combined error on non-zero exit (same as ToolFilter.errorPassthrough). */
+  errorPassthrough?: boolean
+  /** Override the default binary-stem + subcommand match check. */
+  customMatches?: (argv: string[]) => boolean
+  /** Lines matching this re are always kept, checked before all other rules. */
+  alwaysKeepRe?: RegExp
+  /** Count-and-drop rules; reuse {@link AiCliCountedRule} with prepend/append/note positions. */
+  countedRules?: AiCliCountedRule[]
+  /** Dedup rules applied after count rules. */
+  dedupeRules?: LangDedupeRule[]
+  /** Lines matching any drop rule are silently dropped; count goes to droppedNoiseNote. */
+  dropRules?: RegExp[]
+  /** Trailing note for the total silently-dropped count; omit to suppress. */
+  droppedNoiseNote?: (n: number) => string
+}
+
+/**
+ * Factory for compiler/interpreter language filters. All members in the
+ * "shared loop" group share the same skeleton: merge output, walk lines with
+ * always-keep / count-drop / dedup / drop rules, then assemble
+ * prepend-notes + body + trailing-notes. Members with genuinely unique
+ * multi-mode routing (BunFilter, DenoFilter, etc.) are implemented as
+ * bespoke classes; this factory covers ErlangFilter, CrystalFilter,
+ * HaskellFilter, ElmFilter, JuliaFilter, and PowerShellFilter.
+ */
+export function makeLanguageFilter(cfg: LanguageFilterConfig): ToolFilter {
+  return new (class extends ToolFilter {
+    readonly name = cfg.name
+    override readonly binaries = new Set(cfg.binaries)
+    override readonly subcommands = new Set(cfg.subcommands ?? [])
+    override readonly errorPassthrough = cfg.errorPassthrough ?? false
+
+    override matches(argv: string[]): boolean {
+      if (cfg.customMatches) return cfg.customMatches(argv)
+      return super.matches(argv)
+    }
+
+    override compressBody(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
+      const merged = this.combineOutput(stdout, stderr)
+      const lines = merged.split('\n')
+      const kept: string[] = []
+      let droppedNoise = 0
+
+      const rules = cfg.countedRules ?? []
+      const counts = rules.map(() => ({ count: 0, lastLine: undefined as string | undefined }))
+      const dRules = cfg.dedupeRules ?? []
+      const dState = dRules.map(() => ({ elided: 0, seen: new Map<string, number>() }))
+
+      for (const line of lines) {
+        // 1. Always-keep check (error signals + filter-specific keep patterns).
+        if (cfg.alwaysKeepRe?.test(line)) { kept.push(line); continue }
+
+        // 2. Count-and-drop rules (prepend / append / note positions).
+        let counted = false
+        for (let i = 0; i < rules.length; i++) {
+          const rule = rules[i]!
+          const hit = rule.res ? rule.res.some((r) => r.test(line)) : (rule.re?.test(line) ?? false)
+          if (hit) {
+            counts[i]!.count++
+            if (rule.keepLast) counts[i]!.lastLine = line.trim()
+            counted = true
+            break
+          }
+        }
+        if (counted) continue
+
+        // 3. Dedup rules.
+        let deduped = false
+        for (let i = 0; i < dRules.length; i++) {
+          if (dRules[i]!.re.test(line)) {
+            const key = line.slice(0, dRules[i]!.keyLen ?? 40)
+            const ds = dState[i]!
+            const seen = (ds.seen.get(key) ?? 0) + 1
+            ds.seen.set(key, seen)
+            if (seen <= (dRules[i]!.maxPerKey ?? 3)) kept.push(line)
+            else ds.elided++
+            deduped = true
+            break
+          }
+        }
+        if (deduped) continue
+
+        // 4. Drop rules (silent; accumulate droppedNoise for optional note).
+        if (cfg.dropRules?.some((re) => re.test(line))) { droppedNoise++; continue }
+
+        // 5. Default: keep.
+        kept.push(line)
+      }
+
+      // Assemble: prepend notes → kept body → append notes.
+      const out: string[] = []
+      for (let i = 0; i < rules.length; i++) {
+        if (rules[i]!.position === 'prepend' && counts[i]!.count > 0)
+          out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
+      }
+      out.push(...kept)
+      for (let i = 0; i < rules.length; i++) {
+        if (rules[i]!.position === 'append' && counts[i]!.count > 0)
+          out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
+      }
+
+      // Trailing notes.
+      const notes: string[] = []
+      for (let i = 0; i < rules.length; i++) {
+        if (rules[i]!.position === 'note' && counts[i]!.count > 0)
+          notes.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
+      }
+      for (let i = 0; i < dRules.length; i++) {
+        if (dState[i]!.elided > 0) notes.push(dRules[i]!.note(dState[i]!.elided))
+      }
+      if (droppedNoise > 0 && cfg.droppedNoiseNote) notes.push(cfg.droppedNoiseNote(droppedNoise))
+      this.emitNotes(out, notes)
+      return this.finalize(out)
+    }
+  })()
+}
