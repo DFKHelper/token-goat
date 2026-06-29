@@ -338,6 +338,23 @@ describe('parseFile reference extraction', () => {
     expect(ref?.context).toBe('driver')
   })
 
+  it('resolves C++ namespace-qualified call sites (qualified_identifier) in refs', async () => {
+    const cppFile = write(
+      'qcall.cpp',
+      [
+        'void f() {',
+        '  std::sort(0, 0);',
+        '}',
+      ].join('\n'),
+    )
+    const result = await parseFile(cppFile)
+    expect(result.language).toBe('cpp')
+    const refNames = result.refs.map((r) => r.name)
+    // Pre-fix: qualified_identifier (std::sort) would return null, so 'sort' would not appear
+    // Post-fix: qualified_identifier returns lastSegment('std::sort') = 'sort'
+    expect(refNames).toContain('sort')
+  })
+
   it('yields no refs for a language without a tree-sitter grammar', async () => {
     const file = write('notes.md', '# Title\n\nsome prose calling foo()\n')
     const result = await parseFile(file)

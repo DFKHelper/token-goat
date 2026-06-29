@@ -722,6 +722,7 @@ function calleeName(call: TsNode, language: Language): string | null {
       if (fn === null) return null
       if (fn.type === 'identifier') return fn.text
       if (fn.type === 'field_expression') return fn.childForFieldName('field')?.text ?? null
+      if (fn.type === 'qualified_identifier') return lastSegment(fn.text)
       return null
     }
     case 'ruby': {
