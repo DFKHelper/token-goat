@@ -430,6 +430,9 @@ const JAVA_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['class_declaration', 'class'],
   ['interface_declaration', 'interface'],
   ['enum_declaration', 'enum'],
+  ['constructor_declaration', 'method'],
+  ['record_declaration', 'class'],
+  ['annotation_type_declaration', 'interface'],
 ])
 
 function extractJavaSymbols(root: TsNode, filePath: string): SymbolEntry[] {

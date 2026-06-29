@@ -195,6 +195,29 @@ describe('parseFile', () => {
     expect(names).toContain('run') // method inside module
     expect(names).toContain('free_method') // top-level method
   })
+
+  it('indexes Java constructors, records, and annotation types', async () => {
+    const javaFile = write(
+      'Types.java',
+      [
+        'class Foo {',
+        '  Foo() {}',
+        '  Foo(int a) {}',
+        '  void doThing() {}',
+        '}',
+        'record Point(int x, int y) {}',
+        '@interface MyAnno { }',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(javaFile)
+    expect(result.language).toBe('java')
+    const symNames = result.symbols.map((s) => s.name)
+    expect(symNames).toContain('Point') // record_declaration — dropped pre-fix
+    expect(symNames).toContain('MyAnno') // annotation_type_declaration — dropped pre-fix
+    // constructor_declaration: 'Foo' = the class plus 2 constructors post-fix (1 pre-fix)
+    expect(symNames.filter((n) => n === 'Foo').length).toBeGreaterThanOrEqual(2)
+  })
 })
 
 describe('indexFile', () => {
