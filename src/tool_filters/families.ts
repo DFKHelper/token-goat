@@ -1,16 +1,6 @@
-// Filter family factories: shared compression skeletons that multiple per-tool
-// filters configure rather than reimplement. The first family is the Node test
-// runner (Jest / Mocha / Ava / Tap, Vitest), whose output all shares the same
-// shape — per-file PASS/FAIL headers, indented per-test pass ticks, collapsible
-// console/stdout blocks, and a trailing summary. The Python port had these as
-// separate hand-written `compress` loops; here one loop, parameterised by a few
-// regexes and nouns, drives every member so the behaviour stays identical and
-// the next runner is a config object, not another loop.
+// Filter family factories: shared compression skeletons that multiple per-tool filters configure rather than reimplement. The first family is the Node test runner (Jest / Mocha / Ava / Tap, Vitest), whose output all shares the same shape — per-file PASS/FAIL headers, indented per-test pass ticks, collapsible console/stdout blocks, and a trailing summary. The Python port had these as separate hand-written `compress` loops; here one loop, parameterised by a few regexes and nouns, drives every member so the behaviour stays identical and the next runner is a config object, not another loop.
 //
-// The second family is the simple package-manager "line-drop" filter: combine
-// stdout+stderr, walk lines dropping any that match a set of noise regexes
-// (each with its own count note), optionally first checking a keep-regex that
-// short-circuits dropping. Covers Bundler and Pub, which share this structure.
+// The second family is the simple package-manager "line-drop" filter: combine stdout+stderr, walk lines dropping any that match a set of noise regexes (each with its own count note), optionally first checking a keep-regex that short-circuits dropping. Covers Bundler and Pub, which share this structure.
 
 import { ToolFilter } from './base.js'
 import { ERROR_SIGNAL_RE, maybeNote, squeezeBlankLines } from './helpers.js'
@@ -310,8 +300,7 @@ export function makeNodeTestRunnerFilter(cfg: NodeTestRunnerConfig): ToolFilter 
       }
 
       for (const line of lines) {
-        // Jest --verbose duplicate "Failures:" section: drop the header and its
-        // repeated failure bodies (already shown inline); a summary line ends it.
+        // Jest --verbose duplicate "Failures:" section: drop the header and its repeated failure bodies (already shown inline); a summary line ends it.
         if (cfg.failuresSection) {
           if (line.trim() === 'Failures:') {
             flush()

@@ -1,15 +1,8 @@
 // Language-runtime compression filter family (Batch K1).
 //
-// Faithful TypeScript port of the Python bash_compress.py language/compiler
-// filter sub-family.  Dispatch note: NodeFilter uses an eval-only custom
-// matches() so `node script.js` falls through to GenericFilter; all other
-// entries are distinct enough (unique binaries or subcommand gates) that the
-// ordering within LANGUAGE_FILTERS is safe as long as this slice is appended
-// AFTER SHELL_FILE_FILTERS in dispatch.ts.
+// Faithful TypeScript port of the Python bash_compress.py language/compiler filter sub-family. Dispatch note: NodeFilter uses an eval-only custom matches() so `node script.js` falls through to GenericFilter; all other entries are distinct enough (unique binaries or subcommand gates) that the ordering within LANGUAGE_FILTERS is safe as long as this slice is appended AFTER SHELL_FILE_FILTERS in dispatch.ts.
 //
-// Factory usage: ErlangFilter, CrystalFilter, HaskellFilter, ElmFilter,
-// JuliaFilter, PowerShellFilter use makeLanguageFilter (shared loop skeleton).
-// SwiftLintFilter uses makeLinterFilter.  The remaining 12 are bespoke classes.
+// Factory usage: ErlangFilter, CrystalFilter, HaskellFilter, ElmFilter, JuliaFilter, PowerShellFilter use makeLanguageFilter (shared loop skeleton). SwiftLintFilter uses makeLinterFilter. The remaining 12 are bespoke classes.
 
 import { ToolFilter } from './base.js'
 import {
@@ -170,12 +163,7 @@ export class PythonFilter extends ToolFilter {
     const warnCounts = new Map<string, number>()
     for (const line of lines) {
       if (PYTHON_WARNING_RE.test(line)) {
-        // Key on the full Warning class + message (not the file:line prefix) so
-        // the same warning repeated across different source locations is
-        // deduplicated. The key must NOT be truncated: a fixed-length cap makes
-        // two DISTINCT warnings that share a long leading substring collide, so
-        // one is silently suppressed (and mislabelled as a repeat) once the
-        // other fills the keep quota.
+        // Key on the full Warning class + message (not the file:line prefix) so the same warning repeated across different source locations is deduplicated. The key must NOT be truncated: a fixed-length cap makes two DISTINCT warnings that share a long leading substring collide, so one is silently suppressed (and mislabelled as a repeat) once the other fills the keep quota.
         const warnIdx = line.search(/\w+Warning:/)
         const key = warnIdx !== -1 ? line.slice(warnIdx) : line.trim()
         const n = (warnCounts.get(key) ?? 0) + 1

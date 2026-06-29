@@ -276,10 +276,7 @@ describe('compact', () => {
     })
 
     it('uses ~3 chars/token ratio so a long path exhausts budget quickly', () => {
-      // "src/foo/bar/baz.ts" = 18 chars → floor(18/3)+1=7 tokens. With a budget
-      // of 10 it fits; with a budget of 5 the loop breaks before adding it.
-      // With the old /10 divisor (floor(18/10)+1=2 tokens) both budgets would
-      // have included the entry, silently exceeding the true token cost.
+      // "src/foo/bar/baz.ts" = 18 chars → floor(18/3)+1=7 tokens. With a budget of 10 it fits; with a budget of 5 the loop breaks before adding it. With the old /10 divisor (floor(18/10)+1=2 tokens) both budgets would have included the entry, silently exceeding the true token cost.
       const manifests = [
         {
           files: [
@@ -288,13 +285,11 @@ describe('compact', () => {
           ],
         },
       ]
-      // Budget 10: "src/foo/bar/baz.ts" (18 chars) costs floor(18/3)+1=7 tokens → fits;
-      // "a.ts" (4 chars) costs floor(4/3)+1=2 tokens → running total 9 which fits in 10.
+      // Budget 10: "src/foo/bar/baz.ts" (18 chars) costs floor(18/3)+1=7 tokens → fits; "a.ts" (4 chars) costs floor(4/3)+1=2 tokens → running total 9 which fits in 10.
       const resultFits = mergeSessionManifests(manifests as Record<string, unknown>[], 10)
       expect(resultFits).toHaveLength(2)
 
-      // Budget 5: first entry costs 7 tokens > 5 → loop breaks immediately.
-      // With the old /10 divisor it would cost only 1 token and both entries would fit.
+      // Budget 5: first entry costs 7 tokens > 5 → loop breaks immediately. With the old /10 divisor it would cost only 1 token and both entries would fit.
       const resultExceeds = mergeSessionManifests(manifests as Record<string, unknown>[], 5)
       expect(resultExceeds).toHaveLength(0)
     })

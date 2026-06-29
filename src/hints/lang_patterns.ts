@@ -188,9 +188,7 @@ export const BUILD_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
 ]
 
 // ---------------------------------------------------------------------------
-// Count exports — keep these in sync with their source arrays above.
-// Dynamic sizes are computed from the live Sets/Arrays so they update
-// automatically when entries are added.
+// Count exports — keep these in sync with their source arrays above. Dynamic sizes are computed from the live Sets/Arrays so they update automatically when entries are added.
 // ---------------------------------------------------------------------------
 
 export const LOCK_FILE_COUNT = LOCK_FILE_NAMES.size

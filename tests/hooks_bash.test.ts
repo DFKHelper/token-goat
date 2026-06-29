@@ -404,8 +404,7 @@ describe('preBashHandler — cat source file recall', () => {
   it('wraps node -e requiring a node_modules JSON in compress (NodeFilter; not denied)', () => {
     const event = makeBashEvent(`node -e "console.log(require('node_modules/next/package.json').version)"`)
     const result = preBashHandler(event)
-    // NodeFilter now matches node -e; the command is wrapped for output compression,
-    // not denied — node_modules JSON requires are still allowed.
+    // NodeFilter now matches node -e; the command is wrapped for output compression, not denied — node_modules JSON requires are still allowed.
     expect(result.hookType).toBe('rewriteInput')
   })
 
@@ -643,16 +642,14 @@ describe('preBashHandler — python read-modify-write exemption', () => {
   it('wraps python open with write mode w+ in compress (PythonFilter; not denied)', () => {
     const event = makeBashEvent("python3 -c \"with open('config.json','w+') as f: f.write(json.dumps(d))\"")
     const result = preBashHandler(event)
-    // PythonFilter matches python3 -c; write-mode open bypasses the read-deny check,
-    // so the command is wrapped for output compression, not denied.
+    // PythonFilter matches python3 -c; write-mode open bypasses the read-deny check, so the command is wrapped for output compression, not denied.
     expect(result.hookType).toBe('rewriteInput')
   })
 
   it('wraps python open with append mode a in compress (PythonFilter; not denied)', () => {
     const event = makeBashEvent("python3 -c \"open('log.txt','a').write('entry')\"")
     const result = preBashHandler(event)
-    // PythonFilter matches python3 -c; append-mode open bypasses the read-deny check,
-    // so the command is wrapped for output compression, not denied.
+    // PythonFilter matches python3 -c; append-mode open bypasses the read-deny check, so the command is wrapped for output compression, not denied.
     expect(result.hookType).toBe('rewriteInput')
   })
 
@@ -699,9 +696,7 @@ describe('preBashHandler — task output file interception', () => {
     const result = preBashHandler(makeBashEvent('cat /home/user/.claude/tasks/abc123def456.output'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      // The recall command must name the on-disk path via --file; a bare
-      // `bash-output <id>` misses the cache (task id is not a cache key), and the
-      // old "already cached" wording promised a recall that errored.
+      // The recall command must name the on-disk path via --file; a bare `bash-output <id>` misses the cache (task id is not a cache key), and the old "already cached" wording promised a recall that errored.
       expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123def456.output"')
       expect(result.message).toContain('--tail 50')
       expect(result.message).not.toContain('already cached')
@@ -1204,15 +1199,13 @@ describe('preBashHandler — markdown heading grep hint', () => {
 
   it('passes through rg -n "class" types.ts (structural search, not markdown heading)', () => {
     const result = preBashHandler(makeBashEvent('rg -n "class " types.ts'))
-    // Should still fire the structural search hint for .ts, not the markdown heading hint
-    // The key thing is it does NOT return pass for this pattern:
+    // Should still fire the structural search hint for .ts, not the markdown heading hint The key thing is it does NOT return pass for this pattern:
     expect(result.hookType).not.toBe('pass')
   })
 
   it('wraps grep (RgFilter registered in SHELL_FILE_FILTERS matches grep)', () => {
     const result = preBashHandler(makeBashEvent('grep -n "^#" script.sh'))
-    // RgFilter now matches grep; pre-Bash wraps it for output compression.
-    // The markdown-heading hint no longer fires because wrapping takes precedence.
+    // RgFilter now matches grep; pre-Bash wraps it for output compression. The markdown-heading hint no longer fires because wrapping takes precedence.
     expect(result.hookType).toBe('rewriteInput')
   })
 })
@@ -1325,11 +1318,7 @@ describe('postBashHandler — quoted > in command is not treated as a redirect',
   })
 
   it('stores cache entry under the full command hash when > appears inside quotes', async () => {
-    // Bug: redirect-stripping regex lacked quote awareness, so
-    // 'pytest -- -k "test_count > 0"' was truncated to 'pytest -- -k "test_count'
-    // and stored under the wrong (shorter) hash. On the second run the lookup
-    // used the same wrong hash so recall "worked", but any unrelated command
-    // that happened to hash to the same truncated key got a false cache hit.
+    // Bug: redirect-stripping regex lacked quote awareness, so 'pytest -- -k "test_count > 0"' was truncated to 'pytest -- -k "test_count' and stored under the wrong (shorter) hash. On the second run the lookup used the same wrong hash so recall "worked", but any unrelated command that happened to hash to the same truncated key got a false cache hit.
     const cmd = 'pytest -- -k "test_count > 0"'
     const largeOutput = 'PASSED test_count_positive\nPASSED test_count_zero\n'.repeat(60)
     await postBashHandler(makePostBashEvent(cmd, largeOutput))
@@ -1382,9 +1371,7 @@ describe('postBashHandler — redirect to quoted filename is stripped for cache 
   })
 
   it('hits cache when command is rerun with a double-quoted redirect target added', async () => {
-    // Bug: the masked quoted filename "       " has spaces inside, so [^\s|]+ failed
-    // to match it as a redirect target, leaving "> \"tsc.log\"" in the cache key.
-    // Commands with and without a quoted redirect must share a single cache entry.
+    // Bug: the masked quoted filename " " has spaces inside, so [^\s|]+ failed to match it as a redirect target, leaving "> \"tsc.log\"" in the cache key. Commands with and without a quoted redirect must share a single cache entry.
     const baseCmd = 'npx tsc --noEmit'
     const withRedirect = baseCmd + ' > "tsc.log"'
     const largeOutput = 'src/auth.ts(12,5): error TS2345: ...\n'.repeat(50)
@@ -1422,10 +1409,7 @@ describe('postBashHandler — escaped quote inside quoted arg does not expose in
   })
 
   it('stores cache entry under the full command when escaped quote precedes > inside quotes', async () => {
-    // Bug: "([^"]*)" treats \" as a closing quote, mis-pairing the string so that
-    // the interior > after \" is exposed to the redirect regex and truncates the key.
-    // e.g. pytest -k "x != \"skip and count > 0" was truncated to
-    //      pytest -k "x != \"skip and count
+    // Bug: "([^"]*)" treats \" as a closing quote, mis-pairing the string so that the interior > after \" is exposed to the redirect regex and truncates the key. e.g. pytest -k "x != \"skip and count > 0" was truncated to pytest -k "x != \"skip and count
     const cmd = 'pytest -k "x != \\"skip and count > 0"'
     const largeOutput = 'PASSED test_skipme\n'.repeat(60)
     await postBashHandler(makePostBashEvent(cmd, largeOutput))
@@ -1501,8 +1485,7 @@ describe('postBashHandler — gh api advisory hints', () => {
   })
 
   it('still surfaces the scope hint when the body is not valid JSON', async () => {
-    // Regression guard against the original Python behavior, where a json parse failure
-    // discarded an already-detected scope hint.
+    // Regression guard against the original Python behavior, where a json parse failure discarded an already-detected scope hint.
     const result = await postBashHandler(
       ghEvent('gh api /repos/o/r/advisories', 'gh: Resource not accessible by integration (HTTP 403)'),
     )

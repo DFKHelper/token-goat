@@ -56,10 +56,7 @@ function stripOutputPipeline(cmd: string): string {
     }
   }
   let base = cmd.slice(0, cut)
-  // Strip trailing stream redirections (possibly chained), honoring quotes.
-  // Mask quoted content with same-length spaces so the redirect regex cannot
-  // match characters inside a string literal (e.g. 'pytest -k "value > 0"').
-  // String length is preserved, so slicing back to newMasked.length is exact.
+  // Strip trailing stream redirections (possibly chained), honoring quotes. Mask quoted content with same-length spaces so the redirect regex cannot match characters inside a string literal (e.g. 'pytest -k "value > 0"'). String length is preserved, so slicing back to newMasked.length is exact.
   let prev: string
   do {
     prev = base
@@ -138,8 +135,7 @@ export function extractRgSymbolSearch(cmd: string): { filePath: string; identifi
   // Validate: pure identifier or |-joined identifiers only — no regex metacharacters
   if (!/^[A-Za-z_][A-Za-z0-9_]*(\|[A-Za-z_][A-Za-z0-9_]*)*$/.test(pattern)) return null
 
-  // Must target exactly one file with a known source extension (not a directory).
-  // The file may be followed by whitespace (then more flags), a pipe, or end-of-string.
+  // Must target exactly one file with a known source extension (not a directory). The file may be followed by whitespace (then more flags), a pipe, or end-of-string.
   const fileMatch = /(?:^|\s)(?:"([^"]+\.(?:ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|cc|cxx|c|h))"|'([^']+\.(?:ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|cc|cxx|c|h))'|([^\s"'|<>]+\.(?:ts|tsx|js|jsx|py|go|rs|java|rb|php|swift|kt|cpp|cc|cxx|c|h)))(?:\s|$|\|)/i.exec(cmd)
   if (!fileMatch) return null
 
@@ -420,8 +416,7 @@ export function extractMarkdownHeadingGrep(cmd: string): { filePath: string } | 
   // Must have the -n (line-number) flag
   if (!/-n\b/.test(cmd)) return null
 
-  // Pattern must be a markdown heading anchor: starts with ^# in some form.
-  // Allow: "^#", '^##', "^#+" , "^#+", "^## |^### ", /^#/ variants, '^#\+'
+  // Pattern must be a markdown heading anchor: starts with ^# in some form. Allow: "^#", '^##', "^#+" , "^#+", "^## |^### ", /^#/ variants, '^#\+'
   const hasHeadingPattern = (
     /["']?\^#{1,6}["']?/.test(cmd) ||
     /["']?\^#\+["']?/.test(cmd) ||
@@ -614,10 +609,7 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
   }
   if (!cfg.enabled) return null
 
-  // A specific filter (once the framework recognizes the command) wins over the
-  // generic catch-all. Either way the command must be a single pipe/redirect-free
-  // invocation: detectFromCommand enforces that for specific filters; the generic
-  // path requires it explicitly.
+  // A specific filter (once the framework recognizes the command) wins over the generic catch-all. Either way the command must be a single pipe/redirect-free invocation: detectFromCommand enforces that for specific filters; the generic path requires it explicitly.
   const detected = detectFromCommand(cmd)
   let filterName: string
   if (detected !== null) {
@@ -815,8 +807,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
     )
   }
 
-  // Markdown heading grep: `grep -n "^#" SKILL.md` → outline hint (before structural search
-  // so .md heading patterns don't get misrouted to the symbol-search advice)
+  // Markdown heading grep: `grep -n "^#" SKILL.md` → outline hint (before structural search so .md heading patterns don't get misrouted to the symbol-search advice)
   const mdHeadingGrep = extractMarkdownHeadingGrep(cmd)
   if (mdHeadingGrep !== null) {
     const { filePath } = mdHeadingGrep
@@ -853,9 +844,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (monitoringHint !== null) {
     const monCmdHash = shortFingerprint(stripOutputPipeline(cmd))
     const monOutputId = getBashOutputId(monCmdHash)
-    // Only emit the recall hint if the content entry is actually present: the
-    // session index may name an id whose blob was pruned (age/count), and a hint
-    // pointing at a missing id would error instead of saving a re-run.
+    // Only emit the recall hint if the content entry is actually present: the session index may name an id whose blob was pruned (age/count), and a hint pointing at a missing id would error instead of saving a re-run.
     const monEntry = monOutputId !== null ? getBashOutput(monOutputId) : null
     if (monOutputId !== null && monEntry !== null) {
       const monBytes = monEntry.sizeBytes
@@ -877,8 +866,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
     }
   }
 
-  // Item 2: curl -o download recall — keyed by URL so a re-download to a different temp
-  // path still gets a recall hint pointing to the previously saved file.
+  // Item 2: curl -o download recall — keyed by URL so a re-download to a different temp path still gets a recall hint pointing to the previously saved file.
   const curlDl = extractCurlDownload(cmd)
   if (curlDl !== null) {
     const prevPath = getCurlDownloadPath(curlDl.url)
@@ -892,15 +880,12 @@ export function preBashHandler(event: HookEvent): HookOutput {
     }
   }
 
-  // curl GET recall — emit a hint when the same URL was already fetched this session.
-  // Key on URL only (not the full command) so `curl <url> | jq …` and `curl <url> | python3 …`
-  // share the same cache entry.
+  // curl GET recall — emit a hint when the same URL was already fetched this session. Key on URL only (not the full command) so `curl <url> | jq …` and `curl <url> | python3 …` share the same cache entry.
   if (isCurlGetCommand(cmd)) {
     const curlCacheKey = extractCurlUrl(cmd) ?? cmd
     const curlHash = shortFingerprint(curlCacheKey)
     const curlOutputId = getBashOutputId(curlHash)
-    // Guard on the content entry, not just the index, so a pruned blob does not
-    // produce a recall hint that would error (see the monitoring case above).
+    // Guard on the content entry, not just the index, so a pruned blob does not produce a recall hint that would error (see the monitoring case above).
     const curlEntry = curlOutputId !== null ? getBashOutput(curlOutputId) : null
     if (curlOutputId !== null && curlEntry !== null) {
       const curlBytes = curlEntry.sizeBytes
@@ -914,16 +899,13 @@ export function preBashHandler(event: HookEvent): HookOutput {
     }
   }
 
-  // Recognized command: recall a cached prior run, else compress this run.
-  // detectFromCommand matches a specific filter (none until the filters land);
-  // isBuildCommand is the generic-filter gate for build/test tools.
+  // Recognized command: recall a cached prior run, else compress this run. detectFromCommand matches a specific filter (none until the filters land); isBuildCommand is the generic-filter gate for build/test tools.
   if (!isBuildCommand(cmd) && detectFromCommand(cmd) === null) return passOutput()
 
   // Derive the same command hash used by the session store.
   const cmdHash = shortFingerprint(stripOutputPipeline(cmd))
   const outputId = getBashOutputId(cmdHash)
-  // A cached prior run wins: recall it instead of re-running (and re-compressing).
-  // Guard on the content blob too — a pruned id would make `bash-output <id>` error.
+  // A cached prior run wins: recall it instead of re-running (and re-compressing). Guard on the content blob too — a pruned id would make `bash-output <id>` error.
   const entry = outputId !== null ? getBashOutput(outputId) : null
   if (outputId !== null && entry !== null) {
     const bytes = entry.sizeBytes
@@ -931,8 +913,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
     return contextOutput(buildRecallHint(cmd, outputId))
   }
 
-  // First run of a recognized command → transparently wrap it in the compressor
-  // so its output is structurally compressed before it reaches the model.
+  // First run of a recognized command → transparently wrap it in the compressor so its output is structurally compressed before it reaches the model.
   return maybeCompressRewrite(event, rawCmd, cmd) ?? passOutput()
 }
 
@@ -992,8 +973,7 @@ function buildGhApiHint(cmd: string, stdout: string, exitCode: number | null): s
   if (hasScopePhrase || failedSecurityCall) {
     hints.push('[token-goat] GitHub API scope issue: try gh auth refresh -s security_events')
   }
-  // Large-response nudge: only a JSON object can carry the 15+ boilerplate fields this targets,
-  // so skip the parse entirely unless the body looks like one (avoids parsing huge non-JSON logs).
+  // Large-response nudge: only a JSON object can carry the 15+ boilerplate fields this targets, so skip the parse entirely unless the body looks like one (avoids parsing huge non-JSON logs).
   const trimmed = stdout.trimStart()
   if (trimmed.startsWith('{')) {
     try {
@@ -1022,8 +1002,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const rawCmdRaw = extractCommand(event)
     if (rawCmdRaw === undefined) return passOutput()
-    // If the pre-hook rewrote this into a `token-goat compress` wrapper, recover
-    // the original command so the cache keys on it (matching the pre-hook hash).
+    // If the pre-hook rewrote this into a `token-goat compress` wrapper, recover the original command so the cache keys on it (matching the pre-hook hash).
     const rawCmd = unwrapCompressCommand(rawCmdRaw) ?? rawCmdRaw
     const cmd = stripCdPrefix(rawCmd)
 
@@ -1033,8 +1012,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       recordCurlDownload(curlDl.url, curlDl.outputPath)
     }
 
-    // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands
-    // are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
+    // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
     const ghHint = buildGhApiHint(cmd, extractBashOutput(event.raw), extractExitCode(event.raw))
     if (ghHint !== null) {
       recordStat('session_hint', 0, 0)
@@ -1049,8 +1027,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (Buffer.byteLength(output, 'utf-8') < MIN_CACHE_BYTES) return passOutput()
 
     const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
-    // For curl GET commands, key the cache on the URL so that the same endpoint fetched
-    // with different downstream pipes (| jq vs | python3) shares a single cache entry.
+    // For curl GET commands, key the cache on the URL so that the same endpoint fetched with different downstream pipes (| jq vs | python3) shares a single cache entry.
     const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : stripOutputPipeline(cmd)
     const simpleHash = shortFingerprint(cacheKey)
     const id = await storeBashOutput(cmd, output, 0, cwd)

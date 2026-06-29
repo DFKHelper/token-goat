@@ -7,8 +7,7 @@
 
 import * as path from 'node:path'
 
-// Compiled once: matches a WSL mount path /mnt/<drive>/rest. The `s` flag makes
-// `.` match newlines so paths containing newline bytes still normalize fully.
+// Compiled once: matches a WSL mount path /mnt/<drive>/rest. The `s` flag makes `.` match newlines so paths containing newline bytes still normalize fully.
 const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
 
 /**
@@ -26,8 +25,7 @@ const WSL_PATH_RE = /^\/mnt\/([a-zA-Z])\/(.*)$/s
 export function normalizePath(p: string): string {
   let s = p
 
-  // Step 1: backslashes -> forward slashes (before the WSL check so mixed
-  // separators like /mnt/c/foo\bar normalize fully before the regex runs).
+  // Step 1: backslashes -> forward slashes (before the WSL check so mixed separators like /mnt/c/foo\bar normalize fully before the regex runs).
   if (s.includes('\\')) {
     s = s.replace(/\\/g, '/')
   }
@@ -47,9 +45,7 @@ export function normalizePath(p: string): string {
     if (g) s = `${(g[1] as string).toLowerCase()}:${g[2] ?? '/'}`
   }
 
-  // Step 3: lowercase the drive-letter prefix (C: -> c:) on all platforms.
-  // WSL processes emit Windows-format paths on Linux; both must produce the
-  // same cache key, so lowercasing is unconditional.
+  // Step 3: lowercase the drive-letter prefix (C: -> c:) on all platforms. WSL processes emit Windows-format paths on Linux; both must produce the same cache key, so lowercasing is unconditional.
   if (s.length >= 2 && s[1] === ':') {
     const c = s[0] as string
     if (/^[A-Z]$/.test(c)) {

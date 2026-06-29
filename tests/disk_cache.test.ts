@@ -78,8 +78,7 @@ describe('storeBlob / loadBlob', () => {
 
 describe('pruneBlobs', () => {
   it('drops blobs older than maxAgeMs', () => {
-    // Store both first (each store's own prune sees them as fresh), then backdate
-    // 'old' so the explicit prune is what evicts it.
+    // Store both first (each store's own prune sees them as fresh), then backdate 'old' so the explicit prune is what evicts it.
     storeBlob('sub', 'old', { x: 1 })
     storeBlob('sub', 'fresh', { x: 2 })
     const oldPath = path.join(tmpHome, 'sub', 'old.json')

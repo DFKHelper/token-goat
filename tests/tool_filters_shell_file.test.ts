@@ -46,9 +46,7 @@ function compress(
   return filter.compress(stdout, stderr, exitCode, argv)
 }
 
-// Note: combineOutput in the base class always strips trailing whitespace
-// (`.replace(/\s+$/, '')`), so filter output never ends with `\n`. All
-// passthrough expectations use `.trimEnd()` on the input to match.
+// Note: combineOutput in the base class always strips trailing whitespace (`.replace(/\s+$/, '')`), so filter output never ends with `\n`. All passthrough expectations use `.trimEnd()` on the input to match.
 
 // ---------------------------------------------------------------------------
 // GrepFilter
@@ -209,8 +207,7 @@ describe('TreeFilter compression', () => {
   })
 
   it('collapses depth-3 entries when a parent has many children', () => {
-    // TreeFilter collapses depth≥3 entries (two levels of │ indentation).
-    // Structure: . → src → components → [many files at depth 3]
+    // TreeFilter collapses depth≥3 entries (two levels of │ indentation). Structure: . → src → components → [many files at depth 3]
     const lines = [
       '.',
       '├── src',
@@ -806,8 +803,7 @@ describe('SHELL_FILE_FILTERS registry', () => {
     expect(SHELL_FILE_FILTERS).toHaveLength(20)
   })
 
-  // RgFilter is registered before GrepFilter and also claims 'grep', so
-  // selectFilter(['grep', ...]) dispatches to RgFilter, not GrepFilter.
+  // RgFilter is registered before GrepFilter and also claims 'grep', so selectFilter(['grep', ...]) dispatches to RgFilter, not GrepFilter.
   it('selectFilter dispatches grep to RgFilter (RgFilter precedes GrepFilter in registry)', () => {
     expect(selectFilter(['grep', '-r', 'TODO', '.'])).toBeInstanceOf(RgFilter)
   })
@@ -820,8 +816,7 @@ describe('SHELL_FILE_FILTERS registry', () => {
     expect(selectFilter(['ls', '-la'])).toBeInstanceOf(LsFilter)
   })
 
-  // LsFilter includes 'eza' in its binary set and is registered before EzaFilter,
-  // so 'eza' dispatches to LsFilter. 'exa' is only claimed by EzaFilter.
+  // LsFilter includes 'eza' in its binary set and is registered before EzaFilter, so 'eza' dispatches to LsFilter. 'exa' is only claimed by EzaFilter.
   it('selectFilter dispatches eza to LsFilter (LsFilter precedes EzaFilter and also claims eza)', () => {
     expect(selectFilter(['eza', '--long'])).toBeInstanceOf(LsFilter)
   })

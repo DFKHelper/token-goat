@@ -1,11 +1,6 @@
-// Tests for the cloud / IaC filter family (Batch G):
-// TerraformFilter, AwsFilter, AwsCliFilter, GcloudFilter, AzureCliFilter,
-// AnsibleFilter, PulumiFilter, CdkFilter, VaultFilter, PackerFilter,
-// NixFilter, WranglerFilter, HardhatFilter, ServerlessFilter, FlyFilter, ForgeFilter.
+// Tests for the cloud / IaC filter family (Batch G): TerraformFilter, AwsFilter, AwsCliFilter, GcloudFilter, AzureCliFilter, AnsibleFilter, PulumiFilter, CdkFilter, VaultFilter, PackerFilter, NixFilter, WranglerFilter, HardhatFilter, ServerlessFilter, FlyFilter, ForgeFilter.
 //
-// Golden tests ported from the Python TestTerraformFilter, TestAwsFilter, and
-// TestAnsibleFilter / TestAnsibleLintModernFormat classes, plus coverage for
-// the remaining 13 filters and dispatch ordering smoke tests.
+// Golden tests ported from the Python TestTerraformFilter, TestAwsFilter, and TestAnsibleFilter / TestAnsibleLintModernFormat classes, plus coverage for the remaining 13 filters and dispatch ordering smoke tests.
 
 import { describe, expect, it } from 'vitest'
 import {
@@ -59,8 +54,7 @@ describe('CLOUD_FILTERS dispatch ordering', () => {
   })
 
   it('AwsCliFilter wins for aws ec2 describe-instances (json fallback path)', () => {
-    // aws-cli is also registered for aws; it handles all aws commands, so it
-    // wins over aws because it appears first in CLOUD_FILTERS.
+    // aws-cli is also registered for aws; it handles all aws commands, so it wins over aws because it appears first in CLOUD_FILTERS.
     const f = selectFilter(['aws', 'ec2', 'describe-instances'])
     expect(f?.name).toBe('aws-cli')
   })
@@ -536,8 +530,7 @@ describe('PulumiFilter', () => {
   it('does not match cdk', () => expect(f.matches(['cdk', 'deploy'])).toBe(false))
 
   it('drops resource progress and still lines', () => {
-    // Pulumi "still" lines match ^\s+[resource]\s+([^)]+):\s+still\s+
-    // Real Pulumi format: "     my-bucket  (5s elapsed): still creating"
+    // Pulumi "still" lines match ^\s+[resource]\s+([^)]+):\s+still\s+ Real Pulumi format: " my-bucket (5s elapsed): still creating"
     const stdout = [
       'Updating (dev):',
       '     my-bucket  (creating)',
@@ -577,8 +570,7 @@ describe('CdkFilter', () => {
   it('does not match pulumi', () => expect(f.matches(['pulumi', 'up'])).toBe(false))
 
   it('drops asset progress lines but keeps COMPLETE events', () => {
-    // CDK IN_PROGRESS lines match ^\s+\w+_IN_PROGRESS\s+ — the status code
-    // must appear right after leading whitespace (CDK's condensed event table).
+    // CDK IN_PROGRESS lines match ^\s+\w+_IN_PROGRESS\s+ — the status code must appear right after leading whitespace (CDK's condensed event table).
     const stdout = [
       'MyStack: deploying...',
       '  [100%] asset.12345 uploaded',

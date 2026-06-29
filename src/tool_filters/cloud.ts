@@ -1,12 +1,6 @@
-// Cloud / IaC filter family (Batch G): terraform/tofu/terragrunt, aws/aws-cli,
-// gcloud, az, ansible, pulumi, cdk, vault, packer, nix, wrangler, hardhat,
-// serverless/sls, fly/flyctl, forge, hardhat.
+// Cloud / IaC filter family (Batch G): terraform/tofu/terragrunt, aws/aws-cli, gcloud, az, ansible, pulumi, cdk, vault, packer, nix, wrangler, hardhat, serverless/sls, fly/flyctl, forge, hardhat.
 //
-// Ported faithfully from the Python bash_compress.py cloud family. Dispatch
-// ordering note: AwsCliFilter must precede AwsFilter in CLOUD_FILTERS — both
-// match `aws`/`aws2`, but AwsCliFilter is the more specific handler with
-// CFN/S3 routing; AwsFilter is the simpler JSON-array fallback. Listing
-// specific-before-generic preserves the Python registry order exactly.
+// Ported faithfully from the Python bash_compress.py cloud family. Dispatch ordering note: AwsCliFilter must precede AwsFilter in CLOUD_FILTERS — both match `aws`/`aws2`, but AwsCliFilter is the more specific handler with CFN/S3 routing; AwsFilter is the simpler JSON-array fallback. Listing specific-before-generic preserves the Python registry order exactly.
 
 import { ToolFilter } from './base.js'
 import {
@@ -1709,9 +1703,7 @@ export class ForgeFilter extends ToolFilter {
 export const forgeFilter = new ForgeFilter()
 
 // ---------------------------------------------------------------------------
-// CLOUD_FILTERS — ordered: AwsCliFilter before AwsFilter (both match aws/aws2;
-// AwsCliFilter is the more specific handler and must win). All others are
-// single-binary so relative order only matters for readability.
+// CLOUD_FILTERS — ordered: AwsCliFilter before AwsFilter (both match aws/aws2; AwsCliFilter is the more specific handler and must win). All others are single-binary so relative order only matters for readability.
 // ---------------------------------------------------------------------------
 
 export const CLOUD_FILTERS: ToolFilter[] = [

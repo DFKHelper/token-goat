@@ -40,10 +40,7 @@ export function noWindowCreationFlags(): number {
   return isWindows() ? 0x08000000 : 0
 }
 
-// Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same
-// path; normalizePath only lowercases the drive letter, so path-equality and dedup
-// comparisons must fold the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0')
-// overrides the platform default for deterministic cross-platform tests.
+// Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same path; normalizePath only lowercases the drive letter, so path-equality and dedup comparisons must fold the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0') overrides the platform default for deterministic cross-platform tests.
 export function isCaseInsensitiveFs(): boolean {
   const o = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
   if (o === '1') return true
@@ -105,16 +102,14 @@ function isRetryable(err: unknown): boolean {
  * EPERM/EBUSY/ETXTBSY; we retry up to 5 times with a `50 * attempt` ms backoff.
  */
 function atomicWriteCore(dest: string, content: string | Uint8Array): void {
-  // Two-component temp name: pid + high-resolution time avoids collisions
-  // across concurrent and rapid sequential writes to the same path.
+  // Two-component temp name: pid + high-resolution time avoids collisions across concurrent and rapid sequential writes to the same path.
   const tmp = `${dest}.${process.pid}.${process.hrtime.bigint().toString()}.tmp`
 
   // mode 0o600: owner read/write only (no effect on Windows ACLs, but harmless).
   const fd = openSync(tmp, 'w', 0o600)
   try {
     if (typeof content === 'string') {
-      // Encode ourselves so we control the encoding; a Buffer write avoids the
-      // CRLF translation a text-mode stream could apply on Windows.
+      // Encode ourselves so we control the encoding; a Buffer write avoids the CRLF translation a text-mode stream could apply on Windows.
       writeSync(fd, Buffer.from(content, 'utf-8'))
     } else {
       writeSync(fd, Buffer.from(content))
@@ -141,10 +136,7 @@ function atomicWriteCore(dest: string, content: string | Uint8Array): void {
     throw lastErr
   } finally {
     if (!renamed) {
-      // Clean up the orphaned temp file on a failed write or rename. Best-effort.
-      // The `wrote` guard was wrong: the temp file is created by openSync *before*
-      // the write attempt, so it exists (and leaks) whether the write succeeded or
-      // failed.  We must clean up whenever the rename did not happen.
+      // Clean up the orphaned temp file on a failed write or rename. Best-effort. The `wrote` guard was wrong: the temp file is created by openSync *before* the write attempt, so it exists (and leaks) whether the write succeeded or failed. We must clean up whenever the rename did not happen.
       try {
         unlinkSync(tmp)
       } catch {

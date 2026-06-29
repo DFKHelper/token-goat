@@ -92,8 +92,7 @@ function readSettings(p: string): Settings {
     }
     return {}
   } catch {
-    // Corrupt JSON: do not clobber it silently — but for our read we treat it
-    // as empty so callers can decide. (installHooks rewrites the whole file.)
+    // Corrupt JSON: do not clobber it silently — but for our read we treat it as empty so callers can decide. (installHooks rewrites the whole file.)
     return {}
   }
 }

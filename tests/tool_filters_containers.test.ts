@@ -1,9 +1,6 @@
-// Tests for the container / kubernetes filter family (Batch F):
-// DockerFilter, DockerComposeFilter, KubectlFilter, KubectlLogsFilter, HelmFilter.
+// Tests for the container / kubernetes filter family (Batch F): DockerFilter, DockerComposeFilter, KubectlFilter, KubectlLogsFilter, HelmFilter.
 //
-// Golden tests ported from the Python TestDockerFilter / TestKubectlFilter
-// test classes, plus additional coverage for DockerComposeFilter,
-// KubectlLogsFilter, and HelmFilter and a dispatch ordering smoke test.
+// Golden tests ported from the Python TestDockerFilter / TestKubectlFilter test classes, plus additional coverage for DockerComposeFilter, KubectlLogsFilter, and HelmFilter and a dispatch ordering smoke test.
 
 import { describe, expect, it } from 'vitest'
 import {
@@ -31,8 +28,7 @@ function apply(
 }
 
 // ---------------------------------------------------------------------------
-// Dispatch ordering — KubectlLogsFilter must precede KubectlFilter;
-// DockerComposeFilter must precede DockerFilter.
+// Dispatch ordering — KubectlLogsFilter must precede KubectlFilter; DockerComposeFilter must precede DockerFilter.
 // ---------------------------------------------------------------------------
 
 describe('CONTAINER_FILTERS dispatch ordering', () => {
@@ -389,8 +385,7 @@ describe('KubectlLogsFilter', () => {
   })
 
   it('collapses HTTP access logs when >20 lines (with >50 total to pass the early-exit)', () => {
-    // KubectlLogsFilter only fires when nonEmpty.length > 50 (faithful to Python).
-    // Use 60 access-log lines to exercise _collapseAccessLogs.
+    // KubectlLogsFilter only fires when nonEmpty.length > 50 (faithful to Python). Use 60 access-log lines to exercise _collapseAccessLogs.
     const accessLine = (i: number) =>
       `10.0.0.1 - - [01/Jan/2024:00:00:${String(i % 60).toString().padStart(2,'0')} +0000] "GET /health HTTP/1.1" 200 5 req=${i}`
     const lines = Array.from({ length: 60 }, (_, i) => accessLine(i))
@@ -400,8 +395,7 @@ describe('KubectlLogsFilter', () => {
   })
 
   it('collapses stack trace frames beyond 5 (with >50 total to pass the early-exit)', () => {
-    // KubectlLogsFilter only fires when nonEmpty.length > 50 (faithful to Python).
-    // Pad with unique log lines before the stack trace to exceed the threshold.
+    // KubectlLogsFilter only fires when nonEmpty.length > 50 (faithful to Python). Pad with unique log lines before the stack trace to exceed the threshold.
     const preamble = Array.from({ length: 50 }, (_, i) => `2024-01-01T00:00:00Z INFO log msg ${i}`)
     const traceLines = [
       'Error: something went wrong',
@@ -428,8 +422,7 @@ describe('KubectlLogsFilter', () => {
   })
 
   it('deduplicates repetitive log lines, keeps first 3 (with >50 total to pass the early-exit)', () => {
-    // KubectlLogsFilter only fires when nonEmpty.length > 50 (faithful to Python).
-    // 45 unique lines + 10 repetitions = 55 lines total.
+    // KubectlLogsFilter only fires when nonEmpty.length > 50 (faithful to Python). 45 unique lines + 10 repetitions = 55 lines total.
     const unique = Array.from({ length: 45 }, (_, i) => `2024-01-01T00:00:00Z INFO unique event ${i}`)
     const repeated = Array.from({ length: 10 }, (_, i) =>
       `2024-01-01T00:00:${String(i).padStart(2,'0')}Z INFO health check ok`)
@@ -561,17 +554,12 @@ describe('HelmFilter', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Regression: KubectlLogsFilter dedup flush order
-// Verified fail-pre (without the prevKey flush guard) / pass-post.
+// Regression: KubectlLogsFilter dedup flush order Verified fail-pre (without the prevKey flush guard) / pass-post.
 // ---------------------------------------------------------------------------
 
 describe('KubectlLogsFilter dedup flush regression', () => {
   it('flushes omit marker when switching to a different message mid-stream (>50 lines)', () => {
-    // Without the prevKey guard, the omit marker for the first message would
-    // appear at the END of output rather than after the last repeated line.
-    // This regression test proves it appears in the right position (before the
-    // next distinct message).
-    // Pad to >50 lines so the filter actually engages (faithful to Python).
+    // Without the prevKey guard, the omit marker for the first message would appear at the END of output rather than after the last repeated line. This regression test proves it appears in the right position (before the next distinct message). Pad to >50 lines so the filter actually engages (faithful to Python).
     const filler = Array.from({ length: 44 }, (_, i) => `2024-01-01T00:00:00Z INFO filler ${i}`)
     const repeated = Array.from({ length: 5 }, () => '2024-01-01T00:00:00Z INFO repeated message')
     const different = ['2024-01-01T00:00:01Z INFO different message']

@@ -1,6 +1,4 @@
-// Batch C golden tests — linter filters.
-// Faithfully ported from the Python suite (test_bash_compress.py linter classes).
-// These are the regression spec for the 16 filters in src/tool_filters/linters.ts.
+// Batch C golden tests — linter filters. Faithfully ported from the Python suite (test_bash_compress.py linter classes). These are the regression spec for the 16 filters in src/tool_filters/linters.ts.
 
 import { describe, expect, it } from 'vitest'
 
@@ -375,8 +373,7 @@ describe('BiomeFilter', () => {
   })
 
   it('collapses repeated rule stanzas beyond first 3', () => {
-    // Need > 40 non-empty lines to exceed the pass-through threshold.
-    // Each stanza: 1 rule line + 1 source line = 2 non-empty; 25 stanzas = 50 non-empty.
+    // Need > 40 non-empty lines to exceed the pass-through threshold. Each stanza: 1 rule line + 1 source line = 2 non-empty; 25 stanzas = 50 non-empty.
     const stanza = (n: number) =>
       [
         `  × lint/suspicious/noDoubleEquals ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`,
@@ -421,13 +418,7 @@ describe('LinterFilter (generic)', () => {
   })
 
   it('stanza path (stylelint/rome): emits each file header exactly once across a mid-stanza non-issue line', () => {
-    // Regression: the earlier port pushed the file header both when flushing
-    // accumulated rules at a non-issue line AND again at end-of-stanza, so a
-    // stanza with issues -> separator -> more issues duplicated the header.
-    // Python's _compress_eslint_stanza emits the header exactly once.
-    // The stanza header must match _ESLINT_FILE_RE (js/ts/jsx/tsx/...), so use
-    // a .tsx path even though stylelint also runs on CSS — the stanza format is
-    // keyed on the JS/TS-style file header line, matching the Python original.
+    // Regression: the earlier port pushed the file header both when flushing accumulated rules at a non-issue line AND again at end-of-stanza, so a stanza with issues -> separator -> more issues duplicated the header. Python's _compress_eslint_stanza emits the header exactly once. The stanza header must match _ESLINT_FILE_RE (js/ts/jsx/tsx/...), so use a .tsx path even though stylelint also runs on CSS — the stanza format is keyed on the JS/TS-style file header line, matching the Python original.
     const input = [
       'src/component.tsx',
       '  1:1  error  Expected indentation of 2 spaces  indentation',
@@ -739,8 +730,7 @@ describe('ClangTidyFilter', () => {
   })
 
   it('keeps only first context block per diagnostic, drops subsequent caret lines', () => {
-    // Context lines must have ≥4 leading spaces (^\s{4,}\S) or be pure caret/tilde lines.
-    // We test with pure caret/tilde lines (^\s+[\^~]+\s*$), two per diagnostic.
+    // Context lines must have ≥4 leading spaces (^\s{4,}\S) or be pure caret/tilde lines. We test with pure caret/tilde lines (^\s+[\^~]+\s*$), two per diagnostic.
     const lines = [
       'src/foo.cpp:10:5: warning: unsigned comparison [some-check]',
       '    ^~~~~~~~~~~~',  // first context line: matches ^\s+\^[~^]*\s*$ → kept
@@ -749,8 +739,7 @@ describe('ClangTidyFilter', () => {
     const result = clangTidyFilter.apply(lines.join('\n'), '', 1, ['clang-tidy'])
     expect(result.text).toContain('src/foo.cpp:10:5:')
     expect(result.text).toContain('^~~~~~~~~~~~')
-    // The second (tilde-only) context line must be absent — the caret line itself also
-    // contains '~~~~~~~~~~~' so we check for the standalone tilde prefix with leading spaces
+    // The second (tilde-only) context line must be absent — the caret line itself also contains '~~~~~~~~~~~' so we check for the standalone tilde prefix with leading spaces
     expect(result.text).not.toContain('\n    ~~~~~~~~~~~')
     expect(result.text).toMatch(/dropped \d+ redundant source-context/)
   })

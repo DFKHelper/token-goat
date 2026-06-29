@@ -1,16 +1,10 @@
 // Batch D — git filter family.
 //
-// Faithfully ported from the Python `bash_compress.py` git family:
-// GitFilter (generic catch-all), GitLogFilter, GitDiffFilter,
-// GitStatusVerboseFilter, GitBlameFilter, GitCommitFilter, GitPushFilter.
+// Faithfully ported from the Python `bash_compress.py` git family: GitFilter (generic catch-all), GitLogFilter, GitDiffFilter, GitStatusVerboseFilter, GitBlameFilter, GitCommitFilter, GitPushFilter.
 //
-// Dispatch order in GIT_FILTERS: specific subcommand filters first, generic
-// GitFilter last.  GitFilter remains the catch-all for every other git
-// subcommand not claimed by a more specific filter.
+// Dispatch order in GIT_FILTERS: specific subcommand filters first, generic GitFilter last. GitFilter remains the catch-all for every other git subcommand not claimed by a more specific filter.
 //
-// CRLF warning stripping runs via postNormalise on every stream before the
-// per-subcommand compressor sees the text — the base class pipeline calls it
-// after normalise() on both stdout and stderr.
+// CRLF warning stripping runs via postNormalise on every stream before the per-subcommand compressor sees the text — the base class pipeline calls it after normalise() on both stdout and stderr.
 
 import { ToolFilter } from './base.js'
 import {

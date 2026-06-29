@@ -43,8 +43,7 @@ describe('CLI command registration', () => {
     const handlers = declaredCmdHandlers()
     expect(handlers.length).toBeGreaterThan(10)
     const unwired = handlers.filter((name) => {
-      // Native handlers are wired as `guard(cmdX)`; allow a bare `(cmdX)` or a
-      // direct reference inside an `.action(` call as well.
+      // Native handlers are wired as `guard(cmdX)`; allow a bare `(cmdX)` or a direct reference inside an `.action(` call as well.
       const wired =
         CLI_SRC.includes(`guard(${name})`) ||
         new RegExp(`\\.action\\([^)]*\\b${name}\\b`).test(CLI_SRC)

@@ -6,10 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as UtilModule from '../src/util.js'
 
-// Toggle isCaseInsensitiveFs per test so the case-fold branch is exercised on
-// every platform (CI Linux is case-sensitive; a real cross-casing reindex can't
-// even be staged there). Other util exports are preserved — parser.js and db.js
-// both import from this module.
+// Toggle isCaseInsensitiveFs per test so the case-fold branch is exercised on every platform (CI Linux is case-sensitive; a real cross-casing reindex can't even be staged there). Other util exports are preserved — parser.js and db.js both import from this module.
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return { ...actual, isCaseInsensitiveFs: vi.fn(() => true) }
@@ -65,8 +62,7 @@ describe('deleteFileRows path-collation handling', () => {
     seed(db, 'c:/proj/Foo.ts') // walker casing
     deleteFileRows(getDb(db), 'c:/proj/foo.ts') // edit-queue casing
 
-    // Without the COLLATE NOCASE fold these case-variant rows would survive and
-    // a NOCASE read would return them as duplicates of the freshly-indexed file.
+    // Without the COLLATE NOCASE fold these case-variant rows would survive and a NOCASE read would return them as duplicates of the freshly-indexed file.
     expect(survivors(db, 'c:/proj/Foo.ts')).toEqual({ symbols: 0, refs: 0, files: 0 })
   })
 
@@ -76,8 +72,7 @@ describe('deleteFileRows path-collation handling', () => {
     seed(db, 'c:/proj/Foo.ts')
     deleteFileRows(getDb(db), 'c:/proj/foo.ts')
 
-    // On a case-sensitive filesystem Foo.ts and foo.ts are genuinely different
-    // files; folding case here would wrongly delete an unrelated file's rows.
+    // On a case-sensitive filesystem Foo.ts and foo.ts are genuinely different files; folding case here would wrongly delete an unrelated file's rows.
     expect(survivors(db, 'c:/proj/Foo.ts')).toEqual({ symbols: 1, refs: 1, files: 1 })
   })
 })

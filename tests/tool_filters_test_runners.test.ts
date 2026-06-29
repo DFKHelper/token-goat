@@ -1,7 +1,4 @@
-// Batch A golden tests — Node test-runner filters (jest/mocha/ava/tap, vitest).
-// Ported faithfully from the Python suite (tests/test_bash_compress.py:
-// TestJestFilter, TestJestFilterVerboseFeatures, TestVitestFilter). These are
-// the regression spec for the family factory in src/tool_filters/families.ts.
+// Batch A golden tests — Node test-runner filters (jest/mocha/ava/tap, vitest). Ported faithfully from the Python suite (tests/test_bash_compress.py: TestJestFilter, TestJestFilterVerboseFeatures, TestVitestFilter). These are the regression spec for the family factory in src/tool_filters/families.ts.
 
 import { describe, expect, it } from 'vitest'
 

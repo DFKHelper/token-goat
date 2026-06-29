@@ -714,8 +714,7 @@ Some content that makes the file large enough`
     expect(() => postReadHandler(postEvent)).not.toThrow()
   })
 
-  // Source-file auto-diff on re-read (gated by serve_diff_on_reread)
-  // Helper: run a fn with the flag forced on/off, restoring the prior value.
+  // Source-file auto-diff on re-read (gated by serve_diff_on_reread) Helper: run a fn with the flag forced on/off, restoring the prior value.
   function withDiffFlag<T>(on: boolean, fn: () => T): T {
     const oldEnv = process.env.TOKEN_GOAT_SERVE_DIFF_ON_REREAD
     if (on) process.env.TOKEN_GOAT_SERVE_DIFF_ON_REREAD = '1'
@@ -853,8 +852,7 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      // Must name a runnable command — bash-output --file "<path>" — not the old
-      // bare `--tail N` placeholder, which errors with "provide an <id> or --file".
+      // Must name a runnable command — bash-output --file "<path>" — not the old bare `--tail N` placeholder, which errors with "provide an <id> or --file".
       expect(result.context).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
       expect(result.context).toContain('--tail 50')
       expect(result.context).toContain('--grep')

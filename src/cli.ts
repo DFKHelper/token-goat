@@ -101,10 +101,7 @@ function cmdIndex(pathArg?: string, opts: { walk?: boolean } = {}): void {
   }
   let indexed = 0
   for (const f of files) {
-    // Key on the same canonical absolute-normalized path every reader resolves
-    // to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so
-    // a relative root (the natural `token-goat index .`) yields relative paths;
-    // normalizePath alone would store a relative key that no reader can match.
+    // Key on the same canonical absolute-normalized path every reader resolves to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so a relative root (the natural `token-goat index .`) yields relative paths; normalizePath alone would store a relative key that no reader can match.
     const key = resolveIndexPath(f)
     if (detectLanguage(key) === 'unknown') continue
     indexFileSync(key)
@@ -125,8 +122,7 @@ function cmdMap(opts: { compact?: boolean }): void {
 }
 
 async function cmdHook(event: string): Promise<void> {
-  // relay handles its own stdin read / stdout write and never throws on a
-  // malformed/unknown event — it emits `{}` and returns.
+  // relay handles its own stdin read / stdout write and never throws on a malformed/unknown event — it emits `{}` and returns.
   await relay(event)
 }
 
@@ -282,9 +278,7 @@ function runExit(fn: () => number): void {
   }
 }
 
-// Sets process.exitCode to the wrapped command's exit code (NOT via `guard`,
-// which forces 0 on success — compress must propagate the real code so shell
-// chaining still sees the original failure/success signal).
+// Sets process.exitCode to the wrapped command's exit code (NOT via `guard`, which forces 0 on success — compress must propagate the real code so shell chaining still sees the original failure/success signal).
 function cmdCompress(opts: {
   cmd: string
   filter?: string
@@ -629,8 +623,7 @@ export function buildProgram(): Command {
     .description('Surgical token-reduction companion for AI coding agents')
     .version(VERSION, '-v, --version', 'print the token-goat version')
 
-  // Each action wraps the (possibly sync) handler so any thrown CliError or
-  // unexpected error maps to a stderr line + exit code 1, and success to 0.
+  // Each action wraps the (possibly sync) handler so any thrown CliError or unexpected error maps to a stderr line + exit code 1, and success to 0.
   const guard =
     (fn: (...a: never[]) => void | Promise<void>) =>
     async (...args: unknown[]): Promise<void> => {
@@ -923,8 +916,7 @@ export function buildProgram(): Command {
  */
 export async function run(argv: string[] = process.argv): Promise<void> {
   const program = buildProgram()
-  // Commander's exitOverride lets us catch its internal exits (help, version,
-  // unknown command) instead of letting it call process.exit() mid-flush.
+  // Commander's exitOverride lets us catch its internal exits (help, version, unknown command) instead of letting it call process.exit() mid-flush.
   program.exitOverride()
   try {
     await program.parseAsync(argv)

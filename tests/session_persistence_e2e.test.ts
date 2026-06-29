@@ -99,8 +99,7 @@ describe('bash-output recall survives the process boundary', () => {
     expect(post.status).toBe(0)
     expect(fs.existsSync(path.join(tgHome, 'bash_outputs'))).toBe(true)
 
-    // Process 2: pre_tool_use for the same build command emits a recall hint
-    // naming the cached id — only possible if the session index persisted.
+    // Process 2: pre_tool_use for the same build command emits a recall hint naming the cached id — only possible if the session index persisted.
     const pre = runHook('pre_tool_use', {
       session_id: 'e2e-bash',
       tool_name: 'Bash',

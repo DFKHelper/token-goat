@@ -177,11 +177,7 @@ export function killDuplicateDaemon(dataDirParam?: string): string {
     return 'No running worker found.'
   }
 
-  // For now, in the TypeScript version we always kill if a daemon is found,
-  // since we don't have the interpreter info in the simple pid file.
-  // In the Python version this checks if the interpreter differs.
-  // This is acceptable because the TypeScript daemon is simpler and doesn't
-  // track interpreter info in the pid file.
+  // For now, in the TypeScript version we always kill if a daemon is found, since we don't have the interpreter info in the simple pid file. In the Python version this checks if the interpreter differs. This is acceptable because the TypeScript daemon is simpler and doesn't track interpreter info in the pid file.
   const killed = killPid(pid)
   try {
     fs.rmSync(pidPath, { force: true })
@@ -203,8 +199,7 @@ export function killDuplicateDaemon(dataDirParam?: string): string {
  */
 export function startDaemon(opts?: DaemonOptions): DaemonHandle {
   const pollIntervalMs = opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
-  // maxIdleMs is accepted for API compatibility with the Python version
-  // but is not used in the current implementation
+  // maxIdleMs is accepted for API compatibility with the Python version but is not used in the current implementation
   const dir = opts?.dataDir ?? dataDir()
 
   let running = true

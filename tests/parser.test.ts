@@ -15,8 +15,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  // Close cached SQLite handles first; on Windows an open WAL file blocks the
-  // recursive rmSync with EPERM.
+  // Close cached SQLite handles first; on Windows an open WAL file blocks the recursive rmSync with EPERM.
   closeAllDbs()
   fs.rmSync(TMP, { recursive: true, force: true })
 })
@@ -446,8 +445,7 @@ describe('parseFile reference extraction', () => {
     const result = await parseFile(cppFile)
     expect(result.language).toBe('cpp')
     const refNames = result.refs.map((r) => r.name)
-    // Pre-fix: qualified_identifier (std::sort) would return null, so 'sort' would not appear
-    // Post-fix: qualified_identifier returns lastSegment('std::sort') = 'sort'
+    // Pre-fix: qualified_identifier (std::sort) would return null, so 'sort' would not appear Post-fix: qualified_identifier returns lastSegment('std::sort') = 'sort'
     expect(refNames).toContain('sort')
   })
 

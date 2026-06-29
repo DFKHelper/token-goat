@@ -53,8 +53,7 @@ let prevHome: string | undefined
 
 beforeEach(() => {
   io = withFakeIo()
-  // relay() now persists session state to TOKEN_GOAT_HOME. Point it at a fresh
-  // temp dir per test so it never touches the real ~/.token-goat.
+  // relay() now persists session state to TOKEN_GOAT_HOME. Point it at a fresh temp dir per test so it never touches the real ~/.token-goat.
   prevHome = process.env['TOKEN_GOAT_HOME']
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-relay-'))
   process.env['TOKEN_GOAT_HOME'] = tmpHome
@@ -139,10 +138,7 @@ describe('relay', () => {
   })
 
   it('dispatches a valid event through the registry and serializes the result', async () => {
-    // A Read on a never-seen .ts file passes through the read-dedup handler =>
-    // serialized as the empty object (pass). The key assertion is that a valid
-    // event flows end-to-end and produces parseable wire JSON, not {} from an
-    // error path.
+    // A Read on a never-seen .ts file passes through the read-dedup handler => serialized as the empty object (pass). The key assertion is that a valid event flows end-to-end and produces parseable wire JSON, not {} from an error path.
     io.emit(JSON.stringify({ tool_name: 'Read', tool_input: { file_path: '/tmp/never-seen-xyz.ts' }, session_id: 's' }))
     await relay('pre_tool_use')
     const parsed: unknown = JSON.parse(io.written())

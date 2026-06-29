@@ -77,8 +77,7 @@ describe('worker_daemon', () => {
       // Test that writePidFile doesn't crash even if mkdirSync fails
       const readOnlyDir = path.join(tmpDir, 'readonly')
       fs.mkdirSync(readOnlyDir)
-      // On Windows, we can't reliably make a dir read-only, so we test with
-      // a non-existent parent that we then delete
+      // On Windows, we can't reliably make a dir read-only, so we test with a non-existent parent that we then delete
       const nonExistentParent = path.join(tmpDir, 'nonexistent', 'subdir')
       const parentDir = path.dirname(nonExistentParent)
       fs.mkdirSync(parentDir, { recursive: true })

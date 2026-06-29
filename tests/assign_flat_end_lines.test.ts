@@ -14,8 +14,7 @@ describe('assignFlatEndLines', () => {
     ]
     assignFlatEndLines(sections, 10)
 
-    // Before the fix, the first section got endLine = next.line - 1 = 2,
-    // which is below its own start line (3) — an inverted range.
+    // Before the fix, the first section got endLine = next.line - 1 = 2, which is below its own start line (3) — an inverted range.
     for (const s of sections) {
       expect(s.endLine).toBeGreaterThanOrEqual(s.line)
     }

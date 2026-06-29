@@ -267,8 +267,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
   }
 
-  // Item 8: MEMORY.md re-read denial — content is already in the compact manifest.
-  // Also generalised to any .md file under a memory/ directory (e.g. memory/project_findings.md).
+  // Item 8: MEMORY.md re-read denial — content is already in the compact manifest. Also generalised to any .md file under a memory/ directory (e.g. memory/project_findings.md).
   const isMemoryMd = (
     normalized.toLowerCase().includes('memory/memory.md') ||
     /[/\\]memory[/\\][^/\\]+\.md$/i.test(normalized)
@@ -303,10 +302,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     )
   }
 
-  // Session artifact re-read dedup: tasks/<id>.output and tool-results/<id>.txt
-  // On first read of tasks/*.output, emit a proactive hint toward --tail/--grep.
-  // On re-reads (either type), inject a diff or "unchanged" denial using the same
-  // snapshot logic as doc files.
+  // Session artifact re-read dedup: tasks/<id>.output and tool-results/<id>.txt On first read of tasks/*.output, emit a proactive hint toward --tail/--grep. On re-reads (either type), inject a diff or "unchanged" denial using the same snapshot logic as doc files.
   if (isSessionArtifactFile(normalized)) {
     if (wasFileReadThisSession(normalized)) {
       if (wasFileTruncatedThisSession(normalized)) {
@@ -364,12 +360,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     // First read of tool-results/*.txt — fall through to normal handling
   }
 
-  // Doc-file auto-diff on re-read: .md/.mdx/.rst/.txt files that have been read before
-  // get a compact diff (or "unchanged") instead of a wasteful full re-read, provided a
-  // snapshot was captured by postReadHandler on the first read.
-  // When serve_diff_on_reread is enabled, source/style/data files also get diffs.
-  // Falls through to the generic wasFileReadThisSession block when no snapshot exists,
-  // preserving existing context vs. deny behavior for un-snapshotted files.
+  // Doc-file auto-diff on re-read: .md/.mdx/.rst/.txt files that have been read before get a compact diff (or "unchanged") instead of a wasteful full re-read, provided a snapshot was captured by postReadHandler on the first read. When serve_diff_on_reread is enabled, source/style/data files also get diffs. Falls through to the generic wasFileReadThisSession block when no snapshot exists, preserving existing context vs. deny behavior for un-snapshotted files.
   const isDocDiffable = /\.(md|mdx|rst|txt)$/i.test(basename)
   const isSourceDiffable = loadConfig().hints.serve_diff_on_reread && DIFFABLE_SOURCE_RE.test(basename)
   if ((isDocDiffable || isSourceDiffable) && wasFileReadThisSession(normalized)) {
@@ -426,8 +417,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
       }
     }
 
-    // No snapshot yet or file too large — fall through to generic wasFileReadThisSession
-    // logic below, which uses readCount and file size to pick context vs. deny.
+    // No snapshot yet or file too large — fall through to generic wasFileReadThisSession logic below, which uses readCount and file size to pick context vs. deny.
   }
 
   if (wasFileReadThisSession(normalized)) {

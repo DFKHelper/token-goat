@@ -20,8 +20,7 @@ function stripComments(text: string): string {
   return text.replace(COMMENT_RE, (m) => ' '.repeat(m.length))
 }
 
-// Target rule: column-0 non-whitespace followed by one or two colons.
-// Excludes variable assignments (contains `=` before the colon).
+// Target rule: column-0 non-whitespace followed by one or two colons. Excludes variable assignments (contains `=` before the colon).
 const TARGET_RE = /^([^\t\n#:=][^:\n#=]*?):{1,2}\s*(?:[^=\n]|$)/gm
 
 // define VARNAME at column 0

@@ -1,20 +1,8 @@
 // Bespoke `go test` output filter — a faithful port of the Python `GoTestFilter`.
 //
-// Go test emits a `=== RUN` / `--- PASS:` pair per testcase plus a final summary;
-// failures interleave stderr blocks. This is its own filter (not the Node
-// test-runner family) because of two Go-specific concerns the family can't model:
-//   * `go test -json` must pass through UNTOUCHED (compressing it corrupts the
-//     machine-readable stream that gotestsum and friends parse).
-//   * `go test -race` emits `==========` / `WARNING: DATA RACE` fence blocks that
-//     are critical signal — kept verbatim, but with deep goroutine stacks
-//     collapsed to the first five frames.
+// Go test emits a `=== RUN` / `--- PASS:` pair per testcase plus a final summary; failures interleave stderr blocks. This is its own filter (not the Node test-runner family) because of two Go-specific concerns the family can't model: * `go test -json` must pass through UNTOUCHED (compressing it corrupts the machine-readable stream that gotestsum and friends parse). * `go test -race` emits `==========` / `WARNING: DATA RACE` fence blocks that are critical signal — kept verbatim, but with deep goroutine stacks collapsed to the first five frames.
 //
-// Compression model:
-//   * Keep — FAIL/ERROR blocks (the stderr captured under the RUN line), the
-//            final summary (`ok …`, `FAIL …`, coverage %), and race blocks.
-//   * Drop — `=== RUN/PAUSE/CONT/NAME` lines outside FAIL blocks, `--- PASS:`
-//            lines, and `go: downloading …` lines (counted in notes).
-//   * Collapse — `--- SKIP:` lines (counted separately from PASS).
+// Compression model: * Keep — FAIL/ERROR blocks (the stderr captured under the RUN line), the final summary (`ok …`, `FAIL …`, coverage %), and race blocks. * Drop — `=== RUN/PAUSE/CONT/NAME` lines outside FAIL blocks, `--- PASS:` lines, and `go: downloading …` lines (counted in notes). * Collapse — `--- SKIP:` lines (counted separately from PASS).
 
 import { ToolFilter } from './base.js'
 import { maybeNote, positionalArgs } from './helpers.js'
@@ -29,9 +17,7 @@ const SKIP_RE = /^\s*--- SKIP:\s/
 const GOROUTINE_HEADER_RE = /^(?:Goroutine \d+|Previous|Current)\s/
 const OK_PKG_RE = /^ok\s+\S+\s+\d/
 const FAIL_PKG_RE = /^FAIL\t\S+/
-// A panic or runtime fatal aborts the test binary before any `--- FAIL:` line,
-// so the most recent `=== RUN/NAME` line is the only marker of which (sub)test
-// was executing. Emit that buffered line ahead of the panic so it survives.
+// A panic or runtime fatal aborts the test binary before any `--- FAIL:` line, so the most recent `=== RUN/NAME` line is the only marker of which (sub)test was executing. Emit that buffered line ahead of the panic so it survives.
 const PANIC_RE = /^(?:panic:|fatal error:)/
 
 const MAX_RACE_GOROUTINE_FRAMES = 5
@@ -49,8 +35,7 @@ export class GoTestFilter extends ToolFilter {
   }
 
   override compress(stdout: string, stderr: string, _exitCode: number, argv: string[]): string {
-    // `go test -json` is already compact and machine-readable; compressing it
-    // would corrupt the JSON stream. Pass through.
+    // `go test -json` is already compact and machine-readable; compressing it would corrupt the JSON stream. Pass through.
     if (argv.includes('-json')) return this.combineOutput(stdout, stderr)
 
     const merged = this.combineOutput(stdout, stderr)
@@ -62,8 +47,7 @@ export class GoTestFilter extends ToolFilter {
     let lastRunLine: string | null = null
     let droppedRun = 0
     let droppedDownload = 0
-    // Race-detector state: a block spans `==========` (before WARNING) through
-    // the closing `==========`.
+    // Race-detector state: a block spans `==========` (before WARNING) through the closing `==========`.
     let inRaceBlock = false
     let raceBlockLines: string[] = []
     let racePendingFence = false // leading fence seen, WARNING not yet confirmed
@@ -156,8 +140,7 @@ export class GoTestFilter extends ToolFilter {
         continue
       }
 
-      // A panic/fatal aborts before any `--- FAIL:`; surface the buffered
-      // `=== RUN/NAME` line first so the panicking (sub)test is identifiable.
+      // A panic/fatal aborts before any `--- FAIL:`; surface the buffered `=== RUN/NAME` line first so the panicking (sub)test is identifiable.
       if (PANIC_RE.test(line)) {
         if (lastRunLine !== null) {
           kept.push(lastRunLine)
@@ -168,8 +151,7 @@ export class GoTestFilter extends ToolFilter {
         kept.push(line)
         continue
       }
-      // Suppress RUN/PAUSE/CONT both outside and inside fail blocks, but
-      // remember the most recent one in case a panic follows.
+      // Suppress RUN/PAUSE/CONT both outside and inside fail blocks, but remember the most recent one in case a panic follows.
       if (TEST_RPC_RE.test(line)) {
         lastRunLine = line
         droppedRun += 1
@@ -195,9 +177,7 @@ export class GoTestFilter extends ToolFilter {
         continue
       }
       if (TEST_RUN_RE.test(line)) {
-        // `=== RUN/PAUSE/CONT/NAME` inside a FAIL block closes it (keep for
-        // structure); outside a FAIL block, drop entirely (but remember it in
-        // case a panic follows).
+        // `=== RUN/PAUSE/CONT/NAME` inside a FAIL block closes it (keep for structure); outside a FAIL block, drop entirely (but remember it in case a panic follows).
         if (inFailBlock) {
           inFailBlock = false
         } else {

@@ -203,9 +203,7 @@ Some notes here
   })
 
   it('tokensSaved is sum of per-entry estimates, not estimate of concatenated string', () => {
-    // Use entries whose length is a multiple of 3 so that floor arithmetic guarantees
-    // sum-of-individual > estimate-of-concatenation (difference = N-1 = 2 for N=3).
-    // "- [D](x.md)\n" is 12 chars (divisible by 3).
+    // Use entries whose length is a multiple of 3 so that floor arithmetic guarantees sum-of-individual > estimate-of-concatenation (difference = N-1 = 2 for N=3). "- [D](x.md)\n" is 12 chars (divisible by 3).
     const line1 = '- [D](x.md)\n'
     const line2 = '- [E](y.md)\n'
     const line3 = '- [F](z.md)\n'

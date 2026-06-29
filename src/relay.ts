@@ -141,9 +141,7 @@ export async function relay(eventName: string): Promise<void> {
     }
     const payload = await readStdinJson()
     const event = buildEvent(eventName, payload)
-    // Load persisted session state before handlers run; save the mutated state
-    // after. Each is isolated in its own try/catch so a persistence failure can
-    // never suppress the handler's real output (the cardinal rule above).
+    // Load persisted session state before handlers run; save the mutated state after. Each is isolated in its own try/catch so a persistence failure can never suppress the handler's real output (the cardinal rule above).
     try {
       loadSessionState(event.sessionId)
     } catch {

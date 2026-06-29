@@ -171,8 +171,7 @@ describe('webfetch', () => {
         ensureDir: () => {},
       }));
 
-      // Since the module is already loaded, we can't easily mock it
-      // Instead, we'll test the logic directly
+      // Since the module is already loaded, we can't easily mock it Instead, we'll test the logic directly
       const files = readdirSync(tempDir);
       let removed = 0;
       for (const file of files) {

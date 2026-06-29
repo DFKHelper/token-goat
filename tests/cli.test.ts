@@ -16,8 +16,7 @@ interface RunResult {
 }
 
 function runCli(args: string[], input = ''): RunResult {
-  // Invoke node with the tsx ESM loader so the TS entrypoint runs directly with
-  // no build step and no shell (avoids the .cmd-shim + shell quoting on Windows).
+  // Invoke node with the tsx ESM loader so the TS entrypoint runs directly with no build step and no shell (avoids the .cmd-shim + shell quoting on Windows).
   const res = spawnSync(process.execPath, ['--import', 'tsx', MAIN, ...args], {
     input,
     encoding: 'utf8',

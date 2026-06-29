@@ -137,8 +137,7 @@ describe("dedupHints", () => {
   });
 
   it("does not overwrite stored summary when emitting a dup stub", () => {
-    // When a hint is a duplicate, record_hint_content_seen must NOT be called again
-    // — calling it would overwrite the original stored summary with the current item's text.
+    // When a hint is a duplicate, record_hint_content_seen must NOT be called again — calling it would overwrite the original stored summary with the current item's text.
     const mockCache = {
       get_hint_content_summary: vi.fn((_hash: string) => "original stored summary"),
       record_hint_content_seen: vi.fn(),

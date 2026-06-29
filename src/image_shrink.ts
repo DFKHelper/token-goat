@@ -92,8 +92,7 @@ async function loadSharp(): Promise<SharpFactory | null> {
     const mod = (await import('sharp')) as unknown as { default: SharpFactory }
     _sharpCache = mod.default
   } catch (err) {
-    // Native binary missing or incompatible: degrade gracefully for the rest
-    // of the process. One warning is enough; the hot path stays silent.
+    // Native binary missing or incompatible: degrade gracefully for the rest of the process. One warning is enough; the hot path stays silent.
     process.stderr.write(`token-goat: image shrink disabled (sharp unavailable): ${String(err)}\n`)
     _sharpCache = null
   }
@@ -137,8 +136,7 @@ export async function shrinkImage(
   if (sharp === null) return null
 
   try {
-    // Encode both candidates from independent pipelines (a sharp instance is
-    // single-shot once consumed) and keep the smaller output.
+    // Encode both candidates from independent pipelines (a sharp instance is single-shot once consumed) and keep the smaller output.
     const jpegBuf = await sharp(input)
       .rotate()
       .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })

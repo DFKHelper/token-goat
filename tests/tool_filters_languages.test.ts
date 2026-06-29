@@ -143,8 +143,7 @@ describe('PythonFilter compress: repeated-line dedup', () => {
 
 describe('PythonFilter compress: warning dedup', () => {
   it('suppresses warnings beyond the first 3 with the same category key', () => {
-    // 6 warnings with different line numbers but the same key prefix.
-    // _dedupeRepeatedLines does NOT collapse them (lines differ); _compressWarnings sees all 6.
+    // 6 warnings with different line numbers but the same key prefix. _dedupeRepeatedLines does NOT collapse them (lines differ); _compressWarnings sees all 6.
     const suffix = ': UserWarning: deprecated API call'
     const lines = [1, 2, 3, 4, 5, 6].map((n) => `/some/file.py:${n}${suffix}`)
     const out = compress(pythonFilter, lines.join('\n'), ['python', 'x.py'])
@@ -152,9 +151,7 @@ describe('PythonFilter compress: warning dedup', () => {
   })
 
   it('keeps a distinct warning that shares a long leading substring with another', () => {
-    // A and B are DIFFERENT DeprecationWarnings that agree for >60 chars after
-    // the class name. A fills the 3-keep quota; a truncated key would collide
-    // with B and drop it (mislabelled as a repeat). The full-message key keeps both.
+    // A and B are DIFFERENT DeprecationWarnings that agree for >60 chars after the class name. A fills the 3-keep quota; a truncated key would collide with B and drop it (mislabelled as a repeat). The full-message key keeps both.
     const A = 'a.py:1: DeprecationWarning: numpy.core.umath_tests is an internal NumPy module alpha'
     const B = 'b.py:9: DeprecationWarning: numpy.core.umath_tests is an internal NumPy module BETA-DIFFERENT'
     const out = compress(pythonFilter, [A, A, A, B].join('\n'), ['python', 'x.py'])

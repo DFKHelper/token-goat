@@ -1,8 +1,4 @@
-// GenericFilter: the catch-all fallback used when no per-tool filter matches
-// but the hook layer still decided to wrap a command. With no tool-specific
-// structure to exploit, it removes the universal noise sources (ANSI / progress
-// strip already done by `apply`, plus consecutive-line dedupe) and caps the
-// result to ~2000 tokens.
+// GenericFilter: the catch-all fallback used when no per-tool filter matches but the hook layer still decided to wrap a command. With no tool-specific structure to exploit, it removes the universal noise sources (ANSI / progress strip already done by `apply`, plus consecutive-line dedupe) and caps the result to ~2000 tokens.
 
 import { ToolFilter } from './base.js'
 import { capTokens, dedupeConsecutive } from './helpers.js'

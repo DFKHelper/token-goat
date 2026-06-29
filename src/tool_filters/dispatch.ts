@@ -1,12 +1,6 @@
-// Dispatch layer: command → filter selection, compound-command handling, and
-// the `compressOutput` entry point with compression profiles. Faithful port of
-// the Python `select_filter` / `detect_from_command` / `try_wrap_compound_segments`
-// / `compress_output` / `filter_by_name` surface.
+// Dispatch layer: command → filter selection, compound-command handling, and the `compressOutput` entry point with compression profiles. Faithful port of the Python `select_filter` / `detect_from_command` / `try_wrap_compound_segments` / `compress_output` / `filter_by_name` surface.
 //
-// `TOOL_FILTERS` is the ordered registry every per-tool filter joins as the
-// batched port proceeds (test-runners, package-managers, linters, ...). Order
-// matters: more specific filters must precede the generic package-manager
-// handlers they overlap with — each batch documents its placement.
+// `TOOL_FILTERS` is the ordered registry every per-tool filter joins as the batched port proceeds (test-runners, package-managers, linters, ...). Order matters: more specific filters must precede the generic package-manager handlers they overlap with — each batch documents its placement.
 
 import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { GenericFilter } from './generic.js'
@@ -33,69 +27,35 @@ import { TEST_RUNNER_FILTERS } from './test_runners.js'
  * package-manager handlers they overlap with — each batch documents its placement.
  */
 export const TOOL_FILTERS: ToolFilter[] = [
-  // Batch A — test runners. Node family (jest/mocha/ava/tap, vitest) first, then
-  // the bespoke runners (pytest, go test) that need their own structural logic.
-  // No overlap with later batches; safe at the head — except `go-test`, which
-  // must precede any future `go build`/`go run` filter (both match `go`), so it
-  // is registered here ahead of the build batch.
+  // Batch A — test runners. Node family (jest/mocha/ava/tap, vitest) first, then the bespoke runners (pytest, go test) that need their own structural logic. No overlap with later batches; safe at the head — except `go-test`, which must precede any future `go build`/`go run` filter (both match `go`), so it is registered here ahead of the build batch.
   ...TEST_RUNNER_FILTERS,
   pytestFilter,
   goTestFilter,
-  // PlaywrightFilter and CypressFilter must precede BunFilter: BunFilter also
-  // claims 'bunx', so `bunx playwright test` / `bunx cypress run` would route
-  // to BunFilter first without this ordering. Both filters have custom matches()
-  // that handle npx/pnpx/bunx with playwright/cypress as the next positional.
+  // PlaywrightFilter and CypressFilter must precede BunFilter: BunFilter also claims 'bunx', so `bunx playwright test` / `bunx cypress run` would route to BunFilter first without this ordering. Both filters have custom matches() that handle npx/pnpx/bunx with playwright/cypress as the next positional.
   playwrightFilter,
   cypressFilter,
-  // BunFilter must precede the package-manager batch: NodePackageFilter also
-  // claims 'bun', and first-match wins. BunFilter's routing (test/build/run)
-  // is richer than the generic npm-family handler.
+  // BunFilter must precede the package-manager batch: NodePackageFilter also claims 'bun', and first-match wins. BunFilter's routing (test/build/run) is richer than the generic npm-family handler.
   bunFilter,
-  // Batch B — package managers. NpmInstallFilter / PnpmFilter / YarnFilter must
-  // precede the general NodePackageFilter that handles `npm audit` and other
-  // subcommands. DepListFilter is last: it matches a subset of binaries already
-  // claimed by pip/uv/poetry filters, triggered only on list/freeze/tree/show/ls.
+  // Batch B — package managers. NpmInstallFilter / PnpmFilter / YarnFilter must precede the general NodePackageFilter that handles `npm audit` and other subcommands. DepListFilter is last: it matches a subset of binaries already claimed by pip/uv/poetry filters, triggered only on list/freeze/tree/show/ls.
   ...PACKAGE_MANAGER_FILTERS,
-  // Batch C — linters. PylintFilter precedes the generic LinterFilter (which also
-  // declares 'pylint') to ensure the structured dedup path runs for pylint output.
-  // PrettierFilter and BiomeFilter precede any future npm/npx-wrapper handler that
-  // might match 'npx prettier'. All other linters are single-binary and order only
-  // matters within the group to preserve the Python FILTERS registration precedence.
+  // Batch C — linters. PylintFilter precedes the generic LinterFilter (which also declares 'pylint') to ensure the structured dedup path runs for pylint output. PrettierFilter and BiomeFilter precede any future npm/npx-wrapper handler that might match 'npx prettier'. All other linters are single-binary and order only matters within the group to preserve the Python FILTERS registration precedence.
   ...LINTER_FILTERS,
-  // Batch D — vcs. Git-specific filters: specific subcommands first, generic
-  // GitFilter last.  GitFilter catches every remaining git subcommand not
-  // claimed by GitLogFilter, GitDiffFilter, GitStatusVerboseFilter, etc.
+  // Batch D — vcs. Git-specific filters: specific subcommands first, generic GitFilter last. GitFilter catches every remaining git subcommand not claimed by GitLogFilter, GitDiffFilter, GitStatusVerboseFilter, etc.
   ...GIT_FILTERS,
-  // Batch E — build tools. CargoFilter handles all cargo subcommands internally;
-  // GoFilter must follow goTestFilter (Batch A) because both match `go`.
-  // NxFilter/TurboFilter match npx/pnpx so they must follow the package-manager
-  // batch but their own subcommand check prevents false positives.
+  // Batch E — build tools. CargoFilter handles all cargo subcommands internally; GoFilter must follow goTestFilter (Batch A) because both match `go`. NxFilter/TurboFilter match npx/pnpx so they must follow the package-manager batch but their own subcommand check prevents false positives.
   ...BUILD_FILTERS,
-  // Batch F — containers / kubernetes. KubectlLogsFilter must precede
-  // KubectlFilter (both match `kubectl`/`k`); DockerComposeFilter must precede
-  // DockerFilter (both match `docker`). See containers.ts ordering comment.
+  // Batch F — containers / kubernetes. KubectlLogsFilter must precede KubectlFilter (both match `kubectl`/`k`); DockerComposeFilter must precede DockerFilter (both match `docker`). See containers.ts ordering comment.
   ...CONTAINER_FILTERS,
-  // Batch G — cloud / IaC. AwsCliFilter must precede AwsFilter (both match
-  // `aws`/`aws2`; AwsCliFilter owns the CFN/S3 routing; AwsFilter is the
-  // simpler JSON-array fallback). See cloud.ts ordering comment.
+  // Batch G — cloud / IaC. AwsCliFilter must precede AwsFilter (both match `aws`/`aws2`; AwsCliFilter owns the CFN/S3 routing; AwsFilter is the simpler JSON-array fallback). See cloud.ts ordering comment.
   ...CLOUD_FILTERS,
-  // Batch I — AI-CLI streaming assistants. GhCopilotFilter must precede
-  // GhRunLogFilter and GhFilter (all match `gh`; GhCopilotFilter only fires
-  // for `gh copilot explain/suggest`). AI_CLI_FILTERS is therefore spread
-  // BEFORE CI_FILTERS, not after — despite the general "append" convention.
+  // Batch I — AI-CLI streaming assistants. GhCopilotFilter must precede GhRunLogFilter and GhFilter (all match `gh`; GhCopilotFilter only fires for `gh copilot explain/suggest`). AI_CLI_FILTERS is therefore spread BEFORE CI_FILTERS, not after — despite the general "append" convention.
   ...AI_CLI_FILTERS,
-  // Batch H — CI runners, security scanners, and the keyword-based generic
-  // CI log filter. GhRunLogFilter precedes GhFilter (both match `gh`);
-  // GenericCIFilter is last (keyword-only, not binary-gated).
+  // Batch H — CI runners, security scanners, and the keyword-based generic CI log filter. GhRunLogFilter precedes GhFilter (both match `gh`); GenericCIFilter is last (keyword-only, not binary-gated).
   ...CI_FILTERS,
   ...SHELL_FILE_FILTERS,
   // Batch K1 — language runtimes and compilers.
   ...LANGUAGE_FILTERS,
-  // Batch K2 — db clients, runners, CSS-preprocessors, system-package managers,
-  // and generic catch-alls (env dump, JSON array, severity-log, tail-trunc).
-  // PlaywrightFilter and CypressFilter from this family are registered above
-  // (before BunFilter) — they are NOT included in MISC_FILTERS.
-  // TailTruncFilter (matches() → true) MUST remain last in MISC_FILTERS.
+  // Batch K2 — db clients, runners, CSS-preprocessors, system-package managers, and generic catch-alls (env dump, JSON array, severity-log, tail-trunc). PlaywrightFilter and CypressFilter from this family are registered above (before BunFilter) — they are NOT included in MISC_FILTERS. TailTruncFilter (matches() → true) MUST remain last in MISC_FILTERS.
   ...MISC_FILTERS,
 ]
 
@@ -112,8 +72,7 @@ export function selectFilter(argv: string[]): ToolFilter | null {
   if (argv.length === 0) return null
   let resolved = stripPrefixes(argv)
   if (resolved.length === 0) {
-    // Prefix-stripping consumed the whole argv (bare `env`, `env -0`); fall
-    // back to the first token so a dedicated env filter can still opt in.
+    // Prefix-stripping consumed the whole argv (bare `env`, `env -0`); fall back to the first token so a dedicated env filter can still opt in.
     resolved = argv.slice(0, 1)
     if (resolved.length === 0) return null
   }

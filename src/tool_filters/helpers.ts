@@ -1,13 +1,8 @@
 // Shared helper layer for the bash-output compression filter framework.
 //
-// This module is the DRY core every tool filter builds on: text normalisation
-// (ANSI / progress / control-char stripping), line/byte/token capping with
-// error-signal preservation, run-length dedupe, command-prefix resolution, and
-// the small line-shaping utilities (head/tail collapse, repeated-prefix
-// trimming, timestamp stripping) that recur across dozens of filters.
+// This module is the DRY core every tool filter builds on: text normalisation (ANSI / progress / control-char stripping), line/byte/token capping with error-signal preservation, run-length dedupe, command-prefix resolution, and the small line-shaping utilities (head/tail collapse, repeated-prefix trimming, timestamp stripping) that recur across dozens of filters.
 //
-// Ported faithfully from the Python `bash_compress.py` foundation so the
-// per-tool filters that depend on these primitives compress identically.
+// Ported faithfully from the Python `bash_compress.py` foundation so the per-tool filters that depend on these primitives compress identically.
 
 import { stripAnsiCodes } from '../bash_compress.js'
 

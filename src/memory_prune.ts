@@ -204,8 +204,7 @@ function siblingSnippet(filePath: string): string {
     return ''
   }
 
-  // Strip YAML frontmatter (--- ... ---) to get the body. Match only a closing
-  // `\n---` that is followed by `\n` or end-of-file, not `\n---extra` lines.
+  // Strip YAML frontmatter (--- ... ---) to get the body. Match only a closing `\n---` that is followed by `\n` or end-of-file, not `\n---extra` lines.
   if (text.startsWith('---')) {
     const closeRe = /\n---(?:\n|$)/g
     closeRe.lastIndex = 3
@@ -252,8 +251,7 @@ export async function findContentDuplicates(
   memoryDir: string,
   _opts?: { threshold?: number },
 ): Promise<DupCluster[]> {
-  // threshold is intentionally unused; kept for API compatibility
-  // const threshold = _opts?.threshold ?? 0.92
+  // threshold is intentionally unused; kept for API compatibility const threshold = _opts?.threshold ?? 0.92
 
   const siblings = fs
     .readdirSync(memoryDir)
@@ -267,8 +265,7 @@ export async function findContentDuplicates(
 
   const snippets = siblings.map((p) => siblingSnippet(p))
 
-  // Try embedding path (not implemented in this port; skip gracefully).
-  // Jaccard fallback.
+  // Try embedding path (not implemented in this port; skip gracefully). Jaccard fallback.
   const JACCARD_THRESHOLD = 0.60
   const clusters: DupCluster[] = []
   const used = new Set<number>()

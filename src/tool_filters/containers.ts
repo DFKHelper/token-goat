@@ -1,15 +1,8 @@
 // Batch F — container / kubernetes filter family.
 //
-// Faithfully ported from the Python bash_compress.py container family:
-// DockerFilter, DockerComposeFilter, KubectlFilter, KubectlLogsFilter, HelmFilter.
+// Faithfully ported from the Python bash_compress.py container family: DockerFilter, DockerComposeFilter, KubectlFilter, KubectlLogsFilter, HelmFilter.
 //
-// Dispatch ordering in CONTAINER_FILTERS:
-//   1. KubectlLogsFilter before KubectlFilter — both match `kubectl`/`k`;
-//      KubectlLogsFilter's custom matches() gate (requires the `logs` positional
-//      arg) is the more specific guard and must win first.
-//   2. DockerComposeFilter before DockerFilter — both match `docker`; the
-//      compose-subcommand check in DockerComposeFilter.matches() would lose to
-//      DockerFilter's generic binary match if DockerFilter came first.
+// Dispatch ordering in CONTAINER_FILTERS: 1. KubectlLogsFilter before KubectlFilter — both match `kubectl`/`k`; KubectlLogsFilter's custom matches() gate (requires the `logs` positional arg) is the more specific guard and must win first. 2. DockerComposeFilter before DockerFilter — both match `docker`; the compose-subcommand check in DockerComposeFilter.matches() would lose to DockerFilter's generic binary match if DockerFilter came first.
 
 import { ToolFilter } from './base.js'
 import {
@@ -55,8 +48,7 @@ export class DockerFilter extends ToolFilter {
   readonly name = 'docker'
   override readonly binaries = new Set(['docker', 'buildah', 'podman', 'nerdctl'])
 
-  // Docker writes progress/errors to stderr; only stdout carries build bodies.
-  // Merge with stderr first so errors appear before raw build output.
+  // Docker writes progress/errors to stderr; only stdout carries build bodies. Merge with stderr first so errors appear before raw build output.
   override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     // Note: reversed arg order (stderr, stdout) — docker progress goes to stderr
     const merged = this.combineOutput(stderr, stdout)
@@ -75,8 +67,7 @@ export class DockerFilter extends ToolFilter {
       if (_DOCKER_CACHED_RE.test(line)) { droppedCached++; continue }
       if (_DOCKER_PUSH_NOISE_RE.test(line)) { droppedPushNoise++; continue }
       if (_DOCKER_PULL_LAYER_RE.test(line)) { droppedPullLayers++; continue }
-      // Drop step body lines (prefixed timestamp/counter) unless they are
-      // step headers or carry an error/warning signal.
+      // Drop step body lines (prefixed timestamp/counter) unless they are step headers or carry an error/warning signal.
       if (
         _DOCKER_STEP_BODY_RE.test(line) &&
         !_DOCKER_STEP_RE.test(line) &&
@@ -734,9 +725,7 @@ export class HelmFilter extends ToolFilter {
 }
 
 // ---------------------------------------------------------------------------
-// Exported registry
-// Ordering is load-bearing: KubectlLogsFilter BEFORE KubectlFilter;
-// DockerComposeFilter BEFORE DockerFilter.
+// Exported registry Ordering is load-bearing: KubectlLogsFilter BEFORE KubectlFilter; DockerComposeFilter BEFORE DockerFilter.
 // ---------------------------------------------------------------------------
 
 export const kubectlLogsFilter = new KubectlLogsFilter()

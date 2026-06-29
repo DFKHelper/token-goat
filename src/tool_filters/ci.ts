@@ -1,15 +1,8 @@
-// CI / security-scanner filter family (Batch H):
-// GhRunLogFilter, GhFilter, ActFilter, GenericCIFilter, PreCommitFilter,
-// BanditFilter, TrivyFilter, SnykFilter, SemgrepFilter.
+// CI / security-scanner filter family (Batch H): GhRunLogFilter, GhFilter, ActFilter, GenericCIFilter, PreCommitFilter, BanditFilter, TrivyFilter, SnykFilter, SemgrepFilter.
 //
-// Ported faithfully from the Python bash_compress.py CI + security families.
-// GhFilter includes the *_url-stripping enhancement from the python-gh-filter-ref
-// tag (strips boilerplate *_url fields from `gh api` JSON responses while
-// preserving html_url, avatar_url, clone_url, ssh_url).
+// Ported faithfully from the Python bash_compress.py CI + security families. GhFilter includes the *_url-stripping enhancement from the python-gh-filter-ref tag (strips boilerplate *_url fields from `gh api` JSON responses while preserving html_url, avatar_url, clone_url, ssh_url).
 //
-// Dispatch ordering note: GhRunLogFilter (`gh run view --log`) must precede
-// GhFilter in CI_FILTERS — both match `gh`, but GhRunLogFilter is the more
-// specific handler that requires the `--log` flag.
+// Dispatch ordering note: GhRunLogFilter (`gh run view --log`) must precede GhFilter in CI_FILTERS — both match `gh`, but GhRunLogFilter is the more specific handler that requires the `--log` flag.
 
 import { ToolFilter } from './base.js'
 import {
@@ -655,8 +648,7 @@ export class PreCommitFilter extends ToolFilter {
 }
 
 // ---------------------------------------------------------------------------
-// makeSecurityScannerFilter — shared factory for bandit/trivy/snyk/semgrep
-// (Not used here since their bodies differ significantly; bespoke classes below)
+// makeSecurityScannerFilter — shared factory for bandit/trivy/snyk/semgrep (Not used here since their bodies differ significantly; bespoke classes below)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -1124,8 +1116,7 @@ export const snykFilter = new SnykFilter()
 export const semgrepFilter = new SemgrepFilter()
 
 // ---------------------------------------------------------------------------
-// CI_FILTERS — ordered: GhRunLogFilter before GhFilter (both match `gh`).
-// GenericCIFilter is last since it only fires on keyword match, not binary.
+// CI_FILTERS — ordered: GhRunLogFilter before GhFilter (both match `gh`). GenericCIFilter is last since it only fires on keyword match, not binary.
 // ---------------------------------------------------------------------------
 
 export const CI_FILTERS: ToolFilter[] = [
@@ -1141,7 +1132,6 @@ export const CI_FILTERS: ToolFilter[] = [
   trivyFilter,
   snykFilter,
   semgrepFilter,
-  // catch-all keyword-based CI log filter — must be last so it doesn't
-  // preempt kubectl logs or other specific filters registered earlier
+  // catch-all keyword-based CI log filter — must be last so it doesn't preempt kubectl logs or other specific filters registered earlier
   genericCIFilter,
 ]
