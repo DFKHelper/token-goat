@@ -12,6 +12,7 @@ import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, shlexSplit, stripPrefixes } from './helpers.js'
+import { BUILD_FILTERS } from './build.js'
 import { GIT_FILTERS } from './git.js'
 import { LINTER_FILTERS } from './linters.js'
 import { PACKAGE_MANAGER_FILTERS } from './package_managers.js'
@@ -48,7 +49,12 @@ export const TOOL_FILTERS: ToolFilter[] = [
   // GitFilter last.  GitFilter catches every remaining git subcommand not
   // claimed by GitLogFilter, GitDiffFilter, GitStatusVerboseFilter, etc.
   ...GIT_FILTERS,
-  // Batches append here: build · containers ·
+  // Batch E — build tools. CargoFilter handles all cargo subcommands internally;
+  // GoFilter must follow goTestFilter (Batch A) because both match `go`.
+  // NxFilter/TurboFilter match npx/pnpx so they must follow the package-manager
+  // batch but their own subcommand check prevents false positives.
+  ...BUILD_FILTERS,
+  // Batches append here: containers ·
   // cloud/iac · ci · ai-clis · shell/file · lang.
 ]
 
