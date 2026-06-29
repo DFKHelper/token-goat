@@ -91,7 +91,7 @@ function normalizeHeadingStrip(s: string): string {
   return n.replace(/\s+/g, ' ').trim()
 }
 
-const MARKDOWN_HEADER_RE = /^(#{1,6})\s+(.+?)\s*#*\s*$/
+const MARKDOWN_HEADER_RE = /^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/
 const TABLE_HEADER_RE = /^\s*\[+\s*([^\]]+?)\s*\]+\s*$/
 // A Python def/class header. Indentation = nesting; the name is the section key.
 const PYTHON_HEADER_RE = /^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)/

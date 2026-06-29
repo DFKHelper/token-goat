@@ -78,6 +78,14 @@ describe('extractSection', () => {
     expect(extractSection(MD, 'Install#5')).toBeNull()
   })
 
+  it('preserves a trailing # in heading text (C#) instead of stripping it as a closing sequence', () => {
+    const md = ['# Lang notes', '## C#', 'dotnet content', '## Other', 'x'].join('\n')
+    const result = extractSection(md, 'C#')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('C#')
+    expect(result?.content).toBe('## C#\ndotnet content')
+  })
+
   it('does not treat a #-comment inside a fenced code block as a header', () => {
     const md = [
       '# Title',
