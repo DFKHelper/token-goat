@@ -8,7 +8,7 @@
 
 import { createRequire } from 'node:module'
 
-import type { Database as BetterSqlite3Database } from 'better-sqlite3'
+import type { Database as BetterSqlite3Database, Statement as BetterSqlite3Statement } from 'better-sqlite3'
 
 import { pathEqClause } from './sql_path.js'
 
@@ -358,6 +358,15 @@ export function chunkFile(
  * @param chunks - Array of chunks to insert.
  * @throws Error if embeddings are not available or insertion fails.
  */
+// Insert one chunk vector. sqlite-vec's vec0 chunk_vectors table declares rowid as a strict INTEGER PRIMARY KEY that rejects a plain JS number bound by better-sqlite3 ("Only integers are allowed for primary key values"); the rowid must be coerced to BigInt. Centralizing the insert keeps that binding rule in one place so upsertChunks and its tests cannot drift from it.
+export function insertChunkVector(
+  stmt: BetterSqlite3Statement,
+  rowid: number | bigint,
+  embedding: number[],
+): void {
+  stmt.run(BigInt(rowid), packVec(embedding))
+}
+
 export async function upsertChunks(
   db: BetterSqlite3Database,
   chunks: Chunk[],

@@ -27,14 +27,14 @@ afterEach(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
-// Seed one chunk row (under casing `p`) plus its vector stand-in row. sqlite-vec's vec0 table is absent in CI, so create a plain chunk_vectors table for the vector DELETE to hit.
+// Seed one chunk row (under casing `p`) plus its vector row. chunk_vectors is sqlite-vec's vec0 table when the optional dep is installed, else a plain stand-in; the insert binds a BigInt rowid and a 384-dim blob so it satisfies vec0's strict integer-PK and dimension rules while staying valid for the stand-in.
 function seed(dbPath: string, p: string): void {
   const db = getDb(dbPath)
   db.exec('CREATE TABLE IF NOT EXISTS chunk_vectors (rowid INTEGER PRIMARY KEY, embedding BLOB)')
   const info = db
     .prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)')
     .run(p, 1, 1, 'X', 'code')
-  db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)').run(Number(info.lastInsertRowid), Buffer.alloc(4))
+  db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)').run(BigInt(info.lastInsertRowid), Buffer.alloc(384 * 4))
 }
 
 function chunkCount(dbPath: string, p: string): number {
