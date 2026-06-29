@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { dataDir, globalDbPath } from './constants.js'
 import { fingerprintFile } from './fingerprint.js'
 import { indexFileSync } from './parser.js'
+import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
 import { foldPath } from './util.js'
 
@@ -103,8 +104,10 @@ export function getDirtyPathsFor(dir: string): string[] {
  * batch or crashes the drain loop.
  */
 function makeIndexer(dbPath: string): (absPath: string, sha: string) => void {
-  return (absPath) => {
+  return (absPath, sha) => {
     try {
+      // Skip files whose content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed.
+      if (getFileEntry(absPath, dbPath)?.sha === sha) return
       indexFileSync(absPath, dbPath)
     } catch {
       // One bad file must not abort the rest of the batch.
