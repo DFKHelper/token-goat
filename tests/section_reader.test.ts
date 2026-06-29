@@ -284,4 +284,32 @@ describe('readSection', () => {
   it('returns null for an unreadable file', () => {
     expect(readSection('/no/such/path/nope.md', 'X')).toBeNull()
   })
+
+  it('finds a real YAML key when comment lines precede it (comments are not headers)', () => {
+    const yaml = [
+      '# Application configuration',
+      '# do not edit by hand',
+      'database:',
+      '  host: localhost',
+      '  port: 5432',
+      'logging:',
+      '  level: info',
+      '',
+    ].join('\n')
+    const file = tmpFile('config.yaml', yaml)
+    const result = readSection(file, 'database')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('database')
+    expect(result?.content).toContain('host: localhost')
+    // A comment line must never be exposed as a section.
+    expect(readSection(file, 'do not edit by hand')).toBeNull()
+  })
+
+  it('finds an INI [section] when a # comment precedes it', () => {
+    const ini = ['# global config', '[database]', 'host=localhost', '[logging]', 'level=info', ''].join('\n')
+    const file = tmpFile('settings.ini', ini)
+    const result = readSection(file, 'database')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('database')
+  })
 })
