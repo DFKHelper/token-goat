@@ -90,13 +90,21 @@ describe('getDirtyPathsFor', () => {
 })
 
 describe('processDirtyBatch', () => {
-  it('indexes existing files and skips missing ones', () => {
+  it('indexes existing files and prunes missing ones', () => {
     const real = path.join(DIR, 'real.ts')
     fs.writeFileSync(real, 'export const x = 1\n')
+    const ghost = path.join(DIR, 'ghost.ts')
     const indexed: string[] = []
-    const count = processDirtyBatch([real, path.join(DIR, 'ghost.ts')], (p) => indexed.push(p))
+    const removed: string[] = []
+    const count = processDirtyBatch(
+      [real, ghost],
+      (p) => indexed.push(p),
+      (p) => removed.push(p),
+    )
     expect(count).toBe(1)
     expect(indexed).toEqual([real])
+    // The vanished path is reconciled as a deletion, not silently skipped.
+    expect(removed).toEqual([ghost])
   })
 })
 
@@ -165,6 +173,28 @@ describe('drainOnce', () => {
       closeDb(projectDb)
     }
   })
+  // Regression: the incremental drain must reconcile DELETIONS, not just edits. The shipping path is `drainOnce(dir)` with no injected callbacks; before the fix a dirty path whose file was gone was skipped, orphaning its symbol/ref rows forever. This drives the real default path: index a file, delete it, re-queue its path, drain again, and asserts the symbol is gone from the project's global.db. It fails pre-fix (row survives) and passes post-fix.
+  it('default path prunes a deleted file\'s rows on re-drain (no injected callback)', () => {
+    const src = path.join(DIR, 'doomed.ts')
+    fs.writeFileSync(src, 'export function doomedWorkerSymbol(): number {\n  return 1\n}\n')
+    const norm = normalizePath(src)
+    writeQueue(DIR, [norm])
+    expect(drainOnce(DIR)).toBe(1)
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      expect(
+        querySymbols({ name: 'doomedWorkerSymbol', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+      fs.rmSync(src)
+      writeQueue(DIR, [norm])
+      drainOnce(DIR)
+      expect(querySymbols({ name: 'doomedWorkerSymbol', limit: 10 }, projectDb).length).toBe(0)
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
 
   // Regression: the real drain path must SHA-gate. makeIndexer is handed each file's fingerprint but the buggy version dropped it and reparsed every queued file on every drain. Drive the real default path (no injected callback): index a file, delete its symbol rows to prove a reindex would repopulate, then re-queue the UNCHANGED file. With the gate the stored files.sha matches the fingerprint so indexFileSync is skipped and the rows stay deleted; the buggy version reindexes and repopulates them.
   it('default path skips re-indexing a file whose content is unchanged (sha gate)', () => {

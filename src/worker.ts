@@ -28,6 +28,8 @@ import { indexFileSync } from './parser.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
 import { foldPath } from './util.js'
+import { getDb } from './db.js'
+import { removeFileFromIndex } from './index_prune.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
 export interface WorkerOptions {
@@ -112,6 +114,17 @@ function makeIndexer(dbPath: string): (absPath: string, sha: string) => void {
   }
 }
 
+// Build the remove callback the drain loop uses by default: drop the index rows and embedding chunks for a path whose file has vanished from disk, reconciling deletions. A failure on one path is swallowed so a single bad delete never aborts the batch or crashes the drain loop.
+function makeRemover(dbPath: string): (absPath: string) => void {
+  return (absPath) => {
+    try {
+      removeFileFromIndex(getDb(dbPath), absPath)
+    } catch {
+      // One failed delete must not abort the rest of the batch.
+    }
+  }
+}
+
 /**
  * Process one batch of dirty paths.
  *
@@ -125,10 +138,16 @@ function makeIndexer(dbPath: string): (absPath: string, sha: string) => void {
 export function processDirtyBatch(
   paths: string[],
   index: (absPath: string, sha: string) => void = makeIndexer(globalDbPath()),
+  remove: (absPath: string) => void = makeRemover(globalDbPath()),
 ): number {
   let indexed = 0
   for (const p of paths) {
-    if (!p || !fs.existsSync(p)) continue
+    if (!p) continue
+    // A dirty path whose file is gone is a deletion to reconcile, not a no-op: prune its stale rows instead of skipping, otherwise `symbol Foo` resolves a deleted file forever.
+    if (!fs.existsSync(p)) {
+      remove(p)
+      continue
+    }
     const sha = fingerprintFile(p)
     if (sha === null) continue
     index(p, sha)
@@ -162,7 +181,11 @@ function sleepSyncMs(ms: number): void {
  * files are indexed into `dir`'s `global.db` (the real shipping path); in
  * production `dir` is the data dir, so this is {@link globalDbPath}.
  */
-export function drainOnce(dir: string, index?: (absPath: string, sha: string) => void): number {
+export function drainOnce(
+  dir: string,
+  index?: (absPath: string, sha: string) => void,
+  remove?: (absPath: string) => void,
+): number {
   const queuePath = dirtyQueuePathFor(dir)
   const draining = `${queuePath}.draining`
   let rawSnapshot = ''
@@ -218,7 +241,8 @@ export function drainOnce(dir: string, index?: (absPath: string, sha: string) =>
 
   if (rawSnapshot.trim() === '') return 0
   const paths = parseDirtyQueueLines(rawSnapshot)
-  return processDirtyBatch(paths, index ?? makeIndexer(path.join(dir, 'global.db')))
+  const dbPath = path.join(dir, 'global.db')
+  return processDirtyBatch(paths, index ?? makeIndexer(dbPath), remove ?? makeRemover(dbPath))
 }
 
 /** Is `pid` a live process? Uses signal 0 (probe) — no signal is delivered. */
