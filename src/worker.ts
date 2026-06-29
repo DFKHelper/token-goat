@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { dataDir, globalDbPath } from './constants.js'
 import { fingerprintFile } from './fingerprint.js'
 import { indexFileSync } from './parser.js'
+import { normalizePath } from './paths.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
 export interface WorkerOptions {
@@ -74,8 +75,16 @@ export function getDirtyPathsFor(dir: string): string[] {
   const out: string[] = []
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
-    if (trimmed === '' || seen.has(trimmed)) continue
-    seen.add(trimmed)
+    if (trimmed === '') continue
+    // On case-insensitive filesystems (Windows/macOS), deduplicate by
+    // case-folded form so "C:\Projects\file.ts" and "c:\projects\file.ts"
+    // are recognized as the same entry. normalizePath only lowercases the
+    // drive letter, so we fold the entire normalized path for dedup.
+    const normalized = normalizePath(trimmed)
+    const caseInsensitiveFs = process.platform === 'win32' || process.platform === 'darwin'
+    const dedupeKey = caseInsensitiveFs ? normalized.toLowerCase() : normalized
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
     out.push(trimmed)
   }
   return out
