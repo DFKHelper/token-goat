@@ -3,6 +3,8 @@ import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import { passOutput, getToolName, getToolInput } from './hooks_common.js';
 import { recordStat } from './stats.js';
+import { storeWebOutput } from './web_cache.js';
+import { recordWebFetch } from './session.js';
 
 function extractToolResponse(raw: Record<string, unknown>): string {
   const toolResponse = raw['tool_response'];
@@ -26,7 +28,7 @@ function extractToolResponse(raw: Record<string, unknown>): string {
   return '';
 }
 
-function preFetchHandler(event: HookEvent): HookOutput {
+export function preFetchHandler(event: HookEvent): HookOutput {
   try {
     const toolName = getToolName(event);
 
@@ -50,7 +52,7 @@ function preFetchHandler(event: HookEvent): HookOutput {
   }
 }
 
-function postFetchHandler(event: HookEvent): HookOutput {
+export function postFetchHandler(event: HookEvent): HookOutput {
   try {
     const toolName = getToolName(event);
 
@@ -74,6 +76,10 @@ function postFetchHandler(event: HookEvent): HookOutput {
     if (!body || body.length < 1024) {
       return passOutput();
     }
+
+    // Store the fetched content and record it in the session for cross-process recall
+    const cacheId = storeWebOutput(url, body);
+    recordWebFetch(url, cacheId);
 
     return passOutput();
   } catch {
