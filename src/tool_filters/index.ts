@@ -22,6 +22,11 @@ export {
   cargoFilter, goFilter, nxFilter, lernaFilter, turboFilter, webpackFilter,
 } from './build.js'
 export {
+  CONTAINER_FILTERS,
+  DockerFilter, DockerComposeFilter, KubectlFilter, KubectlLogsFilter, HelmFilter,
+  dockerFilter, dockerComposeFilter, kubectlFilter, kubectlLogsFilter, helmFilter,
+} from './containers.js'
+export {
   TOOL_FILTERS,
   selectFilter,
   detectFromCommand,
