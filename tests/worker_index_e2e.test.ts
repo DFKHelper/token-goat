@@ -19,6 +19,8 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { cmdIndex } from '../src/cli.js'
+import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -331,4 +333,28 @@ describe('built bundle exposes exports / imports / find / web-output', () => {
     expect(res.status).toBe(1)
     expect(res.stderr).toContain('no cached web output')
   }, 30000)
+})
+
+describe('cmdIndex prunes deleted files (shipping path)', () => {
+  it('removes a deleted file\'s symbols on re-index via --walk', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdindex-prune-'))
+    const dbPath = path.join(dir, 'idx.db')
+    fs.writeFileSync(path.join(dir, 'keep.ts'), 'export const keepSym = 1\n')
+    const goneFile = path.join(dir, 'gone.ts')
+    fs.writeFileSync(goneFile, 'export const goneSym = 2\n')
+    cmdIndex(dir, { walk: true, dbPath })
+    const db = getDb(dbPath)
+    const count = (sym: string): number =>
+      (db.prepare('SELECT COUNT(*) AS n FROM symbols WHERE name = ?').get(sym) as { n: number }).n
+    expect(count('goneSym')).toBeGreaterThan(0)
+    fs.rmSync(goneFile)
+    cmdIndex(dir, { walk: true, dbPath })
+    expect(count('goneSym')).toBe(0)
+    expect(count('keepSym')).toBeGreaterThan(0)
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if database file is still locked
+    }
+  })
 })
