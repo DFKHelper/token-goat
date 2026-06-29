@@ -139,8 +139,13 @@ export class PytestFilter extends ToolFilter {
         }
         // Warning message line: dedupe by normalised message text.
         if (WARN_MSG_RE.test(line)) {
-          const colonIdx = line.lastIndexOf('Warning')
-          const normKey = colonIdx >= 0 ? line.slice(colonIdx).trim() : line.trim()
+          // Key off the warning text with its leading `path:line:` location
+          // stripped, so the SAME warning fired from many call sites collapses
+          // but two DIFFERENT warning types or messages never do. The earlier
+          // lastIndexOf('Warning') discarded the type name, so e.g.
+          // "UserWarning: deprecated" and "FutureWarning: deprecated" produced
+          // the same key ("Warning: deprecated") and one was wrongly dropped.
+          const normKey = line.replace(/^\s*\S.*?:\d+:\s*/, '').trim() || line.trim()
           const count = warnMsgSeen.get(normKey) ?? 0
           warnMsgSeen.set(normKey, count + 1)
           if (count === 0) kept.push(line)
