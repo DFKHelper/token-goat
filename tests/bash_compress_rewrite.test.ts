@@ -116,7 +116,7 @@ describe('preBashHandler: compression rewrite', () => {
     const result = preBashHandler(preEvent({ command: 'cargo build' }))
     expect(result.hookType).toBe('rewriteInput')
     if (result.hookType === 'rewriteInput') {
-      expect(result.updatedInput['command']).toBe("token-goat compress -f generic -c 'cargo build'")
+      expect(result.updatedInput['command']).toBe("token-goat compress -f cargo -c 'cargo build'")
     }
   })
 
@@ -128,7 +128,7 @@ describe('preBashHandler: compression rewrite', () => {
     if (result.hookType === 'rewriteInput') {
       expect(result.updatedInput['description']).toBe('compile')
       expect(result.updatedInput['timeout']).toBe(120000)
-      expect(result.updatedInput['command']).toBe("token-goat compress -f generic -c 'go build ./...'")
+      expect(result.updatedInput['command']).toBe("token-goat compress -f go -c 'go build ./...'")
     }
   })
 
@@ -138,7 +138,7 @@ describe('preBashHandler: compression rewrite', () => {
     if (result.hookType === 'rewriteInput') {
       // The compressor shell-runs the -c arg; the cd must survive so cargo runs in /repo.
       expect(result.updatedInput['command']).toBe(
-        "token-goat compress -f generic -c 'cd /repo && cargo test'",
+        "token-goat compress -f cargo -c 'cd /repo && cargo test'",
       )
     }
   })
@@ -161,7 +161,7 @@ describe('preBashHandler: compression rewrite', () => {
   })
 
   it('respects a disabled filter in config (no rewrite)', () => {
-    fs.writeFileSync(_testConfigPath, '[bash_compress]\ndisabled_filters = ["generic"]\n')
+    fs.writeFileSync(_testConfigPath, '[bash_compress]\ndisabled_filters = ["cargo"]\n')
     invalidateConfigCache()
     const result = preBashHandler(preEvent({ command: 'cargo build' }))
     expect(result.hookType).toBe('pass')
@@ -232,7 +232,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
     expect(parsed.hookSpecificOutput?.hookEventName).toBe('PreToolUse')
     expect(parsed.hookSpecificOutput?.permissionDecision).toBe('allow')
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f generic -c 'go build ./...'",
+      "token-goat compress -f go -c 'go build ./...'",
     )
   })
 
@@ -330,6 +330,40 @@ describe('compression rewrite (built-bundle e2e)', () => {
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
       "token-goat compress -f git-diff -c 'git diff HEAD'",
+    )
+  })
+
+  it('rewrites make to the make filter (batch E build-tool filter)', () => {
+    // Verifies the batch-E build filters survive esbuild bundling: MakeFilter
+    // is registered in BUILD_FILTERS -> spread into TOOL_FILTERS.
+    const out = runHook({
+      session_id: 'e2e-compress-make',
+      tool_name: 'Bash',
+      tool_input: { command: 'make all' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f make -c 'make all'",
+    )
+  })
+
+  it('rewrites cargo build to the cargo filter (batch E build-tool filter)', () => {
+    // Verifies CargoFilter specifically survives esbuild and dispatch correctly
+    // prefers -f cargo over -f generic for cargo subcommands.
+    const out = runHook({
+      session_id: 'e2e-compress-cargo',
+      tool_name: 'Bash',
+      tool_input: { command: 'cargo build --release' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f cargo -c 'cargo build --release'",
     )
   })
 
