@@ -4,8 +4,8 @@ export * from './helpers.js'
 export { CompressedOutput, ToolFilter } from './base.js'
 export type { ApplyOptions } from './base.js'
 export { GenericFilter } from './generic.js'
-export { makeNodeTestRunnerFilter, makePackageManagerFilter, makeLinterFilter, plural } from './families.js'
-export type { NodeTestRunnerConfig, PackageManagerFilterConfig, LinterFilterConfig, DropRule } from './families.js'
+export { makeNodeTestRunnerFilter, makePackageManagerFilter, makeLinterFilter, makeAiCliFilter, plural } from './families.js'
+export type { NodeTestRunnerConfig, PackageManagerFilterConfig, LinterFilterConfig, DropRule, AiCliFilterConfig, AiCliCountedRule, AiCliKeepLastRule } from './families.js'
 export { jestFilter, vitestFilter, TEST_RUNNER_FILTERS } from './test_runners.js'
 export { PytestFilter, pytestFilter } from './pytest.js'
 export { GoTestFilter, goTestFilter } from './go_test.js'
@@ -35,6 +35,21 @@ export {
   ansibleFilter, pulumiFilter, cdkFilter, vaultFilter, packerFilter,
   nixFilter, wranglerFilter, hardhatFilter, serverlessFilter, flyFilter, forgeFilter,
 } from './cloud.js'
+export {
+  AI_CLI_FILTERS,
+  aiderFilter,
+  ghCopilotFilter,
+  copilotFilter,
+  geminiCliFilter,
+  claudeCliFilter,
+  cursorFilter,
+  windsurfFilter,
+  openCodeFilter,
+  continueFilter,
+  clineFilter,
+  CodexExecFilter,
+  codexExecFilter,
+} from './ai_clis.js'
 export {
   CI_FILTERS,
   GhRunLogFilter, GhFilter, ActFilter, GenericCIFilter, PreCommitFilter,
