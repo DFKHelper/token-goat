@@ -15,13 +15,7 @@
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
-import { isCaseInsensitiveFs } from './util.js'
-
-// On case-insensitive filesystems a stored path and a query path that differ only
-// in casing denote the same file, so compare path columns case-insensitively there.
-function pathEq(column: string): string {
-  return isCaseInsensitiveFs() ? `${column} = ? COLLATE NOCASE` : `${column} = ?`
-}
+import { pathEqClause as pathEq } from './sql_path.js'
 
 /** Raw `symbols` row as returned by better-sqlite3 (snake_case columns). */
 interface SymbolRow {

@@ -19,8 +19,8 @@ import { createRequire } from 'node:module'
 
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
-import { isCaseInsensitiveFs } from './util.js'
 import { fingerprintFile } from './fingerprint.js'
+import { pathEqClause } from './sql_path.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, RefEntry, SymbolEntry } from './parser_types.js'
 import { extractCsharp } from './languages/csharp.js'
@@ -1216,10 +1216,9 @@ function extractSymbolsNoTreeSitter(
  * prior reindex are removed rather than orphaned as case-variant duplicates.
  */
 export function deleteFileRows(db: ReturnType<typeof getDb>, filePath: string): void {
-  const eq = isCaseInsensitiveFs() ? '= ? COLLATE NOCASE' : '= ?'
-  db.prepare(`DELETE FROM symbols WHERE file_path ${eq}`).run(filePath)
-  db.prepare(`DELETE FROM refs WHERE file_path ${eq}`).run(filePath)
-  db.prepare(`DELETE FROM files WHERE path ${eq}`).run(filePath)
+  db.prepare(`DELETE FROM symbols WHERE ${pathEqClause('file_path')}`).run(filePath)
+  db.prepare(`DELETE FROM refs WHERE ${pathEqClause('file_path')}`).run(filePath)
+  db.prepare(`DELETE FROM files WHERE ${pathEqClause('path')}`).run(filePath)
 }
 
 function writeParseResult(filePath: string, result: ParseResult, dbPath: string): void {
