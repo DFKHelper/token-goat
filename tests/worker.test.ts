@@ -13,7 +13,7 @@ import {
   workerPidPath,
 } from '../src/worker.js'
 import { querySymbols, queryRefs } from '../src/index_reader.js'
-import { closeDb } from '../src/db.js'
+import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 
 let DIR: string
@@ -173,6 +173,30 @@ describe('drainOnce', () => {
       const refs = queryRefs({ name: 'knownCallee' }, projectDb)
       expect(refs.length).toBeGreaterThan(0)
       expect(refs[0]?.context).toBe('knownCaller')
+    } finally {
+      closeDb(projectDb)
+    }
+  })
+
+  // Regression: the real drain path must SHA-gate. makeIndexer is handed each file's fingerprint but the buggy version dropped it and reparsed every queued file on every drain. Drive the real default path (no injected callback): index a file, delete its symbol rows to prove a reindex would repopulate, then re-queue the UNCHANGED file. With the gate the stored files.sha matches the fingerprint so indexFileSync is skipped and the rows stay deleted; the buggy version reindexes and repopulates them.
+  it('default path skips re-indexing a file whose content is unchanged (sha gate)', () => {
+    const src = path.join(DIR, 'cached.ts')
+    fs.writeFileSync(src, 'export function shaGatedSymbol(): number {\n  return 7\n}\n')
+    const norm = normalizePath(src)
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      expect(querySymbols({ name: 'shaGatedSymbol', limit: 10 }, projectDb).length).toBeGreaterThan(0)
+
+      // Corrupt the index: drop the file's symbol rows but leave its files row (and stored sha) intact.
+      getDb(projectDb).prepare('DELETE FROM symbols WHERE file_path = ?').run(norm)
+      expect(querySymbols({ name: 'shaGatedSymbol', limit: 10 }, projectDb).length).toBe(0)
+
+      // Re-queue the unchanged file and drain again; the sha gate must skip the reparse.
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      expect(querySymbols({ name: 'shaGatedSymbol', limit: 10 }, projectDb).length).toBe(0)
     } finally {
       closeDb(projectDb)
     }
