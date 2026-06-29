@@ -96,6 +96,36 @@ function helperFn() {}
     expect(imports).toHaveLength(0)
   })
 
+  it('pops class scope at the closing brace so later top-level decls are not mis-parented', () => {
+    const content = `<?php
+class Foo {
+    public function a() {}
+}
+function baz() {}
+class Bar {
+    public function b() {}
+}
+`
+    const { symbols } = extractPhp(content, 'scope.php')
+    const baz = symbols.find((s) => s.name === 'baz')
+    expect(baz).toBeDefined()
+    // baz is declared after Foo's closing brace, so it is a top-level function with no parent class.
+    expect(baz?.kind).toBe('function')
+    expect(baz?.docstring).toBe('')
+    // Bar is a second top-level class declared after Foo closed; its parent must be empty, not Foo.
+    const bar = symbols.find((s) => s.name === 'Bar')
+    expect(bar?.kind).toBe('class')
+    expect(bar?.docstring).toBe('')
+    // Method b genuinely belongs to Bar.
+    const b = symbols.find((s) => s.name === 'b')
+    expect(b?.kind).toBe('method')
+    expect(b?.docstring).toBe('Bar')
+    // Sanity: method a still belongs to Foo.
+    const a = symbols.find((s) => s.name === 'a')
+    expect(a?.kind).toBe('method')
+    expect(a?.docstring).toBe('Foo')
+  })
+
   it('detects .php language via parseFile', async () => {
     const file = tmp('foo.php', '<?php function foo() {}')
     const result = await parseFile(file)
