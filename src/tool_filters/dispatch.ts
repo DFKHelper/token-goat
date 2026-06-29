@@ -18,6 +18,7 @@ import { CI_FILTERS } from './ci.js'
 import { CLOUD_FILTERS } from './cloud.js'
 import { SHELL_FILE_FILTERS } from './shell_file.js'
 import { LANGUAGE_FILTERS, bunFilter } from './languages.js'
+import { MISC_FILTERS, playwrightFilter, cypressFilter } from './misc.js'
 import { CONTAINER_FILTERS } from './containers.js'
 import { GIT_FILTERS } from './git.js'
 import { LINTER_FILTERS } from './linters.js'
@@ -40,6 +41,12 @@ export const TOOL_FILTERS: ToolFilter[] = [
   ...TEST_RUNNER_FILTERS,
   pytestFilter,
   goTestFilter,
+  // PlaywrightFilter and CypressFilter must precede BunFilter: BunFilter also
+  // claims 'bunx', so `bunx playwright test` / `bunx cypress run` would route
+  // to BunFilter first without this ordering. Both filters have custom matches()
+  // that handle npx/pnpx/bunx with playwright/cypress as the next positional.
+  playwrightFilter,
+  cypressFilter,
   // BunFilter must precede the package-manager batch: NodePackageFilter also
   // claims 'bun', and first-match wins. BunFilter's routing (test/build/run)
   // is richer than the generic npm-family handler.
@@ -84,6 +91,12 @@ export const TOOL_FILTERS: ToolFilter[] = [
   ...SHELL_FILE_FILTERS,
   // Batch K1 — language runtimes and compilers.
   ...LANGUAGE_FILTERS,
+  // Batch K2 — db clients, runners, CSS-preprocessors, system-package managers,
+  // and generic catch-alls (env dump, JSON array, severity-log, tail-trunc).
+  // PlaywrightFilter and CypressFilter from this family are registered above
+  // (before BunFilter) — they are NOT included in MISC_FILTERS.
+  // TailTruncFilter (matches() → true) MUST remain last in MISC_FILTERS.
+  ...MISC_FILTERS,
 ]
 
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */
