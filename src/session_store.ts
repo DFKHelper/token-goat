@@ -83,8 +83,34 @@ function asFileEntry(raw: unknown): FileEntry | null {
   return o['wasTruncated'] === true ? { ...entry, wasTruncated: true } : entry
 }
 
+/**
+ * Parse one entry from a Python-format `files` dict value into a {@link FileEntry}.
+ * Returns null for any malformed entry so the caller can skip it safely.
+ *
+ * Python fields: rel_or_abs (string), read_count (int), last_read_ts (float seconds),
+ * read_size (bytes), last_edit_ts (float seconds, may be absent).
+ * The dict key itself is used as the path fallback when rel_or_abs is missing.
+ */
+function asPyFileEntry(dictKey: string, raw: unknown): FileEntry | null {
+  if (raw === null || typeof raw !== 'object') return null
+  const v = raw as Record<string, unknown>
+  const p = typeof v['rel_or_abs'] === 'string' ? v['rel_or_abs'] : dictKey
+  if (!p) return null
+  const readCount = typeof v['read_count'] === 'number' ? Math.max(1, Math.round(v['read_count'])) : 1
+  const lastReadTs = typeof v['last_read_ts'] === 'number' ? v['last_read_ts'] : 0
+  const sizeBytes = typeof v['read_size'] === 'number' ? Math.round(v['read_size']) : 0
+  const wasEdited = typeof v['last_edit_ts'] === 'number' && v['last_edit_ts'] > 0
+  return { path: p, readCount, lastReadAt: lastReadTs * 1000, wasEdited, sizeBytes }
+}
+
 /** Coerce an untrusted parsed-JSON value into a valid (possibly empty)
- * {@link SerializedSession}, dropping anything malformed. Never throws. */
+ * {@link SerializedSession}, dropping anything malformed. Never throws.
+ *
+ * Handles both the TS array format (`files: FileEntry[]`) and the legacy Python
+ * dict format (`files: { path: { rel_or_abs, read_count, last_read_ts, ... } }`).
+ * Python-format files are transparently migrated to the TS shape on load; the
+ * next {@link saveSessionState} call then writes the file in the TS format so
+ * subsequent loads use the fast path automatically. */
 function coerce(raw: unknown): SerializedSession {
   const o = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const files: FileEntry[] = []
@@ -93,10 +119,19 @@ function coerce(raw: unknown): SerializedSession {
       const e = asFileEntry(f)
       if (e !== null) files.push(e)
     }
+  } else if (o['files'] !== null && typeof o['files'] === 'object') {
+    // Python-format: files is a path-keyed object, not an array.
+    for (const [key, val] of Object.entries(o['files'] as Record<string, unknown>)) {
+      const e = asPyFileEntry(key, val)
+      if (e !== null) files.push(e)
+    }
   }
+  // TS format uses `hintsShown`; Python format uses `hints_seen` — accept both.
   const hintsShown = Array.isArray(o['hintsShown'])
     ? o['hintsShown'].filter((h): h is string => typeof h === 'string')
-    : []
+    : Array.isArray(o['hints_seen'])
+      ? (o['hints_seen'] as unknown[]).filter((h): h is string => typeof h === 'string')
+      : []
   return {
     files,
     hintsShown,
