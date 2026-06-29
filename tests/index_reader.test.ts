@@ -159,6 +159,39 @@ describe('index_reader round-trips inserted rows', () => {
     }
   })
 
+  it('searchSymbolsFts matches a natural-language query containing FTS5 operator chars', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    db.prepare(
+      'INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('src/parse.ts', 'parseNote', 'function', 1, 9, '// TODO: fix the error: parse note (later)', 'docs')
+
+    const ftsExists =
+      (
+        db
+          .prepare(
+            "SELECT count(*) AS c FROM sqlite_master WHERE type = 'table' AND name = 'symbols_fts'",
+          )
+          .get() as { c: number }
+      ).c > 0
+    if (!ftsExists) return // FTS5 unavailable — sibling test covers the no-op path
+
+    // Pre-fix: the raw query `error: parse` parses as an FTS5 column filter
+    // (`error:`), throwing "no such column: error" → caught → []. A query with
+    // a paren (`note (later)`) throws a syntax error the same way. Both must
+    // now resolve to the inserted row.
+    const colon = searchSymbolsFts('error: parse', 10, dbPath)
+    expect(colon.map((s) => s.name)).toContain('parseNote')
+
+    const paren = searchSymbolsFts('note (later)', 10, dbPath)
+    expect(paren.map((s) => s.name)).toContain('parseNote')
+
+    // Control: a plain query still works (no regression).
+    const plain = searchSymbolsFts('parseNote', 10, dbPath)
+    expect(plain.map((s) => s.name)).toContain('parseNote')
+  })
+
   describe('case-insensitive filesystem path matching', () => {
     const prev = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
     afterEach(() => {
