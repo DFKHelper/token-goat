@@ -848,14 +848,17 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     return p
   }
 
-  it('emits context hint with bash-output suggestion on first read of tasks/*.output', () => {
+  it('emits a runnable --file recall hint on first read of tasks/*.output', () => {
     const p = makeTasksOutputFile()
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat bash-output')
-      expect(result.context).toContain('--tail')
+      // Must name a runnable command — bash-output --file "<path>" — not the old
+      // bare `--tail N` placeholder, which errors with "provide an <id> or --file".
+      expect(result.context).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
+      expect(result.context).toContain('--tail 50')
       expect(result.context).toContain('--grep')
+      expect(result.context).not.toContain('--tail N')
     }
   })
 
@@ -880,13 +883,14 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('unchanged since last read')
-      expect(result.message).toContain('--tail')
+      expect(result.message).toContain('token-goat bash-output --file "' + normalized + '"')
+      expect(result.message).not.toContain('--tail N')
     }
   })
 
   it('injects diff in deny when tasks/*.output content changed since last read', () => {
     const content1 = 'task output line 1\ntask output line 2\n'
-    const content2 = 'task output line 1\ntask output line 2\ntask output line 3 (new)\n'
+    const content2 = 'task output line 1\ntask output line 2\ntask output line 3 (added)\n'
     const p = makeTasksOutputFile(content1)
     const normalized = normalizePath(p)
 
@@ -908,6 +912,7 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('Content changed since last read')
       expect(result.message).toContain('```diff')
+      expect(result.message).toContain('token-goat bash-output --file "' + normalized + '"')
     }
   })
 })

@@ -112,6 +112,41 @@ describe('built bundle end-to-end indexing', () => {
   }, 60000)
 })
 
+describe('built bundle non-git walk-index (--walk)', () => {
+  it('indexes a non-git folder and resolves a symbol, excluding .env', () => {
+    const walkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-e2e-walk-'))
+    try {
+      fs.writeFileSync(
+        path.join(walkDir, 'thing.ts'),
+        'export function walkE2ESymbol(): number {\n  return 9\n}\n',
+      )
+      fs.writeFileSync(path.join(walkDir, '.env'), 'WALK_E2E_SECRET=nope\n')
+
+      // Without --walk a non-git folder still errors, now pointing at the flag.
+      const noFlag = runBundle(['index', walkDir])
+      expect(noFlag.status).toBe(1)
+      expect(noFlag.stderr).toMatch(/--walk/)
+
+      // With --walk the walker indexes thing.ts (1 file); .env is excluded.
+      const idx = runBundle(['index', '--walk', walkDir])
+      expect(idx.status).toBe(0)
+      expect(idx.stdout).toMatch(/Indexed 1 files/)
+
+      const sym = runBundle(['symbol', 'walkE2ESymbol'])
+      expect(sym.status).toBe(0)
+      expect(sym.stdout).toContain('walkE2ESymbol')
+
+      // The .env key must never have entered the index: a miss exits 1 with the
+      // "No matches" notice on stderr (and nothing on stdout).
+      const secret = runBundle(['symbol', 'WALK_E2E_SECRET'])
+      expect(secret.status).toBe(1)
+      expect(secret.stderr).toMatch(/No matches/i)
+    } finally {
+      fs.rmSync(walkDir, { recursive: true, force: true })
+    }
+  }, 60000)
+})
+
 describe('built bundle resolves relative reader paths (regression for path keying)', () => {
   // The index is keyed by the absolute normalized path; before the resolver was
   // wired in, skeleton/outline used exact equality against the user-typed

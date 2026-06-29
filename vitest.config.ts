@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
+    setupFiles: ['./tests/setup/isolate-home.ts'],
+    // Never pick up test copies inside agent worktrees (.claude/worktrees/...).
+    exclude: ['**/node_modules/**', '**/dist/**', '**/.claude/**'],
     pool: 'forks',
     poolOptions: {
       forks: {

@@ -253,6 +253,51 @@ export function getSessionId(): string {
   return _sessionId
 }
 
+/**
+ * The serializable snapshot of session state.
+ *
+ * Maps are flattened to entry arrays so the shape round-trips through JSON.
+ * Consumed by `session_store.ts` to persist state across the per-tool-call hook
+ * processes (the Python `SessionCache` JSON this port restores).
+ */
+export interface SerializedSession {
+  files: FileEntry[]
+  hintsShown: string[]
+  webFetches: Array<[string, string]>
+  bashOutputs: Array<[string, string]>
+  curlDownloads: Array<[string, string]>
+}
+
+/** Snapshot the current in-memory session state for persistence. */
+export function exportSessionState(): SerializedSession {
+  return {
+    files: Array.from(_files.values()),
+    hintsShown: Array.from(_hintsShown),
+    webFetches: Array.from(_webFetches.entries()),
+    bashOutputs: Array.from(_bashOutputs.entries()),
+    curlDownloads: Array.from(_curlDownloads.entries()),
+  }
+}
+
+/**
+ * Replace the in-memory session state with `s` (hydrate from a loaded snapshot).
+ *
+ * Called once per hook process after loading the on-disk state, before any
+ * handler runs. `FileEntry.path` is already the normalized map key, so entries
+ * re-key directly. Tolerant of a malformed `path` (skips that entry) but assumes
+ * the caller has otherwise validated the shape.
+ */
+export function importSessionState(s: SerializedSession): void {
+  _files = new Map()
+  for (const e of s.files) {
+    if (e && typeof e.path === 'string') _files.set(e.path, e)
+  }
+  _hintsShown = new Set(s.hintsShown)
+  _webFetches = new Map(s.webFetches)
+  _bashOutputs = new Map(s.bashOutputs)
+  _curlDownloads = new Map(s.curlDownloads)
+}
+
 registerReset(() => {
   _files = new Map()
   _hintsShown = new Set()

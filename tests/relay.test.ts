@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -45,13 +48,27 @@ function withFakeIo(): {
 }
 
 let io: ReturnType<typeof withFakeIo>
+let tmpHome: string
+let prevHome: string | undefined
 
 beforeEach(() => {
   io = withFakeIo()
+  // relay() now persists session state to TOKEN_GOAT_HOME. Point it at a fresh
+  // temp dir per test so it never touches the real ~/.token-goat.
+  prevHome = process.env['TOKEN_GOAT_HOME']
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-relay-'))
+  process.env['TOKEN_GOAT_HOME'] = tmpHome
 })
 
 afterEach(() => {
   io.restore()
+  if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+  else process.env['TOKEN_GOAT_HOME'] = prevHome
+  try {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  } catch {
+    // best-effort cleanup
+  }
 })
 
 describe('buildEvent', () => {

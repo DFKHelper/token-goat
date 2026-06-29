@@ -51,10 +51,10 @@ const SKIP_DIRS: ReadonlySet<string> = new Set([
   '.vscode',
 ])
 
-// Cap the walk so a pathological tree cannot make `map` run unbounded.
-const MAX_FILES_SCANNED = 20000
+// Cap the walk so a pathological tree cannot make `map` run unbounded. Also the "too much stuff" ceiling for the non-git walk-index fallback (see walk_index.ts).
+export const MAX_FILES_SCANNED = 20000
 
-interface WalkResult {
+export interface WalkResult {
   readonly files: string[]
   readonly languages: Record<string, number>
 }
@@ -63,7 +63,7 @@ interface WalkResult {
  * Recursively collect source files under `rootDir`, skipping {@link SKIP_DIRS}
  * and any non-source ('unknown') extensions, tallying a language histogram.
  */
-function walkProject(rootDir: string): WalkResult {
+export function walkProject(rootDir: string): WalkResult {
   const files: string[] = []
   const languages: Record<string, number> = {}
   const stack: string[] = [rootDir]

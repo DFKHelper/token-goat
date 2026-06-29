@@ -17,6 +17,7 @@ import * as path from 'path'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
+import { collectWalkIndexFiles } from './walk_index.js'
 import { VERSION } from './constants.js'
 import { getSessionFiles } from './session.js'
 import { searchSymbolsFts } from './index_reader.js'
@@ -84,11 +85,18 @@ function cmdSemantic(query: string, opts: { limit?: string }): void {
   out(blocks.join('\n\n'))
 }
 
-function cmdIndex(pathArg?: string): void {
+function cmdIndex(pathArg?: string, opts: { walk?: boolean } = {}): void {
   const root = pathArg ?? process.cwd()
-  const files = getTrackedFiles(root)
+  let files = getTrackedFiles(root)
   if (files.length === 0) {
-    throw new CliError(`no tracked files found under '${root}' (is it a git repo?)`)
+    if (opts.walk !== true) {
+      throw new CliError(
+        `no tracked files found under '${root}' (is it a git repo?). ` +
+          `Pass --walk to index a non-git folder.`,
+      )
+    }
+    // Opt-in non-git fallback: a bounded directory walk, guarded against over-broad roots / oversized trees and stripped of .env / generated files.
+    files = collectWalkIndexFiles(root)
   }
   let indexed = 0
   for (const f of files) {
@@ -690,6 +698,7 @@ export function buildProgram(): Command {
   program
     .command('index [path]')
     .description('parse all git-tracked files and (re)build the symbol index')
+    .option('--walk', 'if not a git repo, index a bounded directory walk instead (skips .env / generated / oversized trees)')
     .action(guard(cmdIndex))
 
   program
