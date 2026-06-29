@@ -356,6 +356,48 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runConfigGet({ file: f, key: 'project.version' }) })
       expect(stdout.trim()).toBe('2.0.0')
     })
+
+    it('reads a flat top-level key from a YAML file', () => {
+      const f = path.join(tempDir, 'c.yaml')
+      fs.writeFileSync(f, '# comment\nname: myapp\nother: x\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'name' }) })
+      expect(stdout.trim()).toBe('myapp')
+    })
+
+    it('reads a nested YAML key by indentation (2-space)', () => {
+      const f = path.join(tempDir, 'n.yaml')
+      fs.writeFileSync(f, 'database:\n  host: localhost\n  port: 5432\nname: app\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'database.host' }) })
+      expect(stdout.trim()).toBe('localhost')
+    })
+
+    it('reads a nested YAML key with 4-space indentation', () => {
+      const f = path.join(tempDir, 'four.yaml')
+      fs.writeFileSync(f, 'service:\n    port: 8080\n    nested:\n        deep: yes\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'service.nested.deep' }) })
+      expect(stdout.trim()).toBe('yes')
+    })
+
+    it('preserves a colon inside a YAML value', () => {
+      const f = path.join(tempDir, 'url.yaml')
+      fs.writeFileSync(f, 'database:\n  url: postgres://u:p@h/db\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'database.url' }) })
+      expect(stdout.trim()).toBe('postgres://u:p@h/db')
+    })
+
+    it('strips surrounding quotes from a YAML value', () => {
+      const f = path.join(tempDir, 'q.yaml')
+      fs.writeFileSync(f, 'creds:\n  user: "admin"\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'creds.user' }) })
+      expect(stdout.trim()).toBe('admin')
+    })
+
+    it('returns 1 for a missing YAML key', () => {
+      const f = path.join(tempDir, 'm.yaml')
+      fs.writeFileSync(f, 'database:\n  host: localhost\n')
+      const code = runConfigGet({ file: f, key: 'database.missing' })
+      expect(code).toBe(1)
+    })
   })
 
   // ---- runListSections ----------------------------------------------------

@@ -584,6 +584,42 @@ export interface ConfigGetOptions {
   key: string
 }
 
+/**
+ * Resolve a scalar value at a dotted path in a YAML document, line-based (no YAML
+ * library). Handles flat keys, indentation-nested keys at any consistent indent
+ * width, quoted values, and values containing a colon; skips comment and blank
+ * lines. Does not handle lists, multi-line/block scalars, flow mappings, inline
+ * comments after a value, or a literal dotted key.
+ */
+function lookupYaml(lines: readonly string[], key: string): string | null {
+  const parts = key.split('.')
+  let depth = 0
+  let parentIndent = -1
+  let childIndent = -1
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === '' || trimmed.startsWith('#')) continue
+    const indent = line.length - line.trimStart().length
+    if (depth > 0 && indent <= parentIndent) return null
+    if (childIndent !== -1 && indent !== childIndent) continue
+    const colon = trimmed.indexOf(':')
+    if (colon < 0) continue
+    if (childIndent === -1) childIndent = indent
+    const k = trimmed.slice(0, colon).trim()
+    if (k !== parts[depth]) continue
+    if (depth === parts.length - 1) {
+      return trimmed
+        .slice(colon + 1)
+        .trim()
+        .replace(/^["']|["']$/g, '')
+    }
+    parentIndent = indent
+    childIndent = -1
+    depth++
+  }
+  return null
+}
+
 /** Handle ``token-goat config-get file key``. */
 export function runConfigGet(opts: ConfigGetOptions): number {
   const text = readFileText(opts.file)
@@ -617,7 +653,17 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     }
   }
 
-  // For TOML/YAML/INI: section-aware line-based extraction
+  if (ext === '.yaml' || ext === '.yml') {
+    const value = lookupYaml(text.split(/\r?\n/), opts.key)
+    if (value === null) {
+      emitErr(`Key '${opts.key}' not found in ${opts.file}`)
+      return 1
+    }
+    emit(value)
+    return 0
+  }
+
+  // For TOML/INI: section-aware line-based extraction
   // Split the key into section path and leaf key: "tool.ruff.line-length" -> ["tool.ruff"] + "line-length"
   const keyParts = opts.key.split('.')
   const leafKey = keyParts.at(-1) ?? opts.key
