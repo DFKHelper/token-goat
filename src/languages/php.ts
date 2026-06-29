@@ -78,10 +78,10 @@ export function extractPhp(
 
     if (!stripped || stripped.startsWith('//') || stripped.startsWith('#')) continue
 
-    // Track brace depth
+    // Track brace depth. Apply the net delta (opens minus closes) before the pop check so a class's closing brace pops its context on the same line; checking before subtracting closes would leave the stale class on the stack and mis-parent the next top-level declaration.
     const openB = (line.match(/\{/g) ?? []).length
     const closeB = (line.match(/\}/g) ?? []).length
-    braceDepth += openB
+    braceDepth += openB - closeB
 
     // Pop context when we close the class brace
     while (contextStack.length > 0) {
@@ -92,8 +92,6 @@ export function extractPhp(
         break
       }
     }
-
-    braceDepth -= closeB
 
     // namespace
     const nsM = NAMESPACE_RE.exec(stripped)
