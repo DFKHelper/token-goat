@@ -142,6 +142,106 @@ describe('corrupt / malformed disk state', () => {
   })
 })
 
+describe('Python-format session file compatibility', () => {
+  it('loads file entries from a Python-format files dict', () => {
+    const sid = 'py-compat-1'
+    fs.mkdirSync(path.join(tmpHome, 'sessions'), { recursive: true })
+    // Write a Python-format session file (files is an object, not an array).
+    const pySession = {
+      schema_version: 1,
+      created_by: 'token-goat',
+      session_id: sid,
+      files: {
+        '/c/projects/bugcrowd/report.md': {
+          rel_or_abs: '/c/projects/bugcrowd/report.md',
+          read_count: 42,
+          last_read_ts: 1700000000.5,
+          read_size: 8192,
+          last_edit_ts: 0,
+          line_ranges: [[1, 50], [51, 100]],
+        },
+        '/c/projects/bugcrowd/scratch.md': {
+          rel_or_abs: '/c/projects/bugcrowd/scratch.md',
+          read_count: 7,
+          last_read_ts: 1700000100.25,
+          read_size: 512,
+          last_edit_ts: 1700000200.0,
+        },
+      },
+      hints_seen: ['hint-a', 'hint-b'],
+      greps: [],
+    }
+    fs.writeFileSync(sessionFile(sid), JSON.stringify(pySession), 'utf8')
+
+    importSessionState({ files: [], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] })
+    loadSessionState(sid)
+
+    const got = exportSessionState()
+    expect(got.files).toHaveLength(2)
+    const report = got.files.find((f) => f.path === '/c/projects/bugcrowd/report.md')
+    expect(report).toBeDefined()
+    expect(report!.readCount).toBe(42)
+    expect(report!.lastReadAt).toBe(1700000000.5 * 1000)
+    expect(report!.sizeBytes).toBe(8192)
+    expect(report!.wasEdited).toBe(false)
+
+    const scratch = got.files.find((f) => f.path === '/c/projects/bugcrowd/scratch.md')
+    expect(scratch).toBeDefined()
+    expect(scratch!.readCount).toBe(7)
+    expect(scratch!.wasEdited).toBe(true)
+
+    // hints_seen imported as hintsShown
+    expect(got.hintsShown.sort()).toEqual(['hint-a', 'hint-b'])
+  })
+
+  it('uses dict key as path fallback when rel_or_abs is absent', () => {
+    const sid = 'py-compat-2'
+    fs.mkdirSync(path.join(tmpHome, 'sessions'), { recursive: true })
+    fs.writeFileSync(
+      sessionFile(sid),
+      JSON.stringify({
+        files: {
+          '/c/projects/fallback-key.md': {
+            read_count: 3,
+            last_read_ts: 1700000000,
+            read_size: 256,
+          },
+        },
+      }),
+      'utf8',
+    )
+    importSessionState({ files: [], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] })
+    loadSessionState(sid)
+    const got = exportSessionState()
+    expect(got.files).toHaveLength(1)
+    expect(got.files[0]!.path).toBe('/c/projects/fallback-key.md')
+  })
+
+  it('Python-format session is migrated to TS format after save', () => {
+    const sid = 'py-compat-migrate'
+    fs.mkdirSync(path.join(tmpHome, 'sessions'), { recursive: true })
+    fs.writeFileSync(
+      sessionFile(sid),
+      JSON.stringify({
+        schema_version: 1,
+        files: {
+          '/mig.ts': { rel_or_abs: '/mig.ts', read_count: 5, last_read_ts: 1700000000, read_size: 1024 },
+        },
+        hints_seen: ['h1'],
+      }),
+      'utf8',
+    )
+    importSessionState({ files: [], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] })
+    loadSessionState(sid)
+    saveSessionState(sid)
+
+    // The saved file must now use the TS format (files as array with the migrated entry).
+    const saved = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as { files: unknown[] }
+    expect(Array.isArray(saved.files)).toBe(true)
+    expect(saved.files).toHaveLength(1)
+  })
+})
+
 describe('file cap', () => {
   it('keeps only the most-recently-read entries past the cap', () => {
     const many: FileEntry[] = []
