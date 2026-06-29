@@ -140,6 +140,19 @@ describe('pytest filter', () => {
     expect(result.text).toContain('2 passed')
   })
 
+  it('keeps distinct warning types that share a message instead of over-collapsing', () => {
+    const text =
+      '= warnings summary =\n' +
+      'tests/test_a.py::test_one\n' +
+      '  /pkg/a.py:10: UserWarning: This is a Warning\n' +
+      'tests/test_b.py::test_two\n' +
+      '  /pkg/b.py:20: DeprecationWarning: This is a Warning\n' +
+      '= 2 passed in 0.5s =\n'
+    const result = pytestFilter.apply(text, '', 0, ['pytest'])
+    expect(result.text).toContain('UserWarning: This is a Warning')
+    expect(result.text).toContain('DeprecationWarning: This is a Warning')
+  })
+
   it('drops the constant "test session starts" header but keeps collected + tally', () => {
     const text =
       '= test session starts =\n' + 'collected 10 items\n' + '..........\n' + '= 10 passed in 1.5s =\n'
