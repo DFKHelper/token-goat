@@ -314,6 +314,42 @@ describe('embeddings module', () => {
     })
   })
 
+  describe('rerankHits()', () => {
+    const mk = (filePath: string, distance: number, text: string): SearchHit => ({
+      filePath,
+      startLine: 1,
+      endLine: 2,
+      kind: 'window',
+      distance,
+      text,
+    })
+
+    it('demotes hits under generated/build directories below source hits', () => {
+      // 'authenticate' appears in neither text, so boost is 0 on both — pure penalty test.
+      const hits = [mk('dist/bundle.js', 0.4, 'some code'), mk('src/auth.ts', 0.5, 'other code')]
+      const out = embeddings.rerankHits(hits, 'authenticate', 8)
+      // dist/ hit has the lower raw distance but is demoted by the generated-path penalty.
+      expect(out[0].filePath).toBe('src/auth.ts')
+      expect(out.map((h) => h.distance)).toContain(0.4) // hit is reordered, not dropped; raw distance preserved
+    })
+
+    it('boosts hits whose text contains verbatim query tokens above closer non-matches', () => {
+      const hits = [
+        mk('src/b.ts', 0.55, 'totally unrelated code'),
+        mk('src/a.ts', 0.6, 'function login() { return handler() }'),
+      ]
+      // query has two tokens both present in a.ts: boost 2 * 0.05 = 0.10 -> 0.60 - 0.10 = 0.50 < 0.55
+      const out = embeddings.rerankHits(hits, 'login handler', 8)
+      expect(out[0].filePath).toBe('src/a.ts')
+    })
+
+    it('truncates to topK after re-ranking', () => {
+      const hits = [mk('src/a.ts', 0.3, 'x'), mk('src/b.ts', 0.4, 'y'), mk('src/c.ts', 0.5, 'z')]
+      const out = embeddings.rerankHits(hits, 'irrelevant', 2)
+      expect(out.length).toBe(2)
+    })
+  })
+
   describe('constants', () => {
     it('should export DEFAULT_DIM as 384', () => {
       expect(embeddings.DEFAULT_DIM).toBe(384)
