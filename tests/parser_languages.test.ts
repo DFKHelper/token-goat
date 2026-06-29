@@ -59,6 +59,28 @@ Some content here
 
       fs.rmSync(tmpDir, { recursive: true })
     })
+
+    it('extracts keys from single-line and brace-sharing json, top-level only', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const minified = path.join(tmpDir, 'min.json')
+      fs.writeFileSync(minified, '{"name":"foo","version":"1.0","deps":{"lodash":"^4"}}')
+      const minResult = await parseFile(minified)
+      const minNames = minResult.symbols.map((s) => s.name)
+      expect(minNames).toContain('name')
+      expect(minNames).toContain('version')
+      expect(minNames).toContain('deps')
+      expect(minNames).not.toContain('lodash')
+
+      const nested = path.join(tmpDir, 'nested.json')
+      fs.writeFileSync(nested, '{ "a": { "b": 1 }, "c": 2 }')
+      const nestedResult = await parseFile(nested)
+      const nestedNames = nestedResult.symbols.map((s) => s.name)
+      expect(nestedNames).toContain('a')
+      expect(nestedNames).toContain('c')
+      expect(nestedNames).not.toContain('b')
+
+      fs.rmSync(tmpDir, { recursive: true })
+    })
   })
 
   describe('yaml symbols', () => {
