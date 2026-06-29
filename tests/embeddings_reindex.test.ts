@@ -23,7 +23,7 @@ describe('embeddings.indexFile reindex replaces prior chunks', () => {
   it("removes a file's stale chunk rows before inserting (does not append)", async () => {
     const dbPath = path.join(TMP, 'index.db')
     const db = getDb(dbPath)
-    // sqlite-vec's vec0 chunk_vectors table is optional and absent in CI; create a plain stand-in so deleteFileEmbeddings' vector DELETE has a table to hit.
+    // chunk_vectors is sqlite-vec's vec0 table when the optional dep is installed, else absent; CREATE TABLE IF NOT EXISTS is a no-op against the real vec0 table and a plain stand-in otherwise. The seed below binds a BigInt rowid and a 384-dim blob so it satisfies vec0's strict integer-PK and dimension rules while staying valid for the stand-in.
     db.exec('CREATE TABLE IF NOT EXISTS chunk_vectors (rowid INTEGER PRIMARY KEY, embedding BLOB)')
 
     const file = 'c:/proj/stale.ts'
@@ -32,7 +32,7 @@ describe('embeddings.indexFile reindex replaces prior chunks', () => {
       .prepare('INSERT INTO chunks (file_path, start_line, end_line, text, kind) VALUES (?, ?, ?, ?, ?)')
       .run(file, 1, 1, 'STALE_MARKER', 'code')
     const staleId = Number(info.lastInsertRowid)
-    db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)').run(staleId, Buffer.alloc(4))
+    db.prepare('INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)').run(BigInt(staleId), Buffer.alloc(384 * 4))
 
     // Reindex the same path with new content; the pre-insert delete must drop the stale rows.
     await embeddings.indexFile(db, file, 'export const fresh = 1\n')
