@@ -41,6 +41,34 @@ describe('parseFile', () => {
     expect(names).toContain('bar')
   })
 
+  it('excludes function-local variable declarations from the symbol index (regression: nested lexical_declaration walked unconditionally)', async () => {
+    const file = write(
+      'scope.ts',
+      [
+        'export const MODULE_CONST = 1',
+        'export function validatedInt(raw: number): number {',
+        '  const n = raw + 1',
+        '  const tmp = n * 2',
+        '  return tmp',
+        '}',
+        'export class C {',
+        '  get tokensSaved(): number {',
+        '    const local = this.x',
+        '    return local',
+        '  }',
+        '}',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    const names = result.symbols.map((s) => s.name)
+    expect(names).toContain('MODULE_CONST')
+    expect(names).toContain('validatedInt')
+    expect(names).toContain('tokensSaved')
+    expect(names).not.toContain('n')
+    expect(names).not.toContain('tmp')
+    expect(names).not.toContain('local')
+  })
+
   it('indexes TS/JS class fields initialized with arrow functions, not data fields', async () => {
     const tsFile = write(
       'widget.ts',

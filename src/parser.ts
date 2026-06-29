@@ -204,10 +204,17 @@ function collectPatternBindings(node: TsNode): string[] {
  * `export function f` is captured) and class bodies (for methods), and unwraps
  * `const`/`let`/`var` declarators whose initializer is a function/arrow.
  */
+/** Node types whose bodies introduce a new function scope — declarations
+ * nested inside these are locals, excluded from the document-symbol index. */
+const TSJS_FN_SCOPE_TYPES: ReadonlySet<string> = new Set([
+  'function_declaration', 'function_expression', 'arrow_function',
+  'method_definition', 'generator_function', 'generator_function_declaration',
+])
+
 function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
-  const visit = (node: TsNode): void => {
+  const visit = (node: TsNode, insideFunction: boolean): void => {
     const kind = TSJS_KIND_BY_TYPE.get(node.type)
     if (kind !== undefined) {
       const name = nodeName(node)
@@ -218,9 +225,14 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
     }
 
     // Variable/const declarations bound to a function or arrow → 'function'.
+    // Only at module/class scope: a declaration inside a function/method/arrow
+    // body is a local (loop counter, temporary) and must NOT be indexed —
+    // locals pollute outline/skeleton and global `symbol` search and bloat the
+    // index. (Mirrors extractPythonSymbols threading scope through the walk.)
     if (
-      node.type === 'lexical_declaration' ||
-      node.type === 'variable_declaration'
+      !insideFunction &&
+      (node.type === 'lexical_declaration' ||
+        node.type === 'variable_declaration')
     ) {
       for (const child of node.namedChildren) {
         if (child.type !== 'variable_declarator') continue
@@ -262,12 +274,13 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       }
     }
 
+    const childInside = insideFunction || TSJS_FN_SCOPE_TYPES.has(node.type)
     for (const child of node.namedChildren) {
-      visit(child)
+      visit(child, childInside)
     }
   }
 
-  visit(root)
+  visit(root, false)
   return out
 }
 
