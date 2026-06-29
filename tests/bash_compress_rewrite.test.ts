@@ -316,4 +316,21 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  it('rewrites git diff to the git-diff filter (batch D vcs filter)', () => {
+    // Verifies the batch-D vcs git filters survive esbuild: GitDiffFilter is
+    // registered in GIT_FILTERS -> spread into TOOL_FILTERS.
+    const out = runHook({
+      session_id: 'e2e-compress-git-diff',
+      tool_name: 'Bash',
+      tool_input: { command: 'git diff HEAD' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f git-diff -c 'git diff HEAD'",
+    )
+  })
+
 })

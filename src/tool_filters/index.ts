@@ -11,6 +11,7 @@ export { PytestFilter, pytestFilter } from './pytest.js'
 export { GoTestFilter, goTestFilter } from './go_test.js'
 export { PACKAGE_MANAGER_FILTERS } from './package_managers.js'
 export { LINTER_FILTERS } from './linters.js'
+export { GIT_FILTERS, GitFilter, GitLogFilter, GitDiffFilter, GitStatusVerboseFilter, GitBlameFilter, GitCommitFilter, GitPushFilter } from './git.js'
 export {
   TOOL_FILTERS,
   selectFilter,

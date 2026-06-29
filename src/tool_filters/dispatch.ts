@@ -12,6 +12,7 @@ import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, shlexSplit, stripPrefixes } from './helpers.js'
+import { GIT_FILTERS } from './git.js'
 import { LINTER_FILTERS } from './linters.js'
 import { PACKAGE_MANAGER_FILTERS } from './package_managers.js'
 import { pytestFilter } from './pytest.js'
@@ -43,7 +44,11 @@ export const TOOL_FILTERS: ToolFilter[] = [
   // might match 'npx prettier'. All other linters are single-binary and order only
   // matters within the group to preserve the Python FILTERS registration precedence.
   ...LINTER_FILTERS,
-  // Batches append here: vcs · build · containers ·
+  // Batch D — vcs. Git-specific filters: specific subcommands first, generic
+  // GitFilter last.  GitFilter catches every remaining git subcommand not
+  // claimed by GitLogFilter, GitDiffFilter, GitStatusVerboseFilter, etc.
+  ...GIT_FILTERS,
+  // Batches append here: build · containers ·
   // cloud/iac · ci · ai-clis · shell/file · lang.
 ]
 
