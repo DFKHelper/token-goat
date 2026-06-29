@@ -936,7 +936,8 @@ function extractTomlSymbols(content: string, filePath: string): SymbolEntry[] {
     const line = lines[i]
     if (line === undefined) continue
 
-    const sectionMatch = /^\s*\[\s*([^\]]+)\s*\]/.exec(line)
+    // `\[?` matches the optional second bracket of a TOML array-of-tables header (`[[bin]]`) so the name captures as `bin`, not `[bin`.
+    const sectionMatch = /^\s*\[\[?\s*([^\]]+)\s*\]/.exec(line)
     if (sectionMatch !== null && sectionMatch[1] !== undefined) {
       out.push({
         filePath,
