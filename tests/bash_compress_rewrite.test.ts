@@ -281,4 +281,21 @@ describe('compression rewrite (built-bundle e2e)', () => {
     expect(out.status).toBe(0)
     expect(out.stdout.trim()).toBe('{}')
   })
+
+  it('rewrites pip install to the pip filter (batch B package-manager filter)', () => {
+    // Verifies the batch-B package-manager filters survive esbuild: the pip
+    // filter is registered in PACKAGE_MANAGER_FILTERS → spread into TOOL_FILTERS.
+    const out = runHook({
+      session_id: 'e2e-compress-pip',
+      tool_name: 'Bash',
+      tool_input: { command: 'pip install requests' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f pip -c 'pip install requests'",
+    )
+  })
 })

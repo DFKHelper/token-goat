@@ -6,9 +6,14 @@
 // separate hand-written `compress` loops; here one loop, parameterised by a few
 // regexes and nouns, drives every member so the behaviour stays identical and
 // the next runner is a config object, not another loop.
+//
+// The second family is the simple package-manager "line-drop" filter: combine
+// stdout+stderr, walk lines dropping any that match a set of noise regexes
+// (each with its own count note), optionally first checking a keep-regex that
+// short-circuits dropping. Covers Bundler and Pub, which share this structure.
 
 import { ToolFilter } from './base.js'
-import { maybeNote } from './helpers.js'
+import { ERROR_SIGNAL_RE, maybeNote } from './helpers.js'
 
 /** `''` for a count of 1, otherwise the plural suffix (default `'s'`). */
 export function plural(n: number, suffix = 's'): string {
@@ -44,6 +49,98 @@ export interface NodeTestRunnerConfig {
   /** When true, drop Jest's `--verbose` duplicate `Failures:` section. */
   readonly failuresSection?: boolean
 }
+
+// ---------------------------------------------------------------------------
+// Package-manager "line-drop" family
+// ---------------------------------------------------------------------------
+
+/**
+ * One noise-drop rule for {@link makePackageManagerFilter}.
+ */
+export interface DropRule {
+  /** Lines matching this regex are dropped instead of kept. */
+  readonly re: RegExp
+  /**
+   * A function that returns the note text given the final drop count. Called
+   * only when count > 0 (via {@link maybeNote}).
+   */
+  readonly note: (count: number) => string
+}
+
+/**
+ * Configuration for a simple line-drop package-manager filter (see
+ * {@link makePackageManagerFilter}).
+ */
+export interface PackageManagerFilterConfig {
+  /** Filter name, e.g. `'bundler'`. */
+  readonly name: string
+  /** Command basenames this filter handles. */
+  readonly binaries: readonly string[]
+  /** Optional subcommand allowlist (same semantics as {@link ToolFilter.subcommands}). */
+  readonly subcommands?: readonly string[]
+  /**
+   * When present, lines matching this regex are always kept (before drop rules
+   * are evaluated). Useful for "always keep summary lines" patterns.
+   */
+  readonly keepRe?: RegExp
+  /**
+   * Ordered drop rules. Each line is tested against these in order; the first
+   * match drops the line and increments that rule's counter.
+   */
+  readonly dropRules: readonly DropRule[]
+}
+
+/**
+ * Build a {@link ToolFilter} for a package-manager whose noise pattern is:
+ * "drop lines matching these regexes, emit a count note for each, keep
+ * everything else". The returned filter's `compress` method combines stdout
+ * and stderr, walks lines, and emits structured notes.
+ *
+ * Currently used by: BundlerFilter, PubFilter.
+ */
+export function makePackageManagerFilter(cfg: PackageManagerFilterConfig): ToolFilter {
+  return new (class extends ToolFilter {
+    readonly name = cfg.name
+    override readonly binaries = new Set(cfg.binaries)
+    override readonly subcommands = cfg.subcommands ? new Set(cfg.subcommands) : new Set<string>()
+
+    override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
+      const merged = this.combineOutput(stdout, stderr)
+      const lines = merged.split('\n')
+      const kept: string[] = []
+      const counts = Array.from({ length: cfg.dropRules.length }, () => 0)
+      for (const line of lines) {
+        if (ERROR_SIGNAL_RE.test(line)) {
+          kept.push(line)
+          continue
+        }
+        if (cfg.keepRe?.test(line)) {
+          kept.push(line)
+          continue
+        }
+        let dropped = false
+        for (let i = 0; i < cfg.dropRules.length; i++) {
+          if (cfg.dropRules[i]!.re.test(line)) {
+            counts[i]!++
+            dropped = true
+            break
+          }
+        }
+        if (!dropped) kept.push(line)
+      }
+      const notes: string[] = []
+      for (let i = 0; i < cfg.dropRules.length; i++) {
+        maybeNote(notes, counts[i]!, cfg.dropRules[i]!.note(counts[i]!))
+      }
+      this.emitNotes(kept, notes)
+      return this.finalize(kept)
+    }
+  })()
+}
+
+// ---------------------------------------------------------------------------
+// Node test-runner family
+// ---------------------------------------------------------------------------
 
 /**
  * Build a {@link ToolFilter} for a Node test runner from `cfg`. The returned

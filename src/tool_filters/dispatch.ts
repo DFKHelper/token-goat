@@ -12,6 +12,7 @@ import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { GenericFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, shlexSplit, stripPrefixes } from './helpers.js'
+import { PACKAGE_MANAGER_FILTERS } from './package_managers.js'
 import { pytestFilter } from './pytest.js'
 import { TEST_RUNNER_FILTERS } from './test_runners.js'
 
@@ -30,7 +31,12 @@ export const TOOL_FILTERS: ToolFilter[] = [
   ...TEST_RUNNER_FILTERS,
   pytestFilter,
   goTestFilter,
-  // Batches append here: package-managers · linters · vcs · build · containers ·
+  // Batch B — package managers. NpmInstallFilter / PnpmFilter / YarnFilter must
+  // precede the general NodePackageFilter that handles `npm audit` and other
+  // subcommands. DepListFilter is last: it matches a subset of binaries already
+  // claimed by pip/uv/poetry filters, triggered only on list/freeze/tree/show/ls.
+  ...PACKAGE_MANAGER_FILTERS,
+  // Batches append here: linters · vcs · build · containers ·
   // cloud/iac · ci · ai-clis · shell/file · lang.
 ]
 
