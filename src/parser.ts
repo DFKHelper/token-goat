@@ -653,6 +653,7 @@ function cFunctionName(node: TsNode): string | null {
   // Bound the walk so a malformed/unexpected tree can never loop forever.
   for (let i = 0; cur !== null && i < 16; i++) {
     if (cur.type === 'identifier' || cur.type === 'field_identifier') return cur.text
+    if (cur.type === 'qualified_identifier') return lastSegment(cur.text)
     cur = cur.childForFieldName('declarator')
   }
   return null
