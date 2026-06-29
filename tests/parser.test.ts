@@ -96,6 +96,35 @@ describe('parseFile', () => {
     // The class itself still resolves via its name field.
     expect(cppResult.symbols.map((s) => s.name)).toContain('Widget')
   })
+
+  it('indexes Go type, const, var, and method symbols (names live on *_spec nodes)', async () => {
+    const goFile = write(
+      'sym.go',
+      [
+        'package main',
+        '',
+        'type Widget struct { x int }',
+        'type Alias = Widget',
+        'const MaxSize = 100',
+        'var counter int',
+        '',
+        'func helper() int { return 1 }',
+        'func (w Widget) Method() {}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(goFile)
+    expect(result.language).toBe('go')
+    const names = result.symbols.map((s) => s.name)
+    // type/const/var names live on the nested *_spec nodes, not the declaration wrapper.
+    expect(names).toContain('Widget')
+    expect(names).toContain('Alias')
+    expect(names).toContain('MaxSize')
+    expect(names).toContain('counter')
+    // The function already resolved; the method previously had no map entry.
+    expect(names).toContain('helper')
+    expect(names).toContain('Method')
+  })
 })
 
 describe('indexFile', () => {
