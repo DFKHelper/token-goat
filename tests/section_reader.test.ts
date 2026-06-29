@@ -123,6 +123,28 @@ describe('extractSection', () => {
     expect(result?.content).toContain('name = "demo"')
     expect(result?.content).not.toContain('line-length')
   })
+
+  it('includes nested TOML subtables but stops at a sibling table', () => {
+    const toml = [
+      '[tool.ruff]',
+      'line-length = 100',
+      '',
+      '[tool.ruff.lint]',
+      'select = ["E"]',
+      '',
+      '[tool.mypy]',
+      'strict = true',
+      '',
+    ].join('\n')
+    const result = extractSection(toml, 'tool.ruff')
+    expect(result).not.toBeNull()
+    // The nested [tool.ruff.lint] subtable is part of the tool.ruff section...
+    expect(result?.content).toContain('[tool.ruff.lint]')
+    expect(result?.content).toContain('select = ["E"]')
+    // ...but the sibling [tool.mypy] table is not.
+    expect(result?.content).not.toContain('[tool.mypy]')
+    expect(result?.content).not.toContain('strict = true')
+  })
 })
 
 describe('listSections', () => {

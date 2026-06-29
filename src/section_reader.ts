@@ -33,6 +33,9 @@ interface SectionHeader {
   readonly index: number
 }
 
+/** Kind of header finder that produced the headers. */
+type HeaderKind = 'markdown' | 'table' | 'keyvalue' | 'python'
+
 /**
  * Split a heading spec into its base text and optional 1-based ordinal.
  *
@@ -190,21 +193,25 @@ function findKeyValueHeaders(lines: readonly string[]): SectionHeader[] {
  * Markdown and table/INI are detected by their characteristic header lines even
  * when the language hint is `unknown` (so a raw `.txt` of TOML still parses).
  * Python uses the def/class finder; everything else falls back to key-value.
+ *
+ * Returns both the headers and the kind of finder that produced them so
+ * termination rules can be tuned per kind (e.g. table headers use prefix-based
+ * termination instead of level-based).
  */
-function findHeaders(text: string, language: string): SectionHeader[] {
+function findHeaders(text: string, language: string): { headers: SectionHeader[]; kind: HeaderKind } {
   const lines = text.split('\n')
 
-  if (language === 'markdown') return findMarkdownHeaders(lines)
-  if (language === 'toml') return findTableHeaders(lines)
-  if (language === 'python') return findPythonHeaders(lines)
+  if (language === 'markdown') return { headers: findMarkdownHeaders(lines), kind: 'markdown' }
+  if (language === 'toml') return { headers: findTableHeaders(lines), kind: 'table' }
+  if (language === 'python') return { headers: findPythonHeaders(lines), kind: 'python' }
 
   // Unknown / other: sniff. Prefer markdown headings, then tables, then a
   // key-value fallback so generic config files still yield sections.
   const md = findMarkdownHeaders(lines)
-  if (md.length > 0) return md
+  if (md.length > 0) return { headers: md, kind: 'markdown' }
   const tbl = findTableHeaders(lines)
-  if (tbl.length > 0) return tbl
-  return findKeyValueHeaders(lines)
+  if (tbl.length > 0) return { headers: tbl, kind: 'table' }
+  return { headers: findKeyValueHeaders(lines), kind: 'keyvalue' }
 }
 
 /**
@@ -230,6 +237,30 @@ function sectionEndIndex(
 }
 
 /**
+ * Resolve a TOML table section's end line by dotted-name nesting rather than a
+ * numeric level. A later table ends the section unless it is a strict
+ * descendant — its dotted name begins with `<current>.` — so `[tool.ruff]`
+ * absorbs `[tool.ruff.lint]` but stops at a sibling like `[tool.mypy]` or a
+ * different root like `[project]`. Returns a 0-based exclusive end index.
+ */
+function tableSectionEndIndex(
+  headers: readonly SectionHeader[],
+  headerPos: number,
+  totalLines: number,
+): number {
+  const current = headers[headerPos]
+  if (current === undefined) return totalLines
+  const prefix = current.heading + '.'
+  for (let j = headerPos + 1; j < headers.length; j++) {
+    const next = headers[j]
+    if (next === undefined) continue
+    if (next.heading.startsWith(prefix)) continue
+    return next.index
+  }
+  return totalLines
+}
+
+/**
  * Extract a named section from `text`. Returns `null` when not found.
  *
  * `headingSpec` is the section name, optionally suffixed with `#N` to select the
@@ -242,7 +273,7 @@ export function extractSection(text: string, headingSpec: string): SectionResult
   if (base.length === 0) return null
 
   // Language is unknown here (we only have text); the sniffer handles it.
-  const headers = findHeaders(text, 'unknown')
+  const { headers, kind } = findHeaders(text, 'unknown')
   const lines = text.split('\n')
 
   const target = base.toLowerCase()
@@ -269,7 +300,10 @@ export function extractSection(text: string, headingSpec: string): SectionResult
   const header = headers[headerPos]
   if (header === undefined) return null
 
-  const endIndex = sectionEndIndex(headers, headerPos, lines.length)
+  const endIndex =
+    kind === 'table'
+      ? tableSectionEndIndex(headers, headerPos, lines.length)
+      : sectionEndIndex(headers, headerPos, lines.length)
   // Trim a single trailing blank line so adjacent sections don't accrue the
   // separator line into the earlier section's body.
   let endExclusive = endIndex
@@ -306,7 +340,7 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
   if (base.length === 0) return null
 
   const language = detectLanguage(filePath)
-  const headers = findHeaders(text, language)
+  const { headers, kind } = findHeaders(text, language)
   const lines = text.split('\n')
 
   const target = base.toLowerCase()
@@ -333,7 +367,10 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
   const header = headers[headerPos]
   if (header === undefined) return null
 
-  const endIndex = sectionEndIndex(headers, headerPos, lines.length)
+  const endIndex =
+    kind === 'table'
+      ? tableSectionEndIndex(headers, headerPos, lines.length)
+      : sectionEndIndex(headers, headerPos, lines.length)
   let endExclusive = endIndex
   while (endExclusive > header.index + 1 && lines[endExclusive - 1] === '') {
     endExclusive--
@@ -364,7 +401,7 @@ export function listSections(filePath: string): string[] {
   }
 
   const language = detectLanguage(filePath)
-  const headers = findHeaders(text, language)
+  const { headers } = findHeaders(text, language)
   if (headers.length === 0) return []
 
   let minLevel = Number.POSITIVE_INFINITY
@@ -391,6 +428,6 @@ export function listAllSections(filePath: string): string[] {
   }
 
   const language = detectLanguage(filePath)
-  const headers = findHeaders(text, language)
+  const { headers } = findHeaders(text, language)
   return headers.map((h) => h.heading)
 }
