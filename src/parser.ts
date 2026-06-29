@@ -349,24 +349,40 @@ const GO_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['var_spec', 'variable'],
 ])
 
+// Go scope nodes whose bodies hold function-local declarations. A var/const/type declared inside one of these (or any block nested in it, including closures) is a local and must not pollute the global symbol index - mirrors the insideFunction threading in extractTsJsSymbols.
+const GO_FN_SCOPE_TYPES: ReadonlySet<string> = new Set([
+  'function_declaration',
+  'method_declaration',
+  'func_literal',
+])
+
+// Go declaration kinds that are package-level symbols at top level but locals inside a function body; gated on scope. Functions and methods are never local (Go forbids nested declarations) so they emit unconditionally.
+const GO_LOCAL_KINDS: ReadonlySet<string> = new Set([
+  'var_spec',
+  'const_spec',
+  'type_spec',
+  'type_alias',
+])
+
 function extractGoSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
-  const visit = (node: TsNode): void => {
+  const visit = (node: TsNode, insideFunction: boolean): void => {
     const kind = GO_KIND_BY_TYPE.get(node.type)
-    if (kind !== undefined) {
+    if (kind !== undefined && !(insideFunction && GO_LOCAL_KINDS.has(node.type))) {
       const name = nodeName(node)
       if (name !== null && name !== '') {
         out.push(makeSymbol(filePath, name, kind, node))
       }
     }
 
+    const childInside = insideFunction || GO_FN_SCOPE_TYPES.has(node.type)
     for (const child of node.namedChildren) {
-      visit(child)
+      visit(child, childInside)
     }
   }
 
-  visit(root)
+  visit(root, false)
   return out
 }
 
