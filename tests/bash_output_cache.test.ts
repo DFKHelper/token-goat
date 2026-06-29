@@ -246,10 +246,14 @@ describe('depLockfileFingerprint', () => {
 })
 
 describe('reset', () => {
-  it('clearModuleCaches removes all entries', async () => {
+  it('clearModuleCaches drops in-memory entries; getBashOutput reads through to the persisted blob', async () => {
     const id = await storeBashOutput('echo gone', 'gone', 0)
     clearModuleCaches()
-    expect(getBashOutput(id)).toBeNull()
-    expect(getBashOutputByCommandHash(id)).toBeNull()
+    // The in-memory map was cleared, but the content is intentionally persisted
+    // so a later (separate) process can recall it — getBashOutput reads through.
+    expect(getBashOutput(id)?.output).toBe('gone')
+    expect(getBashOutputByCommandHash(id)?.output).toBe('gone')
+    // A never-stored id stays null (no lingering state after the reset).
+    expect(getBashOutput('ffffffffffffffff')).toBeNull()
   })
 })

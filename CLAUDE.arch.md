@@ -69,7 +69,9 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
-| [`src/session.ts`](src/session.ts) | In-process per-session state: `recordFileRead()`, `recordFileEdit()`, `recordWebFetch()`, `recordBashOutput()`, `getSessionId()` (from `CLAUDE_SESSION_ID` env) |
+| [`src/session.ts`](src/session.ts) | In-memory per-session state for the current hook process: `recordFileRead()`, `recordFileEdit()`, `recordWebFetch()`, `recordBashOutput()`, `getSessionId()`; `exportSessionState()` / `importSessionState()` serialize it for cross-process persistence |
+| [`src/session_store.ts`](src/session_store.ts) | Persists session state across the per-tool-call hook processes: `loadSessionState()` / `saveSessionState()` (one JSON per session under `sessions/`), wired into [`src/relay.ts`](src/relay.ts). Fail-soft + merge-on-save |
+| [`src/disk_cache.ts`](src/disk_cache.ts) | Shared content-addressed blob store backing the bash/web caches: `tokenGoatHome()`, `storeBlob()` / `loadBlob()` / `pruneBlobs()` |
 | [`src/snapshots.ts`](src/snapshots.ts) | Per-session content snapshots used by diff-aware re-read in `hooks_read.ts` |
 | [`src/compact.ts`](src/compact.ts) | `buildManifest()` / `buildManifestAdaptive()` — load the session JSON cache and produce a structured PreCompact manifest; `computeAdaptiveBudget()` scales the token budget by session age and edit density |
 | [`src/skill_cache.ts`](src/skill_cache.ts) | Skill body/compact cache on disk (`skills/`); `skill-body`, `skill-compact`, `skill-list`, `skill-size` commands draw from here |
@@ -171,15 +173,15 @@ All index data and stats live in a single `global.db`. [`src/db.ts`](src/db.ts) 
 | Path | Contents |
 |------|----------|
 | `global.db` | Single index and stats SQLite database (tables above) |
-| `sessions/{session_id}.json` | Per-session in-process state persisted by [`src/session.ts`](src/session.ts): file reads, edits, web fetches, bash outputs, skill history |
+| `sessions/{session_id}.json` | Per-session state persisted across hook processes by [`src/session_store.ts`](src/session_store.ts) (loaded/saved in [`src/relay.ts`](src/relay.ts)): file reads, edits, web-fetch index, bash-output index, curl downloads, shown hints |
 | `projects/{hash}/sessions/` | Session manifest JSON files written by [`src/compact.ts`](src/compact.ts) for the PreCompact hook |
 | `projects/{hash}_memory.toml` | Project-scoped key-value memory written by [`src/project_memory.ts`](src/project_memory.ts) |
 | `queue/dirty.txt` | Append-only list of edited file paths; drained by `worker.ts` every 2 s |
 | `queue/pending.txt` | Dirty-queue snapshot written by [`src/hooks_index.ts::preCompactIndexHandler`](src/hooks_index.ts) before compact |
 | `images/` | Shrunk image cache (LRU-evicted, written by [`src/image_shrink.ts`](src/image_shrink.ts)) |
 | `skills/` | Skill body/compact cache keyed by `(session, name, content_sha)` ([`src/skill_cache.ts`](src/skill_cache.ts)) |
-| `bash_outputs/` | Bash stdout/stderr cache ([`src/bash_output_cache.ts`](src/bash_output_cache.ts)) |
-| `web_outputs/` | WebFetch body cache ([`src/web_cache.ts`](src/web_cache.ts)) |
+| `bash_outputs/{id}.json` | Content-addressed bash stdout cache for cross-process `bash-output <id>` recall ([`src/bash_output_cache.ts`](src/bash_output_cache.ts) via [`src/disk_cache.ts`](src/disk_cache.ts)); pruned by age (24h) and count (200) |
+| `web_outputs/{id}.json` | Content-addressed web body cache for cross-process `web-output <id>` recall ([`src/web_cache.ts`](src/web_cache.ts) via [`src/disk_cache.ts`](src/disk_cache.ts)); same prune policy |
 
 Project hash = `crypto.createHash('sha1').update(canonicalRoot)` from [`src/project.ts::projectHash`](src/project.ts).
 
@@ -230,6 +232,14 @@ Commands such as `symbol`, `read`, `section`, `skeleton`, `outline`, `refs`, and
 **Two-tier testing model** — A fast pre-commit guard tier (`npm run test:guards`, ~2 s, no bundle, no DB, no git fixtures) lives in `tests/guards/`. The pre-push/CI tier runs the full suite plus the built-bundle command matrix (`tests/command_matrix_e2e.test.ts`), which indexes a real fixture against `dist/token-goat.mjs` and runs every registered command. Both tiers derive their command set from [`tests/registry.ts::allCommandNames()`](tests/registry.ts), so a newly registered command is automatically in scope for both — there is no second list to maintain. A registered command with no matrix case fails the coverage gate by design. See [AGENTS.md](AGENTS.md) for the full two-tier description.
 
 **Fail-soft hook handlers** — Every handler wrapped by `hooks_cli.ts::failSoft()` catches any exception, logs to stderr, and returns `{ continue: true }`. A broken token-goat must never interrupt the agent's work.
+
+**Session persistence (cross-process)** — The installer wires each hook as `{ type: "command", command: "token-goat hook <event>" }`, so **every tool call spawns a fresh token-goat process** — there is no long-lived server. The session state in [`src/session.ts`](src/session.ts) (file-read/edit tracking, shown-hint dedup, and the web/bash/curl recall indexes) and the bash/web *content* caches are therefore meaningless if kept only in memory: the maps die when the hook process exits. Three on-disk layers under `tokenGoatHome()` (`TOKEN_GOAT_HOME`, else `~/.token-goat`, mirroring [`src/snapshots.ts`](src/snapshots.ts)) restore the behavior the Python original's `SessionCache` JSON provided:
+
+- **Session state** — [`src/relay.ts`](src/relay.ts) calls `loadSessionState(sessionId)` immediately after building the event and `saveSessionState(sessionId)` after the handler returns, each in its own `try/catch` so a persistence failure can never suppress the handler's real output. Save is **merge-on-save**: it re-reads the on-disk JSON and unions it with the in-memory state (set-union for hints, field-wise for files keeping every read/edit/truncation signal, newest-wins for the indexes), then atomic-writes. Combined with the atomic rename, two overlapping same-session hook processes (e.g. background-task hooks) can at worst drop a hint — never corrupt the file. File entries are capped at 500 (oldest by last-read evicted). An empty `sessionId` skips persistence entirely (no shared `anon` file bleeding across sessions).
+- **Bash/web content** — `storeBashOutput()` / `storeWebOutput()` also write a content-addressed blob (`bash_outputs/<id>.json`, `web_outputs/<id>.json`) via [`src/disk_cache.ts`](src/disk_cache.ts); `getBashOutput()` / `getWebOutput()` fall back to a disk read on an in-memory miss, so the session-less CLI (`token-goat bash-output <id>`, `web-output <id>`) and a later hook process resolve a value cached by an earlier one. Blobs are pruned by age (24h) and count (200) on each write.
+- **Honest recall hints** — the three bash recall sites in [`src/hooks_bash.ts`](src/hooks_bash.ts) (monitoring, curl GET, build) guard on the *content entry* existing, not just the session index, so a pruned/evicted blob never yields a `bash-output <id>` hint that would error.
+
+All three layers are fail-soft: a disk error never throws into a hook.
 
 **Compaction assist** — Before Claude Code compacts, `preCompactHandler()` in [`src/hooks_compact.ts`](src/hooks_compact.ts) calls `compact.ts::buildManifest()` / `buildManifestAdaptive()` to build a structured, token-budgeted summary (edited files, files read, web fetches, skills) and returns it as `systemMessage`. The budget scales with session age and edit density via `computeAdaptiveBudget()`. Configurable via `config.toml` (`[compact_assist]`) or `TOKEN_GOAT_COMPACT_ASSIST=0`.
 

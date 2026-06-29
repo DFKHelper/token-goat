@@ -1,14 +1,17 @@
 /**
- * In-memory bash-output cache with disk persistence.
+ * Bash-output cache with cross-process disk persistence.
  *
  * Ports the bash-output dedup concept from `session.py` / `bash_cache.py`
  * (mark_bash_run / lookup_bash_entry): a command's full stdout is kept so a
  * later identical command can be served from cache, and so surgical re-reads
  * (`token-goat bash-output <id>`) can extract a slice without re-running it.
  *
- * Storage is process-local: a single `id -> entry` map keyed by the
- * command hash. Cleared between tests via {@link registerReset}.
- * Disk persistence via sidecar JSON metadata.
+ * A per-process `id -> entry` map fronts a content-addressed disk store
+ * (`~/.token-goat/bash_outputs/<id>.json`). The hooks run as a fresh process per
+ * tool call, so the disk layer is what lets a value cached by the post_tool_use
+ * hook be recalled by a later pre_tool_use process and by the session-less CLI.
+ * The in-memory map is cleared between tests via {@link registerReset}; the disk
+ * store is pruned by age/count on each write.
  */
 
 import * as fs from 'fs/promises'
@@ -17,6 +20,10 @@ import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
+import { storeBlob, loadBlob } from './disk_cache.js'
+
+/** Subdir under the token-goat home where bash-output blobs live. */
+const BASH_OUTPUT_SUBDIR = 'bash_outputs'
 
 /** Metadata associated with a cached Bash output entry. */
 export interface BashOutputMeta {
@@ -256,12 +263,49 @@ export async function storeBashOutput(command: string, output: string, exitCode:
     sizeBytes: Buffer.byteLength(output, 'utf-8'),
   }
   _byId.set(id, entry)
+  // Persist so a later, separate hook process (and the CLI) can recall it.
+  storeBlob(BASH_OUTPUT_SUBDIR, id, entry)
   return id
 }
 
-/** Return the entry for `id`, or null if not present. */
+/** Coerce an untrusted parsed-JSON value into a {@link BashOutputEntry}, or null
+ * when any required field is missing or the wrong type. */
+function coerceBashEntry(raw: unknown): BashOutputEntry | null {
+  if (raw === null || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (
+    typeof o['id'] !== 'string' ||
+    typeof o['command'] !== 'string' ||
+    typeof o['output'] !== 'string' ||
+    typeof o['exitCode'] !== 'number' ||
+    typeof o['storedAt'] !== 'number' ||
+    typeof o['sizeBytes'] !== 'number'
+  ) {
+    return null
+  }
+  return {
+    id: o['id'],
+    command: o['command'],
+    output: o['output'],
+    exitCode: o['exitCode'],
+    storedAt: o['storedAt'],
+    sizeBytes: o['sizeBytes'],
+  }
+}
+
+/**
+ * Return the entry for `id`, or null if not present.
+ *
+ * Falls back to the disk store on an in-memory miss so a value cached by an
+ * earlier hook process (or run) resolves; a disk hit is cached in-process.
+ */
 export function getBashOutput(id: string): BashOutputEntry | null {
-  return _byId.get(id) ?? null
+  const hit = _byId.get(id)
+  if (hit !== undefined) return hit
+  const entry = coerceBashEntry(loadBlob(BASH_OUTPUT_SUBDIR, id))
+  if (entry === null) return null
+  _byId.set(id, entry)
+  return entry
 }
 
 /**
@@ -271,7 +315,7 @@ export function getBashOutput(id: string): BashOutputEntry | null {
  * command-hash index and then the id map.
  */
 export function getBashOutputByCommandHash(commandHash: string): BashOutputEntry | null {
-  return _byId.get(commandHash) ?? null
+  return getBashOutput(commandHash)
 }
 
 registerReset(() => {

@@ -1,16 +1,25 @@
 /**
- * In-memory web-fetch result cache.
+ * Web-fetch result cache with cross-process disk persistence.
  *
  * Ports the web-fetch dedup concept from `session.py` (mark_web_fetch /
  * lookup_web_entry): a previously fetched URL's body is kept so a redundant
- * re-fetch can be served from cache instead of hitting the network again.
+ * re-fetch can be served from cache instead of hitting the network again, and so
+ * `token-goat web-output <id>` can recall it.
  *
- * Storage is process-local: a `cacheId -> content` map plus a `url -> cacheId`
- * index. Cleared between tests via {@link registerReset}.
+ * A per-process `cacheId -> content` map plus a `url -> cacheId` index front a
+ * content-addressed disk store (`~/.token-goat/web_outputs/<cacheId>.json`).
+ * Since the hooks and CLI run as separate processes, the disk layer is what lets
+ * a body cached by one process be recalled by another. The in-memory maps are
+ * cleared between tests via {@link registerReset}; the disk store is pruned by
+ * age/count on each write.
  */
 
 import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
+import { storeBlob, loadBlob } from './disk_cache.js'
+
+/** Subdir under the token-goat home where web-output blobs live. */
+const WEB_OUTPUT_SUBDIR = 'web_outputs'
 
 // cacheId -> stored body.
 let _byId = new Map<string, string>()
@@ -40,12 +49,35 @@ export function storeWebOutput(url: string, content: string): string {
   const cacheId = cacheIdForUrl(url)
   _byId.set(cacheId, content)
   _urlIndex.set(url, cacheId)
+  // Persist so a later, separate process (and the CLI) can recall the body.
+  storeBlob(WEB_OUTPUT_SUBDIR, cacheId, { url, content })
   return cacheId
 }
 
-/** Return the cached body for `cacheId`, or null if not present. */
+/** Coerce an untrusted parsed-JSON blob into `{ url?, content }`, or null when
+ * `content` is missing or not a string. */
+function coerceWebBlob(raw: unknown): { url: string | null; content: string } | null {
+  if (raw === null || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (typeof o['content'] !== 'string') return null
+  return { url: typeof o['url'] === 'string' ? o['url'] : null, content: o['content'] }
+}
+
+/**
+ * Return the cached body for `cacheId`, or null if not present.
+ *
+ * Falls back to the disk store on an in-memory miss so a body cached by an
+ * earlier process (or run) resolves; a disk hit is cached in-process, and its
+ * URL (if recorded) re-populates the URL index.
+ */
 export function getWebOutput(cacheId: string): string | null {
-  return _byId.get(cacheId) ?? null
+  const hit = _byId.get(cacheId)
+  if (hit !== undefined) return hit
+  const blob = coerceWebBlob(loadBlob(WEB_OUTPUT_SUBDIR, cacheId))
+  if (blob === null) return null
+  _byId.set(cacheId, blob.content)
+  if (blob.url !== null) _urlIndex.set(blob.url, cacheId)
+  return blob.content
 }
 
 /**

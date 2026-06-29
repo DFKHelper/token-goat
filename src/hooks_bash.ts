@@ -311,11 +311,14 @@ function extractTailFile(cmd: string): { filePath: string; isDoc: boolean } | nu
  * Detects `cat` or `tail` commands on a tasks output path and returns the task
  * ID so the caller can emit a `token-goat bash-output` recall hint.
  *
- * Tasks output files follow the pattern `…/tasks/<id>.output`. They are
- * already cached by the bash-output cache so re-reading via cat/tail wastes
- * tokens that `token-goat bash-output` returns surgically.
+ * Tasks output files follow the pattern `…/tasks/<id>.output`. They are written
+ * to disk by the harness (not through the bash-output cache), so re-reading via
+ * cat/tail wastes tokens that `token-goat bash-output --file <path>` returns
+ * surgically. The matched path is returned so the recall hint can name a command
+ * that actually works (`bash-output <id>` misses, since the task id is not a
+ * bash-output cache key).
  */
-function extractTasksOutput(cmd: string): { id: string; n?: number } | null {
+function extractTasksOutput(cmd: string): { id: string; path: string; n?: number } | null {
   const taskOutputRe = /[/\\]tasks[/\\]([a-z0-9]+)\.output$/
 
   // cat command (same regex structure as extractCatFile, checked before isTempPath)
@@ -324,7 +327,7 @@ function extractTasksOutput(cmd: string): { id: string; n?: number } | null {
     const fp = catM[1] ?? catM[2] ?? catM[3]
     if (fp) {
       const m = taskOutputRe.exec(fp)
-      if (m) return { id: m[1]! }
+      if (m) return { id: m[1]!, path: fp }
     }
   }
 
@@ -339,7 +342,7 @@ function extractTasksOutput(cmd: string): { id: string; n?: number } | null {
         if (m) {
           const nStr = tailM[1] ?? tailM[2]
           const n = nStr !== undefined ? parseInt(nStr, 10) : undefined
-          return n !== undefined ? { id: m[1]!, n } : { id: m[1]! }
+          return n !== undefined ? { id: m[1]!, path: fp, n } : { id: m[1]!, path: fp }
         }
       }
     }
@@ -349,7 +352,7 @@ function extractTasksOutput(cmd: string): { id: string; n?: number } | null {
       const fp = byteTailM[1] ?? byteTailM[2] ?? byteTailM[3]
       if (fp) {
         const m = taskOutputRe.exec(fp)
-        if (m) return { id: m[1]! }
+        if (m) return { id: m[1]!, path: fp }
       }
     }
   }
@@ -578,11 +581,11 @@ export function preBashHandler(event: HookEvent): HookOutput {
   // Item 3: task output file — already cached, recall with bash-output
   const taskOutput = extractTasksOutput(cmd)
   if (taskOutput !== null) {
-    const { id } = taskOutput
+    const { id, path: outPath, n } = taskOutput
     recordStat('session_hint', 0, 0)
+    const tail = n ?? 50
     return denyOutput(
-      'Use `token-goat bash-output ' + id + '` to recall this task output (already cached). ' +
-      'Append `--tail <n>` or `--grep PATTERN` to slice it.',
+      'Task output ' + id + ' is on disk. Use `token-goat bash-output --file "' + outPath + '" --tail ' + tail + '` (or `--grep PATTERN`) to read a slice instead of the whole file.',
     )
   }
 
@@ -767,9 +770,12 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (monitoringHint !== null) {
     const monCmdHash = shortFingerprint(stripOutputPipeline(cmd))
     const monOutputId = getBashOutputId(monCmdHash)
-    if (monOutputId !== null) {
-      const monEntry = getBashOutput(monOutputId)
-      const monBytes = monEntry?.sizeBytes ?? 0
+    // Only emit the recall hint if the content entry is actually present: the
+    // session index may name an id whose blob was pruned (age/count), and a hint
+    // pointing at a missing id would error instead of saving a re-run.
+    const monEntry = monOutputId !== null ? getBashOutput(monOutputId) : null
+    if (monOutputId !== null && monEntry !== null) {
+      const monBytes = monEntry.sizeBytes
       const catFile = extractCatSourceFile(cmd)
       if (catFile !== null) {
         recordStat('bash_compress:recall', monBytes, Math.round(monBytes / 4))
@@ -810,9 +816,11 @@ export function preBashHandler(event: HookEvent): HookOutput {
     const curlCacheKey = extractCurlUrl(cmd) ?? cmd
     const curlHash = shortFingerprint(curlCacheKey)
     const curlOutputId = getBashOutputId(curlHash)
-    if (curlOutputId !== null) {
-      const curlEntry = getBashOutput(curlOutputId)
-      const curlBytes = curlEntry?.sizeBytes ?? 0
+    // Guard on the content entry, not just the index, so a pruned blob does not
+    // produce a recall hint that would error (see the monitoring case above).
+    const curlEntry = curlOutputId !== null ? getBashOutput(curlOutputId) : null
+    if (curlOutputId !== null && curlEntry !== null) {
+      const curlBytes = curlEntry.sizeBytes
       recordStat('bash_compress:recall', curlBytes, Math.round(curlBytes / 4))
       const curlPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
       return contextOutput(
@@ -830,8 +838,11 @@ export function preBashHandler(event: HookEvent): HookOutput {
   const outputId = getBashOutputId(cmdHash)
   if (outputId === null) return passOutput()
 
+  // The index named an id, but only emit the recall hint if its content blob
+  // still exists; a pruned/missing entry would make `bash-output <id>` error.
   const entry = getBashOutput(outputId)
-  const bytes = entry?.sizeBytes ?? 0
+  if (entry === null) return passOutput()
+  const bytes = entry.sizeBytes
   recordStat('bash_compress:recall', bytes, Math.round(bytes / 4))
   return contextOutput(buildRecallHint(cmd, outputId))
 }

@@ -20,6 +20,7 @@
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput } from './hook_registry.js'
 import { HOOK_EVENTS, type HookEventName } from './types.js'
+import { loadSessionState, saveSessionState } from './session_store.js'
 
 // Side-effect imports: each registers its handlers with the hook registry.
 import './hooks_read.js'
@@ -140,7 +141,20 @@ export async function relay(eventName: string): Promise<void> {
     }
     const payload = await readStdinJson()
     const event = buildEvent(eventName, payload)
+    // Load persisted session state before handlers run; save the mutated state
+    // after. Each is isolated in its own try/catch so a persistence failure can
+    // never suppress the handler's real output (the cardinal rule above).
+    try {
+      loadSessionState(event.sessionId)
+    } catch {
+      // fail-soft: a load failure just means a cold session
+    }
     const output = await runHook(event)
+    try {
+      saveSessionState(event.sessionId)
+    } catch {
+      // fail-soft: a save failure must not block the tool call
+    }
     process.stdout.write(serializeOutput(output))
   } catch {
     // Pass-through on every failure path — a hook must never block Claude Code.

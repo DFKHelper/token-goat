@@ -81,6 +81,16 @@ function isSessionArtifactFile(filePath: string): boolean {
   return false
 }
 
+/**
+ * Recall hint for a session artifact file. Names a `bash-output --file` command
+ * that actually works: the artifact is on disk but not in the bash-output cache,
+ * so a bare `bash-output --tail N` (no id/path) or `bash-output <id>` (id is not
+ * a cache key) both error. `--file <path>` reads the file and applies the slice.
+ */
+function sessionArtifactRecall(filePath: string): string {
+  return 'Use `token-goat bash-output --file "' + filePath + '" --tail 50` (or `--grep PATTERN`) to read a slice instead of the full file.'
+}
+
 /** Best-effort file size in bytes, or null when the file cannot be stat'd. */
 function statSize(absPath: string): number | null {
   try {
@@ -303,7 +313,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
         recordFileRead(normalized)
         recordStat('session_hint', 0, 0)
         return denyOutput(
-          'File was truncated on last read. Use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice.',
+          'File was truncated on last read. ' + sessionArtifactRecall(normalized),
         )
       }
       const artifactSessionId = getSessionId()
@@ -321,8 +331,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
               recordFileRead(normalized)
               recordStat('session_hint', 0, 0)
               return denyOutput(
-                basename + ' is unchanged since last read. ' +
-                'Use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice.',
+                basename + ' is unchanged since last read. ' + sessionArtifactRecall(normalized),
               )
             }
             const diff = buildLineDiff(oldContent, currentContent, basename)
@@ -332,8 +341,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
               recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
               return denyOutput(
                 'Content changed since last read of ' + basename + '. Here is what changed:\n\n' +
-                '```diff\n' + diff + '\n```\n\n' +
-                'Use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice.',
+                '```diff\n' + diff + '\n```\n\n' + sessionArtifactRecall(normalized),
               )
             }
           }
@@ -345,16 +353,13 @@ export function preReadHandler(event: HookEvent): HookOutput {
       recordFileRead(normalized)
       recordStat('session_hint', 0, 0)
       return denyOutput(
-        normalized + ' was already read this session. ' +
-        'Use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice.',
+        normalized + ' was already read this session. ' + sessionArtifactRecall(normalized),
       )
     }
     // First read of tasks/*.output — allow but emit a proactive hint
     if (/[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(normalized)) {
       recordFileRead(normalized)
-      return contextOutput(
-        'Session transcript: use `token-goat bash-output --tail N` or `--grep PATTERN` to read a slice instead of the full file.',
-      )
+      return contextOutput('Session transcript: ' + sessionArtifactRecall(normalized))
     }
     // First read of tool-results/*.txt — fall through to normal handling
   }

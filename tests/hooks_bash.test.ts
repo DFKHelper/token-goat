@@ -687,20 +687,25 @@ describe('preBashHandler — task output file interception', () => {
     clearModuleCaches()
   })
 
-  it('denies cat of a tasks output path and emits bash-output hint', () => {
+  it('denies cat of a tasks output path and emits a working --file recall hint', () => {
     const result = preBashHandler(makeBashEvent('cat /home/user/.claude/tasks/abc123def456.output'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output abc123def456')
-      expect(result.message).toContain('already cached')
+      // The recall command must name the on-disk path via --file; a bare
+      // `bash-output <id>` misses the cache (task id is not a cache key), and the
+      // old "already cached" wording promised a recall that errored.
+      expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123def456.output"')
+      expect(result.message).toContain('--tail 50')
+      expect(result.message).not.toContain('already cached')
     }
   })
 
-  it('denies tail on a tasks output path and emits bash-output hint', () => {
-    const result = preBashHandler(makeBashEvent('tail -n 50 /home/user/.claude/tasks/abc123def456.output'))
+  it('denies tail on a tasks output path and preserves the requested line count', () => {
+    const result = preBashHandler(makeBashEvent('tail -n 20 /home/user/.claude/tasks/abc123def456.output'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output abc123def456')
+      expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123def456.output"')
+      expect(result.message).toContain('--tail 20')
     }
   })
 
@@ -708,7 +713,7 @@ describe('preBashHandler — task output file interception', () => {
     const result = preBashHandler(makeBashEvent('cat C:\\Users\\user\\.claude\\tasks\\def789.output'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output def789')
+      expect(result.message).toContain('token-goat bash-output --file "C:\\Users\\user\\.claude\\tasks\\def789.output"')
     }
   })
 
@@ -721,8 +726,8 @@ describe('preBashHandler — task output file interception', () => {
     const result = preBashHandler(makeBashEvent('tail -c 1500 /home/user/.claude/tasks/abc123def456.output'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output abc123def456')
-      expect(result.message).toContain('already cached')
+      expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123def456.output"')
+      expect(result.message).not.toContain('already cached')
     }
   })
 
@@ -730,7 +735,7 @@ describe('preBashHandler — task output file interception', () => {
     const result = preBashHandler(makeBashEvent('tail -c 2000 C:\\Users\\user\\.claude\\tasks\\bb9912.output'))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat bash-output bb9912')
+      expect(result.message).toContain('token-goat bash-output --file "C:\\Users\\user\\.claude\\tasks\\bb9912.output"')
     }
   })
 
