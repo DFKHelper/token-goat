@@ -177,4 +177,65 @@ describe('drainOnce', () => {
       closeDb(projectDb)
     }
   })
+
+  describe('drainOnce atomic rename-to-claim (lost-update regression)', () => {
+    it('does not drop paths appended during a drain', () => {
+      // Regression: drainOnce must not delete the entire queue without first claiming it atomically.
+      // A path appended by a concurrent appendDirtyPath during processDirtyBatch would be deleted
+      // without being indexed. The atomic rename-to-claim pattern fixes this.
+      const A = path.join(DIR, 'a.ts')
+      const B = path.join(DIR, 'b.ts')
+      fs.writeFileSync(A, 'export const a = 1\n')
+      fs.writeFileSync(B, 'export const b = 2\n')
+
+      // Seed the queue with just A.
+      writeQueue(DIR, [A])
+
+      // The callback simulates concurrent appendDirtyPath calls that land during processDirtyBatch.
+      // When we process A, we append B to the queue to simulate a race.
+      const indexedPaths: string[] = []
+      drainOnce(DIR, (p) => {
+        indexedPaths.push(p)
+        if (p === A) {
+          // Simulate concurrent appendDirtyPath(B) landing during our batch processing.
+          fs.appendFileSync(path.join(DIR, 'queue', 'dirty.txt'), `${B}\n`)
+        }
+      })
+
+      // After the drain, B should still be in the queue (was not deleted).
+      // Pre-fix: B would be deleted without being indexed.
+      // Post-fix: B is preserved in the fresh queue created after the rename.
+      const remaining = getDirtyPathsFor(DIR)
+      expect(remaining).toContain(B)
+    })
+
+    it('recovers from abandoned .draining file', () => {
+      // Regression: if a previous drain process crashed, its .draining file would be abandoned.
+      // drainOnce must recover by reading and indexing it, so those paths are not lost.
+      const C = path.join(DIR, 'c.ts')
+      fs.writeFileSync(C, 'export const c = 3\n')
+
+      // Simulate a crashed drain by creating a .draining file directly.
+      const queuePath = path.join(DIR, 'queue', 'dirty.txt')
+      const drainingPath = `${queuePath}.draining`
+      fs.mkdirSync(path.dirname(drainingPath), { recursive: true })
+      fs.writeFileSync(drainingPath, `${C}\n`)
+
+      // No live queue exists; only the .draining file.
+      expect(fs.existsSync(queuePath)).toBe(false)
+
+      // The drain should recover the .draining file, index C, and clean it up.
+      const indexedPaths: string[] = []
+      const count = drainOnce(DIR, (p) => {
+        indexedPaths.push(p)
+      })
+
+      // C should have been recovered and indexed.
+      expect(count).toBe(1)
+      expect(indexedPaths).toContain(C)
+
+      // The .draining file should be cleaned up.
+      expect(fs.existsSync(drainingPath)).toBe(false)
+    })
+  })
 })
