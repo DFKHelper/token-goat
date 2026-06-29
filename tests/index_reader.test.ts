@@ -158,4 +158,48 @@ describe('index_reader round-trips inserted rows', () => {
       expect(hits).toEqual([])
     }
   })
+
+  describe('case-insensitive filesystem path matching', () => {
+    const prev = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+    afterEach(() => {
+      if (prev === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prev
+    })
+
+    it('querySymbols matches a stored path queried with different casing (case-insensitive FS)', () => {
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+      const dbPath = tmpDbPath()
+      const db = getDb(dbPath)
+      db.prepare('INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run('c:/proj/src/worker.ts', 'foo', 'function', 1, 2, 'function foo(){}', '')
+      expect(querySymbols({ name: 'foo', filePath: 'c:/proj/src/Worker.ts' }, dbPath)).toHaveLength(1)
+    })
+
+    it('getFileEntry matches a stored path queried with different casing (case-insensitive FS)', () => {
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+      const dbPath = tmpDbPath()
+      const db = getDb(dbPath)
+      db.prepare('INSERT INTO files (path, sha, mtime, language, indexed_at) VALUES (?, ?, ?, ?, ?)')
+        .run('c:/proj/src/worker.ts', 'abc', 123, 'typescript', 456)
+      expect(getFileEntry('c:/proj/src/Worker.ts', dbPath)).not.toBeNull()
+    })
+
+    it('control: case-sensitive FS still distinguishes casing', () => {
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'
+      const dbPath = tmpDbPath()
+      const db = getDb(dbPath)
+      db.prepare('INSERT INTO symbols (file_path, name, kind, line_start, line_end, body, docstring) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run('src/worker.ts', 'foo', 'function', 1, 2, 'function foo(){}', '')
+      expect(querySymbols({ name: 'foo', filePath: 'src/Worker.ts' }, dbPath)).toHaveLength(0)
+    })
+
+    it('queryRefs matches a stored path queried with different casing (case-insensitive FS)', () => {
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+      const dbPath = tmpDbPath()
+      const db = getDb(dbPath)
+      db.prepare('INSERT INTO refs (file_path, name, line, col, context) VALUES (?, ?, ?, ?, ?)')
+        .run('c:/proj/src/worker.ts', 'foo', 10, 5, 'foo()')
+      expect(queryRefs({ name: 'foo', filePath: 'c:/proj/src/Worker.ts' }, dbPath)).toHaveLength(1)
+    })
+  })
 })

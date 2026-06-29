@@ -26,6 +26,7 @@ import { dataDir, globalDbPath } from './constants.js'
 import { fingerprintFile } from './fingerprint.js'
 import { indexFileSync } from './parser.js'
 import { normalizePath } from './paths.js'
+import { foldPath } from './util.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
 export interface WorkerOptions {
@@ -64,8 +65,7 @@ function parseDirtyQueueLines(raw: string): string[] {
     // are recognized as the same entry. normalizePath only lowercases the
     // drive letter, so we fold the entire normalized path for dedup.
     const normalized = normalizePath(trimmed)
-    const caseInsensitiveFs = process.platform === 'win32' || process.platform === 'darwin'
-    const dedupeKey = caseInsensitiveFs ? normalized.toLowerCase() : normalized
+    const dedupeKey = foldPath(normalized)
     if (seen.has(dedupeKey)) continue
     seen.add(dedupeKey)
     out.push(trimmed)

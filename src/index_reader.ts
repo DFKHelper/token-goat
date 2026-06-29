@@ -15,6 +15,13 @@
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import type { FileIndexEntry, RefEntry, SymbolEntry } from './parser_types.js'
+import { isCaseInsensitiveFs } from './util.js'
+
+// On case-insensitive filesystems a stored path and a query path that differ only
+// in casing denote the same file, so compare path columns case-insensitively there.
+function pathEq(column: string): string {
+  return isCaseInsensitiveFs() ? `${column} = ? COLLATE NOCASE` : `${column} = ?`
+}
 
 /** Raw `symbols` row as returned by better-sqlite3 (snake_case columns). */
 interface SymbolRow {
@@ -91,7 +98,7 @@ export function querySymbols(
     params.push(opts.name)
   }
   if (opts.filePath !== undefined) {
-    where.push('file_path = ?')
+    where.push(pathEq('file_path'))
     params.push(opts.filePath)
   }
   if (opts.kind !== undefined) {
@@ -128,7 +135,7 @@ export function queryRefs(
   const params: (string | number)[] = [opts.name]
 
   if (opts.filePath !== undefined) {
-    where.push('file_path = ?')
+    where.push(pathEq('file_path'))
     params.push(opts.filePath)
   }
 
@@ -152,7 +159,7 @@ export function getFileEntry(
 ): FileIndexEntry | null {
   const db = getDb(dbPath)
   const row = db
-    .prepare('SELECT path, sha, mtime, language, indexed_at FROM files WHERE path = ?')
+    .prepare(`SELECT path, sha, mtime, language, indexed_at FROM files WHERE ${pathEq('path')}`)
     .get(filePath) as FileRow | undefined
 
   if (row === undefined) return null
