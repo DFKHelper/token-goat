@@ -7,6 +7,8 @@ export { GenericFilter } from './generic.js'
 export { makeNodeTestRunnerFilter, plural } from './families.js'
 export type { NodeTestRunnerConfig } from './families.js'
 export { jestFilter, vitestFilter, TEST_RUNNER_FILTERS } from './test_runners.js'
+export { PytestFilter, pytestFilter } from './pytest.js'
+export { GoTestFilter, goTestFilter } from './go_test.js'
 export {
   TOOL_FILTERS,
   selectFilter,

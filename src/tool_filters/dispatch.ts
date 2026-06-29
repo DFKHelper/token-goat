@@ -10,7 +10,9 @@
 
 import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { GenericFilter } from './generic.js'
+import { goTestFilter } from './go_test.js'
 import { REDIRECT_TOKEN_RE, shlexSplit, stripPrefixes } from './helpers.js'
+import { pytestFilter } from './pytest.js'
 import { TEST_RUNNER_FILTERS } from './test_runners.js'
 
 /**
@@ -20,9 +22,14 @@ import { TEST_RUNNER_FILTERS } from './test_runners.js'
  * package-manager handlers they overlap with — each batch documents its placement.
  */
 export const TOOL_FILTERS: ToolFilter[] = [
-  // Batch A — test runners (jest/mocha/ava/tap, vitest). No overlap with later
-  // batches; safe at the head.
+  // Batch A — test runners. Node family (jest/mocha/ava/tap, vitest) first, then
+  // the bespoke runners (pytest, go test) that need their own structural logic.
+  // No overlap with later batches; safe at the head — except `go-test`, which
+  // must precede any future `go build`/`go run` filter (both match `go`), so it
+  // is registered here ahead of the build batch.
   ...TEST_RUNNER_FILTERS,
+  pytestFilter,
+  goTestFilter,
   // Batches append here: package-managers · linters · vcs · build · containers ·
   // cloud/iac · ci · ai-clis · shell/file · lang.
 ]
