@@ -76,6 +76,24 @@ describe('collectWalkIndexFiles', () => {
     }
   })
 
+  it('excludes installed dependencies under site-packages even when the venv dir has a non-standard name', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-walk-sp-'))
+    try {
+      const sp = path.join(root, 'tmptg-venv', 'Lib', 'site-packages', 'dep')
+      fs.mkdirSync(sp, { recursive: true })
+      fs.mkdirSync(path.join(root, 'src'))
+      fs.writeFileSync(path.join(root, 'src', 'app.ts'), 'export const a = 1\n')
+      fs.writeFileSync(path.join(sp, 'mod.py'), 'def helper():\n    pass\n')
+
+      const files = collectWalkIndexFiles(root).map((f) => f.replace(/\\/g, '/'))
+
+      expect(files.some((f) => f.endsWith('/src/app.ts'))).toBe(true)
+      expect(files.some((f) => f.includes('/site-packages/'))).toBe(false)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('throws when the tree exceeds the file-count ceiling', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-walk-cap-'))
     try {

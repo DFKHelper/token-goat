@@ -42,6 +42,12 @@ const SKIP_DIRS: ReadonlySet<string> = new Set([
   '.nuxt',
   '.venv',
   'venv',
+  // Installed Python packages live under <any-venv>/Lib/site-packages or
+  // lib/pythonX.Y/site-packages. Skip by this exact name so a non-standard venv
+  // directory name (e.g. tmptg-py313-venv) cannot smuggle dependency code into
+  // the symbol index — the enclosing venv dir name varies, but site-packages
+  // does not.
+  'site-packages',
   '__pycache__',
   '.mypy_cache',
   '.pytest_cache',
