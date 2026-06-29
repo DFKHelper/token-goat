@@ -254,6 +254,24 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  it('rewrites a wrapped pytest invocation to the bespoke pytest filter (batch A)', () => {
+    // `python -m pytest tests/` must resolve through stripPrefixes to the
+    // registered `pytest` filter — proving the batch-A-increment-2 bespoke
+    // filter survives esbuild and that two-token launcher prefixes are handled.
+    const out = runHook({
+      session_id: 'e2e-compress-pytest',
+      tool_name: 'Bash',
+      tool_input: { command: 'python -m pytest tests/' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f pytest -c 'python -m pytest tests/'",
+    )
+  })
+
   it('does not rewrite a non-build command (passes through)', () => {
     const out = runHook({
       session_id: 'e2e-compress',
