@@ -378,7 +378,11 @@ function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const visit = (node: TsNode): void => {
     const kind = RUST_KIND_BY_TYPE.get(node.type)
     if (kind !== undefined) {
-      const name = nodeName(node)
+      // An `impl` block has no `name` field; the implemented type lives in a
+      // `type` field (e.g. `impl Widget` or `impl Trait for Widget`), so resolve
+      // it there. All other Rust items expose their name on the `name` field.
+      const name =
+        node.type === 'impl_item' ? (node.childForFieldName('type')?.text ?? null) : nodeName(node)
       if (name !== null && name !== '') {
         out.push(makeSymbol(filePath, name, kind, node))
       }

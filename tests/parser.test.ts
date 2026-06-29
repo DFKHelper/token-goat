@@ -125,6 +125,27 @@ describe('parseFile', () => {
     expect(names).toContain('helper')
     expect(names).toContain('Method')
   })
+  it('indexes Rust impl blocks by their implemented type (name lives on the type field)', async () => {
+    const rustFile = write(
+      'sym.rs',
+      [
+        'struct Widget { x: i32 }',
+        'impl Widget { fn area(&self) -> i32 { self.x } }',
+        'trait Drawable { fn draw(&self); }',
+        'impl Drawable for Widget { fn draw(&self) {} }',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rustFile)
+    expect(result.language).toBe('rust')
+    // The impl blocks resolve their name from the `type` field, not `name`.
+    const implNames = result.symbols.filter((s) => s.kind === 'impl').map((s) => s.name)
+    expect(implNames).toContain('Widget')
+    // The struct and trait still resolve via their name field.
+    const names = result.symbols.map((s) => s.name)
+    expect(names).toContain('Widget')
+    expect(names).toContain('Drawable')
+  })
 })
 
 describe('indexFile', () => {
