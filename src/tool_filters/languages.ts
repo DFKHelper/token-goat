@@ -170,10 +170,14 @@ export class PythonFilter extends ToolFilter {
     const warnCounts = new Map<string, number>()
     for (const line of lines) {
       if (PYTHON_WARNING_RE.test(line)) {
-        // Key on the Warning class + message (not the file:line prefix) so that
-        // the same warning repeated across different source locations is deduplicated.
+        // Key on the full Warning class + message (not the file:line prefix) so
+        // the same warning repeated across different source locations is
+        // deduplicated. The key must NOT be truncated: a fixed-length cap makes
+        // two DISTINCT warnings that share a long leading substring collide, so
+        // one is silently suppressed (and mislabelled as a repeat) once the
+        // other fills the keep quota.
         const warnIdx = line.search(/\w+Warning:/)
-        const key = (warnIdx !== -1 ? line.slice(warnIdx) : line.trim()).slice(0, 60)
+        const key = warnIdx !== -1 ? line.slice(warnIdx) : line.trim()
         const n = (warnCounts.get(key) ?? 0) + 1
         warnCounts.set(key, n)
         if (n <= 3) out.push(line)
