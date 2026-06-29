@@ -36,6 +36,13 @@ export {
   nixFilter, wranglerFilter, hardhatFilter, serverlessFilter, flyFilter, forgeFilter,
 } from './cloud.js'
 export {
+  CI_FILTERS,
+  GhRunLogFilter, GhFilter, ActFilter, GenericCIFilter, PreCommitFilter,
+  BanditFilter, TrivyFilter, SnykFilter, SemgrepFilter,
+  ghRunLogFilter, ghFilter, actFilter, genericCIFilter, preCommitFilter,
+  banditFilter, trivyFilter, snykFilter, semgrepFilter,
+} from './ci.js'
+export {
   TOOL_FILTERS,
   selectFilter,
   detectFromCommand,
