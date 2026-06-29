@@ -662,13 +662,8 @@ export function deleteFileEmbeddings(
   db: BetterSqlite3Database,
   filePath: string,
 ): void {
-  const rows = db.prepare(`SELECT id FROM chunks WHERE ${pathEqClause('file_path')}`).all(filePath) as Array<{
-    id: number
-  }>
-  if (rows.length === 0) return
-  const ids = rows.map((r) => r.id)
-  const placeholders = ids.map(() => '?').join(', ')
-  db.prepare(`DELETE FROM chunk_vectors WHERE rowid IN (${placeholders})`).run(...ids)
+  // Delete the file's vectors via a correlated subquery over chunks rather than an expanded `IN (?, ?, ...)` list: a file with more than SQLITE_MAX_VARIABLE_NUMBER (32766) chunks would overflow SQLite's bound-parameter limit and throw "too many SQL variables". The chunk_vectors delete MUST run before the chunks delete because its subquery reads chunks; deleting chunks first would leave the vectors orphaned.
+  db.prepare(`DELETE FROM chunk_vectors WHERE rowid IN (SELECT id FROM chunks WHERE ${pathEqClause('file_path')})`).run(filePath)
   db.prepare(`DELETE FROM chunks WHERE ${pathEqClause('file_path')}`).run(filePath)
 }
 
