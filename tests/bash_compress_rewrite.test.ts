@@ -419,4 +419,22 @@ describe('compression rewrite (built-bundle e2e)', () => {
     )
   })
 
+  it('rewrites aider to the aider filter (batch I AI-CLI filter)', () => {
+    // Verifies AiderFilter survives esbuild bundling and dispatch produces
+    // the correct -f aider rewrite — the authoritative coverage that the
+    // AI-CLI batch is wired through the built bundle.
+    const out = runHook({
+      session_id: 'e2e-compress-aider',
+      tool_name: 'Bash',
+      tool_input: { command: 'aider --model claude-3-5-sonnet' },
+    })
+    expect(out.status).toBe(0)
+    const parsed = JSON.parse(out.stdout) as {
+      hookSpecificOutput?: { updatedInput?: { command?: string } }
+    }
+    expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
+      "token-goat compress -f aider -c 'aider --model claude-3-5-sonnet'",
+    )
+  })
+
 })

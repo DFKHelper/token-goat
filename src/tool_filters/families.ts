@@ -401,3 +401,160 @@ export function makeNodeTestRunnerFilter(cfg: NodeTestRunnerConfig): ToolFilter 
     }
   })()
 }
+
+// ---------------------------------------------------------------------------
+// AI-CLI streaming assistant filter family
+// ---------------------------------------------------------------------------
+
+/** A single rule for counting and collapsing a class of lines. */
+export interface AiCliCountedRule {
+  /**
+   * Regex to match against each line. Exactly one of `re` or `res` must be set.
+   * When `res` is set, any regex in the array matching the line increments the
+   * shared counter (OpenCode tool-call + tool-result share one counter this way).
+   */
+  re?: RegExp
+  res?: RegExp[]
+  /**
+   * Where the count summary goes:
+   *   'prepend' — emit a full `[token-goat: …]` line BEFORE the kept body.
+   *   'append'  — emit a full `[token-goat: …]` line AFTER the kept body.
+   *   'note'    — add inner text to the trailing `[token-goat: A; B; C]` note.
+   *
+   * For 'prepend'/'append' the `note` fn must return the complete
+   * `[token-goat: …]` string.  For 'note' it returns only the inner text
+   * (emitNotes wraps it).
+   */
+  position: 'prepend' | 'append' | 'note'
+  /** Produce the note/line text. `lastLine` supplied only when `keepLast` is true. */
+  note: (count: number, lastLine?: string) => string
+  /** When true, track the last matching line and pass it to `note`. */
+  keepLast?: boolean
+}
+
+/** Track the last line matching a regex and emit its value as a trailing note. */
+export interface AiCliKeepLastRule {
+  re: RegExp
+  /** Produce the trailing note text from the last-seen stripped line. */
+  note: (value: string) => string
+}
+
+/** Configuration for {@link makeAiCliFilter}. */
+export interface AiCliFilterConfig {
+  name: string
+  binaries: string[]
+  /**
+   * When set, keep matching lines unconditionally BEFORE any drop rules.
+   * Used for Cline's "wants to execute" confirmation lines.
+   */
+  alwaysKeepRe?: RegExp
+  /** Lines matching any entry are silently dropped; count accumulates in dropped_noise. */
+  dropRules: RegExp[]
+  /** Counting rules — each independently counts one class of lines. */
+  countedRules?: AiCliCountedRule[]
+  /** Keep-last rules — each tracks the last matching line and emits it as a trailing note. */
+  keepLastRules?: AiCliKeepLastRule[]
+  /** Produce the trailing note text for the dropped_noise tally. Omit to suppress. */
+  droppedNoiseNote?: (n: number) => string
+  /**
+   * When provided, completely replaces the default `matches()` implementation
+   * (binary-stem check + optional subcommand check). The function receives the
+   * full prefix-stripped argv.
+   */
+  customMatches?: (argv: string[]) => boolean
+}
+
+/**
+ * Factory for AI-CLI streaming assistant filters. All 10+ AI-CLI tools share
+ * the same compression skeleton: drop spinner/banner/boilerplate noise, count
+ * and collapse progress lines, keep the last value seen for token-usage / cost
+ * / context metrics, and emit everything as a compact trailing note.
+ *
+ * The bespoke CodexExecFilter (different structural algorithm) is not built
+ * with this factory.
+ */
+export function makeAiCliFilter(cfg: AiCliFilterConfig): ToolFilter {
+  return new (class extends ToolFilter {
+    readonly name = cfg.name
+    override readonly binaries = new Set(cfg.binaries)
+    override readonly errorPassthrough = true
+
+    override matches(argv: string[]): boolean {
+      if (cfg.customMatches) return cfg.customMatches(argv)
+      return super.matches(argv)
+    }
+
+    override compressBody(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
+      const merged = this.combineOutput(stdout, stderr)
+      const lines = merged.split('\n')
+      const kept: string[] = []
+      let droppedNoise = 0
+
+      const rules = cfg.countedRules ?? []
+      const counts = rules.map(() => ({ count: 0, lastLine: undefined as string | undefined }))
+      const klRules = cfg.keepLastRules ?? []
+      const klValues: (string | undefined)[] = klRules.map(() => undefined)
+
+      for (const line of lines) {
+        if (ERROR_SIGNAL_RE.test(line)) { kept.push(line); continue }
+        if (cfg.alwaysKeepRe?.test(line)) { kept.push(line); continue }
+
+        let dropped = false
+        for (const re of cfg.dropRules) {
+          if (re.test(line)) { droppedNoise++; dropped = true; break }
+        }
+        if (dropped) continue
+
+        let counted = false
+        for (let i = 0; i < rules.length; i++) {
+          const rule = rules[i]!
+          const matched = rule.res ? rule.res.some((r) => r.test(line)) : rule.re!.test(line)
+          if (matched) {
+            counts[i]!.count++
+            if (rule.keepLast) counts[i]!.lastLine = line.trim()
+            counted = true
+            break
+          }
+        }
+        if (counted) continue
+
+        let kl = false
+        for (let i = 0; i < klRules.length; i++) {
+          if (klRules[i]!.re.test(line)) { klValues[i] = line.trim(); kl = true; break }
+        }
+        if (kl) continue
+
+        kept.push(line)
+      }
+
+      const out: string[] = []
+      for (let i = 0; i < rules.length; i++) {
+        if (rules[i]!.position === 'prepend' && counts[i]!.count > 0) {
+          out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
+        }
+      }
+      out.push(...kept)
+      for (let i = 0; i < rules.length; i++) {
+        if (rules[i]!.position === 'append' && counts[i]!.count > 0) {
+          out.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
+        }
+      }
+
+      const notes: string[] = []
+      for (let i = 0; i < rules.length; i++) {
+        if (rules[i]!.position === 'note' && counts[i]!.count > 0) {
+          notes.push(rules[i]!.note(counts[i]!.count, counts[i]!.lastLine))
+        }
+      }
+      for (let i = 0; i < klRules.length; i++) {
+        const v = klValues[i]
+        if (v !== undefined) notes.push(klRules[i]!.note(v))
+      }
+      if (droppedNoise > 0 && cfg.droppedNoiseNote) {
+        notes.push(cfg.droppedNoiseNote(droppedNoise))
+      }
+      this.emitNotes(out, notes)
+      return this.finalize(out)
+    }
+  })()
+}

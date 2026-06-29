@@ -138,6 +138,7 @@ The adapters below are regex-based (no tree-sitter dependency). Tree-sitter inli
 |--------|------|
 | [`src/ask.ts`](src/ask.ts) | `token-goat ask` command |
 | [`src/bash_compress.ts`](src/bash_compress.ts) | Bash output compression filters (vitest, npm, docker, ruff, and others) |
+| [`src/tool_filters/`](src/tool_filters/) | TS rewrite of the bash-output compression filter framework: `base.ts` (`ToolFilter` abstract class + `CompressedOutput`), `helpers.ts` (shared utilities), `families.ts` (factory functions: `makeNodeTestRunnerFilter`, `makePackageManagerFilter`, `makeLinterFilter`, `makeAiCliFilter`), `dispatch.ts` (`TOOL_FILTERS` registry + `selectFilter` / `detectFromCommand`), and per-family modules: `test_runners.ts` (A), `pytest.ts` + `go_test.ts` (A), `package_managers.ts` (B), `linters.ts` (C), `git.ts` (D), `build.ts` (E), `containers.ts` (F), `cloud.ts` (G), `ci.ts` (H), `ai_clis.ts` (I — AiderFilter, GhCopilotFilter, CopilotFilter, GeminiCliFilter, ClaudeCliFilter, CursorFilter, WindsurfFilter, OpenCodeFilter, ContinueFilter, ClineFilter, CodexExecFilter). **Dispatch ordering:** `AI_CLI_FILTERS` is spread before `CI_FILTERS` so `GhCopilotFilter` precedes `GhFilter` (both claim the `gh` binary). |
 | [`src/code_compress.ts`](src/code_compress.ts) | Code-block compression for large tool outputs |
 | [`src/cli_doctor.ts`](src/cli_doctor.ts) | `token-goat doctor` — install state and cache health |
 | [`src/filters.ts`](src/filters.ts) | Shared output-filter helpers |
