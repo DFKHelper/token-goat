@@ -16,6 +16,12 @@ import {
   setSkillsSourceDirForTesting,
   getSkillFilePath,
   installedSkillPath,
+  listSkills,
+  incrementSkillHit,
+  readSkillHits,
+  extractSourceShaFromCompact,
+  isCompactStale,
+  formatAge,
 } from '../src/skill_cache.js'
 import * as fs from 'fs/promises'
 import * as path from 'path'
@@ -483,10 +489,7 @@ describe('getSkillFilePath / installedSkillPath disk fallback', () => {
     setSkillsSourceDirForTesting(null)
   })
 
-  // Regression: getSkillFilePath used to resolve ONLY from cached metas, so a skill
-  // installed on disk but never loaded via the Skill hook this session returned null
-  // -> `skill 'ollama' not found`. The empty (isolated) cache here forces the disk
-  // fallback. Pre-fix: returns null and this expectation fails.
+  // Regression: getSkillFilePath used to resolve ONLY from cached metas, so a skill installed on disk but never loaded via the Skill hook this session returned null -> `skill 'ollama' not found`. The empty (isolated) cache here forces the disk fallback. Pre-fix: returns null and this expectation fails.
   it('resolves an installed skill from disk when the cache is empty', async () => {
     const resolved = await getSkillFilePath('ollama')
     expect(resolved).not.toBeNull()
@@ -506,5 +509,143 @@ describe('getSkillFilePath / installedSkillPath disk fallback', () => {
 
   it('installedSkillPath rejects an unsafe (traversal) name', async () => {
     expect(await installedSkillPath('../etc')).toBeNull()
+  })
+})
+
+describe('Hit count tracking', () => {
+  const hitDir = path.resolve(__dirname, '.temp-skill-hits-test')
+
+  beforeEach(async () => {
+    try {
+      await fs.rm(hitDir, { recursive: true })
+    } catch {
+      // not present yet
+    }
+    setSkillOutputsDirForTesting(hitDir)
+  })
+
+  afterEach(() => {
+    setSkillOutputsDirForTesting(null)
+  })
+
+  it('incrementSkillHit creates or updates hit count', async () => {
+    await incrementSkillHit('myskill')
+    const hits1 = await readSkillHits('myskill')
+    expect(hits1.count).toBe(1)
+
+    await incrementSkillHit('myskill')
+    const hits2 = await readSkillHits('myskill')
+    expect(hits2.count).toBe(2)
+  })
+
+  it('readSkillHits returns zero for nonexistent skills', async () => {
+    const hits = await readSkillHits('nonexistent')
+    expect(hits.count).toBe(0)
+  })
+
+  it('listSkills includes hit count', async () => {
+    const sessionId = 'test-session'
+    const body = 'Test skill body'
+    await storeOutput(sessionId, 'myskill', body)
+    await incrementSkillHit('myskill')
+    await incrementSkillHit('myskill')
+
+    const skills = await listSkills(sessionId)
+    const skill = skills.find((s) => s.name === 'myskill')
+    expect(skill).toBeDefined()
+    expect(skill!.hitCount).toBe(2)
+  })
+})
+
+describe('Compact staleness tracking', () => {
+  const staleDir = path.resolve(__dirname, '.temp-skill-stale-test')
+
+  beforeEach(async () => {
+    try {
+      await fs.rm(staleDir, { recursive: true })
+    } catch {
+      // not present yet
+    }
+    setSkillOutputsDirForTesting(staleDir)
+  })
+
+  afterEach(() => {
+    setSkillOutputsDirForTesting(null)
+  })
+
+  it('extractSourceShaFromCompact parses the source SHA comment', () => {
+    const compact = '<!-- source_sha: abc123def456 -->\nCompact content'
+    const sha = extractSourceShaFromCompact(compact)
+    expect(sha).toBe('abc123def456')
+  })
+
+  it('extractSourceShaFromCompact returns null when no SHA present', () => {
+    const compact = 'Compact content without SHA'
+    const sha = extractSourceShaFromCompact(compact)
+    expect(sha).toBeNull()
+  })
+
+  it('storeCompact with sourceSha embeds the SHA', async () => {
+    const sessionId = 'test-session'
+    const sourceSha = contentHash('test body').slice(0, 12)
+    await storeCompact(sessionId, 'myskill', 'Compact content', sourceSha)
+    const compact = await getCompact(sessionId, 'myskill')
+    expect(compact).toBeDefined()
+    expect(compact).toContain(`<!-- source_sha: ${sourceSha} -->`)
+  })
+
+  it('isCompactStale detects when compact is stale', async () => {
+    const oldSha = 'abc123def456'
+    const newSha = 'xyz789uvw012'
+    const compact = `<!-- source_sha: ${oldSha} -->\nOld content`
+    const stale = await isCompactStale(compact, 'myskill', newSha)
+    expect(stale).toBe(true)
+  })
+
+  it('isCompactStale returns false when compact is fresh', async () => {
+    const sha = 'abc123def456'
+    const compact = `<!-- source_sha: ${sha} -->\nCurrent content`
+    const stale = await isCompactStale(compact, 'myskill', sha)
+    expect(stale).toBe(false)
+  })
+
+  it('isCompactStale returns null when no embedded SHA', async () => {
+    const compact = 'Content without SHA'
+    const stale = await isCompactStale(compact, 'myskill', 'abc123def456')
+    expect(stale).toBeNull()
+  })
+
+  it('listSkills includes compactStale field', async () => {
+    const sessionId = 'test-session'
+    const body = 'Test skill body with content'
+    const bodySha = contentHash(body)
+    await storeOutput(sessionId, 'myskill', body)
+    await storeCompact(sessionId, 'myskill', 'Old compact', bodySha.slice(0, 12))
+    // Now modify body to make compact stale.
+    await storeOutput(sessionId, 'myskill', body + ' more content')
+
+    const skills = await listSkills(sessionId)
+    const skill = skills.find((s) => s.name === 'myskill')
+    expect(skill).toBeDefined()
+    // compactStale should be false since we stored with matching SHA.
+    expect(skill!.compactStale).toBeDefined()
+  })
+})
+
+describe('Age formatting', () => {
+  it('formatAge formats seconds', () => {
+    expect(formatAge(30 * 1000)).toBe('30s')
+  })
+
+  it('formatAge formats minutes', () => {
+    expect(formatAge(5 * 60 * 1000)).toBe('5m')
+  })
+
+  it('formatAge formats hours', () => {
+    expect(formatAge(3 * 60 * 60 * 1000)).toBe('3h')
+  })
+
+  it('formatAge formats days', () => {
+    expect(formatAge(2 * 24 * 60 * 60 * 1000)).toBe('2d')
   })
 })

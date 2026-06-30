@@ -290,6 +290,20 @@ const cases: Record<string, () => void> = {
     expect((r.stdout + r.stderr).length).toBeGreaterThan(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
   },
+  'skill-history': () => {
+    const r = run(['skill-history'])
+    expect(r.status, r.stderr).toBe(0)
+  },
+  'skill-diff': () => {
+    const r = run(['skill-diff', 'no-such-skill'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  'skill-section': () => {
+    const r = run(['skill-section', 'no-such-skill::Heading'])
+    expect(r.status).not.toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
   'gdrive-sections': () => {
     // Reachability only: needs network + a live public doc. A bogus id must fail gracefully (non-zero) without an "unknown command" or tree-shaken module crash — that is what proves the command is wired into the shipped bundle.
     const r = run(['gdrive-sections', 'not-a-real-doc-id'])

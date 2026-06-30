@@ -14,6 +14,7 @@
 import { Command } from 'commander'
 import * as fs from 'fs'
 import * as path from 'path'
+import { homedir } from 'os'
 
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
@@ -47,7 +48,8 @@ import {
   runFind,
   runGrep,
 } from './read_commands.js'
-import { getSkillFilePath, listSkills, storeCompact, storeOutput } from './skill_cache.js'
+import { contentHash, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
+import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage } from './util.js'
 import { renderStats } from './stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
@@ -129,10 +131,44 @@ async function cmdHook(event: string): Promise<void> {
   await relay(event)
 }
 
-function cmdInstall(opts: { project?: boolean }): void {
+async function cmdInstall(opts: { project?: boolean }): Promise<void> {
   const scope: HookScope = opts.project === true ? 'project' : 'user'
   const result = installHooks(scope)
   out(`Installed token-goat hooks (${scope}) → ${result.settingsPath}`)
+
+  // Pre-generate compacts for all installed skills.
+  try {
+    const skillDir = path.join(homedir(), '.claude', 'skills')
+    if (fs.existsSync(skillDir)) {
+      const entries = fs.readdirSync(skillDir, { withFileTypes: true })
+      const skillNames: string[] = []
+      const sessionFiles = getSessionFiles()
+      const sessionId = Array.from(sessionFiles.keys())[0] ?? 'default'
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        const skillFile = path.join(skillDir, entry.name, 'SKILL.md')
+        if (fs.existsSync(skillFile)) {
+          const body = fs.readFileSync(skillFile, 'utf-8')
+          const sourceSha = contentHash(body)
+          await storeCompact(sessionId, entry.name, body, sourceSha)
+          skillNames.push(entry.name)
+        }
+      }
+
+      if (skillNames.length > 0) {
+        // Write pregen.json with list of pre-generated skills.
+        const dir = skillOutputsDir()
+        await fs.promises.mkdir(dir, { recursive: true })
+        const pregenPath = path.join(dir, 'pregen.json')
+        const pregenData = { ts: Date.now(), names: skillNames }
+        await fs.promises.writeFile(pregenPath, JSON.stringify(pregenData, null, 2))
+        out(`Pre-generated ${skillNames.length} skill compacts.`)
+      }
+    }
+  } catch {
+    // fail-soft: install succeeded even if pre-gen fails
+  }
 }
 
 function cmdUninstall(opts: { project?: boolean }): void {
@@ -163,8 +199,12 @@ function cmdStats(): void {
   renderStats({ windowDays: 30 })
 }
 
-function cmdDoctor(): void {
-  const code = runDoctorAndExit()
+function cmdDoctor(opts: { context?: boolean }): void {
+  const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean } = {}
+  if (opts.context === true) {
+    doctorOpts.context = true
+  }
+  const code = runDoctorAndExit(doctorOpts)
   if (code !== 0) {
     throw new CliError('doctor checks failed')
   }
@@ -343,9 +383,35 @@ async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<
   } else {
     out(body)
   }
+  // Increment hit count for skill recall tracking.
+  await incrementSkillHit(name)
 }
 
-async function cmdSkillCompact(name: string | undefined, opts: { path?: string }): Promise<void> {
+async function cmdSkillCompact(name: string | undefined, opts: { path?: string; all?: boolean }): Promise<void> {
+  const sessionFiles = getSessionFiles()
+  const sessionId = Array.from(sessionFiles.keys())[0] ?? 'default'
+
+  if (opts.all === true) {
+    // Regenerate compacts for all skills, skipping fresh ones.
+    const skills = await listSkills(sessionId)
+    let regenerated = 0
+    let skipped = 0
+    for (const skill of skills) {
+      const filePath = await getSkillFilePath(skill.name)
+      if (!filePath) continue
+      const body = fs.readFileSync(filePath, 'utf-8')
+      const sourceSha = contentHash(body)
+      if (skill.compactStale === false) {
+        skipped++
+      } else {
+        await storeCompact(sessionId, skill.name, body, sourceSha)
+        regenerated++
+      }
+    }
+    out(`Regenerated ${regenerated}, skipped ${skipped} (fresh), total ${skills.length}.`)
+    return
+  }
+
   let body: string
   let cacheName: string
   let sourcePath: string
@@ -371,11 +437,10 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string }
     sourcePath = filePath
   }
 
-  const sessionFiles = getSessionFiles()
-  const sessionId = Array.from(sessionFiles.keys())[0] ?? 'default'
   // Persist the body (writes the meta that skill-list surfaces) and the compact slice, so a skill compacted straight from disk is both listable and recallable cross-session, exactly like one loaded via the Skill hook.
   await storeOutput(sessionId, cacheName, body, { sourcePath })
-  await storeCompact(sessionId, cacheName, body)
+  const sourceSha = contentHash(body)
+  await storeCompact(sessionId, cacheName, body, sourceSha)
   out(`Cached compact for skill '${cacheName}'.`)
 }
 
@@ -388,14 +453,23 @@ async function cmdSkillList(opts: { json?: boolean; sessionId?: string }): Promi
       body_bytes: s.bodyLen,
       compact_bytes: s.compactLen,
       has_marker: s.hasMarker,
+      compact_stale: s.compactStale,
+      hit_count: s.hitCount,
+      age_ms: s.ageMs,
     }))
     out(JSON.stringify(json, null, 2))
   } else {
+    // Human table format with columns: name, body, compact, marker, hit count, age, stale/fresh/no-compact.
     const lines = skills.map((s) => {
-      const compact = s.compactLen > 0 ? ` (compact: ${s.compactLen})` : ''
-      return `${s.name}: ${s.bodyLen} bytes${compact}`
+      const bodyKb = (s.bodyLen / 1024).toFixed(1)
+      const compactKb = s.compactLen > 0 ? (s.compactLen / 1024).toFixed(1) : '-'
+      const marker = s.hasMarker ? 'yes' : 'no'
+      const staleStatus = s.compactLen === 0 ? '[no-compact]' : (s.compactStale === true ? '[stale]' : s.compactStale === false ? '[fresh]' : '[unknown]')
+      const age = formatAge(s.ageMs)
+      return `${s.name.padEnd(25)} ${bodyKb.padStart(6)}K  ${compactKb.padStart(6)}K  ${marker}  ${s.hitCount.toString().padStart(3)}  ${age.padStart(3)}  ${staleStatus}`
     })
-    out(lines.join('\n'))
+    const header = `${'Name'.padEnd(25)} ${'Body'.padStart(6)}  ${'Compact'.padStart(6)}  Marker  Hits  Age  Status`
+    out([header, ...lines].join('\n'))
   }
 }
 
@@ -412,7 +486,143 @@ async function cmdSkillSize(opts: { sessionId?: string }): Promise<void> {
     `Body:    ${totalBody} bytes`,
     `Compact: ${totalCompact} bytes`,
   ]
+
+  // Add per-skill table.
+  lines.push('')
+  lines.push('## Per-skill breakdown')
+  for (const skill of skills) {
+    const bodyKb = (skill.bodyLen / 1024).toFixed(1)
+    const compactKb = skill.compactLen > 0 ? (skill.compactLen / 1024).toFixed(1) : '-'
+    lines.push(`  ${skill.name.padEnd(25)} body: ${bodyKb.padStart(6)}K  compact: ${compactKb.padStart(6)}K`)
+  }
+
+  // Add recommendations for skills without compacts and over ~1500 tokens (6000 bytes).
+  const noCompactLargeSkills = skills.filter((s) => s.compactLen === 0 && s.bodyLen > 6000)
+  if (noCompactLargeSkills.length > 0) {
+    lines.push('')
+    lines.push('## Recommendations')
+    for (const skill of noCompactLargeSkills) {
+      const estimatedTokens = Math.floor(skill.bodyLen / 4)
+      lines.push(`  ${skill.name}: add <!-- COMPACT_END --> marker (body ~${estimatedTokens}tok, no compact slice)`)
+    }
+  }
+
   out(lines.join('\n'))
+}
+
+async function cmdSkillHistory(opts: { json?: boolean }): Promise<void> {
+  try {
+    const dir = skillOutputsDir()
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+    const metas: Array<{ outputId: string; skillName: string; bytes: number; truncated: boolean; ts: number }> = []
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.meta')) continue
+      try {
+        const content = await fs.promises.readFile(path.resolve(dir, entry.name), 'utf-8')
+        const meta = JSON.parse(content)
+        metas.push({ outputId: meta.outputId, skillName: meta.skillName, bytes: meta.bodyBytes, truncated: meta.truncated, ts: meta.ts })
+      } catch {
+        continue
+      }
+    }
+
+    // Sort by timestamp descending (newest first).
+    metas.sort((a, b) => b.ts - a.ts)
+
+    if (opts.json === true) {
+      const json = metas.map((m) => ({
+        output_id: m.outputId,
+        skill_name: m.skillName,
+        bytes: m.bytes,
+        truncated: m.truncated,
+        timestamp: m.ts,
+      }))
+      out(JSON.stringify(json, null, 2))
+    } else {
+      const lines = metas.map((m) => {
+        const timeStr = new Date(m.ts).toISOString().slice(0, 19)
+        const truncMarker = m.truncated ? ' [truncated]' : ''
+        return `${m.outputId.padEnd(40)} ${m.skillName.padEnd(25)} ${m.bytes.toString().padStart(8)} bytes  ${timeStr}${truncMarker}`
+      })
+      const header = `${'Output ID'.padEnd(40)} ${'Skill'.padEnd(25)} ${'Bytes'.padStart(8)}  Timestamp`
+      out([header, ...lines].join('\n'))
+    }
+  } catch {
+    throw new CliError('Failed to list skill history')
+  }
+}
+
+async function cmdSkillDiff(name: string): Promise<void> {
+  if (!name) {
+    throw new CliError('skill-diff requires a <name>')
+  }
+  try {
+    const dir = skillOutputsDir()
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
+    const versions: Array<{ ts: number; outputId: string; body: string }> = []
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('.txt')) continue
+      try {
+        const metaName = entry.name.replace(/\.txt$/, '.meta')
+        const metaContent = await fs.promises.readFile(path.resolve(dir, metaName), 'utf-8').catch(() => null)
+        if (!metaContent) continue
+        const meta = JSON.parse(metaContent)
+        if (meta.skillName !== name) continue
+        const body = await fs.promises.readFile(path.resolve(dir, entry.name), 'utf-8')
+        versions.push({ ts: meta.ts, outputId: meta.outputId, body })
+      } catch {
+        continue
+      }
+    }
+
+    // Sort by timestamp descending (newest first).
+    versions.sort((a, b) => b.ts - a.ts)
+
+    if (versions.length < 2) {
+      out(`only one cached version of '${name}'`)
+      return
+    }
+
+    const older = versions[1]!
+    const newer = versions[0]!
+    const diff = buildLineDiff(older.body, newer.body, name)
+    out(diff)
+  } catch {
+    throw new CliError(`Failed to diff skill '${name}'`)
+  }
+}
+
+async function cmdSkillSection(nameHeading: string, headingArg?: string): Promise<void> {
+  if (!nameHeading) {
+    throw new CliError('skill-section requires "<name>::<heading>" or <name> <heading>')
+  }
+  let skillName: string
+  let heading: string
+  if (headingArg) {
+    skillName = nameHeading
+    heading = headingArg
+  } else {
+    const parts = nameHeading.split('::')
+    if (parts.length !== 2) {
+      throw new CliError('skill-section requires "<name>::<heading>" format or <name> <heading> arguments')
+    }
+    skillName = parts[0]!
+    heading = parts[1]!
+  }
+
+  const filePath = await getSkillFilePath(skillName)
+  if (!filePath) {
+    throw new CliError(`skill '${skillName}' not found`)
+  }
+  const body = fs.readFileSync(filePath, 'utf-8')
+  const extracted = extractNamedSection(body, heading)
+  if (!extracted) {
+    process.exitCode = 1
+    return
+  }
+  out(extracted)
 }
 
 function atomicWriteBuffer(dest: string, data: Buffer): void {
@@ -796,7 +1006,7 @@ export function buildProgram(): Command {
 
   program.command('stats').description('show session statistics').action(guard(cmdStats))
 
-  program.command('doctor').description('diagnose token-goat health').action(guard(cmdDoctor))
+  program.command('doctor').description('diagnose token-goat health').option('--context', 'include context footprint analysis').action(guard(cmdDoctor))
 
   program
     .command('bash-output [id]')
@@ -876,6 +1086,7 @@ export function buildProgram(): Command {
     .command('skill-compact [name]')
     .description('regenerate and cache compact slice for a skill')
     .option('--path <file>', 'read the skill body from this file instead of resolving by name')
+    .option('--all', 'regenerate compacts for all skills, skipping fresh ones')
     .action(guard(cmdSkillCompact))
 
   program
@@ -890,6 +1101,22 @@ export function buildProgram(): Command {
     .description('show body/compact token counts per skill')
     .option('--session-id <id>', 'filter by session')
     .action(guard(cmdSkillSize))
+
+  program
+    .command('skill-history')
+    .description('list cached skill versions newest-first')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdSkillHistory))
+
+  program
+    .command('skill-diff <name>')
+    .description('show diff between two cached versions of a skill')
+    .action(guard(cmdSkillDiff))
+
+  program
+    .command('skill-section <nameHeading> [headingArg]')
+    .description('extract a named section from a skill')
+    .action(guard(cmdSkillSection))
 
   program
     .command('changed')
