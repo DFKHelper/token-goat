@@ -17,6 +17,7 @@ import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
+import { detectLanguage, type Language } from './parser_types.js'
 
 /** Strip one or more `cd <dir> &&` prefixes so interceptors match the actual command. */
 function stripCdPrefix(cmd: string): string {
@@ -274,6 +275,28 @@ function extractSedRange(cmd: string): { filePath: string; start: number; end: n
   if (isTempPath(filePath)) return null
   if (start < 1 || end < start) return null
   return { filePath, start, end }
+}
+
+// Languages where `token-goat symbol`/`read "file::Symbol"` resolve a named definition, so a line-range read can be upgraded to a shift-robust symbol read.
+const SYMBOL_BEARING_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
+  'python', 'typescript', 'javascript', 'rust', 'go', 'c', 'cpp', 'ruby', 'java', 'csharp', 'php', 'kotlin', 'sql', 'graphql', 'proto', 'bash', 'powershell',
+])
+
+// Builds the recall hint for a `sed -n 'N,Mp' file` read, tailored to the file's language: Markdown -> section by heading; structured config -> config-get/section; source code -> symbol read (robust to line shifts); everything else -> the exact line range.
+function sedRangeHint(filePath: string, start: number, end: number): string {
+  const lang = detectLanguage(filePath)
+  const rangeRead = '`token-goat read "' + filePath + '@' + start + '-' + end + '"`'
+  const prefix = '`sed -n` line-range reads bypass read hooks. '
+  if (lang === 'markdown') {
+    return prefix + 'For Markdown, `token-goat section "' + filePath + '::<heading>"` extracts a whole section by name (robust to line shifts); or ' + rangeRead + ' for exactly those lines.'
+  }
+  if (lang === 'toml' || lang === 'json' || lang === 'yaml' || lang === 'ini') {
+    return prefix + 'For config, `token-goat config-get "' + filePath + '" <key>` or `token-goat section "' + filePath + '::<block>"` extracts one value; or ' + rangeRead + ' for exactly those lines.'
+  }
+  if (SYMBOL_BEARING_LANGUAGES.has(lang)) {
+    return prefix + 'For a whole function/class, `token-goat symbol <name>` or `token-goat read "' + filePath + '::<Symbol>"` is robust to line shifts; or ' + rangeRead + ' for exactly those lines.'
+  }
+  return prefix + 'Use ' + rangeRead + ' to read exactly those lines.'
 }
 
 /** Extracts file path from `node -e "fs.readFileSync(...)"` or `node -e "require('....json')"` patterns. Returns null if not this pattern or if temp file. */
@@ -768,7 +791,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (sedRange !== null) {
     const { filePath, start, end } = sedRange
     recordStat('session_hint', 0, 0)
-    return contextOutput('`sed -n` line-range reads bypass read hooks. Use `token-goat read "' + filePath + '@' + start + '-' + end + '"` to read exactly those lines.')
+    return contextOutput(sedRangeHint(filePath, start, end))
   }
 
   const catJsonPipe = extractCatJsonPipe(cmd)

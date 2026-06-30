@@ -400,6 +400,44 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  it('sed hint for Markdown suggests section by heading', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('docs/report.md@13-31')
+    }
+  })
+
+  it('sed hint for a source file suggests a symbol read', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '40,90p' src/auth.py"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat symbol')
+      expect(result.context).toContain('src/auth.py@40-90')
+    }
+  })
+
+  it('sed hint for a config file suggests config-get', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '5,15p' pyproject.toml"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat config-get')
+      expect(result.context).toContain('pyproject.toml@5-15')
+    }
+  })
+
+  it('sed hint for an unknown extension falls back to the plain line-range read', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '1,9p' notes/scratch.txt"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('notes/scratch.txt@1-9')
+      expect(result.context).not.toContain('token-goat symbol')
+      expect(result.context).not.toContain('token-goat section')
+      expect(result.context).not.toContain('token-goat config-get')
+    }
+  })
+
   it('denies node -e with readFileSync reading a source file', () => {
     const event = makeBashEvent(`node -e "const lines = require('fs').readFileSync('scripts/ads-orchestrator.js','utf8').split('\\n')"`)
     const result = preBashHandler(event)
