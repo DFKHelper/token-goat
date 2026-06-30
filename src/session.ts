@@ -1,14 +1,18 @@
 /**
  * In-memory session state.
  *
- * Ports the session-tracking concepts from `session.py` to a process-local,
- * in-memory model: which files were read/edited this session, which hints have
- * already fired (so they are not repeated), and the URL/command -> cache-id
- * indexes for web-fetch and bash-output dedup.
+ * Ports the session-tracking concepts from `session.py`: which files were
+ * read/edited this session, which hints have already fired (so they are not
+ * repeated), and the URL/command -> cache-id indexes for web-fetch and
+ * bash-output dedup. This module owns the live state in Maps/Sets, cleared
+ * between tests via {@link registerReset}.
  *
- * The Python implementation persists a `SessionCache` to JSON keyed by session
- * ID; this TypeScript port keeps the same observable behavior within a single
- * process using Maps/Sets, cleared between tests via {@link registerReset}.
+ * Each Claude Code hook runs as a separate `token-goat hook` process, so these
+ * Maps would not survive between tool calls on their own. `session_store.ts`
+ * persists them across processes, mirroring the JSON `SessionCache` the Python
+ * implementation kept keyed by session ID: `relay` hydrates this state via
+ * {@link importSessionState} before a hook runs and writes it back via
+ * {@link exportSessionState} afterward.
  */
 
 import { randomBytes, randomUUID } from 'node:crypto'

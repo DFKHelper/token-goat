@@ -1653,3 +1653,73 @@ describe('postBashHandler — gh api advisory hints', () => {
     expect(result.hookType).toBe('pass')
   })
 })
+
+describe('gh api recall (F4)', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  // A read-only `gh api` GET body large enough to clear the 512-byte cache floor.
+  const bigBody = JSON.stringify({ content: 'x'.repeat(800), encoding: 'base64' })
+
+  // True only when the pre-hook fired the F4 recall hint. A non-cached gh api otherwise
+  // falls through to the pre-existing output-compression wrap (rewriteInput), not a recall.
+  const ghRecalled = (cmd: string): boolean => {
+    const r = preBashHandler(makeBashEvent(cmd))
+    return r.hookType === 'context' && r.context.includes('gh api response cached')
+  }
+
+  it('caches a read-only gh api GET and recalls it on a repeat', async () => {
+    const cmd = 'gh api repos/octocat/hello/contents/README.md'
+    await postBashHandler(makePostBashEvent(cmd, bigBody))
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('gh api response cached')
+      expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
+  it('recalls across an output pipe (keyed on the endpoint, not the pipe)', async () => {
+    const piped = "gh api repos/octocat/hello/contents/README.md | jq -r '.content'"
+    const bare = 'gh api repos/octocat/hello/contents/README.md'
+    await postBashHandler(makePostBashEvent(piped, bigBody))
+    expect(ghRecalled(bare)).toBe(true)
+  })
+
+  it('caches a gh api with explicit --method GET even alongside field flags', async () => {
+    const cmd = 'gh api repos/octocat/hello/x --method GET -f per_page=1'
+    await postBashHandler(makePostBashEvent(cmd, bigBody))
+    expect(ghRecalled(cmd)).toBe(true)
+  })
+
+  it('does not cache a mutating gh api (-X DELETE)', async () => {
+    const cmd = 'gh api -X DELETE repos/octocat/hello/issues/1'
+    await postBashHandler(makePostBashEvent(cmd, bigBody))
+    expect(ghRecalled(cmd)).toBe(false)
+  })
+
+  it('does not cache a gh api with field flags (gh defaults to POST)', async () => {
+    const cmd = 'gh api repos/octocat/hello/issues -f title=Bug'
+    await postBashHandler(makePostBashEvent(cmd, bigBody))
+    expect(ghRecalled(cmd)).toBe(false)
+  })
+
+  it('does not cache the gh api graphql endpoint', async () => {
+    const cmd = "gh api graphql -f query='{viewer{login}}'"
+    await postBashHandler(makePostBashEvent(cmd, bigBody))
+    expect(ghRecalled(cmd)).toBe(false)
+  })
+
+  it('does not cache a gh api carrying an Authorization header (avoids persisting a credential)', async () => {
+    const cmd = 'gh api repos/octocat/hello -H "Authorization: Bearer ghp_x"'
+    await postBashHandler(makePostBashEvent(cmd, bigBody))
+    expect(ghRecalled(cmd)).toBe(false)
+  })
+
+  it('does not cache a gh api response below the size floor', async () => {
+    const cmd = 'gh api repos/octocat/hello/contents/tiny.txt'
+    await postBashHandler(makePostBashEvent(cmd, '{"a":1}'))
+    expect(ghRecalled(cmd)).toBe(false)
+  })
+})
