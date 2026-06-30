@@ -23,7 +23,7 @@ import { runGit } from './util.js'
 import { storeBlob, loadBlob } from './disk_cache.js'
 
 /** Subdir under the token-goat home where bash-output blobs live. */
-const BASH_OUTPUT_SUBDIR = 'bash_outputs'
+export const BASH_OUTPUT_SUBDIR = 'bash_outputs'
 
 /** Metadata associated with a cached Bash output entry. */
 export interface BashOutputMeta {

@@ -2,19 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { buildResumePacket } from '../src/resume.js'
 
 describe('buildResumePacket', () => {
-  it('returns empty string for invalid session id', () => {
+  it('returns null for an invalid (empty) session id', () => {
     const packet = buildResumePacket('')
-    expect(packet).toBe('')
+    expect(packet).toBeNull()
   })
 
-  it('handles missing session gracefully', () => {
+  it('returns null for a nonexistent session id', () => {
     const packet = buildResumePacket('nonexistent-session')
-    expect(typeof packet).toBe('string')
+    expect(packet).toBeNull()
   })
 
-  it('includes session id in header when successful', () => {
-    // This test would require mocking session loading For now, just verify the function handles the case
+  it('returns null for an arbitrary unknown session id', () => {
     const packet = buildResumePacket('abc123')
-    expect(typeof packet).toBe('string')
+    expect(packet).toBeNull()
   })
 })

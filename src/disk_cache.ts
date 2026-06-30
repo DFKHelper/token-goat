@@ -109,6 +109,28 @@ export function loadBlob(subdir: string, id: string): unknown {
   }
 }
 
+/** List every blob in `subdir`, mirroring the pruneBlobs dir scan. Returns `{ id, mtime, value }` sorted by none (caller decides). Missing dir or any top-level error returns []. Entries whose file cannot be stat-ed get mtime 0; entries whose blob cannot be loaded are skipped. */
+export function listBlobs(subdir: string): Array<{ id: string; mtime: number; value: unknown }> {
+  const dir = blobDir(subdir)
+  const out: Array<{ id: string; mtime: number; value: unknown }> = []
+  try {
+    if (!fs.existsSync(dir)) return out
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith('.json')) continue
+      const id = file.slice(0, -5)
+      let mtime = 0
+      try { mtime = fs.statSync(path.join(dir, file)).mtimeMs } catch {
+        // fail-soft: leave mtime at 0
+      }
+      const value = loadBlob(subdir, id)
+      if (value !== null) out.push({ id, mtime, value })
+    }
+  } catch {
+    return out
+  }
+  return out
+}
+
 /**
  * Drop blobs older than `maxAgeMs`, then evict the oldest beyond `maxCount`.
  *

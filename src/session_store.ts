@@ -31,7 +31,7 @@ import { exportSessionState, importSessionState, type FileEntry, type Serialized
 const SAFE_RE = /[^a-zA-Z0-9_-]/g
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
-const SESSIONS_SUBDIR = 'sessions'
+export const SESSIONS_SUBDIR = 'sessions'
 
 /** Resolve the on-disk path for `sessionId`, or null when the id is empty,
  * sanitizes to empty, or would escape the sessions dir (traversal guard). */

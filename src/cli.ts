@@ -80,6 +80,8 @@ import {
 } from './pack.js'
 import { extractFailures, formatFailuresText, formatFailuresJson } from './failures.js'
 import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent, cmdIgnores } from './text_commands.js'
+import { cmdBashHistory, cmdWebHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
+import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -1612,6 +1614,112 @@ export function buildProgram(): Command {
     .action((opts: { json?: boolean }) =>
       guard(() => cmdIgnores(opts))(),
     )
+
+
+  program
+    .command('bash-history')
+    .description('list cached bash output entries, newest first')
+    .option('-l, --limit <n>', 'max results (default: 30)')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { limit?: string; json?: boolean }) => guard(() => cmdBashHistory(opts))())
+
+  program
+    .command('web-history')
+    .description('list cached web-fetch output entries, newest first')
+    .option('-l, --limit <n>', 'max results (default: 30)')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { limit?: string; json?: boolean }) => guard(() => cmdWebHistory(opts))())
+
+  program
+    .command('clean-cache')
+    .description('prune all cache subdirs to default retention limits (200 entries, 24 h)')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { json?: boolean }) => guard(() => cmdCleanCache(opts))())
+
+  program
+    .command('prune-cache')
+    .description('evict cache entries older than --max-age-hours or beyond --max-count (caller-specified bounds)')
+    .option('--max-count <n>', 'max entries to keep per subdir (default: 200)')
+    .option('--max-age-hours <h>', 'max age in hours to keep (default: 24)')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { maxCount?: string; maxAgeHours?: string; json?: boolean }) => guard(() => cmdPruneCache(opts))())
+
+  program
+    .command('cache-audit')
+    .description('check settings.json hook installation and env-var gates that defeat token-goat caching')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { json?: boolean }) => guard(() => cmdCacheAudit(opts))())
+
+  program
+    .command('resume <session-id>')
+    .description('print a recovery context packet for the given session id')
+    .option('-j, --json', 'output as JSON')
+    .action((sessionId: string, opts: { json?: boolean }) => guard(() => cmdResume({ sessionId, ...opts }))())
+
+  program
+    .command('compact-hint')
+    .description('show compact manifest info and context pressure (reuses compact.ts — does not rebuild the manifest)')
+    .option('--session-id <id>', 'session id to inspect (default: latest)')
+    .option('--trigger <mode>', 'set to "auto" to preview autocompact budget')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { sessionId?: string; trigger?: string; json?: boolean }) => guard(() => cmdCompactHint(opts))())
+
+  program
+    .command('session-summary')
+    .description('one-screen summary of the latest cached session: file counts, top files, session id')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { json?: boolean }) => guard(() => cmdSessionSummary(opts))())
+
+  program
+    .command('cost')
+    .description('tokens-saved / cost breakdown (thin framing over stats; --session narrows to current session)')
+    .option('--session', 'show session-level file stats only')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { session?: boolean; json?: boolean }) => guard(() => cmdCost(opts))())
+
+  program
+    .command('baseline')
+    .description('emit the project baseline map (file count, languages, top symbols, recent files)')
+    .option('--subagent', 'emit terser compact variant for subagent context')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { subagent?: boolean; json?: boolean }) => guard(() => cmdBaseline(opts))())
+
+  program
+    .command('config <action> [key] [value]')
+    .description('manage token-goat config (list|get|set|validate). Operates on the token-goat config.toml, not a project config file.')
+    .option('-j, --json', 'output as JSON')
+    .action((action: string, key: string | undefined, value: string | undefined, opts: { json?: boolean }) =>
+      guard(() => cmdConfig({ action, ...(key !== undefined ? { key } : {}), ...(value !== undefined ? { value } : {}), ...(opts.json === true ? { json: true } : {}) }))())
+
+  program
+    .command('project <action> [path]')
+    .description('manage indexed project roots (list|exclude|prune). list = active project + blocked roots; exclude <path> = add to block list; prune = remove stale entries.')
+    .option('-j, --json', 'output as JSON')
+    .action((action: string, pathArg: string | undefined, opts: { json?: boolean }) =>
+      guard(() => cmdProject({ action, ...(pathArg !== undefined ? { pathArg } : {}), ...(opts.json === true ? { json: true } : {}) }))())
+
+  program
+    .command('compact-doc <path>')
+    .description('print an extractive compact of a document (note: prints to stdout; hook-serve is a planned future feature)')
+    .option('--heading <heading>', 'compact only the named section')
+    .option('-j, --json', 'output as JSON')
+    .action((filePath: string, opts: { heading?: string; json?: boolean }) =>
+      guard(() => cmdCompactDoc({ filePath, ...(opts.heading !== undefined ? { heading: opts.heading } : {}), ...(opts.json === true ? { json: true } : {}) }))())
+
+  program
+    .command('fetch-image <url>')
+    .description('fetch an image URL and shrink it (saves to --out path or a temp file)')
+    .option('--out <path>', 'output file path')
+    .option('-j, --json', 'output as JSON')
+    .action((url: string, opts: { out?: string; json?: boolean }) =>
+      guard(() => cmdFetchImage({ url, ...(opts.out !== undefined ? { out: opts.out } : {}), ...(opts.json === true ? { json: true } : {}) }))())
+
+  program
+    .command('history')
+    .description('show recent session history: bash commands and web fetches (current-session or recent cache)')
+    .option('--limit <n>', 'max entries to show (default: 30)')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { limit?: string; json?: boolean }) => guard(() => cmdHistory(opts))())
 
   program
     .command('changed')
