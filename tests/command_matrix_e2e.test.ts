@@ -310,6 +310,91 @@ const cases: Record<string, () => void> = {
     expect(r.status).not.toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function|Cannot find package/)
   },
+  callers: () => {
+    // The fixture has refDriver calling refHelper twice; callers should find refDriver as the enclosing symbol.
+    const r = run(['callers', 'refHelper'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/refDriver|caller\.ts/)
+  },
+  'call-chain': () => {
+    // refHelper is called by refDriver which has no further callers in the tiny fixture.
+    const r = run(['call-chain', 'refHelper', '--depth', '4'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout.length).toBeGreaterThan(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  impact: () => {
+    // refHelper is called by refDriver; impact must list refDriver with hops: 1.
+    const r = run(['impact', 'refHelper', '--top', '5'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/refDriver/)
+  },
+  dead: () => {
+    // The dead command must run and produce valid output (or 'No dead symbols found.') without crashing.
+    const r = run(['dead', '--top', '5'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout.length).toBeGreaterThan(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  deps: () => {
+    // app.ts imports from ./src/mod.js — deps must list that as an internal dep.
+    const r = run(['deps', 'app.ts'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/mod|internal/)
+  },
+  types: () => {
+    // The fixture is tiny and may have no type declarations; accept exit 0 or 1 but never a crash.
+    const r = run(['types'])
+    expect(r.status).not.toBeNull()
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function|Cannot find package/)
+  },
+  scope: () => {
+    // Line 2 of caller.ts is inside refHelper (which spans lines 1-3); scope must find it.
+    const r = run(['scope', 'caller.ts:2'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/refHelper/)
+  },
+  similar: () => {
+    // similar needs a real indexed symbol in the fixture; use 'refHelper' which is indexed.
+    const r = run(['similar', 'caller.ts::refHelper', '--top', '3'])
+    // Either finds similar symbols (exit 0) or reports symbol not found (exit 1); both are reachable, not tree-shaken.
+    expect(r.status).not.toBeNull()
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  'context-for': () => {
+    const r = run(['context-for', 'parse symbols'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  'test-for': () => {
+    const r = run(['test-for', 'caller.ts'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  'coverage-gaps': () => {
+    const r = run(['coverage-gaps', '--top', '3'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  arch: () => {
+    const r = run(['arch', '--top', '3'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(r.stdout).toMatch(/hubs/)
+  },
+  blame: () => {
+    // The fixture is not a git repo; blame must fail gracefully with exit 1 and a message, not crash.
+    const r = run(['blame', 'caller.ts::refHelper'])
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(r.status).not.toBeNull()
+  },
+  ask: () => {
+    // Degraded mode: no TOKEN_GOAT_ASK_BACKEND set; must print degraded notice and exit 0.
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_ASK_BACKEND: '' }
+    const r = run(['ask', 'how are symbols stored'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
 }
 
 describe('built bundle command matrix', () => {

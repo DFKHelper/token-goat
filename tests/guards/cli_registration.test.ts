@@ -87,13 +87,12 @@ describe('CLI command registration', () => {
 describe('CLI command registration - README contract', () => {
   // Every command documented in README must be registered, or explicitly listed in PENDING below while it is still being built. PENDING is the live worklist for the "implement all documented commands" effort: a command may sit here only while unbuilt - once registered it MUST be removed (the first assertion enforces that), and a newly-documented command that is neither built nor pending fails the second assertion. When PENDING empties, README and the CLI are provably in sync and can never silently diverge again.
   const PENDING = new Set<string>([
-    'arch', 'ask', 'baseline', 'bash-history', 'blame', 'budget', 'cache-audit',
-    'call-chain', 'callers', 'clean-cache', 'compact-doc', 'compact-hint',
-    'config', 'context-for', 'cost', 'coverage-gaps', 'dead', 'deps', 'failures',
-    'fetch-image', 'history', 'hot', 'ignores', 'impact', 'lockdeps', 'logfold',
-    'note', 'pack', 'project', 'prune-cache', 'recent', 'resume', 'scope',
-    'session-summary', 'similar',
-    'test-for', 'todo', 'tokens', 'trace', 'types', 'web-history',
+  'baseline', 'bash-history', 'budget', 'cache-audit',
+  'clean-cache', 'compact-doc', 'compact-hint',
+  'config', 'cost', 'failures',
+  'fetch-image', 'history', 'hot', 'ignores', 'lockdeps', 'logfold',
+  'note', 'pack', 'project', 'prune-cache', 'recent', 'resume',
+  'session-summary', 'todo', 'tokens', 'trace', 'web-history',
   ])
 
   const README = fs.readFileSync(path.join(HERE, '..', '..', 'README.md'), 'utf8')
