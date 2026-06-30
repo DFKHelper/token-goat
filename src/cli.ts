@@ -172,7 +172,7 @@ function cmdDoctor(): void {
 
 function _applyFiltersAndPrint(
   content: string,
-  opts: { head?: string; tail?: string; grep?: string; section?: string },
+  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
 ): void {
   if (opts.grep !== undefined) {
     let pattern = opts.grep
@@ -191,6 +191,16 @@ function _applyFiltersAndPrint(
         .split(/\r?\n/)
         .filter((line) => line.includes(pattern))
         .join('\n')
+    }
+  }
+
+  if (opts.grep !== undefined && opts.maxMatches !== undefined) {
+    const cap = Number.parseInt(opts.maxMatches, 10)
+    if (Number.isFinite(cap) && cap > 0) {
+      const matched = content === '' ? [] : content.split(/\r?\n/)
+      if (matched.length > cap) {
+        content = [...matched.slice(0, cap), '[token-goat: showing first ' + cap + ' of ' + matched.length + ' matching lines; raise --max-matches for more]'].join('\n')
+      }
     }
   }
 
@@ -216,7 +226,7 @@ function _applyFiltersAndPrint(
 
 function cmdBashOutput(
   id: string | undefined,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; file?: string },
+  opts: { head?: string; tail?: string; grep?: string; section?: string; file?: string; maxMatches?: string },
 ): void {
   if (opts.file !== undefined) {
     if (opts.file.includes('\0')) {
@@ -246,7 +256,7 @@ function cmdBashOutput(
 
   const entry = getBashOutput(id)
   if (entry === null) {
-    throw new CliError(`no cached bash output for id: ${id}`)
+    throw new CliError(`no cached bash output for id: ${id}. If this id is from a background task, recall its output file directly with: token-goat bash-output --file <path-to-output-file>`)
   }
 
   _applyFiltersAndPrint(entry.output, opts)
@@ -254,14 +264,14 @@ function cmdBashOutput(
 
 function cmdWebOutput(
   id: string | undefined,
-  opts: { head?: string; tail?: string; grep?: string; section?: string },
+  opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
 ): void {
   if (id === undefined) {
     throw new CliError('provide a web cache <id>')
   }
   const content = getWebOutput(id)
   if (content === null) {
-    throw new CliError(`no cached web output for id: ${id}`)
+    throw new CliError(`no cached web output for id: ${id}. The cache may have expired; re-run the WebFetch to repopulate it.`)
   }
   _applyFiltersAndPrint(content, opts)
 }
@@ -772,6 +782,7 @@ export function buildProgram(): Command {
     .option('--head <n>', 'show first N lines')
     .option('--tail <n>', 'show last N lines')
     .option('--grep <pattern>', 'filter lines matching regex')
+    .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--file <path>', 'read from raw output file instead of cache')
     .action(guard(cmdBashOutput))
 
@@ -781,6 +792,7 @@ export function buildProgram(): Command {
     .option('--head <n>', 'show first N lines')
     .option('--tail <n>', 'show last N lines')
     .option('--grep <pattern>', 'filter lines matching regex')
+    .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .action(guard(cmdWebOutput))
 
   program

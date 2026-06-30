@@ -58,6 +58,7 @@ describe('token-goat CLI', () => {
     const r = runCli(['bash-output', 'nonexistent-id'])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('no cached bash output')
+    expect(r.stderr).toContain('--file')
   }, 30000)
 
   it('skill-list --help exits 0', () => {
@@ -132,6 +133,22 @@ describe('token-goat CLI', () => {
       expect(r.stdout).not.toContain('error')
     } finally {
       fs.unlinkSync(tmpFile)
+    }
+  }, 30000)
+
+  it('bash-output --file --grep --max-matches caps matching lines', () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-maxmatch-${Date.now()}.txt`)
+    const lines = Array.from({ length: 10 }, (_, i) => `MATCH line ${i}`).join('\n')
+    fs.writeFileSync(tmpFile, lines, 'utf8')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--grep', 'MATCH', '--max-matches', '3'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('showing first 3 of 10 matching lines')
+      expect(r.stdout).toContain('MATCH line 0')
+      expect(r.stdout).toContain('MATCH line 2')
+      expect(r.stdout).not.toContain('MATCH line 9')
+    } finally {
+      fs.rmSync(tmpFile, { force: true })
     }
   }, 30000)
 

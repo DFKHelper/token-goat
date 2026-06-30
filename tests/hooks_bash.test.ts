@@ -368,6 +368,38 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  it('emits sed line-range read hint with @start-end', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat read')
+      expect(result.context).toContain('docs/report.md@13-31')
+    }
+  })
+
+  it('sed line-range hint handles a path with 2>/dev/null suffix', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '250,300p' src/app/page.tsx 2>/dev/null"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/app/page.tsx@250-300')
+    }
+  })
+
+  it('passes through single-address sed (no comma)', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '5p' src/app/page.tsx"))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through piped sed (not a whole-command line read)', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,20p' src/app/page.tsx | head"))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('passes through sed on a temp path', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '1,5p' /tmp/scratch.md"))
+    expect(result.hookType).toBe('pass')
+  })
+
   it('denies node -e with readFileSync reading a source file', () => {
     const event = makeBashEvent(`node -e "const lines = require('fs').readFileSync('scripts/ads-orchestrator.js','utf8').split('\\n')"`)
     const result = preBashHandler(event)
@@ -867,19 +899,21 @@ describe('preBashHandler — sed line-range interception', () => {
     clearModuleCaches()
   })
 
-  it('emits section hint for sed -n line range extraction', () => {
+  it('emits sed line-range read hint for single-quoted range', () => {
     const result = preBashHandler(makeBashEvent("sed -n '10,50p' src/hooks_read.ts"))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('token-goat read')
+      expect(result.context).toContain('src/hooks_read.ts@10-50')
     }
   })
 
-  it('emits section hint for sed -n with double-quoted range', () => {
+  it('emits sed line-range read hint with double-quoted range', () => {
     const result = preBashHandler(makeBashEvent('sed -n "100,200p" README.md'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section')
+      expect(result.context).toContain('token-goat read')
+      expect(result.context).toContain('README.md@100-200')
     }
   })
 

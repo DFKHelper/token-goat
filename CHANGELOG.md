@@ -2,6 +2,18 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Added
+
+- **`--max-matches <n>` bounds `--grep` output on `token-goat bash-output` and `web-output`.** `--grep` alone filters lines with no upper bound, so a broad pattern over a large cached output still floods the context the recall was meant to spare. `--max-matches 20` caps the result to the first 20 matching lines and appends a one-line notice naming the total match count, so the recall stays cheap and the caller knows to raise the cap when they need more. Opt-in and only active alongside `--grep`. See [src/cli.ts](src/cli.ts); regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
+
+### Changed
+
+- **`sed -n 'N,Mp' file` line-range reads now point at `token-goat read "file@N-M"`.** The pre-bash hook already detected this form but emitted a generic `token-goat section "<file>::Heading"` hint: the wrong tool for a numeric range (sections are heading-addressed), carrying placeholder values the user had to fill in. It now extracts the real path and line numbers and names the exact `read "file@N-M"` command, the line-range syntax added in 2.4.0. Single-address `sed -n '5p'`, piped `sed`, and temp-path reads are left untouched. See [src/hooks_bash.ts](src/hooks_bash.ts); regression-tested in [tests/hooks_bash.test.ts](tests/hooks_bash.test.ts).
+
+- **Stale `bash-output`/`web-output` IDs now return a recovery path, not a dead end.** `no cached bash output for id: X` adds that a background-task id can be recalled directly with `token-goat bash-output --file <path-to-output-file>`, and the web variant notes the cache may have expired and a re-fetch repopulates it. The bare id-not-found message left the caller with no next step. See [src/cli.ts](src/cli.ts); regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
+
 ## [2.4.0] - 2026-06-29
 
 ### Added

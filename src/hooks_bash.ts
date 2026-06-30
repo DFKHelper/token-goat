@@ -264,6 +264,18 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   return { filePath, isDoc, isConfig }
 }
 
+function extractSedRange(cmd: string): { filePath: string; start: number; end: number } | null {
+  const m = /^sed\s+-n\s+['"](\d+),(\d+)p['"]\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>\/dev\/null)?\s*$/.exec(cmd)
+  if (!m) return null
+  const start = parseInt(m[1] as string, 10)
+  const end = parseInt(m[2] as string, 10)
+  const filePath = m[3] ?? m[4] ?? m[5]
+  if (filePath === undefined) return null
+  if (isTempPath(filePath)) return null
+  if (start < 1 || end < start) return null
+  return { filePath, start, end }
+}
+
 /** Extracts file path from `node -e "fs.readFileSync(...)"` or `node -e "require('....json')"` patterns. Returns null if not this pattern or if temp file. */
 function extractNodeFileRead(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
   if (!/^node\s+-e/.test(cmd)) return null
@@ -399,10 +411,6 @@ function extractTasksOutput(cmd: string): { id: string; path: string; n?: number
  * Returns true when the command is a sed line-range extraction (`sed -n 'N,Mp'`).
  * These are typically used as a substitute for `token-goat section`, which is cheaper.
  */
-function extractSedLineRange(cmd: string): boolean {
-  return /^sed\s+-n\s+['"]?\d+,\d+p['"]?/.test(cmd)
-}
-
 /**
  * Returns true when the command is a directory listing (eza --long or ls … | head)
  * for which `token-goat map --compact` is a cheaper alternative.
@@ -737,12 +745,12 @@ export function preBashHandler(event: HookEvent): HookOutput {
     )
   }
 
-  // Item 4b: sed line-range extraction
-  if (extractSedLineRange(cmd)) {
+  // Item 4b: sed line-range extraction — replaced with extractSedRange to provide specific line range
+  const sedRange = extractSedRange(cmd)
+  if (sedRange !== null) {
+    const { filePath, start, end } = sedRange
     recordStat('session_hint', 0, 0)
-    return contextOutput(
-      'Use `token-goat section "<file>::HeadingName"` to read one section instead of a line range.',
-    )
+    return contextOutput('`sed -n` line-range reads bypass read hooks. Use `token-goat read "' + filePath + '@' + start + '-' + end + '"` to read exactly those lines.')
   }
 
   const catJsonPipe = extractCatJsonPipe(cmd)
