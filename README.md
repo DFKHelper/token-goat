@@ -388,7 +388,7 @@ To upgrade cleanly:
 | `token-goat stats` | See how many tokens you have saved. Shows a per-source breakdown (image / hint / read / compact / bash / web). |
 | `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
 | `token-goat history` | Show current session access history: bash commands, URLs fetched, and grep patterns. |
-| `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head+tail view by default; pass `--full` for everything, or narrow with `--head N`, `--tail N`, or `--grep PATTERN` (cap `--grep` to the first N hits with `--max-matches N`). |
+| `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head+tail view by default; pass `--full` for everything, or narrow with `--head N`, `--tail N`, or `--grep PATTERN` (cap `--grep` to the first N hits with `--max-matches N`). Read a file directly with `--file <path>` (e.g. a background task's `tasks/<id>.output`); add `--transcript` to parse that file as a subagent JSONL transcript, keeping only assistant text blocks in order before the slicers apply. |
 | `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
 | `token-goat compress --cmd '<command>'` | Preview what the Bash compression hook would do to any command — runs it, applies the matching filter, and prints the compressed view. |
 | `token-goat web-output <id>` | Retrieve a cached WebFetch response body by ID — same head+tail default, `--full`, and `--head`/`--tail`/`--grep`/`--max-matches` slicers as `bash-output`. |

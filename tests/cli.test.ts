@@ -152,6 +152,45 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
+  it('bash-output --file --transcript keeps only assistant text from a JSONL transcript', () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-transcript-${Date.now()}.jsonl`)
+    const jsonl = [
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'do it' } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'HIDDEN' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'inspecting the file' }, { type: 'tool_use', name: 'Read' }] } }),
+      'corrupt line not json',
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'the answer is 42' }] } }),
+    ].join('\n')
+    fs.writeFileSync(tmpFile, jsonl + '\n', 'utf8')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--transcript'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('inspecting the file')
+      expect(r.stdout).toContain('the answer is 42')
+      expect(r.stdout).not.toContain('HIDDEN')
+      expect(r.stdout).not.toContain('do it')
+    } finally {
+      fs.rmSync(tmpFile, { force: true })
+    }
+  }, 30000)
+
+  it('bash-output --file --transcript with --grep composes after transcript extraction', () => {
+    const tmpFile = path.join(os.tmpdir(), `tg-transcript-grep-${Date.now()}.jsonl`)
+    const jsonl = [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'alpha line' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'beta line' }] } }),
+    ].join('\n')
+    fs.writeFileSync(tmpFile, jsonl + '\n', 'utf8')
+    try {
+      const r = runCli(['bash-output', '--file', tmpFile, '--transcript', '--grep', 'beta'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('beta line')
+      expect(r.stdout).not.toContain('alpha line')
+    } finally {
+      fs.rmSync(tmpFile, { force: true })
+    }
+  }, 30000)
+
   it('bash-output with no id and no --file exits 1', () => {
     const r = runCli(['bash-output'])
     expect(r.status).toBe(1)
