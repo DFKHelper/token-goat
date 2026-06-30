@@ -562,6 +562,33 @@ endef
     expect(symbols.find((s) => s.name === 'GREETING')?.kind).toBe('makefile_define')
   })
 
+  it('excludes ::= and :::= assignments but keeps real targets including double-colon rules', () => {
+    const content = `build:
+\tgo build ./...
+
+IMMEDIATE ::= now
+
+POSIX_IMM :::= later
+
+SIMPLE := x
+
+archive:: build
+
+clean::
+\trm -rf dist/
+`
+    const symbols = extractMakefile(content, 'Makefile')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('build')
+    expect(names).toContain('archive')
+    expect(names).toContain('clean')
+    expect(names).not.toContain('IMMEDIATE')
+    expect(names).not.toContain('POSIX_IMM')
+    expect(names).not.toContain('SIMPLE')
+    expect(symbols.find((s) => s.name === 'build')?.kind).toBe('makefile_target')
+    expect(symbols.find((s) => s.name === 'archive')?.kind).toBe('makefile_target')
+  })
+
   it('skips .PHONY and other special targets', () => {
     const content = `.PHONY: all build\n\nall:\n\techo done\n`
     const symbols = extractMakefile(content, 'Makefile')
