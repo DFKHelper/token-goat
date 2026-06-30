@@ -164,3 +164,6 @@ coverage/
 
 # Temp test artifacts
 .temp-skill-cache-test/
+.temp-skill-source/
+.temp-hooks-skill-cache/
+.temp-hooks-skill-source/

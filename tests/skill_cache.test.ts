@@ -13,6 +13,9 @@ import {
   findCrossSessionEntry,
   getAllCachedSkills,
   setSkillOutputsDirForTesting,
+  setSkillsSourceDirForTesting,
+  getSkillFilePath,
+  installedSkillPath,
 } from '../src/skill_cache.js'
 import * as fs from 'fs/promises'
 import * as path from 'path'
@@ -456,5 +459,52 @@ describe('outputIdFor regression - colon handling', () => {
     const id = outputIdFor('session123456789', 'myskill', 'sha')
     expect(id).not.toMatch(/mykilln/)
     expect(id).toContain('myskill-sha')
+  })
+})
+
+describe('getSkillFilePath / installedSkillPath disk fallback', () => {
+  const sourceDir = path.resolve(__dirname, '.temp-skill-source')
+
+  beforeEach(async () => {
+    try {
+      await fs.rm(sourceDir, { recursive: true })
+    } catch {
+      // not present yet
+    }
+    await fs.mkdir(path.join(sourceDir, 'ollama'), { recursive: true })
+    await fs.writeFile(
+      path.join(sourceDir, 'ollama', 'SKILL.md'),
+      'Ollama skill body\n<!-- COMPACT_END -->\nrules'
+    )
+    setSkillsSourceDirForTesting(sourceDir)
+  })
+
+  afterEach(() => {
+    setSkillsSourceDirForTesting(null)
+  })
+
+  // Regression: getSkillFilePath used to resolve ONLY from cached metas, so a skill
+  // installed on disk but never loaded via the Skill hook this session returned null
+  // -> `skill 'ollama' not found`. The empty (isolated) cache here forces the disk
+  // fallback. Pre-fix: returns null and this expectation fails.
+  it('resolves an installed skill from disk when the cache is empty', async () => {
+    const resolved = await getSkillFilePath('ollama')
+    expect(resolved).not.toBeNull()
+    expect(resolved).toBe(path.join(sourceDir, 'ollama', 'SKILL.md'))
+  })
+
+  it('returns null for a skill that is neither cached nor installed', async () => {
+    expect(await getSkillFilePath('does-not-exist')).toBeNull()
+  })
+
+  it('installedSkillPath returns the SKILL.md path when present, null otherwise', async () => {
+    expect(await installedSkillPath('ollama')).toBe(
+      path.join(sourceDir, 'ollama', 'SKILL.md')
+    )
+    expect(await installedSkillPath('absent')).toBeNull()
+  })
+
+  it('installedSkillPath rejects an unsafe (traversal) name', async () => {
+    expect(await installedSkillPath('../etc')).toBeNull()
   })
 })

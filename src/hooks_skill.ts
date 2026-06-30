@@ -3,6 +3,7 @@ import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import { passOutput, getToolName, getToolInput } from './hooks_common.js';
 import { recordStat } from './stats.js';
+import { storeOutput, installedSkillPath } from './skill_cache.js';
 
 function extractSkillName(toolInput: Record<string, unknown>): string | null {
   const skill = toolInput['skill'] as string;
@@ -38,7 +39,7 @@ function extractSkillBody(raw: Record<string, unknown>): string {
   return '';
 }
 
-function preSkillHandler(event: HookEvent): HookOutput {
+export function preSkillHandler(event: HookEvent): HookOutput {
   try {
     const toolName = getToolName(event);
 
@@ -62,7 +63,7 @@ function preSkillHandler(event: HookEvent): HookOutput {
   }
 }
 
-function postSkillHandler(event: HookEvent): HookOutput {
+export async function postSkillHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const toolName = getToolName(event);
 
@@ -86,6 +87,10 @@ function postSkillHandler(event: HookEvent): HookOutput {
     if (!body) {
       return passOutput();
     }
+
+    // Persist the loaded body under the real skill name (toolInput.skill), so skill-compact/skill-body/skill-list can recall it after compaction. Keyed by skill name + content hash; storeOutput dedups identical bodies across sessions. sourcePath points at the on-disk install when present, so getSkillFilePath resolves it without the disk-scan fallback.
+    const sourcePath = await installedSkillPath(skillName);
+    await storeOutput(event.sessionId, skillName, body, sourcePath ? { sourcePath } : undefined);
 
     return passOutput();
   } catch {

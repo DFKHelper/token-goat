@@ -47,7 +47,7 @@ import {
   runFind,
   runGrep,
 } from './read_commands.js'
-import { getSkillFilePath, listSkills, storeCompact } from './skill_cache.js'
+import { getSkillFilePath, listSkills, storeCompact, storeOutput } from './skill_cache.js'
 import { isWindows, ensureNewline, extractErrorMessage } from './util.js'
 import { renderStats } from './stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
@@ -345,17 +345,38 @@ async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<
   }
 }
 
-async function cmdSkillCompact(name: string): Promise<void> {
-  const filePath = await getSkillFilePath(name)
-  if (filePath === null) {
-    throw new CliError(`skill '${name}' not found`)
+async function cmdSkillCompact(name: string | undefined, opts: { path?: string }): Promise<void> {
+  let body: string
+  let cacheName: string
+  let sourcePath: string
+
+  if (opts.path !== undefined && opts.path !== '') {
+    // --path bypasses name resolution: read the body straight from the given file. The cache key is the explicit name when supplied, else the parent directory name (a skill lives in ~/.claude/skills/<name>/SKILL.md, so its parent dir is its name).
+    if (!fs.existsSync(opts.path)) {
+      throw new CliError(`skill file not found: ${opts.path}`)
+    }
+    body = fs.readFileSync(opts.path, 'utf-8')
+    cacheName = name ?? path.basename(path.dirname(path.resolve(opts.path)))
+    sourcePath = path.resolve(opts.path)
+  } else {
+    if (name === undefined || name === '') {
+      throw new CliError('skill-compact requires a <name> or --path <file>')
+    }
+    const filePath = await getSkillFilePath(name)
+    if (filePath === null) {
+      throw new CliError(`skill '${name}' not found`)
+    }
+    body = fs.readFileSync(filePath, 'utf-8')
+    cacheName = name
+    sourcePath = filePath
   }
 
-  const body = fs.readFileSync(filePath, 'utf-8')
   const sessionFiles = getSessionFiles()
   const sessionId = Array.from(sessionFiles.keys())[0] ?? 'default'
-  await storeCompact(sessionId, name, body)
-  out(`Cached compact for skill '${name}'.`)
+  // Persist the body (writes the meta that skill-list surfaces) and the compact slice, so a skill compacted straight from disk is both listable and recallable cross-session, exactly like one loaded via the Skill hook.
+  await storeOutput(sessionId, cacheName, body, { sourcePath })
+  await storeCompact(sessionId, cacheName, body)
+  out(`Cached compact for skill '${cacheName}'.`)
 }
 
 async function cmdSkillList(opts: { json?: boolean; sessionId?: string }): Promise<void> {
@@ -363,6 +384,7 @@ async function cmdSkillList(opts: { json?: boolean; sessionId?: string }): Promi
   if (opts.json === true) {
     const json = skills.map((s) => ({
       name: s.name,
+      skill_name: s.name,
       body_bytes: s.bodyLen,
       compact_bytes: s.compactLen,
       has_marker: s.hasMarker,
@@ -851,8 +873,9 @@ export function buildProgram(): Command {
     .action(guard(cmdSkillBody))
 
   program
-    .command('skill-compact <name>')
+    .command('skill-compact [name]')
     .description('regenerate and cache compact slice for a skill')
+    .option('--path <file>', 'read the skill body from this file instead of resolving by name')
     .action(guard(cmdSkillCompact))
 
   program

@@ -15,6 +15,7 @@
 import * as fs from 'fs/promises'
 import { createHash } from 'crypto'
 import { resolve } from 'path'
+import { homedir } from 'os'
 import { dataDir } from './constants.js'
 import { atomicWriteText, isCodeFenceDelimiter } from './util.js'
 import { registerReset } from './reset.js'
@@ -22,13 +23,19 @@ import { registerReset } from './reset.js'
 const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
 
 let _skillOutputsDirOverride: string | null = null
+let _skillsSourceDirOverride: string | null = null
 
 export function setSkillOutputsDirForTesting(dir: string | null): void {
   _skillOutputsDirOverride = dir
 }
 
+export function setSkillsSourceDirForTesting(dir: string | null): void {
+  _skillsSourceDirOverride = dir
+}
+
 registerReset(() => {
   _skillOutputsDirOverride = null
+  _skillsSourceDirOverride = null
 })
 
 export interface SkillMeta {
@@ -51,6 +58,12 @@ export interface CachedSkillInfo {
 function skillOutputsDir(): string {
   if (_skillOutputsDirOverride) return _skillOutputsDirOverride
   return resolve(dataDir(), 'skills')
+}
+
+// The on-disk source directory where Claude Code installs skills, one dir per skill containing a SKILL.md. Lazy homedir() so a test override (or spy) takes effect per call. This is the install location, distinct from skillOutputsDir() which is token-goat's body cache.
+function skillsSourceDir(): string {
+  if (_skillsSourceDirOverride) return _skillsSourceDirOverride
+  return resolve(homedir(), '.claude', 'skills')
 }
 
 async function ensureSkillsDir(): Promise<void> {
@@ -553,7 +566,21 @@ export async function getSkillFilePath(skillName: string): Promise<string | null
       }
     }
 
+    // Cache miss: fall back to the on-disk skill install at ~/.claude/skills/<name>/SKILL.md, so skill-compact/skill-body resolve for any installed skill even when it was never loaded via the Skill hook this session.
+    return await installedSkillPath(name)
+  } catch {
     return null
+  }
+}
+
+// Resolve the on-disk install path of a skill (~/.claude/skills/<name>/SKILL.md) if it exists, else null. `name` is sanitized by safeSkillName (no slash or dot), so there is no path-traversal risk. Shared by getSkillFilePath's cache-miss fallback and the Skill hook's sourcePath resolution.
+export async function installedSkillPath(skillName: string): Promise<string | null> {
+  const name = safeSkillName(skillName)
+  if (!name) return null
+  const diskPath = resolve(skillsSourceDir(), name, 'SKILL.md')
+  try {
+    await fs.access(diskPath)
+    return diskPath
   } catch {
     return null
   }
