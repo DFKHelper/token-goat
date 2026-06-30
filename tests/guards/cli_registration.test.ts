@@ -58,7 +58,7 @@ describe('CLI command registration', () => {
       'symbol', 'read', 'section', 'semantic', 'skeleton', 'outline', 'refs',
       'index', 'map', 'hook', 'install', 'uninstall', 'stats', 'doctor',
       'bash-output', 'web-output', 'skill-body', 'skill-compact', 'skill-list',
-      'skill-size', 'changed', 'config-get', 'write-file', 'gdrive-sections',
+      'skill-size', 'skill-history', 'skill-diff', 'skill-section', 'changed', 'config-get', 'write-file', 'gdrive-sections',
       'version', 'exports', 'imports', 'find', 'grep',
       'worker start', 'worker stop', 'worker status',
     ]
@@ -81,5 +81,49 @@ describe('CLI command registration', () => {
       .filter((c) => c.description().trim() === '')
       .map((c) => c.name())
     expect(undocumented).toEqual([])
+  })
+})
+
+describe('CLI command registration - README contract', () => {
+  // Every command documented in README must be registered, or explicitly listed in PENDING below while it is still being built. PENDING is the live worklist for the "implement all documented commands" effort: a command may sit here only while unbuilt - once registered it MUST be removed (the first assertion enforces that), and a newly-documented command that is neither built nor pending fails the second assertion. When PENDING empties, README and the CLI are provably in sync and can never silently diverge again.
+  const PENDING = new Set<string>([
+    'arch', 'ask', 'baseline', 'bash-history', 'blame', 'budget', 'cache-audit',
+    'call-chain', 'callers', 'clean-cache', 'compact-doc', 'compact-hint',
+    'config', 'context-for', 'cost', 'coverage-gaps', 'dead', 'deps', 'failures',
+    'fetch-image', 'history', 'hot', 'ignores', 'impact', 'lockdeps', 'logfold',
+    'note', 'pack', 'project', 'prune-cache', 'recent', 'resume', 'scope',
+    'session-summary', 'similar',
+    'test-for', 'todo', 'tokens', 'trace', 'types', 'web-history',
+  ])
+
+  const README = fs.readFileSync(path.join(HERE, '..', '..', 'README.md'), 'utf8')
+
+  // First word of every `token-goat <cmd>` backtick span in README. The leading [a-z] guard skips flag spans (--pi) and placeholders (<name>).
+  function documentedCommands(): Set<string> {
+    const re = /`token-goat\s+([a-z][a-z-]*)/g
+    const out = new Set<string>()
+    let m: RegExpExecArray | null
+    while ((m = re.exec(README)) !== null) {
+      const name = m[1]
+      if (name !== undefined) out.add(name)
+    }
+    return out
+  }
+
+  function registeredTopLevel(): Set<string> {
+    return new Set(buildProgram().commands.map((c) => c.name()))
+  }
+
+  it('keeps PENDING honest: nothing pending is already registered', () => {
+    const registered = registeredTopLevel()
+    const builtButStillPending = [...PENDING].filter((n) => registered.has(n))
+    expect(builtButStillPending).toEqual([])
+  })
+
+  it('every command documented in README is registered (or pending)', () => {
+    const registered = registeredTopLevel()
+    const documented = documentedCommands()
+    const gap = [...documented].filter((n) => !registered.has(n) && !PENDING.has(n))
+    expect(gap).toEqual([])
   })
 })

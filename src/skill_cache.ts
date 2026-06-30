@@ -19,6 +19,7 @@ import { homedir } from 'os'
 import { dataDir } from './constants.js'
 import { atomicWriteText, isCodeFenceDelimiter } from './util.js'
 import { registerReset } from './reset.js'
+import { readdirSync, readFileSync } from 'node:fs'
 
 const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
 
@@ -53,9 +54,12 @@ export interface CachedSkillInfo {
   readonly bodyLen: number
   readonly compactLen: number
   readonly hasMarker: boolean
+  readonly compactStale: boolean | null
+  readonly hitCount: number
+  readonly ageMs: number
 }
 
-function skillOutputsDir(): string {
+export function skillOutputsDir(): string {
   if (_skillOutputsDirOverride) return _skillOutputsDirOverride
   return resolve(dataDir(), 'skills')
 }
@@ -506,6 +510,88 @@ export async function getCompactAnySession(skillName: string): Promise<string | 
   }
 }
 
+// Synchronous sibling of getCompactAnySession for the hot pre-read path: first non-empty cached compact body for a skill across sessions, or null.
+export function getCompactAnySessionSync(skillName: string): string | null {
+  try {
+    const name = safeSkillName(skillName)
+    if (!name) return null
+    const dir = skillOutputsDir()
+    const entries = readdirSync(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith('-compact')) continue
+      if (!entry.name.includes(`${sanitizeSkillId(name)}-compact`)) continue
+      try {
+        const text = readFileSync(resolve(dir, entry.name), 'utf-8')
+        if (text.trim()) return text
+      } catch {
+        continue
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+// Extract the source SHA from a cached compact's embedded comment (<!-- source_sha: <sha12> -->), returning the 12-char hex string or null if not found.
+export function extractSourceShaFromCompact(compactText: string): string | null {
+  if (!compactText) return null
+  const match = compactText.match(/<!--\s*source_sha:\s*([a-f0-9]{12})\s*-->/)
+  return match ? match[1]! : null
+}
+
+// Determine staleness: return true if compact is stale, false if fresh, null if indeterminate (no compact, no source SHA in it, or body can't be resolved).
+export function isCompactStale(compactText: string | null, skillName: string, currentBodySha: string): boolean | null {
+  if (!compactText) return null
+  const embeddedSha = extractSourceShaFromCompact(compactText)
+  if (!embeddedSha) return null
+  const currentSha = currentBodySha.slice(0, 12)
+  return embeddedSha !== currentSha
+}
+
+// Read or create hit count sidecar for a skill (<skillOutputsDir>/<sanitizeSkillId(name)>.hits), returning {count, lastTs}.
+export async function readSkillHits(skillName: string): Promise<{ count: number; lastTs: number }> {
+  try {
+    const dir = skillOutputsDir()
+    const hitsFile = resolve(dir, `${sanitizeSkillId(skillName)}.hits`)
+    const content = await fs.readFile(hitsFile, 'utf-8').catch(() => null)
+    if (content) {
+      const parsed = JSON.parse(content) as { count: number; lastTs: number }
+      return parsed
+    }
+  } catch {
+    // ignore
+  }
+  return { count: 0, lastTs: 0 }
+}
+
+// Increment hit count sidecar for a skill.
+export async function incrementSkillHit(skillName: string): Promise<void> {
+  try {
+    await ensureSkillsDir()
+    const hits = await readSkillHits(skillName)
+    hits.count++
+    hits.lastTs = Date.now()
+    const dir = skillOutputsDir()
+    const hitsFile = resolve(dir, `${sanitizeSkillId(skillName)}.hits`)
+    await atomicWriteText(hitsFile, JSON.stringify(hits, null, 2))
+  } catch {
+    // fail-soft
+  }
+}
+
+// Format age in milliseconds as human-readable string (e.g., "5m", "2h", "1d").
+export function formatAge(ageMs: number): string {
+  const s = Math.floor(ageMs / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h`
+  const d = Math.floor(h / 24)
+  return `${d}d`
+}
+
 export async function listSkills(sessionId?: string): Promise<CachedSkillInfo[]> {
   try {
     const metas = await listOutputs()
@@ -525,9 +611,11 @@ export async function listSkills(sessionId?: string): Promise<CachedSkillInfo[]>
       const compactFileId = `${safeSession}-${sanitizeSkillId(meta.skillName)}-compact`
 
       let compactLen = 0
+      let compactText = ''
       try {
         const stat = await fs.stat(resolve(dir, compactFileId))
         compactLen = stat.size
+        compactText = await fs.readFile(resolve(dir, compactFileId), 'utf-8').catch(() => '')
       } catch {
         compactLen = 0
       }
@@ -536,11 +624,18 @@ export async function listSkills(sessionId?: string): Promise<CachedSkillInfo[]>
         await fs.readFile(resolve(dir, `${meta.outputId}.txt`), 'utf-8').catch(() => '')
       ) !== null
 
+      const compactStale = isCompactStale(compactText, meta.skillName, meta.contentSha)
+      const { count: hitCount } = await readSkillHits(meta.skillName)
+      const ageMs = Date.now() - meta.ts
+
       results.push({
         name: meta.skillName,
         bodyLen: meta.bodyBytes,
         compactLen,
         hasMarker,
+        compactStale,
+        hitCount,
+        ageMs,
       })
     }
 

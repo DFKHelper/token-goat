@@ -9,6 +9,7 @@ import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileRead, wasFileReadThisSession } from '../src/session.js'
+import { storeCompact, setSkillOutputsDirForTesting, contentHash } from '../src/skill_cache.js'
 
 const tmpFiles: string[] = []
 
@@ -912,5 +913,44 @@ describe('preReadHandler — session artifact re-read dedup', () => {
       expect(result.message).toContain('```diff')
       expect(result.message).toContain('token-goat bash-output --file "' + normalized + '"')
     }
+  })
+})
+
+describe('preReadHandler - skill stale compact advisory', () => {
+  const rnd = `${process.pid}-${Math.random().toString(36).slice(2)}`
+  const skillsRoot = path.join(os.tmpdir(), `tg-skilladv-${rnd}`)
+  const outputsDir = path.join(os.tmpdir(), `tg-skilladv-out-${rnd}`)
+  const skillMd = path.join(skillsRoot, '.claude', 'skills', 'advskill', 'SKILL.md')
+
+  beforeEach(() => {
+    fs.mkdirSync(path.dirname(skillMd), { recursive: true })
+    fs.mkdirSync(outputsDir, { recursive: true })
+    setSkillOutputsDirForTesting(outputsDir)
+  })
+
+  afterEach(() => {
+    setSkillOutputsDirForTesting(null)
+    fs.rmSync(skillsRoot, { recursive: true, force: true })
+    fs.rmSync(outputsDir, { recursive: true, force: true })
+  })
+
+  // Drives the real preReadHandler through the stale branch (no injected seam): a cached compact whose embedded source_sha != the body sha must yield the hint.
+  it('emits a skill-compact hint when the cached compact is stale', async () => {
+    fs.writeFileSync(skillMd, '# Adv Skill\n\nbody content here\n')
+    await storeCompact('default', 'advskill', 'compact slice', 'deadbeefcafe')
+    const result = preReadHandler(readEvent(skillMd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('skill-compact advskill')
+    }
+  })
+
+  it('does not emit the hint when the compact sha matches the body', async () => {
+    const body = '# Adv Skill\n\nfresh body\n'
+    fs.writeFileSync(skillMd, body)
+    await storeCompact('default', 'advskill', 'compact slice', contentHash(body).slice(0, 12))
+    const result = preReadHandler(readEvent(skillMd))
+    const text = result.hookType === 'context' ? result.context : ''
+    expect(text).not.toContain('skill-compact advskill')
   })
 })

@@ -36,6 +36,7 @@ import {
 } from './hints/markdown_hints.js'
 import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
 import { recordStat } from './stats.js'
+import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -117,6 +118,12 @@ function surgicalHint(filePath: string, basename: string): string {
   }
 }
 
+// Check if a file is a skill definition file (SKILL.md in ~/.claude/skills/<name>/SKILL.md) and return the skill name, or null.
+function detectSkillFile(filePath: string): string | null {
+  const match = filePath.match(/\.claude[\\/]skills[\\/]([^\\/]+)[\\/]SKILL\.md$/i)
+  return match ? match[1]! : null
+}
+
 /**
  * Compute a compact unified-style diff between two versions of a doc file.
  *
@@ -124,7 +131,7 @@ function surgicalHint(filePath: string, basename: string): string {
  * it as a truncated unified diff (at most 50 changed lines). Returns '' when
  * the contents are identical.
  */
-function buildLineDiff(oldContent: string, newContent: string, label: string): string {
+export function buildLineDiff(oldContent: string, newContent: string, label: string): string {
   const oldLines = oldContent.split('\n')
   const newLines = newContent.split('\n')
 
@@ -232,6 +239,25 @@ export function preReadHandler(event: HookEvent): HookOutput {
       'You\'ve already read ' + basename + '. Use `token-goat section "' + normalized + '::<field>"` ' +
       'or `token-goat config-get ' + normalized + ' <key>` to extract just the value you need.',
     )
+  }
+
+  // Skill file stale compact advisory.
+  const skillName = detectSkillFile(normalized)
+  if (skillName && basename === 'SKILL.md') {
+    try {
+      const body = fs.readFileSync(normalized, 'utf-8')
+      const bodySha = contentHash(body)
+      const compact = getCompactAnySessionSync(skillName)
+      const stale = isCompactStale(compact, skillName, bodySha)
+      if (stale === true) {
+        recordFileRead(normalized)
+        return contextOutput(
+          'This skill\'s cached compact is stale. Run `token-goat skill-compact ' + skillName + '` to regenerate it.',
+        )
+      }
+    } catch {
+      // fail-soft: ignore errors and continue with normal read processing
+    }
   }
 
   // Markdown large-file intercept

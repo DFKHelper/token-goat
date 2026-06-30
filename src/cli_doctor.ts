@@ -8,6 +8,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { execSync, spawnSync } from 'child_process'
 import { extractErrorMessage } from './util.js'
+import { runContextStats } from './cli_context_stats.js'
+import { skillOutputsDir } from './skill_cache.js'
 
 /**
  * Result of a single doctor check.
@@ -173,8 +175,49 @@ export function printDoctorResults(results: DoctorResult[]): void {
 /**
  * Run doctor and return exit code (0 for success, 1 for failures).
  */
-export function runDoctorAndExit(dataDir?: string, configPath?: string): number {
-  const results = runDoctor(dataDir, configPath)
+export function runDoctorAndExit(opts?: { dataDir?: string; configPath?: string; context?: boolean }): number {
+  const results = runDoctor(opts?.dataDir, opts?.configPath)
   printDoctorResults(results)
+
+  if (opts?.context === true) {
+    console.log('\n## Context footprint\n')
+    // Call runContextStats to show the context breakdown.
+    runContextStats({})
+    console.log()
+
+    // Add pregen-gap check: if pregen.json exists, check for skills on disk missing from pregen names.
+    try {
+      const dir = skillOutputsDir()
+      const pregenPath = path.join(dir, 'pregen.json')
+      if (fs.existsSync(pregenPath)) {
+        const content = JSON.parse(fs.readFileSync(pregenPath, 'utf-8')) as { names?: string[] }
+        const pregenNames = new Set(content.names || [])
+        const skills = [] as string[]
+        try {
+          const entries = fs.readdirSync(dir, { withFileTypes: true })
+          for (const entry of entries) {
+            if (!entry.isFile() || !entry.name.endsWith('.meta')) continue
+            try {
+              const meta = JSON.parse(fs.readFileSync(path.join(dir, entry.name), 'utf-8')) as { skillName: string }
+              if (meta.skillName && !pregenNames.has(meta.skillName)) {
+                skills.push(meta.skillName)
+              }
+            } catch {
+              // skip
+            }
+          }
+        } catch {
+          // skip
+        }
+        if (skills.length > 0) {
+          console.log(`Missing from pregen.json: ${skills.join(', ')}`)
+          console.log(`Remediation: token-goat skill-compact --all\n`)
+        }
+      }
+    } catch {
+      // skip pregen check
+    }
+  }
+
   return results.some((r) => r.status === 'fail') ? 1 : 0
 }
