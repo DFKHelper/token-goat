@@ -297,6 +297,9 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   { pattern: /^gh run (?:watch|view|list)/, recallHint: '--grep "fail|error|pass|✓|✗|conclusion"' },
   { pattern: /^gh run view.*--log/, recallHint: '--tail 100 --grep "Error|FAIL|error"' },
   { pattern: /^gh pr checks/, recallHint: '--grep "fail|error|pass|pending"' },
+  { pattern: /^gh pr view/, recallHint: '--grep "state|title|mergeable|review|OPEN|CLOSED|MERGED"' },
+  { pattern: /^gh pr list/, recallHint: '--grep "OPEN|DRAFT|MERGED|#"' },
+  { pattern: /^gh issue view/, recallHint: '--grep "state|title|label|OPEN|CLOSED"' },
   { pattern: /^gh workflow (?:run|list|view)/, recallHint: '--grep "completed|failed|in_progress"' },
 
   // Dev servers (Next, Vite, Nuxt, Remix, Astro)
@@ -334,6 +337,9 @@ export const MONITORING_COMMAND_PATTERNS: Array<{
   // git diff (full diff output — can be very large; excludes --stat which is small)
   { pattern: /^git diff(?!\s+--stat)(?:\s+HEAD)?(?:\s|$)/, recallHint: '--grep "@@|\\+\\+\\+|---|diff --git"' },
   { pattern: /^git diff\s+--cached(?!\s+--stat)/, recallHint: '--grep "@@|\\+\\+\\+|---|diff --git"' },
+
+  // git push — output is dominated by the pre-push hook (full test suite, often 10K+); cache it so failures/rejections are recallable without re-pushing
+  { pattern: /^git push(?:\s|$)/, recallHint: '--tail 100 --grep "error|fail|FAIL|rejected|To "' },
 
   // npm run * wrappers (npm test is excluded — too generic; npm run test is explicit)
   { pattern: /^npm run (?:test|spec)(?:\s|$)/, recallHint: '--grep "FAIL|PASS|Error|Tests:|✓|✗"' },
