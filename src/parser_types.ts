@@ -70,6 +70,7 @@ export type Language =
   | 'makefile'
   | 'proto'
   | 'env_file'
+  | 'powershell'
   | 'unknown'
 
 /**
@@ -127,6 +128,8 @@ const EXTENSION_LANGUAGE: ReadonlyMap<string, Language> = new Map([
   ['.cfg', 'ini'],
   ['.conf', 'ini'],
   ['.proto', 'proto'],
+  ['.ps1', 'powershell'],
+  ['.psm1', 'powershell'],
   ['.env', 'env_file'],
 ])
 

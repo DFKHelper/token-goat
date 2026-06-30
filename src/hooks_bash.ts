@@ -109,7 +109,7 @@ function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv:
   if (isTempPath(filePath)) return null
   const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
-  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
+  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|ps1|psm1|env)$/i.test(filePath)
   if (!hasKnownExt && !isEnvFile) return null
   const isSql = /\.sql$/i.test(filePath)
   const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
@@ -172,7 +172,7 @@ function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isE
   if (isTempPath(filePath)) return null
   const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
   const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
-  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|env)$/i.test(filePath)
+  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|ps1|psm1|env)$/i.test(filePath)
   if (!hasKnownExt && !isEnvFile) return null
   const isSql = /\.sql$/i.test(filePath)
   const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
@@ -187,7 +187,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
   // Return null when the command shows write intent — these are edits, not reads
   if (/open\s*\([^)]*,\s*['"][wa]/i.test(cmd) || /\.write\s*\(/.test(cmd)) return null
 
-  const OPEN_EXT = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties)/i
+  const OPEN_EXT = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|ps1|psm1)/i
 
   // Heredoc form: python3 - << 'PYEOF'\n...\nPYEOF
   const heredocMatch = /^python3?\s+-\s+<<\s*'?(\w+)'?\s*\n([\s\S]*?)\n\1\s*$/.exec(cmd)
