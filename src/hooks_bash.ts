@@ -184,10 +184,18 @@ function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isE
 }
 
 /** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
-function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean } | null {
+function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean; isTranscript: boolean } | null {
   if (!/python3?/.test(cmd)) return null
   // Return null when the command shows write intent — these are edits, not reads
   if (/open\s*\([^)]*,\s*['"][wa]/i.test(cmd) || /\.write\s*\(/.test(cmd)) return null
+
+  // .output files are subagent/task JSONL transcripts, not source — route to the transcript-recall command rather than a symbol read
+  const outputOpen = /open\s*\(\s*r?['"]([^'"]+\.output)['"]/i.exec(cmd)
+  if (outputOpen?.[1]) {
+    const filePath = outputOpen[1]
+    if (isOrchestratorStateFile(filePath)) return null
+    return { filePath, isDoc: false, isTranscript: true }
+  }
 
   const OPEN_EXT = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|ps1|psm1)/i
 
@@ -207,7 +215,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
       const filePath = heredocOpen[1]
       if (isOrchestratorStateFile(filePath)) return null
       const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-      return { filePath, isDoc }
+      return { filePath, isDoc, isTranscript: false }
     }
     // Indirect: open(var, ...) where a string literal with known ext appears in the body
     if (/open\s*\(/.test(body)) {
@@ -217,7 +225,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
         if (isOrchestratorStateFile(filePath)) return null
         if (OPEN_EXT.test(filePath)) {
           const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-          return { filePath, isDoc }
+          return { filePath, isDoc, isTranscript: false }
         }
       }
     }
@@ -231,7 +239,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
     if (!filePath) return null
     if (isOrchestratorStateFile(filePath)) return null
     const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-    return { filePath, isDoc }
+    return { filePath, isDoc, isTranscript: false }
   }
   // Indirect: open(var, ...) where a string literal with a known extension appears elsewhere in the cmd
   if (/open\s*\(/.test(cmd)) {
@@ -242,7 +250,7 @@ function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean 
         if (isOrchestratorStateFile(filePath)) return null
         if (OPEN_EXT.test(filePath)) {
           const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
-          return { filePath, isDoc }
+          return { filePath, isDoc, isTranscript: false }
         }
       }
     }
@@ -770,7 +778,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     const tail = n ?? 50
     return denyOutput(
-      'Task output ' + id + ' is on disk. Use `token-goat bash-output --file "' + outPath + '" --tail ' + tail + '` (or `--grep PATTERN`) to read a slice instead of the whole file.',
+      'Task output ' + id + ' is a JSONL agent transcript on disk. Use `token-goat bash-output --file "' + outPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail ' + tail + '`, instead of reading the whole file.',
     )
   }
 
@@ -872,11 +880,15 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
   const pyRead = extractPythonFileRead(cmd)
   if (pyRead !== null) {
-    const { filePath, isDoc } = pyRead
+    const { filePath, isDoc, isTranscript } = pyRead
+    recordStat('session_hint', 0, 0)
+    if (isTranscript) {
+      const tHint = '`.output` files are JSONL agent transcripts. Use `token-goat bash-output --file "' + filePath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
+      return cdStripped ? contextOutput(tHint) : denyOutput(tHint)
+    }
     const hint = isDoc
       ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
       : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
-    recordStat('session_hint', 0, 0)
     return cdStripped ? contextOutput('Python `open()` file reads bypass read hooks. ' + hint) : denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
   }
 

@@ -897,6 +897,16 @@ describe('preBashHandler — orchestrator state file exemption', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  it('denies python open() of a .output transcript and points at bash-output --transcript', () => {
+    const event = makeBashEvent("python3 -c \"\nimport json\nfor line in open(r'/home/user/.claude/tasks/abc123.output'):\n    print(json.loads(line))\n\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123.output" --transcript')
+      expect(result.message).not.toContain('token-goat read')
+    }
+  })
+
   it('passes through node readFileSync reading an improve-state JSON', () => {
     const event = makeBashEvent('node -e "const fs = require(\'fs\'); const d = JSON.parse(fs.readFileSync(\'.improve-state-foo.json\', \'utf8\')); console.log(d)"')
     const result = preBashHandler(event)
@@ -915,6 +925,7 @@ describe('preBashHandler — task output file interception', () => {
     if (result.hookType === 'deny') {
       // The recall command must name the on-disk path via --file; a bare `bash-output <id>` misses the cache (task id is not a cache key), and the old "already cached" wording promised a recall that errored.
       expect(result.message).toContain('token-goat bash-output --file "/home/user/.claude/tasks/abc123def456.output"')
+      expect(result.message).toContain('--transcript')
       expect(result.message).toContain('--tail 50')
       expect(result.message).not.toContain('already cached')
     }
