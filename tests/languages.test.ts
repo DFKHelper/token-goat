@@ -273,6 +273,27 @@ fun topLevel() {}
     expect(imports.some((i) => i.target.includes('List'))).toBe(true)
   })
 
+  it('indexes top-level SCREAMING_SNAKE const/val declarations', () => {
+    const content = `const val MAX_SIZE = 100
+val GREETING = "hi"
+private const val SECRET = "x"
+val lowercase = 5
+
+class Config {
+  const val INNER = 1
+}
+`
+    const { symbols } = extractKotlin(content, 'Config.kt')
+    const consts = symbols.filter((s) => s.kind === 'const').map((s) => s.name)
+    // Top-level SCREAMING_SNAKE const/val are now indexed.
+    expect(consts).toContain('MAX_SIZE')
+    expect(consts).toContain('GREETING')
+    expect(consts).toContain('SECRET')
+    // In-class const still indexed; non-SCREAMING_SNAKE val still excluded.
+    expect(consts).toContain('INNER')
+    expect(consts).not.toContain('lowercase')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractKotlin('', 'empty.kt')
     expect(symbols).toHaveLength(0)
