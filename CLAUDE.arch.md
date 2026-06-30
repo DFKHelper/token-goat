@@ -56,7 +56,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_common.ts`](src/hooks_common.ts) | Shared hook helpers: `getToolName()`, `getToolInput()`, `getFilePath()`, `passOutput()`, `denyOutput()`, `contextOutput()` |
 | [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection; `postReadHandler()` — snapshot update and session recording |
 | [`src/hooks_edit.ts`](src/hooks_edit.ts) | `postEditHandler()` — calls `recordFileEdit()` and `appendDirtyPath()` to queue the file for re-indexing; fires on `Write` and `Edit` tool events |
-| [`src/hooks_bash.ts`](src/hooks_bash.ts) | `preBashHandler()` — cat/wsl-cat/rg detection, bash output dedup, compression filters; `postBashHandler()` — caches bash stdout/stderr |
+| [`src/hooks_bash.ts`](src/hooks_bash.ts) | `preBashHandler()` — cat/wsl-cat/rg detection (incl. `powershell -Command`/`pwsh -c`-wrapped `Get-Content` via `extractPowerShellWrappedGetContent`, size-gated on temp paths), bash output dedup, compression filters; `postBashHandler()` — caches bash stdout/stderr |
 | [`src/hooks_fetch.ts`](src/hooks_fetch.ts) | `preFetchHandler()` / `postFetchHandler()` — image shrink for WebFetch responses, web-output cache |
 | [`src/hooks_compact.ts`](src/hooks_compact.ts) | `preCompactHandler()` — builds a structured session manifest from `getSessionFiles()` and `getSessionWebFetches()` and returns it as `systemMessage` |
 | [`src/hooks_index.ts`](src/hooks_index.ts) | `appendDirtyPath()` — atomic append to `queue/dirty.txt`; `preCompactIndexHandler()` — drains any remaining dirty queue before compaction |

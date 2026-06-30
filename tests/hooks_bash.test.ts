@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
-import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent } from '../src/hooks_bash.js'
 import { getBashOutputId } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 function makePostBashEvent(command: string, output: string): HookEvent {
   return {
@@ -1803,5 +1806,83 @@ describe('gh api recall (F4)', () => {
     const cmd = 'gh api repos/octocat/hello/contents/tiny.txt'
     await postBashHandler(makePostBashEvent(cmd, '{"a":1}'))
     expect(ghRecalled(cmd)).toBe(false)
+  })
+})
+
+describe('extractPowerShellWrappedGetContent — unwraps a powershell -Command Get-Content wrapper', () => {
+  it('returns null for a non-powershell command', () => {
+    expect(extractPowerShellWrappedGetContent('cat src/auth.ts')).toBeNull()
+    expect(extractPowerShellWrappedGetContent('echo hi')).toBeNull()
+  })
+
+  it('extracts a source path from `powershell -Command "Get-Content \'<path>\'"`', () => {
+    const r = extractPowerShellWrappedGetContent(`powershell -Command "Get-Content 'src/auth.ts'"`)
+    expect(r).not.toBeNull()
+    expect(r?.filePath).toBe('src/auth.ts')
+    expect(r?.isDoc).toBe(false)
+    expect(r?.isConfig).toBe(false)
+  })
+
+  // Regression for F6: the reported flood used a TRAILING -Raw, which bare extractCatFile
+  // rejects (its regex demands end-of-string right after the path). The wrapper extractor
+  // must still classify it. Neutralizing POWERSHELL_WRAP_RE makes this return null.
+  it('still matches when a trailing -Raw / -Encoding follows the path', () => {
+    expect(extractPowerShellWrappedGetContent(`powershell -Command "Get-Content 'src/auth.ts' -Raw"`)?.filePath).toBe('src/auth.ts')
+    expect(extractPowerShellWrappedGetContent(`powershell -Command "Get-Content 'src/auth.ts' -Raw -Encoding utf8"`)?.filePath).toBe('src/auth.ts')
+  })
+
+  it('handles the `pwsh -c "gc <doc>"` short form and classifies a doc', () => {
+    const r = extractPowerShellWrappedGetContent(`pwsh -c "gc README.md"`)
+    expect(r?.filePath).toBe('README.md')
+    expect(r?.isDoc).toBe(true)
+  })
+
+  it('classifies a config path', () => {
+    expect(extractPowerShellWrappedGetContent(`powershell -Command "Get-Content 'config.json'"`)?.isConfig).toBe(true)
+  })
+
+  it('returns null for an unknown extension (no surgical-read alternative)', () => {
+    expect(extractPowerShellWrappedGetContent(`powershell -Command "Get-Content 'blob.b64' -Raw"`)).toBeNull()
+  })
+
+  it('size-gates temp paths: large temp read classifies, small one is skipped', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-f6-'))
+    const bigPath = join(dir, 'big.ts')
+    const smallPath = join(dir, 'small.ts')
+    writeFileSync(bigPath, 'x'.repeat(20 * 1024))
+    writeFileSync(smallPath, 'const a = 1\n')
+    try {
+      expect(extractPowerShellWrappedGetContent(`powershell -Command "Get-Content '${bigPath}' -Raw"`)?.filePath).toBe(bigPath)
+      expect(extractPowerShellWrappedGetContent(`powershell -Command "Get-Content '${smallPath}' -Raw"`)).toBeNull()
+    } finally {
+      try { unlinkSync(bigPath) } catch { /* best-effort */ }
+      try { unlinkSync(smallPath) } catch { /* best-effort */ }
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+    }
+  })
+})
+
+describe('preBashHandler — powershell-wrapped Get-Content recall (wiring)', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  // Proves the extractor is wired into preBashHandler ahead of the compress fallback:
+  // a non-temp source read through a powershell wrapper denies with the read hint.
+  it('denies a non-temp source read with a token-goat read hint and the powershell lead', () => {
+    const result = preBashHandler(makeBashEvent(`powershell -Command "Get-Content 'src/auth.ts'"`))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('powershell -Command` wrapper bypasses read hooks')
+      expect(result.message).toContain('token-goat read "src/auth.ts::SymbolName"')
+    }
+  })
+
+  it('routes a wrapped doc read to a section hint', () => {
+    const result = preBashHandler(makeBashEvent(`pwsh -c "gc README.md"`))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat section "README.md::SectionHeading"')
+    }
   })
 })

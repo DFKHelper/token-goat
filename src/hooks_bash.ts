@@ -18,6 +18,7 @@ import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
 import { detectLanguage, type Language } from './parser_types.js'
+import { statSync } from 'node:fs'
 
 /** Strip one or more `cd <dir> &&` prefixes so interceptors match the actual command. */
 function stripCdPrefix(cmd: string): string {
@@ -118,6 +119,42 @@ function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv:
   const isEnv = isEnvFile || /\.env$/i.test(filePath)
   const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
   return { filePath, isDoc, isEnv, isConfig, isSql, cmd0 }
+}
+
+const POWERSHELL_WRAP_RE = /^(?:powershell|pwsh)(?:\.exe)?(?:\s+-[a-zA-Z]+(?:\s+\S+)?)*\s+(?:-Command|-c|-EncodedCommand)\s+(?:"([^"]*)"|'([^']*)')\s*$/i
+const PS_GETCONTENT_INNER_RE = /^(?:Get-Content|gc|cat|type)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+?))(?:\s+-[a-zA-Z].*)?\s*$/i
+// A temp-path read only floods context when the file is large; a small scratch read stays silent.
+const PS_TEMP_READ_FLOOD_BYTES = 16 * 1024
+
+function isLargeFileOnDisk(filePath: string, floor: number): boolean {
+  try {
+    return statSync(filePath).size >= floor
+  } catch {
+    return false
+  }
+}
+
+/** Extracts the read path from a `powershell -Command "Get-Content '<path>' -Raw"` (or pwsh/cat/type) wrapper, which otherwise bypasses every Get-Content/cat extractor because the command token is `powershell`. Tolerates a trailing `-Raw`/`-Encoding` that bare extractCatFile rejects. Temp paths are size-gated: a small scratch read stays silent, a large one still earns a recall hint. */
+export function extractPowerShellWrappedGetContent(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
+  const w = POWERSHELL_WRAP_RE.exec(cmd)
+  if (!w) return null
+  const inner = (w[1] ?? w[2] ?? '').trim()
+  if (!inner) return null
+  const m = PS_GETCONTENT_INNER_RE.exec(inner)
+  if (!m) return null
+  const filePath = m[1] ?? m[2] ?? m[3]
+  if (filePath === undefined) return null
+  const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
+  const isEnvFile = /^\.env(\.\w+)?$/i.test(basename)
+  const hasKnownExt = /\.(?:java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|conf|cfg|ini|properties|sql|ps1|psm1|env)$/i.test(filePath)
+  if (!hasKnownExt && !isEnvFile) return null
+  // Temp reads are normally scratch and skipped, but a large one still floods context; gate on size rather than excluding unconditionally.
+  if (isTempPath(filePath) && !isLargeFileOnDisk(filePath, PS_TEMP_READ_FLOOD_BYTES)) return null
+  const isSql = /\.sql$/i.test(filePath)
+  const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
+  const isEnv = isEnvFile || /\.env$/i.test(filePath)
+  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  return { filePath, isDoc, isEnv, isConfig, isSql }
 }
 
 /**
@@ -857,6 +894,26 @@ export function preBashHandler(event: HookEvent): HookOutput {
           ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
           : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
     return cdStripped ? contextOutput('`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
+  }
+
+  const psGetContentResult = extractPowerShellWrappedGetContent(cmd)
+  if (psGetContentResult !== null) {
+    const { filePath, isDoc, isEnv, isConfig, isSql } = psGetContentResult
+    recordStat('session_hint', 0, 0)
+    const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context. '
+    if (isSql) {
+      return cdStripped
+        ? contextOutput(lead + 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+        : denyOutput(lead + 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+    }
+    const hint = isEnv
+      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` to read a specific variable.'
+      : isConfig
+        ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+        : isDoc
+          ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+          : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
+    return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }
 
   const wslCatResult = extractWslCatFile(cmd)
