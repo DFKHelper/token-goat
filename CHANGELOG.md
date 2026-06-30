@@ -16,6 +16,16 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Stale `bash-output`/`web-output` IDs now return a recovery path, not a dead end.** `no cached bash output for id: X` adds that a background-task id can be recalled directly with `token-goat bash-output --file <path-to-output-file>`, and the web variant notes the cache may have expired and a re-fetch repopulates it. The bare id-not-found message left the caller with no next step. See [src/cli.ts](src/cli.ts); regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
 
+### Fixed
+
+- **Skills loaded via the Skill tool are now cached, and `skill-compact`/`skill-body`/`skill-list` resolve installed skills from disk.** Loading a skill (e.g. `/ollama`) then running `token-goat skill-compact ollama` returned `skill 'ollama' not found`, and `skill-list` never showed it. Two defects combined: the Skill post-tool hook extracted the skill name and body but never persisted them (`postSkillHandler` was a no-op stub with zero production callers, masked by tests that only inspected the event object), and `getSkillFilePath` resolved names only from cached metas with no on-disk fallback, so an installed-but-not-yet-loaded skill was unreachable. The hook now stores the loaded body under the real skill name (`toolInput.skill`), and `getSkillFilePath` falls back to `~/.claude/skills/<name>/SKILL.md`. `skill-compact` also writes the body meta (not just the compact slice), so a skill compacted straight from disk is listable and recallable like one loaded via the hook. See [src/hooks_skill.ts](src/hooks_skill.ts), [src/skill_cache.ts](src/skill_cache.ts), and [src/cli.ts](src/cli.ts); regression-tested in [tests/hooks_skill.test.ts](tests/hooks_skill.test.ts), [tests/skill_cache.test.ts](tests/skill_cache.test.ts), and [tests/cli.test.ts](tests/cli.test.ts).
+
+### Added
+
+- **`skill-compact --path <file>` and an optional skill name.** `token-goat skill-compact --path ~/.claude/skills/ollama/SKILL.md` caches a skill straight from a file, bypassing name resolution; the cache name is the explicit argument when given, else the file's parent directory name. The command is now `skill-compact [name]` (name optional when `--path` is supplied). See [src/cli.ts](src/cli.ts); regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
+
+- **`skill-list --json` now includes a `skill_name` field** carrying each skill's invocation name explicitly, so consumers don't have to infer it. See [src/cli.ts](src/cli.ts); regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
+
 ## [2.4.0] - 2026-06-29
 
 ### Added

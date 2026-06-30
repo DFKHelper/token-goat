@@ -535,3 +535,71 @@ describe('token-goat CLI', () => {
     }
   })
 })
+
+describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
+  // These drive the REAL built bundle. dataDir() is computed once at module load
+  // from LOCALAPPDATA (win32) / XDG_DATA_HOME (linux), so pointing both at a fresh
+  // temp dir isolates the skill cache from the user's real one - the exact pollution
+  // that masked the original bug. `skill-compact --path` bypasses name resolution,
+  // so no ~/.claude/skills override is needed.
+  function runIsolated(args: string[], dataDir: string): RunResult {
+    const res = spawnSync(process.execPath, [BUNDLE, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, LOCALAPPDATA: dataDir, XDG_DATA_HOME: dataDir },
+    })
+    return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+  }
+
+  function makeSkill(): { dataDir: string; skillFile: string; cleanup: () => void } {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
+    const dataDir = path.join(base, 'data')
+    const skillDir = path.join(base, 'skills', 'myskill')
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.mkdirSync(skillDir, { recursive: true })
+    const skillFile = path.join(skillDir, 'SKILL.md')
+    fs.writeFileSync(skillFile, 'Compact line\n<!-- COMPACT_END -->\nfull body details')
+    return { dataDir, skillFile, cleanup: () => fs.rmSync(base, { recursive: true, force: true }) }
+  }
+
+  it('caches a compact from --path and derives the name from the parent dir', () => {
+    const { dataDir, skillFile, cleanup } = makeSkill()
+    try {
+      const r = runIsolated(['skill-compact', '--path', skillFile], dataDir)
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain("Cached compact for skill 'myskill'")
+    } finally {
+      cleanup()
+    }
+  }, 30000)
+
+  // Regression for the acceptance test: after `skill-compact`, `skill-list` must show
+  // the skill. Pre-fix skill-compact wrote only a -compact file (no meta), and listSkills
+  // iterates metas, so the entry was invisible. skill-compact now also writes the body meta.
+  it('skill-list --json surfaces the compacted skill with a skill_name field', () => {
+    const { dataDir, skillFile, cleanup } = makeSkill()
+    try {
+      const compact = runIsolated(['skill-compact', '--path', skillFile], dataDir)
+      expect(compact.status).toBe(0)
+
+      const list = runIsolated(['skill-list', '--json'], dataDir)
+      expect(list.status).toBe(0)
+      const parsed = JSON.parse(list.stdout) as Array<{ name: string; skill_name: string }>
+      const entry = parsed.find((e) => e.name === 'myskill')
+      expect(entry).toBeDefined()
+      expect(entry!.skill_name).toBe('myskill')
+    } finally {
+      cleanup()
+    }
+  }, 30000)
+
+  it('skill-compact with neither name nor --path exits 1', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-skillcli-'))
+    try {
+      const r = runIsolated(['skill-compact'], path.join(base, 'data'))
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('requires a <name> or --path')
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  }, 30000)
+})
