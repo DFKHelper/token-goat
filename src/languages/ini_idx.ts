@@ -2,7 +2,7 @@
  * INI/CFG section extractor and .env key extractor.
  *
  * `extractIni` — one symbol+section per `[header]` at column 0.
- * `extractEnv` — one symbol per `KEY=value` assignment at column 0.
+ * `extractEnv` — one symbol per `KEY=value` assignment at column 0, with an optional leading `export `.
  */
 
 import type { SymbolEntry } from '../parser_types.js'
@@ -16,8 +16,8 @@ const MAX_ENV_KEYS = 200
 // Column-0-anchored [name] header. Allows letters, digits, underscores, hyphens, dots, colons, slashes — covers [tool.black], [mysqld:replica], [group/sub].
 const HEADER_RE = /^\[([A-Za-z0-9_\-.:/]+)\]\s*(?:[;#].*)?$/
 
-// Column-0 KEY= or KEY: assignment (dotenv / envrc).
-const ENV_KEY_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*[:=]/
+// Optional leading `export ` (shell-sourced .env / direnv .envrc) is consumed so the captured key is the variable name, not the literal `export`. A var literally named `export` (`export=5`, no following space) still captures as `export` because the prefix group requires whitespace.
+const ENV_KEY_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:=]/
 
 function makeSymbol(
   filePath: string,

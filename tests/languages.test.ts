@@ -420,6 +420,21 @@ PORT=3000
     expect(symbols[0]?.kind).toBe('env_key')
   })
 
+  it('captures keys written with a leading export prefix', () => {
+    const content = `export API_KEY=abc123
+PLAIN=1
+export DB_URL=postgres://localhost/db
+`
+    const symbols = extractEnv(content, '.env')
+    const names = symbols.map((s) => s.name)
+    // The export-prefixed keys are captured as the variable name, not "export".
+    expect(names).toContain('API_KEY')
+    expect(names).toContain('DB_URL')
+    expect(names).not.toContain('export')
+    // A plain assignment with no prefix still works.
+    expect(names).toContain('PLAIN')
+  })
+
   it('skips comment lines', () => {
     const content = `# This is a comment
 KEY=value
