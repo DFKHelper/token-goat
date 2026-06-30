@@ -935,4 +935,46 @@ export function runImports(opts: ImportsExportsOptions): number {
 // ---- re-export underlying layers -------------------------------------------
 
 export type { SymbolEntry, RefEntry }
+/**
+ * Collect assistant text in order from a Claude Code / subagent JSONL transcript.
+ *
+ * Each line is one JSON record; keep `type:"assistant"` records and pull their
+ * `message.content[]` text blocks (or a plain-string `content`), joined in order.
+ * Malformed lines, non-assistant records, and non-text blocks (thinking, tool_use,
+ * tool_result) are skipped. Returns the joined text, or '' when nothing matches,
+ * which keeps `--transcript` harmless on a file that is not a transcript.
+ */
+export function extractTranscriptText(jsonl: string): string {
+  const collected: string[] = []
+  for (const rawLine of jsonl.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (line.length === 0) continue
+    let obj: unknown
+    try {
+      obj = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (typeof obj !== 'object' || obj === null) continue
+    const rec = obj as Record<string, unknown>
+    if (rec['type'] !== 'assistant') continue
+    const msg = rec['message']
+    if (typeof msg !== 'object' || msg === null) continue
+    const content = (msg as Record<string, unknown>)['content']
+    if (typeof content === 'string') {
+      if (content.length > 0) collected.push(content)
+      continue
+    }
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      if (typeof block !== 'object' || block === null) continue
+      const b = block as Record<string, unknown>
+      if (b['type'] === 'text' && typeof b['text'] === 'string' && b['text'].length > 0) {
+        collected.push(b['text'])
+      }
+    }
+  }
+  return collected.join('\n')
+}
+
 export { querySymbols, queryRefs, readSection, listSections, extractSection, listAllSections }

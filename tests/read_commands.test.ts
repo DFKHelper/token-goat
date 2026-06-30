@@ -37,6 +37,7 @@ import {
   runChanged,
   extractImports,
   extractExportNames,
+  extractTranscriptText,
 } from '../src/read_commands.js'
 import { querySymbols } from '../src/index_reader.js'
 import { runGit } from '../src/util.js'
@@ -671,5 +672,31 @@ describe('read_commands', () => {
       })
       expect(stderr).toContain('git diff failed')
     })
+  })
+})
+
+describe('extractTranscriptText (#93)', () => {
+  it('collects assistant text blocks in order and skips thinking/tool_use/user records', () => {
+    const jsonl = [
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'SECRET' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'step one' }, { type: 'tool_use', name: 'Read' }] } }),
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'final answer' }] } }),
+    ].join('\n')
+    expect(extractTranscriptText(jsonl)).toBe('step one\nfinal answer')
+  })
+
+  it('accepts a plain-string content form', () => {
+    const jsonl = JSON.stringify({ type: 'assistant', message: { content: 'plain text' } })
+    expect(extractTranscriptText(jsonl)).toBe('plain text')
+  })
+
+  it('skips malformed JSON lines without throwing', () => {
+    const jsonl = ['not json', JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }), '{ broken'].join('\n')
+    expect(extractTranscriptText(jsonl)).toBe('ok')
+  })
+
+  it('returns empty string for a file that is not a transcript', () => {
+    expect(extractTranscriptText('line one\nline two\n')).toBe('')
   })
 })

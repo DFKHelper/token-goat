@@ -47,6 +47,7 @@ import {
   runImports,
   runFind,
   runGrep,
+  extractTranscriptText,
 } from './read_commands.js'
 import {
   runCallers,
@@ -294,7 +295,7 @@ function _applyFiltersAndPrint(
 
 function cmdBashOutput(
   id: string | undefined,
-  opts: { head?: string; tail?: string; grep?: string; section?: string; file?: string; maxMatches?: string },
+  opts: { head?: string; tail?: string; grep?: string; section?: string; file?: string; maxMatches?: string; transcript?: boolean },
 ): void {
   if (opts.file !== undefined) {
     if (opts.file.includes('\0')) {
@@ -314,7 +315,7 @@ function cmdBashOutput(
       if (e instanceof CliError) throw e
       throw new CliError(`cannot read file: ${opts.file}`)
     }
-    _applyFiltersAndPrint(content, opts)
+    _applyFiltersAndPrint(opts.transcript === true ? extractTranscriptText(content) : content, opts)
     return
   }
 
@@ -1219,6 +1220,7 @@ export function buildProgram(): Command {
     .option('--grep <pattern>', 'filter lines matching regex')
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
     .option('--file <path>', 'read from raw output file instead of cache')
+    .option('--transcript', 'parse the --file as a JSONL agent transcript: keep assistant text blocks in order before filtering')
     .action(guard(cmdBashOutput))
 
   program
