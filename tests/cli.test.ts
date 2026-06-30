@@ -1,13 +1,14 @@
-import { execSync, spawnSync } from 'node:child_process'
+import { execFileSync, execSync, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const MAIN = path.join(HERE, '..', 'src', 'main.ts')
+const ROOT = path.join(HERE, '..')
+const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
 
 interface RunResult {
   readonly status: number | null
@@ -16,8 +17,8 @@ interface RunResult {
 }
 
 function runCli(args: string[], input = ''): RunResult {
-  // Invoke node with the tsx ESM loader so the TS entrypoint runs directly with no build step and no shell (avoids the .cmd-shim + shell quoting on Windows).
-  const res = spawnSync(process.execPath, ['--import', 'tsx', MAIN, ...args], {
+  // Spawn the prebuilt bundle directly with node - no per-call tsx transpile (much faster than --import tsx across dozens of spawns) and it exercises the real shipping artifact. No shell, so no .cmd-shim or quoting issues on Windows.
+  const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     input,
     encoding: 'utf8',
   })
@@ -27,6 +28,11 @@ function runCli(args: string[], input = ''): RunResult {
     stderr: res.stderr ?? '',
   }
 }
+
+beforeAll(() => {
+  // Build the shipping artifact once so every runCli spawn below executes the real bundle.
+  execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
+}, 120000)
 
 describe('token-goat CLI', () => {
   it('version exits 0 and prints a semver-ish string', () => {
@@ -76,7 +82,7 @@ describe('token-goat CLI', () => {
     const destFile = path.join(os.tmpdir(), `tg-dest-${Date.now()}.txt`)
     fs.writeFileSync(srcFile, 'test content')
     try {
-      const res = spawnSync(process.execPath, ['--import', 'tsx', MAIN, 'write-file', destFile, '--from', srcFile], {
+      const res = spawnSync(process.execPath, [BUNDLE, 'write-file', destFile, '--from', srcFile], {
         env: { ...process.env, TOKEN_GOAT_MAX_STDIN_MB: 'invalid' },
         encoding: 'utf8',
       })
@@ -402,7 +408,7 @@ describe('token-goat CLI', () => {
     const big = Buffer.alloc(2 * 1024 * 1024, 0x41)
     try {
       const env = { ...process.env, TOKEN_GOAT_MAX_STDIN_MB: '1' }
-      const r = spawnSync(process.execPath, ['--import', 'tsx', MAIN, 'write-file', tmp], {
+      const r = spawnSync(process.execPath, [BUNDLE, 'write-file', tmp], {
         input: big,
         encoding: 'buffer',
         env,
@@ -419,7 +425,7 @@ describe('token-goat CLI', () => {
     const data = Buffer.from('test')
     try {
       const env = { ...process.env, TOKEN_GOAT_MAX_STDIN_MB: 'not-a-number' }
-      const r = spawnSync(process.execPath, ['--import', 'tsx', MAIN, 'write-file', tmp], {
+      const r = spawnSync(process.execPath, [BUNDLE, 'write-file', tmp], {
         input: data,
         encoding: 'buffer',
         env,
@@ -436,7 +442,7 @@ describe('token-goat CLI', () => {
     const data = Buffer.from('test')
     try {
       const env = { ...process.env, TOKEN_GOAT_MAX_STDIN_MB: '0' }
-      const r = spawnSync(process.execPath, ['--import', 'tsx', MAIN, 'write-file', tmp], {
+      const r = spawnSync(process.execPath, [BUNDLE, 'write-file', tmp], {
         input: data,
         encoding: 'buffer',
         env,
