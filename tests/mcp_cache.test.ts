@@ -1,169 +1,146 @@
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   isMcpReadOnly,
   mcpHash,
-  storeMcpResult,
-  getMcpResult,
-  sidecarMetaPath,
-  reset,
+  mcpOutputId,
+  storeMcpOutput,
+  getMcpOutput,
+  MCP_MAX_CACHE_BYTES,
 } from '../src/mcp_cache.js'
+import { getBashOutput } from '../src/bash_output_cache.js'
+import { clearModuleCaches } from '../src/reset.js'
 
-describe('mcp_cache', () => {
-  beforeEach(() => {
-    reset()
+let tmpHome: string
+let prevHome: string | undefined
+
+beforeEach(() => {
+  prevHome = process.env['TOKEN_GOAT_HOME']
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-'))
+  process.env['TOKEN_GOAT_HOME'] = tmpHome
+  clearModuleCaches()
+})
+
+afterEach(() => {
+  if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+  else process.env['TOKEN_GOAT_HOME'] = prevHome
+  try {
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  } catch {
+    // best-effort cleanup
+  }
+})
+
+describe('isMcpReadOnly', () => {
+  it('returns true for read-only tools', () => {
+    expect(isMcpReadOnly('mcp__plugin_github_github__get_file_contents')).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_github_github__list_issues')).toBe(true)
   })
 
-  afterEach(() => {
-    reset()
+  it('returns false for mutation tools', () => {
+    expect(isMcpReadOnly('mcp__plugin_github_github__create_issue')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_github_github__update_issue')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_github_github__delete_file')).toBe(false)
   })
 
-  describe('isMcpReadOnly', () => {
-    it('returns true for read-only tools', () => {
-      expect(isMcpReadOnly('mcp__plugin_github_github__get_file_contents')).toBe(true)
-      expect(isMcpReadOnly('mcp__plugin_github_github__list_issues')).toBe(true)
-    })
-
-    it('returns false for mutation tools', () => {
-      expect(isMcpReadOnly('mcp__plugin_github_github__create_issue')).toBe(false)
-      expect(isMcpReadOnly('mcp__plugin_github_github__update_issue')).toBe(false)
-      expect(isMcpReadOnly('mcp__plugin_github_github__delete_file')).toBe(false)
-    })
-
-    it('returns false for non-mcp tools', () => {
-      expect(isMcpReadOnly('some_tool')).toBe(false)
-      expect(isMcpReadOnly('bash')).toBe(false)
-    })
-
-    it('handles case-insensitive mutation verbs', () => {
-      expect(isMcpReadOnly('mcp__test__Create')).toBe(false)
-      expect(isMcpReadOnly('mcp__test__UPDATE')).toBe(false)
-    })
+  it('returns false for non-mcp tools', () => {
+    expect(isMcpReadOnly('some_tool')).toBe(false)
+    expect(isMcpReadOnly('bash')).toBe(false)
   })
 
-  describe('mcpHash', () => {
-    it('returns a 16-char hex string', () => {
-      const hash = mcpHash('mcp__test__tool', { key: 'value' })
-      expect(hash).toMatch(/^[0-9a-f]{16}$/)
-    })
+  it('handles case-insensitive mutation verbs', () => {
+    expect(isMcpReadOnly('mcp__test__Create')).toBe(false)
+    expect(isMcpReadOnly('mcp__test__UPDATE')).toBe(false)
+  })
+})
 
-    it('produces consistent hashes', () => {
-      const input = { key: 'value', number: 42 }
-      const hash1 = mcpHash('mcp__test__tool', input)
-      const hash2 = mcpHash('mcp__test__tool', input)
-      expect(hash1).toBe(hash2)
-    })
-
-    it('produces different hashes for different tools', () => {
-      const input = { key: 'value' }
-      const hash1 = mcpHash('mcp__tool1', input)
-      const hash2 = mcpHash('mcp__tool2', input)
-      expect(hash1).not.toBe(hash2)
-    })
-
-    it('produces different hashes for different inputs', () => {
-      const hash1 = mcpHash('mcp__test__tool', { key: 'value1' })
-      const hash2 = mcpHash('mcp__test__tool', { key: 'value2' })
-      expect(hash1).not.toBe(hash2)
-    })
-
-    it('handles empty input objects', () => {
-      const hash = mcpHash('mcp__test__tool', {})
-      expect(hash).toMatch(/^[0-9a-f]{16}$/)
-    })
-
-    it('normalizes key order for consistent hashing', () => {
-      const hash1 = mcpHash('mcp__test__tool', { a: 1, b: 2 })
-      const hash2 = mcpHash('mcp__test__tool', { b: 2, a: 1 })
-      expect(hash1).toBe(hash2)
-    })
+describe('mcpHash', () => {
+  it('returns a 16-char hex string', () => {
+    expect(mcpHash('mcp__test__tool', { key: 'value' })).toMatch(/^[0-9a-f]{16}$/)
   })
 
-  describe('sidecarMetaPath', () => {
-    it('returns a valid path for valid output IDs', () => {
-      const path = sidecarMetaPath('session_abc123_12345')
-      expect(path).toContain('mcp_outputs')
-      expect(path).toContain('session_abc123_12345.json')
-    })
-
-    it('returns null for invalid output IDs', () => {
-      expect(sidecarMetaPath('../../etc/passwd')).toBeNull()
-      expect(sidecarMetaPath('')).toBeNull()
-      expect(sidecarMetaPath('id/with/slashes')).toBeNull()
-    })
+  it('produces consistent hashes', () => {
+    const input = { key: 'value', number: 42 }
+    expect(mcpHash('mcp__test__tool', input)).toBe(mcpHash('mcp__test__tool', input))
   })
 
-  describe('MCP result caching', () => {
-    it('stores and retrieves MCP results', async () => {
-      const sessionId = 'test-session'
-      const toolInputHash = 'abc123def456'
-      const resultText = '{"result": "success"}'
+  it('produces different hashes for different tools', () => {
+    expect(mcpHash('mcp__tool1', { key: 'value' })).not.toBe(mcpHash('mcp__tool2', { key: 'value' }))
+  })
 
-      const outputId = await storeMcpResult(
-        sessionId,
-        toolInputHash,
-        resultText,
-        undefined,
-        { toolName: 'mcp__test__tool', inputPreview: '{"test": "input"}' }
-      )
+  it('produces different hashes for different inputs', () => {
+    expect(mcpHash('mcp__test__tool', { key: 'value1' })).not.toBe(
+      mcpHash('mcp__test__tool', { key: 'value2' }),
+    )
+  })
 
-      expect(outputId).not.toBeNull()
-      expect(outputId).toContain(sessionId)
+  it('normalizes key order for consistent hashing', () => {
+    expect(mcpHash('mcp__test__tool', { a: 1, b: 2 })).toBe(mcpHash('mcp__test__tool', { b: 2, a: 1 }))
+  })
+})
 
-      const retrieved = await getMcpResult(sessionId, toolInputHash)
-      expect(retrieved).toBe(resultText)
-    })
+describe('mcpOutputId', () => {
+  it('is a fixed-length mcp_<16hex> id', () => {
+    expect(mcpOutputId('session-abc', 'deadbeefdeadbeef')).toMatch(/^mcp_[0-9a-f]{16}$/)
+  })
 
-    it('returns null for results exceeding max size', async () => {
-      const sessionId = 'test-session'
-      const toolInputHash = 'abc123def456'
-      const largeText = 'x'.repeat(3 * 1024 * 1024)
+  it('is deterministic for the same (session, hash)', () => {
+    expect(mcpOutputId('s', 'h')).toBe(mcpOutputId('s', 'h'))
+  })
 
-      const outputId = await storeMcpResult(
-        sessionId,
-        toolInputHash,
-        largeText
-      )
+  it('is session-scoped (different sessions => different ids)', () => {
+    expect(mcpOutputId('session-a', 'h')).not.toBe(mcpOutputId('session-b', 'h'))
+  })
 
-      expect(outputId).toBeNull()
-    })
+  it('stays within the 64-char blob-id budget for long session ids', () => {
+    const id = mcpOutputId('x'.repeat(500), 'h')
+    expect(id.length).toBeLessThanOrEqual(64)
+    expect(id).toMatch(/^mcp_[0-9a-f]{16}$/)
+  })
+})
 
-    it('returns null for missing results', async () => {
-      const retrieved = await getMcpResult('nonexistent', 'nonexistent')
-      expect(retrieved).toBeNull()
-    })
+describe('storeMcpOutput / getMcpOutput', () => {
+  const sessionId = 'sess-1'
+  const toolName = 'mcp__plugin_github_github__get_file_contents'
+  const toolInput = { owner: 'o', repo: 'r', path: 'README.md' }
 
-    it('stores metadata when toolName is provided', async () => {
-      const sessionId = 'test-session'
-      const toolInputHash = 'abc123'
-      const resultText = 'test result'
+  it('persists a result and recalls its id', () => {
+    const id = storeMcpOutput(sessionId, toolName, toolInput, 'file body here')
+    expect(id).not.toBeNull()
+    expect(getMcpOutput(sessionId, toolName, toolInput)).toBe(id)
+  })
 
-      const outputId = await storeMcpResult(
-        sessionId,
-        toolInputHash,
-        resultText,
-        undefined,
-        {
-          toolName: 'mcp__plugin_github__get_file',
-          inputPreview: '{"repo": "test"}',
-        }
-      )
+  it('recalls across a cleared in-memory cache (disk round-trip)', () => {
+    const id = storeMcpOutput(sessionId, toolName, toolInput, 'persisted body')
+    expect(id).not.toBeNull()
+    // Drop every in-memory map; recall must now resolve from the blob on disk —
+    // the exact cross-hook-process path the previous in-memory-only cache failed.
+    clearModuleCaches()
+    expect(getMcpOutput(sessionId, toolName, toolInput)).toBe(id)
+    const entry = getBashOutput(id as string)
+    expect(entry?.output).toBe('persisted body')
+  })
 
-      expect(outputId).not.toBeNull()
-    })
+  it('returns null on a miss', () => {
+    expect(getMcpOutput(sessionId, toolName, toolInput)).toBeNull()
+  })
 
-    it('handles custom timestamps', async () => {
-      const sessionId = 'test-session'
-      const toolInputHash = 'abc123'
-      const ts = 1234567890
+  it('does not cache results above MCP_MAX_CACHE_BYTES', () => {
+    const big = 'x'.repeat(MCP_MAX_CACHE_BYTES + 1)
+    expect(storeMcpOutput(sessionId, toolName, toolInput, big)).toBeNull()
+    expect(getMcpOutput(sessionId, toolName, toolInput)).toBeNull()
+  })
 
-      const outputId = await storeMcpResult(
-        sessionId,
-        toolInputHash,
-        'result',
-        ts
-      )
+  it('does not cache empty results or empty sessions', () => {
+    expect(storeMcpOutput(sessionId, toolName, toolInput, '')).toBeNull()
+    expect(storeMcpOutput('', toolName, toolInput, 'body')).toBeNull()
+  })
 
-      expect(outputId).toContain(String(Math.floor(ts / 1000)))
-    })
+  it('scopes the cache per session', () => {
+    const id = storeMcpOutput(sessionId, toolName, toolInput, 'body')
+    expect(id).not.toBeNull()
+    expect(getMcpOutput('other-session', toolName, toolInput)).toBeNull()
   })
 })

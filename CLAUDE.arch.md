@@ -62,6 +62,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_index.ts`](src/hooks_index.ts) | `appendDirtyPath()` — atomic append to `queue/dirty.txt`; `preCompactIndexHandler()` — drains any remaining dirty queue before compaction |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |
 | [`src/hooks_skill.ts`](src/hooks_skill.ts) | `preSkillHandler()` / `postSkillHandler()` — capture and recall skill bodies across compaction |
+| [`src/hooks_mcp.ts`](src/hooks_mcp.ts) | `preMcpHandler()` / `postMcpHandler()` — cache read-only `mcp__*` results into the bash-output store; deny an identical repeat with a `bash-output <id>` recall hint |
 | [`src/image_shrink.ts`](src/image_shrink.ts) | `preReadImageHandler()` — intercepts large image Read events, shrinks via system tools, injects the smaller bytes |
 | [`src/install.ts`](src/install.ts) | `installHooks()` / `uninstallHooks()` — idempotently writes/removes `token-goat hook <event>` entries in `.claude/settings.json`; `HOOK_EVENT_MAP` registers `PreToolUse`, `PostToolUse`, `PreCompact` |
 
@@ -126,7 +127,7 @@ The adapters below are regex-based (no tree-sitter dependency). Tree-sitter inli
 |--------|------|
 | [`src/bash_output_cache.ts`](src/bash_output_cache.ts) | Bash stdout/stderr disk store (byte cap plus 4096 file-count cap, oldest-first eviction) |
 | [`src/web_cache.ts`](src/web_cache.ts) | WebFetch body disk store (byte-capped, LRU-evicted) |
-| [`src/mcp_cache.ts`](src/mcp_cache.ts) | MCP tool output cache |
+| [`src/mcp_cache.ts`](src/mcp_cache.ts) | Read-only MCP result cache: `isMcpReadOnly`/`mcpHash` helpers plus `storeMcpOutput`/`getMcpOutput` delegating to the bash-output blob store (session-scoped `mcp_<hash>` id) |
 | [`src/gdrive.ts`](src/gdrive.ts) | Google Drive fetch and image cache integration |
 | [`src/webfetch.ts`](src/webfetch.ts) | URL download and content cache persistence |
 | [`src/git_history.ts`](src/git_history.ts) | Recent git history hints surfaced into session and compact manifest |

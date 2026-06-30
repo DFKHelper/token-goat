@@ -1,32 +1,30 @@
 /**
- * MCP tool result cache — dedup repeated read-only MCP calls within a session.
+ * MCP tool result cache — dedup repeated read-only MCP calls across hook
+ * processes.
+ *
+ * Read-only `mcp__*` tool results are persisted into the shared bash-output
+ * blob store (`~/.token-goat/bash_outputs/<id>.json`) so a result captured by
+ * the post_tool_use hook process can be recalled — by a later pre_tool_use
+ * process firing on an identical call, and by the session-less
+ * `token-goat bash-output <id>` CLI. Reusing that proven cross-process store
+ * (rather than a parallel MCP-specific one) keeps recall on a single working
+ * path and adds no new CLI surface. The previous in-memory-only implementation
+ * could never hit across the fresh-process-per-hook boundary.
  */
 
-import * as fs from 'fs/promises'
-import { resolve } from 'path'
 import { shortFingerprint } from './fingerprint.js'
-import { dataDir } from './constants.js'
+import { storeBlob } from './disk_cache.js'
+import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_output_cache.js'
 
-export const MCP_DEFAULT_MAX_TOTAL_BYTES = 32 * 1024 * 1024
+/** Results larger than this are not cached (recall then degrades to a re-fetch). */
 export const MCP_MAX_CACHE_BYTES = 2 * 1024 * 1024
-
-/** Metadata associated with a cached MCP result entry. */
-export interface McpOutputMeta {
-  readonly outputId: string
-  readonly toolName: string
-  readonly inputPreview: string
-  readonly resultBytes: number
-  readonly ts: number
-}
 
 const MUTABLE_VERBS_RE = /(?:^|_)(?:create|update|delete|send|write|push|post|remove|label|unlabel|merge|modify|draft|fork|reply|move|rename|set|add|run|execute|close|copy|request|upload|insert|revoke|reset|archive|restore|annotate|register|unregister|star|unstar|like|unlike|vote|block|unblock|invite|kick|ban)(?=_|$)/i
 
-const _resultsByHash = new Map<string, { text: string; ts: number }>()
-const _metaByOutputId = new Map<string, McpOutputMeta>()
-
 /**
- * Return True when *toolName* is a read-only MCP tool safe to cache.
- * Only `mcp__`-prefixed tools are considered.
+ * Return true when *toolName* is a read-only MCP tool safe to cache.
+ * Only `mcp__`-prefixed tools are considered; the trailing method segment is
+ * matched against a verb blocklist so mutating calls are never deduped.
  */
 export function isMcpReadOnly(toolName: string): boolean {
   if (!toolName.startsWith('mcp__')) {
@@ -50,114 +48,62 @@ export function mcpHash(toolName: string, toolInput: Record<string, unknown>): s
 }
 
 /**
- * Return the sidecar JSON metadata path for *outputId*.
+ * Deterministic, fixed-length, session-scoped recall id for an MCP call.
+ * Fingerprinting `${sessionId}\x00${hash}` keeps the id collision-resistant and
+ * within the blob-store's 64-char id budget regardless of sessionId length, and
+ * scopes the cache per session so two sessions issuing the same call do not
+ * cross-pollinate.
  */
-export function sidecarMetaPath(outputId: string): string | null {
-  if (!outputId || outputId.includes('..') || outputId.includes('/') || outputId.includes('\\')) {
-    return null
-  }
-  const baseDir = resolve(dataDir(), 'mcp_outputs')
-  return resolve(baseDir, `${outputId}.json`)
+export function mcpOutputId(sessionId: string, hash: string): string {
+  return `mcp_${shortFingerprint(`${sessionId}\x00${hash}`)}`
 }
 
-/**
- * Write *meta* as a JSON sidecar (best-effort).
- */
-export async function writeSidecar(meta: McpOutputMeta): Promise<void> {
+/** Short readable label stored as the blob's `command` for `bash-history`. */
+function mcpInputPreview(toolInput: Record<string, unknown>): string {
   try {
-    const path = sidecarMetaPath(meta.outputId)
-    if (!path) return
-    const dir = resolve(path, '..')
-    await fs.mkdir(dir, { recursive: true })
-    await fs.writeFile(path, JSON.stringify(meta, null, 2) + '\n')
-    _metaByOutputId.set(meta.outputId, meta)
+    return JSON.stringify(toolInput).slice(0, 120)
   } catch {
-    // Best-effort; swallow errors
+    return ''
   }
 }
 
 /**
- * Return parsed McpOutputMeta from cache or sidecar, or null.
+ * Persist a read-only MCP *resultText* into the shared bash-output store and
+ * return its recall id, or null when the result is empty, the inputs are
+ * unusable, or the result exceeds {@link MCP_MAX_CACHE_BYTES}.
  */
-export async function readSidecar(outputId: string): Promise<McpOutputMeta | null> {
-  if (_metaByOutputId.has(outputId)) {
-    return _metaByOutputId.get(outputId) || null
-  }
-
-  try {
-    const path = sidecarMetaPath(outputId)
-    if (!path) return null
-    const content = await fs.readFile(path, 'utf-8')
-    const data = JSON.parse(content)
-    const meta: McpOutputMeta = {
-      outputId: String(data.outputId || outputId),
-      toolName: String(data.toolName || ''),
-      inputPreview: String(data.inputPreview || ''),
-      resultBytes: Number(data.resultBytes || 0),
-      ts: Number(data.ts || 0),
-    }
-    _metaByOutputId.set(outputId, meta)
-    return meta
-  } catch {
-    return null
-  }
-}
-
-/**
- * Write *resultText* to the MCP output store and return the outputId, or null on error.
- * Returns null when the blob exceeds MCP_MAX_CACHE_BYTES or the write fails.
- */
-export async function storeMcpResult(
+export function storeMcpOutput(
   sessionId: string,
-  toolInputHash: string,
+  toolName: string,
+  toolInput: Record<string, unknown>,
   resultText: string,
-  ts?: number,
-  opts?: { toolName?: string; inputPreview?: string }
-): Promise<string | null> {
-  const resultBytes = Buffer.byteLength(resultText, 'utf-8')
-  if (resultBytes > MCP_MAX_CACHE_BYTES) {
-    return null
+): string | null {
+  if (!sessionId || !resultText) return null
+  const sizeBytes = Buffer.byteLength(resultText, 'utf-8')
+  if (sizeBytes > MCP_MAX_CACHE_BYTES) return null
+  const id = mcpOutputId(sessionId, mcpHash(toolName, toolInput))
+  const entry: BashOutputEntry = {
+    id,
+    command: `mcp:${toolName} ${mcpInputPreview(toolInput)}`.trim(),
+    output: resultText,
+    exitCode: 0,
+    storedAt: Date.now(),
+    sizeBytes,
   }
-
-  const timestamp = ts ?? Date.now()
-  const outputId = `${sessionId}_${toolInputHash}_${Math.floor(timestamp / 1000)}`
-
-  try {
-    const dir = resolve(dataDir(), 'mcp_outputs')
-    await fs.mkdir(dir, { recursive: true })
-    _resultsByHash.set(toolInputHash, { text: resultText, ts: timestamp })
-
-    if (opts?.toolName) {
-      const meta: McpOutputMeta = {
-        outputId,
-        toolName: opts.toolName,
-        inputPreview: (opts.inputPreview || '').slice(0, 200),
-        resultBytes,
-        ts: timestamp,
-      }
-      await writeSidecar(meta)
-    }
-
-    return outputId
-  } catch {
-    return null
-  }
+  return storeBlob(BASH_OUTPUT_SUBDIR, id, entry) ? id : null
 }
 
 /**
- * Return the cached MCP result text for *outputId*, or null.
+ * Return the recall id for a previously-stored identical MCP call, or null on a
+ * miss. Resolves through the shared bash-output store, so a value cached by an
+ * earlier hook process is found.
  */
-export async function getMcpResult(sessionId: string, toolInputHash: string): Promise<string | null> {
-  if (_resultsByHash.has(toolInputHash)) {
-    return _resultsByHash.get(toolInputHash)?.text || null
-  }
-  return null
-}
-
-/**
- * Clear all in-memory caches (for testing).
- */
-export function reset(): void {
-  _resultsByHash.clear()
-  _metaByOutputId.clear()
+export function getMcpOutput(
+  sessionId: string,
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): string | null {
+  if (!sessionId) return null
+  const id = mcpOutputId(sessionId, mcpHash(toolName, toolInput))
+  return getBashOutput(id) ? id : null
 }
