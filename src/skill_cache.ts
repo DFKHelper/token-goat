@@ -107,13 +107,17 @@ function sanitizeSkillId(name: string): string {
   return name.replace(/:/g, '_')
 }
 
-export function outputIdFor(sessionId: string, skillName: string, contentSha: string): string {
+function sessionSkillPrefix(sessionId: string, skillName: string): string {
   const safeSession = safeSessionFragment(sessionId)
   let safeName = skillName.replace(/:/g, '_')
   if (safeName !== skillName) {
     safeName += 'n'
   }
-  return `${safeSession}-${safeName}-${contentSha}`
+  return `${safeSession}-${safeName}-`
+}
+
+export function outputIdFor(sessionId: string, skillName: string, contentSha: string): string {
+  return `${sessionSkillPrefix(sessionId, skillName)}${contentSha}`
 }
 
 export function extractCompactFromMarker(body: string): string | null {
@@ -344,6 +348,25 @@ async function listOutputs(): Promise<SkillMeta[]> {
     return metas
   } catch {
     return []
+  }
+}
+
+/**
+ * Return true when a skill body for *skillName* was already cached under
+ * *sessionId* earlier this session (a stored outputId carries this session's
+ * fragment and name). The pre-skill hook uses this to advise recall over a
+ * wasteful full re-load. Cross-session dedup may suppress a same-session meta,
+ * so a miss is conservative (no false-positive advisories), never a false hit.
+ */
+export async function hasSessionOutput(sessionId: string, skillName: string): Promise<boolean> {
+  try {
+    if (!sessionId) return false
+    if (!safeSkillName(skillName)) return false
+    const prefix = sessionSkillPrefix(sessionId, skillName)
+    const metas = await listOutputs()
+    return metas.some(m => m.outputId.startsWith(prefix))
+  } catch {
+    return false
   }
 }
 
