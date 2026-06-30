@@ -1159,7 +1159,7 @@ export function buildProgram(): Command {
 
   program
     .command('refs <spec>')
-    .description('find references to a symbol (spec: file::symbol or symbol)')
+    .description('find references to one or more symbols (spec: file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view)')
     .option('--callers', 'group references by their enclosing caller symbol')
     .option('-l, --limit <n>', 'max results')
     .option('-j, --json', 'output as JSON')

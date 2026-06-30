@@ -276,7 +276,48 @@ export interface RefsOptions {
 }
 
 /** Handle ``token-goat refs file::symbol``. */
+/** Splits a refs spec into an optional `::`-prefixed file scope and the comma-separated symbol list after it. With no `::`, the whole spec is the comma-separated symbol list; with no comma, a single-element list (the original single-symbol form). */
+function parseMultiRefsSpec(spec: string): { file: string | undefined; symbols: string[] } {
+  const colonIdx = spec.indexOf('::')
+  const file = colonIdx === -1 ? undefined : spec.slice(0, colonIdx)
+  const symPart = colonIdx === -1 ? spec : spec.slice(colonIdx + 2)
+  const symbols = symPart.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+  return { file, symbols }
+}
+
+/** Handle ``token-goat refs <spec>``. A comma-separated spec (`a,b,c` or `file::a,b`) merges the references of several symbols into one call, each group headed by its symbol name; a single symbol keeps the original behavior verbatim via {@link runRefsSingle}. */
 export function runRefs(opts: RefsOptions): number {
+  const { file, symbols } = parseMultiRefsSpec(opts.spec)
+  if (symbols.length <= 1) return runRefsSingle(opts)
+
+  const jsonOut: Record<string, RefEntry[]> = {}
+  let anyFound = false
+  for (const sym of symbols) {
+    const queryOpts: Parameters<typeof queryRefs>[0] = { name: sym }
+    if (file !== undefined) queryOpts.filePath = resolveIndexPath(file)
+    if (opts.limit !== undefined) queryOpts.limit = opts.limit
+    const results = queryRefs(queryOpts)
+    if (results.length > 0) anyFound = true
+    if (opts.json === true) {
+      jsonOut[sym] = results
+      continue
+    }
+    if (results.length === 0) {
+      emit(`${sym}: (no references found)`)
+      continue
+    }
+    emit(`${sym}:`)
+    if (opts.callers === true) {
+      emitCallerGroups(results)
+    } else {
+      for (const ref of results) emit(`  ${ref.filePath}:${ref.line}: ${ref.context}`)
+    }
+  }
+  if (opts.json === true) emit(JSON.stringify(jsonOut, null, 2))
+  return anyFound ? 0 : 1
+}
+
+function runRefsSingle(opts: RefsOptions): number {
   const { file, symbol } = parseReadSpec(opts.spec)
   const symName = symbol ?? file
 

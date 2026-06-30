@@ -35,16 +35,18 @@ import {
   runConfigGet,
   runExports,
   runChanged,
+  runRefs,
   extractImports,
   extractExportNames,
   extractTranscriptText,
 } from '../src/read_commands.js'
-import { querySymbols } from '../src/index_reader.js'
+import { querySymbols, queryRefs } from '../src/index_reader.js'
 import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { readSection, listSections, listAllSections } from '../src/section_reader.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
+const mockQueryRefs = vi.mocked(queryRefs)
 const mockReadSection = vi.mocked(readSection)
 const mockListSections = vi.mocked(listSections)
 const mockListAllSections = vi.mocked(listAllSections)
@@ -698,5 +700,75 @@ describe('extractTranscriptText (#93)', () => {
 
   it('returns empty string for a file that is not a transcript', () => {
     expect(extractTranscriptText('line one\nline two\n')).toBe('')
+  })
+})
+
+function ref(filePath: string, line: number, context: string): { filePath: string; name: string; line: number; col: number; context: string } {
+  return { filePath, name: 'x', line, col: 0, context }
+}
+
+describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('routes a single (comma-free) spec through the original single-symbol path unchanged', () => {
+    mockQueryRefs.mockReturnValue([ref('src/auth.ts', 10, 'login()')])
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'login' })
+      expect(code).toBe(0)
+    })
+    // Single-symbol output has no `symbol:` header — just file:line: context.
+    expect(stdout).toContain('src/auth.ts:10: login()')
+    expect(stdout).not.toContain('login:')
+  })
+
+  it('merges several symbols, each under its own header, in one call', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) => {
+      if (opts.name === 'login') return [ref('src/auth.ts', 10, 'login()')]
+      if (opts.name === 'refresh') return [ref('src/session.ts', 22, 'refresh()')]
+      return []
+    })
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'login,refresh,logout' })
+      expect(code).toBe(0)
+    })
+    expect(stdout).toContain('login:')
+    expect(stdout).toContain('src/auth.ts:10: login()')
+    expect(stdout).toContain('refresh:')
+    expect(stdout).toContain('src/session.ts:22: refresh()')
+    // A symbol with no hits is reported, not silently dropped.
+    expect(stdout).toContain('logout: (no references found)')
+  })
+
+  it('scopes every comma-separated symbol to a `::`-prefixed file', () => {
+    mockQueryRefs.mockReturnValue([])
+    capture(() => runRefs({ spec: 'src/auth.ts::login,refresh' }))
+    const names = mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string }).name)
+    expect(names).toEqual(['login', 'refresh'])
+    for (const call of mockQueryRefs.mock.calls) {
+      expect((call[0] as { filePath?: string }).filePath).toBeDefined()
+    }
+  })
+
+  it('emits a per-symbol map under --json', () => {
+    mockQueryRefs.mockImplementation((opts: { name: string }) =>
+      opts.name === 'login' ? [ref('src/auth.ts', 10, 'login()')] : [],
+    )
+    const { stdout } = capture(() => runRefs({ spec: 'login,refresh', json: true }))
+    const parsed = JSON.parse(stdout) as Record<string, unknown[]>
+    expect(Object.keys(parsed)).toEqual(['login', 'refresh'])
+    expect(parsed.login).toHaveLength(1)
+    expect(parsed.refresh).toHaveLength(0)
+  })
+
+  it('returns exit 1 when no symbol in a multi-spec has any references', () => {
+    mockQueryRefs.mockReturnValue([])
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'nope1,nope2' })
+      expect(code).toBe(1)
+    })
+    expect(stdout).toContain('nope1: (no references found)')
+    expect(stdout).toContain('nope2: (no references found)')
   })
 })
