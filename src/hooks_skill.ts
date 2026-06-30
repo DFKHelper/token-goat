@@ -1,9 +1,9 @@
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
-import { passOutput, getToolName, getToolInput } from './hooks_common.js';
+import { passOutput, denyOutput, getToolName, getToolInput } from './hooks_common.js';
 import { recordStat } from './stats.js';
-import { storeOutput, installedSkillPath, incrementSkillHit } from './skill_cache.js';
+import { storeOutput, installedSkillPath, incrementSkillHit, hasSessionOutput } from './skill_cache.js';
 
 function extractSkillName(toolInput: Record<string, unknown>): string | null {
   const skill = toolInput['skill'] as string;
@@ -39,7 +39,7 @@ function extractSkillBody(raw: Record<string, unknown>): string {
   return '';
 }
 
-export function preSkillHandler(event: HookEvent): HookOutput {
+export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const toolName = getToolName(event);
 
@@ -55,6 +55,16 @@ export function preSkillHandler(event: HookEvent): HookOutput {
 
     if (!event.sessionId) {
       return passOutput();
+    }
+
+    // Skill already loaded earlier this session: its body is cached and recallable, so re-loading just re-injects the whole thing. Deny and point at the cheaper compact recall instead.
+    if (await hasSessionOutput(event.sessionId, skillName)) {
+      recordStat('session_hint');
+      return denyOutput(
+        'Skill `' + skillName + '` was already loaded this session and is cached. Use `token-goat skill-body ' +
+          skillName + ' --compact` to recall the compact slice (or `token-goat skill-body ' + skillName +
+          '` for the full body) instead of re-loading it.',
+      );
     }
 
     return passOutput();

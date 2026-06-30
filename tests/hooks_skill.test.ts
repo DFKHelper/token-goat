@@ -9,6 +9,8 @@ import {
   setSkillOutputsDirForTesting,
   setSkillsSourceDirForTesting,
   getAllCachedSkills,
+  hasSessionOutput,
+  storeOutput,
 } from '../src/skill_cache.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -47,10 +49,7 @@ function skillPostEvent(skill: string, body: string, sessionId = 'sess-1'): Hook
 }
 
 describe('postSkillHandler — caches the loaded body under the real skill name', () => {
-  // Regression for the bug where postSkillHandler was a no-op stub: it extracted the
-  // skill name + body but never called storeOutput, so `skill-compact <name>` could
-  // never find a skill loaded via the Skill tool. Pre-fix this assertion sees zero
-  // cached skills; post-fix it sees the body cached under the name the user types.
+  // Regression for the bug where postSkillHandler was a no-op stub: it extracted the skill name + body but never called storeOutput, so `skill-compact <name>` could never find a skill loaded via the Skill tool. Pre-fix this assertion sees zero cached skills; post-fix it sees the body cached under the name the user types.
   it('stores the body so the skill is recallable by its directory name', async () => {
     const body = 'Body for the ollama skill.\n<!-- COMPACT_END -->\nrules go here';
     const result = await postSkillHandler(skillPostEvent('ollama', body));
@@ -112,27 +111,70 @@ describe('postSkillHandler — caches the loaded body under the real skill name'
   });
 });
 
-describe('preSkillHandler — pass-through scaffold (no side-effect by design)', () => {
-  it('returns pass for a Skill event and stores nothing', async () => {
-    const event: HookEvent = {
-      eventName: 'pre_tool_use',
-      toolName: 'Skill',
-      toolInput: { skill: 'ollama' },
-      sessionId: 'sess-1',
-      raw: {},
-    };
-    expect(preSkillHandler(event).hookType).toBe('pass');
+function skillPreEvent(skill: string, sessionId = 'sess-1'): HookEvent {
+  return {
+    eventName: 'pre_tool_use',
+    toolName: 'Skill',
+    toolInput: { skill },
+    sessionId,
+    raw: {},
+  };
+}
+
+describe('hasSessionOutput — same-session skill-load detection', () => {
+  it('is false before any load and true after the body is cached this session', async () => {
+    expect(await hasSessionOutput('sess-h', 'ollama')).toBe(false);
+    await storeOutput('sess-h', 'ollama', 'cached body for ollama');
+    expect(await hasSessionOutput('sess-h', 'ollama')).toBe(true);
+  });
+
+  it('is session-scoped: a load under one session is not seen by another', async () => {
+    await storeOutput('sess-A', 'codex', 'cached body for codex');
+    expect(await hasSessionOutput('sess-A', 'codex')).toBe(true);
+    expect(await hasSessionOutput('sess-B', 'codex')).toBe(false);
+  });
+
+  it('returns false for an empty session id or unsafe name', async () => {
+    await storeOutput('sess-A', 'codex', 'cached body for codex');
+    expect(await hasSessionOutput('', 'codex')).toBe(false);
+    expect(await hasSessionOutput('sess-A', '')).toBe(false);
+  });
+});
+
+describe('preSkillHandler — duplicate-load advisory', () => {
+  it('passes the first (cold) load of a skill', async () => {
+    const out = await preSkillHandler(skillPreEvent('ollama'));
+    expect(out.hookType).toBe('pass');
     expect(await getAllCachedSkills()).toHaveLength(0);
   });
 
-  it('returns pass for a non-Skill tool', () => {
-    const event: HookEvent = {
+  it('returns pass for a non-Skill tool', async () => {
+    const out = await preSkillHandler({
       eventName: 'pre_tool_use',
       toolName: 'WebFetch',
       toolInput: {},
       sessionId: 'sess-1',
       raw: {},
-    };
-    expect(preSkillHandler(event).hookType).toBe('pass');
+    });
+    expect(out.hookType).toBe('pass');
+  });
+
+  // Regression for F5: once a skill body is cached this session, a second Skill invocation must be denied with a compact-recall pointer instead of re-injecting the whole body. Drives the REAL registry: post stores via runHook, then a pre dispatch through runHook must come back deny. A no-op preSkillHandler (the pre-fix scaffold) returns pass here and fails this test.
+  it('denies a second load through the real runHook dispatch and points at compact recall', async () => {
+    const post = await runHook(skillPostEvent('ollama', 'Body for ollama.', 'sess-dup'));
+    expect(post.hookType).toBe('pass');
+
+    const pre = await runHook(skillPreEvent('ollama', 'sess-dup'));
+    expect(pre.hookType).toBe('deny');
+    if (pre.hookType === 'deny') {
+      expect(pre.message).toContain('already loaded this session');
+      expect(pre.message).toContain('token-goat skill-body ollama --compact');
+    }
+  });
+
+  it('does not deny a different skill that was not loaded this session', async () => {
+    await runHook(skillPostEvent('ollama', 'Body for ollama.', 'sess-dup2'));
+    const pre = await runHook(skillPreEvent('codex', 'sess-dup2'));
+    expect(pre.hookType).toBe('pass');
   });
 });

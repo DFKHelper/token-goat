@@ -61,7 +61,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_compact.ts`](src/hooks_compact.ts) | `preCompactHandler()` — builds a structured session manifest from `getSessionFiles()` and `getSessionWebFetches()` and returns it as `systemMessage` |
 | [`src/hooks_index.ts`](src/hooks_index.ts) | `appendDirtyPath()` — atomic append to `queue/dirty.txt`; `preCompactIndexHandler()` — drains any remaining dirty queue before compaction |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |
-| [`src/hooks_skill.ts`](src/hooks_skill.ts) | `preSkillHandler()` / `postSkillHandler()` — capture and recall skill bodies across compaction |
+| [`src/hooks_skill.ts`](src/hooks_skill.ts) | `postSkillHandler()` captures skill bodies across compaction; `preSkillHandler()` denies a same-session re-load with a compact-recall hint |
 | [`src/hooks_mcp.ts`](src/hooks_mcp.ts) | `preMcpHandler()` / `postMcpHandler()` — cache read-only `mcp__*` results into the bash-output store; deny an identical repeat with a `bash-output <id>` recall hint |
 | [`src/image_shrink.ts`](src/image_shrink.ts) | `preReadImageHandler()` — intercepts large image Read events, shrinks via system tools, injects the smaller bytes |
 | [`src/install.ts`](src/install.ts) | `installHooks()` / `uninstallHooks()` — idempotently writes/removes `token-goat hook <event>` entries in `.claude/settings.json`; `HOOK_EVENT_MAP` registers `PreToolUse`, `PostToolUse`, `PreCompact` |
@@ -245,7 +245,7 @@ All three layers are fail-soft: a disk error never throws into a hook.
 
 **Compaction assist** — Before Claude Code compacts, `preCompactHandler()` in [`src/hooks_compact.ts`](src/hooks_compact.ts) calls `compact.ts::buildManifest()` / `buildManifestAdaptive()` to build a structured, token-budgeted summary (edited files, files read, web fetches, skills) and returns it as `systemMessage`. The budget scales with session age and edit density via `computeAdaptiveBudget()`. Configurable via `config.toml` (`[compact_assist]`) or `TOKEN_GOAT_COMPACT_ASSIST=0`.
 
-**Skill preservation** — `postSkillHandler()` in [`src/hooks_skill.ts`](src/hooks_skill.ts) captures every loaded skill body to `skills/` keyed by `(session, name, content_sha)`, enabling `token-goat skill-body <name>` recall after compaction without re-invoking the skill.
+**Skill preservation** — `postSkillHandler()` in [`src/hooks_skill.ts`](src/hooks_skill.ts) captures every loaded skill body to `skills/` keyed by `(session, name, content_sha)`, enabling `token-goat skill-body <name>` recall after compaction without re-invoking the skill. `preSkillHandler()` reads the same store via `hasSessionOutput()`: if a body for the skill was already cached this session, the re-load is denied with a `skill-body <name> --compact` recall hint rather than re-injecting the whole body.
 
 **Codex/Gemini compatibility** — `hooks_cli.ts::normalizePayload()` maps Codex tool-name aliases (`shell` to `Bash`) and Gemini aliases (`read_file` to `Read`, `write_file` to `Write`, and others) to canonical names before dispatching, using `CODEX_TOOL_NAME_MAP` and `GEMINI_TOOL_NAME_MAP`. The same `registerHook('pre_tool_use', handler, { toolName: 'Bash' })` registrations fire identically across harnesses.
 
