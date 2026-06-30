@@ -396,12 +396,18 @@ const RUST_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   ['const_item', 'const'],
 ])
 
+// Rust scope nodes whose bodies hold function-local declarations. A `const` declared inside one of these (or any block nested in it) is a local and must not pollute the global symbol index. An `impl` block is deliberately NOT here: associated consts inside `impl` are reachable as `Type::CONST`, so they stay indexed.
+const RUST_FN_SCOPE_TYPES: ReadonlySet<string> = new Set(['function_item', 'closure_expression'])
+
+// Rust declaration kinds that are package-level symbols at top level but locals inside a function body; gated on scope. Only value bindings are excluded - nested structs, enums, functions, traits, impls, and types stay indexed, mirroring how the TS/JS extractor keeps nested classes and functions while dropping local `const`/`let`/`var`.
+const RUST_LOCAL_KINDS: ReadonlySet<string> = new Set(['const_item'])
+
 function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
 
-  const visit = (node: TsNode): void => {
+  const visit = (node: TsNode, insideFunction: boolean): void => {
     const kind = RUST_KIND_BY_TYPE.get(node.type)
-    if (kind !== undefined) {
+    if (kind !== undefined && !(insideFunction && RUST_LOCAL_KINDS.has(node.type))) {
       // An `impl` block has no `name` field; the implemented type lives in a `type` field (e.g. `impl Widget` or `impl Trait for Widget`), so resolve it there. All other Rust items expose their name on the `name` field.
       const name =
         node.type === 'impl_item' ? (node.childForFieldName('type')?.text ?? null) : nodeName(node)
@@ -410,12 +416,13 @@ function extractRustSymbols(root: TsNode, filePath: string): SymbolEntry[] {
       }
     }
 
+    const childInside = insideFunction || RUST_FN_SCOPE_TYPES.has(node.type)
     for (const child of node.namedChildren) {
-      visit(child)
+      visit(child, childInside)
     }
   }
 
-  visit(root)
+  visit(root, false)
   return out
 }
 
