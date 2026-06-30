@@ -117,6 +117,48 @@ describe('merge-on-save (concurrent writer not clobbered)', () => {
   })
 })
 
+describe('sed line-range overlap persistence (#87)', () => {
+  it('persists and restores per-file served line ranges', () => {
+    importSessionState({
+      ...empty(),
+      fileLineRanges: [['src/app.ts', [[1, 50], [40, 90]]]],
+    })
+    saveSessionState('sid-lr-1')
+
+    importSessionState(empty())
+    expect(exportSessionState().fileLineRanges ?? []).toHaveLength(0)
+
+    loadSessionState('sid-lr-1')
+    expect(exportSessionState().fileLineRanges).toEqual([['src/app.ts', [[1, 50], [40, 90]]]])
+  })
+
+  it('unions ranges for one file across two writers, deduping identical ranges', () => {
+    importSessionState({ ...empty(), fileLineRanges: [['f.ts', [[1, 20]]]] })
+    saveSessionState('sid-lr-2')
+    importSessionState({ ...empty(), fileLineRanges: [['f.ts', [[1, 20], [30, 60]]]] })
+    saveSessionState('sid-lr-2')
+
+    const disk = JSON.parse(fs.readFileSync(sessionFile('sid-lr-2'), 'utf8')) as SerializedSession
+    expect(disk.fileLineRanges).toEqual([['f.ts', [[1, 20], [30, 60]]]])
+  })
+
+  it('drops malformed range entries on load without throwing', () => {
+    importSessionState(empty())
+    const sid = 'sid-lr-3'
+    fs.mkdirSync(path.join(tmpHome, 'sessions'), { recursive: true })
+    fs.writeFileSync(
+      sessionFile(sid),
+      JSON.stringify({
+        files: [],
+        hintsShown: [],
+        fileLineRanges: [['ok.ts', [[1, 9]]], 'garbage', ['bad.ts', 'notarray'], ['mixed.ts', [[2, 5], [99]]]],
+      }),
+    )
+    expect(() => loadSessionState(sid)).not.toThrow()
+    expect(exportSessionState().fileLineRanges ?? []).toEqual([['ok.ts', [[1, 9]]], ['mixed.ts', [[2, 5]]]])
+  })
+})
+
 describe('corrupt / malformed disk state', () => {
   it('load treats a corrupt file as an empty session (fail-soft)', () => {
     fs.mkdirSync(path.join(tmpHome, 'sessions'), { recursive: true })

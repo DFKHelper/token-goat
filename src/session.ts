@@ -58,6 +58,9 @@ let _bashOutputs = new Map<string, string>()
 // url -> saved file path for curl -o download dedup (Item 2).
 let _curlDownloads = new Map<string, string>()
 
+// path (as written on the sed command line) -> served inclusive line ranges this session, for overlap detection across repeated `sed -n 'N,Mp'` reads.
+let _fileLineRanges = new Map<string, Array<[number, number]>>()
+
 // Resolved once per process: env-provided session id or a generated one.
 let _sessionId: string | null = null
 
@@ -198,6 +201,23 @@ export function getCurlDownloadPath(url: string): string | null {
   return _curlDownloads.get(url) ?? null
 }
 
+/** Cap on retained line ranges per file - bounds memory if one file is paged many times. */
+export const MAX_RANGES_PER_FILE = 64
+
+/** Record that inclusive line range [start, end] of `filePath` was served via a sed line-range read this session. Deduplicates identical ranges and caps retained ranges per file. */
+export function recordFileLineRange(filePath: string, start: number, end: number): void {
+  const ranges = _fileLineRanges.get(filePath) ?? []
+  if (ranges.some(([s, e]) => s === start && e === end)) return
+  ranges.push([start, end])
+  if (ranges.length > MAX_RANGES_PER_FILE) ranges.splice(0, ranges.length - MAX_RANGES_PER_FILE)
+  _fileLineRanges.set(filePath, ranges)
+}
+
+/** Inclusive line ranges of `filePath` already served via sed this session (empty if none). */
+export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [number, number]> {
+  return _fileLineRanges.get(filePath) ?? []
+}
+
 /**
  * Mark `filePath` as having been truncated during a Read this session.
  *
@@ -268,6 +288,7 @@ export interface SerializedSession {
   webFetches: Array<[string, string]>
   bashOutputs: Array<[string, string]>
   curlDownloads: Array<[string, string]>
+  fileLineRanges?: Array<[string, Array<[number, number]>]>
 }
 
 /** Snapshot the current in-memory session state for persistence. */
@@ -278,6 +299,7 @@ export function exportSessionState(): SerializedSession {
     webFetches: Array.from(_webFetches.entries()),
     bashOutputs: Array.from(_bashOutputs.entries()),
     curlDownloads: Array.from(_curlDownloads.entries()),
+    fileLineRanges: Array.from(_fileLineRanges.entries()),
   }
 }
 
@@ -298,6 +320,7 @@ export function importSessionState(s: SerializedSession): void {
   _webFetches = new Map(s.webFetches)
   _bashOutputs = new Map(s.bashOutputs)
   _curlDownloads = new Map(s.curlDownloads)
+  _fileLineRanges = new Map(s.fileLineRanges ?? [])
 }
 
 registerReset(() => {
@@ -306,5 +329,6 @@ registerReset(() => {
   _webFetches = new Map()
   _bashOutputs = new Map()
   _curlDownloads = new Map()
+  _fileLineRanges = new Map()
   _sessionId = null
 })
