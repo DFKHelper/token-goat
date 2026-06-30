@@ -23,7 +23,7 @@ const FUN_RE = new RegExp(
 )
 
 const CONST_RE = new RegExp(
-  '^\\s+(?:(?:public|internal|protected|private|open|override|abstract|' +
+  '^\\s*(?:(?:public|internal|protected|private|open|override|abstract|' +
   'final|actual|expect|const|lateinit|companion)\\s+)*' +
   '(?:const\\s+)?val\\s+([A-Z_][A-Z0-9_]*)\\s*(?::|=)',
 )
@@ -120,6 +120,11 @@ export function extractKotlin(
         const sigEnd = line.indexOf('{')
         const sig = sigEnd >= 0 ? line.slice(0, sigEnd).trim() : line.trimEnd()
         symbols.push(makeSymbol(filePath, fname, 'function', lineNum, sig.slice(0, 200)))
+      }
+      // Top-level SCREAMING_SNAKE const/val declarations (no parent class).
+      const topConstM = CONST_RE.exec(line)
+      if (topConstM) {
+        symbols.push(makeSymbol(filePath, topConstM[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
       }
     }
 
