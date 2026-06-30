@@ -50,6 +50,29 @@ public class UserService {
     expect(imports.some((i) => i.target === 'System')).toBe(true)
   })
 
+  it('indexes methods with no access modifier and rejects field/statement lines', () => {
+    const content = `public class Calc {
+  public string GetUser(int id) { return ""; }
+  int Add(int a, int b) { return a + b; }
+  void Run() { Add(1, 2); }
+  new void Hide() {}
+  private int count;
+  List<int> items;
+  int Count => count;
+}
+`
+    const { symbols } = extractCsharp(content, 'Calc.cs')
+    const methods = symbols.filter((s) => s.kind === 'method').map((s) => s.name)
+    // No-modifier, return-type-only, and new-modified methods are all indexed.
+    expect(methods).toContain('GetUser')
+    expect(methods).toContain('Add')
+    expect(methods).toContain('Run')
+    expect(methods).toContain('Hide')
+    // Fields and expression-bodied properties are not methods.
+    expect(methods).not.toContain('count')
+    expect(methods).not.toContain('items')
+  })
+
   it('returns empty arrays for empty input', () => {
     const { symbols, imports } = extractCsharp('', 'empty.cs')
     expect(symbols).toHaveLength(0)
