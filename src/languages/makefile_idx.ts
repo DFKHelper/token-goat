@@ -20,8 +20,8 @@ function stripComments(text: string): string {
   return text.replace(COMMENT_RE, (m) => ' '.repeat(m.length))
 }
 
-// Target rule: column-0 non-whitespace followed by one or two colons. Excludes variable assignments (contains `=` before the colon).
-const TARGET_RE = /^([^\t\n#:=][^:\n#=]*?):{1,2}\s*(?:[^=\n]|$)/gm
+// Target rule: column-0 non-whitespace followed by one or two colons not part of an assignment. The `(?![:=])` after the colon run rejects `:=`, `::=`, and `:::=` (GNU make immediate-expansion assignments) while still matching real `:` and `::` (double-colon) rules.
+const TARGET_RE = /^([^\t\n#:=][^:\n#=]*?):{1,2}(?![:=])\s*(?:[^=\n]|$)/gm
 
 // define VARNAME at column 0
 const DEFINE_RE = /^define\s+([\w./%$()-]+)/gm
