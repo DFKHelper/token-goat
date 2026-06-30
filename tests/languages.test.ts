@@ -13,6 +13,7 @@ import { extractSql } from '../src/languages/sql_idx.js'
 import { extractIni, extractEnv } from '../src/languages/ini_idx.js'
 import { extractMakefile } from '../src/languages/makefile_idx.js'
 import { extractProto } from '../src/languages/proto_idx.js'
+import { extractPowershell } from '../src/languages/powershell_idx.js'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -673,4 +674,109 @@ service UserService {
     expect(result.language).toBe('proto')
     fs.rmSync(path.dirname(file), { recursive: true })
   })
+
+describe('PowerShell adapter', () => {
+  it('extracts function, filter, class, enum, and method symbols', () => {
+    const content = `# PowerShell script
+function Get-Foo {
+  Write-Host "Outer function"
+  
+  function Helper {
+    Write-Host "Nested helper"
+  }
+}
+
+filter Select-Bar {
+  $_ | Where-Object { $_.Active -eq $true }
+}
+
+class Widget {
+  Widget() {
+    # Constructor
+  }
+
+  [void] Render() {
+    Write-Host "Rendering"
+  }
+}
+
+enum Color {
+  Red = 1
+  Green = 2
+  Blue = 3
+}
+`
+    const { symbols } = extractPowershell(content, 'script.ps1')
+    expect(symbols.length).toBeGreaterThan(0)
+    const names = symbols.map((s) => s.name)
+    
+    // Should contain top-level definitions
+    expect(names).toContain('Get-Foo')
+    expect(names).toContain('Select-Bar')
+    expect(names).toContain('Widget')
+    expect(names).toContain('Color')
+    expect(names).toContain('Render')
+    
+    // Should NOT contain nested function
+    expect(names).not.toContain('Helper')
+    
+    // Check kinds
+    expect(symbols.find((s) => s.name === 'Get-Foo')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'Select-Bar')?.kind).toBe('function')
+    expect(symbols.find((s) => s.name === 'Widget')?.kind).toBe('class')
+    expect(symbols.find((s) => s.name === 'Color')?.kind).toBe('enum')
+    expect(symbols.find((s) => s.name === 'Render')?.kind).toBe('method')
+  })
+
+  it('handles block comments correctly', () => {
+    const content = `<# 
+      Block comment spanning
+      multiple lines
+    #>
+    
+function MyFunction {
+  # Single line comment
+  Write-Host "test"
+}
+`
+    const { symbols } = extractPowershell(content, 'comment_test.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('MyFunction')
+  })
+
+  it('does not emit control-flow keywords inside a method body as methods', () => {
+    const content = `class Calc {
+  [int] Compute([int] $n) {
+    if ($n -gt 0) {
+      Write-Host "positive"
+    }
+    foreach ($i in 1..$n) {
+      $this.Helper($i)
+    }
+    return $n
+  }
+}
+`
+    const { symbols } = extractPowershell(content, 'calc.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Compute')
+    expect(symbols.find((s) => s.name === 'Compute')?.kind).toBe('method')
+    expect(names).not.toContain('if')
+    expect(names).not.toContain('foreach')
+    expect(names).not.toContain('Write-Host')
+    expect(names).not.toContain('Helper')
+  })
+
+  it('detects .ps1 and .psm1 languages via parseFile', async () => {
+    const ps1File = tmp('script.ps1', 'function Get-Test { }')
+    const result1 = await parseFile(ps1File)
+    expect(result1.language).toBe('powershell')
+    fs.rmSync(path.dirname(ps1File), { recursive: true })
+    
+    const psm1File = tmp('module.psm1', 'function Get-Test { }')
+    const result2 = await parseFile(psm1File)
+    expect(result2.language).toBe('powershell')
+    fs.rmSync(path.dirname(psm1File), { recursive: true })
+  })
+})
 })

@@ -35,6 +35,7 @@ import { extractIni, extractEnv } from './languages/ini_idx.js'
 import { extractMakefile } from './languages/makefile_idx.js'
 import { extractProto } from './languages/proto_idx.js'
 
+import { extractPowershell } from './languages/powershell_idx.js'
 const _require = createRequire(import.meta.url)
 
 /** Result of parsing one file: extracted symbols, refs, language, timing. */
@@ -1183,6 +1184,7 @@ function extractSymbolsNoTreeSitter(
   if (language === 'ini') return extractIni(content, filePath)
   if (language === 'makefile') return extractMakefile(content, filePath)
   if (language === 'proto') return extractProto(content, filePath).symbols
+  if (language === 'powershell') return extractPowershell(content, filePath).symbols
   if (language === 'env_file') return extractEnv(content, filePath)
 
   if (language === 'unknown') return []
