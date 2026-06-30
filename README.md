@@ -363,7 +363,7 @@ To upgrade cleanly:
 | `token-goat outline "file"` | List top-level symbols with line ranges and docstring hints — one-glance file map. |
 | `token-goat scope "file:line"` | Show symbols in scope at a given line — avoids reading the whole file to understand locals. |
 | `token-goat exports "file"` | List public (exported) symbols with types and docstring hints. |
-| `token-goat refs "<name>"` | Show all files and line numbers where a symbol is referenced. |
+| `token-goat refs "<name>"` | Show all files and line numbers where a symbol is referenced. Pass a comma-separated spec (`a,b,c` or `file::a,b`) to merge several symbols' references into one call, each group headed by its symbol name. |
 | `token-goat callers <symbol>` | Show which functions call a given symbol, grouped by caller with file, caller name, and every invoking line. Complements `refs`, which shows raw reference sites without grouping by enclosing function. |
 | `token-goat call-chain <symbol>` | Trace every caller layer from a symbol back to the entry points — one step deeper than `callers`. Use when you need to know what reaches a function across the whole call graph, not only who invokes it directly. Pairs with `impact` for the downstream direction. |
 | `token-goat impact <symbol>` | Walk the reference graph forward and list every file and function that depends on a symbol, with hop depth and dependency type (call, type annotation, import). Run before a refactor to size up the blast radius without starting a build. |
