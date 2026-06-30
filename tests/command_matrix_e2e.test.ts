@@ -395,6 +395,130 @@ const cases: Record<string, () => void> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
   },
+  pack: () => {
+    // Pack a known file and assert its content appears in the bundle.
+    const r = run(['pack', 'src/mod.ts'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('alphaSym')
+  },
+  tokens: () => {
+    // --top 1 must limit to exactly one row; --json must parse.
+    const r = run(['tokens', 'src/mod.ts', 'caller.ts', '--top', '1'])
+    expect(r.status, r.stderr).toBe(0)
+    const rows = r.stdout.split('\n').filter((l) => l.includes('mod.ts') || l.includes('caller.ts'))
+    expect(rows.length).toBe(1)
+    const rj = run(['tokens', 'src/mod.ts', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { entries: unknown[]; total_tokens: number }
+    expect(parsed.entries.length).toBeGreaterThan(0)
+    expect(parsed.total_tokens).toBeGreaterThan(0)
+  },
+  budget: () => {
+    // Output must reflect the file's token cost; --json must parse.
+    const r = run(['budget', 'src/mod.ts'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/mod.ts/)
+    const rj = run(['budget', 'src/mod.ts', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { total_tokens: number }
+    expect(parsed.total_tokens).toBeGreaterThan(0)
+  },
+  failures: () => {
+    // Feed a minimal pytest failure block and assert extraction works; --json must parse.
+    const input = [
+      '=== FAILURES ===',
+      '______ test_add ______',
+      'def test_add():',
+      '    assert 1 == 2',
+      'E   AssertionError: assert 1 == 2',
+      '',
+      'test_math.py:4: AssertionError',
+      '=== 1 failed in 0.05s ===',
+    ].join('\n')
+    const r = run(['failures'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('test_add')
+    const rj = run(['failures', '--json'], { input })
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { failures: unknown[] }
+    expect(parsed.failures.length).toBeGreaterThan(0)
+  },
+  todo: () => {
+    // Write a temp file with a TODO marker and confirm it's found.
+    const fixture = path.join(dataBase, 'todo_fixture.ts')
+    fs.writeFileSync(fixture, 'const x = 1 // TODO: fix this\n', 'utf8')
+    const r = run(['todo', fixture])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('TODO')
+    const rj = run(['todo', fixture, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { items: unknown[] }
+    expect(parsed.items.length).toBeGreaterThan(0)
+  },
+  trace: () => {
+    const tb = [
+      'Traceback (most recent call last):',
+      '  File "main.py", line 3, in run',
+      '    result = helper()',
+      '  File "/usr/lib/python3/site.py", line 10, in site_fn',
+      '    pass',
+      'ValueError: bad input',
+    ].join('\n')
+    const r = run(['trace'], { input: tb, cwd: repo })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  logfold: () => {
+    const input = 'added 5 packages in 1s\n[12:00:01] hit\n[12:00:02] hit\n'
+    const r = run(['logfold'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    // npm-summary line should be dropped; identical normalised lines should fold
+    expect(r.stdout).not.toContain('added 5 packages')
+    expect(r.stdout).toMatch(/hit/)
+  },
+  lockdeps: () => {
+    // token-goat ships a package-lock.json; run against the repo root.
+    const r = run(['lockdeps', 'package-lock.json'], { cwd: path.join(HERE, '..') })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('commander')
+    expect(r.stdout).toContain('package-lock.json')
+  },
+  note: () => {
+    // Use an isolated data dir so notes don't pollute real home.
+    const noteData = mkIsolated('tg-note-')
+    const noteEnv = { ...tgEnv(noteData), TOKEN_GOAT_HOME: noteData }
+    const rSet = run(['note', 'set', 'mykey', 'myval'], { env: noteEnv, cwd: repo })
+    expect(rSet.status, rSet.stderr).toBe(0)
+    const rGet = run(['note', 'get', 'mykey'], { env: noteEnv, cwd: repo })
+    expect(rGet.status, rGet.stderr).toBe(0)
+    expect(rGet.stdout.trim()).toBe('myval')
+    const rList = run(['note', 'list', '--json'], { env: noteEnv, cwd: repo })
+    expect(rList.status, rList.stderr).toBe(0)
+    const parsed = JSON.parse(rList.stdout) as Record<string, string>
+    expect(parsed['mykey']).toBe('myval')
+  },
+  hot: () => {
+    // Fresh isolated env — no sessions; must exit 0 and not crash.
+    const hotData = mkIsolated('tg-hot-')
+    const r = run(['hot', '--limit', '5'], { env: tgEnv(hotData) })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  recent: () => {
+    // Fresh process — no session files read; must exit 0.
+    const r = run(['recent', '5'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+  },
+  ignores: () => {
+    const r = run(['ignores'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/Walk mode/)
+    const rj = run(['ignores', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { walkMode: string; excludeTests: boolean }
+    expect(['git', 'non-git']).toContain(parsed.walkMode)
+  },
 }
 
 describe('built bundle command matrix', () => {
