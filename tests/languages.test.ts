@@ -50,6 +50,20 @@ public class UserService {
     expect(imports.some((i) => i.target === 'System')).toBe(true)
   })
 
+  it('emits a namespace declaration with kind namespace, not const', () => {
+    const content = `namespace Acme.Core;
+
+public class Widget {
+    public void Run() {}
+}
+`
+    const { symbols } = extractCsharp(content, 'Widget.cs')
+    const ns = symbols.find((s) => s.name === 'Acme.Core')
+    expect(ns).toBeDefined()
+    expect(ns?.kind).toBe('namespace')
+    expect(symbols.find((s) => s.name === 'Widget')?.kind).toBe('class')
+  })
+
   it('indexes methods with no access modifier and rejects field/statement lines', () => {
     const content = `public class Calc {
   public string GetUser(int id) { return ""; }
