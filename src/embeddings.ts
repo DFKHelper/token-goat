@@ -380,6 +380,11 @@ export async function upsertChunks(
     return
   }
 
+  // Without the optional sqlite-vec chunk_vectors table (the table is absent when the native binary did not load), semantic indexing is impossible and chunk rows have no independent reader - they are only ever read as JOIN targets of a vector hit - so skip the whole operation rather than inserting unsearchable rows and paying the embedTexts cost. isAvailable() above gates only the model, which installs independently of sqlite-vec.
+  if (!chunkVectorsTableExists(db)) {
+    return
+  }
+
   // Embed all chunk texts.
   const texts = chunks.map((c) => c.text)
   const embeddings = await embedTexts(texts)
@@ -445,6 +450,11 @@ export async function searchSemantic(
   }
 
   if (query.trim().length === 0) {
+    return []
+  }
+
+  // No chunk_vectors table (sqlite-vec absent) means there is nothing to match against; return no hits before paying the query-embed cost. isAvailable() gates only the model, which is independent of sqlite-vec.
+  if (!chunkVectorsTableExists(db)) {
     return []
   }
 
