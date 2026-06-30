@@ -549,6 +549,120 @@ describe('preBashHandler — cat source file recall', () => {
   })
 })
 
+describe('preBashHandler — PowerShell read commands', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('Get-Content src/auth.ps1 → suggests token-goat read', () => {
+    const event = makeBashEvent('Get-Content src/auth.ps1')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat read')
+      expect(result.message).toContain('Get-Content')
+    }
+  })
+
+  it('gc README.md → suggests token-goat section (doc)', () => {
+    const event = makeBashEvent('gc README.md')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat section')
+      expect(result.message).toContain('gc')
+    }
+  })
+
+  it('bat src/auth.ts → suggests token-goat read with bat prefix', () => {
+    const event = makeBashEvent('bat src/auth.ts')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('bat')
+      expect(result.message).toContain('token-goat read')
+    }
+  })
+
+  it('type src/main.py → suggests surgical read', () => {
+    const event = makeBashEvent('type src/main.py')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('type')
+      expect(result.message).toContain('token-goat')
+    }
+  })
+
+  it('Get-Content src/auth.ts -Tail 50 → suggests surgical read', () => {
+    const event = makeBashEvent('Get-Content src/auth.ts -Tail 50')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Get-Content -Tail')
+      expect(result.context).toContain('token-goat')
+    }
+  })
+
+  it('Get-Content -Tail 50 src/auth.ts (flag-first) → suggests surgical read', () => {
+    const event = makeBashEvent('Get-Content -Tail 50 src/auth.ts')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Get-Content -Tail')
+    }
+  })
+
+  it('Get-Content foo.ts -Tail 5 (N <= 10) → passes through', () => {
+    const event = makeBashEvent('Get-Content foo.ts -Tail 5')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('Get-Content src/auth.ts | Select-Object -First 50 → suggests surgical read', () => {
+    const event = makeBashEvent('Get-Content src/auth.ts | Select-Object -First 50')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Select-Object -First')
+      expect(result.context).toContain('token-goat')
+    }
+  })
+
+  it('gc src/auth.ts | select -First 30 → suggests surgical read', () => {
+    const event = makeBashEvent('gc src/auth.ts | select -First 30')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Select-Object -First')
+    }
+  })
+
+  it('Get-Content C:/Windows/Temp/x.log (temp path) → passes through', () => {
+    const event = makeBashEvent('Get-Content C:/Windows/Temp/x.log')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('Get-Content src/config.json | Select-Object -First 30 (config) → suggests config-get', () => {
+    const event = makeBashEvent('Get-Content src/config.json | Select-Object -First 30')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('config-get')
+    }
+  })
+
+  it('Get-Content README.md | Select-Object -First 30 (doc) → suggests section', () => {
+    const event = makeBashEvent('Get-Content README.md | Select-Object -First 30')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+})
+
 describe('preBashHandler — rg structural search', () => {
   beforeEach(() => {
     clearModuleCaches()
