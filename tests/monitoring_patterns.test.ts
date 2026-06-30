@@ -19,6 +19,11 @@ describe('getMonitoringRecallHint', () => {
     'gh run list',
     'gh run view --log',
     'gh pr checks',
+    'gh pr view 123',
+    'gh pr view 123 --json state,title',
+    'gh pr list',
+    'gh pr list --state open',
+    'gh issue view 45',
     'gh workflow run',
     'gh workflow list',
     'gh workflow view',
@@ -176,6 +181,29 @@ describe('getMonitoringRecallHint', () => {
 
   it('npm run build hint contains --grep', () => {
     expect(getMonitoringRecallHint('npm run build')).toContain('--grep')
+  })
+
+  it.each([
+    'git push',
+    'git push origin main',
+    'git push -u origin feature',
+    'git push --force-with-lease',
+  ])('matches git push (large pre-push hook output) "%s"', (cmd) => {
+    expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+  })
+
+  it('git push hint contains --tail and --grep for failure recall', () => {
+    const hint = getMonitoringRecallHint('git push origin main')
+    expect(hint).toContain('--tail')
+    expect(hint).toContain('--grep')
+  })
+
+  it('git push does not over-match other git subcommands', () => {
+    expect(getMonitoringRecallHint('git pushd')).toBeNull()
+  })
+
+  it('gh pr view hint targets PR state fields', () => {
+    expect(getMonitoringRecallHint('gh pr view 123')).toContain('state')
   })
 
   it.each([
