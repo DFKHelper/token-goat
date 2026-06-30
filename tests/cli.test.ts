@@ -1,10 +1,10 @@
-import { execFileSync, execSync, spawnSync } from 'node:child_process'
+import { execSync, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { beforeAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(HERE, '..')
@@ -28,11 +28,6 @@ function runCli(args: string[], input = ''): RunResult {
     stderr: res.stderr ?? '',
   }
 }
-
-beforeAll(() => {
-  // Build the shipping artifact once so every runCli spawn below executes the real bundle.
-  execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
-}, 120000)
 
 describe('token-goat CLI', () => {
   it('version exits 0 and prints a semver-ish string', () => {

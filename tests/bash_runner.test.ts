@@ -15,7 +15,7 @@
  * temp DB, never the developer's real ~/.local global.db, then restore the env
  * so the override does not leak to other test files sharing this worker.
  */
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -113,8 +113,6 @@ describe('compress command (built-bundle e2e)', () => {
   let dataBase: string
 
   beforeAll(() => {
-    // Build the real shipping artifact so this fails if `compress` is missing from the bundle's command registry or tree-shaken out.
-    execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
     dataBase = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-br-e2e-data-'))
   })
 

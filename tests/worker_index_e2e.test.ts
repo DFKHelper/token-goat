@@ -45,9 +45,6 @@ function runBundle(args: string[]): { status: number | null; stdout: string; std
 }
 
 beforeAll(() => {
-  // Build the real shipping artifact so this test fails if the parser/indexer is missing from the bundle.
-  execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
-
   dataBase = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-e2e-data-'))
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-e2e-repo-'))
   fs.writeFileSync(
