@@ -207,7 +207,7 @@ Registered handlers by event:
 
 - **PreToolUse / Read** — `preReadHandler` (session hint, diff-on-reread, large-file gate, surgical hint), `preReadImageHandler` (image shrink)
 - **PreToolUse / Bash** — `preBashHandler` (cat detection, bash output dedup, compression)
-- **PreToolUse / WebFetch** — `preFetchHandler` (image shrink for web content)
+- **PreToolUse / WebFetch** — `preFetchHandler` (image shrink for web content; on a repeat fetch of a URL already retrieved this session, a non-blocking recall hint pointing at `token-goat web-output <id>`)
 - **PreToolUse / Skill** — `preSkillHandler` (skill cache dedup)
 - **PostToolUse / Read** — `postReadHandler` (snapshot, session record)
 - **PostToolUse / Edit, Write** — `postEditHandler` (dirty queue append)
@@ -238,7 +238,7 @@ Commands such as `symbol`, `read`, `section`, `skeleton`, `outline`, `refs`, and
 
 - **Session state** — [`src/relay.ts`](src/relay.ts) calls `loadSessionState(sessionId)` immediately after building the event and `saveSessionState(sessionId)` after the handler returns, each in its own `try/catch` so a persistence failure can never suppress the handler's real output. Save is **merge-on-save**: it re-reads the on-disk JSON and unions it with the in-memory state (set-union for hints, field-wise for files keeping every read/edit/truncation signal, newest-wins for the indexes), then atomic-writes. Combined with the atomic rename, two overlapping same-session hook processes (e.g. background-task hooks) can at worst drop a hint — never corrupt the file. File entries are capped at 500 (oldest by last-read evicted). An empty `sessionId` skips persistence entirely (no shared `anon` file bleeding across sessions).
 - **Bash/web content** — `storeBashOutput()` / `storeWebOutput()` also write a content-addressed blob (`bash_outputs/<id>.json`, `web_outputs/<id>.json`) via [`src/disk_cache.ts`](src/disk_cache.ts); `getBashOutput()` / `getWebOutput()` fall back to a disk read on an in-memory miss, so the session-less CLI (`token-goat bash-output <id>`, `web-output <id>`) and a later hook process resolve a value cached by an earlier one. Blobs are pruned by age (24h) and count (200) on each write.
-- **Honest recall hints** — the three bash recall sites in [`src/hooks_bash.ts`](src/hooks_bash.ts) (monitoring, curl GET, build) guard on the *content entry* existing, not just the session index, so a pruned/evicted blob never yields a `bash-output <id>` hint that would error.
+- **Honest recall hints** — the three bash recall sites in [`src/hooks_bash.ts`](src/hooks_bash.ts) (monitoring, curl GET, build) guard on the *content entry* existing, not just the session index, so a pruned/evicted blob never yields a `bash-output <id>` hint that would error. `preFetchHandler` in [`src/hooks_fetch.ts`](src/hooks_fetch.ts) mirrors this for WebFetch: it resolves the URL via the persisted session index (`getWebFetchCacheId()`) and guards on the cached body (`getWebOutput()`) before emitting a `web-output <id>` recall hint, so the WebFetch cache is recalled in-band instead of silently re-fetched.
 
 All three layers are fail-soft: a disk error never throws into a hook.
 
