@@ -70,6 +70,16 @@ import { isWindows, ensureNewline, extractErrorMessage } from './util.js'
 import { renderStats } from './stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
+import {
+  collectFiles,
+  collectFromStdin,
+  formatPack,
+  scanSecrets,
+  estimateBudget,
+  formatBudgetText,
+} from './pack.js'
+import { extractFailures, formatFailuresText, formatFailuresJson } from './failures.js'
+import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent, cmdIgnores } from './text_commands.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -874,6 +884,181 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string }): Pr
   }
 }
 
+/** Expand glob patterns in a list of path strings using fs.globSync when available (Node 22+). Literal paths are passed through unchanged. */
+function expandGlobs(root: string, patterns: string[]): string[] {
+  const out: string[] = []
+  const globFn = (fs as unknown as Record<string, unknown>)['globSync'] as
+    | ((pattern: string, opts: { cwd: string }) => string[])
+    | undefined
+  for (const p of patterns) {
+    if (globFn !== undefined && (p.includes('*') || p.includes('?') || p.includes('{'))) {
+      try {
+        const hits = globFn(p, { cwd: root })
+        out.push(...hits.map((h) => path.join(root, h)))
+        continue
+      } catch {
+        // fall through to literal path
+      }
+    }
+    out.push(path.isAbsolute(p) ? p : path.join(root, p))
+  }
+  return out
+}
+
+function cmdPack(
+  patterns: string[] | undefined,
+  opts: {
+    format?: string
+    lineNumbers?: boolean
+    instructionFile?: string
+    output?: string
+    ignore?: boolean
+    stripComments?: boolean
+    scanSecrets?: boolean
+    budget?: string
+  },
+): void {
+  try {
+    const root = process.cwd()
+    const style = opts.format === 'xml' ? 'xml' : opts.format === 'text' ? 'plain' : 'markdown'
+    const collectOpts = {
+      ...(opts.stripComments === true ? { do_strip_comments: true as const } : {}),
+    }
+    const patternList = patterns ?? []
+    const expandedList = patternList.length > 0 ? expandGlobs(root, patternList) : []
+    const result =
+      expandedList.length > 0
+        ? collectFiles(root, expandedList, collectOpts)
+        : collectFromStdin(root, collectOpts)
+    if (opts.budget !== undefined) {
+      const budgetN = Number.parseInt(opts.budget, 10)
+      if (result.total_tokens > budgetN) {
+        err(`token-goat: pack: token count ${result.total_tokens} exceeds budget ${budgetN}`)
+        process.exitCode = 3
+        return
+      }
+    }
+    if (opts.scanSecrets === true) {
+      const hits = scanSecrets(result.files)
+      if (hits.length > 0) {
+        for (const hit of hits) {
+          err(`token-goat: secret in ${hit.rel_path}:${hit.line}: ${hit.kind}`)
+        }
+        process.exitCode = 2
+        return
+      }
+    }
+    let instruction: string | undefined
+    if (opts.instructionFile !== undefined) {
+      instruction = fs.readFileSync(opts.instructionFile, 'utf8')
+    }
+    const formatted = formatPack(result, style, {
+      ...(opts.lineNumbers === true ? { line_numbers: true } : {}),
+      ...(instruction !== undefined ? { instruction } : {}),
+    })
+    if (opts.output !== undefined) {
+      fs.writeFileSync(opts.output, formatted, 'utf8')
+    } else {
+      out(formatted)
+    }
+    process.exitCode = 0
+  } catch (e) {
+    err(`token-goat: ${extractErrorMessage(e)}`)
+    process.exitCode = 1
+  }
+}
+
+function cmdTokens(
+  patterns: string[] | undefined,
+  opts: { tree?: boolean; top?: string; asc?: boolean; json?: boolean },
+): void {
+  try {
+    const root = process.cwd()
+    const result = estimateBudget(root, expandGlobs(root, patterns ?? []))
+    let entries = [...result.entries]
+    if (opts.asc === true) entries.reverse()
+    if (opts.top !== undefined) entries = entries.slice(0, Number.parseInt(opts.top, 10))
+    if (opts.json === true) {
+      out(JSON.stringify({ entries, total_tokens: result.total_tokens, total_lines: result.total_lines }, null, 2))
+      process.exitCode = 0
+      return
+    }
+    if (opts.tree === true) {
+      const dirs = new Map<string, typeof entries>()
+      for (const e of entries) {
+        const dir = path.dirname(e.rel_path)
+        if (!dirs.has(dir)) dirs.set(dir, [])
+        dirs.get(dir)!.push(e)
+      }
+      const lines: string[] = []
+      for (const [dir, dirEntries] of dirs) {
+        const dirTokens = dirEntries.reduce((s, e) => s + e.tokens, 0)
+        const pct = result.total_tokens > 0 ? Math.round((dirTokens / result.total_tokens) * 100) : 0
+        lines.push(`${dir}/ (${dirTokens} tokens, ${pct}%)`)
+        for (const e of dirEntries) {
+          lines.push(`  ${path.basename(e.rel_path).padEnd(30)}  ${String(e.tokens).padStart(8)} tokens`)
+        }
+      }
+      out(lines.join('\n'))
+      process.exitCode = 0
+      return
+    }
+    if (entries.length === 0) {
+      out('No files matched.')
+      process.exitCode = 0
+      return
+    }
+    const colW = Math.max(4, Math.max(...entries.map((e) => e.rel_path.length)))
+    const lines = [
+      `${'File'.padEnd(colW)}  ${'~Tokens'.padStart(8)}  ${'Lines'.padStart(6)}`,
+      `${'-'.repeat(colW)}  ${'-'.repeat(8)}  ${'-'.repeat(6)}`,
+    ]
+    for (const e of entries) {
+      lines.push(`${e.rel_path.padEnd(colW)}  ${String(e.tokens).padStart(8)}  ${String(e.lines).padStart(6)}`)
+    }
+    out(lines.join('\n'))
+    process.exitCode = 0
+  } catch (e) {
+    err(`token-goat: ${extractErrorMessage(e)}`)
+    process.exitCode = 1
+  }
+}
+
+function cmdBudget(
+  patterns: string[],
+  opts: { context?: string; json?: boolean },
+): void {
+  try {
+    const root = process.cwd()
+    const result = estimateBudget(root, expandGlobs(root, patterns))
+    if (opts.json === true) {
+      out(JSON.stringify(result, null, 2))
+    } else {
+      const contextK = opts.context !== undefined ? Number.parseInt(opts.context, 10) : undefined
+      out(formatBudgetText(result, contextK))
+    }
+    process.exitCode = 0
+  } catch (e) {
+    err(`token-goat: ${extractErrorMessage(e)}`)
+    process.exitCode = 1
+  }
+}
+
+function cmdFailures(
+  src: string | undefined,
+  opts: { runner?: string; json?: boolean },
+): void {
+  try {
+    const text = src !== undefined ? fs.readFileSync(src, 'utf8') : fs.readFileSync(0, 'utf8')
+    const result = extractFailures(text, opts.runner !== undefined ? { runner: opts.runner } : {})
+    out(opts.json === true ? formatFailuresJson(result) : formatFailuresText(result))
+    process.exitCode = 0
+  } catch (e) {
+    err(`token-goat: ${extractErrorMessage(e)}`)
+    process.exitCode = 1
+  }
+}
+
 // --- Program assembly -------------------------------------------------------
 
 /** Build the Commander program. Exported so tests can introspect/parse it. */
@@ -1319,6 +1504,113 @@ export function buildProgram(): Command {
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
+    )
+
+  program
+    .command('pack [patterns...]')
+    .description('bundle matched files into a single LLM-ready output (Markdown, XML, or plain text)')
+    .option('--format <style>', 'output style: md (default), xml, or text', 'md')
+    .option('--line-numbers', 'prefix each line with its line number')
+    .option('--instruction-file <path>', 'append a task prompt from a file')
+    .option('--output <path>', 'write output to a file instead of stdout')
+    .option('--no-ignore', 'bypass .tokengoatignore patterns')
+    .option('--strip-comments', 'remove language-appropriate comments before packing')
+    .option('--scan-secrets', 'scan for credentials; exit 2 if any are found')
+    .option('--budget <n>', 'exit 3 if the estimated token count exceeds n')
+    .action(cmdPack)
+
+  program
+    .command('tokens [patterns...]')
+    .description('per-file token footprint table, sorted largest-first')
+    .option('--tree', 'group by directory with subtotals and percentage of total')
+    .option('--top <n>', 'limit to the N biggest files')
+    .option('--asc', 'reverse order (ascending)')
+    .option('-j, --json', 'output as JSON')
+    .action(cmdTokens)
+
+  program
+    .command('budget <patterns...>')
+    .description('estimate the total token cost of a file set')
+    .option('--context <n>', 'context window in thousands of tokens (shows % fill)')
+    .option('-j, --json', 'output as JSON')
+    .action(cmdBudget)
+
+  program
+    .command('failures [src]')
+    .description('extract failing test blocks from test runner output (pytest, Jest, Go, Cargo)')
+    .option('--runner <name>', 'runner hint: pytest, jest, go, or cargo')
+    .option('-j, --json', 'output as JSON')
+    .action(cmdFailures)
+
+  program
+    .command('todo [patterns...]')
+    .description('scan source files for TODO/FIXME/HACK/XXX/NOTE markers')
+    .option('--group <by>', 'group output by file or kind (default: file)')
+    .option('--kinds <csv>', 'comma-separated marker kinds to include (default: TODO,FIXME,HACK,XXX,NOTE)')
+    .option('-j, --json', 'output as JSON')
+    .action((patterns: string[], opts: { group?: string; kinds?: string; json?: boolean }) =>
+      guard(() => cmdTodo(patterns, opts))(),
+    )
+
+  program
+    .command('trace [src]')
+    .description('condense a Python traceback to project frames only')
+    .option('--keep <n>', 'keep last N project frames (default: all)')
+    .option('-j, --json', 'output as JSON')
+    .action((src: string | undefined, opts: { keep?: string; json?: boolean }) =>
+      guard(() => cmdTrace(src, opts))(),
+    )
+
+  program
+    .command('logfold [src]')
+    .description('apply log-noise filters then fold consecutive duplicate lines')
+    .option('--tail <n>', 'only process the last N lines of input')
+    .option('--no-normalize', 'skip volatile-token normalization (still applies filters and folds)')
+    .option('-j, --json', 'output as JSON')
+    .action((src: string | undefined, opts: { tail?: string; normalize?: boolean; json?: boolean }) =>
+      guard(() => cmdLogfold(src, { tail: opts.tail, noNormalize: opts.normalize === false, json: opts.json }))(),
+    )
+
+  program
+    .command('lockdeps [path]')
+    .description('summarize a dependency lockfile (auto-detects package-lock.json, yarn.lock, poetry.lock, uv.lock, Pipfile.lock, Cargo.lock, requirements*.txt)')
+    .option('-j, --json', 'output as JSON')
+    .action((filePath: string | undefined, opts: { json?: boolean }) =>
+      guard(() => cmdLockdeps(filePath, opts))(),
+    )
+
+  program
+    .command('note <action> [key] [value]')
+    .description('per-project key-value notes (actions: set, get, unset, list, clear)')
+    .option('-j, --json', 'output as JSON (list action only)')
+    .action((action: string, key: string | undefined, value: string | undefined, opts: { json?: boolean }) =>
+      guard(() => cmdNote(action, key, value, opts))(),
+    )
+
+  program
+    .command('hot')
+    .description('show most-read files across all sessions (current session: use `recent`)')
+    .option('-l, --limit <n>', 'max results (default: 20)')
+    .option('--project', 'filter to files under the current project root')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { limit?: string; project?: boolean; json?: boolean }) =>
+      guard(() => cmdHot(opts))(),
+    )
+
+  program
+    .command('recent [n]')
+    .description('show N most-recently read/edited files in the current session (cross-session: use `hot`)')
+    .option('-j, --json', 'output as JSON')
+    .action((n: string | undefined, opts: { json?: boolean }) =>
+      guard(() => cmdRecent(n, opts))(),
+    )
+
+  program
+    .command('ignores')
+    .description('report active file-exclusion settings (walk mode, built-ins, blocked_roots, exclude_tests)')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { json?: boolean }) =>
+      guard(() => cmdIgnores(opts))(),
     )
 
   program
