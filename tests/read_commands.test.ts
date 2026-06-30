@@ -180,6 +180,85 @@ describe('read_commands', () => {
       expect(mockQuerySymbols).toHaveBeenCalledWith(expect.objectContaining({ name: 'refresh' }))
       expect(mockQuerySymbols).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Inner' }))
     })
+
+    // ---- line-range reads (file@N-M) --------------------------------------
+    // These exercise the @N-M syntax the Python build had and the TS port dropped. Each asserts on sliced content, so it fails on pre-feature code (where `file@2-4` fell through to symbol resolution and errored "Could not read") and passes once the range path exists.
+    describe('line-range reads (file@N-M)', () => {
+      function rangeFile(): string {
+        const f = path.join(tempDir, 'lines.txt')
+        fs.writeFileSync(f, 'one\ntwo\nthree\nfour\nfive\n')
+        return f
+      }
+
+      it('reads an inclusive N-M range', () => {
+        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@2-4` }) })
+        expect(stdout).toContain('two\nthree\nfour')
+        expect(stdout).not.toContain('one')
+        expect(stdout).not.toContain('five')
+      })
+
+      it('reads a single line with @N', () => {
+        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@3` }) })
+        expect(stdout).toContain('three')
+        expect(stdout).not.toContain('two')
+        expect(stdout).not.toContain('four')
+      })
+
+      it('does not count a trailing newline as an extra line', () => {
+        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@1-99` }) })
+        expect(stdout).toContain('# lines 1-5 of 5')
+        expect(stdout.trimEnd().endsWith('five')).toBe(true)
+      })
+
+      it('clamps an end past EOF to the last line', () => {
+        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@4-100` }) })
+        expect(stdout).toContain('four\nfive')
+        expect(stdout).toContain('# lines 4-5 of 5')
+      })
+
+      it('errors when start > end', () => {
+        let code = 0
+        const { stderr } = capture(() => { code = runRead({ spec: `${rangeFile()}@5-2` }) })
+        expect(code).toBe(1)
+        expect(stderr).toContain('before start')
+      })
+
+      it('errors when start < 1', () => {
+        let code = 0
+        // Assert the range-specific message, not just the exit code: a plain file-not-found also returns 1, so a code-only check would pass even with the range path disabled.
+        const { stderr } = capture(() => { code = runRead({ spec: `${rangeFile()}@0-3` }) })
+        expect(code).toBe(1)
+        expect(stderr).toContain('start must be >= 1')
+      })
+
+      it('errors when start is past EOF', () => {
+        let code = 0
+        const { stderr } = capture(() => { code = runRead({ spec: `${rangeFile()}@99` }) })
+        expect(code).toBe(1)
+        expect(stderr).toContain('past end of file')
+      })
+
+      it('reads an out-of-project path without consulting the index', () => {
+        // Line-range reads must not require an indexed project (closes the out-of-project read gap). The symbol index is never queried.
+        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@2-3` }) })
+        expect(stdout).toContain('two\nthree')
+        expect(mockQuerySymbols).not.toHaveBeenCalled()
+      })
+
+      it('emits structured JSON with the json flag', () => {
+        const { stdout } = capture(() => { runRead({ spec: `${rangeFile()}@2-3`, json: true }) })
+        const parsed = JSON.parse(stdout) as { start: number; end: number; lines: string[] }
+        expect(parsed.start).toBe(2)
+        expect(parsed.end).toBe(3)
+        expect(parsed.lines).toEqual(['two', 'three'])
+      })
+
+      it('still resolves :: as a symbol, not a range', () => {
+        mockQuerySymbols.mockReturnValue([])
+        runRead({ spec: 'src/foo.ts::myFn' })
+        expect(mockQuerySymbols).toHaveBeenCalled()
+      })
+    })
   })
 
   // ---- runSection ---------------------------------------------------------

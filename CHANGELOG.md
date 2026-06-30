@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.4.0] - 2026-06-29
+
+### Added
+
+- **Line-range reads in `token-goat read` (`file@N-M`).** `read "file.ts@10-40"` returns lines 10 to 40 inclusive, and `read "file.ts@42"` returns a single line. Ranges read straight from disk with no index lookup, so they work on any file, including paths outside every indexed project (whole-file `read` already allowed those, but the line-range syntax from the Python build had not been ported). An end past EOF clamps to the last line; an inverted range or a start below 1 is a clear error. See [src/read_commands.ts](src/read_commands.ts); regression-tested in [tests/read_commands.test.ts](tests/read_commands.test.ts).
+
 ## [2.3.0] - 2026-06-29
 
 ### Fixed

@@ -123,8 +123,54 @@ function parseReadSpec(spec: string): { file: string; symbol?: string } {
   return { file: spec.slice(0, colonIdx), symbol: spec.slice(colonIdx + 2) }
 }
 
-/** Handle ``token-goat read "file::symbol"``. */
+// A line-range read spec ends in `@N` (single line) or `@N-M` (inclusive range), e.g. `src/app.ts@10-20`. The `$`-anchored trailing digits mean a real path that ends in an extension (`report@2024.txt`) never matches; only a bare digit suffix triggers a range read.
+function parseLineRange(spec: string): { file: string; start: number; end: number } | null {
+  const m = /^(.+)@(\d+)(?:-(\d+))?$/.exec(spec)
+  if (m === null) return null
+  const start = parseInt(m[2]!, 10)
+  const end = m[3] !== undefined ? parseInt(m[3], 10) : start
+  return { file: m[1]!, start, end }
+}
+
+// Read an inclusive, 1-indexed line range straight from disk. Index-independent (raw fs read), so it works for files in any project and for paths outside every indexed project root.
+function runLineRange(range: { file: string; start: number; end: number }, opts: ReadOptions): number {
+  const { file, start, end } = range
+  if (start < 1) {
+    emitErr(`Invalid line range: start must be >= 1 (got ${start})`)
+    return 1
+  }
+  if (end < start) {
+    emitErr(`Invalid line range: end (${end}) is before start (${start})`)
+    return 1
+  }
+  const text = readFileText(file)
+  if (text === null) {
+    emitErr(`Could not read: ${file}`)
+    return 1
+  }
+  const allLines = text.split(/\r?\n/)
+  // A trailing newline terminates the last line rather than starting a new empty one; drop the phantom empty element split() appends so the line count matches editor/symbol-read conventions.
+  if (allLines.length > 1 && allLines[allLines.length - 1] === '') allLines.pop()
+  if (start > allLines.length) {
+    emitErr(`Line ${start} is past end of file (${allLines.length} lines): ${file}`)
+    return 1
+  }
+  const clampedEnd = Math.min(end, allLines.length)
+  const slice = allLines.slice(start - 1, clampedEnd)
+  if (opts.json === true) {
+    emit(JSON.stringify({ file, start, end: clampedEnd, lines: slice }, null, 2))
+    return 0
+  }
+  const tok = Math.ceil(slice.join('\n').length / 4)
+  emit([`# lines ${start}-${clampedEnd} of ${allLines.length} (~${tok} tok)`, slice.join('\n')].join('\n'))
+  return 0
+}
+
+/** Handle ``token-goat read "file::symbol"`` and ``token-goat read "file@N-M"``. */
 export function runRead(opts: ReadOptions): number {
+  const range = parseLineRange(opts.spec)
+  if (range !== null) return runLineRange(range, opts)
+
   const { file, symbol } = parseReadSpec(opts.spec)
 
   if (symbol === undefined || symbol === '') {
