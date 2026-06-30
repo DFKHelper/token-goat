@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
-import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent } from '../src/hooks_bash.js'
+import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
 import { getBashOutputId } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -1884,5 +1884,71 @@ describe('preBashHandler — powershell-wrapped Get-Content recall (wiring)', ()
     if (result.hookType === 'deny') {
       expect(result.message).toContain('token-goat section "README.md::SectionHeading"')
     }
+  })
+})
+
+describe('extractGhViewForBatchAdvisory — detects an un-batched gh pr/issue view', () => {
+  it('extracts the subcommand and PR number from `gh pr view <N>`', () => {
+    expect(extractGhViewForBatchAdvisory('gh pr view 37836')).toEqual({ sub: 'pr', ref: '37836' })
+  })
+
+  it('extracts an issue view', () => {
+    expect(extractGhViewForBatchAdvisory('gh issue view 42')).toEqual({ sub: 'issue', ref: '42' })
+  })
+
+  it('returns ref undefined for the current-branch form `gh pr view`', () => {
+    expect(extractGhViewForBatchAdvisory('gh pr view')).toEqual({ sub: 'pr', ref: undefined })
+  })
+
+  it('still fires for a single-field --json query (field-by-field is the pattern to fix)', () => {
+    expect(extractGhViewForBatchAdvisory('gh pr view 37836 --json title')).toEqual({ sub: 'pr', ref: '37836' })
+  })
+
+  // A multi-field --json list means the model is already batching, so the advisory must NOT fire.
+  it('returns null when the command already batches multiple --json fields', () => {
+    expect(extractGhViewForBatchAdvisory('gh pr view 37836 --json title,body,labels')).toBeNull()
+  })
+
+  it('returns null for non-view gh subcommands and non-gh commands', () => {
+    expect(extractGhViewForBatchAdvisory('gh pr list')).toBeNull()
+    expect(extractGhViewForBatchAdvisory('gh pr edit 5 --title x')).toBeNull()
+    expect(extractGhViewForBatchAdvisory('gh issue create')).toBeNull()
+    expect(extractGhViewForBatchAdvisory('git status')).toBeNull()
+  })
+})
+
+describe('postBashHandler — gh view field-batching advisory (one-time per session)', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('emits a batched --json advisory on the first gh pr view, then stays silent on later views', async () => {
+    const out = 'title:\tFix the thing\nstate:\tOPEN\n'.repeat(40)
+    const first = await postBashHandler(makePostBashEvent('gh pr view 37836', out))
+    expect(first.hookType).toBe('context')
+    if (first.hookType === 'context') {
+      expect(first.context).toContain('field queries can be batched')
+      expect(first.context).toContain('gh pr view 37836 --json')
+      expect(first.context).toContain('labels')
+    }
+    // One-time per session: a second view (even a different PR) does not re-advise.
+    const second = await postBashHandler(makePostBashEvent('gh pr view 99999', out))
+    expect(second.hookType).toBe('pass')
+  })
+
+  it('tailors the example to `gh issue view` and its ref', async () => {
+    const out = 'title:\tA bug\nstate:\tOPEN\n'.repeat(40)
+    const result = await postBashHandler(makePostBashEvent('gh issue view 42', out))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('gh issue view 42 --json')
+      expect(result.context).toContain('comments')
+    }
+  })
+
+  it('does not advise when the first view already batches --json fields', async () => {
+    const out = '{"title":"x","body":"y","labels":[]}\n'.repeat(40)
+    const result = await postBashHandler(makePostBashEvent('gh pr view 1 --json title,body,labels', out))
+    expect(result.hookType).toBe('pass')
   })
 })
