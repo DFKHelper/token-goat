@@ -545,6 +545,24 @@ function isCurlGetCommand(cmd: string): boolean {
 }
 
 /**
+ * Returns true when the command is a read-only `gh api` GET whose response is
+ * safe to cache: not GraphQL (always a POST query), no mutating method, and no
+ * request-body/field flags (gh defaults to POST when -f/-F/--field/--raw-field/--input
+ * are present). An explicit `--method GET` / `-X GET` is honored even with other
+ * flags. An embedded Authorization header is skipped so a credential is never
+ * persisted into the cached command string.
+ */
+function isReadOnlyGhApi(cmd: string): boolean {
+  if (!/^gh\s+api\b/.test(cmd)) return false
+  if (/\bgraphql\b/.test(cmd)) return false
+  if (/-H\s+['"]?Authorization/i.test(cmd)) return false
+  if (/(?:-X|--method)\s+GET\b/i.test(cmd)) return true
+  if (/(?:-X|--method)\s+(?:POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b/i.test(cmd)) return false
+  if (/\s(?:-f|-F|--field|--raw-field|--input)\b/.test(cmd)) return false
+  return true
+}
+
+/**
  * Extracts {url, outputPath} from a `curl -o <file> <url>` download command.
  * Returns null for non-curl commands, commands without `-o`/`--output`, or
  * commands with auth/POST/body flags that should not be cached.
@@ -966,6 +984,23 @@ export function preBashHandler(event: HookEvent): HookOutput {
     }
   }
 
+  // gh api recall — emit a hint when the same read-only `gh api` GET was already run this session. Key on the command minus output pipes/redirects (endpoint + flags), matching the post-side cache key.
+  if (isReadOnlyGhApi(cmd)) {
+    const ghHash = shortFingerprint(stripOutputPipeline(cmd))
+    const ghOutputId = getBashOutputId(ghHash)
+    const ghEntry = ghOutputId !== null ? getBashOutput(ghOutputId) : null
+    if (ghOutputId !== null && ghEntry !== null) {
+      const ghBytes = ghEntry.sizeBytes
+      recordStat('bash_compress:recall', ghBytes, Math.round(ghBytes / 4))
+      const ghPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
+      return contextOutput(
+        'gh api response cached (`' + ghPreview + '`). ' +
+        'Use `token-goat bash-output ' + ghOutputId + '` to recall it. ' +
+        "Append `--jq '.field'` on the original call, or `--grep PATTERN` / `--max-matches N` here, to narrow it.",
+      )
+    }
+  }
+
   // Recognized command: recall a cached prior run, else compress this run. detectFromCommand matches a specific filter (none until the filters land); isBuildCommand is the generic-filter gate for build/test tools.
   if (!isBuildCommand(cmd) && detectFromCommand(cmd) === null) return passOutput()
 
@@ -1080,7 +1115,18 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     }
 
     // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
-    const ghHint = buildGhApiHint(cmd, extractBashOutput(event.raw), extractExitCode(event.raw))
+    const output = extractBashOutput(event.raw)
+    const exitCode = extractExitCode(event.raw)
+    const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
+
+    // Cache a successful, read-only `gh api` GET so a later identical call recalls it instead of re-fetching. Done as a side effect before the advisory-hint return below, so a wide-JSON response is both nudged toward --jq and cached. Gated on exit 0 (and the shared size floor) so an error/permission body is never stored as content.
+    if (isReadOnlyGhApi(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= MIN_CACHE_BYTES) {
+      const ghCacheHash = shortFingerprint(stripOutputPipeline(cmd))
+      const ghCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+      recordBashOutput(ghCacheHash, ghCacheId, Buffer.byteLength(output, 'utf-8'))
+    }
+
+    const ghHint = buildGhApiHint(cmd, output, exitCode)
     if (ghHint !== null) {
       recordStat('session_hint', 0, 0)
       return contextOutput(ghHint)
@@ -1090,10 +1136,8 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
     if (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd)) return passOutput()
 
-    const output = extractBashOutput(event.raw)
     if (Buffer.byteLength(output, 'utf-8') < MIN_CACHE_BYTES) return passOutput()
 
-    const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
     // For curl GET commands, key the cache on the URL so that the same endpoint fetched with different downstream pipes (| jq vs | python3) shares a single cache entry.
     const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : stripOutputPipeline(cmd)
     const simpleHash = shortFingerprint(cacheKey)
