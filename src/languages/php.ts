@@ -67,14 +67,27 @@ export function extractPhp(
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
-    const line = rawLine.trimEnd()
-    const stripped = line.trimStart()
     const lineNum = i + 1
 
-    // Block comment handling
-    if (stripped.includes('/*') && !inComment) inComment = true
-    if (stripped.includes('*/')) { inComment = false; continue }
-    if (inComment) continue
+    // Strip /* */ block-comment spans (state carried across lines via inComment) and keep the residual code, so a brace or declaration sharing a line with a comment is still counted and parsed - the old line-granular skip dropped them.
+    let codeLine = ''
+    let j = 0
+    while (j < rawLine.length) {
+      if (!inComment) {
+        const open = rawLine.indexOf('/*', j)
+        if (open === -1) { codeLine += rawLine.slice(j); break }
+        codeLine += rawLine.slice(j, open)
+        inComment = true
+        j = open + 2
+      } else {
+        const close = rawLine.indexOf('*/', j)
+        if (close === -1) break
+        inComment = false
+        j = close + 2
+      }
+    }
+    const line = codeLine.trimEnd()
+    const stripped = line.trimStart()
 
     if (!stripped || stripped.startsWith('//') || stripped.startsWith('#')) continue
 
@@ -125,7 +138,7 @@ export function extractPhp(
         : 'class'
       const parent = currentClass()
       symbols.push(makeSymbol(filePath, name, kind, lineNum, stripped.slice(0, 200), parent ?? undefined))
-      contextStack.push([name, braceDepth - openB])
+      contextStack.push([name, braceDepth - openB + closeB])
       continue
     }
 

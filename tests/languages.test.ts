@@ -149,6 +149,35 @@ class Bar {
     expect(a?.docstring).toBe('Foo')
   })
 
+  it('parses declarations and braces that share a line with a block comment', () => {
+    const content = `<?php
+class Foo {
+  public function methodA() {}
+} /* closes Foo */
+function afterFoo() {}
+/* standalone
+   block with a } brace that must not be counted
+*/
+class Bar { /* inline */ }
+function tail() {}
+`
+    const { symbols } = extractPhp(content, 'x.php')
+    const foo = symbols.find((s) => s.name === 'Foo')
+    expect(foo?.kind).toBe('class')
+    const methodA = symbols.find((s) => s.name === 'methodA')
+    expect(methodA?.kind).toBe('method')
+    expect(methodA?.docstring).toBe('Foo')
+    // Core regression: afterFoo shares a line with */ that closes Foo; the closing brace must pop Foo's scope so afterFoo is top-level, not a method.
+    const afterFoo = symbols.find((s) => s.name === 'afterFoo')
+    expect(afterFoo?.kind).toBe('function')
+    expect(afterFoo?.docstring).toBe('')
+    const bar = symbols.find((s) => s.name === 'Bar')
+    expect(bar?.kind).toBe('class')
+    const tail = symbols.find((s) => s.name === 'tail')
+    expect(tail?.kind).toBe('function')
+    expect(tail?.docstring).toBe('')
+  })
+
   it('detects .php language via parseFile', async () => {
     const file = tmp('foo.php', '<?php function foo() {}')
     const result = await parseFile(file)
