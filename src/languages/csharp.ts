@@ -33,9 +33,12 @@ const CLASS_HEADER_RE = new RegExp(
   '^(?:(?:public|protected|private|internal|abstract|sealed|static|partial)\\s+)*' +
   '(?:class|struct|interface|enum|record)\\s+([A-Za-z_][A-Za-z0-9_]*)',
 )
+// Methods may have no access modifier (implicitly private) or only a return type (e.g. `void Run()`), so the modifier group is zero-or-more. The leading negative-lookahead rejects statement-starting keywords in the return-type slot so a no-modifier match cannot mistake `return Helper();`-style lines for a method; `new` is omitted from the guard because it is also a valid method modifier (`new void Foo()`). Method detection only runs at one brace level inside a class body, where bare statements cannot legally appear, so this stays safe.
 const METHOD_RE = new RegExp(
-  '^\\s+(?:(?:public|protected|private|internal|static|virtual|override|abstract|' +
-  'sealed|new|async|extern|partial)\\s+)+' +
+  '^\\s+(?!(?:return|throw|yield|await|if|else|while|for|foreach|do|switch|case|' +
+  'lock|using|fixed|checked|unchecked|goto|var)\\b)' +
+  '(?:(?:public|protected|private|internal|static|virtual|override|abstract|' +
+  'sealed|new|async|extern|partial)\\s+)*' +
   '(?:[A-Za-z_][A-Za-z0-9_<>?,\\[\\]\\s]*?)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*[<(]',
 )
 
