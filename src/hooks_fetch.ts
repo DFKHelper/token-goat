@@ -1,10 +1,10 @@
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
-import { passOutput, getToolName, getToolInput } from './hooks_common.js';
+import { passOutput, getToolName, getToolInput, contextOutput } from './hooks_common.js';
 import { recordStat } from './stats.js';
-import { storeWebOutput } from './web_cache.js';
-import { recordWebFetch } from './session.js';
+import { storeWebOutput, getWebOutput } from './web_cache.js';
+import { recordWebFetch, getWebFetchCacheId } from './session.js';
 
 function extractToolResponse(raw: Record<string, unknown>): string {
   const toolResponse = raw['tool_response'];
@@ -44,6 +44,20 @@ export function preFetchHandler(event: HookEvent): HookOutput {
 
     if (!event.sessionId) {
       return passOutput();
+    }
+
+    const cacheId = getWebFetchCacheId(url);
+    if (cacheId !== null) {
+      // Guard on the content blob (in-memory or on disk), not just the session index, so a pruned or evicted entry never yields a web-output hint that would error - mirrors the curl-GET recall guard in hooks_bash.
+      const cached = getWebOutput(cacheId);
+      if (cached !== null) {
+        recordStat('webfetch:recall', Buffer.byteLength(cached, 'utf-8'), Math.round(cached.length / 4));
+        return contextOutput(
+          'You already fetched this URL this session; the response is cached. ' +
+          'Use `token-goat web-output ' + cacheId + '` to recall it ' +
+          '(append `--grep PATTERN` to filter or `--section Heading` for a markdown section) instead of re-fetching.',
+        );
+      }
     }
 
     return passOutput();

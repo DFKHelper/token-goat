@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import type { HookEvent } from '../src/hook_registry.js'
-import { postFetchHandler } from '../src/hooks_fetch.js'
+import { postFetchHandler, preFetchHandler } from '../src/hooks_fetch.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { getWebOutputByUrl } from '../src/web_cache.js'
 import { getWebFetchCacheId } from '../src/session.js'
@@ -88,5 +88,49 @@ describe('WebFetch hook persistence', () => {
     // Should not cache when session ID is empty
     const cached = getWebOutputByUrl(url)
     expect(cached).toBeNull()
+  })
+
+  it('recalls a previously fetched URL via a web-output hint on the next pre-fetch', async () => {
+    const url = 'https://example.com/page'
+    const largeResponse = 'x'.repeat(2000)
+    const sessionId = 'test-session-recall'
+
+    // First fetch stores the body and records the URL in the session.
+    await postFetchHandler({
+      eventName: 'post_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId,
+      raw: { tool_response: largeResponse },
+    } as HookEvent)
+
+    const cacheId = getWebFetchCacheId(url)
+    expect(cacheId).not.toBeNull()
+
+    // A subsequent pre-fetch of the same URL/session must surface a recall hint
+    // naming the web-output command and the cache id - not silently re-fetch.
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId,
+      raw: {},
+    } as HookEvent)
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('web-output')
+      expect(result.context).toContain(cacheId as string)
+    }
+  })
+
+  it('does not emit a recall hint for a URL not fetched this session', () => {
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://example.com/never' },
+      sessionId: 'test-session-cold',
+      raw: {},
+    } as HookEvent)
+    expect(result.hookType).toBe('pass')
   })
 })

@@ -119,3 +119,31 @@ describe('bash-output recall survives the process boundary', () => {
     expect(recall.stdout).toContain('BUILD OK')
   })
 })
+
+describe('WebFetch recall survives the process boundary', () => {
+  it('a pre_fetch of a previously fetched URL in a new process emits the web-output recall hint', () => {
+    const url = 'https://example.com/doc'
+    const body = 'web body line\n'.repeat(120) // > 1KB, above the post-fetch cache threshold
+
+    // Process 1: cache the response body to disk and record the URL in the session.
+    const first = runHook('post_tool_use', {
+      session_id: 'e2e-web',
+      tool_name: 'WebFetch',
+      tool_input: { url },
+      tool_response: { output: body },
+    })
+    expect(first.status).toBe(0)
+    expect(fs.existsSync(path.join(tgHome, 'web_outputs'))).toBe(true)
+    expect(fs.readdirSync(path.join(tgHome, 'web_outputs')).length).toBeGreaterThan(0)
+
+    // Process 2 (cold memory): the recall hint must cross the process boundary via the
+    // persisted session state plus the on-disk web_outputs blob.
+    const second = runHook('pre_tool_use', {
+      session_id: 'e2e-web',
+      tool_name: 'WebFetch',
+      tool_input: { url },
+    })
+    expect(second.status).toBe(0)
+    expect(second.stdout).toMatch(/web-output/)
+  })
+})
