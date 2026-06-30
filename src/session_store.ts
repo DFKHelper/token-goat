@@ -26,7 +26,7 @@ import * as path from 'node:path'
 
 import { atomicWriteText } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { exportSessionState, importSessionState, type FileEntry, type SerializedSession } from './session.js'
+import { exportSessionState, importSessionState, MAX_RANGES_PER_FILE, type FileEntry, type SerializedSession } from './session.js'
 
 const SAFE_RE = /[^a-zA-Z0-9_-]/g
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
@@ -111,6 +111,24 @@ function asPyFileEntry(dictKey: string, raw: unknown): FileEntry | null {
  * Python-format files are transparently migrated to the TS shape on load; the
  * next {@link saveSessionState} call then writes the file in the TS format so
  * subsequent loads use the fast path automatically. */
+/** Coerce an untrusted value into the persisted line-ranges shape, dropping anything malformed. Never throws. */
+function asLineRanges(raw: unknown): Array<[string, Array<[number, number]>]> {
+  if (!Array.isArray(raw)) return []
+  const out: Array<[string, Array<[number, number]>]> = []
+  for (const pair of raw) {
+    if (!Array.isArray(pair) || pair.length !== 2) continue
+    const filePath = pair[0]
+    const ranges = pair[1]
+    if (typeof filePath !== 'string' || !Array.isArray(ranges)) continue
+    const valid: Array<[number, number]> = []
+    for (const r of ranges) {
+      if (Array.isArray(r) && r.length === 2 && typeof r[0] === 'number' && typeof r[1] === 'number') valid.push([r[0], r[1]])
+    }
+    out.push([filePath, valid])
+  }
+  return out
+}
+
 function coerce(raw: unknown): SerializedSession {
   const o = (raw !== null && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const files: FileEntry[] = []
@@ -138,6 +156,7 @@ function coerce(raw: unknown): SerializedSession {
     webFetches: asStringPairs(o['webFetches']),
     bashOutputs: asStringPairs(o['bashOutputs']),
     curlDownloads: asStringPairs(o['curlDownloads']),
+    fileLineRanges: asLineRanges(o['fileLineRanges']),
   }
 }
 
@@ -160,6 +179,23 @@ function mergePairs(disk: Array<[string, string]>, mem: Array<[string, string]>)
   return Array.from(new Map([...disk, ...mem]).entries())
 }
 
+/** Merge two views of the per-file served line ranges: union per file, dedup identical ranges, cap per file. */
+function mergeLineRanges(disk: Array<[string, Array<[number, number]>]>, mem: Array<[string, Array<[number, number]>]>): Array<[string, Array<[number, number]>]> {
+  const byPath = new Map<string, Array<[number, number]>>()
+  for (const [filePath, ranges] of disk) byPath.set(filePath, [...ranges])
+  for (const [filePath, ranges] of mem) {
+    const prev = byPath.get(filePath) ?? []
+    const seen = new Set(prev.map(([s, e]) => s + ':' + e))
+    for (const [s, e] of ranges) {
+      const key = s + ':' + e
+      if (!seen.has(key)) { prev.push([s, e]); seen.add(key) }
+    }
+    if (prev.length > MAX_RANGES_PER_FILE) prev.splice(0, prev.length - MAX_RANGES_PER_FILE)
+    byPath.set(filePath, prev)
+  }
+  return Array.from(byPath.entries())
+}
+
 /** Merge the on-disk snapshot with the in-memory one (see module invariants). */
 function mergeSessionState(disk: SerializedSession, mem: SerializedSession): SerializedSession {
   const byPath = new Map<string, FileEntry>()
@@ -174,6 +210,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     webFetches: mergePairs(disk.webFetches, mem.webFetches),
     bashOutputs: mergePairs(disk.bashOutputs, mem.bashOutputs),
     curlDownloads: mergePairs(disk.curlDownloads, mem.curlDownloads),
+    fileLineRanges: mergeLineRanges(disk.fileLineRanges ?? [], mem.fileLineRanges ?? []),
   }
 }
 

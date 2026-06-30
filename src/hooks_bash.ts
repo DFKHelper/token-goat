@@ -10,7 +10,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath } from './session.js'
+import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
@@ -297,6 +297,30 @@ function sedRangeHint(filePath: string, start: number, end: number): string {
     return prefix + 'For a whole function/class, `token-goat symbol <name>` or `token-goat read "' + filePath + '::<Symbol>"` is robust to line shifts; or ' + rangeRead + ' for exactly those lines.'
   }
   return prefix + 'Use ' + rangeRead + ' to read exactly those lines.'
+}
+
+// Returns the previously-served range that overlaps [start, end] the most (by shared line count), or null if none overlap.
+function findRangeOverlap(prior: ReadonlyArray<readonly [number, number]>, start: number, end: number): readonly [number, number] | null {
+  let best: readonly [number, number] | null = null
+  let bestOverlap = 0
+  for (const range of prior) {
+    const overlap = Math.min(range[1], end) - Math.max(range[0], start) + 1
+    if (overlap > bestOverlap) {
+      bestOverlap = overlap
+      best = range
+    }
+  }
+  return best
+}
+
+// Builds the recall hint when a sed range overlaps one already served this session: name the prior range and point at a `read "file@delta"` for only the not-yet-seen lines.
+function sedOverlapHint(filePath: string, prior: readonly [number, number], start: number, end: number): string {
+  const base = 'You already read lines ' + prior[0] + '-' + prior[1] + ' of ' + filePath + ' via an earlier `sed` this session; this read (' + start + '-' + end + ') overlaps. '
+  const deltaStart = Math.max(start, prior[1] + 1)
+  if (deltaStart <= end) {
+    return base + 'For only the new lines, `token-goat read "' + filePath + '@' + deltaStart + '-' + end + '"`.'
+  }
+  return base + 'These lines were already served - recall them from your earlier output instead of re-reading.'
 }
 
 /** Extracts file path from `node -e "fs.readFileSync(...)"` or `node -e "require('....json')"` patterns. Returns null if not this pattern or if temp file. */
@@ -791,6 +815,11 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (sedRange !== null) {
     const { filePath, start, end } = sedRange
     recordStat('session_hint', 0, 0)
+    const priorOverlap = findRangeOverlap(getFileLineRanges(filePath), start, end)
+    recordFileLineRange(filePath, start, end)
+    if (priorOverlap !== null) {
+      return contextOutput(sedOverlapHint(filePath, priorOverlap, start, end))
+    }
     return contextOutput(sedRangeHint(filePath, start, end))
   }
 

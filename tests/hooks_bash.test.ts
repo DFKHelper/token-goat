@@ -438,6 +438,39 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
+  it('first sed read on a file gets the normal hint, not an overlap hint', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/paging_demo.ts@10-60')
+      expect(result.context).not.toContain('already read')
+    }
+  })
+
+  it('a second overlapping sed read names the prior range and points at the delta', () => {
+    // First read records lines 10-60 for this file.
+    preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts"))
+    // Second read overlaps (50-60 repeat); the hint should name 10-60 and suggest only the new lines 61-100.
+    const result = preBashHandler(makeBashEvent("sed -n '50,100p' src/paging_demo.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already read')
+      expect(result.context).toContain('10-60')
+      expect(result.context).toContain('src/paging_demo.ts@61-100')
+    }
+  })
+
+  it('a non-overlapping later sed read on the same file gets the normal hint', () => {
+    preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts"))
+    // 200-260 is disjoint from 10-60, so no overlap hint.
+    const result = preBashHandler(makeBashEvent("sed -n '200,260p' src/paging_demo.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/paging_demo.ts@200-260')
+      expect(result.context).not.toContain('already read')
+    }
+  })
+
   it('denies node -e with readFileSync reading a source file', () => {
     const event = makeBashEvent(`node -e "const lines = require('fs').readFileSync('scripts/ads-orchestrator.js','utf8').split('\\n')"`)
     const result = preBashHandler(event)
