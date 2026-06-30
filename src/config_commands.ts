@@ -1,0 +1,459 @@
+/**
+ * D3 commands: config, project, compact-doc, fetch-image, history.
+ *
+ * config  <list|get|set|validate> [key] [value] [--json]
+ * project <list|exclude|prune>   [path]         [--json]
+ * compact-doc <path> [--heading H] [--json]
+ * fetch-image <url>  [--out path]  [--json]
+ * history [--limit N] [--json]
+ */
+
+import * as fs from 'node:fs'
+import * as https from 'node:https'
+import * as http from 'node:http'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+import { parse } from 'smol-toml'
+
+import { loadConfig, saveConfig, invalidateConfigCache, defaultConfig } from './config.js'
+import { compactDoc } from './doc_compact.js'
+import { shrinkImage } from './image_shrink.js'
+import { findProject } from './project.js'
+import { listBlobs } from './disk_cache.js'
+import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
+import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
+import { ensureNewline } from './util.js'
+import { configPath } from './constants.js'
+
+function emit(text: string): void {
+  process.stdout.write(ensureNewline(text))
+}
+
+function emitErr(text: string): void {
+  process.stderr.write(ensureNewline(text))
+}
+
+/** Ensure the config parent directory exists then call saveConfig. */
+function saveConfigSafe(cfg: Parameters<typeof saveConfig>[0]): void {
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+  saveConfig(cfg)
+}
+
+// ── Levenshtein distance (capped at threshold to save time) ─────────────────
+
+function levenshtein(a: string, b: string, cap = 3): number {
+  if (Math.abs(a.length - b.length) > cap) return cap + 1
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const curr: number[] = [i]
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      curr.push(Math.min((curr[j - 1] ?? 0) + 1, (prev[j] ?? 0) + 1, (prev[j - 1] ?? 0) + cost))
+    }
+    prev.splice(0, prev.length, ...curr)
+  }
+  return prev[b.length] ?? cap + 1
+}
+
+function closestKeys(unknown: string, known: string[]): string[] {
+  return known
+    .map((k) => ({ k, d: levenshtein(unknown, k) }))
+    .filter((x) => x.d <= 3)
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 3)
+    .map((x) => x.k)
+}
+
+// ── Nested path walk helpers ─────────────────────────────────────────────────
+
+/** Walk a dotted path over a plain object, returning the value or null on miss. */
+function walkGet(obj: Record<string, unknown>, parts: string[]): { found: true; value: unknown } | { found: false } {
+  let cur: unknown = obj
+  for (const part of parts) {
+    if (typeof cur !== 'object' || cur === null) return { found: false }
+    cur = (cur as Record<string, unknown>)[part]
+    if (cur === undefined) return { found: false }
+  }
+  return { found: true, value: cur }
+}
+
+/** Walk to the parent of the leaf path, returning a ref and the leaf key. */
+function walkParent(obj: Record<string, unknown>, parts: string[]): { parent: Record<string, unknown>; leaf: string } | null {
+  if (parts.length === 0) return null
+  let cur: unknown = obj
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (typeof cur !== 'object' || cur === null) return null
+    cur = (cur as Record<string, unknown>)[parts[i]!]
+    if (typeof cur !== 'object' || cur === null) return null
+  }
+  const leaf = parts[parts.length - 1]!
+  return { parent: cur as Record<string, unknown>, leaf }
+}
+
+/** Coerce `raw` string to the same JS type as `existing`. */
+function coerce(raw: string, existing: unknown): unknown {
+  if (typeof existing === 'boolean') {
+    return raw === 'true' || raw === '1'
+  }
+  if (typeof existing === 'number') {
+    const n = Number(raw)
+    if (!Number.isFinite(n)) throw new Error(`expected a number, got: ${raw}`)
+    return n
+  }
+  if (Array.isArray(existing)) {
+    if (raw.trimStart().startsWith('[')) {
+      return JSON.parse(raw) as unknown[]
+    }
+    return raw.split(',').map((s) => s.trim()).filter(Boolean)
+  }
+  return raw
+}
+
+// ── config ───────────────────────────────────────────────────────────────────
+
+/** Flatten a Config (plain object) into key=value pairs using dot notation. */
+function flattenConfig(obj: Record<string, unknown>, prefix = ''): Array<[string, unknown]> {
+  const pairs: Array<[string, unknown]> = []
+  for (const [k, v] of Object.entries(obj)) {
+    const full = prefix ? `${prefix}.${k}` : k
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+      pairs.push(...flattenConfig(v as Record<string, unknown>, full))
+    } else {
+      pairs.push([full, v])
+    }
+  }
+  return pairs
+}
+
+export function cmdConfig(opts: { action: string; key?: string; value?: string; json?: boolean }): void {
+  const { action } = opts
+
+  if (action === 'list') {
+    const cfg = loadConfig() as unknown as Record<string, unknown>
+    if (opts.json === true) {
+      emit(JSON.stringify(cfg, null, 2))
+      return
+    }
+    const pairs = flattenConfig(cfg)
+    for (const [k, v] of pairs) {
+      emit(`${k} = ${JSON.stringify(v)}`)
+    }
+    return
+  }
+
+  if (action === 'get') {
+    if (!opts.key) {
+      emitErr('config get requires a key (e.g. compact_assist.enabled)')
+      throw new Error('missing key')
+    }
+    const parts = opts.key.split('.')
+    const cfg = loadConfig() as unknown as Record<string, unknown>
+    const result = walkGet(cfg, parts)
+    if (!result.found) {
+      emitErr(`key not found: ${opts.key}`)
+      throw new Error(`key not found: ${opts.key}`)
+    }
+    if (opts.json === true) {
+      emit(JSON.stringify({ key: opts.key, value: result.value }, null, 2))
+      return
+    }
+    emit(typeof result.value === 'string' ? result.value : JSON.stringify(result.value))
+    return
+  }
+
+  if (action === 'set') {
+    if (!opts.key) {
+      emitErr('config set requires a key (e.g. compact_assist.enabled)')
+      throw new Error('missing key')
+    }
+    if (opts.value === undefined) {
+      emitErr('config set requires a value')
+      throw new Error('missing value')
+    }
+    const parts = opts.key.split('.')
+    const cfg = loadConfig() as unknown as Record<string, unknown>
+    const ref = walkParent(cfg, parts)
+    if (!ref) {
+      emitErr(`key not found: ${opts.key}`)
+      throw new Error(`key not found: ${opts.key}`)
+    }
+    const existing = ref.parent[ref.leaf]
+    if (existing === undefined) {
+      emitErr(`key not found: ${opts.key}`)
+      throw new Error(`key not found: ${opts.key}`)
+    }
+    const coerced = coerce(opts.value, existing)
+    ref.parent[ref.leaf] = coerced
+    saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
+    invalidateConfigCache()
+    if (opts.json === true) {
+      emit(JSON.stringify({ key: opts.key, value: coerced }, null, 2))
+      return
+    }
+    emit(`${opts.key} = ${JSON.stringify(coerced)}`)
+    return
+  }
+
+  if (action === 'validate') {
+    const cfgFile = configPath()
+    let raw: Record<string, unknown> = {}
+    let parseErr: string | null = null
+    try {
+      const text = fs.readFileSync(cfgFile, 'utf8')
+      raw = parse(text) as Record<string, unknown>
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT') {
+        parseErr = e instanceof Error ? e.message : String(e)
+      }
+    }
+
+    const defCfg = defaultConfig() as unknown as Record<string, unknown>
+    const findings: Array<{ kind: string; key: string; suggestion?: string }> = []
+
+    if (parseErr !== null) {
+      findings.push({ kind: 'parse_error', key: cfgFile, suggestion: parseErr })
+    } else {
+      for (const section of Object.keys(raw)) {
+        const knownSecs = Object.keys(defCfg)
+        if (!knownSecs.includes(section)) {
+          const suggestions = closestKeys(section, knownSecs)
+          const finding: { kind: string; key: string; suggestion?: string } = { kind: 'unknown_section', key: section }
+          if (suggestions.length > 0) finding.suggestion = suggestions.join(', ')
+          findings.push(finding)
+          continue
+        }
+        const defSection = defCfg[section] as Record<string, unknown>
+        const rawSection = raw[section]
+        if (typeof rawSection !== 'object' || rawSection === null) continue
+        for (const subkey of Object.keys(rawSection as Record<string, unknown>)) {
+          const knownKeys = Object.keys(defSection)
+          if (!knownKeys.includes(subkey)) {
+            const suggestions = closestKeys(subkey, knownKeys)
+            const finding: { kind: string; key: string; suggestion?: string } = { kind: 'unknown_key', key: `${section}.${subkey}` }
+            if (suggestions.length > 0) finding.suggestion = suggestions.join(', ')
+            findings.push(finding)
+          }
+        }
+      }
+    }
+
+    if (opts.json === true) {
+      emit(JSON.stringify({ findings, ok: findings.length === 0 }, null, 2))
+      return
+    }
+    if (findings.length === 0) {
+      emit('config validate: no issues found')
+      return
+    }
+    for (const f of findings) {
+      const hint = f.suggestion !== undefined ? ` (did you mean: ${f.suggestion}?)` : ''
+      emit(`[${f.kind}] ${f.key}${hint}`)
+    }
+    emit(`config validate: ${findings.length} issue(s) found`)
+    return
+  }
+
+  emitErr(`config: unknown action '${action}'. Use list, get, set, or validate.`)
+  throw new Error(`unknown config action: ${action}`)
+}
+
+// ── project ───────────────────────────────────────────────────────────────────
+
+export function cmdProject(opts: { action: string; pathArg?: string; json?: boolean }): void {
+  const { action } = opts
+
+  if (action === 'list') {
+    const cfg = loadConfig()
+    const active = findProject(process.cwd())
+    const blocked = cfg.worker.blocked_roots
+    if (opts.json === true) {
+      emit(JSON.stringify({ active: active ? { root: active.root, hash: active.hash, marker: active.marker } : null, blocked_roots: blocked }, null, 2))
+      return
+    }
+    if (active) {
+      emit(`Active project: ${active.root}`)
+      emit(`  marker: ${active.marker}`)
+    } else {
+      emit('Active project: (none — not inside a recognized project root)')
+    }
+    if (blocked.length === 0) {
+      emit('Blocked roots: (none)')
+    } else {
+      emit('Blocked roots:')
+      for (const r of blocked) emit(`  ${r}`)
+    }
+    return
+  }
+
+  if (action === 'exclude') {
+    if (!opts.pathArg) {
+      emitErr('project exclude requires a path argument')
+      throw new Error('missing path')
+    }
+    const target = path.resolve(opts.pathArg)
+    const cfg = loadConfig()
+    if (cfg.worker.blocked_roots.includes(target)) {
+      emit(`Already excluded: ${target}`)
+      return
+    }
+    cfg.worker.blocked_roots = [...cfg.worker.blocked_roots, target]
+    saveConfigSafe(cfg)
+    invalidateConfigCache()
+    if (opts.json === true) {
+      emit(JSON.stringify({ excluded: target, blocked_roots: cfg.worker.blocked_roots }, null, 2))
+      return
+    }
+    emit(`Excluded: ${target}`)
+    return
+  }
+
+  if (action === 'prune') {
+    const cfg = loadConfig()
+    const before = cfg.worker.blocked_roots
+    const after = before.filter((r) => {
+      try { return fs.existsSync(r) } catch { return false }
+    })
+    const removed = before.length - after.length
+    cfg.worker.blocked_roots = after
+    saveConfigSafe(cfg)
+    invalidateConfigCache()
+    if (opts.json === true) {
+      emit(JSON.stringify({ pruned: removed, blocked_roots: after }, null, 2))
+      return
+    }
+    emit(`Pruned ${removed} stale root(s). Remaining: ${after.length}`)
+    return
+  }
+
+  emitErr(`project: unknown action '${action}'. Use list, exclude, or prune.`)
+  throw new Error(`unknown project action: ${action}`)
+}
+
+// ── compact-doc ───────────────────────────────────────────────────────────────
+
+export function cmdCompactDoc(opts: { filePath: string; heading?: string; json?: boolean }): void {
+  const resolved = path.resolve(opts.filePath)
+  const result = compactDoc(resolved, opts.heading)
+  if (result === null) {
+    emitErr(`compact-doc: could not read or compact '${resolved}'`)
+    throw new Error(`could not compact: ${resolved}`)
+  }
+  if (opts.json === true) {
+    emit(JSON.stringify({ path: resolved, compact: result }, null, 2))
+    return
+  }
+  emit(result)
+}
+
+// ── fetch-image ───────────────────────────────────────────────────────────────
+
+function fetchBuffer(url: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https://') ? https : http
+    const req = mod.get(url, (res) => {
+      if (res.statusCode !== undefined && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        fetchBuffer(res.headers.location).then(resolve, reject)
+        return
+      }
+      if (res.statusCode === undefined || res.statusCode < 200 || res.statusCode >= 300) {
+        reject(new Error(`HTTP ${res.statusCode ?? 'unknown'} for ${url}`))
+        return
+      }
+      const chunks: Buffer[] = []
+      res.on('data', (chunk: Buffer) => chunks.push(chunk))
+      res.on('end', () => resolve(Buffer.concat(chunks)))
+      res.on('error', reject)
+    })
+    req.on('error', reject)
+    req.setTimeout(30000, () => { req.destroy(new Error('fetch timeout')) })
+  })
+}
+
+export async function cmdFetchImage(opts: { url: string; out?: string; json?: boolean }): Promise<void> {
+  const outPath = opts.out ?? path.join(os.tmpdir(), `tg-fetch-${Date.now()}.bin`)
+  let buf: Buffer
+  try {
+    buf = await fetchBuffer(opts.url)
+  } catch (e) {
+    emitErr(`fetch-image: network error — ${e instanceof Error ? e.message : String(e)}`)
+    throw new Error(`fetch failed: ${opts.url}`, { cause: e })
+  }
+  const originalBytes = buf.length
+  let shrunkBytes: number
+  let outData: Buffer
+  let wasShrunk = false
+  try {
+    const result = await shrinkImage(buf)
+    if (result !== null) {
+      outData = result.data
+      shrunkBytes = result.shrunkBytes
+      wasShrunk = true
+    } else {
+      outData = buf
+      shrunkBytes = originalBytes
+    }
+  } catch {
+    outData = buf
+    shrunkBytes = originalBytes
+  }
+  fs.writeFileSync(outPath, outData)
+  if (opts.json === true) {
+    emit(JSON.stringify({ url: opts.url, out: outPath, originalBytes, shrunkBytes, wasShrunk }, null, 2))
+    return
+  }
+  const savings = wasShrunk ? ` (saved ${originalBytes - shrunkBytes} bytes)` : ' (not shrunk — already small or unsupported format)'
+  emit(`Fetched ${originalBytes} bytes → ${outPath}${savings}`)
+}
+
+// ── history ───────────────────────────────────────────────────────────────────
+
+export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
+  const limit = opts.limit !== undefined ? Math.max(1, Number.parseInt(opts.limit, 10)) : 30
+
+  const bashItems = listBlobs(BASH_OUTPUT_SUBDIR)
+    .map(({ id, mtime, value }) => {
+      if (typeof value !== 'object' || value === null) return null
+      const v = value as Record<string, unknown>
+      return {
+        type: 'bash' as const,
+        id,
+        storedAt: typeof v['storedAt'] === 'number' ? v['storedAt'] : mtime,
+        summary: typeof v['command'] === 'string' ? v['command'] : '',
+      }
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+
+  const webItems = listBlobs(WEB_OUTPUT_SUBDIR)
+    .map(({ id, mtime, value }) => {
+      if (typeof value !== 'object' || value === null) return null
+      const v = value as Record<string, unknown>
+      return {
+        type: 'web' as const,
+        id,
+        storedAt: mtime,
+        summary: typeof v['url'] === 'string' ? v['url'] : '',
+      }
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+
+  const items = [...bashItems, ...webItems]
+    .sort((a, b) => b.storedAt - a.storedAt)
+    .slice(0, limit)
+
+  if (opts.json === true) {
+    process.stdout.write(JSON.stringify(items, null, 2) + '\n')
+    return
+  }
+  if (items.length === 0) {
+    emit('No history entries found (no cached bash outputs or web fetches).')
+    return
+  }
+  const pad = (s: string, n: number) => (s.length >= n ? s : s + ' '.repeat(n - s.length))
+  emit(`${pad('type', 5)}  ${pad('id', 18)}  summary`)
+  for (const item of items) {
+    const preview = item.summary.length > 80 ? item.summary.slice(0, 77) + '...' : item.summary
+    emit(`${pad(item.type, 5)}  ${pad(item.id, 18)}  ${preview}`)
+  }
+}

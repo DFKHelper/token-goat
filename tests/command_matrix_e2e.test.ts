@@ -519,6 +519,188 @@ const cases: Record<string, () => void> = {
     const parsed = JSON.parse(rj.stdout) as { walkMode: string; excludeTests: boolean }
     expect(['git', 'non-git']).toContain(parsed.walkMode)
   },
+  'bash-history': () => {
+    // Isolated home so no bash blobs exist; must exit 0 and report empty cache.
+    const cacheDir = mkIsolated('tg-bhist-')
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['bash-history'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('No bash output entries cached.')
+    const rj = run(['bash-history', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const arr = JSON.parse(rj.stdout) as unknown[]
+    expect(Array.isArray(arr)).toBe(true)
+  },
+  'web-history': () => {
+    // Isolated home so no web blobs exist; must exit 0 and report empty cache.
+    const cacheDir = mkIsolated('tg-whist-')
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['web-history'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('No web output entries cached.')
+    const rj = run(['web-history', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const arr = JSON.parse(rj.stdout) as unknown[]
+    expect(Array.isArray(arr)).toBe(true)
+  },
+  'clean-cache': () => {
+    // Isolated home; nothing to prune; must exit 0 and report 0 removed total.
+    const cacheDir = mkIsolated('tg-clean-')
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['clean-cache'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('total: 0 removed')
+    const rj = run(['clean-cache', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { total: number }
+    expect(parsed.total).toBe(0)
+  },
+  'prune-cache': () => {
+    // Isolated home; nothing to prune; must exit 0.
+    const cacheDir = mkIsolated('tg-prune-')
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['prune-cache', '--max-count', '5'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('total:')
+    const rj = run(['prune-cache', '--max-count', '5', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { total: number; maxCount: number }
+    expect(parsed.maxCount).toBe(5)
+  },
+  'cache-audit': () => {
+    // Must exit 0 and emit findings; content varies by environment.
+    const r = run(['cache-audit'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(r.stdout).toContain('cache-audit:')
+    const rj = run(['cache-audit', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as { findings: unknown[]; issueCount: number }
+    expect(Array.isArray(parsed.findings)).toBe(true)
+    expect(typeof parsed.issueCount).toBe('number')
+  },
+  resume: () => {
+    // No real session blobs in isolated env; must exit 1 with a clear error message.
+    const cacheDir = mkIsolated('tg-resume-')
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['resume', 'no_such_session_xyz'], { env })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/no session blob found/i)
+  },
+  'compact-hint': () => {
+    // May have no compact sessions; must exit 0 regardless and produce hint output.
+    const cacheDir = mkIsolated('tg-chint-')
+    const env = { ...tgEnv(cacheDir), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['compact-hint'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    const rj = run(['compact-hint', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const p = JSON.parse(rj.stdout) as { tier: string; fillFraction: number }
+    expect(typeof p.tier).toBe('string')
+    expect(typeof p.fillFraction).toBe('number')
+  },
+  'session-summary': () => {
+    // Isolated home; no sessions; must exit 0 and report empty.
+    const cacheDir = mkIsolated('tg-sesssum-')
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['session-summary'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/no session blobs found|Session:/i)
+    const rj = run(['session-summary', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const p = JSON.parse(rj.stdout) as { sessionCount: number }
+    expect(typeof p.sessionCount).toBe('number')
+  },
+  cost: () => {
+    // Must exit 0 and emit stats or empty-session message.
+    const cacheDir = mkIsolated('tg-cost-')
+    const env = { ...tgEnv(cacheDir), TOKEN_GOAT_HOME: cacheDir }
+    const r = run(['cost'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    const rs = run(['cost', '--session'], { env })
+    expect(rs.status, rs.stderr).toBe(0)
+  },
+  baseline: () => {
+    // Run against the test repo; must produce a project map with file count.
+    const r = run(['baseline'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/Project map|Files:|Languages/i)
+    const rj = run(['baseline', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const p = JSON.parse(rj.stdout) as { fileCount: number; rootDir: string }
+    expect(typeof p.fileCount).toBe('number')
+    expect(p.fileCount).toBeGreaterThan(0)
+  },
+  config: () => {
+    // config list in an isolated home — must exit 0 and emit at least one key=value line.
+    const cfgDir = mkIsolated('tg-config-')
+    const env = { ...tgEnv(cfgDir), TOKEN_GOAT_HOME: cfgDir }
+    const r = run(['config', 'list'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/compact_assist|worker/)
+    const rj = run(['config', 'list', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const parsed = JSON.parse(rj.stdout) as Record<string, unknown>
+    expect(typeof parsed['compact_assist']).toBe('object')
+    // config get a known key
+    const rg = run(['config', 'get', 'compact_assist.enabled'], { env })
+    expect(rg.status, rg.stderr).toBe(0)
+    expect(rg.stdout.trim()).toBe('true')
+    // config validate on empty config — no issues
+    const rv = run(['config', 'validate'], { env })
+    expect(rv.status, rv.stderr).toBe(0)
+    expect(rv.stdout).toContain('no issues found')
+  },
+  project: () => {
+    // project list — must exit 0 and list blocked_roots (empty by default).
+    const projDir = mkIsolated('tg-proj-')
+    const env = { ...tgEnv(projDir), TOKEN_GOAT_HOME: projDir }
+    const r = run(['project', 'list'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    const rj = run(['project', 'list', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const p = JSON.parse(rj.stdout) as { blocked_roots: string[] }
+    expect(Array.isArray(p.blocked_roots)).toBe(true)
+    // project prune — no stale roots, exits 0
+    const rp = run(['project', 'prune'], { env })
+    expect(rp.status, rp.stderr).toBe(0)
+  },
+  'compact-doc': () => {
+    // Run compact-doc with --heading (fixture README.md has an Install section).
+    const r = run(['compact-doc', 'README.md', '--heading', 'Install'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(r.stdout.length).toBeGreaterThan(0)
+    expect(r.stdout).toContain('Install')
+    // --json emits a compact field
+    const rj = run(['compact-doc', 'README.md', '--heading', 'Install', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const p = JSON.parse(rj.stdout) as { path: string; compact: string }
+    expect(typeof p.compact).toBe('string')
+    expect(p.compact.length).toBeGreaterThan(0)
+  },
+  'fetch-image': () => {
+    // fetch-image without network — verify it dispatches correctly by checking --help reachability.
+    const r = run(['fetch-image', '--help'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    expect(r.stdout).toMatch(/url|fetch|image/i)
+  },
+  history: () => {
+    // Isolated home — no blobs; must exit 0 and report empty.
+    const histDir = mkIsolated('tg-hist-')
+    const env = { ...tgEnv(dataBase), TOKEN_GOAT_HOME: histDir }
+    const r = run(['history'], { env })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('No history entries found')
+    const rj = run(['history', '--json'], { env })
+    expect(rj.status, rj.stderr).toBe(0)
+    const arr = JSON.parse(rj.stdout) as unknown[]
+    expect(Array.isArray(arr)).toBe(true)
+  },
 }
 
 describe('built bundle command matrix', () => {

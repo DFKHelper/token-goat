@@ -19,7 +19,7 @@ import { registerReset } from './reset.js'
 import { storeBlob, loadBlob } from './disk_cache.js'
 
 /** Subdir under the token-goat home where web-output blobs live. */
-const WEB_OUTPUT_SUBDIR = 'web_outputs'
+export const WEB_OUTPUT_SUBDIR = 'web_outputs'
 
 // cacheId -> stored body.
 let _byId = new Map<string, string>()
