@@ -260,6 +260,50 @@ describe('parseFile', () => {
     expect(names).toContain('Drawable')
   })
 
+  it('excludes function-local const from the Rust index but keeps nested items and associated consts', async () => {
+    const rustFile = write(
+      'rlocals.rs',
+      [
+        'const TOP: i32 = 1;',
+        'struct Widget { x: i32 }',
+        'impl Widget {',
+        '    const ASSOC: i32 = 9;',
+        '    fn area(&self) -> i32 {',
+        '        const LOCAL_C: i32 = 5;',
+        '        self.x + LOCAL_C',
+        '    }',
+        '}',
+        'fn outer() {',
+        '    const FN_LOCAL: i32 = 2;',
+        '    struct NestedS { a: i32 }',
+        '    fn inner() {}',
+        '    let _ = FN_LOCAL;',
+        '    let _ = NestedS { a: 0 };',
+        '    inner();',
+        '}',
+        'let _g = || {',
+        '    const CLOSURE_C: i32 = 3;',
+        '    CLOSURE_C',
+        '};',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(rustFile)
+    const names = result.symbols.map((s) => s.name)
+    // Top-level and associated declarations stay indexed.
+    expect(names).toContain('TOP')
+    expect(names).toContain('Widget')
+    expect(names).toContain('outer')
+    expect(names).toContain('ASSOC')
+    // Nested named items stay indexed, matching how the TS/JS extractor keeps nested classes and functions.
+    expect(names).toContain('NestedS')
+    expect(names).toContain('inner')
+    // Function-local and closure-local consts are excluded.
+    expect(names).not.toContain('LOCAL_C')
+    expect(names).not.toContain('FN_LOCAL')
+    expect(names).not.toContain('CLOSURE_C')
+  })
+
   it('indexes Ruby classes, modules, methods, and singleton methods', async () => {
     const rubyFile = write(
       'sym.rb',
