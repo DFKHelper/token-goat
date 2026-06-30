@@ -92,7 +92,7 @@ export function extractCsharp(
     // namespace
     const nsM = NAMESPACE_RE.exec(stripped)
     if (nsM) {
-      symbols.push(makeSymbol(filePath, nsM[1] ?? '', 'const', lineNum, stripped.slice(0, 200)))
+      symbols.push(makeSymbol(filePath, nsM[1] ?? '', 'namespace', lineNum, stripped.slice(0, 200)))
     }
 
     // delegate
