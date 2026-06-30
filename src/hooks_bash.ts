@@ -10,7 +10,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange } from './session.js'
+import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
@@ -654,6 +654,32 @@ function isReadOnlyGhApi(cmd: string): boolean {
   return true
 }
 
+const GH_VIEW_BATCH_HINT_KEY = 'gh-view-field-batch'
+
+const GH_VIEW_RE = /^gh\s+(pr|issue)\s+view\b(.*)$/i
+
+/** Detects a read-only `gh pr view`/`gh issue view` that is NOT already batching fields, returning the subcommand and the positional ref (PR/issue number or branch, undefined for the current-branch form) so a concrete `--json a,b,c` example can be built. Returns null when the command already passes a multi-field `--json a,b` (the model is already batching, so no advisory) or is not a gh view. `gh pr view`/`gh issue view` have no mutating variant, so matching `view` is sufficient for the read-only guard. */
+export function extractGhViewForBatchAdvisory(cmd: string): { sub: 'pr' | 'issue'; ref: string | undefined } | null {
+  const m = GH_VIEW_RE.exec(cmd)
+  if (!m) return null
+  const sub = (m[1] ?? '').toLowerCase() === 'issue' ? 'issue' : 'pr'
+  const rest = m[2] ?? ''
+  // Already batching multiple --json fields (a comma-separated list) means the model is doing the right thing; do not advise.
+  if (/--json\s+\S*,/.test(rest)) return null
+  // First positional token that is not a flag is the PR/issue ref; its absence means the current-branch form.
+  const refMatch = /^\s+(?!-)(\S+)/.exec(rest)
+  const ref = refMatch?.[1]
+  return { sub, ref }
+}
+
+/** Builds the one-time field-batching advisory for a `gh pr view`/`gh issue view`, naming a concrete batched `--json` example tailored to the subcommand and the viewed ref. */
+function buildGhViewBatchAdvisory(sub: 'pr' | 'issue', ref: string | undefined): string {
+  const target = ref ? ref + ' ' : ''
+  const fields = sub === 'pr' ? 'number,title,state,body,labels,reviews,files' : 'number,title,state,body,labels,comments'
+  const example = 'gh ' + sub + ' view ' + target + '--json ' + fields
+  return '`gh ' + sub + ' view` field queries can be batched: fetch every field you need in one round-trip with `' + example + '` (slice it with `--jq`) instead of querying field-by-field across multiple calls.'
+}
+
 /**
  * Extracts {url, outputPath} from a `curl -o <file> <url>` download command.
  * Returns null for non-curl commands, commands without `-o`/`--output`, or
@@ -1251,6 +1277,18 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (ghHint !== null) {
       recordStat('session_hint', 0, 0)
       return contextOutput(ghHint)
+    }
+
+    // One-time field-batching advisory: on the first successful read-only `gh pr view`/`gh issue view` this session, nudge toward a single batched `--json a,b,c` instead of querying field-by-field across many calls. Cache the output inline first (as the monitoring path would) so a later identical view still recalls, then return the advisory.
+    const ghView = extractGhViewForBatchAdvisory(cmd)
+    if (ghView !== null && (exitCode === null || exitCode === 0) && !wasHintShown(GH_VIEW_BATCH_HINT_KEY)) {
+      markHintShown(GH_VIEW_BATCH_HINT_KEY)
+      if (Buffer.byteLength(output, 'utf-8') >= MIN_CACHE_BYTES) {
+        const ghViewId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
+        recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), ghViewId, Buffer.byteLength(output, 'utf-8'))
+      }
+      recordStat('session_hint', 0, 0)
+      return contextOutput(buildGhViewBatchAdvisory(ghView.sub, ghView.ref))
     }
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.
