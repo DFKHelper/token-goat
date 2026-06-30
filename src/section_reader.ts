@@ -23,6 +23,8 @@ export interface SectionResult {
   readonly content: string
   readonly lineStart: number
   readonly lineEnd: number
+  /** The original query a prefix redirect resolved from; absent on an exact match. */
+  readonly redirectedFrom?: string
 }
 
 /** A located section header before its end line is resolved. */
@@ -252,21 +254,17 @@ function tableSectionEndIndex(
 }
 
 /**
- * Extract a named section from `text`. Returns `null` when not found.
- *
- * `headingSpec` is the section name, optionally suffixed with `#N` to select the
- * Nth (1-based) occurrence among headers sharing that name. Matching is
- * case-insensitive on the trimmed heading text. Without an ordinal the first
- * occurrence by line order is returned.
+ * Resolve a heading spec to a header index. Tries exact / normalized / stripped
+ * equality first; on a miss with no ordinal, falls back to a unique
+ * normalized-prefix match (e.g. `"Business"` resolves a lone `"Business / logic"`)
+ * and reports the original query via `redirectedFrom`. Returns null when nothing
+ * resolves or a prefix is ambiguous across distinct headings.
  */
-export function extractSection(text: string, headingSpec: string): SectionResult | null {
-  const { base, ordinal } = parseHeadingSpec(headingSpec)
-  if (base.length === 0) return null
-
-  // Language is unknown here (we only have text); the sniffer handles it.
-  const { headers, kind } = findHeaders(text, 'unknown')
-  const lines = text.split('\n')
-
+function resolveHeaderPos(
+  headers: readonly SectionHeader[],
+  base: string,
+  ordinal: number | null,
+): { headerPos: number; redirectedFrom: string | null } | null {
   const target = base.toLowerCase()
   const normalizedTarget = normalizeHeading(base).toLowerCase()
   const strippedTarget = normalizeHeadingStrip(base).toLowerCase()
@@ -282,15 +280,45 @@ export function extractSection(text: string, headingSpec: string): SectionResult
       matches.push(i)
     }
   }
-  if (matches.length === 0) return null
+  if (matches.length > 0) {
+    const pick = ordinal === null ? 0 : ordinal - 1
+    const headerPos = matches[pick]
+    if (headerPos === undefined) return null
+    return { headerPos, redirectedFrom: null }
+  }
+  // No exact match. Fall back to an unambiguous normalized-prefix match so a slash/ampersand subtitle (which the strip-normalizer doesn't cover) still resolves. An ordinal implies the caller already knows the exact text, so skip the fallback there.
+  if (ordinal !== null || normalizedTarget.length === 0) return null
+  let prefixPos = -1
+  const distinct = new Set<string>()
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i]
+    if (h === undefined) continue
+    const norm = normalizeHeading(h.heading).toLowerCase()
+    if (norm.startsWith(normalizedTarget)) {
+      distinct.add(norm)
+      if (prefixPos === -1) prefixPos = i
+    }
+  }
+  if (distinct.size !== 1 || prefixPos === -1) return null
+  const chosen = headers[prefixPos]
+  if (chosen === undefined) return null
+  return { headerPos: prefixPos, redirectedFrom: base }
+}
 
-  const pick = ordinal === null ? 0 : ordinal - 1
-  const headerPos = matches[pick]
-  if (headerPos === undefined) return null
-
+/**
+ * Build a SectionResult for a resolved header: compute the section's end line,
+ * trim a single trailing blank, and slice the body. `redirectedFrom`, when set,
+ * is the original query text the spec resolved to via a prefix redirect.
+ */
+function buildSectionResult(
+  headers: readonly SectionHeader[],
+  kind: HeaderKind,
+  lines: readonly string[],
+  headerPos: number,
+  redirectedFrom: string | null,
+): SectionResult | null {
   const header = headers[headerPos]
   if (header === undefined) return null
-
   const endIndex =
     kind === 'table'
       ? tableSectionEndIndex(headers, headerPos, lines.length)
@@ -300,14 +328,35 @@ export function extractSection(text: string, headingSpec: string): SectionResult
   while (endExclusive > header.index + 1 && lines[endExclusive - 1] === '') {
     endExclusive--
   }
-
   const content = lines.slice(header.index, endExclusive).join('\n')
-  return {
+  const result: SectionResult = {
     heading: header.heading,
     content,
     lineStart: header.index + 1,
     lineEnd: endExclusive,
   }
+  return redirectedFrom === null ? result : { ...result, redirectedFrom }
+}
+
+/**
+ * Extract a named section from `text`. Returns `null` when not found.
+ *
+ * `headingSpec` is the section name, optionally suffixed with `#N` to select the
+ * Nth (1-based) occurrence among headers sharing that name. Matching is
+ * case-insensitive on the trimmed heading text. Without an ordinal the first
+ * occurrence by line order is returned.
+ */
+export function extractSection(text: string, headingSpec: string): SectionResult | null {
+  const { base, ordinal } = parseHeadingSpec(headingSpec)
+  if (base.length === 0) return null
+
+  // Language is unknown here (we only have text); the sniffer handles it.
+  const { headers, kind } = findHeaders(text, 'unknown')
+  const lines = text.split('\n')
+
+  const resolved = resolveHeaderPos(headers, base, ordinal)
+  if (resolved === null) return null
+  return buildSectionResult(headers, kind, lines, resolved.headerPos, resolved.redirectedFrom)
 }
 
 /**
@@ -333,46 +382,9 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
   const { headers, kind } = findHeaders(text, language)
   const lines = text.split('\n')
 
-  const target = base.toLowerCase()
-  const normalizedTarget = normalizeHeading(base).toLowerCase()
-  const strippedTarget = normalizeHeadingStrip(base).toLowerCase()
-  const matches: number[] = []
-  for (let i = 0; i < headers.length; i++) {
-    const h = headers[i]
-    if (h === undefined) continue
-    if (
-      h.heading.toLowerCase() === target ||
-      normalizeHeading(h.heading).toLowerCase() === normalizedTarget ||
-      normalizeHeadingStrip(h.heading).toLowerCase() === strippedTarget
-    ) {
-      matches.push(i)
-    }
-  }
-  if (matches.length === 0) return null
-
-  const pick = ordinal === null ? 0 : ordinal - 1
-  const headerPos = matches[pick]
-  if (headerPos === undefined) return null
-
-  const header = headers[headerPos]
-  if (header === undefined) return null
-
-  const endIndex =
-    kind === 'table'
-      ? tableSectionEndIndex(headers, headerPos, lines.length)
-      : sectionEndIndex(headers, headerPos, lines.length)
-  let endExclusive = endIndex
-  while (endExclusive > header.index + 1 && lines[endExclusive - 1] === '') {
-    endExclusive--
-  }
-
-  const content = lines.slice(header.index, endExclusive).join('\n')
-  return {
-    heading: header.heading,
-    content,
-    lineStart: header.index + 1,
-    lineEnd: endExclusive,
-  }
+  const resolved = resolveHeaderPos(headers, base, ordinal)
+  if (resolved === null) return null
+  return buildSectionResult(headers, kind, lines, resolved.headerPos, resolved.redirectedFrom)
 }
 
 /**

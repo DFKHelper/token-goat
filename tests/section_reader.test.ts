@@ -238,6 +238,51 @@ describe('extractSection — normalized heading matching', () => {
   })
 })
 
+describe('extractSection — unambiguous prefix redirect (#92)', () => {
+  const MD_PREFIX = [
+    '# Business / logic',
+    'body a',
+    '',
+    '# postMessage abuse & Service Worker persistence',
+    'body b',
+    '',
+    '# Setup',
+    'body c',
+    '',
+  ].join('\n')
+
+  it('redirects a unique normalized-prefix query to the lone matching heading', () => {
+    const result = extractSection(MD_PREFIX, 'Business')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Business / logic')
+    expect(result?.redirectedFrom).toBe('Business')
+    expect(result?.content).toContain('body a')
+  })
+
+  it('redirects across an ampersand subtitle the strip-normalizer does not cover', () => {
+    const result = extractSection(MD_PREFIX, 'postMessage')
+    expect(result?.heading).toBe('postMessage abuse & Service Worker persistence')
+    expect(result?.redirectedFrom).toBe('postMessage')
+  })
+
+  it('does not set redirectedFrom on an exact match', () => {
+    const result = extractSection(MD_PREFIX, 'Setup')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Setup')
+    expect(result?.redirectedFrom).toBeUndefined()
+  })
+
+  it('does NOT redirect when a prefix is ambiguous across distinct headings', () => {
+    const md = ['# Business / logic', 'a', '', '# Business rules engine', 'b', ''].join('\n')
+    expect(extractSection(md, 'Business')).toBeNull()
+  })
+
+  it('does NOT use the prefix fallback when an ordinal is given', () => {
+    // An ordinal implies the caller knows the exact heading text, so a prefix-only query with `#N` must miss rather than silently redirect.
+    expect(extractSection(MD_PREFIX, 'Business#1')).toBeNull()
+  })
+})
+
 describe('listAllSections', () => {
   it('returns all headings at all nesting levels', () => {
     const content = ['# Title', '## Sub A', '### Deep A1', '## Sub B'].join('\n')

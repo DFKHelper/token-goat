@@ -293,6 +293,21 @@ describe('read_commands', () => {
       expect(stdout).toContain('npm install')
     })
 
+    it('annotates the header with a redirect note when a prefix redirect resolved it (#92)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockReadSection.mockReturnValue({ content: '# Business / logic\nbody', heading: 'Business / logic', lineStart: 1, lineEnd: 2, redirectedFrom: 'Business' } as any)
+      const { stdout } = capture(() => { runSection({ spec: 'doc.md::Business' }) })
+      expect(stdout).toContain("redirected from: 'Business'")
+      expect(stdout).toContain('Business / logic')
+    })
+
+    it('omits the redirect note on an exact match (#92)', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockReadSection.mockReturnValue({ content: '# Setup\nbody', heading: 'Setup', lineStart: 1, lineEnd: 2 } as any)
+      const { stdout } = capture(() => { runSection({ spec: 'doc.md::Setup' }) })
+      expect(stdout).not.toContain('redirected from')
+    })
+
     it('emits JSON when json flag is set', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockReadSection.mockReturnValue({ content: '# Hello', heading: 'Hello', startLine: 1, endLine: 2 } as any)

@@ -260,7 +260,9 @@ export function runSection(opts: SectionOptions): number {
     return 0
   }
 
-  emit(`# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}\n${result.content}`)
+  const redirectNote =
+    result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
+  emit(`# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`)
   return 0
 }
 
