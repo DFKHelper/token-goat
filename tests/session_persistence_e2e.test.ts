@@ -10,7 +10,7 @@
  * survives the process boundary. They fail on a port without disk persistence.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -46,7 +46,6 @@ function runCli(args: string[]): { stdout: string; stderr: string; status: numbe
 }
 
 beforeAll(() => {
-  execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
   tgHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-persist-home-'))
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-persist-repo-'))
   fs.writeFileSync(path.join(repo, 'tsconfig.json'), '{\n  "compilerOptions": { "strict": true }\n}\n')

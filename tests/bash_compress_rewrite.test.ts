@@ -19,7 +19,7 @@
  * branch, so `configPath()` is redirected (hoisted vi.mock) to a per-test temp
  * file — the same pattern tests/config.test.ts uses.
  */
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -188,7 +188,6 @@ describe('compression rewrite (built-bundle e2e)', () => {
   let tgHome: string
 
   beforeAll(() => {
-    execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
     tgHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-compress-e2e-home-'))
   }, 120_000)
 

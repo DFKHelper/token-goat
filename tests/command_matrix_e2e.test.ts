@@ -74,8 +74,6 @@ function expectRead(args: string[], substr: string): void {
 }
 
 beforeAll(() => {
-  execFileSync(process.execPath, ['esbuild.config.mjs'], { cwd: ROOT, stdio: 'ignore' })
-
   dataBase = mkIsolated('tg-matrix-data-')
   repo = mkIsolated('tg-matrix-repo-')
 
