@@ -48,6 +48,22 @@ import {
   runFind,
   runGrep,
 } from './read_commands.js'
+import {
+  runCallers,
+  runCallChain,
+  runImpact,
+  runDead,
+  runDeps,
+  runTypes,
+  runScope,
+  runSimilar,
+  runContextFor,
+  runTestFor,
+  runCoverageGaps,
+  runArch,
+  runBlame,
+  runAsk,
+} from './graph_commands.js'
 import { contentHash, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage } from './util.js'
@@ -1117,6 +1133,193 @@ export function buildProgram(): Command {
     .command('skill-section <nameHeading> [headingArg]')
     .description('extract a named section from a skill')
     .action(guard(cmdSkillSection))
+
+  program
+    .command('callers <symbol>')
+    .description('find all callers of a symbol, resolved to their enclosing function')
+    .option('-j, --json', 'output as JSON')
+    .option('-l, --limit <n>', 'max references to scan')
+    .action((symbol: string, opts: { json?: boolean; limit?: string }) =>
+      runExit(() =>
+        runCallers({
+          symbol,
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.limit !== undefined ? { limit: Number.parseInt(opts.limit, 10) } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('call-chain <symbol>')
+    .description('transitive callers up toward entry points (BFS, cycle-safe)')
+    .option('-d, --depth <n>', 'max BFS depth (default 8)')
+    .option('-j, --json', 'output as JSON')
+    .action((symbol: string, opts: { depth?: string; json?: boolean }) =>
+      runExit(() =>
+        runCallChain({
+          symbol,
+          ...(opts.depth !== undefined ? { depth: Number.parseInt(opts.depth, 10) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('impact <symbol>')
+    .description('transitive set of callers impacted by a change (with hop depth)')
+    .option('--top <n>', 'limit output to top N results')
+    .option('-j, --json', 'output as JSON')
+    .action((symbol: string, opts: { top?: string; json?: boolean }) =>
+      runExit(() =>
+        runImpact({
+          symbol,
+          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('dead')
+    .description('symbols with zero references (default kind: function)')
+    .option('-k, --kind <kind>', 'symbol kind to check (function, method, class, ...)')
+    .option('--include-private', 'include _-prefixed names')
+    .option('--top <n>', 'limit output to top N results')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { kind?: string; includePrivate?: boolean; top?: string; json?: boolean }) =>
+      runExit(() =>
+        runDead({
+          ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+          ...(opts.includePrivate === true ? { includePrivate: true } : {}),
+          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('deps <file>')
+    .description('one-level imports: resolves relative imports to project files, groups others as external')
+    .option('-j, --json', 'output as JSON')
+    .action((file: string, opts: { json?: boolean }) =>
+      runExit(() => runDeps({ file, ...(opts.json === true ? { json: true } : {}) })),
+    )
+
+  program
+    .command('types [file]')
+    .description('type-like declarations (type, interface, enum, struct, trait, and Python type classes)')
+    .option('-j, --json', 'output as JSON')
+    .option('-l, --limit <n>', 'max results per kind')
+    .action((file: string | undefined, opts: { json?: boolean; limit?: string }) =>
+      runExit(() =>
+        runTypes({
+          ...(file !== undefined ? { file } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+          ...(opts.limit !== undefined ? { limit: Number.parseInt(opts.limit, 10) } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('scope <fileColonLine>')
+    .description('list symbols enclosing a file:line position, innermost first')
+    .option('-j, --json', 'output as JSON')
+    .action((spec: string, opts: { json?: boolean }) =>
+      runExit(() => runScope({ spec, ...(opts.json === true ? { json: true } : {}) })),
+    )
+
+  program
+    .command('similar <spec>')
+    .description('find symbols similar to a given "file::symbol" anchor using FTS')
+    .option('--top <n>', 'max results (default 10)')
+    .option('-j, --json', 'output as JSON')
+    .action((spec: string, opts: { top?: string; json?: boolean }) =>
+      runExit(() =>
+        runSimilar({
+          spec,
+          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('context-for <task>')
+    .description('suggest token-goat read commands for symbols relevant to a task')
+    .option('--top <n>', 'max results (default 12)')
+    .option('--budget <n>', 'stop when estimated tokens exceed budget')
+    .option('-j, --json', 'output as JSON')
+    .action((task: string, opts: { top?: string; budget?: string; json?: boolean }) =>
+      runExit(() =>
+        runContextFor({
+          task,
+          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.budget !== undefined ? { budget: Number.parseInt(opts.budget, 10) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('test-for <file>')
+    .description('list test files that reference symbols defined in a source file')
+    .option('-j, --json', 'output as JSON')
+    .action((file: string, opts: { json?: boolean }) =>
+      runExit(() => runTestFor({ file, ...(opts.json === true ? { json: true } : {}) })),
+    )
+
+  program
+    .command('coverage-gaps')
+    .description('functions and methods with no references in test files')
+    .option('--top <n>', 'limit output to top N results (default 50)')
+    .option('--include-private', 'include _-prefixed symbols')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { top?: string; includePrivate?: boolean; json?: boolean }) =>
+      runExit(() =>
+        runCoverageGaps({
+          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.includePrivate === true ? { includePrivate: true } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('arch')
+    .description('internal import graph analysis: hubs, entry points, cycles')
+    .option('--top <n>', 'limit hubs and entry points to top N (default 10)')
+    .option('-j, --json', 'output as JSON')
+    .action((opts: { top?: string; json?: boolean }) =>
+      runExit(() =>
+        runArch({
+          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
+
+  program
+    .command('blame <spec>')
+    .description('git blame for the line range of a symbol ("file::symbol")')
+    .option('-j, --json', 'output as JSON')
+    .action((spec: string, opts: { json?: boolean }) =>
+      runExit(() => runBlame({ spec, ...(opts.json === true ? { json: true } : {}) })),
+    )
+
+  program
+    .command('ask <question>')
+    .description('(experimental) find relevant code context; synthesize with an LLM if TOKEN_GOAT_ASK_BACKEND is set')
+    .option('--top <n>', 'max FTS hits to surface (default 8)')
+    .option('-j, --json', 'output as JSON')
+    .action((question: string, opts: { top?: string; json?: boolean }) =>
+      runExit(() =>
+        runAsk({
+          question,
+          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
+      ),
+    )
 
   program
     .command('changed')
