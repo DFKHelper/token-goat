@@ -429,6 +429,8 @@ describe('embeddings module', () => {
           preparedStatements.push(sql)
           return {
             all: () => [],
+            // chunk_vectors existence probe (searchSemantic gate) - return a row so the gate passes and the KNN query under test runs.
+            get: () => ({}),
           }
         },
       }
