@@ -101,10 +101,11 @@ function extractCatSourceFile(cmd: string): string | null {
 }
 
 /** Extracts the file path from a simple `cat [flags] <path>` command (quoted or unquoted), returning it and whether it is a doc, env, config, or sql file. Returns null for multi-file cat, piped cat, etc. */
-function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean } | null {
-  const m = /^cat(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/.exec(cmd)
+function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv: boolean; isConfig: boolean; isSql: boolean; cmd0: string } | null {
+  const m = /^(cat|bat|type|Get-Content|gc)(?:\s+(?:-[a-zA-Z]+|--[a-zA-Z-]+))*\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s*$/i.exec(cmd)
   if (!m) return null
-  const filePath = m[1] ?? m[2] ?? m[3]
+  const cmd0 = m[1]!
+  const filePath = m[2] ?? m[3] ?? m[4]
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
   const basename = (filePath.includes('/') ? filePath.split('/').at(-1) : filePath.split('\\').at(-1)) ?? filePath
@@ -115,7 +116,7 @@ function extractCatFile(cmd: string): { filePath: string; isDoc: boolean; isEnv:
   const isDoc = /\.(?:md|mdx|rst|txt)$/i.test(filePath)
   const isEnv = isEnvFile || /\.env$/i.test(filePath)
   const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
-  return { filePath, isDoc, isEnv, isConfig, isSql }
+  return { filePath, isDoc, isEnv, isConfig, isSql, cmd0 }
 }
 
 /**
@@ -303,6 +304,42 @@ function extractTailFile(cmd: string): { filePath: string; isDoc: boolean } | nu
   if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh)$/i.test(filePath)) return null
   const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
   return { filePath, isDoc }
+}
+
+// Extracts file path from `Get-Content <path> -Tail N` or `Get-Content -Tail N <path>` (PowerShell).
+function extractGetContentTail(cmd: string): { filePath: string; isDoc: boolean } | null {
+  // Match: Get-Content <file> -Tail <N> or Get-Content -Tail <N> <file>
+  const tailMatch = /-Tail\s+(\d+)/i.exec(cmd)
+  if (!tailMatch) return null
+  const n = parseInt(tailMatch[1]!, 10)
+  if (n <= 10) return null
+  const getnMatch = /^(Get-Content|gc)\s+/i.exec(cmd)
+  if (!getnMatch) return null
+  // Extract filePath: everything between command and -Tail, or between -Tail N and end
+  const afterCmd = cmd.slice(getnMatch[0].length)
+  const beforeTail = afterCmd.split(/-Tail/i)[0]?.trim() ?? ''
+  const afterTail = afterCmd.split(/-Tail\s+\d+/i)[1]?.trim() ?? ''
+  const filePath = beforeTail || afterTail
+  if (!filePath) return null
+  if (isTempPath(filePath)) return null
+  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
+  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+  return { filePath, isDoc }
+}
+
+// Extracts file path from `Get-Content <path> | Select-Object -First N` (PowerShell).
+function extractGetContentSelectFirst(cmd: string): { filePath: string; isDoc: boolean; isConfig: boolean } | null {
+  const m = /^(Get-Content|gc)\s+([^|]+)\s*\|\s*(Select-Object|select)\s+(-First\s+(\d+))/i.exec(cmd)
+  if (!m) return null
+  const filePath = m[2]?.trim() ?? ''
+  const n = parseInt(m[5] ?? '0', 10)
+  if (n < 10) return null
+  if (!filePath) return null
+  if (isTempPath(filePath)) return null
+  if (!/\.(?:ts|tsx|js|jsx|py|go|java|rs|rb|cs|md|mdx|rst|txt|json|yaml|yml|toml|sql|sh|ps1|psm1)$/i.test(filePath)) return null
+  const isDoc = /\.(?:md|mdx|rst|txt|sql)$/i.test(filePath)
+  const isConfig = /\.(?:json|yaml|yml|toml|conf|cfg|ini|properties)$/i.test(filePath)
+  return { filePath, isDoc, isConfig }
 }
 
 /**
@@ -719,11 +756,11 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
   const catResult = extractCatFile(cmd)
   if (catResult !== null) {
-    const { filePath, isDoc, isEnv, isConfig, isSql } = catResult
+    const { filePath, isDoc, isEnv, isConfig, isSql, cmd0 } = catResult
     recordStat('session_hint', 0, 0)
     if (isSql) {
       return contextOutput(
-        '`cat` loads the entire file into context. Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
+        '`' + cmd0 + '` loads the entire file into context. Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
     const hint = isEnv
@@ -733,7 +770,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
         : isDoc
           ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
           : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
-    return cdStripped ? contextOutput('`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
+    return cdStripped ? contextOutput('`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
   }
 
   const wslCatResult = extractWslCatFile(cmd)
@@ -785,6 +822,28 @@ export function preBashHandler(event: HookEvent): HookOutput {
         : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
     recordStat('session_hint', 0, 0)
     return contextOutput('`head` bypasses read hooks. ' + hint)
+  }
+
+  const gcTailResult = extractGetContentTail(cmd)
+  if (gcTailResult !== null) {
+    const { filePath, isDoc } = gcTailResult
+    const hint = isDoc
+      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+      : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+    recordStat('session_hint', 0, 0)
+    return contextOutput('`Get-Content -Tail` bypasses read hooks. ' + hint)
+  }
+
+  const gcSelectResult = extractGetContentSelectFirst(cmd)
+  if (gcSelectResult !== null) {
+    const { filePath, isDoc, isConfig } = gcSelectResult
+    const hint = isConfig
+      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+      : isDoc
+        ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+        : 'Use `token-goat read "' + filePath + '::SymbolName"` or `token-goat skeleton "' + filePath + '"` to see the file structure.'
+    recordStat('session_hint', 0, 0)
+    return contextOutput('`Select-Object -First` bypasses read hooks. ' + hint)
   }
 
   const nodeRead = extractNodeFileRead(cmd)
