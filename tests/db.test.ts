@@ -57,6 +57,13 @@ describe('getDb', () => {
     expect(Number(sync)).toBe(1)
   })
 
+  it('sets a busy_timeout above the better-sqlite3 default so concurrent writers wait instead of erroring', () => {
+    // token-goat runs multiple processes against one global.db (worker daemon + CLI hook invocations). Without a generous busy_timeout a writer that finds the write lock held fails immediately with SQLITE_BUSY ("database is locked"). The better-sqlite3 default is 5000ms; we raise it to 15000ms, so a regression that drops the explicit pragma is caught here.
+    const db = getDb(tmpDbPath())
+    const timeout = Number(db.pragma('busy_timeout', { simple: true }))
+    expect(timeout).toBe(15000)
+  })
+
   it('creates the index tables on first open', () => {
     const db = getDb(tmpDbPath())
     const names = (
