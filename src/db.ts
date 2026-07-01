@@ -123,6 +123,8 @@ function initConnection(conn: BetterSqlite3Database): void {
     throw new Error(`db: failed to enable WAL mode (got: ${walMode})`)
   }
   conn.pragma('synchronous = NORMAL')
+  // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
+  conn.pragma('busy_timeout = 15000')
 
   conn.exec(SCHEMA_SQL)
 

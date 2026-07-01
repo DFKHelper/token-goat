@@ -8,6 +8,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **`skill-history` and `skill-diff` no longer error on a fresh install with no cached skills.** Both commands re-implemented the skill-outputs directory scan with a `catch` that turned the missing-directory `ENOENT` (the normal state before any skill has been loaded, and on a fresh CI checkout) into a fatal `Failed to list skill history` / `Failed to diff skill` exit-1. They now reuse the shared, missing-dir-tolerant `listOutputs()` from [src/skill_cache.ts](src/skill_cache.ts): an absent cache yields an empty listing (exit 0), removing duplicated readdir logic in the process. Regression-tested against a never-created cache in [tests/skill_history_diff_empty.test.ts](tests/skill_history_diff_empty.test.ts).
 
+- **Concurrent writers to the shared index no longer fail with "database is locked".** token-goat runs as multiple processes against one `global.db` (the worker daemon draining the dirty queue alongside CLI invocations from hooks), so concurrent writers are the normal case. The connection enabled WAL but relied on better-sqlite3's default 5000ms busy timeout, which was exhausted under heavy parallel indexing and surfaced as an intermittent `SqliteError: database is locked` (reproducible in the full test suite against a fresh data directory). The connection now sets an explicit `busy_timeout = 15000`, so a writer waits for a held write lock instead of erroring immediately. Guarded in [tests/db.test.ts](tests/db.test.ts).
+
 ## [2.5.0] - 2026-06-30
 
 ### Added
