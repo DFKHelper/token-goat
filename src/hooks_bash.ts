@@ -17,6 +17,7 @@ import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
+import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
 import { statSync } from 'node:fs'
 
@@ -789,6 +790,8 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
     return null
   }
   if (!cfg.enabled) return null
+  // No usable shell to run the wrapper under (Windows with no Git-Bash): leave the command to run normally in the harness bash, uncompressed, rather than wrapping it into a cmd.exe execution.
+  if (!canRunWrappedShell()) return null
 
   // A specific filter (once the framework recognizes the command) wins over the generic catch-all. Either way the command must be a single pipe/redirect-free invocation: detectFromCommand enforces that for specific filters; the generic path requires it explicitly.
   const detected = detectFromCommand(cmd)
