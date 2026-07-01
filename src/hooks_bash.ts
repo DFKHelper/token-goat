@@ -11,6 +11,7 @@ import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
+import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
@@ -620,18 +621,32 @@ function extractCurlUrl(cmd: string): string | null {
   return m?.[1] ?? null
 }
 
-/** Match a `token-goat symbol|read|section <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section. */
+/** Match a `token-goat symbol|read|section|skill-body|skill-compact <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section; skill-body/skill-compact dedup on the raw remainder. */
 function extractTgSurgicalRead(cmd: string): { sub: string; spec: string; filePath: string | null } | null {
-  const m = /^token-goat\s+(symbol|read|section)\s+(.+)$/.exec(cmd)
+  const m = /^token-goat\s+(symbol|read|section|skill-body|skill-compact)\s+(.+)$/.exec(cmd)
   if (!m) return null
   const sub = m[1]!
-  const specMatch = /^(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(m[2]!.trim())
-  const spec = specMatch?.[1] ?? specMatch?.[2] ?? specMatch?.[3] ?? null
-  if (spec === null) return null
+  const rest = m[2]!.trim()
+
+  // skill-body/skill-compact take a name (or --path/--all flags), not a file::symbol spec — dedup
+  // on the exact remainder so distinct flag/name combos never collide under one key.
+  if (sub === 'skill-body' || sub === 'skill-compact') {
+    return { sub, spec: rest, filePath: null }
+  }
+
+  const specMatch = /^(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(rest)
+  const rawSpec = specMatch?.[1] ?? specMatch?.[2] ?? specMatch?.[3] ?? null
+  if (rawSpec === null) return null
   let filePath: string | null = null
+  let spec = rawSpec
   if (sub === 'read' || sub === 'section') {
-    const colonIdx = spec.indexOf('::')
-    filePath = colonIdx === -1 ? spec : spec.slice(0, colonIdx)
+    const colonIdx = rawSpec.indexOf('::')
+    const rawFilePath = colonIdx === -1 ? rawSpec : rawSpec.slice(0, colonIdx)
+    // Normalize before it becomes the dedup key: two invocations differing only in drive-letter
+    // case or slash direction must collide, or the CLI dedup misses them (unlike the Read-tool
+    // ledger, which already normalizes via recordFileRead).
+    filePath = normalizePath(rawFilePath)
+    spec = colonIdx === -1 ? filePath : filePath + rawSpec.slice(colonIdx)
   }
   return { sub, spec, filePath }
 }
