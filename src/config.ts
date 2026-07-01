@@ -135,6 +135,7 @@ export interface HintsConfig {
   stable_doc_compacts: boolean
   truncated_read_min_lines: number
   protect_recent_reads: number
+  warn_unbalanced_shell_quoting: boolean
   prompt_triggers: PromptTrigger[]
   log_large_file_hint_outcomes: boolean
 }
@@ -312,6 +313,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     stable_doc_compacts: true,
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
+    warn_unbalanced_shell_quoting: true,
     prompt_triggers: [],
     log_large_file_hint_outcomes: false,
   },
@@ -451,6 +453,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_SKILL_COMPRESS',
   'TOKEN_GOAT_PRE_SKILL',
   'TOKEN_GOAT_ORPHAN_SWEEP',
+  'TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING',
   'TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES',
 ]
 
@@ -649,7 +652,9 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.stable_doc_compacts = validatedBool(hi_raw['stable_doc_compacts'], hi.stable_doc_compacts)
   hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, 0, 1_000_000)
   hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, 0, 100)
+  hi.warn_unbalanced_shell_quoting = validatedBool(hi_raw['warn_unbalanced_shell_quoting'], hi.warn_unbalanced_shell_quoting)
   hi.log_large_file_hint_outcomes = validatedBool(hi_raw['log_large_file_hint_outcomes'], hi.log_large_file_hint_outcomes)
+  hi.warn_unbalanced_shell_quoting = envBool('TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING', hi.warn_unbalanced_shell_quoting)
   hi.serve_diff_on_reread = envBool('TOKEN_GOAT_SERVE_DIFF_ON_REREAD', hi.serve_diff_on_reread)
   hi.log_large_file_hint_outcomes = envBool('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', hi.log_large_file_hint_outcomes)
   hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes)

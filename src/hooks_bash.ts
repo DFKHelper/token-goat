@@ -847,11 +847,159 @@ function unwrapCompressCommand(executed: string): string | null {
   return null
 }
 
+/**
+ * Detect unbalanced shell quoting or unterminated heredocs in a bash command.
+ * Returns a human-readable reason string if a clear syntax error is found,
+ * or null if the command appears syntactically valid.
+ *
+ * Conservative approach: only flags unambiguous errors. Better to miss a false
+ * negative (let a broken command run and fail naturally) than to false-positive
+ * on valid constructs like `git commit -m "don't do that"` (single quote in
+ * double quotes).
+ */
+function detectUnbalancedShellSyntax(cmd: string): string | null {
+  let inSingle = false
+  let inDouble = false
+  let i = 0
+
+  // State machine: track whether we're inside single or double quotes
+  while (i < cmd.length) {
+    const ch = cmd[i]
+
+    if (inSingle) {
+      // Inside single quotes: only ' can toggle the state (no escaping possible)
+      if (ch === "'") {
+        inSingle = false
+      }
+      i++
+      continue
+    }
+
+    if (inDouble) {
+      // Inside double quotes: " toggles unless it's escaped with \
+      if (ch === '\\' && i + 1 < cmd.length) {
+        // Skip the next character (it's escaped)
+        i += 2
+        continue
+      }
+      if (ch === '"') {
+        inDouble = false
+      }
+      i++
+      continue
+    }
+
+    // Bare code (outside quotes)
+    if (ch === "'") {
+      inSingle = true
+      i++
+      continue
+    }
+
+    if (ch === '"') {
+      inDouble = true
+      i++
+      continue
+    }
+
+    // Check for heredoc syntax: <<[-~]?WORD or <<[-~]?'WORD' or <<[-~]?"WORD"
+    if (ch === '<' && i + 1 < cmd.length && cmd[i + 1] === '<') {
+      let j = i + 2
+      // Optional - or ~ modifier for indented heredoc
+      let hasIndentModifier = false
+      if (j < cmd.length && (cmd[j] === '-' || cmd[j] === '~')) {
+        hasIndentModifier = true
+        j++
+      }
+      // Skip whitespace
+      while (j < cmd.length && cmd[j] === ' ') {
+        j++
+      }
+      if (j < cmd.length) {
+        // Check for optional quotes around the delimiter
+        let delimStart = j
+        if (cmd[j] === '"' || cmd[j] === "'") {
+          delimStart = j + 1
+          // Find closing quote
+          const quoteChar = cmd[j]
+          let delimEnd = delimStart
+          while (delimEnd < cmd.length && cmd[delimEnd] !== quoteChar) {
+            delimEnd++
+          }
+          if (delimEnd >= cmd.length) {
+            // Unclosed quote in heredoc opener — that's already a syntax error
+            return 'an unclosed quote in a heredoc opener'
+          }
+          j = delimEnd + 1
+        } else {
+          // Unquoted delimiter: continue until space, newline, or special char
+          let delimEnd = delimStart
+          while (delimEnd < cmd.length && /\w/.test(cmd.charAt(delimEnd))) {
+            delimEnd++
+          }
+          j = delimEnd
+        }
+        // Extract the delimiter word
+        const delimiter = cmd.slice(delimStart, j).replace(/["']/g, '')
+        if (delimiter) {
+          // Now check if the command contains a line that exactly matches the delimiter
+          const lines = cmd.slice(j).split('\n')
+          let foundTerminator = false
+          for (const line of lines) {
+            // Heredoc terminator must be the delimiter on its own line
+            // Without <<- modifier, it must NOT be indented; with <<-, it may be indented
+            if (hasIndentModifier) {
+              // With <<- (indented heredoc), allow leading whitespace
+              if (line.trim() === delimiter) {
+                foundTerminator = true
+                break
+              }
+            } else {
+              // Without <<- (strict heredoc), no leading whitespace allowed
+              if (line === delimiter) {
+                foundTerminator = true
+                break
+              }
+            }
+          }
+          if (!foundTerminator) {
+            return `an unterminated heredoc (${delimiter} never appears on its own line)`
+          }
+        }
+      }
+    }
+
+    i++
+  }
+
+  // Final check: unbalanced quotes
+  if (inSingle) {
+    return 'an unclosed single quote'
+  }
+  if (inDouble) {
+    return 'an unclosed double quote'
+  }
+
+  return null
+}
+
 export function preBashHandler(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined) return passOutput()
   const cmd = stripCdPrefix(rawCmd)
   const cdStripped = cmd !== rawCmd
+
+  // Check for unbalanced shell quoting or unterminated heredocs
+  const cfg = loadConfig()
+  if (cfg.hints.warn_unbalanced_shell_quoting) {
+    const quoteError = detectUnbalancedShellSyntax(cmd)
+    if (quoteError !== null) {
+      recordStat('session_hint', 0, 0)
+      return contextOutput(
+        'This command has ' + quoteError + '. If you\'re writing a multi-line string with embedded quotes or special characters, consider using the Write tool instead — it avoids shell quoting issues entirely.',
+      )
+    }
+  }
 
   // Item 3: task output file — already cached, recall with bash-output
   const taskOutput = extractTasksOutput(cmd)
