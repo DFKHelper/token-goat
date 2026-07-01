@@ -22,7 +22,7 @@ import { normalizePath } from './paths.js'
 import { isWindows } from './util.js'
 import { loadConfig } from './config.js'
 import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState } from './session.js'
-import { writeSessionManifest } from './compact.js'
+import { writeSessionManifest, readAllSessionManifests } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
@@ -38,7 +38,6 @@ import {
 import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
 import { recordStat } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
-import { dataDir } from './constants.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
@@ -179,6 +178,44 @@ export function buildLineDiff(oldContent: string, newContent: string, label: str
 }
 
 /**
+ * True if a sibling session's manifest (see compact.ts) shows a recent read of filePath.
+ * Delegates the directory walk / staleness / corrupt-JSON handling to readAllSessionManifests
+ * instead of re-implementing it, so both cross-session dedup and compaction share one reader.
+ */
+function scanCrossSessionManifests(
+  projectRoot: string,
+  projectHash: string,
+  filePath: string,
+  ttlSecs: number,
+): boolean {
+  try {
+    const relPath = path.relative(projectRoot, filePath).replace(/\\/g, '/')
+    const manifests = readAllSessionManifests(projectHash, ttlSecs)
+
+    for (const data of manifests) {
+      const files = data['files']
+      if (!Array.isArray(files)) continue
+
+      for (const entry of files) {
+        if (
+          typeof entry === 'object' &&
+          entry !== null &&
+          (entry as Record<string, unknown>)['rel_path'] === relPath &&
+          typeof (entry as Record<string, unknown>)['hit_count'] === 'number' &&
+          ((entry as Record<string, unknown>)['hit_count'] as number) > 0
+        ) {
+          return true
+        }
+      }
+    }
+  } catch {
+    // Fail-soft: ignore any errors in cross-session scanning
+  }
+
+  return false
+}
+
+/**
  * pre_tool_use handler for Read/Grep/Glob.
  *
  * Returns `deny` for: node_modules, lock files, .tsbuildinfo, build artifacts,
@@ -188,72 +225,6 @@ export function buildLineDiff(oldContent: string, newContent: string, label: str
  * Returns `pass` otherwise.
  * Always records the read so the re-read hint fires on the next touch.
  */
-function scanCrossSessionManifests(
-  projectRoot: string,
-  projectHash: string,
-  sessionId: string,
-  filePath: string,
-  ttlSecs: number,
-): boolean {
-  try {
-    const sessionsDir = path.join(dataDir(), 'projects', projectHash, 'sessions')
-
-    if (!fs.existsSync(sessionsDir)) {
-      return false
-    }
-
-    const now = Date.now() / 1000
-    const relPath = path.relative(projectRoot, filePath).replace(/\\/g, '/')
-
-    try {
-      const files = fs.readdirSync(sessionsDir)
-      for (const file of files) {
-        if (!file.endsWith('.json') || file === sessionId + '.json') {
-          continue
-        }
-
-        try {
-          const fullPath = path.join(sessionsDir, file)
-          const stat = fs.statSync(fullPath)
-          if (now - stat.mtimeMs / 1000 > ttlSecs) {
-            continue
-          }
-
-          const text = fs.readFileSync(fullPath, 'utf8')
-          const data = JSON.parse(text)
-
-          if (
-            typeof data === 'object' &&
-            data !== null &&
-            'files' in data &&
-            Array.isArray(data.files)
-          ) {
-            for (const entry of data.files) {
-              if (
-                typeof entry === 'object' &&
-                entry !== null &&
-                entry.rel_path === relPath &&
-                entry.hit_count !== undefined &&
-                entry.hit_count > 0
-              ) {
-                return true
-              }
-            }
-          }
-        } catch {
-          // Silently skip corrupt JSON or inaccessible files
-        }
-      }
-    } catch {
-      // Silently fail if directory not accessible
-    }
-  } catch {
-    // Fail-soft: ignore any errors in cross-session scanning
-  }
-
-  return false
-}
-
 export function preReadHandler(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
@@ -527,9 +498,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
 
       const relPath = path.relative(project.root, normalized).replace(/\\/g, '/')
       if (!relPath.startsWith('..')) {
-        const sessionId = getSessionId()
         const ttlSecs = config.hints.cross_session_read_dedup_ttl_secs
-        if (scanCrossSessionManifests(project.root, project.hash, sessionId, normalized, ttlSecs)) {
+        if (scanCrossSessionManifests(project.root, project.hash, normalized, ttlSecs)) {
           recordFileRead(normalized)
           return contextOutput(
             'This file may have already been read by another agent/session working in this project recently. ' +
