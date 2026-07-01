@@ -65,7 +65,7 @@ import {
   runBlame,
   runAsk,
 } from './graph_commands.js'
-import { contentHash, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
+import { contentHash, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage } from './util.js'
 import { renderStats } from './stats.js'
@@ -540,45 +540,27 @@ async function cmdSkillSize(opts: { sessionId?: string }): Promise<void> {
 }
 
 async function cmdSkillHistory(opts: { json?: boolean }): Promise<void> {
-  try {
-    const dir = skillOutputsDir()
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
-    const metas: Array<{ outputId: string; skillName: string; bytes: number; truncated: boolean; ts: number }> = []
+  const metas = (await listOutputs())
+    .map((m) => ({ outputId: m.outputId, skillName: m.skillName, bytes: m.bodyBytes, truncated: m.truncated, ts: m.ts }))
+    .sort((a, b) => b.ts - a.ts)
 
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.meta')) continue
-      try {
-        const content = await fs.promises.readFile(path.resolve(dir, entry.name), 'utf-8')
-        const meta = JSON.parse(content)
-        metas.push({ outputId: meta.outputId, skillName: meta.skillName, bytes: meta.bodyBytes, truncated: meta.truncated, ts: meta.ts })
-      } catch {
-        continue
-      }
-    }
-
-    // Sort by timestamp descending (newest first).
-    metas.sort((a, b) => b.ts - a.ts)
-
-    if (opts.json === true) {
-      const json = metas.map((m) => ({
-        output_id: m.outputId,
-        skill_name: m.skillName,
-        bytes: m.bytes,
-        truncated: m.truncated,
-        timestamp: m.ts,
-      }))
-      out(JSON.stringify(json, null, 2))
-    } else {
-      const lines = metas.map((m) => {
-        const timeStr = new Date(m.ts).toISOString().slice(0, 19)
-        const truncMarker = m.truncated ? ' [truncated]' : ''
-        return `${m.outputId.padEnd(40)} ${m.skillName.padEnd(25)} ${m.bytes.toString().padStart(8)} bytes  ${timeStr}${truncMarker}`
-      })
-      const header = `${'Output ID'.padEnd(40)} ${'Skill'.padEnd(25)} ${'Bytes'.padStart(8)}  Timestamp`
-      out([header, ...lines].join('\n'))
-    }
-  } catch {
-    throw new CliError('Failed to list skill history')
+  if (opts.json === true) {
+    const json = metas.map((m) => ({
+      output_id: m.outputId,
+      skill_name: m.skillName,
+      bytes: m.bytes,
+      truncated: m.truncated,
+      timestamp: m.ts,
+    }))
+    out(JSON.stringify(json, null, 2))
+  } else {
+    const lines = metas.map((m) => {
+      const timeStr = new Date(m.ts).toISOString().slice(0, 19)
+      const truncMarker = m.truncated ? ' [truncated]' : ''
+      return `${m.outputId.padEnd(40)} ${m.skillName.padEnd(25)} ${m.bytes.toString().padStart(8)} bytes  ${timeStr}${truncMarker}`
+    })
+    const header = `${'Output ID'.padEnd(40)} ${'Skill'.padEnd(25)} ${'Bytes'.padStart(8)}  Timestamp`
+    out([header, ...lines].join('\n'))
   }
 }
 
@@ -586,41 +568,30 @@ async function cmdSkillDiff(name: string): Promise<void> {
   if (!name) {
     throw new CliError('skill-diff requires a <name>')
   }
-  try {
-    const dir = skillOutputsDir()
-    const entries = await fs.promises.readdir(dir, { withFileTypes: true })
-    const versions: Array<{ ts: number; outputId: string; body: string }> = []
+  const dir = skillOutputsDir()
+  const versions = (await listOutputs())
+    .filter((m) => m.skillName === name)
+    .sort((a, b) => b.ts - a.ts)
 
-    for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.txt')) continue
-      try {
-        const metaName = entry.name.replace(/\.txt$/, '.meta')
-        const metaContent = await fs.promises.readFile(path.resolve(dir, metaName), 'utf-8').catch(() => null)
-        if (!metaContent) continue
-        const meta = JSON.parse(metaContent)
-        if (meta.skillName !== name) continue
-        const body = await fs.promises.readFile(path.resolve(dir, entry.name), 'utf-8')
-        versions.push({ ts: meta.ts, outputId: meta.outputId, body })
-      } catch {
-        continue
-      }
-    }
-
-    // Sort by timestamp descending (newest first).
-    versions.sort((a, b) => b.ts - a.ts)
-
-    if (versions.length < 2) {
-      out(`only one cached version of '${name}'`)
-      return
-    }
-
-    const older = versions[1]!
-    const newer = versions[0]!
-    const diff = buildLineDiff(older.body, newer.body, name)
-    out(diff)
-  } catch {
-    throw new CliError(`Failed to diff skill '${name}'`)
+  if (versions.length === 0) {
+    out(`no cached versions of '${name}'`)
+    return
   }
+  if (versions.length < 2) {
+    out(`only one cached version of '${name}'`)
+    return
+  }
+
+  const newer = versions[0]!
+  const older = versions[1]!
+  const newerBody = await fs.promises.readFile(path.resolve(dir, `${newer.outputId}.txt`), 'utf-8').catch(() => null)
+  const olderBody = await fs.promises.readFile(path.resolve(dir, `${older.outputId}.txt`), 'utf-8').catch(() => null)
+  if (newerBody === null || olderBody === null) {
+    out(`only one cached version of '${name}'`)
+    return
+  }
+  const diff = buildLineDiff(olderBody, newerBody, name)
+  out(diff)
 }
 
 async function cmdSkillSection(nameHeading: string, headingArg?: string): Promise<void> {
