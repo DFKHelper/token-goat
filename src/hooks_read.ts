@@ -315,6 +315,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     if (fileContent !== null) {
       const headings = extractMarkdownHeadings(fileContent)
       if (headings.length >= 3) {
+        const alreadyRead = wasFileReadThisSession(normalized)
         recordFileRead(normalized)
         const hintText = formatHeadingTree(headings, normalized)
         const wellKnown = getWellKnownSections(basename)
@@ -328,7 +329,10 @@ export function preReadHandler(event: HookEvent): HookOutput {
         const changelogExtra = basename.toLowerCase() === 'changelog.md'
           ? extractChangelogVersionHint(fileContent, normalized)
           : ''
-        return denyOutput(hintText + wellKnownText + changelogExtra)
+        const message = hintText + wellKnownText + changelogExtra
+        // First read: let it through (contextOutput) so Claude Code's Read-before-Edit
+        // ledger is satisfied. Only hard-deny a re-read, matching every other block below.
+        return alreadyRead ? denyOutput(message) : contextOutput(message)
       }
     }
   }

@@ -212,7 +212,7 @@ describe('preReadHandler', () => {
     }
   })
 
-  it('intercepts markdown files >=8KB with >=3 headings and returns deny', () => {
+  it('gives a context hint (not a deny) on the first read of a large markdown file with >=3 headings', () => {
     const mdContent = `# Title
 Some content here
 
@@ -229,6 +229,34 @@ How to use this
 Examples here`
 
     const p = _makeTmpMdFile(mdContent + 'x'.repeat(10000))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Large markdown file')
+      expect(result.context).toContain('# Title')
+      expect(result.context).toContain('## Installation')
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('hard-denies a re-read of a large markdown file with >=3 headings', () => {
+    const mdContent = `# Title
+Some content here
+
+## Installation
+Instructions here
+
+### Quick Start
+More details
+
+## Usage
+How to use this
+
+### Examples
+Examples here`
+
+    const p = _makeTmpMdFile(mdContent + 'x'.repeat(10000))
+    recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
@@ -258,7 +286,7 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('pass')
   })
 
-  it('intercepts .mdx files with same rules as .md', () => {
+  it('intercepts .mdx files with same rules as .md, denying only on re-read', () => {
     const mdContent = `# React Component
 ## Props
 ### Configuration
@@ -271,6 +299,13 @@ Some content that makes the file large enough`
     fs.writeFileSync(p, mdContent + 'x'.repeat(10000))
     tmpFiles.push(p)
 
+    const first = preReadHandler(readEvent(p))
+    expect(first.hookType).toBe('context')
+    if (first.hookType === 'context') {
+      expect(first.context).toContain('Large markdown file')
+    }
+
+    recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
@@ -278,7 +313,7 @@ Some content that makes the file large enough`
     }
   })
 
-  it('includes well-known sections in the deny output for README.md', () => {
+  it('includes well-known sections in the re-read deny output for README.md', () => {
     const readmeContent = `# My Project
 ## Installation
 ## Usage
@@ -293,6 +328,7 @@ Some content that makes the file large enough`
     fs.writeFileSync(p, readmeContent + 'x'.repeat(10000))
     tmpFiles.push(p)
 
+    recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
@@ -430,6 +466,7 @@ Some content that makes the file large enough`
     fs.writeFileSync(p, changelogContent + 'x'.repeat(10000))
     tmpFiles.push(p)
 
+    recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
