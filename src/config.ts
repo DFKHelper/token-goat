@@ -136,6 +136,7 @@ export interface HintsConfig {
   truncated_read_min_lines: number
   protect_recent_reads: number
   prompt_triggers: PromptTrigger[]
+  log_large_file_hint_outcomes: boolean
 }
 
 export interface HooksConfig {
@@ -312,6 +313,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     truncated_read_min_lines: 200,
     protect_recent_reads: 4,
     prompt_triggers: [],
+    log_large_file_hint_outcomes: false,
   },
   hooks: {
     watchdog_ms: 700,
@@ -449,6 +451,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_SKILL_COMPRESS',
   'TOKEN_GOAT_PRE_SKILL',
   'TOKEN_GOAT_ORPHAN_SWEEP',
+  'TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES',
 ]
 
 export function configEnvFingerprint(): string {
@@ -646,7 +649,9 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.stable_doc_compacts = validatedBool(hi_raw['stable_doc_compacts'], hi.stable_doc_compacts)
   hi.truncated_read_min_lines = validatedInt(hi_raw['truncated_read_min_lines'], hi.truncated_read_min_lines, 0, 1_000_000)
   hi.protect_recent_reads = validatedInt(hi_raw['protect_recent_reads'], hi.protect_recent_reads, 0, 100)
+  hi.log_large_file_hint_outcomes = validatedBool(hi_raw['log_large_file_hint_outcomes'], hi.log_large_file_hint_outcomes)
   hi.serve_diff_on_reread = envBool('TOKEN_GOAT_SERVE_DIFF_ON_REREAD', hi.serve_diff_on_reread)
+  hi.log_large_file_hint_outcomes = envBool('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', hi.log_large_file_hint_outcomes)
   hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes)
   // parse prompt_triggers
   const triggers_raw = hi_raw['prompt_triggers']
@@ -844,6 +849,7 @@ export function saveConfig(config: Config): void {
       truncated_read_min_lines: config.hints.truncated_read_min_lines,
       protect_recent_reads: config.hints.protect_recent_reads,
       prompt_triggers: config.hints.prompt_triggers,
+      log_large_file_hint_outcomes: config.hints.log_large_file_hint_outcomes,
     },
     hooks: {
       watchdog_ms: config.hooks.watchdog_ms,

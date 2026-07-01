@@ -182,12 +182,18 @@ function getGlobalDb(): Database.Database {
  * Silently no-ops on any error so hook paths are never blocked.
  * Pass `_testDb` in tests to inject a pre-initialized database.
  */
-export function recordStat(kind: string, bytesSaved = 0, tokensSaved = 0, _testDb?: Database.Database): void {
+export function recordStat(
+  kind: string,
+  bytesSaved = 0,
+  tokensSaved = 0,
+  _testDb?: Database.Database,
+  detail?: string,
+): void {
   try {
     const db = _testDb ?? getGlobalDb()
     db.prepare(
-      'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, ?, ?)',
-    ).run(Math.floor(Date.now() / 1000), kind, bytesSaved, tokensSaved)
+      'INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail) VALUES (?, ?, ?, ?, ?)',
+    ).run(Math.floor(Date.now() / 1000), kind, bytesSaved, tokensSaved, detail ?? null)
   } catch {
     // Best-effort — never block the hook path.
   }

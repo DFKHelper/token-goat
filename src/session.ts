@@ -61,6 +61,12 @@ let _curlDownloads = new Map<string, string>()
 // path (as written on the sed command line) -> served inclusive line ranges this session, for overlap detection across repeated `sed -n 'N,Mp'` reads.
 let _fileLineRanges = new Map<string, Array<[number, number]>>()
 
+// `${sub}::${spec}` keys for `token-goat symbol|read|section` invocations already run this session (CLI-side re-read dedup).
+let _cliReads = new Set<string>()
+
+// path -> size (bytes) for a large-file hint fired but not yet resolved as followed/ignored (opt-in outcome logging, consume-on-resolve).
+let _pendingLargeFileHints = new Map<string, number>()
+
 // Resolved once per process: env-provided session id or a generated one.
 let _sessionId: string | null = null
 
@@ -159,6 +165,30 @@ export function wasHintShown(hintKey: string): boolean {
 /** Mark `hintKey` as shown so a later {@link wasHintShown} returns true. */
 export function markHintShown(hintKey: string): void {
   _hintsShown.add(hintKey)
+}
+
+/** True if `cliReadKey` (a `token-goat symbol|read|section` invocation) already ran this session. */
+export function wasCliReadThisSession(cliReadKey: string): boolean {
+  return _cliReads.has(cliReadKey)
+}
+
+/** Record that a `token-goat symbol|read|section` invocation ran this session. */
+export function recordCliRead(cliReadKey: string): void {
+  _cliReads.add(cliReadKey)
+}
+
+/** Record that a large-file hint fired for `filePath` (size in bytes), pending an outcome resolution. */
+export function recordLargeFileHintPending(filePath: string, sizeBytes: number): void {
+  _pendingLargeFileHints.set(normalizePath(filePath), sizeBytes)
+}
+
+/** Consume and return the pending large-file-hint size for `filePath`, or null if none is pending. */
+export function takePendingLargeFileHint(filePath: string): number | null {
+  const key = normalizePath(filePath)
+  const size = _pendingLargeFileHints.get(key)
+  if (size === undefined) return null
+  _pendingLargeFileHints.delete(key)
+  return size
 }
 
 /** Index a web-fetch result: `url` -> `cacheId`. */
@@ -289,6 +319,8 @@ export interface SerializedSession {
   bashOutputs: Array<[string, string]>
   curlDownloads: Array<[string, string]>
   fileLineRanges?: Array<[string, Array<[number, number]>]>
+  cliReads?: string[]
+  pendingLargeFileHints?: Array<[string, number]>
 }
 
 /** Snapshot the current in-memory session state for persistence. */
@@ -300,6 +332,8 @@ export function exportSessionState(): SerializedSession {
     bashOutputs: Array.from(_bashOutputs.entries()),
     curlDownloads: Array.from(_curlDownloads.entries()),
     fileLineRanges: Array.from(_fileLineRanges.entries()),
+    cliReads: Array.from(_cliReads),
+    pendingLargeFileHints: Array.from(_pendingLargeFileHints.entries()),
   }
 }
 
@@ -321,6 +355,8 @@ export function importSessionState(s: SerializedSession): void {
   _bashOutputs = new Map(s.bashOutputs)
   _curlDownloads = new Map(s.curlDownloads)
   _fileLineRanges = new Map(s.fileLineRanges ?? [])
+  _cliReads = new Set(s.cliReads ?? [])
+  _pendingLargeFileHints = new Map(s.pendingLargeFileHints ?? [])
 }
 
 registerReset(() => {
@@ -330,5 +366,7 @@ registerReset(() => {
   _bashOutputs = new Map()
   _curlDownloads = new Map()
   _fileLineRanges = new Map()
+  _cliReads = new Set()
+  _pendingLargeFileHints = new Map()
   _sessionId = null
 })

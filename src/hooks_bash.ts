@@ -10,7 +10,7 @@ import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown } from './session.js'
+import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
@@ -620,6 +620,22 @@ function extractCurlUrl(cmd: string): string | null {
   return m?.[1] ?? null
 }
 
+/** Match a `token-goat symbol|read|section <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section. */
+function extractTgSurgicalRead(cmd: string): { sub: string; spec: string; filePath: string | null } | null {
+  const m = /^token-goat\s+(symbol|read|section)\s+(.+)$/.exec(cmd)
+  if (!m) return null
+  const sub = m[1]!
+  const specMatch = /^(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(m[2]!.trim())
+  const spec = specMatch?.[1] ?? specMatch?.[2] ?? specMatch?.[3] ?? null
+  if (spec === null) return null
+  let filePath: string | null = null
+  if (sub === 'read' || sub === 'section') {
+    const colonIdx = spec.indexOf('::')
+    filePath = colonIdx === -1 ? spec : spec.slice(0, colonIdx)
+  }
+  return { sub, spec, filePath }
+}
+
 /**
  * Returns true when the command is a `curl` GET request whose response is safe
  * to cache (no -X POST/PUT/PATCH/DELETE, no request body flags, no auth credentials).
@@ -1151,6 +1167,24 @@ export function preBashHandler(event: HookEvent): HookOutput {
     }
   }
 
+  // CLI surgical-read dedup: warn on an exact repeat `token-goat symbol|read|section` invocation, and cross-check against the Read-tool ledger (a file already fully Read this session may already cover the same content).
+  const tgRead = extractTgSurgicalRead(cmd)
+  if (tgRead !== null) {
+    const cliKey = tgRead.sub + '::' + tgRead.spec
+    const notes = []
+    if (wasCliReadThisSession(cliKey)) {
+      notes.push('You already ran this exact `token-goat ' + tgRead.sub + '` query earlier this session — check your context above before re-running it.')
+    }
+    if (tgRead.filePath !== null && wasFileReadThisSession(tgRead.filePath)) {
+      notes.push('`' + tgRead.filePath + '` was already fully read via the Read tool this session — that content may already cover this.')
+    }
+    if (notes.length > 0) {
+      recordStat('session_hint', 0, 0)
+      return contextOutput(notes.join(' '))
+    }
+    return passOutput()
+  }
+
   // Recognized command: recall a cached prior run, else compress this run. detectFromCommand matches a specific filter (none until the filters land); isBuildCommand is the generic-filter gate for build/test tools.
   if (!isBuildCommand(cmd) && detectFromCommand(cmd) === null) return passOutput()
 
@@ -1268,6 +1302,18 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const output = extractBashOutput(event.raw)
     const exitCode = extractExitCode(event.raw)
     const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
+
+    // Record a successful `token-goat symbol|read|section` invocation so a later identical call gets the re-read dedup hint from the pre-hook.
+    const tgRead = extractTgSurgicalRead(cmd)
+    if (tgRead !== null && (exitCode === null || exitCode === 0)) {
+      recordCliRead(tgRead.sub + '::' + tgRead.spec)
+      if (tgRead.filePath !== null && loadConfig().hints.log_large_file_hint_outcomes) {
+        const pendingSize = takePendingLargeFileHint(tgRead.filePath)
+        if (pendingSize !== null) {
+          recordStat('large_file_hint_followed', 0, 0, undefined, `${tgRead.filePath} (${pendingSize} bytes) — hint fired, then followed by a surgical token-goat read`)
+        }
+      }
+    }
 
     // Cache a successful, read-only `gh api` GET so a later identical call recalls it instead of re-fetching. Done as a side effect before the advisory-hint return below, so a wide-JSON response is both nudged toward --jq and cached. Gated on exit 0 (and the shared size floor) so an error/permission body is never stored as content.
     if (isReadOnlyGhApi(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= MIN_CACHE_BYTES) {
