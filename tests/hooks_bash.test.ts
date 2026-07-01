@@ -1447,6 +1447,44 @@ describe('preBashHandler — token-goat CLI surgical-read dedup', () => {
     const result = preBashHandler(makeBashEvent('token-goat map --compact'))
     expect(result.hookType).not.toBe('context')
   })
+
+  it('dedups a repeat token-goat section invocation that only differs in drive-letter case', async () => {
+    await postBashHandler(makePostBashEvent('token-goat section "C:/Projects/token-goat/src/foo.ts::Bar"', 'heading text'))
+    const result = preBashHandler(makeBashEvent('token-goat section "c:/Projects/token-goat/src/foo.ts::Bar"'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already ran this exact')
+    }
+  })
+
+  it('dedups a repeat token-goat read invocation that only differs in slash direction', async () => {
+    await postBashHandler(makePostBashEvent('token-goat read "src\\foo.ts::bar"', 'function bar() {}'))
+    const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::bar"'))
+    expect(result.hookType).toBe('context')
+  })
+
+  it('emits an advisory hint on an exact repeat token-goat skill-body invocation', async () => {
+    const cmd = 'token-goat skill-body my-skill'
+    await postBashHandler(makePostBashEvent(cmd, 'skill body text'))
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already ran this exact')
+    }
+  })
+
+  it('emits an advisory hint on an exact repeat token-goat skill-compact invocation', async () => {
+    const cmd = 'token-goat skill-compact my-skill'
+    await postBashHandler(makePostBashEvent(cmd, 'compact skill text'))
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('context')
+  })
+
+  it('does not dedup token-goat skill-compact --path X against --path Y', async () => {
+    await postBashHandler(makePostBashEvent('token-goat skill-compact --path skills/x.md', 'x skill text'))
+    const result = preBashHandler(makeBashEvent('token-goat skill-compact --path skills/y.md'))
+    expect(result.hookType).toBe('pass')
+  })
 })
 
 describe('extractMarkdownHeadingGrep', () => {
