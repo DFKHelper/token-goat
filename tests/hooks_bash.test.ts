@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
 import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
-import { getBashOutputId } from '../src/session.js'
+import { getBashOutputId, recordFileRead } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
@@ -1370,6 +1370,82 @@ describe('preBashHandler — curl download dedup', () => {
     await postBashHandler(makePostBashEvent(cmd, ''))
     const result = preBashHandler(makeBashEvent(cmd))
     expect(result.hookType).toBe('deny')
+  })
+})
+
+describe('preBashHandler — token-goat CLI surgical-read dedup', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('passes through the first token-goat read invocation', () => {
+    const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::bar"'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('emits an advisory hint on an exact repeat token-goat read invocation', async () => {
+    const cmd = 'token-goat read "src/foo.ts::bar"'
+    await postBashHandler(makePostBashEvent(cmd, 'function bar() {}'))
+
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already ran this exact')
+      expect(result.context).toContain('token-goat read')
+    }
+  })
+
+  it('emits an advisory hint on an exact repeat token-goat symbol invocation', async () => {
+    const cmd = 'token-goat symbol bar'
+    await postBashHandler(makePostBashEvent(cmd, 'function bar() {}'))
+
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('context')
+  })
+
+  it('does not dedup a different spec against the same subcommand', async () => {
+    await postBashHandler(makePostBashEvent('token-goat read "src/foo.ts::bar"', 'function bar() {}'))
+    const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::baz"'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not record a failed invocation for later dedup', async () => {
+    const cmd = 'token-goat read "src/foo.ts::bar"'
+    const failedEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: cmd },
+      sessionId: 'test-session',
+      raw: {
+        tool_name: 'Bash',
+        tool_input: { command: cmd },
+        tool_response: { output: 'symbol not found', exit_code: 1 },
+      },
+    }
+    await postBashHandler(failedEvent)
+
+    const result = preBashHandler(makeBashEvent(cmd))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('cross-references a file already fully read via the Read tool', () => {
+    recordFileRead('src/foo.ts')
+    const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::bar"'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already fully read via the Read tool')
+    }
+  })
+
+  it('does not cross-reference an unrelated file', () => {
+    recordFileRead('src/other.ts')
+    const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::bar"'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not intercept unrelated token-goat subcommands', () => {
+    const result = preBashHandler(makeBashEvent('token-goat map --compact'))
+    expect(result.hookType).not.toBe('context')
   })
 })
 

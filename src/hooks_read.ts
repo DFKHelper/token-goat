@@ -21,7 +21,7 @@ import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
 import { isWindows } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint } from './session.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
@@ -454,6 +454,14 @@ export function preReadHandler(event: HookEvent): HookOutput {
     const rereadBytes = statSize(normalized) ?? 0
     recordStat('session_hint', rereadBytes, Math.round(rereadBytes / 4))
 
+    const config = loadConfig()
+    if (config.hints.log_large_file_hint_outcomes) {
+      const pendingSize = takePendingLargeFileHint(normalized)
+      if (pendingSize !== null) {
+        recordStat('large_file_hint_ignored', 0, 0, undefined, `${normalized} (${pendingSize} bytes) — hint fired but file was fully re-read instead of surgically read`)
+      }
+    }
+
     // Item 1: file was truncated on last read — surgical reads only
     if (wasFileTruncatedThisSession(normalized)) {
       return denyOutput(
@@ -495,6 +503,10 @@ export function preReadHandler(event: HookEvent): HookOutput {
   if (size !== null && size >= LARGE_FILE_BYTES) {
     const kb = Math.round(size / 1024)
     recordFileRead(normalized)
+    const config = loadConfig()
+    if (config.hints.log_large_file_hint_outcomes) {
+      recordLargeFileHintPending(normalized, size)
+    }
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Consider token-goat skeleton or token-goat section.'

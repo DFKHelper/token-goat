@@ -150,6 +150,15 @@ function coerce(raw: unknown): SerializedSession {
     : Array.isArray(o['hints_seen'])
       ? (o['hints_seen'] as unknown[]).filter((h): h is string => typeof h === 'string')
       : []
+  const cliReads = Array.isArray(o['cliReads'])
+    ? o['cliReads'].filter((h): h is string => typeof h === 'string')
+    : []
+  const pendingLargeFileHints: Array<[string, number]> = Array.isArray(o['pendingLargeFileHints'])
+    ? (o['pendingLargeFileHints'] as unknown[]).filter(
+        (p): p is [string, number] =>
+          Array.isArray(p) && p.length === 2 && typeof p[0] === 'string' && typeof p[1] === 'number',
+      )
+    : []
   return {
     files,
     hintsShown,
@@ -157,6 +166,8 @@ function coerce(raw: unknown): SerializedSession {
     bashOutputs: asStringPairs(o['bashOutputs']),
     curlDownloads: asStringPairs(o['curlDownloads']),
     fileLineRanges: asLineRanges(o['fileLineRanges']),
+    cliReads,
+    pendingLargeFileHints,
   }
 }
 
@@ -211,6 +222,8 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     bashOutputs: mergePairs(disk.bashOutputs, mem.bashOutputs),
     curlDownloads: mergePairs(disk.curlDownloads, mem.curlDownloads),
     fileLineRanges: mergeLineRanges(disk.fileLineRanges ?? [], mem.fileLineRanges ?? []),
+    cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
+    pendingLargeFileHints: Array.from(new Map([...(disk.pendingLargeFileHints ?? []), ...(mem.pendingLargeFileHints ?? [])]).entries()),
   }
 }
 
