@@ -1,9 +1,18 @@
+import { readFile } from 'node:fs/promises';
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import { passOutput, denyOutput, getToolName, getToolInput } from './hooks_common.js';
 import { recordStat } from './stats.js';
-import { storeOutput, installedSkillPath, incrementSkillHit, hasSessionOutput } from './skill_cache.js';
+import {
+  storeOutput,
+  installedSkillPath,
+  incrementSkillHit,
+  hasSessionOutput,
+  extractCompactFromMarker,
+} from './skill_cache.js';
+
+const OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES = 6000;
 
 function extractSkillName(toolInput: Record<string, unknown>): string | null {
   const skill = toolInput['skill'] as string;
@@ -65,6 +74,25 @@ export async function preSkillHandler(event: HookEvent): Promise<HookOutput> {
           skillName + ' --compact` to recall the compact slice (or `token-goat skill-body ' + skillName +
           '` for the full body) instead of re-loading it.',
       );
+    }
+
+    // First (cold) load of an oversized skill with an extractable compact: gate this too, or the full body still lands in context once per skill per session regardless of repeat-load protection.
+    const sourcePath = await installedSkillPath(skillName);
+    if (sourcePath) {
+      try {
+        const body = await readFile(sourcePath, 'utf-8');
+        const bodyBytes = Buffer.byteLength(body, 'utf-8');
+        if (bodyBytes > OVERSIZED_FIRST_LOAD_THRESHOLD_BYTES && extractCompactFromMarker(body) !== null) {
+          recordStat('skill_oversized_first_load');
+          return denyOutput(
+            'Skill `' + skillName + '` is large (' + bodyBytes +
+              ' bytes) and has a compact slice available. Use `token-goat skill-body ' + skillName +
+              ' --compact` to load the compact slice instead of the full body.',
+          );
+        }
+      } catch {
+        // fail-soft: unreadable file just falls through to the normal load
+      }
     }
 
     return passOutput();

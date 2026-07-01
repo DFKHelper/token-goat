@@ -88,6 +88,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   exports: SOURCE_READ,
   web_fetch: SOURCE_WEB,
   skill_load: SOURCE_SKILL,
+  skill_oversized_first_load: SOURCE_SKILL,
 }
 
 const KIND_PREFIX_TO_SOURCE: Array<[string, string]> = [

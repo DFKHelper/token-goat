@@ -178,3 +178,42 @@ describe('preSkillHandler — duplicate-load advisory', () => {
     expect(pre.hookType).toBe('pass');
   });
 });
+
+describe('preSkillHandler — oversized first-load gate', () => {
+  // Regression for the bug where only REPEAT loads were size-gated: a skill's full body still landed in context once per session on its first (cold) invocation, even when a compact slice was available on disk. Pre-fix, this cold-load call returns pass (no prior hasSessionOutput entry to trigger the duplicate-load path); post-fix it must deny and point at skill-body --compact.
+  it('denies the very first load of an oversized skill that has a compact marker', async () => {
+    const skillDir = path.join(sourceDir, 'big-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+    const compact = 'Compact summary of the big skill.';
+    const detail = 'x'.repeat(7000);
+    const body = `${compact}\n<!-- COMPACT_END -->\n${detail}`;
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent('big-skill', 'sess-cold'));
+    expect(out.hookType).toBe('deny');
+    if (out.hookType === 'deny') {
+      expect(out.message).toContain('big-skill');
+      expect(out.message).toContain('token-goat skill-body big-skill --compact');
+    }
+  });
+
+  it('passes the first load of an oversized skill with no compact marker', async () => {
+    const skillDir = path.join(sourceDir, 'big-no-marker');
+    await fs.mkdir(skillDir, { recursive: true });
+    const body = 'y'.repeat(7000);
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent('big-no-marker', 'sess-cold2'));
+    expect(out.hookType).toBe('pass');
+  });
+
+  it('passes the first load of a small skill even with a compact marker', async () => {
+    const skillDir = path.join(sourceDir, 'small-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+    const body = 'short compact\n<!-- COMPACT_END -->\nshort detail';
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+
+    const out = await preSkillHandler(skillPreEvent('small-skill', 'sess-cold3'));
+    expect(out.hookType).toBe('pass');
+  });
+});
