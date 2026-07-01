@@ -88,6 +88,23 @@ EOF2`
       expect(result.hookType).toBe('pass')
     })
 
+    it('does NOT flag an unmatched apostrophe inside a heredoc body (contraction in prose)', () => {
+      const cmd = `cat <<EOF
+it's a test
+EOF
+echo "done"`
+      const result = preBashHandler(makeBashEvent(cmd))
+      expect(result.hookType).toBe('pass')
+    })
+
+    it('does NOT flag an unmatched apostrophe inside an indented (<<-) heredoc body', () => {
+      const cmd = `cat <<-EOF
+  don't stop believing
+  EOF`
+      const result = preBashHandler(makeBashEvent(cmd))
+      expect(result.hookType).toBe('pass')
+    })
+
     it('passes through command with awk using single quotes', () => {
       const result = preBashHandler(makeBashEvent("awk '{print $1}' file.txt"))
       expect(result.hookType).toBe('pass')

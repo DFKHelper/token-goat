@@ -942,29 +942,30 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
         // Extract the delimiter word
         const delimiter = cmd.slice(delimStart, j).replace(/["']/g, '')
         if (delimiter) {
-          // Now check if the command contains a line that exactly matches the delimiter
-          const lines = cmd.slice(j).split('\n')
-          let foundTerminator = false
-          for (const line of lines) {
-            // Heredoc terminator must be the delimiter on its own line
-            // Without <<- modifier, it must NOT be indented; with <<-, it may be indented
-            if (hasIndentModifier) {
-              // With <<- (indented heredoc), allow leading whitespace
-              if (line.trim() === delimiter) {
-                foundTerminator = true
-                break
-              }
-            } else {
-              // Without <<- (strict heredoc), no leading whitespace allowed
-              if (line === delimiter) {
-                foundTerminator = true
-                break
-              }
+          // Scan line-by-line from the end of the opener to find the terminator,
+          // tracking exact offsets so a match lets us skip the whole heredoc body.
+          // The body is literal shell text, not shell syntax — a stray apostrophe
+          // in prose like "it's" must not be rescanned as a quote delimiter.
+          let scanPos = j
+          let terminatorEnd = -1
+          while (scanPos <= cmd.length) {
+            const nl = cmd.indexOf('\n', scanPos)
+            const lineEnd = nl === -1 ? cmd.length : nl
+            const line = cmd.slice(scanPos, lineEnd)
+            const isMatch = hasIndentModifier ? line.trim() === delimiter : line === delimiter
+            if (isMatch) {
+              terminatorEnd = nl === -1 ? cmd.length : nl + 1
+              break
             }
+            if (nl === -1) break
+            scanPos = nl + 1
           }
-          if (!foundTerminator) {
+          if (terminatorEnd === -1) {
             return `an unterminated heredoc (${delimiter} never appears on its own line)`
           }
+          // Skip past the entire heredoc body before resuming the scan.
+          i = terminatorEnd
+          continue
         }
       }
     }
