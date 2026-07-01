@@ -325,7 +325,7 @@ export function extractChecklistSection(body: string): string | null {
   return text || null
 }
 
-async function listOutputs(): Promise<SkillMeta[]> {
+export async function listOutputs(): Promise<SkillMeta[]> {
   try {
     const dir = skillOutputsDir()
     const entries = await fs.readdir(dir, { withFileTypes: true })

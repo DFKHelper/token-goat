@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **`skill-history` and `skill-diff` no longer error on a fresh install with no cached skills.** Both commands re-implemented the skill-outputs directory scan with a `catch` that turned the missing-directory `ENOENT` (the normal state before any skill has been loaded, and on a fresh CI checkout) into a fatal `Failed to list skill history` / `Failed to diff skill` exit-1. They now reuse the shared, missing-dir-tolerant `listOutputs()` from [src/skill_cache.ts](src/skill_cache.ts): an absent cache yields an empty listing (exit 0), removing duplicated readdir logic in the process. Regression-tested against a never-created cache in [tests/skill_history_diff_empty.test.ts](tests/skill_history_diff_empty.test.ts).
+
 ## [2.5.0] - 2026-06-30
 
 ### Added
