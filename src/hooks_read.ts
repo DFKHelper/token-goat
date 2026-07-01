@@ -21,7 +21,8 @@ import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
 import { isWindows } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState } from './session.js'
+import { writeSessionManifest } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
@@ -36,6 +37,8 @@ import {
 } from './hints/markdown_hints.js'
 import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
 import { recordStat } from './stats.js'
+import { findProject, makeProjectAt } from './project.js'
+import { dataDir } from './constants.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
@@ -185,6 +188,72 @@ export function buildLineDiff(oldContent: string, newContent: string, label: str
  * Returns `pass` otherwise.
  * Always records the read so the re-read hint fires on the next touch.
  */
+function scanCrossSessionManifests(
+  projectRoot: string,
+  projectHash: string,
+  sessionId: string,
+  filePath: string,
+  ttlSecs: number,
+): boolean {
+  try {
+    const sessionsDir = path.join(dataDir(), 'projects', projectHash, 'sessions')
+
+    if (!fs.existsSync(sessionsDir)) {
+      return false
+    }
+
+    const now = Date.now() / 1000
+    const relPath = path.relative(projectRoot, filePath).replace(/\\/g, '/')
+
+    try {
+      const files = fs.readdirSync(sessionsDir)
+      for (const file of files) {
+        if (!file.endsWith('.json') || file === sessionId + '.json') {
+          continue
+        }
+
+        try {
+          const fullPath = path.join(sessionsDir, file)
+          const stat = fs.statSync(fullPath)
+          if (now - stat.mtimeMs / 1000 > ttlSecs) {
+            continue
+          }
+
+          const text = fs.readFileSync(fullPath, 'utf8')
+          const data = JSON.parse(text)
+
+          if (
+            typeof data === 'object' &&
+            data !== null &&
+            'files' in data &&
+            Array.isArray(data.files)
+          ) {
+            for (const entry of data.files) {
+              if (
+                typeof entry === 'object' &&
+                entry !== null &&
+                entry.rel_path === relPath &&
+                entry.hit_count !== undefined &&
+                entry.hit_count > 0
+              ) {
+                return true
+              }
+            }
+          }
+        } catch {
+          // Silently skip corrupt JSON or inaccessible files
+        }
+      }
+    } catch {
+      // Silently fail if directory not accessible
+    }
+  } catch {
+    // Fail-soft: ignore any errors in cross-session scanning
+  }
+
+  return false
+}
+
 export function preReadHandler(event: HookEvent): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
@@ -446,6 +515,34 @@ export function preReadHandler(event: HookEvent): HookOutput {
     // No snapshot yet or file too large — fall through to generic wasFileReadThisSession logic below, which uses readCount and file size to pick context vs. deny.
   }
 
+  // Cross-session read dedup: check if another session (different sessionId) working in the same project already read this file recently
+  const config = loadConfig()
+  if (config.hints.cross_session_read_dedup && !wasFileReadThisSession(normalized)) {
+    try {
+      const cwd = (event.raw && typeof event.raw === 'object' && 'cwd' in event.raw && typeof event.raw['cwd'] === 'string') ? event.raw['cwd'] : process.cwd()
+      let project = findProject(cwd)
+      if (!project) {
+        project = makeProjectAt(cwd)
+      }
+
+      const relPath = path.relative(project.root, normalized).replace(/\\/g, '/')
+      if (!relPath.startsWith('..')) {
+        const sessionId = getSessionId()
+        const ttlSecs = config.hints.cross_session_read_dedup_ttl_secs
+        if (scanCrossSessionManifests(project.root, project.hash, sessionId, normalized, ttlSecs)) {
+          recordFileRead(normalized)
+          return contextOutput(
+            'This file may have already been read by another agent/session working in this project recently. ' +
+            'If you are a subagent continuing shared work, consider whether you already have this content from context, ' +
+            'or use `token-goat read ' + normalized + '::SymbolName` for a narrower slice instead of a full re-read.',
+          )
+        }
+      }
+    } catch {
+      // Fail-soft: ignore any errors in cross-session checking
+    }
+  }
+
   if (wasFileReadThisSession(normalized)) {
     const entry = getSessionFiles().get(normalized)
     const reads = entry?.readCount ?? 1
@@ -592,6 +689,34 @@ export function postReadHandler(event: HookEvent): HookOutput {
       }
     } catch {
       // best-effort; never block the hook
+    }
+  }
+
+  // Cross-session manifest recording: write this session's reads for other sessions to discover
+  if (loadConfig().hints.cross_session_read_dedup) {
+    try {
+      const cwd = (event.raw && typeof event.raw === 'object' && 'cwd' in event.raw && typeof event.raw['cwd'] === 'string') ? event.raw['cwd'] : process.cwd()
+      let project = findProject(cwd)
+      if (!project) {
+        project = makeProjectAt(cwd)
+      }
+
+      const sessionState = exportSessionState()
+      const mappedFiles: Array<{rel_path: string; hit_count: number}> = []
+
+      for (const fileEntry of sessionState.files) {
+        const relPath = path.relative(project.root, fileEntry.path).replace(/\\/g, '/')
+        if (!relPath.startsWith('..')) {
+          mappedFiles.push({
+            rel_path: relPath,
+            hit_count: fileEntry.readCount,
+          })
+        }
+      }
+
+      writeSessionManifest(project.hash, getSessionId(), { files: mappedFiles })
+    } catch {
+      // Fail-soft: ignore any errors in manifest writing
     }
   }
 
