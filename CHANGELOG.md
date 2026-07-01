@@ -10,6 +10,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Concurrent writers to the shared index no longer fail with "database is locked".** token-goat runs as multiple processes against one `global.db` (the worker daemon draining the dirty queue alongside CLI invocations from hooks), so concurrent writers are the normal case. The connection enabled WAL but relied on better-sqlite3's default 5000ms busy timeout, which was exhausted under heavy parallel indexing and surfaced as an intermittent `SqliteError: database is locked` (reproducible in the full test suite against a fresh data directory). The connection now sets an explicit `busy_timeout = 15000`, so a writer waits for a held write lock instead of erroring immediately. Guarded in [tests/db.test.ts](tests/db.test.ts).
 
+- **The test suite no longer reads or writes the developer's real symbol index.** The global test setup isolated `TOKEN_GOAT_HOME` (the bash/web/session cache home) but not `LOCALAPPDATA`/`XDG_DATA_HOME`, which resolve `DATA_DIR` — so any test that indexed wrote token-goat's own symbols into the real `global.db` and raced the live worker daemon writing to that same file, an intermittent `database is locked` that passed on CI (no daemon, fresh checkout) but flaked at pre-push locally. [tests/setup/isolate-home.ts](tests/setup/isolate-home.ts) now points both platform data-dir env vars at a per-worker temp dir, making every local run hermetic and identical to CI's fresh-data-dir condition. Guarded in [tests/data_dir_isolation.test.ts](tests/data_dir_isolation.test.ts).
+
 ## [2.5.0] - 2026-06-30
 
 ### Added
