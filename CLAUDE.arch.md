@@ -322,3 +322,8 @@ Steps:
    ```
 3. **Register in `buildProgram()`** — call `program.command('xxx').description('...').option(...)...action(guard(cmdXxx))`. The guard in [`tests/guards/cli_registration.test.ts`](tests/guards/cli_registration.test.ts) checks that every `cmd*` function appears in an `.action(...)` call and that every command in `allCommandNames()` appears in `--help` output — it will fail immediately if the handler is declared but not wired.
 4. **Add a matrix case** — add an entry to [`tests/command_matrix_e2e.test.ts`](tests/command_matrix_e2e.test.ts). The coverage gate at the bottom of that file fails automatically if a registered command has no case, using [`tests/registry.ts::allCommandNames()`](tests/registry.ts) as the single source of truth shared with the guard.
+
+
+## Known Limitations
+
+- **Post-compaction skill re-injection is Claude Code's own native behavior, not something token-goat's `pre_compact` hooks control.** When the harness compacts a conversation, Claude Code itself decides which skills get reloaded into the fresh context — token-goat only gets to shape the manifest text injected alongside that compaction (see [hooks_compact.ts](src/hooks_compact.ts) and [hooks_index.ts](src/hooks_index.ts)), it cannot prevent or filter which skill bodies the harness chooses to re-inject. The load-time gate in [hooks_skill.ts](src/hooks_skill.ts) (deny + redirect to `skill-body --compact` on a same-session repeat `Skill` tool call) is the closest available enforcement point, since it operates on the actual tool call rather than trying to intercept harness-internal re-injection.

@@ -22,7 +22,6 @@ export interface CompactAssistConfig {
   max_section_lines: number
   wide_session_threshold: number
   orchestrator_commit_threshold: number
-  lazy_skill_injection: boolean
   max_manifest_chars: number
   harness: string
 }
@@ -217,7 +216,6 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     max_section_lines: 0,
     wide_session_threshold: 15,
     orchestrator_commit_threshold: 5,
-    lazy_skill_injection: true,
     max_manifest_chars: 1600,
     harness: 'auto',
   },
@@ -429,7 +427,6 @@ const ENV_KEYS = [
   'TOKEN_GOAT_BASH_COMPRESS',
   'TOKEN_GOAT_SESSION_BRIEF',
   'TOKEN_GOAT_SKILL_PRESERVATION',
-  'TOKEN_GOAT_LAZY_SKILL_INJECTION',
   'TOKEN_GOAT_PREFER_AVIF',
   'TOKEN_GOAT_MAX_IMAGE_PIXELS',
   'TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD',
@@ -523,12 +520,10 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   ca.max_section_lines = validatedInt(ca_raw['max_section_lines'], ca.max_section_lines, 0, 10000)
   ca.wide_session_threshold = validatedInt(ca_raw['wide_session_threshold'], ca.wide_session_threshold, 1, 10000)
   ca.orchestrator_commit_threshold = validatedInt(ca_raw['orchestrator_commit_threshold'], ca.orchestrator_commit_threshold, 1, 10000)
-  ca.lazy_skill_injection = validatedBool(ca_raw['lazy_skill_injection'], ca.lazy_skill_injection)
   ca.max_manifest_chars = validatedInt(ca_raw['max_manifest_chars'], ca.max_manifest_chars, 0, 16000)
   ca.harness = validatedStr(ca_raw['harness'], ca.harness)
   // env overrides
   ca.enabled = envBool('TOKEN_GOAT_COMPACT_ASSIST', envBool('TOKENWISE_COMPACT_ASSIST', ca.enabled))
-  ca.lazy_skill_injection = envBool('TOKEN_GOAT_LAZY_SKILL_INJECTION', ca.lazy_skill_injection)
 
   const bc_raw = section(raw, 'bash_compress')
   const bc = getDefaultConfig('bash_compress') as BashCompressConfig
@@ -753,7 +748,6 @@ export function saveConfig(config: Config): void {
       max_section_lines: ca.max_section_lines,
       wide_session_threshold: ca.wide_session_threshold,
       orchestrator_commit_threshold: ca.orchestrator_commit_threshold,
-      lazy_skill_injection: ca.lazy_skill_injection,
       max_manifest_chars: ca.max_manifest_chars,
       harness: ca.harness,
     },

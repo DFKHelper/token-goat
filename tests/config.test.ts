@@ -141,8 +141,13 @@ describe('defaultConfig field spot-checks', () => {
     expect(cfg.compact_assist.enabled).toBe(true)
     expect(cfg.compact_assist.triggers).toEqual(['manual', 'auto'])
     expect(cfg.compact_assist.auto_trigger_multiplier).toBe(2.0)
-    expect(cfg.compact_assist.lazy_skill_injection).toBe(true)
     expect(cfg.compact_assist.harness).toBe('auto')
+  })
+
+  // Regression: lazy_skill_injection was removed as dead config -- it was never read by any registered pre_compact hook. Guards against it silently reappearing on the config object.
+  it('CompactAssistConfig no longer carries lazy_skill_injection', () => {
+    const cfg = defaultConfig()
+    expect(Object.hasOwn(cfg.compact_assist, 'lazy_skill_injection')).toBe(false)
   })
 
   it('BashCompressConfig defaults', () => {
