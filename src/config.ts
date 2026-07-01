@@ -138,6 +138,8 @@ export interface HintsConfig {
   warn_unbalanced_shell_quoting: boolean
   prompt_triggers: PromptTrigger[]
   log_large_file_hint_outcomes: boolean
+  cross_session_read_dedup: boolean
+  cross_session_read_dedup_ttl_secs: number
 }
 
 export interface HooksConfig {
@@ -316,6 +318,8 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     warn_unbalanced_shell_quoting: true,
     prompt_triggers: [],
     log_large_file_hint_outcomes: false,
+    cross_session_read_dedup: false,
+    cross_session_read_dedup_ttl_secs: 2700,
   },
   hooks: {
     watchdog_ms: 700,
@@ -657,6 +661,10 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.warn_unbalanced_shell_quoting = envBool('TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING', hi.warn_unbalanced_shell_quoting)
   hi.serve_diff_on_reread = envBool('TOKEN_GOAT_SERVE_DIFF_ON_REREAD', hi.serve_diff_on_reread)
   hi.log_large_file_hint_outcomes = envBool('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', hi.log_large_file_hint_outcomes)
+  hi.cross_session_read_dedup = validatedBool(hi_raw['cross_session_read_dedup'], hi.cross_session_read_dedup)
+  hi.cross_session_read_dedup_ttl_secs = validatedInt(hi_raw['cross_session_read_dedup_ttl_secs'], hi.cross_session_read_dedup_ttl_secs, 1, 86400)
+  hi.cross_session_read_dedup = envBool('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP', hi.cross_session_read_dedup)
+  hi.cross_session_read_dedup_ttl_secs = envInt('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS', hi.cross_session_read_dedup_ttl_secs)
   hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes)
   // parse prompt_triggers
   const triggers_raw = hi_raw['prompt_triggers']
