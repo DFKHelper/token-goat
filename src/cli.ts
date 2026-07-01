@@ -65,7 +65,7 @@ import {
   runBlame,
   runAsk,
 } from './graph_commands.js'
-import { contentHash, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
+import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage } from './util.js'
 import { renderStats } from './stats.js'
@@ -179,8 +179,10 @@ async function cmdInstall(opts: { project?: boolean }): Promise<void> {
         const skillFile = path.join(skillDir, entry.name, 'SKILL.md')
         if (fs.existsSync(skillFile)) {
           const body = fs.readFileSync(skillFile, 'utf-8')
+          const compact = extractCompactFromMarker(body)
+          if (compact === null) continue
           const sourceSha = contentHash(body)
-          await storeCompact(sessionId, entry.name, body, sourceSha)
+          await storeCompact(sessionId, entry.name, compact, sourceSha)
           skillNames.push(entry.name)
         }
       }
@@ -402,13 +404,7 @@ async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<
 
   const body = fs.readFileSync(filePath, 'utf-8')
   if (opts.compact === true) {
-    const lines = body.split('\n')
-    const end = lines.findIndex((l) => l.includes('COMPACT_END'))
-    if (end !== -1) {
-      out(lines.slice(end + 1).join('\n'))
-    } else {
-      out(body)
-    }
+    out(extractCompactFromMarker(body) ?? body)
   } else {
     out(body)
   }
@@ -429,11 +425,13 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
       const filePath = await getSkillFilePath(skill.name)
       if (!filePath) continue
       const body = fs.readFileSync(filePath, 'utf-8')
+      const compact = extractCompactFromMarker(body)
+      if (compact === null) continue
       const sourceSha = contentHash(body)
       if (skill.compactStale === false) {
         skipped++
       } else {
-        await storeCompact(sessionId, skill.name, body, sourceSha)
+        await storeCompact(sessionId, skill.name, compact, sourceSha)
         regenerated++
       }
     }
@@ -468,8 +466,13 @@ async function cmdSkillCompact(name: string | undefined, opts: { path?: string; 
 
   // Persist the body (writes the meta that skill-list surfaces) and the compact slice, so a skill compacted straight from disk is both listable and recallable cross-session, exactly like one loaded via the Skill hook.
   await storeOutput(sessionId, cacheName, body, { sourcePath })
+  const compact = extractCompactFromMarker(body)
+  if (compact === null) {
+    out(`Skill '${cacheName}' has no COMPACT_END marker — nothing to compact.`)
+    return
+  }
   const sourceSha = contentHash(body)
-  await storeCompact(sessionId, cacheName, body, sourceSha)
+  await storeCompact(sessionId, cacheName, compact, sourceSha)
   out(`Cached compact for skill '${cacheName}'.`)
 }
 
