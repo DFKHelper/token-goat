@@ -4,8 +4,13 @@
  * populated before this suite runs — the fixture is the token-goat repo itself).
  */
 
-import { describe, expect, it } from 'vitest'
+import { readdirSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 
+import { beforeAll, describe, expect, it } from 'vitest'
+
+import { indexFileSync } from '../src/parser.js'
+import { normalizePath } from '../src/paths.js'
 import {
   bfsCallChains,
   enclosingSymbol,
@@ -35,6 +40,17 @@ import type { SymbolEntry } from '../src/parser_types.js'
 function makeSymbol(name: string, lineStart: number, lineEnd: number, kind = 'function'): SymbolEntry {
   return { name, kind, lineStart, lineEnd, filePath: 'file.ts', body: '', docstring: '' }
 }
+
+// Establish the precondition this suite's header assumes: the token-goat repo's own src tree indexed into the ambient global.db. Without it a fresh checkout (CI) has an empty index and the runTypes/runCallers/runImpact integration cases below find nothing and exit 1; seeding here makes them deterministic on any machine instead of depending on pre-existing ambient index state.
+beforeAll(() => {
+  const walk = (dir: string): string[] =>
+    readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const child = join(dir, e.name)
+      if (e.isDirectory()) return walk(child)
+      return child.endsWith('.ts') && !child.endsWith('.d.ts') ? [child] : []
+    })
+  for (const file of walk(resolve('src'))) indexFileSync(normalizePath(file))
+})
 
 // ---- enclosingSymbol --------------------------------------------------------
 
