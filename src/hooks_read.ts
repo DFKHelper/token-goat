@@ -235,7 +235,11 @@ function scanCrossSessionManifests(
  * Always records the read so the re-read hint fires on the next touch.
  */
 export function preReadHandler(event: HookEvent): HookOutput {
-  const filePath = getFilePath(event)
+  let filePath = getFilePath(event)
+  if (filePath === undefined && event.toolName === 'Grep') {
+    const rawPath = event.toolInput['path']
+    if (typeof rawPath === 'string' && rawPath !== '') filePath = rawPath
+  }
   if (filePath === undefined) return passOutput()
 
   const normalized = normalizePath(filePath)
@@ -371,7 +375,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     recordFileRead(normalized)
     recordStat('session_hint', 0, 0)
     return denyOutput(
-      'Orchestrator state already read this session. Use `token-goat bash-output <id>` or recall it from the compact manifest.',
+      'Orchestrator state already read this session. ' + sessionArtifactRecall(normalized),
     )
   }
 
@@ -444,7 +448,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   }
 
   // Doc-file auto-diff on re-read: .md/.mdx/.rst/.txt files that have been read before get a compact diff (or "unchanged") instead of a wasteful full re-read, provided a snapshot was captured by postReadHandler on the first read. When serve_diff_on_reread is enabled, source/style/data files also get diffs. Falls through to the generic wasFileReadThisSession block when no snapshot exists, preserving existing context vs. deny behavior for un-snapshotted files.
-  const isDocDiffable = /\.(md|mdx|rst|txt)$/i.test(basename)
+  const isDocDiffable = /\.(md|mdx|markdown|rst|txt)$/i.test(basename)
   const isSourceDiffable = loadConfig().hints.serve_diff_on_reread && DIFFABLE_SOURCE_RE.test(basename)
   if ((isDocDiffable || isSourceDiffable) && wasFileReadThisSession(normalized)) {
     // Truncation takes priority: redirect to skeleton/surgical reads.
@@ -530,7 +534,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
   }
 
-  if (wasFileReadThisSession(normalized)) {
+  if (!isImagePath(normalized) && wasFileReadThisSession(normalized)) {
     const entry = getSessionFiles().get(normalized)
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
