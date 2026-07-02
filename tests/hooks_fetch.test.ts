@@ -1,12 +1,18 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { HookEvent } from '../src/hook_registry.js';
+import { postFetchHandler, preFetchHandler } from '../src/hooks_fetch.js';
+import { clearModuleCaches } from '../src/reset.js';
 
-describe('hooks_fetch', () => {
-  beforeEach(() => {
-    // Setup before each test
-  });
+beforeEach(() => {
+  clearModuleCaches();
+});
 
-  it('should handle pre_tool_use for non-WebFetch tools', () => {
+afterEach(() => {
+  clearModuleCaches();
+});
+
+describe('preFetchHandler', () => {
+  it('passes through non-WebFetch tools', () => {
     const event: HookEvent = {
       eventName: 'pre_tool_use',
       toolName: 'SomeOtherTool',
@@ -14,10 +20,10 @@ describe('hooks_fetch', () => {
       sessionId: 'test-session',
       raw: {},
     };
-    expect(event.toolName).toBe('SomeOtherTool');
+    expect(preFetchHandler(event).hookType).toBe('pass');
   });
 
-  it('should handle pre_tool_use for WebFetch with missing url', () => {
+  it('passes through WebFetch with a missing url', () => {
     const event: HookEvent = {
       eventName: 'pre_tool_use',
       toolName: 'WebFetch',
@@ -25,23 +31,63 @@ describe('hooks_fetch', () => {
       sessionId: 'test-session',
       raw: {},
     };
-    expect(event.toolName).toBe('WebFetch');
-    expect(event.toolInput['url']).toBeUndefined();
+    expect(preFetchHandler(event).hookType).toBe('pass');
   });
 
-  it('should handle pre_tool_use for WebFetch with missing sessionId', () => {
+  it('passes through WebFetch with a missing sessionId', () => {
     const event: HookEvent = {
       eventName: 'pre_tool_use',
       toolName: 'WebFetch',
-      toolInput: { url: 'https://example.com' },
+      toolInput: { url: 'https://example.com/no-session' },
       sessionId: '',
       raw: {},
     };
-    expect(event.toolName).toBe('WebFetch');
-    expect(event.sessionId).toBe('');
+    expect(preFetchHandler(event).hookType).toBe('pass');
   });
 
-  it('should handle post_tool_use for non-WebFetch tools', () => {
+  it('passes through a URL that was never fetched this session', () => {
+    const event: HookEvent = {
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url: 'https://example.com/never-fetched' },
+      sessionId: 'test-session',
+      raw: {},
+    };
+    expect(preFetchHandler(event).hookType).toBe('pass');
+  });
+
+  it('denies a re-fetch of an already-cached URL instead of a soft hint (regression: m15 — a contextOutput hint let the redundant fetch proceed anyway)', () => {
+    const url = 'https://example.com/cached';
+    const sessionId = 'cache-session';
+
+    // Seed the cache the way a real prior WebFetch would: run postFetchHandler on a
+    // large response for this URL/session first.
+    const postResult = postFetchHandler({
+      eventName: 'post_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId,
+      raw: { tool_response: 'x'.repeat(2000) },
+    });
+    expect(postResult.hookType).toBe('pass');
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url },
+      sessionId,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('deny');
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat web-output');
+    }
+  });
+});
+
+describe('postFetchHandler', () => {
+  it('passes through non-WebFetch tools', () => {
     const event: HookEvent = {
       eventName: 'post_tool_use',
       toolName: 'SomeOtherTool',
@@ -51,33 +97,32 @@ describe('hooks_fetch', () => {
         tool_response: 'test response',
       },
     };
-    expect(event.toolName).toBe('SomeOtherTool');
+    expect(postFetchHandler(event).hookType).toBe('pass');
   });
 
-  it('should handle post_tool_use for WebFetch with small response', () => {
+  it('passes through a WebFetch response smaller than the cache threshold', () => {
     const event: HookEvent = {
       eventName: 'post_tool_use',
       toolName: 'WebFetch',
-      toolInput: { url: 'https://example.com' },
+      toolInput: { url: 'https://example.com/small' },
       sessionId: 'test-session',
       raw: {
         tool_response: 'small',
       },
     };
-    const response = event.raw['tool_response'] as string;
-    expect(response.length).toBeLessThan(1024);
+    expect(postFetchHandler(event).hookType).toBe('pass');
   });
 
-  it('should handle post_tool_use for WebFetch with missing sessionId', () => {
+  it('passes through WebFetch with a missing sessionId, even for a large response', () => {
     const event: HookEvent = {
       eventName: 'post_tool_use',
       toolName: 'WebFetch',
-      toolInput: { url: 'https://example.com' },
+      toolInput: { url: 'https://example.com/no-session-large' },
       sessionId: '',
       raw: {
         tool_response: 'x'.repeat(2000),
       },
     };
-    expect(event.sessionId).toBe('');
+    expect(postFetchHandler(event).hookType).toBe('pass');
   });
 });
