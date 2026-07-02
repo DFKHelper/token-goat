@@ -19,12 +19,12 @@ describe('cli_doctor', () => {
 
   describe('checkDbExists', () => {
     it('returns ok when database exists', () => {
-      const dbPath = path.join(tempDir, 'index.db')
+      const dbPath = path.join(tempDir, 'global.db')
       fs.writeFileSync(dbPath, 'mock db content')
 
       const result = checkDbExists(tempDir)
       expect(result.status).toBe('ok')
-      expect(result.message).toContain('index.db exists')
+      expect(result.message).toContain('global.db exists')
     })
 
     it('returns warn when database missing', () => {
@@ -34,7 +34,7 @@ describe('cli_doctor', () => {
     })
 
     it('includes file size in message', () => {
-      const dbPath = path.join(tempDir, 'index.db')
+      const dbPath = path.join(tempDir, 'global.db')
       fs.writeFileSync(dbPath, 'x'.repeat(2048))
 
       const result = checkDbExists(tempDir)
