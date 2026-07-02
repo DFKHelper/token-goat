@@ -260,9 +260,10 @@ function _applyFiltersAndPrint(
 ): void {
   if (opts.section !== undefined) {
     const sectionResult = extractSection(content, opts.section)
-    if (sectionResult !== null) {
-      content = sectionResult.content
+    if (sectionResult === null) {
+      throw new CliError(`section '${opts.section}' not found`)
     }
+    content = sectionResult.content
   }
 
   if (opts.grep !== undefined) {
