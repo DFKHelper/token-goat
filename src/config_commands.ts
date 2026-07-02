@@ -438,7 +438,15 @@ export async function cmdFetchImage(opts: { url: string; out?: string; json?: bo
 // ── history ───────────────────────────────────────────────────────────────────
 
 export function cmdHistory(opts: { limit?: string; json?: boolean }): void {
-  const limit = opts.limit !== undefined ? Math.max(1, Number.parseInt(opts.limit, 10)) : 30
+  let limit = 30
+  if (opts.limit !== undefined) {
+    const n = Number.parseInt(opts.limit, 10)
+    if (!Number.isFinite(n)) {
+      emitErr(`history: --limit must be a number, got: "${opts.limit}"`)
+      throw new Error(`invalid --limit: ${opts.limit}`)
+    }
+    limit = Math.max(1, n)
+  }
 
   const bashItems = listBlobs(BASH_OUTPUT_SUBDIR)
     .map(({ id, mtime, value }) => {
