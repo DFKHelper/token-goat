@@ -101,4 +101,17 @@ describe('buildManifest', () => {
     const manifest = buildManifest()
     expect(manifest.length).toBeLessThan(2000)
   })
+
+  it('does not list a file twice if it was both read and edited', () => {
+    const p = makeTmpFile('data')
+    recordFileRead(p)
+    recordFileEdit(p)
+    const manifest = buildManifest()
+    // Find the basename since paths are rendered with slashes
+    const basename = path.basename(p)
+    // Count occurrences of the basename in the manifest
+    const matches = manifest.match(new RegExp(basename, 'g')) || []
+    // Should appear in exactly one section, not both
+    expect(matches.length).toBeLessThanOrEqual(1)
+  })
 })
