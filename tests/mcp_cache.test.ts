@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   isMcpReadOnly,
   mcpHash,
@@ -53,6 +53,41 @@ describe('isMcpReadOnly', () => {
   it('handles case-insensitive mutation verbs', () => {
     expect(isMcpReadOnly('mcp__test__Create')).toBe(false)
     expect(isMcpReadOnly('mcp__test__UPDATE')).toBe(false)
+  })
+
+  it('returns false for browser-automation / state-mutating verbs', () => {
+    // These chrome-devtools-mcp tool names mutate page/browser state (or their
+    // result is expected to change between calls), so they must never be
+    // classified as read-only/cacheable.
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__click')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__fill')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__fill_form')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__press_key')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__type_text')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__navigate_page')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__evaluate_script')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__drag')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__hover')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__handle_dialog')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_snapshot')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__wait_for')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__emulate')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__upload_file')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__close_page')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__new_page')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__select_page')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__resize_page')).toBe(false)
+  })
+
+  it('returns true for genuinely read-only chrome-devtools tools, borderline ones excluded', () => {
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_pages')).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__get_console_message')).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_console_messages')).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__get_network_request')).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_network_requests')).toBe(true)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot')).toBe(true)
+    // Borderline (triggers a page reload/navigation): conservative default is to exclude it.
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__lighthouse_audit')).toBe(false)
   })
 })
 
@@ -142,5 +177,37 @@ describe('storeMcpOutput / getMcpOutput', () => {
     const id = storeMcpOutput(sessionId, toolName, toolInput, 'body')
     expect(id).not.toBeNull()
     expect(getMcpOutput('other-session', toolName, toolInput)).toBeNull()
+  })
+
+  it('with no ttlMs given, recalls indefinitely (back-compat default)', () => {
+    const id = storeMcpOutput(sessionId, toolName, toolInput, 'body')
+    expect(id).not.toBeNull()
+    expect(getMcpOutput(sessionId, toolName, toolInput)).toBe(id)
+  })
+
+  it('recalls within the given TTL window', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000_000)
+      const id = storeMcpOutput(sessionId, toolName, toolInput, 'body')
+      expect(id).not.toBeNull()
+      vi.setSystemTime(1_000_000 + 30_000) // 30s later, inside a 60s TTL
+      expect(getMcpOutput(sessionId, toolName, toolInput, 60_000)).toBe(id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('treats an entry as a miss once it ages past the TTL window', () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_000_000)
+      const id = storeMcpOutput(sessionId, toolName, toolInput, 'body')
+      expect(id).not.toBeNull()
+      vi.setSystemTime(1_000_000 + 61_000) // 61s later, outside a 60s TTL
+      expect(getMcpOutput(sessionId, toolName, toolInput, 60_000)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

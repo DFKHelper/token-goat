@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 // Importing relay registers EVERY hook module (including hooks_mcp) for its
 // side-effects, so runHook dispatches through the real production registry —
 // not a test-only handler reference. buildEvent maps a Claude Code payload onto
@@ -95,6 +95,30 @@ describe('MCP caching hooks (real runHook dispatch)', () => {
   it('passes the first pre (cold cache) for a read-only call', async () => {
     const pre = await runHook(buildEvent('pre_tool_use', prePayload()))
     expect(pre.hookType).toBe('pass')
+  })
+
+  it('denies a repeat within the dedup TTL window but allows it again once the TTL has elapsed', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(1_700_000_000_000)
+      const post = await runHook(buildEvent('post_tool_use', postPayload('the file body')))
+      expect(post.hookType).toBe('pass')
+
+      // Still well inside the default 45s dedup TTL: the repeat is denied.
+      vi.setSystemTime(1_700_000_000_000 + 30_000)
+      const preWithinTtl = await runHook(buildEvent('pre_tool_use', prePayload()))
+      expect(preWithinTtl.hookType).toBe('deny')
+
+      // Past the default 45s dedup TTL: the identical call is no longer treated
+      // as a stale duplicate — a real re-call is allowed through again, since a
+      // cached read-only result forever (no expiry) is unsound even for
+      // genuinely read-only tools whose results can change between calls.
+      vi.setSystemTime(1_700_000_000_000 + 46_000)
+      const preAfterTtl = await runHook(buildEvent('pre_tool_use', prePayload()))
+      expect(preAfterTtl.hookType).toBe('pass')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not cache or deny a mutating mcp tool', async () => {
