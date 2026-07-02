@@ -603,7 +603,7 @@ export function runGrep(opts: GrepOptions): number {
   function searchFile(filePath: string): void {
     try {
       const text = fs.readFileSync(filePath, 'utf-8')
-      const lines = text.split('\n')
+      const lines = text.split(/\r?\n/)
       lines.forEach((lineText, idx) => {
         if (regex.test(lineText)) {
           hits.push({ file: filePath, line: idx + 1, text: lineText })
