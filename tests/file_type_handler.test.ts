@@ -22,9 +22,11 @@ describe('handlePdf', () => {
     expect(result.shouldBlock).toBe(true)
   })
 
-  it('message contains pages parameter hint', () => {
+  it('does not advertise a pages-parameter Read retry — PDFs are always blocked regardless of args, so that remedy can never work; points to a real extraction command instead', () => {
     const result = handlePdf('/path/to/doc.pdf', 1024)
-    expect(result.message).toContain('pages')
+    expect(result.message).not.toContain('pages')
+    expect(result.message).not.toContain('Read({')
+    expect(result.message).toContain('pdftotext')
     expect(result.message).toContain('/path/to/doc.pdf')
   })
 
@@ -218,7 +220,7 @@ describe('dispatchFileTypeHandler', () => {
   it('dispatches PDF — always blocks', () => {
     const result = dispatchFileTypeHandler('/path/to/doc.pdf', '')
     expect(result?.shouldBlock).toBe(true)
-    expect(result?.message).toContain('pages')
+    expect(result?.message).toContain('pdftotext')
   })
 
   it('uses contentLengthHint for PDF size display', () => {

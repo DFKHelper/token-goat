@@ -33,9 +33,9 @@ export function handlePdf(filePath: string, contentLength: number): FileTypeResu
   return {
     shouldBlock: true,
     message: [
-      `PDF file (${formatBytes(contentLength)}).`,
-      `Use the \`pages\` parameter to scope the read: Read({ file_path: "${filePath}", pages: "1-5" })`,
-      `For the full page count, run: pdfinfo "${filePath}" | grep Pages`,
+      `PDF file (${formatBytes(contentLength)}) — Read cannot return PDF content; this is not retryable with different Read parameters.`,
+      `Extract text first: pdftotext "${filePath}" "${filePath}.txt"`,
+      `Then read the extracted .txt file. For the page count: pdfinfo "${filePath}" | grep Pages`,
     ].join('\n'),
   }
 }
