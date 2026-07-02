@@ -1054,5 +1054,52 @@ function MyFunction {
     expect(result2.language).toBe('powershell')
     fs.rmSync(path.dirname(psm1File), { recursive: true })
   })
+
+  it('indexes a function whose declaration line also carries a same-line inline block comment', () => {
+    const content = `function Setup { <# init #> }\n`
+    const { symbols } = extractPowershell(content, 'inline_comment.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Setup')
+  })
+
+  it('does not treat <# inside a string literal as a real block comment opener', () => {
+    const content = `$x = "the <# marker"
+function AfterString {
+  Write-Host "hi"
+}
+`
+    const { symbols } = extractPowershell(content, 'string_marker.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('AfterString')
+  })
+
+  it('clears currentClass after a one-liner class body so a following top-level function is still indexed', () => {
+    const content = `class Empty { }
+
+function AfterClass {
+  Write-Host "after"
+}
+`
+    const { symbols } = extractPowershell(content, 'oneliner_class.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Empty')
+    expect(names).toContain('AfterClass')
+  })
+
+  it('does not let braces inside a # comment desync the brace-depth counter', () => {
+    const content = `function Outer {
+  # TODO: handle { edge case
+  Write-Host "x"
+}
+
+function AfterComment {
+  Write-Host "y"
+}
+`
+    const { symbols } = extractPowershell(content, 'hash_brace.ps1')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('Outer')
+    expect(names).toContain('AfterComment')
+  })
 })
 })

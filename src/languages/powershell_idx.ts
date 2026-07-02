@@ -22,6 +22,30 @@ function makeSymbol(
   }
 }
 
+// Finds the index of the first unquoted occurrence of `needle` in `text`,
+// tracking single- and double-quoted string state as it scans left to right.
+// Used so that comment markers (`<#`, `#`) that merely appear inside a string
+// literal aren't mistaken for real comment syntax.
+function findUnquoted(text: string, needle: string): number {
+  let inSingle = false
+  let inDouble = false
+  for (let idx = 0; idx < text.length; idx++) {
+    const ch = text[idx]
+    if (!inDouble && ch === "'") {
+      inSingle = !inSingle
+      continue
+    }
+    if (!inSingle && ch === '"') {
+      inDouble = !inDouble
+      continue
+    }
+    if (!inSingle && !inDouble && text.startsWith(needle, idx)) {
+      return idx
+    }
+  }
+  return -1
+}
+
 export function extractPowershell(
   content: string,
   filePath: string,
@@ -41,28 +65,49 @@ export function extractPowershell(
   let inBlockComment = false
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? ''
-    const stripped = line.trim()
+    const rawLine = lines[i] ?? ''
+    const lineNum = i + 1
 
-    // Handle <# ... #> block comments
-    if (stripped.includes('<#')) {
-      inBlockComment = true
+    // Handle <# ... #> block comments. A `<#` only opens a real comment when
+    // it isn't sitting inside a quoted string literal - PowerShell strings can
+    // legitimately contain that two-character sequence (e.g. "the <# marker").
+    let line = rawLine
+    if (!inBlockComment) {
+      const openIdx = findUnquoted(rawLine, '<#')
+      if (openIdx !== -1) {
+        const closeIdx = rawLine.indexOf('#>', openIdx + 2)
+        if (closeIdx !== -1) {
+          // Opens and closes on this same line: blank out the comment span
+          // (keeping column positions stable) and keep processing the rest of
+          // the line as normal code instead of short-circuiting the whole line.
+          line = rawLine.slice(0, openIdx) + ' '.repeat(closeIdx + 2 - openIdx) + rawLine.slice(closeIdx + 2)
+        } else {
+          inBlockComment = true
+        }
+      }
     }
+
     if (inBlockComment) {
-      if (stripped.includes('#>')) {
+      if (rawLine.includes('#>')) {
         inBlockComment = false
       }
-      braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
+      braceDepth += (rawLine.match(/\{/g) ?? []).length - (rawLine.match(/\}/g) ?? []).length
       continue
     }
 
-    // Skip empty lines and single-line comments (#)
-    if (!stripped || stripped.startsWith('#')) {
-      braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
+    // Strip an unquoted `#` onward before anything else, so comment text
+    // (e.g. `# TODO: handle { edge case`) never desyncs the brace counter or
+    // gets mistaken for a declaration.
+    const hashIdx = findUnquoted(line, '#')
+    if (hashIdx !== -1) {
+      line = line.slice(0, hashIdx)
+    }
+    const stripped = line.trim()
+
+    // Skip empty lines (including lines that were pure comments)
+    if (!stripped) {
       continue
     }
-
-    const lineNum = i + 1
 
     // FUNCTION or FILTER (top-level only, not nested)
     if (braceDepth === 0 && currentClass === null) {
@@ -85,9 +130,21 @@ export function extractPowershell(
           symbols.push(makeSymbol(filePath, cname, kind, lineNum, line.trimEnd().slice(0, 200)))
         }
         if (kind === 'class') {
-          currentClass = cname
-          classBraceDepth = braceDepth
-          classBodyEntered = false
+          const openCount = (line.match(/\{/g) ?? []).length
+          const closeCount = (line.match(/\}/g) ?? []).length
+          if (openCount > 0 && openCount === closeCount) {
+            // The class header, body, and closing brace are all on this one
+            // line, so there is no lingering class scope to track. Leaving
+            // `currentClass` set here would otherwise drop every top-level
+            // declaration that follows (it only nets back to classBraceDepth
+            // within this single line, so the classBodyEntered guard below
+            // never trips and the pop check never fires).
+            currentClass = null
+          } else {
+            currentClass = cname
+            classBraceDepth = braceDepth
+            classBodyEntered = false
+          }
         }
       }
     }
