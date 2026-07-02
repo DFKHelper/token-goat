@@ -3,6 +3,7 @@ import { loadBlob } from './disk_cache.js'
 import { SESSIONS_SUBDIR } from './session_store.js'
 import { findProject } from './project.js'
 import { runGit } from './util.js'
+import { getBashOutput } from './bash_output_cache.js'
 
 export const MAX_RESUME_TOKENS = 2000
 export const MAX_RESUME_CHARS = MAX_RESUME_TOKENS * 4
@@ -43,7 +44,10 @@ export function buildResumePacket(sessionId: string): string | null {
   if (recentBash.length > 0) {
     lines.push('## Recent bash commands')
     for (const entry of recentBash) {
-      if (Array.isArray(entry) && typeof entry[0] === 'string') lines.push(`- ${entry[0]}`)
+      if (Array.isArray(entry) && typeof entry[1] === 'string') {
+        const bashEntry = getBashOutput(entry[1])
+        if (bashEntry !== null) lines.push(`- ${bashEntry.command}`)
+      }
     }
     lines.push('')
   }

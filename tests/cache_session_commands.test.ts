@@ -361,12 +361,36 @@ describe('buildResumePacket', () => {
   })
 
   it('includes recent bash commands when present', () => {
-    const session = { files: [], hintsShown: [], webFetches: [], bashOutputs: [['npm test', 'id1'], ['git status', 'id2']] as Array<[string, string]>, curlDownloads: [] }
+    // Store real bash output entries.
+    const bashEntry1 = { id: 'id1', command: 'npm test', output: 'test output', exitCode: 0, storedAt: Date.now(), sizeBytes: 11 }
+    const bashEntry2 = { id: 'id2', command: 'git status', output: 'status output', exitCode: 0, storedAt: Date.now(), sizeBytes: 13 }
+    storeBlob(BASH_OUTPUT_SUBDIR, bashEntry1.id, bashEntry1)
+    storeBlob(BASH_OUTPUT_SUBDIR, bashEntry2.id, bashEntry2)
+    const session = { files: [], hintsShown: [], webFetches: [], bashOutputs: [['hash1', 'id1'], ['hash2', 'id2']] as Array<[string, string]>, curlDownloads: [] }
     storeBlob(SESSIONS_SUBDIR, 'test-sess-3', session)
     const packet = buildResumePacket('test-sess-3')
     expect(packet).toContain('Recent bash commands')
     expect(packet).toContain('npm test')
     expect(packet).toContain('git status')
+  })
+
+  it('resolves bash output ids to command text (regression: printed hash instead of command)', () => {
+    // Store real bash output entries.
+    const entry1 = { id: 'abc123def456', command: 'npm test', output: 'test output', exitCode: 0, storedAt: Date.now(), sizeBytes: 11 }
+    const entry2 = { id: 'xyz789uvw012', command: 'git status', output: 'status output', exitCode: 0, storedAt: Date.now(), sizeBytes: 13 }
+    storeBlob(BASH_OUTPUT_SUBDIR, entry1.id, entry1)
+    storeBlob(BASH_OUTPUT_SUBDIR, entry2.id, entry2)
+    // Record them in session the way the real code does: [commandHash, outputId] pairs.
+    const session = { files: [], hintsShown: [], webFetches: [], bashOutputs: [['hash1', entry1.id], ['hash2', entry2.id]] as Array<[string, string]>, curlDownloads: [] }
+    storeBlob(SESSIONS_SUBDIR, 'test-sess-bash-real', session)
+    const packet = buildResumePacket('test-sess-bash-real')
+    expect(packet).toContain('Recent bash commands')
+    // Bug: used to print the hash (entry[0]) instead of the command (entry[1]->getBashOutput->command).
+    expect(packet).toContain('npm test')
+    expect(packet).toContain('git status')
+    // Ensure hashes are NOT printed.
+    expect(packet).not.toContain('hash1')
+    expect(packet).not.toContain('hash2')
   })
 
   it('packet stays within MAX_RESUME_CHARS cap even for large sessions', () => {
