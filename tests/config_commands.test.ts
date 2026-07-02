@@ -187,6 +187,19 @@ describe('cmdConfig set input validation hardening', () => {
     expect(cfg.hints.backoff_thresholds).toEqual([1, 3, 10])
   })
 
+  it('still coerces a comma-separated number list after the field was previously emptied to []', () => {
+    cmdConfig({ action: 'set', key: 'hints.backoff_thresholds', value: '[]' })
+    invalidateConfigCache()
+    cmdConfig({ action: 'set', key: 'hints.backoff_thresholds', value: '1,3,10' })
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    // Pre-fix, coerce() decided "is this a number list?" purely from existing.length > 0.
+    // Once the field was emptied to [], that check saw length 0 and treated the field as a
+    // plain string list, so the comma-split segments stayed strings and the load-time
+    // int-list validator silently filtered them all out to [] again.
+    expect(cfg.hints.backoff_thresholds).toEqual([1, 3, 10])
+  })
+
   it('rejects setting an entire config section to a scalar value instead of corrupting it (#M24)', () => {
     expect(() => cmdConfig({ action: 'set', key: 'compact_assist', value: 'oops' })).toThrow()
     expect(capturedErr()).toContain('section')
