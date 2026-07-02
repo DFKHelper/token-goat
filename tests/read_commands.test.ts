@@ -184,6 +184,46 @@ describe('read_commands', () => {
       expect(mockQuerySymbols).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Inner' }))
     })
 
+    it('does not let a bare filename match an indexed path with a different prefix in the partial-path fallback (M34)', () => {
+      // 'src/myutils.ts'.endsWith('utils.ts') is true, but requesting `utils.ts` must not
+      // resolve to a completely different file that merely happens to share a suffix.
+      const wrongMatch: MockSymbol = { name: 'helper', kind: 'function', filePath: 'src/myutils.ts', lineStart: 1, lineEnd: 3, body: 'function helper() {}', docstring: '' }
+      mockQuerySymbols.mockImplementation((opts: { filePath?: string }) => {
+        if (opts.filePath !== undefined) return []
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return [wrongMatch as any]
+      })
+      const code = runRead({ spec: 'utils.ts::helper' })
+      expect(code).toBe(1)
+    })
+
+    it('does match a real path-segment boundary in the partial-path fallback (M34)', () => {
+      const rightMatch: MockSymbol = { name: 'helper', kind: 'function', filePath: 'src/utils.ts', lineStart: 1, lineEnd: 3, body: 'function helper() {}', docstring: '' }
+      mockQuerySymbols.mockImplementation((opts: { filePath?: string }) => {
+        if (opts.filePath !== undefined) return []
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return [rightMatch as any]
+      })
+      const { stdout } = capture(() => { runRead({ spec: 'utils.ts::helper' }) })
+      expect(stdout).toContain('helper')
+    })
+
+    it('disambiguates a dotted symbol by its class qualifier when two classes share a method name (M35)', () => {
+      // ClassA and ClassB both define `render`; `ClassB.render` must resolve to ClassB's copy,
+      // not silently fall through to whichever same-named method the index happens to list first.
+      const classB: MockSymbol = { name: 'ClassB', kind: 'class', filePath: 'src/comp.ts', lineStart: 20, lineEnd: 30, body: 'class ClassB {}', docstring: '' }
+      const renderInA: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 3, lineEnd: 5, body: 'ClassA.render body', docstring: '' }
+      const renderInB: MockSymbol = { name: 'render', kind: 'method', filePath: 'src/comp.ts', lineStart: 22, lineEnd: 24, body: 'ClassB.render body', docstring: '' }
+      mockQuerySymbols.mockImplementation((opts: { name?: string }) => {
+        if (opts.name === 'render') return [renderInA, renderInB] as unknown as ReturnType<typeof mockQuerySymbols>
+        if (opts.name === 'ClassB') return [classB] as unknown as ReturnType<typeof mockQuerySymbols>
+        return []
+      })
+      const { stdout } = capture(() => { runRead({ spec: 'src/comp.ts::ClassB.render' }) })
+      expect(stdout).toContain('ClassB.render body')
+      expect(stdout).not.toContain('ClassA.render body')
+    })
+
     it('splits on the LAST :: so a file path containing a literal :: still resolves the correct symbol (#m2)', () => {
       mockQuerySymbols.mockReturnValue([])
       runRead({ spec: 'a::b::mySymbol' })
@@ -807,5 +847,78 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     })
     expect(stdout).toContain('nope1: (no references found)')
     expect(stdout).toContain('nope2: (no references found)')
+  })
+})
+
+// A synthetic multi-file fixture, not a single-file stub: `queryRefs` is faked with the
+// SAME filtering semantics as the real SQL query (name always filters; filePath, when
+// present, additionally restricts rows to that exact file) so these tests exercise the
+// real scoping bug rather than merely asserting on call arguments.
+function fakeRefsTable(rows: Array<{ filePath: string; name: string; line: number; context: string }>) {
+  return (opts: { name: string; filePath?: string }) =>
+    rows
+      .filter((r) => r.name === opts.name && (opts.filePath === undefined || r.filePath === opts.filePath))
+      .map((r) => ({ filePath: r.filePath, name: r.name, line: r.line, col: 0, context: r.context }))
+}
+
+describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defining file (M33)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('runRefsSingle: finds callers in other files, not just the file the symbol is defined in', () => {
+    // helperFn is DEFINED in src/util.ts but CALLED from three other files — the
+    // realistic shape of a flagship "find all callers" query.
+    mockQueryRefs.mockImplementation(
+      fakeRefsTable([
+        { filePath: 'src/a.ts', name: 'helperFn', line: 10, context: 'helperFn()' },
+        { filePath: 'src/b.ts', name: 'helperFn', line: 20, context: 'helperFn()' },
+        { filePath: 'src/c.ts', name: 'helperFn', line: 30, context: 'helperFn()' },
+      ]),
+    )
+
+    const { stdout, stderr } = capture(() => {
+      const code = runRefs({ spec: 'src/util.ts::helperFn', callers: true })
+      expect(code).toBe(0)
+    })
+
+    expect(stderr).toBe('')
+    expect(stdout).toContain('src/a.ts')
+    expect(stdout).toContain('src/b.ts')
+    expect(stdout).toContain('src/c.ts')
+  })
+
+  it('runRefs (multi-symbol): finds callers in other files for each symbol under --callers', () => {
+    mockQueryRefs.mockImplementation(
+      fakeRefsTable([
+        { filePath: 'src/x.ts', name: 'login', line: 5, context: 'login()' },
+        { filePath: 'src/y.ts', name: 'login', line: 15, context: 'login()' },
+        { filePath: 'src/z.ts', name: 'refresh', line: 8, context: 'refresh()' },
+      ]),
+    )
+
+    const { stdout } = capture(() => {
+      const code = runRefs({ spec: 'src/auth.ts::login,refresh', callers: true })
+      expect(code).toBe(0)
+    })
+
+    expect(stdout).toContain('src/x.ts')
+    expect(stdout).toContain('src/y.ts')
+    expect(stdout).toContain('src/z.ts')
+  })
+
+  it('without --callers, a file::symbol spec still scopes to that file (unchanged behavior)', () => {
+    mockQueryRefs.mockImplementation(
+      fakeRefsTable([
+        { filePath: 'src/a.ts', name: 'helperFn', line: 10, context: 'helperFn()' },
+        { filePath: 'src/b.ts', name: 'helperFn', line: 20, context: 'helperFn()' },
+      ]),
+    )
+
+    capture(() => runRefs({ spec: 'src/a.ts::helperFn' }))
+
+    expect(mockQueryRefs).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'helperFn', filePath: expect.any(String) }),
+    )
   })
 })
