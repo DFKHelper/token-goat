@@ -132,7 +132,7 @@ export function extractChangelogVersionHint(content: string, filePath: string): 
   for (const line of lines) {
     const m = /^##\s+(\[?[\d]+\.[\d]+\.[\d]+\]?)/.exec(line)
     if (m) {
-      if (foundUnreleased || !line.toLowerCase().includes('unreleased')) {
+      if (foundUnreleased && !line.toLowerCase().includes('unreleased')) {
         const ver = m[1]
         return ` | token-goat section "${filePath}::${ver}"`
       }

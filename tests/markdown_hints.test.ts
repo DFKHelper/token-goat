@@ -224,6 +224,25 @@ Some prose about versioning`
     const hint = extractChangelogVersionHint(content, '/CHANGELOG.md')
     expect(hint).toBe('')
   })
+
+  it('ignores a version heading that appears before Unreleased (fail-on-buggy: OR-vs-AND lets the pre-Unreleased version win)', () => {
+    const content = `# Changelog
+
+## [1.5.0] - 2024-02-01
+
+Some superseded notes here
+
+## [Unreleased]
+
+WIP changes
+
+## [1.4.0] - 2023-11-01
+
+Older release notes`
+    const hint = extractChangelogVersionHint(content, '/CHANGELOG.md')
+    expect(hint).toContain('[1.4.0]')
+    expect(hint).not.toContain('[1.5.0]')
+  })
 })
 
 describe('MARKDOWN_SIZE_THRESHOLD', () => {
