@@ -40,6 +40,7 @@ import { recordStat } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
 import { isImagePath } from './image_shrink.js'
+import { compactPathFor, isCompactFresh, readCompactBody } from './doc_compact.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -310,6 +311,31 @@ export function preReadHandler(event: HookEvent): HookOutput {
       }
     } catch {
       // fail-soft: ignore errors and continue with normal read processing
+    }
+  }
+
+  // Stable-doc compact serving: if a fresh extractive compact sidecar exists for
+  // this doc (built via `token-goat compact-doc`), serve its content in place of
+  // the full file — 80-95% smaller. Runs ahead of the markdown large-file
+  // intercept below, which is the expensive full-read path this preempts.
+  // Gated by [hints] stable_doc_compacts (default on).
+  if (loadConfig().hints.stable_doc_compacts && _isDocFile(normalized)) {
+    const compactPath = compactPathFor(normalized)
+    if (isCompactFresh(compactPath, normalized)) {
+      const compactBody = readCompactBody(compactPath)
+      if (compactBody !== null) {
+        recordFileRead(normalized)
+        const fullSize = statSize(normalized) ?? 0
+        const savedBytes = Math.max(0, fullSize - compactBody.length)
+        recordStat('session_hint', savedBytes, Math.round(savedBytes / 4))
+        return denyOutput(
+          'Serving the extractive compact sidecar in place of the full file ' +
+          '(source unchanged since the last `compact-doc` build):\n\n' +
+          compactBody +
+          '\n\nUse `token-goat compact-doc "' + normalized + '" --force` to rebuild it, ' +
+          'or `token-goat compact-doc "' + normalized + '" --show` to view it directly.',
+        )
+      }
     }
   }
 
