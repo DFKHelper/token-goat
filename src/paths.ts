@@ -74,7 +74,16 @@ export function normalizePath(p: string): string {
  *              working directory; `changed` passes its own repo root.
  */
 export function resolveIndexPath(file: string, base: string = process.cwd()): string {
-  return normalizePath(path.resolve(base, file))
+  // A Windows-drive-absolute file or base (C:/foo, from a WSL-Windows-interop process, a
+  // Windows caller, or a cwd carried over from a Windows session) must resolve using Windows
+  // semantics regardless of host: the ambient path.resolve is POSIX on a non-Windows host and
+  // doesn't recognize a drive letter as absolute in either argument, so it would join a
+  // drive-letter file onto base (or a relative file onto a drive-letter base) as if neither
+  // were absolute, corrupting the index key. path.win32.resolve recognizes drive letters on
+  // any host; when neither argument is Windows-absolute this still behaves like plain resolve.
+  const isWindowsAbsolute = (s: string): boolean => /^[a-zA-Z]:[/\\]/.test(s)
+  const resolve = isWindowsAbsolute(file) || isWindowsAbsolute(base) ? path.win32.resolve : path.resolve
+  return normalizePath(resolve(base, file))
 }
 
 /**

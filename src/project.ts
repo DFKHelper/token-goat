@@ -74,9 +74,9 @@ export function canonicalize(inputPath: string | URL): string {
   const slashed = pathStr.replace(/\\/g, '/');
   let pre = isWin32 ? normalizeShellDrivePrefix(slashed) : slashed;
   if (pre !== slashed) {
-    pre = path.resolve(pre);
+    pre = (isWin32 ? path.win32.resolve : path.resolve)(pre);
   } else {
-    pre = path.resolve(pathStr);
+    pre = (isWin32 ? path.win32.resolve : path.resolve)(pathStr);
   }
 
   // Convert to forward slashes and normalize shell prefixes.
