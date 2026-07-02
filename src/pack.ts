@@ -96,24 +96,87 @@ function matches(rel: string, patterns: string[]): boolean {
 }
 
 /**
- * True when `candidate`'s real, symlink-resolved location lives inside
- * `rootReal` (itself already symlink-resolved). Unlike a lexical
- * `path.resolve()` check, `fs.realpathSync` follows symlinks to their actual
- * target, so this catches a candidate that is itself a symlink — or that sits
- * behind a symlinked ancestor directory — pointing outside the project root.
- * The containment test uses `path.relative` plus a `..`/absolute-path guard
- * so a sibling that merely shares a string prefix (e.g. `root-evil`) is never
- * mistaken for a path inside `root`.
+ * True when `resolvedPath` (an already symlink-resolved absolute path)
+ * lives inside `rootReal` (itself already symlink-resolved). Uses
+ * `path.relative` plus a `..`/absolute-path guard so a sibling that merely
+ * shares a string prefix (e.g. `root-evil`) is never mistaken for a path
+ * inside `root`.
  */
-function isRealPathWithinRoot(rootReal: string, candidate: string): boolean {
-  let candidateReal: string
-  try {
-    candidateReal = fs.realpathSync(candidate)
-  } catch {
-    return false
-  }
-  const rel = path.relative(rootReal, candidateReal)
+function isPathWithinRoot(rootReal: string, resolvedPath: string): boolean {
+  const rel = path.relative(rootReal, resolvedPath)
   return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)
+}
+
+/**
+ * Opens `p` exactly once and returns a descriptor already bound to a file
+ * that has been validated as living inside `rootReal`. This closes the
+ * TOCTOU gap between "check" and "use": `collectFiles`/`estimateBudget`
+ * used to resolve `p` via `fs.realpathSync` to check containment, then
+ * separately `fs.statSync(p)` and `fs.readFileSync(p)` the same path again
+ * to get the size and content — three independent path lookups, each free
+ * to land on a different filesystem entry if whatever `p` points to (a
+ * symlink at `p` itself, or at any ancestor directory) is swapped out by a
+ * concurrent process between calls. Opening the fd first binds it to one
+ * specific inode; everything the caller does afterward via that same fd
+ * (`fstatSync`, `readFileSync`) is guaranteed to operate on that exact
+ * inode no matter what happens to the path afterward.
+ *
+ * Node has no cross-platform fd -> realpath call, so the containment check
+ * still has to resolve `p` by path — racy relative to the open by itself —
+ * but the result is cross-checked against the already-open fd's own
+ * `fstatSync` device/inode via `fs.statSync` on the resolved path. A
+ * mismatch means the path resolved to something other than what the fd is
+ * bound to (i.e. it was repointed between the open and the check), so the
+ * candidate is rejected rather than trusted.
+ *
+ * Returns `null` when `p` can't be opened or isn't a regular file (silent
+ * skip, matching the previous pre-check), `'outside-root'` when the
+ * validated target doesn't resolve inside `rootReal` (or the identity
+ * cross-check fails), or `{ fd, stat }` on success — `stat` is the fd's own
+ * `fstatSync`, safe to use for the size check. The caller owns the returned
+ * fd and must close it.
+ */
+function openWithinRoot(rootReal: string, p: string): { fd: number; stat: fs.Stats } | 'outside-root' | null {
+  let fd: number
+  try {
+    fd = fs.openSync(p, 'r')
+  } catch {
+    return null
+  }
+
+  let ownershipTransferred = false
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile()) return null
+
+    let realPath: string
+    try {
+      realPath = fs.realpathSync(p)
+    } catch {
+      return 'outside-root'
+    }
+
+    if (!isPathWithinRoot(rootReal, realPath)) return 'outside-root'
+
+    let realStat: fs.Stats
+    try {
+      realStat = fs.statSync(realPath)
+    } catch {
+      return 'outside-root'
+    }
+    if (realStat.dev !== stat.dev || realStat.ino !== stat.ino) return 'outside-root'
+
+    ownershipTransferred = true
+    return { fd, stat }
+  } finally {
+    if (!ownershipTransferred) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // already closed or invalid; nothing more to do
+      }
+    }
+  }
 }
 
 // Comment stripping patterns
@@ -249,12 +312,6 @@ export function collectFiles(
     }
 
     for (const p of candidates) {
-      try {
-        if (!fs.statSync(p).isFile()) continue
-      } catch {
-        continue
-      }
-
       if (seen.has(p)) continue
 
       let rel: string
@@ -265,54 +322,53 @@ export function collectFiles(
         continue
       }
 
-      if (!isRealPathWithinRoot(rootReal, p)) {
+      const opened = openWithinRoot(rootReal, p)
+      if (opened === null) continue
+      if (opened === 'outside-root') {
         result.skipped.push(`${rel} (symlink points outside project root)`)
         continue
       }
 
-      if (opts.ignore_patterns && matches(rel, opts.ignore_patterns)) {
-        continue
-      }
-
-      let stat: fs.Stats
+      const { fd, stat } = opened
       try {
-        stat = fs.statSync(p)
-      } catch {
-        result.skipped.push(`${rel} (unreadable)`)
-        continue
-      }
+        if (opts.ignore_patterns && matches(rel, opts.ignore_patterns)) {
+          continue
+        }
 
-      const size = stat.size
-      if (size > maxFileBytes) {
-        result.skipped.push(`${rel} (too large: ${Math.floor(size / 1024)}KB)`)
-        continue
-      }
+        const size = stat.size
+        if (size > maxFileBytes) {
+          result.skipped.push(`${rel} (too large: ${Math.floor(size / 1024)}KB)`)
+          continue
+        }
 
-      let content: string
-      try {
-        content = fs.readFileSync(p, 'utf8')
-      } catch {
-        result.skipped.push(`${rel} (unreadable)`)
-        continue
-      }
+        let content: string
+        try {
+          content = fs.readFileSync(fd, 'utf8')
+        } catch {
+          result.skipped.push(`${rel} (unreadable)`)
+          continue
+        }
 
-      if (opts.do_strip_comments) {
-        content = stripComments(content, p)
-      }
+        if (opts.do_strip_comments) {
+          content = stripComments(content, p)
+        }
 
-      seen.add(p)
-      const lines = content === '' ? 0 : content.split('\n').length - (content.endsWith('\n') ? 1 : 0)
-      const tokens = estimateTokens(content)
-      const pf: PackFile = {
-        path: p,
-        rel_path: rel,
-        content,
-        lines,
-        tokens,
+        seen.add(p)
+        const lines = content === '' ? 0 : content.split('\n').length - (content.endsWith('\n') ? 1 : 0)
+        const tokens = estimateTokens(content)
+        const pf: PackFile = {
+          path: p,
+          rel_path: rel,
+          content,
+          lines,
+          tokens,
+        }
+        result.files.push(pf)
+        result.total_lines += lines
+        result.total_tokens += tokens
+      } finally {
+        fs.closeSync(fd)
       }
-      result.files.push(pf)
-      result.total_lines += lines
-      result.total_tokens += tokens
     }
   }
 
@@ -501,12 +557,6 @@ export function estimateBudget(
     }
 
     for (const p of candidates) {
-      try {
-        if (!fs.statSync(p).isFile()) continue
-      } catch {
-        continue
-      }
-
       if (seen.has(p)) continue
 
       let rel: string
@@ -517,48 +567,47 @@ export function estimateBudget(
         continue
       }
 
-      if (!isRealPathWithinRoot(rootReal, p)) {
+      const opened = openWithinRoot(rootReal, p)
+      if (opened === null) continue
+      if (opened === 'outside-root') {
         result.skipped.push(`${rel} (symlink points outside project root)`)
         continue
       }
 
-      if (opts.ignore_patterns && matches(rel, opts.ignore_patterns)) {
-        continue
-      }
-
-      let stat: fs.Stats
+      const { fd, stat } = opened
       try {
-        stat = fs.statSync(p)
-      } catch {
-        result.skipped.push(`${rel} (stat error)`)
-        continue
-      }
+        if (opts.ignore_patterns && matches(rel, opts.ignore_patterns)) {
+          continue
+        }
 
-      const size = stat.size
-      if (size > maxFileBytes) {
-        result.skipped.push(`${rel} (>${Math.floor(maxFileBytes / 1024 / 1024)}MB)`)
-        continue
-      }
+        const size = stat.size
+        if (size > maxFileBytes) {
+          result.skipped.push(`${rel} (>${Math.floor(maxFileBytes / 1024 / 1024)}MB)`)
+          continue
+        }
 
-      let lines: number
-      let tokens: number
-      try {
-        const data = fs.readFileSync(p)
-        const sampleSize = Math.min(1000, data.length)
-        const sampleLines = (data.toString('utf8', 0, sampleSize).match(/\n/g) || []).length
-        lines = data.length > sampleSize ? Math.ceil(sampleLines * (data.length / sampleSize)) : sampleLines + 1
-        const text = data.toString('utf8', 0, Math.min(100000, data.length))
-        tokens = estimateTokens(text)
-      } catch {
-        result.skipped.push(`${rel} (unreadable)`)
-        continue
-      }
+        let lines: number
+        let tokens: number
+        try {
+          const data = fs.readFileSync(fd)
+          const sampleSize = Math.min(1000, data.length)
+          const sampleLines = (data.toString('utf8', 0, sampleSize).match(/\n/g) || []).length
+          lines = data.length > sampleSize ? Math.ceil(sampleLines * (data.length / sampleSize)) : sampleLines + 1
+          const text = data.toString('utf8', 0, Math.min(100000, data.length))
+          tokens = estimateTokens(text)
+        } catch {
+          result.skipped.push(`${rel} (unreadable)`)
+          continue
+        }
 
-      seen.add(p)
-      const entry: BudgetEntry = { rel_path: rel, lines, tokens, size_bytes: size }
-      result.entries.push(entry)
-      result.total_lines += lines
-      result.total_tokens += tokens
+        seen.add(p)
+        const entry: BudgetEntry = { rel_path: rel, lines, tokens, size_bytes: size }
+        result.entries.push(entry)
+        result.total_lines += lines
+        result.total_tokens += tokens
+      } finally {
+        fs.closeSync(fd)
+      }
     }
   }
 
