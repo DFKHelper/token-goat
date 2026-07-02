@@ -2,11 +2,17 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import sharp from 'sharp'
 
 import { isImagePath, preReadImageHandler, shrinkImage } from '../src/image_shrink.js'
 import type { HookEvent } from '../src/hook_registry.js'
+// Importing relay registers EVERY hook module (hooks_read's large-file deny AND
+// image_shrink's preReadImageHandler) for its side-effects, so runHook dispatches
+// through the real production registry — the only way to observe the composed
+// pre_tool_use decision both handlers produce together, not either in isolation.
+import { buildEvent } from '../src/relay.js'
+import { runHook } from '../src/hook_registry.js'
 
 function makeEvent(filePath: string | undefined): HookEvent {
   return {
@@ -112,5 +118,60 @@ describe('preReadImageHandler', () => {
     if (out.hookType !== 'context') return
     expect(out.context).toContain('data:image/')
     expect(out.context).toContain('smaller')
+  })
+})
+
+describe('composed pre_tool_use dispatch (real runHook)', () => {
+  // hooks_read.ts's generic large-file deny threshold is 500KB; image_shrink.ts's
+  // own "worth shrinking" threshold is 512KB. A file in between is too big for the
+  // deny check to let through, but too small for the shrink handler to touch —
+  // the dead zone where a flat deny previously won regardless of what the shrink
+  // handler would have done.
+  const overlapBytes = 505 * 1024 // 517,120 bytes: inside [512,000, 524,288)
+  let overlapDir: string
+  let overlapImagePath: string
+  let prevHome: string | undefined
+  let tmpHome: string
+
+  beforeEach(() => {
+    prevHome = process.env['TOKEN_GOAT_HOME']
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-composed-home-'))
+    process.env['TOKEN_GOAT_HOME'] = tmpHome
+
+    overlapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-overlap-'))
+    overlapImagePath = path.join(overlapDir, 'overlap.png')
+    // Content doesn't need to be a decodable image: at this size image_shrink's
+    // own threshold (512KB) means it never attempts to decode/shrink it anyway —
+    // the point is exercising the size-gate composition, not the shrink itself.
+    fs.writeFileSync(overlapImagePath, Buffer.alloc(overlapBytes, 1))
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+    else process.env['TOKEN_GOAT_HOME'] = prevHome
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+    fs.rmSync(overlapDir, { recursive: true, force: true })
+  })
+
+  it('does not unconditionally deny a Read of an image sized in the 500-512KB overlap window', async () => {
+    const event = buildEvent('pre_tool_use', {
+      tool_name: 'Read',
+      tool_input: { file_path: overlapImagePath },
+      session_id: 'composed-1',
+    })
+    const result = await runHook(event)
+    expect(result.hookType).not.toBe('deny')
+  })
+
+  it('still denies a same-sized non-image file via the generic large-file deny', async () => {
+    const textPath = path.join(overlapDir, 'overlap.txt')
+    fs.writeFileSync(textPath, Buffer.alloc(overlapBytes, 97)) // 'a'
+    const event = buildEvent('pre_tool_use', {
+      tool_name: 'Read',
+      tool_input: { file_path: textPath },
+      session_id: 'composed-2',
+    })
+    const result = await runHook(event)
+    expect(result.hookType).toBe('deny')
   })
 })
