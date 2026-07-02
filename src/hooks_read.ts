@@ -39,6 +39,7 @@ import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS } from './hints/file_type
 import { recordStat } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
+import { isImagePath } from './image_shrink.js'
 
 /** True when `basename` is a tsconfig or jsconfig file. */
 function isTsConfigFile(basename: string): boolean {
@@ -575,7 +576,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   }
 
   const size = statSize(normalized)
-  if (size !== null && size >= LARGE_FILE_BYTES) {
+  if (size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized)) {
     const kb = Math.round(size / 1024)
     recordFileRead(normalized)
     const config = loadConfig()
@@ -603,7 +604,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const textTypeExts = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv'])
   const fileStatSize = size ?? statSize(normalized) ?? 0
   const isKnownFileType = binaryExts.has(fileTypeExt) || textTypeExts.has(fileTypeExt)
-  if (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic) {
+  if (!isImagePath(normalized) && (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic)) {
     let ftContent = ''
     if (!binaryExts.has(fileTypeExt)) {
       try {
