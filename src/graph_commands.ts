@@ -77,6 +77,7 @@ export function bfsCallChains(start: string, callersOf: CallersOfFn, maxDepth: n
     for (const caller of callers) {
       if (globalVisited.has(caller)) {
         complete.push([...chain, `(cycle:${caller})`])
+        expanded = true
         continue
       }
       globalVisited.add(caller)
