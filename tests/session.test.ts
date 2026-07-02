@@ -4,9 +4,11 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import {
   getBashOutputId,
+  getFileLineRanges,
   getSessionFiles,
   getSessionId,
   getWebFetchCacheId,
@@ -14,6 +16,7 @@ import {
   markHintShown,
   recordBashOutput,
   recordFileEdit,
+  recordFileLineRange,
   recordFileRead,
   recordWebFetch,
   wasFileReadThisSession,
@@ -106,6 +109,41 @@ describe('recordFileEdit preserves other tracked flags (#M20)', () => {
     // recordFileEdit used to rebuild the entry field-by-field, silently dropping wasTruncated
     // instead of preserving it like the sibling read/truncate functions do.
     expect(files[0]?.wasTruncated).toBe(true)
+  })
+})
+
+describe('recordFileEdit clears stale line ranges', () => {
+  it('drops previously recorded sed line ranges when the file is edited without a prior full read', () => {
+    const p = normalizePath(makeTmpFile())
+    recordFileLineRange(p, 1, 50)
+    expect(getFileLineRanges(p)).toEqual([[1, 50]])
+
+    recordFileEdit(p)
+    expect(getFileLineRanges(p)).toEqual([])
+  })
+
+  it('drops previously recorded sed line ranges when the file was read before being edited', () => {
+    const p = normalizePath(makeTmpFile())
+    recordFileRead(p)
+    recordFileLineRange(p, 10, 20)
+    expect(getFileLineRanges(p)).toEqual([[10, 20]])
+
+    recordFileEdit(p)
+    expect(getFileLineRanges(p)).toEqual([])
+    const files = [...getSessionFiles().values()]
+    expect(files[0]?.wasEdited).toBe(true)
+  })
+
+  it('does not clear line ranges recorded for a different, unedited file', () => {
+    const edited = normalizePath(makeTmpFile())
+    const other = normalizePath(makeTmpFile())
+    recordFileLineRange(edited, 1, 10)
+    recordFileLineRange(other, 1, 10)
+
+    recordFileEdit(edited)
+
+    expect(getFileLineRanges(edited)).toEqual([])
+    expect(getFileLineRanges(other)).toEqual([[1, 10]])
   })
 })
 

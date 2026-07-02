@@ -122,10 +122,14 @@ export function recordFileRead(filePath: string): void {
  * Record that `filePath` was edited/written.
  *
  * Sets `wasEdited` true. If the file was never read this session an entry is
- * created with `readCount` 0 so the edit is still tracked.
+ * created with `readCount` 0 so the edit is still tracked. Also drops any
+ * previously recorded sed line-range history for the file (see
+ * {@link recordFileLineRange}): an edit shifts line numbers and content, so a
+ * pre-edit range can no longer be trusted by hooks_bash.ts's overlap check.
  */
 export function recordFileEdit(filePath: string): void {
   const key = normalizePath(filePath)
+  _fileLineRanges.delete(key)
   const prev = _files.get(key)
   if (prev === undefined) {
     _files.set(key, {
