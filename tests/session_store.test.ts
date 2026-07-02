@@ -8,6 +8,8 @@ import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import {
   exportSessionState,
   importSessionState,
+  recordLargeFileHintPending,
+  takePendingLargeFileHint,
   type FileEntry,
   type SerializedSession,
 } from '../src/session.js'
@@ -114,6 +116,50 @@ describe('merge-on-save (concurrent writer not clobbered)', () => {
     expect(a.readCount).toBe(3) // max of the two
     expect(a.lastReadAt).toBe(25) // newest
     expect(a.sizeBytes).toBe(999) // size from the newest read
+  })
+})
+
+describe('pendingLargeFileHints merge (consumed hints stay consumed)', () => {
+  it('does not resurrect a hint this process consumed, even though a fresh disk read at save time still has it (fail-on-buggy: a plain union-of-entries merge restores the deleted key)', () => {
+    // Process A: a pre-read hook fires a pending hint for a large file and saves.
+    importSessionState(empty())
+    recordLargeFileHintPending('/big.md', 999999)
+    saveSessionState('sid-pending-1')
+
+    const diskAfterA = JSON.parse(fs.readFileSync(sessionFile('sid-pending-1'), 'utf8')) as SerializedSession
+    expect(diskAfterA.pendingLargeFileHints).toEqual([['/big.md', 999999]])
+
+    // Process B: a fresh hook process loads that session, resolves the hint (the CLI read that
+    // followed it), and saves. Nothing else touches the file in between, so the disk read at B's
+    // save time still shows the entry — the merge must still drop it, not resurrect it.
+    importSessionState(empty())
+    loadSessionState('sid-pending-1')
+    expect(takePendingLargeFileHint('/big.md')).toBe(999999)
+    saveSessionState('sid-pending-1')
+
+    const diskAfterB = JSON.parse(fs.readFileSync(sessionFile('sid-pending-1'), 'utf8')) as SerializedSession
+    expect(diskAfterB.pendingLargeFileHints ?? []).toEqual([])
+  })
+
+  it('still preserves an unrelated pending hint recorded by a concurrent process', () => {
+    importSessionState(empty())
+    recordLargeFileHintPending('/a.md', 100)
+    saveSessionState('sid-pending-2')
+
+    // Process B loads and consumes /a.md...
+    importSessionState(empty())
+    loadSessionState('sid-pending-2')
+    takePendingLargeFileHint('/a.md')
+
+    // ...but before B saves, a concurrent process records a different pending hint.
+    const diskState = JSON.parse(fs.readFileSync(sessionFile('sid-pending-2'), 'utf8')) as SerializedSession
+    diskState.pendingLargeFileHints = [['/a.md', 100], ['/c.md', 200]]
+    fs.writeFileSync(sessionFile('sid-pending-2'), JSON.stringify(diskState))
+
+    saveSessionState('sid-pending-2')
+
+    const finalDisk = JSON.parse(fs.readFileSync(sessionFile('sid-pending-2'), 'utf8')) as SerializedSession
+    expect((finalDisk.pendingLargeFileHints ?? []).map(([k]: [string, number]) => k).sort()).toEqual(['/c.md'])
   })
 })
 

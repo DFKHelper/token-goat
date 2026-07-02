@@ -67,6 +67,11 @@ let _cliReads = new Set<string>()
 // path -> size (bytes) for a large-file hint fired but not yet resolved as followed/ignored (opt-in outcome logging, consume-on-resolve).
 let _pendingLargeFileHints = new Map<string, number>()
 
+// Snapshot of `_pendingLargeFileHints` at hydration time, so `consumedPendingLargeFileHintKeys`
+// can tell "this process resolved it" apart from "this process never saw it" — session_store.ts's
+// merge needs that distinction to avoid resurrecting a resolved hint from a stale disk read.
+let _pendingLargeFileHintsAtLoad = new Map<string, number>()
+
 // Resolved once per process: env-provided session id or a generated one.
 let _sessionId: string | null = null
 
@@ -189,6 +194,15 @@ export function takePendingLargeFileHint(filePath: string): number | null {
   if (size === undefined) return null
   _pendingLargeFileHints.delete(key)
   return size
+}
+
+/** Keys pending at load but resolved (consumed) since — tombstones for session_store.ts's merge. */
+export function consumedPendingLargeFileHintKeys(): string[] {
+  const consumed: string[] = []
+  for (const key of _pendingLargeFileHintsAtLoad.keys()) {
+    if (!_pendingLargeFileHints.has(key)) consumed.push(key)
+  }
+  return consumed
 }
 
 /** Index a web-fetch result: `url` -> `cacheId`. */
@@ -357,6 +371,7 @@ export function importSessionState(s: SerializedSession): void {
   _fileLineRanges = new Map(s.fileLineRanges ?? [])
   _cliReads = new Set(s.cliReads ?? [])
   _pendingLargeFileHints = new Map(s.pendingLargeFileHints ?? [])
+  _pendingLargeFileHintsAtLoad = new Map(_pendingLargeFileHints)
 }
 
 registerReset(() => {
@@ -368,5 +383,6 @@ registerReset(() => {
   _fileLineRanges = new Map()
   _cliReads = new Set()
   _pendingLargeFileHints = new Map()
+  _pendingLargeFileHintsAtLoad = new Map()
   _sessionId = null
 })
