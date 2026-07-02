@@ -75,8 +75,15 @@ export function bfsCallChains(start: string, callersOf: CallersOfFn, maxDepth: n
     }
     let expanded = false
     for (const caller of callers) {
-      if (globalVisited.has(caller)) {
+      if (chain.includes(caller)) {
+        // Real cycle: caller is an ancestor in THIS chain, so following it would loop back on itself.
         complete.push([...chain, `(cycle:${caller})`])
+        expanded = true
+        continue
+      }
+      if (globalVisited.has(caller)) {
+        // Cross-branch dedup: caller was already explored via a different branch, not an ancestor here — not a real cycle.
+        complete.push([...chain, `(visited:${caller})`])
         expanded = true
         continue
       }
@@ -397,15 +404,15 @@ export function runTypes(opts: TypesOptions): number {
     (a, b) => a.filePath.localeCompare(b.filePath) || a.lineStart - b.lineStart,
   )
 
-  if (opts.json === true) {
-    emit(JSON.stringify(results, null, 2))
-    return 0
-  }
-
   if (results.length === 0) {
     const ctx = opts.file !== undefined ? ` in '${opts.file}'` : ''
     emitErr(`No type declarations found${ctx}`)
     return 1
+  }
+
+  if (opts.json === true) {
+    emit(JSON.stringify(results, null, 2))
+    return 0
   }
 
   for (const r of results) {
@@ -444,14 +451,14 @@ export function runScope(opts: ScopeOptions): number {
     .filter((s) => s.lineStart <= line && line <= s.lineEnd)
     .sort((a, b) => b.lineStart - a.lineStart)
 
-  if (opts.json === true) {
-    emit(JSON.stringify(enclosing, null, 2))
-    return 0
-  }
-
   if (enclosing.length === 0) {
     emitErr(`No symbols enclosing line ${line} in '${file}'`)
     return 1
+  }
+
+  if (opts.json === true) {
+    emit(JSON.stringify(enclosing, null, 2))
+    return 0
   }
 
   for (const s of enclosing) {

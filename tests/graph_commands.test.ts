@@ -166,15 +166,15 @@ describe('bfsCallChains', () => {
     expect(chains).toEqual([['a', 'b']])
   })
 
-  it('produces multiple chains for a diamond', () => {
+  it('produces multiple chains for a diamond, labeling a cross-branch revisit as "visited" rather than a false cycle', () => {
     const graph: Record<string, string[]> = { a: ['b', 'c'], b: ['d'], c: ['d'] }
     const callersOf = (n: string): string[] => graph[n] ?? []
     const chains = bfsCallChains('a', callersOf, 4)
     const flat = chains.map((c) => c.join('->'))
     expect(flat).toContain('a->b->d')
-    // c is visited after b adds d, so the d node is already visited when c's turn comes. The BFS visits nodes globally, so c->d becomes a cycle. The test checks the cycle sentinel appears for the second path to d.
-    const hasCycleOrD = flat.some((s) => s.includes('d') || s.includes('cycle'))
-    expect(hasCycleOrD).toBe(true)
+    // d is reached first via a->b->d. The second path, a->c->d, revisits d via a DIFFERENT branch — c is not an ancestor of the first d, so there is no real cycle back to the current chain. This is legitimate cross-branch deduplication and must be labeled "visited", not "cycle".
+    expect(flat).toContain('a->c->(visited:d)')
+    expect(flat.some((s) => s.includes('cycle'))).toBe(false)
   })
 
   it('emits a cycle sentinel instead of looping forever', () => {
@@ -256,6 +256,11 @@ describe('runScope integration', () => {
     const parsed: unknown = JSON.parse(captured)
     expect(Array.isArray(parsed)).toBe(true)
   })
+
+  it('exits 1 for a nonsense file even with --json (regression: emptiness check must run before format branching)', () => {
+    const result = runScope({ spec: 'src/__nonexistent_file_xyzzy__.ts:1', json: true })
+    expect(result).toBe(1)
+  })
 })
 
 // ---- integration: runTypes against the real repo index ---------------------
@@ -291,6 +296,29 @@ describe('runTypes integration', () => {
       process.stdout.write = origWrite
     }
     expect(captured).toMatch(/SymbolEntry|Language/)
+  })
+
+  it('returns valid JSON for --json flag', () => {
+    let captured = ''
+    const origWrite = process.stdout.write.bind(process.stdout)
+    process.stdout.write = (chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+      if (typeof chunk === 'string') captured += chunk
+      return origWrite(chunk, ...(rest as Parameters<typeof origWrite>))
+    }
+    try {
+      const code = runTypes({ json: true })
+      expect(code).toBe(0)
+    } finally {
+      process.stdout.write = origWrite
+    }
+    const parsed: unknown = JSON.parse(captured)
+    expect(Array.isArray(parsed)).toBe(true)
+    expect((parsed as unknown[]).length).toBeGreaterThan(0)
+  })
+
+  it('exits 1 for a nonexistent file even with --json (regression: emptiness check must run before format branching)', () => {
+    const code = runTypes({ file: 'src/__nonexistent_xyzzy__.ts', json: true })
+    expect(code).toBe(1)
   })
 })
 
