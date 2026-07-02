@@ -4,11 +4,12 @@ import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHe
 import { getBashOutputId, recordFileRead } from '../src/session.js'
 import { getBashOutputByCommandHash } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { resolveIndexPath } from '../src/paths.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-function makePostBashEvent(command: string, output: string): HookEvent {
+function makePostBashEvent(command: string, output: string, cwd?: string): HookEvent {
   return {
     eventName: 'post_tool_use',
     toolName: 'Bash',
@@ -18,6 +19,7 @@ function makePostBashEvent(command: string, output: string): HookEvent {
       tool_name: 'Bash',
       tool_input: { command },
       tool_response: output,
+      ...(cwd !== undefined ? { cwd } : {}),
     },
   }
 }
@@ -199,13 +201,13 @@ describe('pipe/redirect-insensitive cache keying', () => {
   })
 })
 
-function makeBashEvent(command: string): HookEvent {
+function makeBashEvent(command: string, cwd?: string): HookEvent {
   return {
     eventName: 'pre_tool_use',
     toolName: 'Bash',
     toolInput: { command },
     sessionId: 'test-session',
-    raw: {},
+    raw: cwd !== undefined ? { cwd } : {},
   }
 }
 
@@ -1429,7 +1431,10 @@ describe('preBashHandler — token-goat CLI surgical-read dedup', () => {
   })
 
   it('cross-references a file already fully read via the Read tool', () => {
-    recordFileRead('src/foo.ts')
+    // The Read tool always records an absolute path; the CLI dedup key is now resolved against
+    // the bash event's cwd too (falling back to process.cwd() here, since makeBashEvent sets none)
+    // so both sides land on the same absolute path.
+    recordFileRead(resolveIndexPath('src/foo.ts'))
     const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::bar"'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
@@ -1461,6 +1466,18 @@ describe('preBashHandler — token-goat CLI surgical-read dedup', () => {
     await postBashHandler(makePostBashEvent('token-goat read "src\\foo.ts::bar"', 'function bar() {}'))
     const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::bar"'))
     expect(result.hookType).toBe('context')
+  })
+
+  it('dedups a relative spec run twice from the same cwd (fail-on-buggy: breaks if the dedup key stops resolving against cwd)', async () => {
+    await postBashHandler(makePostBashEvent('token-goat read "src/foo.ts::bar"', 'function bar() {}', 'C:/Projects/repo-a'))
+    const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::bar"', 'C:/Projects/repo-a'))
+    expect(result.hookType).toBe('context')
+  })
+
+  it('does NOT dedup the same relative spec run from two different project cwds', async () => {
+    await postBashHandler(makePostBashEvent('token-goat read "src/foo.ts::bar"', 'function bar() {}', 'C:/Projects/repo-a'))
+    const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts::bar"', 'C:/Projects/repo-b'))
+    expect(result.hookType).toBe('pass')
   })
 
   it('emits an advisory hint on an exact repeat token-goat skill-body invocation', async () => {
