@@ -134,4 +134,35 @@ describe('WebFetch hook persistence', () => {
     } as HookEvent)
     expect(result.hookType).toBe('pass')
   })
+
+  it('recognizes a URL already cached by a different process/session (regression: dedup relied on the in-memory, per-session webFetches map)', async () => {
+    const url = 'https://example.com/cross-process-page'
+    const prompt = 'Summarize the changelog'
+    const largeResponse = 'x'.repeat(2000)
+
+    // "Process 1": a WebFetch is made and its response is stored to disk.
+    await postFetchHandler({
+      eventName: 'post_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url, prompt },
+      sessionId: 'session-process-1',
+      raw: { tool_response: largeResponse },
+    } as HookEvent)
+
+    // Simulate a brand-new process (or a new terminal tab / new session): every
+    // in-memory module cache is wiped, and a different session id is used, but
+    // the on-disk cache under TOKEN_GOAT_HOME survives (same as a real new
+    // CLI hook invocation reading the same ~/.token-goat directory).
+    clearModuleCaches()
+
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url, prompt },
+      sessionId: 'session-process-2',
+      raw: {},
+    } as HookEvent)
+
+    expect(result.hookType).toBe('deny')
+  })
 })
