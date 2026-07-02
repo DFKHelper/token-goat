@@ -371,17 +371,24 @@ export async function upsertChunks(
   db: BetterSqlite3Database,
   chunks: Chunk[],
 ): Promise<void> {
-  if (!isAvailable()) {
-    console.warn('Embeddings not available; skipping semantic indexing')
+  if (chunks.length === 0) {
     return
   }
+  // Every chunk here comes from chunkFile(filePath, content) for one file, so they all
+  // share the same filePath - safe to read it once, guarded by the length check above.
+  const filePath = chunks[0]!.filePath
 
-  if (chunks.length === 0) {
+  if (!isAvailable()) {
+    console.warn('Embeddings not available; skipping semantic indexing')
+    // Still clear the file's stale rows even though we can't reinsert - matches the
+    // unconditional cleanup indexFile used to perform before this delete moved here.
+    deleteFileEmbeddings(db, filePath)
     return
   }
 
   // Without the optional sqlite-vec chunk_vectors table (the table is absent when the native binary did not load), semantic indexing is impossible and chunk rows have no independent reader - they are only ever read as JOIN targets of a vector hit - so skip the whole operation rather than inserting unsearchable rows and paying the embedTexts cost. isAvailable() above gates only the model, which installs independently of sqlite-vec.
   if (!chunkVectorsTableExists(db)) {
+    deleteFileEmbeddings(db, filePath)
     return
   }
 
@@ -402,6 +409,11 @@ export async function upsertChunks(
   `)
 
   const tx = db.transaction(() => {
+    // Delete the file's prior chunks/vectors inside the same transaction as the
+    // inserts below, so a failed insert rolls back the delete too instead of
+    // leaving the file's embeddings deleted-but-not-replaced.
+    deleteFileEmbeddings(db, filePath)
+
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i]
       const embedding = embeddings[i]
@@ -416,8 +428,7 @@ export async function upsertChunks(
         chunk.text,
         chunk.kind,
       )
-      const packed = packVec(embedding)
-      vectorInsertStmt.run(chunkResult.lastInsertRowid, packed)
+      insertChunkVector(vectorInsertStmt, chunkResult.lastInsertRowid, embedding)
     }
   })
 
@@ -653,9 +664,13 @@ export async function indexFile(
 ): Promise<number> {
   const chunks = chunkFile(filePath, content)
   // Replace, do not append: drop the file's prior chunks (and their vectors) before inserting, so a reindex - or an edit that empties the file - leaves no stale rows behind.
-  deleteFileEmbeddings(db, filePath)
   if (chunks.length > 0) {
+    // upsertChunks deletes the file's prior chunks/vectors as part of the same
+    // transaction as the new insert, so a failed insert can't leave them
+    // deleted-but-not-replaced.
     await upsertChunks(db, chunks)
+  } else {
+    deleteFileEmbeddings(db, filePath)
   }
   return chunks.length
 }
