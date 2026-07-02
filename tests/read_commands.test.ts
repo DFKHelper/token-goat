@@ -39,6 +39,7 @@ import {
   extractImports,
   extractExportNames,
   extractTranscriptText,
+  parseDiffHunks,
 } from '../src/read_commands.js'
 import { querySymbols, queryRefs } from '../src/index_reader.js'
 import { runGit } from '../src/util.js'
@@ -405,6 +406,19 @@ describe('read_commands', () => {
       expect(stdout).toContain('1 symbols')
       expect(stdout).toContain('30 lines')
     })
+
+    it('applies minLines to JSON output too, not just the text branch (item1)', () => {
+      const syms: MockSymbol[] = [
+        { name: 'tiny', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+        { name: 'large', kind: 'class', filePath: 'a.ts', lineStart: 10, lineEnd: 30, body: 'class {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runSkeleton({ file: 'a.ts', minLines: 10, json: true }) })
+      const parsed = JSON.parse(stdout) as Array<{ name: string }>
+      expect(parsed).toHaveLength(1)
+      expect(parsed[0]?.name).toBe('large')
+    })
   })
 
   // ---- runOutline ---------------------------------------------------------
@@ -425,6 +439,19 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runOutline({ file: 'f.ts' }) })
       expect(stdout).toContain('10')
       expect(stdout).toContain('myFunc')
+    })
+
+    it('applies minLines to JSON output too, not just the text branch (item1)', () => {
+      const syms: MockSymbol[] = [
+        { name: 'tiny', kind: 'function', filePath: 'f.ts', lineStart: 1, lineEnd: 5, body: 'x', docstring: '' },
+        { name: 'large', kind: 'class', filePath: 'f.ts', lineStart: 10, lineEnd: 30, body: 'class {}', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runOutline({ file: 'f.ts', minLines: 10, json: true }) })
+      const parsed = JSON.parse(stdout) as Array<{ name: string }>
+      expect(parsed).toHaveLength(1)
+      expect(parsed[0]?.name).toBe('large')
     })
   })
 
@@ -479,6 +506,16 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runGrep({ pattern: 'hello', path: f }) })
       expect(stdout).toContain('hello world')
       expect(stdout).not.toMatch(/world\r/)
+    })
+
+    it('skips node_modules when walking a directory recursively (item3)', () => {
+      const nmDir = path.join(tempDir, 'node_modules', 'somepkg')
+      fs.mkdirSync(nmDir, { recursive: true })
+      fs.writeFileSync(path.join(nmDir, 'index.js'), 'const findme = 1')
+      fs.writeFileSync(path.join(tempDir, 'real.ts'), 'const findme = 2')
+      const { stdout } = capture(() => { runGrep({ pattern: 'findme', path: tempDir }) })
+      expect(stdout).toContain('real.ts')
+      expect(stdout).not.toContain('node_modules')
     })
   })
 
@@ -785,6 +822,114 @@ describe('read_commands', () => {
       })
       expect(stderr).toContain('git diff failed')
     })
+
+    it('scopes symbolMode to symbols overlapping the changed diff hunks, not every symbol in the file (item2)', () => {
+      const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+      const unifiedDiff = {
+        exitCode: 0,
+        stdout: [
+          'diff --git a/a.ts b/a.ts',
+          'index 111..222 100644',
+          '--- a/a.ts',
+          '+++ b/a.ts',
+          '@@ -7,0 +8 @@',
+          '+  // touched line',
+        ].join('\n'),
+        stderr: '',
+      }
+      mockRunGit
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(nameOnly as any)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(unifiedDiff as any)
+      const syms: MockSymbol[] = [
+        { name: 'untouchedFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
+        { name: 'touchedFn', kind: 'function', filePath: 'a.ts', lineStart: 7, lineEnd: 10, body: '', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runChanged({ symbolMode: true }) })
+      expect(stdout).toContain('touchedFn')
+      expect(stdout).not.toContain('untouchedFn')
+    })
+
+    it('falls back to every symbol in the file when the hunk-diff git call fails (item2)', () => {
+      const nameOnly = { exitCode: 0, stdout: 'a.ts\n', stderr: '' }
+      const diffFail = { exitCode: 128, stdout: '', stderr: 'boom' }
+      mockRunGit
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(nameOnly as any)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .mockReturnValueOnce(diffFail as any)
+      const syms: MockSymbol[] = [
+        { name: 'anyFn', kind: 'function', filePath: 'a.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runChanged({ symbolMode: true }) })
+      expect(stdout).toContain('anyFn')
+    })
+  })
+})
+
+describe('parseDiffHunks (item2)', () => {
+  it('parses a hunk header with an explicit new-line count into a start/end range keyed by file', () => {
+    const diff = [
+      'diff --git a/a.ts b/a.ts',
+      'index 111..222 100644',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -10,2 +10,3 @@',
+      '+line',
+      '+line',
+      ' unchanged',
+    ].join('\n')
+    expect(parseDiffHunks(diff).get('a.ts')).toEqual([{ start: 10, end: 12 }])
+  })
+
+  it('treats an omitted new-line count as a single-line hunk', () => {
+    const diff = [
+      'diff --git a/b.ts b/b.ts',
+      '--- a/b.ts',
+      '+++ b/b.ts',
+      '@@ -5 +8 @@',
+      '-old',
+      '+new',
+    ].join('\n')
+    expect(parseDiffHunks(diff).get('b.ts')).toEqual([{ start: 8, end: 8 }])
+  })
+
+  it('anchors a pure-deletion hunk (new count 0) to the insertion point', () => {
+    const diff = [
+      'diff --git a/c.ts b/c.ts',
+      '--- a/c.ts',
+      '+++ b/c.ts',
+      '@@ -20,3 +19,0 @@',
+      '-a',
+      '-b',
+      '-c',
+    ].join('\n')
+    expect(parseDiffHunks(diff).get('c.ts')).toEqual([{ start: 19, end: 19 }])
+  })
+
+  it('tracks multiple files independently', () => {
+    const diff = [
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -1 +1 @@',
+      '-x',
+      '+y',
+      'diff --git a/b.ts b/b.ts',
+      '--- a/b.ts',
+      '+++ b/b.ts',
+      '@@ -40,0 +41,2 @@',
+      '+p',
+      '+q',
+    ].join('\n')
+    const hunks = parseDiffHunks(diff)
+    expect(hunks.get('a.ts')).toEqual([{ start: 1, end: 1 }])
+    expect(hunks.get('b.ts')).toEqual([{ start: 41, end: 42 }])
   })
 })
 
