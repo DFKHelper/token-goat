@@ -1,7 +1,20 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type * as NodeFs from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// vi.mock is hoisted — wrap readdirSync (still delegating to the real implementation by default)
+// so the #M26 test below can simulate a Node < 20.1 Dirent (no `.path` property) without touching
+// Node's non-configurable fs module properties directly (vi.spyOn on a builtin fails at runtime).
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof NodeFs>();
+  return {
+    ...original,
+    readdirSync: vi.fn((...args: Parameters<typeof original.readdirSync>) => original.readdirSync(...args)),
+  };
+});
+
 import { canonicalize, projectHash, makeProjectAt, findProject, PROJECT_MARKERS } from '../src/project.js';
 
 describe('project', () => {
@@ -45,6 +58,26 @@ describe('project', () => {
       const with_trailing = canonicalize(tmpDir + '/');
       const without = canonicalize(tmpDir);
       expect(with_trailing).toBe(without);
+    });
+
+    describe('WSL mount-path rewrite (win32-gated, #M25)', () => {
+      const realPlatform = process.platform;
+      const setPlatform = (p: string): void => {
+        Object.defineProperty(process, 'platform', { value: p, configurable: true });
+      };
+      afterEach(() => setPlatform(realPlatform));
+
+      it('rewrites /mnt/c/... to c:/... on win32', () => {
+        setPlatform('win32');
+        expect(canonicalize('/mnt/c/foo/bar')).toBe('c:/foo/bar');
+      });
+
+      it('does not rewrite /mnt/c/... on real POSIX platforms (path.resolve() is POSIX resolve there and does not understand drive-letter syntax, so rewriting first would corrupt an otherwise-valid POSIX path)', () => {
+        setPlatform('linux');
+        const result = canonicalize('/mnt/c/foo/bar');
+        expect(result).not.toBe('c:/foo/bar');
+        expect(result).toContain('mnt');
+      });
     });
   });
 
@@ -155,6 +188,29 @@ describe('project', () => {
       fs.writeFileSync(subMarker, '{}');
       const project = findProject(subdir);
       expect(project?.marker).toBe('package.json');
+    });
+
+    it('does not mistake a repo-container for a project root when Dirent lacks a .path property (#M26, Node < 20.1 compat)', () => {
+      // tmpDir has its own .git marker AND >= 3 nested repos, so it's a "repo container" (a
+      // monorepo/workspace root) — findProject must skip it and keep walking up, not treat it
+      // as the project root. Node < 20.1 Dirent objects never had a `.path` property, so
+      // isRepoContainer must not rely on it.
+      fs.mkdirSync(path.join(tmpDir, '.git'));
+      for (const name of ['repo1', 'repo2', 'repo3']) {
+        fs.mkdirSync(path.join(tmpDir, name, '.git'), { recursive: true });
+      }
+      const subdir = path.join(tmpDir, 'src');
+      fs.mkdirSync(subdir);
+
+      const readdirMock = fs.readdirSync as unknown as ReturnType<typeof vi.fn>;
+      readdirMock.mockImplementationOnce(() => [
+        { name: 'repo1', isDirectory: () => true },
+        { name: 'repo2', isDirectory: () => true },
+        { name: 'repo3', isDirectory: () => true },
+      ]);
+
+      const project = findProject(subdir);
+      expect(project).toBeNull();
     });
   });
 

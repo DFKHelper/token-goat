@@ -64,10 +64,16 @@ function normalizeShellDrivePrefix(posixStr: string): string {
  */
 export function canonicalize(inputPath: string | URL): string {
   const pathStr = typeof inputPath === 'string' ? inputPath : inputPath.pathname;
+  // Windows-only: rewrites MSYS/WSL/Cygwin style paths (e.g. /mnt/c/foo) to drive-letter form
+  // before path.resolve() runs. On real POSIX Node, path.resolve() is POSIX resolve and doesn't
+  // understand drive-letter syntax, so rewriting first would corrupt an otherwise-valid POSIX
+  // path. Mirrors the win32 gate in paths.ts's normalizePath().
+  const isWin32 = process.platform === 'win32';
 
   // Pre-resolve normalization: convert MSYS/WSL/Cygwin prefix before resolve.
-  let pre = normalizeShellDrivePrefix(pathStr.replace(/\\/g, '/'));
-  if (pre !== pathStr.replace(/\\/g, '/')) {
+  const slashed = pathStr.replace(/\\/g, '/');
+  let pre = isWin32 ? normalizeShellDrivePrefix(slashed) : slashed;
+  if (pre !== slashed) {
     pre = path.resolve(pre);
   } else {
     pre = path.resolve(pathStr);
@@ -75,7 +81,9 @@ export function canonicalize(inputPath: string | URL): string {
 
   // Convert to forward slashes and normalize shell prefixes.
   let normalized = pre.replace(/\\/g, '/');
-  normalized = normalizeShellDrivePrefix(normalized);
+  if (isWin32) {
+    normalized = normalizeShellDrivePrefix(normalized);
+  }
 
   // Lowercase drive letter on Windows (e.g., "C:/foo" → "c:/foo").
   if (normalized.length >= 2 && normalized[1] === ':') {
@@ -135,7 +143,11 @@ function isRepoContainer(pathStr: string): boolean {
     const entries = fs.readdirSync(pathStr, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        const gitPath = path.join(entry.path, entry.name, '.git');
+        // Build the path from pathStr (already known) + entry.name rather than entry.path/
+        // entry.parentPath: entry.path only exists from Node 20.1+ and is undefined on Node
+        // 18/19 (this package's declared minimum), which throws inside this try and silently
+        // disables repo-container detection via the catch below.
+        const gitPath = path.join(pathStr, entry.name, '.git');
         if (fs.existsSync(gitPath)) {
           nestedRepos++;
           if (nestedRepos >= REPO_CONTAINER_THRESHOLD) {
