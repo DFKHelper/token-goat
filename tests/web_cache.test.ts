@@ -1,5 +1,8 @@
+import fs from 'fs'
+import path from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from '../src/disk_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import {
   getWebOutput,
@@ -60,6 +63,29 @@ describe('wasUrlFetchedThisSession', () => {
     expect(wasUrlFetchedThisSession('https://example.com/d')).toBe(false)
     storeWebOutput('https://example.com/d', 'x')
     expect(wasUrlFetchedThisSession('https://example.com/d')).toBe(true)
+  })
+})
+
+describe('TTL expiry', () => {
+  it('getWebOutput returns null for stale disk entries beyond DEFAULT_MAX_AGE_MS', () => {
+    // Store a web output
+    const url = 'https://example.com/stale-check'
+    const cacheId = storeWebOutput(url, 'stale-content')
+
+    // Get the file path and set its mtime to be old (beyond TTL)
+    const blobDir = path.join(tokenGoatHome(), 'web_outputs')
+    const blobPath = path.join(blobDir, `${cacheId}.json`)
+
+    // Set mtime to now minus (DEFAULT_MAX_AGE_MS + 1 second) to ensure it's expired
+    const now = Date.now()
+    const expiredTime = now - DEFAULT_MAX_AGE_MS - 1000
+    fs.utimesSync(blobPath, expiredTime / 1000, expiredTime / 1000)
+
+    // Clear the in-memory cache so the next read must hit disk
+    clearModuleCaches()
+
+    // Reading the stale entry from disk should return null (cache miss), not the old content
+    expect(getWebOutput(cacheId)).toBeNull()
   })
 })
 

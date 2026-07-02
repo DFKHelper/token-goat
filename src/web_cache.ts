@@ -14,9 +14,10 @@
  * age/count on each write.
  */
 
+import fs from 'fs'
 import { shortFingerprint } from './fingerprint.js'
 import { registerReset } from './reset.js'
-import { storeBlob, loadBlob } from './disk_cache.js'
+import { blobPath, DEFAULT_MAX_AGE_MS, loadBlob, storeBlob } from './disk_cache.js'
 
 /** Subdir under the token-goat home where web-output blobs live. */
 export const WEB_OUTPUT_SUBDIR = 'web_outputs'
@@ -77,11 +78,29 @@ function coerceWebBlob(raw: unknown): { url: string | null; content: string } | 
  *
  * Falls back to the disk store on an in-memory miss so a body cached by an
  * earlier process (or run) resolves; a disk hit is cached in-process, and its
- * URL (if recorded) re-populates the URL index.
+ * URL (if recorded) re-populates the URL index. Returns null if the disk entry
+ * is older than DEFAULT_MAX_AGE_MS (stale cache).
  */
 export function getWebOutput(cacheId: string): string | null {
   const hit = _byId.get(cacheId)
   if (hit !== undefined) return hit
+
+  // Check TTL: if the file exists and is stale, treat as cache miss
+  const p = blobPath(WEB_OUTPUT_SUBDIR, cacheId)
+  if (p !== null) {
+    try {
+      if (fs.existsSync(p)) {
+        const stat = fs.statSync(p)
+        const ageMs = Date.now() - stat.mtimeMs
+        if (ageMs > DEFAULT_MAX_AGE_MS) {
+          return null // Cache entry is stale
+        }
+      }
+    } catch {
+      // If we can't stat the file, fall through to loadBlob which will handle the error
+    }
+  }
+
   const blob = coerceWebBlob(loadBlob(WEB_OUTPUT_SUBDIR, cacheId))
   if (blob === null) return null
   _byId.set(cacheId, blob.content)
