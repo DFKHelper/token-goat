@@ -71,7 +71,7 @@ import {
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
 import { isWindows, ensureNewline, extractErrorMessage } from './util.js'
-import { renderStats } from './stats.js'
+import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
 import {
@@ -240,8 +240,31 @@ function cmdWorkerStatus(): void {
   out(isWorkerRunning() ? 'Worker is running.' : 'Worker is not running.')
 }
 
-function cmdStats(): void {
-  renderStats({ windowDays: 30 })
+function cmdStats(opts: { json?: boolean; windowDays?: string; byProject?: boolean; byCommand?: boolean; top?: string; homeDir?: string } = {}): void {
+  const windowDays = opts.windowDays ? parseInt(opts.windowDays, 10) : 30
+  if (!Number.isFinite(windowDays) || windowDays < 0) {
+    throw new CliError('--window-days must be a non-negative number')
+  }
+  let topNum: number | undefined
+  if (opts.top !== undefined) {
+    topNum = parseInt(opts.top, 10)
+    if (!Number.isFinite(topNum) || topNum < 1) {
+      throw new CliError('--top must be a positive number')
+    }
+  }
+  const statsOpts: Parameters<typeof runStats>[0] = {
+    json: opts.json === true,
+    windowDays,
+    byProject: opts.byProject === true,
+    byCommand: opts.byCommand === true,
+  }
+  if (topNum !== undefined) {
+    statsOpts.top = topNum
+  }
+  if (opts.homeDir !== undefined) {
+    statsOpts.homeDir = opts.homeDir
+  }
+  runStats(statsOpts)
 }
 
 function cmdDoctor(opts: { context?: boolean }): void {
@@ -1219,7 +1242,16 @@ export function buildProgram(): Command {
   worker.command('stop').description('stop the background indexer').action(guard(cmdWorkerStop))
   worker.command('status').description('check if the indexer is running').action(guard(cmdWorkerStatus))
 
-  program.command('stats').description('show session statistics').action(guard(cmdStats))
+  program
+    .command('stats')
+    .description('show session statistics')
+    .option('--json', 'output JSON')
+    .option('--window-days <days>', 'days to include (0 = all time)', '30')
+    .option('--by-project', 'show breakdown by project')
+    .option('--by-command', 'show breakdown by command')
+    .option('--top <n>', 'number of top entries to show in project view')
+    .option('--home-dir <path>', 'home directory (for testing)')
+    .action(guard(cmdStats))
 
   program.command('doctor').description('diagnose token-goat health').option('--context', 'include context footprint analysis').action(guard(cmdDoctor))
   program
