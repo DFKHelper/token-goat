@@ -890,7 +890,7 @@ function expandGlobs(root: string, patterns: string[]): string[] {
     if (globFn !== undefined && (p.includes('*') || p.includes('?') || p.includes('{'))) {
       try {
         const hits = globFn(p, { cwd: root })
-        out.push(...hits.map((h) => path.join(root, h)))
+        out.push(...hits.map((h) => (path.isAbsolute(h) ? h : path.join(root, h))))
         continue
       } catch {
         // fall through to literal path
@@ -922,6 +922,9 @@ function cmdPack(
     }
     const patternList = patterns ?? []
     const expandedList = patternList.length > 0 ? expandGlobs(root, patternList) : []
+    if (patternList.length > 0 && expandedList.length === 0) {
+      throw new CliError(`no files matched: ${patternList.join(' ')}`)
+    }
     const result =
       expandedList.length > 0
         ? collectFiles(root, expandedList, collectOpts)
