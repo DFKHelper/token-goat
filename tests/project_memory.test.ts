@@ -80,11 +80,14 @@ describe('project_memory', () => {
       delete process.env['HOME'];
       delete process.env['USERPROFILE'];
       const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>;
-      homedirMock.mockReturnValueOnce('C:\\mock\\home');
+      // Platform-appropriate mock: a POSIX host's path.isAbsolute/path.join don't understand
+      // Windows drive-letter syntax, so a hardcoded 'C:\\mock\\home' only passes on Windows.
+      const mockHome = process.platform === 'win32' ? 'C:\\mock\\home' : '/mock/home';
+      homedirMock.mockReturnValueOnce(mockHome);
       try {
         const p = memoryPath('test');
         expect(path.isAbsolute(p)).toBe(true);
-        expect(p).toBe(path.join('C:\\mock\\home', '.local', 'share', 'token-goat', 'projects', 'test_memory.toml'));
+        expect(p).toBe(path.join(mockHome, '.local', 'share', 'token-goat', 'projects', 'test_memory.toml'));
       } finally {
         if (oldHome !== undefined) process.env['HOME'] = oldHome; else delete process.env['HOME'];
         if (oldUserProfile !== undefined) process.env['USERPROFILE'] = oldUserProfile; else delete process.env['USERPROFILE'];
