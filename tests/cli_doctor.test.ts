@@ -43,9 +43,10 @@ describe('cli_doctor', () => {
   })
 
   describe('checkConfigValid', () => {
-    it('returns ok for valid JSON config', () => {
-      const configPath = path.join(tempDir, 'config.json')
-      fs.writeFileSync(configPath, JSON.stringify({ key: 'value' }))
+    it('returns ok for valid TOML config', () => {
+      // Production config files are TOML (see constants.ts configPath()), not JSON.
+      const configPath = path.join(tempDir, 'config.toml')
+      fs.writeFileSync(configPath, 'key = "value"\n')
 
       const result = checkConfigValid(configPath)
       expect(result.status).toBe('ok')
@@ -53,15 +54,15 @@ describe('cli_doctor', () => {
     })
 
     it('returns warn when config missing', () => {
-      const configPath = path.join(tempDir, 'missing.json')
+      const configPath = path.join(tempDir, 'missing.toml')
       const result = checkConfigValid(configPath)
       expect(result.status).toBe('warn')
       expect(result.message).toContain('not found')
     })
 
-    it('returns fail for invalid JSON', () => {
-      const configPath = path.join(tempDir, 'config.json')
-      fs.writeFileSync(configPath, '{invalid json}')
+    it('returns fail for invalid TOML', () => {
+      const configPath = path.join(tempDir, 'config.toml')
+      fs.writeFileSync(configPath, 'key = "unterminated string\n')
 
       const result = checkConfigValid(configPath)
       expect(result.status).toBe('fail')
@@ -69,8 +70,8 @@ describe('cli_doctor', () => {
     })
 
     it('includes file size for valid config', () => {
-      const configPath = path.join(tempDir, 'config.json')
-      fs.writeFileSync(configPath, '{"test":"value"}')
+      const configPath = path.join(tempDir, 'config.toml')
+      fs.writeFileSync(configPath, 'test = "value"\n')
 
       const result = checkConfigValid(configPath)
       expect(result.message).toMatch(/\d+ bytes/)

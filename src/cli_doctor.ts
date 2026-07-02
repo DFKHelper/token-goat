@@ -7,6 +7,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { execSync, spawnSync } from 'child_process'
+import { parse } from 'smol-toml'
 import { extractErrorMessage } from './util.js'
 import { isWorkerRunning } from './worker.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
@@ -81,7 +82,7 @@ export function checkConfigValid(configPath: string): DoctorResult {
   }
   try {
     const content = fs.readFileSync(configPath, 'utf-8')
-    JSON.parse(content)
+    parse(content)
     return {
       name: 'Config',
       status: 'ok',
