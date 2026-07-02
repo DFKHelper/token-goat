@@ -38,6 +38,7 @@ import {
   runSymbol,
   runRead,
   runSection,
+  runListSections,
   runRefs,
   runSkeleton,
   runOutline,
@@ -1109,10 +1110,15 @@ export function buildProgram(): Command {
 
   program
     .command('section <spec>')
-    .description('read one section from a file (spec: file::heading)')
+    .description('read one section from a file (spec: file::heading), or list all sections with --list')
     .option('-j, --json', 'output as JSON')
-    .action((spec: string, opts: { json?: boolean }) =>
-      runExit(() => runSection({ spec, ...(opts.json === true ? { json: true } : {}) })),
+    .option('--list', 'list all section headings in the file instead of reading one')
+    .action((spec: string, opts: { json?: boolean; list?: boolean }) =>
+      runExit(() =>
+        opts.list === true
+          ? runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}) })
+          : runSection({ spec, ...(opts.json === true ? { json: true } : {}) }),
+      ),
     )
 
   program
