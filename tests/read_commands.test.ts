@@ -423,6 +423,23 @@ describe('read_commands', () => {
       expect(Array.isArray(parsed)).toBe(true)
       expect(parsed[0]?.text).toContain('match')
     })
+
+    it('matches a $-anchored pattern on CRLF line endings (M3)', () => {
+      // A trailing \r left on each line by a naive split('\n') sits between the match
+      // text and the string end, so a $-anchor never lines up on CRLF files.
+      const f = path.join(tempDir, 'crlf.txt')
+      fs.writeFileSync(f, 'line one\r\nhello world\r\nline three\r\n')
+      const code = runGrep({ pattern: 'world$', path: f })
+      expect(code).toBe(0)
+    })
+
+    it('does not leave a stray \\r in the matched line text on CRLF files (M3)', () => {
+      const f = path.join(tempDir, 'crlf2.txt')
+      fs.writeFileSync(f, 'hello world\r\nline three\r\n')
+      const { stdout } = capture(() => { runGrep({ pattern: 'hello', path: f }) })
+      expect(stdout).toContain('hello world')
+      expect(stdout).not.toMatch(/world\r/)
+    })
   })
 
   // ---- runConfigGet -------------------------------------------------------
