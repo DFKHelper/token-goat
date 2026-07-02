@@ -4,8 +4,9 @@
  * populated before this suite runs — the fixture is the token-goat repo itself).
  */
 
-import { readdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { readdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { join, resolve, delimiter } from 'node:path'
+import { tmpdir } from 'node:os'
 
 import { beforeAll, describe, expect, it } from 'vitest'
 
@@ -749,5 +750,38 @@ describe('runAsk', () => {
     }
     expect(code).toBe(0)
     expect(captured).toMatch(/degraded mode/)
+  })
+
+  // Regression: on Windows, `where.exe <label>` for an npm-installed CLI resolves to a .cmd
+  // shim (there is no separate .exe). spawnSync cannot exec a .cmd directly without
+  // `shell: true` and used to throw EINVAL, which the catch block swallowed into a silent
+  // degrade -- TOKEN_GOAT_ASK_BACKEND=claude looked like it worked but never ran anything.
+  it.skipIf(process.platform !== 'win32')('actually runs a resolved .cmd backend shim on Windows instead of silently degrading', () => {
+    const shimDir = mkdtempSync(join(tmpdir(), 'tg-ask-shim-'))
+    const shimName = 'tg_test_ask_backend'
+    writeFileSync(join(shimDir, `${shimName}.cmd`), '@echo off\r\necho shim-answer-12345\r\n', 'utf-8')
+
+    const origPath = process.env['PATH']
+    const origBackend = process.env['TOKEN_GOAT_ASK_BACKEND']
+    process.env['PATH'] = `${shimDir}${delimiter}${origPath ?? ''}`
+    process.env['TOKEN_GOAT_ASK_BACKEND'] = shimName
+
+    let captured = ''
+    const origWrite = process.stdout.write.bind(process.stdout)
+    process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+    let code: number
+    try {
+      code = runAsk({ question: 'how are refs stored' })
+    } finally {
+      process.stdout.write = origWrite
+      if (origPath !== undefined) process.env['PATH'] = origPath
+      else delete process.env['PATH']
+      if (origBackend !== undefined) process.env['TOKEN_GOAT_ASK_BACKEND'] = origBackend
+      else delete process.env['TOKEN_GOAT_ASK_BACKEND']
+      rmSync(shimDir, { recursive: true, force: true })
+    }
+    expect(code).toBe(0)
+    expect(captured).not.toMatch(/degraded mode/)
+    expect(captured).toContain('shim-answer-12345')
   })
 })

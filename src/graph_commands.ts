@@ -818,7 +818,16 @@ export function runAsk(opts: AskOptions): number {
   const prompt = `Answer the QUESTION using only the CODE SNIPPETS below.\nQUESTION: ${opts.question}\n\nSNIPPETS:\n${context}\n\nANSWER:`
 
   try {
-    const result = spawnSync(backendPath, ['--print', '--bare', '--no-session-persistence'], { input: prompt, encoding: 'utf8', timeout: 30000 })
+    // A resolved backend on Windows is frequently an npm .cmd/.bat wrapper (there is no separate
+    // .exe for a Node-based CLI) -- spawnSync cannot exec .cmd/.bat directly without shell:true
+    // and throws EINVAL otherwise, which the catch below swallowed into a silent degrade.
+    const askArgs = ['--print', '--bare', '--no-session-persistence']
+    const needsShell = isWin && /\.(cmd|bat)$/i.test(backendPath)
+    // shell:true plus a separate args array is a deprecated (DEP0190) combination on Windows;
+    // fold the (static, non-user-controlled) args into a single quoted command string instead.
+    const result = needsShell
+      ? spawnSync([`"${backendPath}"`, ...askArgs].join(' '), { input: prompt, encoding: 'utf8', timeout: 30000, shell: true })
+      : spawnSync(backendPath, askArgs, { input: prompt, encoding: 'utf8', timeout: 30000 })
     if (result.status === 0 && result.stdout?.trim()) {
       if (opts.json === true) {
         emit(JSON.stringify({ answer: result.stdout.trim(), context: entries }, null, 2))
