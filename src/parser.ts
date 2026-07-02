@@ -211,7 +211,9 @@ function extractTsJsSymbols(root: TsNode, filePath: string): SymbolEntry[] {
 
   const visit = (node: TsNode, insideFunction: boolean): void => {
     const kind = TSJS_KIND_BY_TYPE.get(node.type)
-    if (kind !== undefined) {
+    // A local `function` declaration nested inside a function body is a local, exactly like a
+    // local const/let/var below -- exclude it from the top-level index the same way.
+    if (kind !== undefined && !(insideFunction && node.type === 'function_declaration')) {
       const name = nodeName(node)
       if (name !== null && name !== '') {
         out.push(makeSymbol(filePath, name, kind, node))
@@ -881,11 +883,15 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
           if (content[k] === ':' && depthWhenStringOpened === 1) {
             // lineEnd/body defaulted to the key's own line for every value kind. When the value is itself a string that contains an embedded literal newline, that undersells the span: scan forward past the colon and, if the value opens with a quote, walk to its matching closing quote (respecting escapes) to find the value's real end line, then widen body to cover every line in between. Non-string values (numbers, booleans, objects, arrays) keep the original single-line behavior.
             let v = k + 1
-            while (v < content.length && /\s/.test(content[v] ?? '')) v++
+            let gapNewlines = 0
+            while (v < content.length && /\s/.test(content[v] ?? '')) {
+              if (content[v] === '\n') gapNewlines++
+              v++
+            }
             let lineEnd = strStartLine
             let body = (lines[strStartLine - 1] ?? '').trim()
             if (content[v] === '"') {
-              let valueLine = line
+              let valueLine = line + gapNewlines
               let valueEscaping = false
               for (let j = v + 1; j < content.length; j++) {
                 const vch = content[j]
@@ -1294,12 +1300,8 @@ export async function indexFile(filePath: string, dbPath: string = globalDbPath(
   try {
     content = await fs.promises.readFile(filePath, 'utf8')
   } catch {
-    writeParseResult(
-      filePath,
-      null,
-      { symbols: [], refs: [], language, duration: Date.now() - start },
-      dbPath,
-    )
+    // Transient read failure (e.g. a Windows exclusive-lock error): no-op, matching
+    // indexFileSync, rather than destructively wiping this file's existing rows.
     return
   }
 
