@@ -605,18 +605,62 @@ export async function readSkillHits(skillName: string): Promise<{ count: number;
   return { count: 0, lastTs: 0 }
 }
 
-// Increment hit count sidecar for a skill. Same safeSkillName routing as readSkillHits.
+// Exclusive lock for incrementSkillHit's read-modify-write, so two concurrent processes/sessions
+// incrementing the same skill's hit count at once can't both read the same pre-increment count
+// and silently drop one hit. Directory creation is atomic on both POSIX and Windows, so an
+// mkdir-based lock doubles as a cross-process mutex: the loser gets EEXIST.
+const SKILL_HIT_LOCK_MAX_ATTEMPTS = 20
+const SKILL_HIT_LOCK_RETRY_MS = 5
+const SKILL_HIT_LOCK_STALE_MS = 5000
+
+// Acquires the lock directory for hitsFile, reclaiming a lock older than SKILL_HIT_LOCK_STALE_MS
+// as abandoned (left behind by a crashed process) instead of wedging future increments forever.
+// Returns false once every retry is exhausted so the caller can fall back to an unlocked
+// increment rather than dropping the hit -- see incrementSkillHit.
+async function acquireSkillHitLock(lockPath: string): Promise<boolean> {
+  for (let attempt = 0; attempt < SKILL_HIT_LOCK_MAX_ATTEMPTS; attempt++) {
+    try {
+      await fs.mkdir(lockPath)
+      return true
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return false
+      try {
+        const st = await fs.stat(lockPath)
+        if (Date.now() - st.mtimeMs > SKILL_HIT_LOCK_STALE_MS) {
+          await fs.rmdir(lockPath).catch(() => {})
+          continue
+        }
+      } catch {
+        // Lock vanished between the failed mkdir and this stat -- retry immediately.
+        continue
+      }
+      await new Promise((r) => setTimeout(r, SKILL_HIT_LOCK_RETRY_MS))
+    }
+  }
+  return false
+}
+
+// Increment hit count sidecar for a skill. Same safeSkillName routing as readSkillHits. The
+// read-modify-write is guarded by acquireSkillHitLock; if the lock can't be acquired the
+// increment still happens unlocked rather than being skipped, matching this function's existing
+// fail-soft philosophy (the whole body is already wrapped in a swallowing catch below).
 export async function incrementSkillHit(skillName: string): Promise<void> {
   try {
     const name = safeSkillName(skillName)
     if (!name) return
     await ensureSkillsDir()
-    const hits = await readSkillHits(name)
-    hits.count++
-    hits.lastTs = Date.now()
     const dir = skillOutputsDir()
     const hitsFile = resolve(dir, `${sanitizeSkillId(name)}.hits`)
-    await atomicWriteText(hitsFile, JSON.stringify(hits, null, 2))
+    const lockPath = `${hitsFile}.lock`
+    const locked = await acquireSkillHitLock(lockPath)
+    try {
+      const hits = await readSkillHits(name)
+      hits.count++
+      hits.lastTs = Date.now()
+      await atomicWriteText(hitsFile, JSON.stringify(hits, null, 2))
+    } finally {
+      if (locked) await fs.rmdir(lockPath).catch(() => {})
+    }
   } catch {
     // fail-soft
   }
