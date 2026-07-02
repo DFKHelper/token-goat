@@ -173,6 +173,13 @@ describe('doc_compact', () => {
       expect(compact).toContain('Compact content')
     })
 
+    it('does not match heading text that merely appears in prose before the real heading (fail-on-buggy: line.includes matches non-heading lines)', () => {
+      const body = 'See the Setup guide below for details.\n## Setup\nCompact content here'
+      const compact = extractDocCompact(body, 'Setup')
+      expect(compact).toContain('Compact content here')
+      expect(compact).not.toContain('See the Setup guide below')
+    })
+
     it('returns empty string when marker not found', () => {
       const body = 'Content without marker'
       const compact = extractDocCompact(body)
