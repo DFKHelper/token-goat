@@ -6,6 +6,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { atomicWriteText } from './util.js';
+
 const MAX_ENTRIES = 30;
 const MAX_VALUE_LEN = 300;
 const MAX_TOTAL_CHARS = 4000;
@@ -93,10 +95,10 @@ function save(filePath: string, entries: Record<string, string>): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
 
-  // Atomic write: write to temp file, then rename
-  const tmpPath = `${filePath}.tmp`;
-  fs.writeFileSync(tmpPath, content, 'utf-8');
-  fs.renameSync(tmpPath, filePath);
+  // Atomic write via the shared helper (unique pid+hrtime temp filename, retries on transient
+  // Windows file-lock errors) instead of a hand-rolled fixed `.tmp` name that two concurrent
+  // processes writing the same project's memory file could collide on.
+  atomicWriteText(filePath, content);
 }
 
 /**
