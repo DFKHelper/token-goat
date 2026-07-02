@@ -92,7 +92,7 @@ function walkParent(obj: Record<string, unknown>, parts: string[]): { parent: Re
 }
 
 /** Coerce `raw` string to the same JS type as `existing`. */
-function coerce(raw: string, existing: unknown): unknown {
+function coerce(raw: string, existing: unknown, defaultValue?: unknown): unknown {
   if (typeof existing === 'boolean') {
     return raw === 'true' || raw === '1'
   }
@@ -109,8 +109,11 @@ function coerce(raw: string, existing: unknown): unknown {
     // A non-empty existing array of numbers means this field is a number list (e.g.
     // hints.backoff_thresholds) — parse each comma-separated segment as a number instead of
     // leaving it as a string, or a later load-time validator silently filters the whole list
-    // down to an empty array.
-    if (existing.length > 0 && existing.every((x) => typeof x === 'number')) {
+    // down to an empty array. An empty existing array carries no element-type information of
+    // its own (e.g. the field was previously cleared to []), so fall back to the default
+    // config's array at this key to recover the declared type.
+    const typeSample = existing.length > 0 ? existing : (Array.isArray(defaultValue) ? defaultValue : existing)
+    if (typeSample.length > 0 && typeSample.every((x) => typeof x === 'number')) {
       return parts.map((p) => {
         const n = Number(p)
         if (!Number.isFinite(n)) throw new Error(`expected a number in list, got: ${p}`)
@@ -199,7 +202,8 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       emitErr(`config set: '${opts.key}' is a section, not a settable field — set an individual key within it instead (e.g. ${opts.key}.<field>)`)
       throw new Error(`cannot set a whole config section: ${opts.key}`)
     }
-    const coerced = coerce(opts.value, existing)
+    const defaultAtKey = walkGet(defaultConfig() as unknown as Record<string, unknown>, parts)
+    const coerced = coerce(opts.value, existing, defaultAtKey.found ? defaultAtKey.value : undefined)
     ref.parent[ref.leaf] = coerced
     if (typeof coerced === 'number') {
       // Re-validate the candidate config through the same bounds loadConfig() enforces (no env
