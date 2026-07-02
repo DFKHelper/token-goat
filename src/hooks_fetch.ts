@@ -1,7 +1,7 @@
 import type { HookEvent } from './hook_registry.js';
 import { registerHook } from './hook_registry.js';
 import type { HookOutput } from './types.js';
-import { passOutput, getToolName, getToolInput, contextOutput } from './hooks_common.js';
+import { passOutput, getToolName, getToolInput, denyOutput } from './hooks_common.js';
 import { recordStat } from './stats.js';
 import { storeWebOutput, getWebOutput } from './web_cache.js';
 import { recordWebFetch, getWebFetchCacheId } from './session.js';
@@ -52,8 +52,8 @@ export function preFetchHandler(event: HookEvent): HookOutput {
       const cached = getWebOutput(cacheId);
       if (cached !== null) {
         recordStat('webfetch:recall', Buffer.byteLength(cached, 'utf-8'), Math.round(cached.length / 4));
-        return contextOutput(
-          'You already fetched this URL this session; the response is cached. ' +
+        return denyOutput(
+          'Already fetched this URL this session; the response is cached. ' +
           'Use `token-goat web-output ' + cacheId + '` to recall it ' +
           '(append `--grep PATTERN` to filter or `--section Heading` for a markdown section) instead of re-fetching.',
         );

@@ -90,7 +90,7 @@ describe('WebFetch hook persistence', () => {
     expect(cached).toBeNull()
   })
 
-  it('recalls a previously fetched URL via a web-output hint on the next pre-fetch', async () => {
+  it('denies a re-fetch of a previously fetched URL, pointing at the web-output cache (regression: m15 — was a non-blocking hint that let the redundant fetch through)', async () => {
     const url = 'https://example.com/page'
     const largeResponse = 'x'.repeat(2000)
     const sessionId = 'test-session-recall'
@@ -107,8 +107,9 @@ describe('WebFetch hook persistence', () => {
     const cacheId = getWebFetchCacheId(url)
     expect(cacheId).not.toBeNull()
 
-    // A subsequent pre-fetch of the same URL/session must surface a recall hint
-    // naming the web-output command and the cache id - not silently re-fetch.
+    // A subsequent pre-fetch of the same URL/session must be denied, naming the
+    // web-output command and the cache id, rather than letting the redundant
+    // network fetch proceed.
     const result = preFetchHandler({
       eventName: 'pre_tool_use',
       toolName: 'WebFetch',
@@ -116,10 +117,10 @@ describe('WebFetch hook persistence', () => {
       sessionId,
       raw: {},
     } as HookEvent)
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('web-output')
-      expect(result.context).toContain(cacheId as string)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('web-output')
+      expect(result.message).toContain(cacheId as string)
     }
   })
 
