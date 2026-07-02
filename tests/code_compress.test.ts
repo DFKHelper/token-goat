@@ -81,6 +81,29 @@ describe('code_compress', () => {
         ['function build() {', '// ... 4 lines', 'function afterTemplate() {', '// ... 1 lines'].join('\n'),
       )
     })
+
+    it('does not let braces inside a nested template-literal interpolation affect body brace counting', () => {
+      // ``${`}`}`` is a template literal nested inside another template literal's
+      // interpolation, and the inner literal's own string content is a single "}". A scanner
+      // that treats every backtick as a simple string-delimiter toggle (rather than tracking
+      // `${`/`}` interpolation depth per nesting level) pairs the outer literal's opening
+      // backtick with the inner literal's opening backtick as if that already closed the
+      // string, then scans the inner literal's "}" as if it were a real closing brace of
+      // build()'s body -- ending the body scan two statements early.
+      const code = [
+        'function build() {',
+        '  const s = `wrap:${`}`}:end`;',
+        '  return s;',
+        '}',
+        'function afterBuild() {',
+        '  return 42;',
+        '}',
+      ].join('\n')
+      const result = compressToSkeleton(code, '.js')
+      expect(result).toBe(
+        ['function build() {', '// ... 2 lines', 'function afterBuild() {', '// ... 1 lines'].join('\n'),
+      )
+    })
   })
 
   describe('stripComments', () => {
@@ -146,6 +169,19 @@ describe('code_compress', () => {
       const code = 'const url = `http://example.com\n// not a comment\nmore text`  // this IS a comment'
       const result = stripComments(code, 'js')
       expect(result).toBe('const url = `http://example.com\n// not a comment\nmore text`')
+    })
+
+    it('does not treat // inside a nested template literal as a comment', () => {
+      // The inner template literal `inner ${x} // not a comment` is itself nested inside the
+      // outer literal's `${...}` interpolation. A scanner that treats every backtick as a
+      // simple string-delimiter toggle (rather than tracking `${`/`}` interpolation depth per
+      // nesting level) pairs the outer literal's opening backtick with the inner literal's
+      // opening backtick as if that already closed the string, then scans the inner literal's
+      // own content as real code -- where the "//" inside it looks like (and gets stripped
+      // as) a genuine comment, truncating the rest of the line.
+      const code = 'const greeting = `outer ${`inner ${x} // not a comment`} end`;'
+      const result = stripComments(code, 'js')
+      expect(result).toBe(code)
     })
   })
 
