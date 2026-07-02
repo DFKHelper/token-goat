@@ -7,6 +7,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
+import { stripBlockCommentSpan, stripLineComment } from './common.js'
 
 export interface KotlinImport {
   readonly kind: string
@@ -69,18 +70,34 @@ export function extractKotlin(
 
   let currentClass: string | null = null
   let classBraceDepth = 0
+  // True once braceDepth has risen above classBraceDepth at least once, i.e. the class's own
+  // opening brace has actually been consumed. Guards the pop check below: for a class whose
+  // primary-constructor header spans multiple lines (`class Foo(\n  val x: Int\n) {`),
+  // braceDepth still equals classBraceDepth on the header line itself, so an ungated pop check
+  // fires immediately and discards the class context before its body is ever seen.
+  let classBodyEntered = false
   let braceDepth = 0
+  let inComment = false
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? ''
+    const rawLine = lines[i] ?? ''
+    const lineNum = i + 1
+
+    // Strip /* */ block-comment spans (state carried across lines via inComment) so braces
+    // inside commented-out code are not counted toward braceDepth. A `/*` inside an open quote
+    // is not treated as a comment opener.
+    const { code: blockStripped, inComment: nextInComment } = stripBlockCommentSpan(rawLine, inComment)
+    inComment = nextInComment
+
+    // Strip a trailing `//` line comment (quote-aware) so braces/text after it are ignored.
+    const line = stripLineComment(blockStripped)
     const stripped = line.trim()
 
-    if (!stripped || stripped.startsWith('//')) {
+    if (!stripped) {
       braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
       continue
     }
 
-    const lineNum = i + 1
     const isIndented = line[0] === ' ' || line[0] === '\t'
 
     // import
@@ -96,6 +113,7 @@ export function extractKotlin(
       symbols.push(makeSymbol(filePath, cname, 'class', lineNum, line.trimEnd().slice(0, 200)))
       currentClass = cname
       classBraceDepth = braceDepth
+      classBodyEntered = false
     }
 
     if (currentClass !== null) {
@@ -130,7 +148,10 @@ export function extractKotlin(
 
     braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
 
-    if (currentClass !== null && braceDepth <= classBraceDepth) {
+    if (currentClass !== null && braceDepth > classBraceDepth) {
+      classBodyEntered = true
+    }
+    if (currentClass !== null && classBodyEntered && braceDepth <= classBraceDepth) {
       currentClass = null
     }
   }
