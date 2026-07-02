@@ -175,6 +175,37 @@ describe('cmdConfig set', () => {
   })
 })
 
+// ── config set input validation hardening (#M23, #M24, #M28) ────────────────
+
+describe('cmdConfig set input validation hardening', () => {
+  it('coerces a comma-separated number list into actual numbers, not strings (#M23)', () => {
+    cmdConfig({ action: 'set', key: 'hints.backoff_thresholds', value: '1,3,10' })
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    // Pre-fix, the comma-split segments stayed strings and the load-time int-list validator
+    // silently filtered them all out, leaving an empty array instead of the intended values.
+    expect(cfg.hints.backoff_thresholds).toEqual([1, 3, 10])
+  })
+
+  it('rejects setting an entire config section to a scalar value instead of corrupting it (#M24)', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist', value: 'oops' })).toThrow()
+    expect(capturedErr()).toContain('section')
+    invalidateConfigCache()
+    const cfg = loadConfig()
+    // The section must still be a valid object with its documented fields intact, not
+    // silently replaced with the raw string (which would serialize every field as undefined).
+    expect(typeof cfg.compact_assist).toBe('object')
+    expect(cfg.compact_assist.min_events).toBe(3)
+  })
+
+  it('rejects a config set value above the documented max instead of silently clamping on disk (#M28)', () => {
+    expect(() => cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '2000' })).toThrow()
+    expect(capturedErr()).toContain('outside the allowed range')
+    // The out-of-range value must never reach disk in the first place.
+    expect(fs.existsSync(_testConfigPath)).toBe(false)
+  })
+})
+
 // ── mutate-then-save commands must not bake env overrides into disk (#M21) ───
 
 describe('config set / project exclude / prune do not persist transient env overrides (#M21)', () => {

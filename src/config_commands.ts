@@ -16,7 +16,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig } from './config.js'
+import { loadConfig, loadPersistedConfig, buildPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig } from './config.js'
 import { compactDoc } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
@@ -105,7 +105,19 @@ function coerce(raw: string, existing: unknown): unknown {
     if (raw.trimStart().startsWith('[')) {
       return JSON.parse(raw) as unknown[]
     }
-    return raw.split(',').map((s) => s.trim()).filter(Boolean)
+    const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
+    // A non-empty existing array of numbers means this field is a number list (e.g.
+    // hints.backoff_thresholds) — parse each comma-separated segment as a number instead of
+    // leaving it as a string, or a later load-time validator silently filters the whole list
+    // down to an empty array.
+    if (existing.length > 0 && existing.every((x) => typeof x === 'number')) {
+      return parts.map((p) => {
+        const n = Number(p)
+        if (!Number.isFinite(n)) throw new Error(`expected a number in list, got: ${p}`)
+        return n
+      })
+    }
+    return parts
   }
   return raw
 }
@@ -183,8 +195,24 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       emitErr(`key not found: ${opts.key}`)
       throw new Error(`key not found: ${opts.key}`)
     }
+    if (typeof existing === 'object' && existing !== null && !Array.isArray(existing)) {
+      emitErr(`config set: '${opts.key}' is a section, not a settable field — set an individual key within it instead (e.g. ${opts.key}.<field>)`)
+      throw new Error(`cannot set a whole config section: ${opts.key}`)
+    }
     const coerced = coerce(opts.value, existing)
     ref.parent[ref.leaf] = coerced
+    if (typeof coerced === 'number') {
+      // Re-validate the candidate config through the same bounds loadConfig() enforces (no env
+      // overlay, so the check reflects the value actually being written). If the field clamps
+      // to something else, the input was out of its documented range — reject instead of
+      // silently writing an invalid value that only gets clamped (with no feedback) next load.
+      const revalidated = buildPersistedConfig(cfg) as unknown as Record<string, unknown>
+      const revalidatedResult = walkGet(revalidated, parts)
+      if (revalidatedResult.found && revalidatedResult.value !== coerced) {
+        emitErr(`config set: ${opts.key} = ${coerced} is outside the allowed range (would be clamped to ${String(revalidatedResult.value)}); rejected`)
+        throw new Error(`value out of range for ${opts.key}: ${coerced}`)
+      }
+    }
     saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
     invalidateConfigCache()
     if (opts.json === true) {
