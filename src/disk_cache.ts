@@ -53,7 +53,7 @@ function blobDir(subdir: string): string {
 
 /** Resolve the on-disk path for `id` in `subdir`, or null when the id sanitizes
  * to empty or escapes the subdir (traversal guard, mirrors snapshots). */
-function blobPath(subdir: string, id: string): string | null {
+export function blobPath(subdir: string, id: string): string | null {
   const safe = sanitizeId(id)
   if (!safe) return null
   const dir = blobDir(subdir)
