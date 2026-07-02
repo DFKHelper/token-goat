@@ -95,6 +95,27 @@ function matches(rel: string, patterns: string[]): boolean {
   return patterns.some((pat) => mm.minimatch(norm, pat) || mm.minimatch(base, pat))
 }
 
+/**
+ * True when `candidate`'s real, symlink-resolved location lives inside
+ * `rootReal` (itself already symlink-resolved). Unlike a lexical
+ * `path.resolve()` check, `fs.realpathSync` follows symlinks to their actual
+ * target, so this catches a candidate that is itself a symlink — or that sits
+ * behind a symlinked ancestor directory — pointing outside the project root.
+ * The containment test uses `path.relative` plus a `..`/absolute-path guard
+ * so a sibling that merely shares a string prefix (e.g. `root-evil`) is never
+ * mistaken for a path inside `root`.
+ */
+function isRealPathWithinRoot(rootReal: string, candidate: string): boolean {
+  let candidateReal: string
+  try {
+    candidateReal = fs.realpathSync(candidate)
+  } catch {
+    return false
+  }
+  const rel = path.relative(rootReal, candidateReal)
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel)
+}
+
 // Comment stripping patterns
 const PY_LINE_COMMENT_RE = /[ \t]*#(?!!)[^\r\n]*/gm
 const CSTYLE_BLOCK_RE = /\/\*.*?\*\//gs
@@ -186,6 +207,12 @@ export function collectFiles(
   const result: PackResult = { files: [], skipped: [], total_lines: 0, total_tokens: 0 }
   const seen = new Set<string>()
   const rootResolved = path.resolve(projectRoot)
+  let rootReal: string
+  try {
+    rootReal = fs.realpathSync(rootResolved)
+  } catch {
+    rootReal = rootResolved
+  }
   const maxFileBytes = opts.max_file_bytes ?? 2 * 1024 * 1024
 
   for (const pattern of patterns) {
@@ -214,14 +241,7 @@ export function collectFiles(
         continue
       }
 
-      try {
-        const resolved = path.resolve(p)
-        path.relative(rootResolved, resolved)
-        if (resolved.includes('..')) {
-          result.skipped.push(`${rel} (symlink points outside project root)`)
-          continue
-        }
-      } catch {
+      if (!isRealPathWithinRoot(rootReal, p)) {
         result.skipped.push(`${rel} (symlink points outside project root)`)
         continue
       }
@@ -439,6 +459,12 @@ export function estimateBudget(
   const result: BudgetResult = { entries: [], skipped: [], total_lines: 0, total_tokens: 0 }
   const seen = new Set<string>()
   const rootResolved = path.resolve(projectRoot)
+  let rootReal: string
+  try {
+    rootReal = fs.realpathSync(rootResolved)
+  } catch {
+    rootReal = rootResolved
+  }
   const maxFileBytes = opts.max_file_bytes ?? 10 * 1024 * 1024
 
   for (const pattern of patterns) {
@@ -467,14 +493,7 @@ export function estimateBudget(
         continue
       }
 
-      try {
-        const resolved = path.resolve(p)
-        path.relative(rootResolved, resolved)
-        if (resolved.includes('..')) {
-          result.skipped.push(`${rel} (symlink points outside project root)`)
-          continue
-        }
-      } catch {
+      if (!isRealPathWithinRoot(rootReal, p)) {
         result.skipped.push(`${rel} (symlink points outside project root)`)
         continue
       }

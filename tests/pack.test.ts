@@ -2,7 +2,25 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { stripComments, scanSecrets, formatMarkdown, formatXml, formatPlain } from '../src/pack.js'
+import { stripComments, scanSecrets, formatMarkdown, formatXml, formatPlain, collectFiles, estimateBudget } from '../src/pack.js'
+
+// Capability probe: creating a real symlink on Windows requires either an
+// elevated shell or Developer Mode. Run it once at module load so the suite
+// below can skip cleanly (with a reason) on a locked-down runner instead of
+// failing every test with EPERM.
+const CAN_SYMLINK = (() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-symlink-probe-'))
+  try {
+    const target = path.join(dir, 'target.txt')
+    fs.writeFileSync(target, 'x')
+    fs.symlinkSync(target, path.join(dir, 'link.txt'))
+    return true
+  } catch {
+    return false
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})()
 
 let TMP: string
 
@@ -136,5 +154,59 @@ describe('formatPlain', () => {
     const text = formatPlain(result)
     expect(text).toContain('File: f.ts')
     expect(text).toContain('=====')
+  })
+})
+
+describe('symlink escape guard', () => {
+  // On Windows, fs.symlinkSync can throw EPERM without elevation or
+  // Developer Mode enabled. Skip (not fail) the whole suite when this
+  // environment can't create symlinks — see CAN_SYMLINK probe above.
+  it.skipIf(!CAN_SYMLINK)('collectFiles does not embed content from a symlink pointing outside the project root', () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pack-outside-'))
+    try {
+      const secretPath = path.join(outsideDir, 'secret.txt')
+      fs.writeFileSync(secretPath, 'TOP_SECRET_OUTSIDE_ROOT_VALUE')
+
+      const linkPath = path.join(TMP, 'escape-link.txt')
+      fs.symlinkSync(secretPath, linkPath)
+
+      const result = collectFiles(TMP, ['escape-link.txt'])
+
+      const leaked = result.files.some((f) => f.content.includes('TOP_SECRET_OUTSIDE_ROOT_VALUE'))
+      expect(leaked).toBe(false)
+      expect(result.skipped.some((s) => s.includes('escape-link.txt'))).toBe(true)
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true })
+    }
+  })
+
+  it.skipIf(!CAN_SYMLINK)('collectFiles still reads a symlink that points inside the project root', () => {
+    const targetPath = path.join(TMP, 'real.txt')
+    fs.writeFileSync(targetPath, 'inside root content')
+
+    const linkPath = path.join(TMP, 'inside-link.txt')
+    fs.symlinkSync(targetPath, linkPath)
+
+    const result = collectFiles(TMP, ['inside-link.txt'])
+
+    expect(result.files.some((f) => f.content.includes('inside root content'))).toBe(true)
+  })
+
+  it.skipIf(!CAN_SYMLINK)('estimateBudget does not stat a symlink pointing outside the project root', () => {
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-budget-outside-'))
+    try {
+      const secretPath = path.join(outsideDir, 'secret.txt')
+      fs.writeFileSync(secretPath, 'TOP_SECRET_OUTSIDE_ROOT_VALUE')
+
+      const linkPath = path.join(TMP, 'escape-link.txt')
+      fs.symlinkSync(secretPath, linkPath)
+
+      const result = estimateBudget(TMP, ['escape-link.txt'])
+
+      expect(result.entries.some((e) => e.rel_path.includes('escape-link.txt'))).toBe(false)
+      expect(result.skipped.some((s) => s.includes('escape-link.txt'))).toBe(true)
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true })
+    }
   })
 })
