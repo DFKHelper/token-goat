@@ -18,9 +18,17 @@ function withFakeIo(): {
   emit: (payload: string) => void
   emitError: (err: Error) => void
   written: () => string
+  destroyed: () => boolean
   restore: () => void
 } {
-  const fakeStdin = new EventEmitter() as EventEmitter & { removeListener: typeof EventEmitter.prototype.removeListener }
+  const fakeStdin = new EventEmitter() as EventEmitter & {
+    removeListener: typeof EventEmitter.prototype.removeListener
+    destroy: () => void
+  }
+  let wasDestroyed = false
+  fakeStdin.destroy = (): void => {
+    wasDestroyed = true
+  }
   const origStdin = Object.getOwnPropertyDescriptor(process, 'stdin')
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true })
 
@@ -41,6 +49,7 @@ function withFakeIo(): {
       queueMicrotask(() => fakeStdin.emit('error', err))
     },
     written: () => out,
+    destroyed: () => wasDestroyed,
     restore(): void {
       writeSpy.mockRestore()
       if (origStdin) Object.defineProperty(process, 'stdin', origStdin)
@@ -129,6 +138,12 @@ describe('readStdinJson', () => {
   it('still accepts a payload at or under maxBytes', async () => {
     io.emit('{"a":1}')
     await expect(readStdinJson(1000, 1000)).resolves.toEqual({ a: 1 })
+  })
+
+  it('destroys the stdin stream once the size cap is hit, instead of leaving it flowing after the application stops consuming it (regression: cap only detached listeners, never tore down the stream)', async () => {
+    io.emit('x'.repeat(50))
+    await expect(readStdinJson(5000, 10)).rejects.toThrow(/exceeded 10 bytes/)
+    expect(io.destroyed()).toBe(true)
   })
 })
 
