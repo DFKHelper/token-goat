@@ -5,6 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { registerHook } from '../src/hook_registry.js'
 import { buildEvent, readStdinJson, relay } from '../src/relay.js'
 
 /**
@@ -143,5 +144,69 @@ describe('relay', () => {
     await relay('pre_tool_use')
     const parsed: unknown = JSON.parse(io.written())
     expect(typeof parsed).toBe('object')
+  })
+})
+
+describe('relay tool-name normalization (regression: M49 — toolName filters inert under Codex)', () => {
+  const ENV_KEYS = ['TERM_PROGRAM', 'CLAUDE_CODE_VERSION', 'CODEX_SESSION_ID', 'OPENCODE_SESSION_ID'] as const
+  const savedEnv: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    for (const k of ENV_KEYS) {
+      savedEnv[k] = process.env[k]
+      delete process.env[k]
+    }
+  })
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (savedEnv[k] === undefined) delete process.env[k]
+      else process.env[k] = savedEnv[k]
+    }
+  })
+
+  it('normalizes a raw Codex tool_name through the real relay() path so a toolName-filtered handler actually matches', async () => {
+    process.env['CODEX_SESSION_ID'] = 'codex-test-session'
+
+    let observedToolName: string | undefined
+    registerHook(
+      'pre_tool_use',
+      (event) => {
+        observedToolName = event.toolName
+        return { hookType: 'pass' }
+      },
+      { toolName: 'Bash' },
+    )
+
+    // Codex's raw hook payload carries its own snake_case tool name ('bash'), not
+    // token-goat's canonical 'Bash'. Before this fix, relay() forwarded tool_name
+    // straight into buildEvent() with no normalization, so a handler registered
+    // via registerHook(..., { toolName: 'Bash' }) never matched — it silently
+    // never ran for a real Codex invocation.
+    io.emit(
+      JSON.stringify({ tool_name: 'bash', tool_input: { command: 'echo hi' }, session_id: 's' }),
+    )
+    await relay('pre_tool_use')
+
+    expect(observedToolName).toBe('Bash')
+  })
+
+  it('leaves an already-canonical Claude Code tool_name unchanged', async () => {
+    let observedToolName: string | undefined
+    registerHook(
+      'pre_tool_use',
+      (event) => {
+        observedToolName = event.toolName
+        return { hookType: 'pass' }
+      },
+      { toolName: 'Bash' },
+    )
+
+    io.emit(
+      JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo hi' }, session_id: 's' }),
+    )
+    await relay('pre_tool_use')
+
+    expect(observedToolName).toBe('Bash')
   })
 })

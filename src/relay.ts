@@ -17,8 +17,10 @@
  * side-effects, so the registry is populated by the time {@link relay} runs.
  */
 
+import { detectHarness } from './bridges/index.js'
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput } from './hook_registry.js'
+import { normalizePayload, type Harness } from './hooks_cli.js'
 import { HOOK_EVENTS, type HookEventName } from './types.js'
 import { loadSessionState, saveSessionState } from './session_store.js'
 
@@ -127,6 +129,23 @@ export function buildEvent(eventName: HookEventName, payload: unknown): HookEven
 }
 
 /**
+ * Map the env-detected harness ({@link detectHarness}) onto {@link Harness}, the
+ * narrower harness identifier {@link normalizePayload} understands.
+ *
+ * Only Codex needs tool-name remapping today. Gemini's tool-name maps still live
+ * in hooks_cli.ts, but this build has no installed Gemini bridge (no env signal
+ * detects it, no bridge script forwards its payloads here), so there is nothing
+ * live to wire it into; 'claudecode' / 'opencode' / 'generic' payloads already
+ * use canonical tool names and pass through unchanged. Uses detectHarness()
+ * (uncached) rather than getHarnessName(): each hook invocation is a fresh,
+ * short-lived process, so there is no benefit to memoizing and no stale-cache
+ * risk to worry about.
+ */
+function harnessForNormalization(): Harness {
+  return detectHarness() === 'codex' ? 'codex' : 'claude'
+}
+
+/**
  * Run the hook for `eventName` and write the wire JSON response to stdout.
  *
  * Reads and parses stdin, builds the event, dispatches it through the registry,
@@ -140,7 +159,18 @@ export async function relay(eventName: string): Promise<void> {
       process.stdout.write('{}')
       return
     }
-    const payload = await readStdinJson()
+    const rawPayload = await readStdinJson()
+    // Codex (and, if a Gemini bridge is ever restored, Gemini) sends harness-native
+    // tool names (e.g. `bash`, `read_file`) that never match the canonical names
+    // (`Bash`, `Read`, ...) handlers filter on via registerHook(..., { toolName }).
+    // Normalization is scoped to the two tool-scoped events: normalizePayload()
+    // treats a payload with no tool_name as invalid and returns {}, which would
+    // silently drop session_id off pre_compact/stop/notification payloads if run
+    // unconditionally.
+    const payload =
+      eventName === 'pre_tool_use' || eventName === 'post_tool_use'
+        ? normalizePayload(rawPayload, harnessForNormalization())
+        : rawPayload
     const event = buildEvent(eventName, payload)
     // Load persisted session state before handlers run; save the mutated state after. Each is isolated in its own try/catch so a persistence failure can never suppress the handler's real output (the cardinal rule above).
     try {
