@@ -21,6 +21,8 @@ import { appendDirtyPath } from './hooks_index.js'
 import { normalizePath } from './paths.js'
 import { recordFileEdit } from './session.js'
 import { recordStat } from './stats.js'
+import { loadConfig } from './config.js'
+import { compactPathFor, markCompactStale } from './doc_compact.js'
 import type { HookOutput } from './types.js'
 
 /**
@@ -45,6 +47,14 @@ export function postEditHandler(event: HookEvent): HookOutput {
     // and the rest of this handler's work (the markdown hint below) should still
     // run rather than the exception propagating out of postEditHandler.
     recordStat('dirty_queue_append_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+  }
+
+  // A fresh compact sidecar (built via `token-goat compact-doc`) is only valid
+  // while the source is unchanged — mark it stale so pre_read falls back to a
+  // full read instead of serving outdated content. markCompactStale is a
+  // fail-soft no-op when no sidecar exists for this path.
+  if (loadConfig().hints.stable_doc_compacts) {
+    markCompactStale(compactPathFor(normalized))
   }
 
   const editedBasename = path.basename(normalized)
