@@ -4,6 +4,7 @@ import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { deleteFileEmbeddings } from './embeddings.js'
 import { deleteFileRows } from './parser.js'
+import { foldPath } from './util.js'
 
 type DbHandle = ReturnType<typeof getDb>
 
@@ -24,10 +25,18 @@ export function pruneDeletedFiles(rootPrefix: string, dbPath: string = globalDbP
   if (isTooShallowToPrune(rootPrefix)) return 0
   const db = getDb(dbPath)
   const prefix = rootPrefix.endsWith('/') ? rootPrefix : `${rootPrefix}/`
+  // Fold case the same way pathEqClause/COLLATE NOCASE do for SQL comparisons elsewhere
+  // in this codebase (parser.ts, embeddings.ts): on case-insensitive filesystems
+  // (Windows/macOS) a stored path and rootPrefix can differ in casing beyond the drive
+  // letter (normalizePath only lowercases that), and a raw case-sensitive comparison
+  // would leave those rows stranded forever after the file is deleted.
+  const foldedRootPrefix = foldPath(rootPrefix)
+  const foldedPrefix = foldPath(prefix)
   const rows = db.prepare('SELECT DISTINCT path FROM files').all() as Array<{ path: string }>
   let pruned = 0
   for (const { path: p } of rows) {
-    if (p !== rootPrefix && !p.startsWith(prefix)) continue
+    const foldedP = foldPath(p)
+    if (foldedP !== foldedRootPrefix && !foldedP.startsWith(foldedPrefix)) continue
     if (fs.existsSync(p)) continue
     try {
       removeFileFromIndex(db, p)

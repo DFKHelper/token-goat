@@ -111,6 +111,51 @@ describe('index_prune', () => {
     expect(symbolCount(dbPath, aKey)).toBe(countBefore)
   })
 
+  describe('case-insensitive filesystem path matching', () => {
+    const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+    afterEach(() => {
+      if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+    })
+
+    // Regression (M8): pruneDeletedFiles compared the stored path and rootPrefix with a
+    // case-SENSITIVE `startsWith`, while every other path comparison in this codebase
+    // (pathEqClause/COLLATE NOCASE for SQL, foldPath for JS string comparisons -- see
+    // parseDirtyQueueLines in worker.ts) folds case on case-insensitive filesystems.
+    // normalizePath only lowercases the drive letter, so a rootPrefix whose casing
+    // differs from the stored key elsewhere in the path (a realistic drift on
+    // Windows/macOS) never matched the prefix check and the row was never pruned.
+    it('prunes rows for a deleted file even when rootPrefix casing differs from the stored path', () => {
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+      const aPath = path.join(dir, 'a.ts')
+      fs.writeFileSync(aPath, 'export const aSym = 1\n')
+      const aKey = normalizePath(aPath)
+      indexFileSync(aKey, dbPath)
+      expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+      fs.rmSync(aPath)
+
+      // Casing differs beyond the drive letter, which normalizePath does not fold.
+      const differentlyCasedRoot = normalizePath(dir).toUpperCase()
+      const result = pruneDeletedFiles(differentlyCasedRoot, dbPath)
+      expect(result).toBe(1)
+      expect(symbolCount(dbPath, aKey)).toBe(0)
+    })
+
+    it('control: case-sensitive FS still requires matching casing', () => {
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'
+      const aPath = path.join(dir, 'a.ts')
+      fs.writeFileSync(aPath, 'export const aSym = 1\n')
+      const aKey = normalizePath(aPath)
+      indexFileSync(aKey, dbPath)
+      fs.rmSync(aPath)
+
+      const differentlyCasedRoot = normalizePath(dir).toUpperCase()
+      const result = pruneDeletedFiles(differentlyCasedRoot, dbPath)
+      expect(result).toBe(0)
+      expect(symbolCount(dbPath, aKey)).toBeGreaterThan(0)
+    })
+  })
+
   it('is idempotent', () => {
     const aPath = path.join(dir, 'a.ts')
     fs.writeFileSync(aPath, 'export const aSym = 1\n')
