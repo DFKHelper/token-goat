@@ -208,6 +208,16 @@ describe('bfsCallChains', () => {
     }
     expect(() => bfsCallChains('start', callersOf, 10)).not.toThrow()
   })
+
+  it('does not emit a redundant duplicate chain when all of a node\'s callers are cycles (fail-on-buggy: missing expanded=true in the cycle branch double-emits)', () => {
+    const graph: Record<string, string[]> = { a: ['b'], b: ['a'] }
+    const callersOf = (n: string): string[] => graph[n] ?? []
+    const chains = bfsCallChains('a', callersOf, 10)
+    const flat = chains.map((c) => c.join('->'))
+    expect(flat).toContain('a->b->(cycle:a)')
+    expect(flat).not.toContain('a->b')
+    expect(chains).toHaveLength(1)
+  })
 })
 
 // ---- integration: runScope against the real repo index ----------------------
