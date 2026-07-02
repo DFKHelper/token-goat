@@ -112,6 +112,27 @@ describe('pack command', () => {
     expect(r.stdout.trim()).toBe('')
     expect(fs.readFileSync(dest, 'utf8')).toContain('greet')
   })
+
+  // Regression guard: expandGlobs() applied a path.isAbsolute() guard in the literal-path
+  // branch (skip re-joining against root when the path is already absolute) but not in the
+  // glob-expansion branch, so an absolute glob pattern got its matched hits re-joined against
+  // root anyway -- path.join() does not special-case an absolute second segment, so the result
+  // was a mangled, nonexistent path instead of the real file.
+  it('an absolute glob pattern is not mangled by re-joining its matches against the cwd', () => {
+    const absoluteGlob = `${tmpDir.split(path.sep).join('/')}/hel*.ts`
+    const r = run(['pack', absoluteGlob])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('greet')
+  })
+
+  // Regression guard: cmdPack fell back to reading stdin whenever expandGlobs() returned zero
+  // matches, even when the user explicitly passed a pattern -- so a typo'd pattern silently
+  // packed empty stdin instead of reporting "no files matched".
+  it('a pattern that matches zero files errors instead of silently falling back to stdin', () => {
+    const r = run(['pack', 'no-such-file-*.ts'], { input: '' })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('no files matched')
+  })
 })
 
 // tokens
