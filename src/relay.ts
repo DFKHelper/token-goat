@@ -84,7 +84,12 @@ export function readStdinJson(
     const onData = (chunk: Buffer): void => {
       totalBytes += chunk.length
       if (totalBytes > maxBytes) {
-        finish(() => reject(new Error(`readStdinJson: stdin exceeded ${maxBytes} bytes`)))
+        // Detaching listeners alone leaves the stream flowing at the OS/event-loop level;
+        // destroy it so the fd is released and nothing keeps buffering data no one will read.
+        finish(() => {
+          process.stdin.destroy()
+          reject(new Error(`readStdinJson: stdin exceeded ${maxBytes} bytes`))
+        })
         return
       }
       chunks.push(chunk)
