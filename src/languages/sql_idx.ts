@@ -32,9 +32,13 @@ function makeCreateRe(objectKw: string, optPrefix = ''): RegExp {
 
 const TABLE_RE = makeCreateRe('TABLE', '(?:TEMP(?:ORARY)?\\s+)?')
 const VIEW_RE = makeCreateRe('VIEW', '(?:OR\\s+REPLACE\\s+)?(?:TEMP(?:ORARY)?\\s+)?')
+const MATERIALIZED_VIEW_RE = makeCreateRe('MATERIALIZED\\s+VIEW', '(?:OR\\s+REPLACE\\s+)?(?:TEMP(?:ORARY)?\\s+)?')
 const FUNCTION_RE = makeCreateRe('FUNCTION', '(?:OR\\s+REPLACE\\s+)?')
 const PROCEDURE_RE = makeCreateRe('PROCEDURE', '(?:OR\\s+REPLACE\\s+)?')
-const INDEX_RE = makeCreateRe('INDEX', '(?:UNIQUE\\s+)?')
+const INDEX_RE = new RegExp(
+  `(?<!\\w)CREATE\\s+(?:UNIQUE\\s+)?INDEX(?:\\s+CONCURRENTLY)?\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(${NAME_PAT})`,
+  'gi',
+)
 const TRIGGER_RE = makeCreateRe('TRIGGER', '(?:OR\\s+REPLACE\\s+)?(?:CONSTRAINT\\s+)?')
 const TYPE_RE = makeCreateRe('TYPE', '(?:OR\\s+REPLACE\\s+)?')
 const SCHEMA_RE = makeCreateRe('SCHEMA')
@@ -42,6 +46,7 @@ const SCHEMA_RE = makeCreateRe('SCHEMA')
 const PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [TABLE_RE, 'sql_table'],
   [VIEW_RE, 'sql_view'],
+  [MATERIALIZED_VIEW_RE, 'sql_view'],
   [FUNCTION_RE, 'sql_function'],
   [PROCEDURE_RE, 'sql_procedure'],
   [INDEX_RE, 'sql_index'],

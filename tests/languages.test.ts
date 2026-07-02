@@ -504,6 +504,27 @@ CREATE UNIQUE INDEX idx_users_name ON users(name);
     expect(symbols.find((s) => s.name === 'active_users')?.kind).toBe('sql_view')
   })
 
+  it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
+    const content = `
+CREATE INDEX CONCURRENTLY idx_name ON users (id);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('idx_name')
+    expect(names).not.toContain('CONCURRENTLY')
+    expect(symbols.find((s) => s.name === 'idx_name')?.kind).toBe('sql_index')
+  })
+
+  it('extracts CREATE MATERIALIZED VIEW', () => {
+    const content = `
+CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('mat_view')
+    expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
+  })
+
   it('returns empty array for empty input', () => {
     expect(extractSql('', 'empty.sql')).toHaveLength(0)
   })
@@ -538,6 +559,27 @@ debug = true
     expect(names).toContain('tool.black')
     expect(names).toContain('server')
     expect(symbols[0]?.kind).toBe('ini_section')
+  })
+
+  it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
+    const content = `
+CREATE INDEX CONCURRENTLY idx_name ON users (id);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('idx_name')
+    expect(names).not.toContain('CONCURRENTLY')
+    expect(symbols.find((s) => s.name === 'idx_name')?.kind).toBe('sql_index')
+  })
+
+  it('extracts CREATE MATERIALIZED VIEW', () => {
+    const content = `
+CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('mat_view')
+    expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
   })
 
   it('returns empty array for empty input', () => {
@@ -594,6 +636,27 @@ KEY=value
 `
     const symbols = extractEnv(content, '.env')
     expect(symbols.map((s) => s.name)).not.toContain('This')
+  })
+
+  it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
+    const content = `
+CREATE INDEX CONCURRENTLY idx_name ON users (id);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('idx_name')
+    expect(names).not.toContain('CONCURRENTLY')
+    expect(symbols.find((s) => s.name === 'idx_name')?.kind).toBe('sql_index')
+  })
+
+  it('extracts CREATE MATERIALIZED VIEW', () => {
+    const content = `
+CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('mat_view')
+    expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
   })
 
   it('returns empty array for empty input', () => {
@@ -673,6 +736,27 @@ clean::
     const content = `.PHONY: all build\n\nall:\n\techo done\n`
     const symbols = extractMakefile(content, 'Makefile')
     expect(symbols.map((s) => s.name)).not.toContain('.PHONY')
+  })
+
+  it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
+    const content = `
+CREATE INDEX CONCURRENTLY idx_name ON users (id);
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('idx_name')
+    expect(names).not.toContain('CONCURRENTLY')
+    expect(symbols.find((s) => s.name === 'idx_name')?.kind).toBe('sql_index')
+  })
+
+  it('extracts CREATE MATERIALIZED VIEW', () => {
+    const content = `
+CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
+`
+    const symbols = extractSql(content, 'schema.sql')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('mat_view')
+    expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
   })
 
   it('returns empty array for empty input', () => {
