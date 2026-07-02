@@ -482,7 +482,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
       recordFileRead(normalized)
       recordStat('session_hint', 0, 0)
       return denyOutput(
-        'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.',
+        'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
+        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
     }
 
@@ -579,14 +580,16 @@ export function preReadHandler(event: HookEvent): HookOutput {
     // Item 1: file was truncated on last read — surgical reads only
     if (wasFileTruncatedThisSession(normalized)) {
       return denyOutput(
-        'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.',
+        'File was truncated on last read (>33K tokens). Use `token-goat skeleton "' + normalized + '"` for structure or `token-goat read "' + normalized + '::SymbolName"` for one function.' +
+        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
     }
 
     // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
     if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
       return denyOutput(
-        'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.',
+        'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.' +
+        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
     }
 
@@ -595,7 +598,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
     if (isSourceExt && reads >= 2) {
       recordStat('read_count_deny', rereadBytes, Math.round(rereadBytes / 4))
       return denyOutput(
-        'Read this file ' + reads + ' times already — use `token-goat read "' + normalized + '::Symbol"`, `token-goat skeleton ' + normalized + '`, or `token-goat outline ' + normalized + '` to pull just the part you need.',
+        'Read this file ' + reads + ' times already — use `token-goat read "' + normalized + '::Symbol"`, `token-goat skeleton ' + normalized + '`, or `token-goat outline ' + normalized + '` to pull just the part you need.' +
+        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
     }
 
@@ -604,7 +608,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
       : 'Use token-goat read/section/symbol to re-read surgically.'
     if (rereadBytes >= REREAD_DENY_BYTES || reads >= 2) {
       return denyOutput(
-        normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint,
+        normalized + ' was already read this session (' + reads + ' ' + plural + '). ' + hint +
+        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
     }
     return contextOutput(
@@ -627,7 +632,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
       // offset/limit params from a plain re-read) hits "already read this session"
       // instead of this same actionable deny, leaving no way to follow its own advice.
       return denyOutput(
-        normalized + ' is very large (' + kb + 'KB). ' + hint + ' Use Read with offset/limit to sample specific sections.',
+        normalized + ' is very large (' + kb + 'KB). ' + hint + ' Use Read with offset/limit to sample specific sections.' +
+        ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
     }
     recordFileRead(normalized)

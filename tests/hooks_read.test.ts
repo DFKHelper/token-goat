@@ -110,6 +110,8 @@ describe('preReadHandler', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('already read this session')
       expect(result.message).toContain('token-goat read/section/symbol')
+      expect(result.message).toContain('To edit it anyway')
+      expect(result.message).toContain('token-goat replace')
     }
   })
 
@@ -132,6 +134,8 @@ describe('preReadHandler', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('is very large')
       expect(result.message).toContain('token-goat skeleton')
+      expect(result.message).toContain('To edit it anyway')
+      expect(result.message).toContain('token-goat replace')
     }
   })
 
@@ -521,6 +525,8 @@ Some content that makes the file large enough`
       expect(result.message).toContain('times already')
       expect(result.message).toContain('token-goat skeleton')
       expect(result.message).toContain('token-goat outline')
+      expect(result.message).toContain('To edit it anyway')
+      expect(result.message).toContain('token-goat replace')
     }
   })
 
@@ -716,6 +722,8 @@ Some content that makes the file large enough`
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('Markdown file already read this session')
+      expect(result.message).toContain('To edit it anyway')
+      expect(result.message).toContain('token-goat replace')
     }
   })
 

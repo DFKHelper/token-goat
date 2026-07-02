@@ -26,6 +26,7 @@ import { indexFileSync } from './parser.js'
 import { pruneDeletedFiles } from './index_prune.js'
 import { detectLanguage } from './parser_types.js'
 import { resolveIndexPath } from './paths.js'
+import { appendDirtyPath } from './hooks_index.js'
 import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import { installHooks, uninstallHooks } from './install.js'
@@ -710,6 +711,15 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   }
 }
 
+/** Enqueue a written path for background reindexing; never lets a queue-append failure block the write it follows. */
+function enqueueDirtyPathSafe(filePath: string): void {
+  try {
+    appendDirtyPath(resolveIndexPath(filePath))
+  } catch {
+    // Fail-soft: the file is written correctly either way, just not reindexed until the next `token-goat index`.
+  }
+}
+
 function mapFsError(e: unknown, src?: string, dest?: string): never {
   const fe = e as NodeJS.ErrnoException
   if (fe.code === 'ENOENT') {
@@ -721,6 +731,9 @@ function mapFsError(e: unknown, src?: string, dest?: string): never {
     throw new CliError(`destination directory does not exist: ${destDir}`)
   }
   if (fe.code === 'ENOTDIR') {
+    if (src !== undefined && dest === undefined) {
+      throw new CliError(`source path contains a file where a directory was expected: ${src}`)
+    }
     throw new CliError(`destination path contains a file where a directory was expected: ${dest ?? fe.path ?? ''}`)
   }
   if (fe.code === 'EISDIR') {
@@ -731,6 +744,9 @@ function mapFsError(e: unknown, src?: string, dest?: string): never {
     throw new CliError(`destination is a directory, not a file: ${dest ?? (errPath || '(unknown)')}`)
   }
   if (fe.code === 'EACCES' || fe.code === 'EPERM') {
+    if (src !== undefined && dest === undefined) {
+      throw new CliError(`permission denied reading: ${src}`)
+    }
     throw new CliError(`permission denied writing to: ${dest ?? fe.path ?? ''}`)
   }
   if (fe.code === 'EROFS') {
@@ -764,6 +780,80 @@ const WIN_RESERVED = new Set([
   'LPT0','LPT1','LPT2','LPT3','LPT4','LPT5','LPT6','LPT7','LPT8','LPT9',
   'CONIN$','CONOUT$',
 ])
+
+function validateWritablePath(dest: string, label: string): void {
+  if (!dest || !dest.trim()) {
+    throw new CliError(`${label} path cannot be empty`)
+  }
+  if (dest.includes('\0')) {
+    throw new CliError(`${label} path contains a null byte`)
+  }
+  if (isWindows()) {
+    const base = path.basename(dest)
+    const stem = base.replace(/\.[^.]*$/, '').toUpperCase()
+    if (WIN_RESERVED.has(stem)) {
+      throw new CliError(`${label} '${base}' is a reserved Windows device name`)
+    }
+    if (base.endsWith('.') || base.endsWith(' ')) {
+      throw new CliError(`${label} filename '${base}' ends with '${base.slice(-1)}' — Windows NTFS silently strips trailing dots and spaces, which would clobber a different file`)
+    }
+  }
+}
+
+function parseMaxStdinMB(): number {
+  const raw = process.env['TOKEN_GOAT_MAX_STDIN_MB'] ?? '512'
+  const maxMB = parseInt(raw, 10)
+  if (!Number.isFinite(maxMB) || maxMB <= 0) {
+    throw new CliError(`TOKEN_GOAT_MAX_STDIN_MB must be a positive integer; got '${raw}'`)
+  }
+  return maxMB
+}
+
+function readTextFileBounded(filePath: string, label: string, allowStdIn = false): string {
+  if (!filePath || !filePath.trim()) {
+    throw new CliError(`${label} path cannot be empty`)
+  }
+  if (filePath.includes('\0')) {
+    throw new CliError(`${label} path contains a null byte`)
+  }
+  if (!allowStdIn && !isWindows() && /^\/dev\/(stdin|fd\/0)$|^\/proc\/self\/fd\/0$/.test(filePath) && process.stdin.isTTY) {
+    const altLabel = label.endsWith('-from') ? label.replace('-from', '-b64') : 'a regular file path'
+    throw new CliError(`${label} ${filePath} requires piped input; use ${altLabel} for interactive use`)
+  }
+  try {
+    const st = fs.statSync(filePath)
+    if (st.isFIFO() || st.isSocket()) {
+      throw new CliError(`${label} '${filePath}' is a special file (FIFO or socket) — only regular files are supported`)
+    }
+    const maxBytes = parseMaxStdinMB() * 1024 * 1024
+    if (st.size > maxBytes) {
+      throw new CliError(`${label} '${filePath}' exceeds size limit (${Math.round(st.size / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`)
+    }
+    return fs.readFileSync(filePath, 'utf8')
+  } catch (e) {
+    if (e instanceof CliError) throw e
+    mapFsError(e, filePath)
+  }
+}
+
+function decodeBase64Text(payload: string, label: string): string {
+  const normalized = payload.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
+  if (payload !== '' && normalized === '') {
+    throw new CliError(`${label} payload contains only whitespace — likely a shell expansion error; pass an empty string explicitly for a zero-byte file`)
+  }
+  const maxBytes = parseMaxStdinMB() * 1024 * 1024
+  const decodedSize = Math.floor((normalized.replace(/=+$/, '').length * 3) / 4)
+  if (decodedSize > maxBytes) {
+    throw new CliError(`${label} payload would decode to ${Math.round(decodedSize / 1024 / 1024)} MB which exceeds size limit; set TOKEN_GOAT_MAX_STDIN_MB to override`)
+  }
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(normalized)) {
+    throw new CliError(`${label} payload contains non-base64 characters — check for shell expansion of $VAR or backticks`)
+  }
+  if (normalized.replace(/=+$/, '').length % 4 === 1) {
+    throw new CliError(`${label} payload length is invalid (trailing single base64 character cannot decode to any bytes — payload is likely truncated)`)
+  }
+  return Buffer.from(normalized, 'base64').toString('utf8')
+}
 
 function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
   if (!dest || !dest.trim()) {
@@ -814,6 +904,7 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
       if (e instanceof CliError) throw e
       mapFsError(e, opts.from, dest)
     }
+    enqueueDirtyPathSafe(dest)
     return
   }
   if (opts.b64 !== undefined) {
@@ -843,6 +934,7 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     } catch (e) {
       mapFsError(e, undefined, dest)
     }
+    enqueueDirtyPathSafe(dest)
     return
   }
   if (process.stdin.isTTY) {
@@ -874,7 +966,7 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
       if (settled) return
       settled = true
       cleanup()
-      try { atomicWriteBuffer(dest, Buffer.concat(chunks)); resolve() }
+      try { atomicWriteBuffer(dest, Buffer.concat(chunks)); enqueueDirtyPathSafe(dest); resolve() }
       catch (e) { try { mapFsError(e, undefined, dest) } catch (e2) { reject(e2) } }
     }
     const onError = (e: Error) => {
@@ -893,6 +985,64 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
     process.stdin.on('error', onError)
     process.stdin.resume()
   })
+}
+
+function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean }): void {
+  validateWritablePath(file, 'target file')
+
+  const targetText = readTextFileBounded(file, 'target file', true)
+  const usingFrom = opts.oldFrom !== undefined || opts.newFrom !== undefined
+  const usingB64 = opts.oldB64 !== undefined || opts.newB64 !== undefined
+
+  if (usingFrom && usingB64) {
+    throw new CliError('cannot mix --old-from/--new-from with --old-b64/--new-b64')
+  }
+  if (!usingFrom && !usingB64) {
+    throw new CliError('must provide either --old-from/--new-from or --old-b64/--new-b64')
+  }
+  if (usingFrom) {
+    if (opts.oldFrom === undefined || opts.newFrom === undefined) {
+      throw new CliError('must pass both --old-from and --new-from together')
+    }
+  } else {
+    if (opts.oldB64 === undefined || opts.newB64 === undefined) {
+      throw new CliError('must pass both --old-b64 and --new-b64 together')
+    }
+  }
+
+  const oldText = usingFrom
+    ? readTextFileBounded(opts.oldFrom!, '--old-from')
+    : decodeBase64Text(opts.oldB64!, '--old-b64')
+  const newText = usingFrom
+    ? readTextFileBounded(opts.newFrom!, '--new-from')
+    : decodeBase64Text(opts.newB64!, '--new-b64')
+
+  if (oldText === '') {
+    throw new CliError('old string cannot be empty')
+  }
+
+  let occurrences = 0
+  let cursor = 0
+  while ((cursor = targetText.indexOf(oldText, cursor)) !== -1) {
+    occurrences += 1
+    cursor += oldText.length
+  }
+
+  if (occurrences === 0) {
+    throw new CliError(`old string not found in ${file}`)
+  }
+  if (occurrences > 1 && !opts.all) {
+    throw new CliError(`old string appears ${occurrences} times in ${file} — pass --all to replace every occurrence, or provide a more specific match`)
+  }
+
+  const replaced = occurrences === 1 && !opts.all ? targetText.replace(oldText, () => newText) : targetText.replaceAll(oldText, () => newText)
+  try {
+    atomicWriteBuffer(file, Buffer.from(replaced, 'utf8'))
+  } catch (e) {
+    mapFsError(e, undefined, file)
+  }
+  enqueueDirtyPathSafe(file)
+  out(`replaced ${occurrences} occurrence${occurrences === 1 ? '' : 's'} in ${file}`)
 }
 
 async function cmdGdriveSections(fileId: string, opts: { heading?: string }): Promise<void> {
@@ -1812,6 +1962,16 @@ export function buildProgram(): Command {
     .option('--from <source>', 'copy bytes from this source file instead of stdin/base64')
     .option('--b64 <payload>', 'decode base64 payload and write to dest')
     .action(guard(cmdWriteFile))
+
+  program
+    .command('replace <file>')
+    .description('replace one string in a file; supply old/new text via --old-from/--new-from or --old-b64/--new-b64, and use --all to replace every occurrence')
+    .option('--old-from <source>', 'read the old text from this source file')
+    .option('--new-from <source>', 'read the new text from this source file')
+    .option('--old-b64 <payload>', 'base64 payload for the old text')
+    .option('--new-b64 <payload>', 'base64 payload for the new text')
+    .option('--all', 'replace every occurrence instead of requiring a unique match')
+    .action(guard(cmdReplace))
 
   program
     .command('gdrive-sections <file-id>')
