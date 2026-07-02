@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -15,6 +16,11 @@ import {
   isDepListCommand,
   isNpxCommand,
   isUnscopedGitDiff,
+  isGitPushCommand,
+  isTestRunnerCommand,
+  isLintCommand,
+  isNpmRunScriptCommand,
+  isCatCommand,
   normalizeCommandForCacheKey,
   globHash,
   storeGlobResult,
@@ -375,5 +381,114 @@ describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
+  })
+})
+
+/** Init a git repo with one committed file at `<repo>/a.txt`, returning the repo dir. */
+function initGitRepoWithFile(prefix: string): string {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'one\n')
+  const git = (args: string[]): void => {
+    execFileSync('git', args, { cwd: tmpDir, stdio: 'ignore' })
+  }
+  git(['init'])
+  git(['-c', 'core.hooksPath=/dev/null', 'add', '.'])
+  git(['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'init'])
+  return tmpDir
+}
+
+describe('gitStateFingerprintSync — uncommitted working-tree changes (M45 regression)', () => {
+  it('flags a cached git-diff entry as stale once a tracked file is edited without staging', async () => {
+    const tmpDir = initGitRepoWithFile('tg-fp-gitwt-')
+    try {
+      const id = await storeBashOutput('git diff', '', 0, tmpDir)
+      const entry = getBashOutput(id)
+      expect(entry?.fingerprints?.git).toBeDefined()
+      expect(isBashEntryStale(entry!, 'git diff', tmpDir)).toBe(false)
+
+      // Edit a tracked file WITHOUT staging or committing -- HEAD sha and
+      // .git/index mtime are both untouched by this, so a fingerprint based
+      // only on those two never changes and the stale check misses the edit.
+      fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'two\n')
+
+      expect(isBashEntryStale(entry!, 'git diff', tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('flags a cached git-status entry as stale once a new untracked file appears', async () => {
+    const tmpDir = initGitRepoWithFile('tg-fp-gitwt-untracked-')
+    try {
+      const id = await storeBashOutput('git status', 'clean', 0, tmpDir)
+      const entry = getBashOutput(id)
+      expect(isBashEntryStale(entry!, 'git status', tmpDir)).toBe(false)
+
+      fs.writeFileSync(path.join(tmpDir, 'new-file.txt'), 'new\n')
+
+      expect(isBashEntryStale(entry!, 'git status', tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('computeBashFingerprints coverage for common monitored commands (M46 regression)', () => {
+  it.each(['pytest', 'vitest run', 'jest', 'go test ./...', 'eslint src', 'ruff check', 'npm run build', 'git push origin main'])(
+    'computes a git fingerprint for %s and flags it stale once a tracked file is edited',
+    async (cmd) => {
+      const tmpDir = initGitRepoWithFile('tg-fp-cov-')
+      try {
+        const id = await storeBashOutput(cmd, 'output', 0, tmpDir)
+        const entry = getBashOutput(id)
+        expect(entry?.fingerprints?.git).toBeDefined()
+        expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(false)
+
+        fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'two\n')
+
+        expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(true)
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('computes a file fingerprint for `cat <file>` and flags it stale once the file changes', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-cat-'))
+    try {
+      const target = path.join(tmpDir, 'notes.txt')
+      fs.writeFileSync(target, 'v1\n')
+      const id = await storeBashOutput('cat notes.txt', 'v1\n', 0, tmpDir)
+      const entry = getBashOutput(id)
+      expect(entry?.fingerprints?.file).toBeDefined()
+      expect(isBashEntryStale(entry!, 'cat notes.txt', tmpDir)).toBe(false)
+
+      fs.writeFileSync(target, 'v2\n')
+
+      expect(isBashEntryStale(entry!, 'cat notes.txt', tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('detects the new command classes', () => {
+    expect(isTestRunnerCommand('pytest')).toBe(true)
+    expect(isTestRunnerCommand('vitest run')).toBe(true)
+    expect(isTestRunnerCommand('jest')).toBe(true)
+    expect(isTestRunnerCommand('go test ./...')).toBe(true)
+    expect(isTestRunnerCommand('cat file')).toBe(false)
+
+    expect(isLintCommand('eslint src')).toBe(true)
+    expect(isLintCommand('ruff check')).toBe(true)
+    expect(isLintCommand('cat file')).toBe(false)
+
+    expect(isNpmRunScriptCommand('npm run build')).toBe(true)
+    expect(isNpmRunScriptCommand('npm install')).toBe(false)
+
+    expect(isGitPushCommand('git push origin main')).toBe(true)
+    expect(isGitPushCommand('git pull')).toBe(false)
+
+    expect(isCatCommand('cat file.txt')).toBe(true)
+    expect(isCatCommand('catalog')).toBe(false)
   })
 })

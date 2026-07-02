@@ -52,7 +52,7 @@ export interface BashOutputEntry {
   /** Byte length of `output` (UTF-8). */
   readonly sizeBytes: number
   /** Optional fingerprints for validation on cache recall. */
-  readonly fingerprints?: { git?: string; dir?: string; lockfile?: string }
+  readonly fingerprints?: { git?: string; dir?: string; lockfile?: string; file?: string }
 }
 
 // id -> entry.
@@ -73,6 +73,11 @@ const COMMAND_PATTERNS: Record<string, RegExp> = {
   npmOutdated: /^\s*npm\s+(?:-\S+\s+)*outdated\b/i,
   envProbe: /^\s*(?:node\s+(?:-v|--version)|npm\s+(?:-v|--version)|python3?\s+(?:(?:-V)\b|--?version)|git\s+--version|uv\s+--version|go\s+version|rustc\s+--version|cargo\s+--version|java\s+--version|ruby\s+--version|gem\s+--version|php\s+--version|which\b|where\b)/i,
   npx: /^\s*npx\s+(?:--?yes\s+)?(?!.*\b(?:install|add|remove|uninstall|i|rm|update|upgrade|set|get|publish|link|ci|audit|shrinkwrap|dedupe|prune|rebuild)\b)/i,
+  gitPush: /^\s*git\s+push\b/i,
+  testRunner: /^\s*(?:npx\s+)?(?:pytest|vitest|jest|go\s+test)\b/i,
+  lintCommand: /^\s*(?:(?:npx\s+)?eslint|(?:uv\s+run\s+)?ruff)\b/i,
+  npmRunScript: /^\s*npm\s+run(?:-script)?\b/i,
+  catCommand: /^\s*cat\b/i,
 }
 
 const DEP_LOCKFILES: Record<string, string[]> = {
@@ -101,27 +106,45 @@ export const isNpmInstallCommand = (cmd: string) => isCommandOfType(cmd, 'npmIns
 export const isNpmAuditCommand = (cmd: string) => isCommandOfType(cmd, 'npmAudit')
 export const isNpmOutdatedCommand = (cmd: string) => isCommandOfType(cmd, 'npmOutdated')
 export const isNpxCommand = (cmd: string) => isCommandOfType(cmd, 'npx')
+export const isGitPushCommand = (cmd: string) => isCommandOfType(cmd, 'gitPush')
+export const isTestRunnerCommand = (cmd: string) => isCommandOfType(cmd, 'testRunner')
+export const isLintCommand = (cmd: string) => isCommandOfType(cmd, 'lintCommand')
+export const isNpmRunScriptCommand = (cmd: string) => isCommandOfType(cmd, 'npmRunScript')
+export const isCatCommand = (cmd: string) => isCommandOfType(cmd, 'catCommand')
 
 export function isUnscopedGitDiff(cmd: string): boolean {
   if (!isCommandOfType(cmd, 'gitDiffUnscoped')) return false
   return !isCommandOfType(cmd, 'gitDiffScoped')
 }
 
+/**
+ * Fingerprint HEAD plus uncommitted working-tree state: HEAD sha and a hash
+ * of `git status --porcelain` (staged, unstaged, and untracked changes).
+ * HEAD sha alone only changes on a commit, so a plain edit to a tracked file
+ * -- never staged -- would otherwise leave the fingerprint unchanged and a
+ * cached git-diff/-status (or test/lint) result would keep being served as
+ * fresh after the tree it was computed against had already changed.
+ *
+ * Deliberately does NOT fold in `.git/index`'s mtime: `git status` can
+ * itself refresh the index's on-disk stat cache as a side effect (with no
+ * porcelain-visible change), so reading the index mtime around a `status`
+ * call is racy and would self-invalidate on the very next check even though
+ * nothing real changed. `git status --porcelain`'s output is the stable,
+ * logical signal and already a superset of what the index mtime covered.
+ */
 function gitStateFingerprintSync(cwd: string): string | null {
   try {
     const headResult = runGit(['rev-parse', 'HEAD'], { cwd })
     if (headResult.exitCode !== 0) return null
     const headSha = headResult.stdout.trim()
 
-    let indexMtime = ''
-    try {
-      const stat = statSync(resolve(cwd, '.git', 'index'))
-      indexMtime = stat.mtimeMs.toString()
-    } catch {
-      // index file may not exist yet
+    let statusHash = ''
+    const statusResult = runGit(['status', '--porcelain'], { cwd })
+    if (statusResult.exitCode === 0) {
+      statusHash = shortFingerprint(statusResult.stdout)
     }
 
-    const key = `${headSha}\x00${indexMtime}`
+    const key = `${headSha}\x00${statusHash}`
     return shortFingerprint(key)
   } catch {
     return null
@@ -146,6 +169,17 @@ function dirStateFingerprintSync(path: string): string | null {
 /** Async wrapper kept for existing callers/tests that `await` this. */
 export async function dirStateFingerprint(path: string): Promise<string | null> {
   return dirStateFingerprintSync(path)
+}
+
+/** Fingerprint a single file's mtime + size (used for `cat <file>`). */
+function fileStateFingerprintSync(path: string): string | null {
+  try {
+    const stat = statSync(path)
+    if (!stat.isFile()) return null
+    return shortFingerprint(`${stat.mtimeMs}\x00${stat.size}`)
+  } catch {
+    return null
+  }
 }
 
 function depLockfileFingerprintSync(cmd: string, cwd: string | null): string | null {
@@ -271,16 +305,33 @@ export async function commandHash(command: string, cwd: string | null = null): P
 }
 
 /**
- * Compute current git/dir/lockfile state fingerprints for `command` run in
- * `cwd`. Stored on a {@link BashOutputEntry} at write time (`storeBashOutput`)
- * and recomputed at cache-recall time ({@link isBashEntryStale}) so a cached
- * entry whose underlying source state (HEAD commit, directory mtime, lockfile
- * contents) has since changed is not served as if it were still fresh.
+ * Compute current git/dir/lockfile/file state fingerprints for `command` run
+ * in `cwd`. Stored on a {@link BashOutputEntry} at write time
+ * (`storeBashOutput`) and recomputed at cache-recall time
+ * ({@link isBashEntryStale}) so a cached entry whose underlying source state
+ * has since changed is not served as if it were still fresh.
+ *
+ * - `git`: git-mutable commands (`git diff`/`git status`), `git push`, and
+ *   any command whose output depends on the whole working tree -- test
+ *   runners (pytest/vitest/jest/go test), linters (eslint/ruff), and
+ *   `npm run <script>` -- since {@link gitStateFingerprintSync} already
+ *   captures staged/unstaged/untracked changes anywhere in the tree.
+ * - `dir`: directory-listing commands, scoped to the listed directory's mtime.
+ * - `lockfile`: dependency-list/install commands, scoped to the resolved
+ *   lockfile's content.
+ * - `file`: `cat <file>`, scoped to that one file's mtime + size.
  */
-export function computeBashFingerprints(command: string, cwd: string | null): { git?: string; dir?: string; lockfile?: string } | undefined {
-  const fingerprints: { git?: string; dir?: string; lockfile?: string } = {}
+export function computeBashFingerprints(command: string, cwd: string | null): { git?: string; dir?: string; lockfile?: string; file?: string } | undefined {
+  const fingerprints: { git?: string; dir?: string; lockfile?: string; file?: string } = {}
 
-  if (cwd && isGitMutableCommand(command)) {
+  if (
+    cwd &&
+    (isGitMutableCommand(command) ||
+      isGitPushCommand(command) ||
+      isTestRunnerCommand(command) ||
+      isLintCommand(command) ||
+      isNpmRunScriptCommand(command))
+  ) {
     const fp = gitStateFingerprintSync(cwd)
     if (fp) fingerprints.git = fp
   }
@@ -296,6 +347,14 @@ export function computeBashFingerprints(command: string, cwd: string | null): { 
   if (isDepListCommand(command) || (cwd && isNpmInstallCommand(command))) {
     const fp = depLockfileFingerprintSync(command, cwd)
     if (fp) fingerprints.lockfile = fp
+  }
+
+  if (cwd && isCatCommand(command)) {
+    const target = extractCatTarget(command, cwd)
+    if (target) {
+      const fp = fileStateFingerprintSync(target)
+      if (fp) fingerprints.file = fp
+    }
   }
 
   return Object.keys(fingerprints).length > 0 ? fingerprints : undefined
@@ -316,6 +375,7 @@ export function isBashEntryStale(entry: BashOutputEntry, command: string, cwd: s
   if (stored.git !== undefined && stored.git !== current?.git) return true
   if (stored.dir !== undefined && stored.dir !== current?.dir) return true
   if (stored.lockfile !== undefined && stored.lockfile !== current?.lockfile) return true
+  if (stored.file !== undefined && stored.file !== current?.file) return true
   return false
 }
 
@@ -331,6 +391,21 @@ function extractLsTarget(cmd: string, cwd: string): string | null {
     }
   }
   return cwd
+}
+
+/** Same shape as {@link extractLsTarget}, but `cat` with no file argument (reads stdin) has no sensible default target. */
+function extractCatTarget(cmd: string, cwd: string): string | null {
+  const tokens = cmd.trim().split(/\s+/)
+  for (let i = 1; i < tokens.length; i++) {
+    const token = tokens[i]!
+    if (!token.startsWith('-')) {
+      if (!token.startsWith('/')) {
+        return resolve(cwd, token)
+      }
+      return token
+    }
+  }
+  return null
 }
 
 /**
@@ -409,10 +484,11 @@ function coerceBashEntry(raw: unknown): BashOutputEntry | null {
   const rawFingerprints = o['fingerprints']
   if (rawFingerprints !== null && typeof rawFingerprints === 'object') {
     const f = rawFingerprints as Record<string, unknown>
-    const fingerprints: { git?: string; dir?: string; lockfile?: string } = {}
+    const fingerprints: { git?: string; dir?: string; lockfile?: string; file?: string } = {}
     if (typeof f['git'] === 'string') fingerprints.git = f['git']
     if (typeof f['dir'] === 'string') fingerprints.dir = f['dir']
     if (typeof f['lockfile'] === 'string') fingerprints.lockfile = f['lockfile']
+    if (typeof f['file'] === 'string') fingerprints.file = f['file']
     if (Object.keys(fingerprints).length > 0) return { ...entry, fingerprints }
   }
   return entry
