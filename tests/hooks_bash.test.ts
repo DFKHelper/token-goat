@@ -211,6 +211,43 @@ function makeBashEvent(command: string, cwd?: string): HookEvent {
   }
 }
 
+describe('preBashHandler — unbalanced shell quoting false positives (detectUnbalancedShellSyntax)', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  it('does not false-positive on a backslash-escaped quote outside any string', () => {
+    const result = preBashHandler(makeBashEvent('echo hello \\" world'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not false-positive on an arithmetic left-shift inside $(( ... ))', () => {
+    const result = preBashHandler(makeBashEvent('echo $((1 << 2))'))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not false-positive on an apostrophe inside a real shell comment', () => {
+    const result = preBashHandler(makeBashEvent("echo hi  # don't forget"))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('still flags a genuinely unclosed double quote', () => {
+    const result = preBashHandler(makeBashEvent('echo "unterminated'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('unclosed double quote')
+    }
+  })
+
+  it('still flags a genuinely unclosed single quote', () => {
+    const result = preBashHandler(makeBashEvent("echo 'unterminated"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('unclosed single quote')
+    }
+  })
+})
+
 describe('preBashHandler — cd-prefix stripping', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -324,6 +361,16 @@ describe('preBashHandler — cat source file recall', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('token-goat section')
     }
+  })
+
+  it('does not false-positive on a command that merely contains the substring "python3" elsewhere', () => {
+    // The python-read detector used to be unanchored (`/python3?/.test(cmd)`), matching that
+    // substring ANYWHERE in the command — not just an actual python invocation. A command that
+    // just mentions "python3" in passing (e.g. a commit message) while separately calling an
+    // unrelated open(...) (here a Node one-liner) must not be misread as a Python file read.
+    const event = makeBashEvent("git commit -m \"add python3 support\" && node -e \"require('fs').open('config.json', 'r', cb)\"")
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('pass')
   })
 
   it('denies cat of a local.env file', () => {
@@ -473,6 +520,17 @@ describe('preBashHandler — cat source file recall', () => {
     if (result.hookType === 'context') {
       expect(result.context).toContain('src/paging_demo.ts@200-260')
       expect(result.context).not.toContain('already read')
+    }
+  })
+
+  it('dedups a sed read against the same file referenced by relative vs absolute path (fail-on-buggy: breaks if the line-range key stops resolving against cwd)', () => {
+    const cwd = 'C:/Projects/repo-a'
+    preBashHandler(makeBashEvent("sed -n '10,60p' src/paging_demo.ts", cwd))
+    const result = preBashHandler(makeBashEvent("sed -n '50,100p' C:/Projects/repo-a/src/paging_demo.ts", cwd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already read')
+      expect(result.context).toContain('10-60')
     }
   })
 
@@ -1347,17 +1405,25 @@ describe('preBashHandler — curl download dedup', () => {
   })
 
   it('denies re-download of the same URL to a different temp path', async () => {
-    const url = 'https://example.com/report.json'
-    const firstCmd = `curl ${url} -o /tmp/report-v1.json`
-    await postBashHandler(makePostBashEvent(firstCmd, ''))
+    const dir = mkdtempSync(join(tmpdir(), 'tg-curl-'))
+    const v1Path = join(dir, 'report-v1.json')
+    try {
+      writeFileSync(v1Path, '{}')
+      const url = 'https://example.com/report.json'
+      const firstCmd = `curl ${url} -o ${v1Path}`
+      await postBashHandler(makePostBashEvent(firstCmd, ''))
 
-    const secondCmd = `curl ${url} -o /tmp/report-v2.json`
-    const result = preBashHandler(makeBashEvent(secondCmd))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('/tmp/report-v1.json')
-      expect(result.message).toContain('rg')
-      expect(result.message).toContain('token-goat read')
+      const v2Path = join(dir, 'report-v2.json')
+      const secondCmd = `curl ${url} -o ${v2Path}`
+      const result = preBashHandler(makeBashEvent(secondCmd))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain(v1Path)
+        expect(result.message).toContain('rg')
+        expect(result.message).toContain('token-goat read')
+      }
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
     }
   })
 
@@ -1368,10 +1434,45 @@ describe('preBashHandler — curl download dedup', () => {
   })
 
   it('denies re-download of same URL with identical output path', async () => {
-    const cmd = 'curl https://example.com/script.sh -o /tmp/script.sh'
-    await postBashHandler(makePostBashEvent(cmd, ''))
-    const result = preBashHandler(makeBashEvent(cmd))
-    expect(result.hookType).toBe('deny')
+    const dir = mkdtempSync(join(tmpdir(), 'tg-curl-'))
+    const outPath = join(dir, 'script.sh')
+    try {
+      writeFileSync(outPath, '#!/bin/sh\necho hi\n')
+      const cmd = `curl https://example.com/script.sh -o ${outPath}`
+      await postBashHandler(makePostBashEvent(cmd, ''))
+      const result = preBashHandler(makeBashEvent(cmd))
+      expect(result.hookType).toBe('deny')
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+    }
+  })
+
+  it('does not record a curl -o download that failed (missing output file) — a retry is allowed, not denied', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-curl-fail-'))
+    const outPath = join(dir, 'missing.json')
+    try {
+      const url = 'https://example.com/missing.json'
+      const cmd = `curl ${url} -o ${outPath}`
+      // Simulate a failed download: curl exited non-zero and never wrote the output file.
+      const failedEvent: HookEvent = {
+        eventName: 'post_tool_use',
+        toolName: 'Bash',
+        toolInput: { command: cmd },
+        sessionId: 'test-session',
+        raw: {
+          tool_name: 'Bash',
+          tool_input: { command: cmd },
+          tool_response: { output: 'curl: (22) The requested URL returned error: 404', exit_code: 22 },
+        },
+      }
+      await postBashHandler(failedEvent)
+
+      // Retrying the exact same download must be allowed, not denied as "already downloaded".
+      const result = preBashHandler(makeBashEvent(cmd))
+      expect(result.hookType).not.toBe('deny')
+    } finally {
+      try { rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+    }
   })
 })
 
@@ -1448,6 +1549,18 @@ describe('preBashHandler — token-goat CLI surgical-read dedup', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  it('cross-references a file already fully read via the Read tool when the CLI read uses an @N-M line-range suffix', () => {
+    // A `token-goat read "file@N-M"` spec must extract the bare file path for the dedup/
+    // pending-hint key (stripping the range suffix), not the literal "file@N-M" string —
+    // otherwise a range-scoped read never cross-references the same file read in full.
+    recordFileRead(resolveIndexPath('src/foo.ts'))
+    const result = preBashHandler(makeBashEvent('token-goat read "src/foo.ts@10-50"'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already fully read via the Read tool')
+    }
+  })
+
   it('does not intercept unrelated token-goat subcommands', () => {
     const result = preBashHandler(makeBashEvent('token-goat map --compact'))
     expect(result.hookType).not.toBe('context')
@@ -1501,6 +1614,16 @@ describe('preBashHandler — token-goat CLI surgical-read dedup', () => {
     await postBashHandler(makePostBashEvent('token-goat skill-compact --path skills/x.md', 'x skill text'))
     const result = preBashHandler(makeBashEvent('token-goat skill-compact --path skills/y.md'))
     expect(result.hookType).toBe('pass')
+  })
+
+  it('dedups a repeat skill-compact --path invocation to the same file that only differs in slash direction (resolved via resolveIndexPath, same as read/section)', async () => {
+    const cwd = 'C:/Projects/repo-a'
+    await postBashHandler(makePostBashEvent('token-goat skill-compact --path skills\\x.md', 'x skill text', cwd))
+    const result = preBashHandler(makeBashEvent('token-goat skill-compact --path skills/x.md', cwd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already ran this exact')
+    }
   })
 })
 
