@@ -107,10 +107,21 @@ function symbolHeader(s: SymbolEntry): string {
   return `# ${s.name} (${s.kind}) — ${s.filePath}:${s.lineStart}-${s.lineEnd}`
 }
 
+// Parses a --limit/--top style numeric CLI flag, rejecting a non-numeric value with a clean
+// CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which better-sqlite3
+// rejects with an opaque "datatype mismatch" error).
+function requireInt(flag: string, raw: string): number {
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n)) {
+    throw new CliError(`${flag} must be a number, got: "${raw}"`)
+  }
+  return n
+}
+
 // --- Command handlers -------------------------------------------------------
 
 function cmdSemantic(query: string, opts: { limit?: string }): void {
-  const limit = opts.limit !== undefined ? Number.parseInt(opts.limit, 10) : 20
+  const limit = opts.limit !== undefined ? requireInt('--limit', opts.limit) : 20
   // No embeddings table in this port → fall back to FTS over symbol names/bodies.
   const results = searchSymbolsFts(query, Number.isFinite(limit) ? limit : 20)
   if (results.length === 0) {
@@ -963,7 +974,7 @@ function cmdTokens(
     const result = estimateBudget(root, expandGlobs(root, patterns ?? []))
     let entries = [...result.entries]
     if (opts.asc === true) entries.reverse()
-    if (opts.top !== undefined) entries = entries.slice(0, Number.parseInt(opts.top, 10))
+    if (opts.top !== undefined) entries = entries.slice(0, requireInt('--top', opts.top))
     if (opts.json === true) {
       out(JSON.stringify({ entries, total_tokens: result.total_tokens, total_lines: result.total_lines }, null, 2))
       process.exitCode = 0
@@ -1080,7 +1091,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runSymbol({
           name,
-          limit: opts.limit !== undefined ? Number.parseInt(opts.limit, 10) : 20,
+          limit: opts.limit !== undefined ? requireInt('--limit', opts.limit) : 20,
           ...(opts.file !== undefined ? { file: opts.file } : {}),
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
           ...(opts.json === true ? { json: true } : {}),
@@ -1152,7 +1163,7 @@ export function buildProgram(): Command {
           spec,
           ...(opts.callers === true ? { callers: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: Number.parseInt(opts.limit, 10) } : {}),
+          ...(opts.limit !== undefined ? { limit: requireInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -1243,7 +1254,7 @@ export function buildProgram(): Command {
         runFind({
           pattern,
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: Number.parseInt(opts.limit, 10) } : {}),
+          ...(opts.limit !== undefined ? { limit: requireInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -1318,7 +1329,7 @@ export function buildProgram(): Command {
         runCallers({
           symbol,
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: Number.parseInt(opts.limit, 10) } : {}),
+          ...(opts.limit !== undefined ? { limit: requireInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -1347,7 +1358,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runImpact({
           symbol,
-          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -1365,7 +1376,7 @@ export function buildProgram(): Command {
         runDead({
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
           ...(opts.includePrivate === true ? { includePrivate: true } : {}),
-          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -1389,7 +1400,7 @@ export function buildProgram(): Command {
         runTypes({
           ...(file !== undefined ? { file } : {}),
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: Number.parseInt(opts.limit, 10) } : {}),
+          ...(opts.limit !== undefined ? { limit: requireInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -1411,7 +1422,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runSimilar({
           spec,
-          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -1427,7 +1438,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runContextFor({
           task,
-          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
           ...(opts.budget !== undefined ? { budget: Number.parseInt(opts.budget, 10) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
@@ -1451,7 +1462,7 @@ export function buildProgram(): Command {
     .action((opts: { top?: string; includePrivate?: boolean; json?: boolean }) =>
       runExit(() =>
         runCoverageGaps({
-          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
           ...(opts.includePrivate === true ? { includePrivate: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
@@ -1466,7 +1477,7 @@ export function buildProgram(): Command {
     .action((opts: { top?: string; json?: boolean }) =>
       runExit(() =>
         runArch({
-          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -1489,7 +1500,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runAsk({
           question,
-          ...(opts.top !== undefined ? { top: Number.parseInt(opts.top, 10) } : {}),
+          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
