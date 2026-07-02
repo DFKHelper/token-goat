@@ -239,6 +239,24 @@ describe('cmdPruneCache', () => {
     const parsed = JSON.parse(capturedOutput()) as { removed: Record<string, number> }
     expect((parsed.removed[BASH_OUTPUT_SUBDIR] ?? 0)).toBeGreaterThanOrEqual(2)
   })
+
+  // M5 regression: a non-numeric --maxCount/--maxAgeHours used to silently
+  // coerce to NaN (Number.parseInt / parseFloat both return NaN, and
+  // Math.max(0, NaN) is NaN), so prune-cache would run with maxCount=NaN or
+  // maxAgeMs=NaN instead of failing loudly -- a NaN bound makes every
+  // count/age comparison in pruneBlobs false, silently pruning nothing while
+  // reporting success.
+  it('rejects a non-numeric --maxCount instead of silently coercing to NaN', () => {
+    expect(() => cmdPruneCache({ maxCount: 'abc' })).toThrow(/--maxCount must be a valid integer/)
+  })
+
+  it('rejects a non-numeric --maxAgeHours instead of silently coercing to NaN', () => {
+    expect(() => cmdPruneCache({ maxAgeHours: 'abc' })).toThrow(/--maxAgeHours must be a valid number/)
+  })
+
+  it('rejects a non-numeric --maxCount even when --maxAgeHours is valid', () => {
+    expect(() => cmdPruneCache({ maxCount: 'NaN', maxAgeHours: '2' })).toThrow(/--maxCount must be a valid integer/)
+  })
 })
 
 // ── cache-audit ───────────────────────────────────────────────────────────────
