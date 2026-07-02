@@ -44,9 +44,18 @@ function cacheIdForUrl(url: string): string {
  *
  * Re-storing the same URL overwrites the body and keeps the same id, so the
  * URL index always points at the latest content.
+ *
+ * `dedupKey` (default: `url`) is what the cache id is derived from. A caller
+ * whose identity for "is this the same request" is broader than the bare URL
+ * (e.g. hooks_fetch.ts, where a WebFetch answer is specific to the `prompt`
+ * asked, not just the URL) can pass a composite key so two requests for the
+ * same URL with different keys get distinct ids - while the blob's stored
+ * `url` field (and `_urlIndex`, used by getWebOutputByUrl /
+ * wasUrlFetchedThisSession) stay keyed on the real URL for display and
+ * URL-only lookups.
  */
-export function storeWebOutput(url: string, content: string): string {
-  const cacheId = cacheIdForUrl(url)
+export function storeWebOutput(url: string, content: string, dedupKey: string = url): string {
+  const cacheId = cacheIdForUrl(dedupKey)
   _byId.set(cacheId, content)
   _urlIndex.set(url, cacheId)
   // Persist so a later, separate process (and the CLI) can recall the body.

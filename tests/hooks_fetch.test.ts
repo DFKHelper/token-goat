@@ -84,6 +84,33 @@ describe('preFetchHandler', () => {
       expect(result.message).toContain('token-goat web-output');
     }
   });
+
+  it('does not redirect a different prompt against the same URL to the wrong cached answer (regression: dedup key ignored prompt)', () => {
+    const url = 'https://example.com/prompt-dedup';
+    const sessionId = 'prompt-dedup-session';
+
+    // First fetch: cache an answer for prompt A.
+    const postResult = postFetchHandler({
+      eventName: 'post_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url, prompt: 'What is the pricing?' },
+      sessionId,
+      raw: { tool_response: 'x'.repeat(2000) },
+    });
+    expect(postResult.hookType).toBe('pass');
+
+    // Second fetch: same URL, a genuinely different question. Must NOT be denied
+    // and redirected to the cached answer for the first (unrelated) prompt.
+    const result = preFetchHandler({
+      eventName: 'pre_tool_use',
+      toolName: 'WebFetch',
+      toolInput: { url, prompt: 'What is the refund policy?' },
+      sessionId,
+      raw: {},
+    });
+
+    expect(result.hookType).toBe('pass');
+  });
 });
 
 describe('postFetchHandler', () => {
