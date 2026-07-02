@@ -132,9 +132,14 @@ function skipBraceBody(lines: string[], start: number, initialDepth: number, isJ
   let bodyCount = 0
   let i = start
   let inBlockComment = false
-  // Carries "still inside an unclosed backtick template literal" state across lines, so real
-  // braces/comments inside a multi-line template literal's content are not scanned as code.
-  let inTemplateLiteral = false
+  // Tracks nested template-literal state across lines/chars. Each stack entry is the open
+  // brace depth of that level's active `${...}` interpolation (0 = currently in that
+  // level's own string part, not inside an interpolation). This is required because a
+  // template literal can itself contain a nested template literal inside `${...}`, so a
+  // single "am I in a template literal" flag can't tell which level's closing backtick or
+  // interpolation brace is being scanned. Braces belonging to an interpolation (at any
+  // nesting level) must never affect `depth`, the brace count for the body being skipped.
+  const templateStack: number[] = []
   let prev = ''
   let prevWord = ''
   let word = ''
@@ -143,26 +148,34 @@ function skipBraceBody(lines: string[], start: number, initialDepth: number, isJ
     const line = lines[i]!
     let j = 0
 
-    if (inTemplateLiteral) {
-      let k = 0
-      let closed = false
-      while (k < line.length) {
-        if (line[k] === '\\') {
-          k += 2
-        } else if (line[k] === '`') {
-          k++
-          closed = true
-          break
-        } else {
-          k++
-        }
-      }
-      inTemplateLiteral = !closed
-      j = closed ? k : line.length
-    }
-
     while (j < line.length && depth > 0) {
       const ch = line[j]!
+
+      if (templateStack.length > 0 && templateStack[templateStack.length - 1] === 0) {
+        // In a template literal's string part: only an escape, the closing backtick, or the
+        // start of a new interpolation are special; everything else is inert string content.
+        if (ch === '\\' && j + 1 < line.length) {
+          j += 2
+          continue
+        }
+        if (ch === '`') {
+          templateStack.pop()
+          prev = '`'
+          prevWord = ''
+          j++
+          continue
+        }
+        if (ch === '$' && j + 1 < line.length && line[j + 1] === '{') {
+          templateStack[templateStack.length - 1] = 1
+          prev = '{'
+          prevWord = ''
+          j += 2
+          continue
+        }
+        prev = ch
+        j++
+        continue
+      }
 
       if (inBlockComment) {
         if (ch === '*' && j + 1 < line.length && line[j + 1] === '/') {
@@ -204,26 +217,30 @@ function skipBraceBody(lines: string[], start: number, initialDepth: number, isJ
         continue
       }
 
-      if (ch === '"' || ch === "'" || ch === '`') {
+      if (ch === '"' || ch === "'") {
         const quote = ch
         j++
-        let closedQuote = false
         while (j < line.length) {
           if (line[j] === '\\') {
             j += 2
           } else if (line[j] === quote) {
             j++
-            closedQuote = true
             break
           } else {
             j++
           }
         }
-        if (!closedQuote && quote === '`') {
-          inTemplateLiteral = true
-        }
         prev = quote
         prevWord = ''
+        continue
+      }
+
+      if (ch === '`') {
+        // Opens a template literal (possibly nested inside an enclosing interpolation).
+        templateStack.push(0)
+        prev = '`'
+        prevWord = ''
+        j++
         continue
       }
 
@@ -259,11 +276,19 @@ function skipBraceBody(lines: string[], start: number, initialDepth: number, isJ
       }
 
       if (ch === '{') {
-        depth++
+        if (templateStack.length > 0) {
+          templateStack[templateStack.length - 1]!++
+        } else {
+          depth++
+        }
       } else if (ch === '}') {
-        depth--
-        if (depth === 0) {
-          break
+        if (templateStack.length > 0) {
+          templateStack[templateStack.length - 1]!--
+        } else {
+          depth--
+          if (depth === 0) {
+            break
+          }
         }
       }
 
@@ -357,17 +382,24 @@ function compressBraceLang(source: string, fileExt: string): string {
 export function stripComments(code: string, language: string): string {
   const lines = code.split('\n')
   const isPython = ['py', 'ruby'].includes(language)
-  // Carries "still inside an unclosed backtick template literal" state across lines, so a
-  // multi-line JS/TS template literal's content (including a `//` sequence inside it) isn't
-  // mistaken for a real comment.
-  let inTemplateLiteral = false
+  // Tracks nested template-literal state across lines/chars. Each stack entry is the open
+  // brace depth of that level's active `${...}` interpolation (0 = currently in that
+  // level's own string part, not inside an interpolation). A single "am I in a template
+  // literal" flag can't handle a template literal that itself contains a nested template
+  // literal inside `${...}`, since a `//` inside the nested literal's own string part must
+  // stay untouched while a genuine `//` in the surrounding interpolation code must still be
+  // stripped.
+  const templateStack: number[] = []
 
   return lines
     .map((line) => {
-      let inString = inTemplateLiteral
-      let stringChar = inTemplateLiteral ? '`' : ''
+      let inString = false
+      let stringChar = ''
+      if (templateStack.length > 0 && templateStack[templateStack.length - 1] === 0) {
+        inString = true
+        stringChar = '`'
+      }
       let i = 0
-      inTemplateLiteral = false
 
       while (i < line.length) {
         const ch = line[i]!
@@ -377,8 +409,17 @@ export function stripComments(code: string, language: string): string {
             i += 2
             continue
           }
+          if (stringChar === '`' && ch === '$' && i + 1 < line.length && line[i + 1] === '{') {
+            templateStack[templateStack.length - 1] = 1
+            inString = false
+            i += 2
+            continue
+          }
           if (ch === stringChar) {
             inString = false
+            if (stringChar === '`') {
+              templateStack.pop()
+            }
           }
           i++
           continue
@@ -387,8 +428,29 @@ export function stripComments(code: string, language: string): string {
         if (ch === '"' || ch === "'" || (!isPython && ch === '`')) {
           inString = true
           stringChar = ch
+          if (ch === '`') {
+            templateStack.push(0)
+          }
           i++
           continue
+        }
+
+        if (!isPython && templateStack.length > 0) {
+          const top = templateStack.length - 1
+          if (ch === '{') {
+            templateStack[top]!++
+            i++
+            continue
+          }
+          if (ch === '}') {
+            templateStack[top]!--
+            if (templateStack[top] === 0) {
+              inString = true
+              stringChar = '`'
+            }
+            i++
+            continue
+          }
         }
 
         if (isPython && ch === '#') {
@@ -398,10 +460,6 @@ export function stripComments(code: string, language: string): string {
         }
 
         i++
-      }
-
-      if (inString && stringChar === '`') {
-        inTemplateLiteral = true
       }
 
       return line
