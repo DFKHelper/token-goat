@@ -62,6 +62,13 @@ function userPromptSubmitHandler(event: HookEvent): HookOutput {
   }
 }
 
+// Matches common completion-tense verbs a subagent would use in its own
+// final report when it CLAIMS to have made changes (e.g. "Fixed the bug
+// and committed the change") — as opposed to inferring intent from the
+// task it was assigned. Handles common inflections (fix/fixed/fixing).
+const CLAIMED_CHANGE_VERBS_RE =
+  /\b(fix(?:ed|es|ing)?|implement(?:ed|s|ing)?|add(?:ed|s|ing)?|creat(?:e|ed|es|ing)|writ(?:e|ten|es|ing)|refactor(?:ed|s|ing)?|updat(?:e|ed|es|ing)|chang(?:e|ed|es|ing)|edit(?:ed|s|ing)?|modif(?:y|ied|ies|ying)|delet(?:e|ed|es|ing)|remov(?:e|ed|es|ing)|patch(?:ed|es|ing)?|resolv(?:e|ed|es|ing)|replac(?:e|ed|es|ing)|improv(?:e|ed|es|ing)|commit(?:ted|s|ting)?|push(?:ed|es|ing)?|appl(?:y|ied|ies|ying))\b/i;
+
 function subagentStopHandler(event: HookEvent): HookOutput {
   try {
     if (!event.sessionId) {
@@ -78,9 +85,13 @@ function subagentStopHandler(event: HookEvent): HookOutput {
       if (result.exitCode === 0) {
         const gitOutput = result.stdout.trim();
         if (!gitOutput) {
-          const prompt = (event.raw['prompt'] as string) || '';
-          const hasActionVerbs = /\b(fix|implement|add|create|write|refactor|update|change|edit|modify|delete|remove|patch|resolve|replace|improve)\b/i.test(prompt);
-          if (hasActionVerbs) {
+          // last_assistant_message is the subagent's own final report — the
+          // real signal is whether the agent CLAIMS to have made changes
+          // (fixed/committed/implemented/...) while git shows none, not
+          // whether the assigned task merely asked for changes.
+          const lastAssistantMessage = (event.raw['last_assistant_message'] as string) || '';
+          const claimsChanges = CLAIMED_CHANGE_VERBS_RE.test(lastAssistantMessage);
+          if (claimsChanges) {
             console.warn(
               `subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`
             );

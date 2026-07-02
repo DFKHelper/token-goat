@@ -79,7 +79,7 @@ describe('hooks_session', () => {
   });
 
   describe('subagentStopHandler - hallucination detection', () => {
-    it('should not warn for readonly research task with clean git status', () => {
+    it('does not warn when the report is a readonly research summary and git status is clean', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -95,7 +95,7 @@ describe('hooks_session', () => {
         sessionId: 'test-session',
         raw: {
           cwd: '/tmp/repo',
-          prompt: 'Search the codebase and report what you find about authentication patterns',
+          last_assistant_message: 'Searched the codebase and found the relevant function at line 42',
         },
       };
 
@@ -105,7 +105,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('should warn when prompt contains action verbs and git status is clean', () => {
+    it('warns when the report claims a fix and commit but git status is clean', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -121,7 +121,7 @@ describe('hooks_session', () => {
         sessionId: 'test-session',
         raw: {
           cwd: '/tmp/repo',
-          prompt: 'Fix the bug in the auth module',
+          last_assistant_message: 'Fixed the bug in auth.ts and committed the change',
         },
       };
 
@@ -133,7 +133,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('should warn when prompt contains "implement" and git status is clean', () => {
+    it('warns when the report claims an implementation and git status is clean', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -149,7 +149,7 @@ describe('hooks_session', () => {
         sessionId: 'test-session',
         raw: {
           cwd: '/tmp/repo',
-          prompt: 'Implement the new feature for user profiles',
+          last_assistant_message: 'I have implemented the new feature for user profiles',
         },
       };
 
@@ -161,7 +161,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('should not warn when git status has changes', () => {
+    it('does not warn when the report claims a fix but git status has changes', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -177,7 +177,7 @@ describe('hooks_session', () => {
         sessionId: 'test-session',
         raw: {
           cwd: '/tmp/repo',
-          prompt: 'Fix the bug in the auth module',
+          last_assistant_message: 'Fixed the bug in the auth module',
         },
       };
 
@@ -187,7 +187,7 @@ describe('hooks_session', () => {
       warnSpy.mockRestore();
     });
 
-    it('should not warn when prompt has no action verbs despite clean status', () => {
+    it('does not warn when the report has no claimed-change verbs despite clean status', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
       vi.mocked(util.runGit).mockReturnValue({
@@ -203,7 +203,34 @@ describe('hooks_session', () => {
         sessionId: 'test-session',
         raw: {
           cwd: '/tmp/repo',
-          prompt: 'Examine the architecture and explain how it works',
+          last_assistant_message: 'Examined the architecture and explained how it works',
+        },
+      };
+
+      subagentStopHandler(event);
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('does not warn when raw event has no last_assistant_message field (real minimal payload shape)', () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      vi.mocked(util.runGit).mockReturnValue({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      });
+
+      const event: HookEvent = {
+        eventName: 'subagent_stop',
+        toolName: undefined,
+        toolInput: {},
+        sessionId: 'test-session',
+        raw: {
+          cwd: '/tmp/repo',
+          transcript_path: '/tmp/transcript.jsonl',
+          hook_event_name: 'SubagentStop',
         },
       };
 
