@@ -236,7 +236,11 @@ export function buildExtractiveCompact(text: string, maxSentences?: number): str
 export function extractDocCompact(body: string, heading?: string): string {
   if (heading) {
     const lines = body.split('\n')
-    const compactIdx = lines.findIndex((line) => line.includes(heading))
+    // A plain `line.includes(heading)` matches ANY line containing the heading text as a substring, including ordinary prose that merely mentions it before the real heading appears. Require the line to actually be a markdown heading (`#`..`######` prefix) and only compare the heading text portion, so prose references can't be mistaken for the section boundary.
+    const compactIdx = lines.findIndex((line) => {
+      const m = /^#{1,6}\s+(.*)$/.exec(line.trim())
+      return m !== null && (m[1] ?? '').includes(heading)
+    })
     if (compactIdx === -1) return ''
     return lines.slice(compactIdx).join('\n')
   }
