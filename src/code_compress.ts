@@ -132,6 +132,9 @@ function skipBraceBody(lines: string[], start: number, initialDepth: number, isJ
   let bodyCount = 0
   let i = start
   let inBlockComment = false
+  // Carries "still inside an unclosed backtick template literal" state across lines, so real
+  // braces/comments inside a multi-line template literal's content are not scanned as code.
+  let inTemplateLiteral = false
   let prev = ''
   let prevWord = ''
   let word = ''
@@ -139,6 +142,24 @@ function skipBraceBody(lines: string[], start: number, initialDepth: number, isJ
   while (i < lines.length && depth > 0) {
     const line = lines[i]!
     let j = 0
+
+    if (inTemplateLiteral) {
+      let k = 0
+      let closed = false
+      while (k < line.length) {
+        if (line[k] === '\\') {
+          k += 2
+        } else if (line[k] === '`') {
+          k++
+          closed = true
+          break
+        } else {
+          k++
+        }
+      }
+      inTemplateLiteral = !closed
+      j = closed ? k : line.length
+    }
 
     while (j < line.length && depth > 0) {
       const ch = line[j]!
@@ -186,15 +207,20 @@ function skipBraceBody(lines: string[], start: number, initialDepth: number, isJ
       if (ch === '"' || ch === "'" || ch === '`') {
         const quote = ch
         j++
+        let closedQuote = false
         while (j < line.length) {
           if (line[j] === '\\') {
             j += 2
           } else if (line[j] === quote) {
             j++
+            closedQuote = true
             break
           } else {
             j++
           }
+        }
+        if (!closedQuote && quote === '`') {
+          inTemplateLiteral = true
         }
         prev = quote
         prevWord = ''
@@ -331,12 +357,17 @@ function compressBraceLang(source: string, fileExt: string): string {
 export function stripComments(code: string, language: string): string {
   const lines = code.split('\n')
   const isPython = ['py', 'ruby'].includes(language)
+  // Carries "still inside an unclosed backtick template literal" state across lines, so a
+  // multi-line JS/TS template literal's content (including a `//` sequence inside it) isn't
+  // mistaken for a real comment.
+  let inTemplateLiteral = false
 
   return lines
     .map((line) => {
-      let inString = false
-      let stringChar = ''
+      let inString = inTemplateLiteral
+      let stringChar = inTemplateLiteral ? '`' : ''
       let i = 0
+      inTemplateLiteral = false
 
       while (i < line.length) {
         const ch = line[i]!
@@ -367,6 +398,10 @@ export function stripComments(code: string, language: string): string {
         }
 
         i++
+      }
+
+      if (inString && stringChar === '`') {
+        inTemplateLiteral = true
       }
 
       return line

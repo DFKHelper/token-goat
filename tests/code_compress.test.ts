@@ -59,6 +59,28 @@ describe('code_compress', () => {
       expect(result).toContain('function add')
       expect(result).toContain('function mul')
     })
+
+    it('does not let a brace-like character inside a multi-line template literal end the body early', () => {
+      // The stray "}" on the middle line is inside an unclosed template literal opened on the
+      // line above it (closed by the backtick on the line below). A scanner that doesn't carry
+      // "inside a template literal" state across lines miscounts that "}" as a real scope
+      // close, cutting build()'s body short and losing 3 of its 4 real lines.
+      const code = [
+        'function build() {',
+        '  const url = `line one',
+        '  this has a } stray brace',
+        '  line three`',
+        '  return url;',
+        '}',
+        'function afterTemplate() {',
+        '  return 42;',
+        '}',
+      ].join('\n')
+      const result = compressToSkeleton(code, '.js')
+      expect(result).toBe(
+        ['function build() {', '// ... 4 lines', 'function afterTemplate() {', '// ... 1 lines'].join('\n'),
+      )
+    })
   })
 
   describe('stripComments', () => {
@@ -118,6 +140,12 @@ describe('code_compress', () => {
       const code = 'x = 1  # comment with ` backtick'
       const result = stripComments(code, 'py')
       expect(result).toBe('x = 1')
+    })
+
+    it('preserves content inside a multi-line JS template literal and only strips a genuine trailing comment', () => {
+      const code = 'const url = `http://example.com\n// not a comment\nmore text`  // this IS a comment'
+      const result = stripComments(code, 'js')
+      expect(result).toBe('const url = `http://example.com\n// not a comment\nmore text`')
     })
   })
 
