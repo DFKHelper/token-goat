@@ -72,6 +72,17 @@ describe('project', () => {
         expect(canonicalize('/mnt/c/foo/bar')).toBe('c:/foo/bar');
       });
 
+      it('uses path.win32.resolve, not the ambient path.resolve, when the mocked platform is win32 (fail-on-buggy: passes trivially on a real Windows host even without the fix, since the ambient resolve is win32-native there and the mock is redundant)', () => {
+        setPlatform('win32');
+        const win32Spy = vi.spyOn(path.win32, 'resolve');
+        try {
+          canonicalize('/mnt/c/foo/bar');
+          expect(win32Spy).toHaveBeenCalled();
+        } finally {
+          win32Spy.mockRestore();
+        }
+      });
+
       it('does not rewrite /mnt/c/... on real POSIX platforms (path.resolve() is POSIX resolve there and does not understand drive-letter syntax, so rewriting first would corrupt an otherwise-valid POSIX path)', () => {
         setPlatform('linux');
         const result = canonicalize('/mnt/c/foo/bar');
