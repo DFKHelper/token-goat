@@ -78,9 +78,13 @@ function subagentStopHandler(event: HookEvent): HookOutput {
       if (result.exitCode === 0) {
         const gitOutput = result.stdout.trim();
         if (!gitOutput) {
-          console.warn(
-            `subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`
-          );
+          const prompt = (event.raw['prompt'] as string) || '';
+          const hasActionVerbs = /\b(fix|implement|add|create|write|refactor|update|change|edit|modify|delete|remove|patch|resolve|replace|improve)\b/i.test(prompt);
+          if (hasActionVerbs) {
+            console.warn(
+              `subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`
+            );
+          }
         }
       }
 
@@ -96,3 +100,5 @@ function subagentStopHandler(event: HookEvent): HookOutput {
 registerHook('session_start', sessionStartHandler);
 registerHook('user_prompt_submit', userPromptSubmitHandler);
 registerHook('subagent_stop', subagentStopHandler);
+
+export { subagentStopHandler };
