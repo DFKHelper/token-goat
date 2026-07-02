@@ -6,6 +6,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
+import { stripBlockCommentSpan } from './common.js'
 
 export interface CsharpImport {
   readonly kind: string
@@ -78,11 +79,19 @@ export function extractCsharp(
   // discards the class context before its body is ever seen.
   let classBodyEntered = false
   let braceDepth = 0
+  let inComment = false
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? ''
-    const stripped = line.trim()
+    const rawLine = lines[i] ?? ''
     const lineNum = i + 1
+
+    // Strip /* */ block-comment spans (state carried across lines) so braces inside
+    // commented-out code are not counted toward braceDepth. A `/*` inside an open quote is
+    // not treated as a comment opener.
+    const { code: codeLine, inComment: nextInComment } = stripBlockCommentSpan(rawLine, inComment)
+    inComment = nextInComment
+    const line = codeLine.trimEnd()
+    const stripped = line.trim()
 
     if (!stripped || stripped.startsWith('//')) {
       braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
