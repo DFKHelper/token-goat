@@ -77,6 +77,14 @@ describe('todo command', () => {
     expect(r.stdout).not.toMatch(/:\d+\s+TODO/)
   })
 
+  it('does not misclassify a comment after a string ending in an escaped backslash as inside the string (fail-on-buggy: single-char lookbehind miscounts escaped-backslash-then-quote)', () => {
+    const src = path.join(tmpDir, 'escaped_backslash.ts')
+    fs.writeFileSync(src, 'const p = "path\\\\" // TODO: fix escaping\n', 'utf8')
+    const r = run(['todo', src])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/:\d+\s+TODO/)
+  })
+
   it('--kinds limits which markers are reported', () => {
     const src = path.join(tmpDir, 'kinds.ts')
     fs.writeFileSync(src, '// TODO: a\n// FIXME: b\n// HACK: c\n', 'utf8')
@@ -161,6 +169,25 @@ describe('trace command', () => {
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: unknown[] }> }
     expect(parsed.tracebacks[0]?.frames.length).toBe(1)
+  })
+
+  it('does not drop a second traceback whose frames run to EOF with no exception line (fail-on-buggy: trailing-frames flush is gated on the global blocks array, not scoped per block)', () => {
+    const multi = [
+      'Traceback (most recent call last):',
+      '  File "a.py", line 1, in fa',
+      '    x()',
+      'ValueError: first error',
+      'Traceback (most recent call last):',
+      '  File "b.py", line 2, in fb',
+      '    y()',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: multi, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string }>; exception: string }> }
+    expect(parsed.tracebacks.length).toBe(2)
+    expect(parsed.tracebacks[0]?.exception).toContain('ValueError')
+    expect(parsed.tracebacks[1]?.frames.length).toBe(1)
+    expect(parsed.tracebacks[1]?.frames[0]?.file).toBe('b.py')
   })
 })
 

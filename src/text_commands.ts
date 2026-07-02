@@ -40,11 +40,26 @@ interface TodoItem {
   text: string
 }
 
+// Counts quote chars in `text` that are NOT escaped, tracking a running per-char backslash-parity counter rather than a fixed-width regex lookbehind: `(?<!\\)"` only inspects the single char before each quote, so an escaped-backslash-then-quote sequence like `path\\"` (backslash pair, then a real closing quote) undercounts -- it sees the quote preceded by one backslash and treats it as escaped, even though the pair of backslashes means the quote is not actually escaped (even backslash count).
+function countUnescapedQuotes(text: string, quoteChar: string): number {
+  let count = 0
+  let backslashes = 0
+  for (const ch of text) {
+    if (ch === '\\') {
+      backslashes++
+      continue
+    }
+    if (ch === quoteChar && backslashes % 2 === 0) count++
+    backslashes = 0
+  }
+  return count
+}
+
 /** Returns true when markerIndex falls inside an opening string literal on the line. */
 function isInsideStringLiteral(line: string, markerIndex: number): boolean {
   const before = line.slice(0, markerIndex)
-  const dqCount = (before.match(/(?<!\\)"/g) ?? []).length
-  const sqCount = (before.match(/(?<!\\)'/g) ?? []).length
+  const dqCount = countUnescapedQuotes(before, '"')
+  const sqCount = countUnescapedQuotes(before, "'")
   return dqCount % 2 !== 0 || sqCount % 2 !== 0
 }
 
@@ -167,6 +182,7 @@ function parseTracebacks(text: string): TraceBlock[] {
     if (!/^Traceback \(most recent call last\):/.test(lines[i] ?? '')) { i++; continue }
     i++
     const frames: TraceFrame[] = []
+    let blockPushed = false
     while (i < lines.length) {
       const fl = lines[i] ?? ''
       const fm = /^\s{2}File "([^"]+)", line (\d+), in (\S+)/.exec(fl)
@@ -179,12 +195,15 @@ function parseTracebacks(text: string): TraceBlock[] {
       }
       if (!/^\s/.test(fl) && fl.trim() !== '') {
         blocks.push({ frames, exception: fl.trim() })
+        blockPushed = true
         i++
         break
       }
       i++
     }
-    if (frames.length > 0 && blocks.length === 0) {
+    // Scoped to THIS block, not the global blocks array: a later traceback whose frames run to
+    // EOF with no exception line must still be flushed even though an earlier block already pushed.
+    if (frames.length > 0 && !blockPushed) {
       blocks.push({ frames, exception: '' })
     }
   }
