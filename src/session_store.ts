@@ -26,7 +26,7 @@ import * as path from 'node:path'
 
 import { atomicWriteText } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { consumedPendingLargeFileHintKeys, exportSessionState, importSessionState, MAX_RANGES_PER_FILE, type FileEntry, type SerializedSession } from './session.js'
+import { consumedPendingLargeFileHintKeys, exportSessionState, importSessionState, MAX_RANGES_PER_FILE, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 const SAFE_RE = /[^a-zA-Z0-9_-]/g
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
@@ -214,14 +214,25 @@ function mergeLineRanges(disk: Array<[string, Array<[number, number]>]>, mem: Ar
 /** Merge pending large-file hints: union disk with mem, but drop any key this process
  * explicitly consumed (took an outcome for) even if a stale disk read still has it — the
  * other merged fields are monotonic sets where union is always correct, but this one is a
- * pending-to-consumed lifecycle where a deletion must actually stick. */
+ * pending-to-consumed lifecycle where a deletion must actually stick.
+ *
+ * The overlay only re-asserts keys this process actually acted on this run: brand-new keys
+ * it added, or keys whose value it changed. A key it merely carried unchanged from hydration
+ * (same key, same size as `pendingLargeFileHintsAtLoad`) is left alone and instead defers to
+ * whatever the freshest disk read says — otherwise a process that loaded a key but never
+ * touched it would resurrect that key on every save, even after a *different* concurrent
+ * process legitimately consumed and removed it from disk in the meantime. */
 function mergePendingLargeFileHints(
   disk: Array<[string, number]>,
   mem: Array<[string, number]>,
 ): Array<[string, number]> {
   const merged = new Map(disk)
   for (const key of consumedPendingLargeFileHintKeys()) merged.delete(key)
-  for (const [key, size] of mem) merged.set(key, size)
+  const atLoad = pendingLargeFileHintsAtLoad()
+  for (const [key, size] of mem) {
+    if (atLoad.get(key) === size) continue
+    merged.set(key, size)
+  }
   return Array.from(merged.entries())
 }
 

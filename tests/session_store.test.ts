@@ -163,6 +163,61 @@ describe('pendingLargeFileHints merge (consumed hints stay consumed)', () => {
   })
 })
 
+describe('pendingLargeFileHints merge does not resurrect an untouched carried key (#M22)', () => {
+  it('does not resurrect a key a process merely carried from load when a concurrent process legitimately consumed and removed it', () => {
+    const sid = 'sid-pending-3'
+
+    // Seed disk: an earlier process recorded and persisted a pending hint for /k.md.
+    importSessionState(empty())
+    recordLargeFileHintPending('/k.md', 555)
+    saveSessionState(sid)
+
+    // Process A: loads the disk snapshot (sees /k.md) but never touches it — it's just
+    // carried along in memory, unconsumed and unmodified.
+    importSessionState(empty())
+    loadSessionState(sid)
+    expect(exportSessionState().pendingLargeFileHints).toEqual([['/k.md', 555]])
+    const aSnapshot = exportSessionState()
+
+    // Process B: independently loads the same disk snapshot, legitimately consumes /k.md
+    // (resolves the hint), and saves — removing it from disk.
+    importSessionState(empty())
+    loadSessionState(sid)
+    expect(takePendingLargeFileHint('/k.md')).toBe(555)
+    saveSessionState(sid)
+    const afterB = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
+    expect(afterB.pendingLargeFileHints ?? []).toEqual([])
+
+    // Process A now saves its own (stale) view. Its own bookkeeping correctly shows it never
+    // consumed /k.md (it never touched it, so the key is not in its own "consumed since load"
+    // set) — a plain union-of-entries overlay would still resurrect it from A's stale
+    // in-memory copy. It must not: B already legitimately removed the key.
+    importSessionState(aSnapshot)
+    saveSessionState(sid)
+
+    const finalDisk = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
+    expect(finalDisk.pendingLargeFileHints ?? []).toEqual([])
+  })
+
+  it('still persists a genuinely new pending hint a process added after loading', () => {
+    const sid = 'sid-pending-4'
+    importSessionState(empty())
+    recordLargeFileHintPending('/existing.md', 10)
+    saveSessionState(sid)
+
+    importSessionState(empty())
+    loadSessionState(sid)
+    recordLargeFileHintPending('/new.md', 20)
+    saveSessionState(sid)
+
+    const disk = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
+    expect((disk.pendingLargeFileHints ?? []).slice().sort()).toEqual([
+      ['/existing.md', 10],
+      ['/new.md', 20],
+    ])
+  })
+})
+
 describe('sed line-range overlap persistence (#87)', () => {
   it('persists and restores per-file served line ranges', () => {
     importSessionState({
