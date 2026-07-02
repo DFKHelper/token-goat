@@ -74,18 +74,20 @@ export function renderTopSessionFilesFromDisk(topN: number = 5, overrideSessions
       try {
         const raw = fs.readFileSync(path.join(sessionsDir, name), 'utf-8')
         const data = JSON.parse(raw) as Record<string, unknown>
-        const counts = data['file_access_counts']
-        if (typeof counts !== 'object' || counts === null) continue
+        const filesList = data['files']
+        if (!Array.isArray(filesList)) continue
 
-        const ranked = Object.entries(counts as Record<string, number>)
-          .filter(([, v]) => v > 1)
-          .sort(([, a], [, b]) => b - a)
+        const ranked = (filesList as Array<Record<string, unknown>>)
+          .filter((f): f is Record<string, unknown> => typeof f === 'object' && f !== null)
+          .filter((f) => typeof f['readCount'] === 'number' && f['readCount'] > 1)
+          .map((f) => ({ path: String(f['path'] ?? ''), count: Number(f['readCount'] ?? 0) }))
+          .sort((a, b) => b.count - a.count)
           .slice(0, topN)
 
         if (ranked.length === 0) continue
 
         const lines = ['Top files this session:']
-        for (const [filePath, count] of ranked) {
+        for (const { path: filePath, count } of ranked) {
           const basename = path.basename(filePath)
           lines.push(`  ${count.toString().padStart(3)}x  ${basename}  (${filePath})`)
         }
