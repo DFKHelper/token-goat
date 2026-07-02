@@ -1,7 +1,20 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type * as NodeFs from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// vi.mock is hoisted — wrap renameSync (still delegating to the real implementation) so the
+// #M27 test below can observe the temp filename each write used without touching Node's
+// non-configurable fs module properties directly (vi.spyOn on a builtin fails at runtime).
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof NodeFs>();
+  return {
+    ...original,
+    renameSync: vi.fn((...args: Parameters<typeof original.renameSync>) => original.renameSync(...args)),
+  };
+});
+
 import {
   memoryPath,
   loadEntries,
@@ -238,6 +251,20 @@ describe('project_memory', () => {
       }
       const result = buildInjection('test');
       expect(result).toContain('omitted');
+    });
+  });
+
+  describe('save uses a unique temp filename per write (#M27)', () => {
+    it('does not reuse the same fixed temp filename across two saves to the same memory file', () => {
+      const renameMock = fs.renameSync as unknown as ReturnType<typeof vi.fn>;
+      renameMock.mockClear();
+      setEntry('proj-m27', 'k1', 'v1');
+      setEntry('proj-m27', 'k2', 'v2');
+      const renamedFrom = renameMock.mock.calls.map((args: unknown[]) => String(args[0]));
+      // The old hand-rolled implementation always wrote to the exact same fixed `${filePath}.tmp`
+      // name, so two concurrent writers to the same project's memory file could collide on it.
+      expect(renamedFrom).toHaveLength(2);
+      expect(renamedFrom[0]).not.toBe(renamedFrom[1]);
     });
   });
 });
