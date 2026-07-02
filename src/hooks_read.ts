@@ -47,8 +47,16 @@ function isTsConfigFile(basename: string): boolean {
   return /^tsconfig(\..+)?\.json$/i.test(lower) || lower === 'jsconfig.json'
 }
 
-/** Size at or above which a read is nudged toward a surgical command. */
-const LARGE_FILE_BYTES = 100 * 1024
+/**
+ * Size at or above which a read is nudged toward a surgical command.
+ *
+ * Shared with {@link FILE_TYPE_THRESHOLDS}.generic — both represent the same
+ * "large file" boundary and must stay numerically identical, or a file sized
+ * between the two literals gets a hard block from the universal file-type
+ * handler (checked further below) instead of the softer "large" context nudge
+ * this branch would otherwise give it.
+ */
+const LARGE_FILE_BYTES = FILE_TYPE_THRESHOLDS.generic
 
 /** Re-read deny threshold: files above this size that have already been read are denied rather than just hinted. */
 const REREAD_DENY_BYTES = 50 * 1024
@@ -545,8 +553,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
       )
     }
 
-    // Item 2: any .md/.mdx already read this session is denied on 2nd+ read regardless of size
-    if (/\.(md|mdx)$/i.test(basename)) {
+    // Item 2: any .md/.mdx/.markdown/.rst already read this session is denied on 2nd+ read regardless of size
+    if (/\.(md|mdx|markdown|rst)$/i.test(basename)) {
       return denyOutput(
         'Markdown file already read this session. Use `token-goat section "' + normalized + '::HeadingName"` to read one section.',
       )
@@ -578,19 +586,23 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const size = statSize(normalized)
   if (size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized)) {
     const kb = Math.round(size / 1024)
-    recordFileRead(normalized)
     const config = loadConfig()
-    if (config.hints.log_large_file_hint_outcomes) {
-      recordLargeFileHintPending(normalized, size)
-    }
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Consider token-goat skeleton or token-goat section.'
     recordStat('session_hint', size, Math.round(size / 4))
     if (size >= LARGE_FILE_DENY_BYTES) {
+      // The read is blocked outright, so it never actually happened — don't record it
+      // against re-read dedup. Otherwise a retry (this hook doesn't distinguish
+      // offset/limit params from a plain re-read) hits "already read this session"
+      // instead of this same actionable deny, leaving no way to follow its own advice.
       return denyOutput(
         normalized + ' is very large (' + kb + 'KB). ' + hint + ' Use Read with offset/limit to sample specific sections.',
       )
+    }
+    recordFileRead(normalized)
+    if (config.hints.log_large_file_hint_outcomes) {
+      recordLargeFileHintPending(normalized, size)
     }
     return contextOutput(
       'Note: ' + normalized + ' is large (' + kb + 'KB). ' +
@@ -615,7 +627,10 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
     const ftResult = dispatchFileTypeHandler(normalized, ftContent, fileStatSize)
     if (ftResult?.shouldBlock) {
-      recordFileRead(normalized)
+      // Blocked read never happened — don't count it against re-read dedup. These
+      // messages (large txt/log/csv/generic) tell the caller to retry with
+      // offset/limit; recording the read here would make that retry hit the
+      // "already read this session" deny instead, with no way to ever read the file.
       return denyOutput(ftResult.message)
     }
   }
@@ -659,7 +674,7 @@ export function postReadHandler(event: HookEvent): HookOutput {
   // Snapshot doc file content so the next re-read can inject a diff instead of the full file.
   const postBasename = path.basename(normalized)
   const diffSourcesEnabled = loadConfig().hints.serve_diff_on_reread
-  if (/\.(md|mdx|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized) || (diffSourcesEnabled && DIFFABLE_SOURCE_RE.test(postBasename))) {
+  if (/\.(md|mdx|markdown|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized) || (diffSourcesEnabled && DIFFABLE_SOURCE_RE.test(postBasename))) {
     try {
       const sz = statSize(normalized)
       if (sz !== null && sz <= 256 * 1024) {

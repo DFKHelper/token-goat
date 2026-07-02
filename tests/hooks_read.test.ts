@@ -8,8 +8,10 @@ import type { HookEvent } from '../src/hook_registry.js'
 import { preReadHandler, postReadHandler } from '../src/hooks_read.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileRead, wasFileReadThisSession } from '../src/session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionId } from '../src/session.js'
 import { storeCompact, setSkillOutputsDirForTesting, contentHash } from '../src/skill_cache.js'
+import { load as snapshotLoad } from '../src/snapshots.js'
+import { FILE_TYPE_THRESHOLDS } from '../src/hints/file_type_handler.js'
 
 const tmpFiles: string[] = []
 
@@ -119,6 +121,52 @@ describe('preReadHandler', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('is very large')
       expect(result.message).toContain('token-goat skeleton')
+    }
+  })
+
+  it('does not poison re-read dedup when a first read is denied for being too large (>500KB) — a retry sees the same deny, not "already read"', () => {
+    const p = makeTmpFile('x'.repeat(600 * 1024))
+    const first = preReadHandler(readEvent(p))
+    expect(first.hookType).toBe('deny')
+    expect(wasFileReadThisSession(normalizePath(p))).toBe(false)
+
+    const retry = preReadHandler(readEvent(p))
+    expect(retry.hookType).toBe('deny')
+    if (retry.hookType === 'deny') {
+      expect(retry.message).toContain('is very large')
+      expect(retry.message).not.toContain('already read this session')
+    }
+  })
+
+  it('does not poison re-read dedup when a large CSV read is denied by the universal file-type handler', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.csv`)
+    fs.writeFileSync(p, 'a,b\n' + 'x'.repeat(FILE_TYPE_THRESHOLDS.csv + 1000))
+    tmpFiles.push(p)
+
+    const first = preReadHandler(readEvent(p))
+    expect(first.hookType).toBe('deny')
+    expect(wasFileReadThisSession(normalizePath(p))).toBe(false)
+
+    const retry = preReadHandler(readEvent(p))
+    expect(retry.hookType).toBe('deny')
+    if (retry.hookType === 'deny') {
+      expect(retry.message).not.toContain('already read this session')
+    }
+  })
+
+  it('treats a 101KB unrecognized-extension file via the unified 100KB threshold (soft hint, not a hard block)', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.xyz`)
+    fs.writeFileSync(p, 'x'.repeat(FILE_TYPE_THRESHOLDS.generic + 1000))
+    tmpFiles.push(p)
+    const result = preReadHandler(readEvent(p))
+    // Above FILE_TYPE_THRESHOLDS.generic (100,000) and, with the thresholds unified,
+    // also above the large-file soft-hint boundary — so this should get the soft
+    // "is large" context nudge from the large-file branch (checked first), not the
+    // generic file-type handler's hard block that fired below the old, higher
+    // 102,400-byte LARGE_FILE_BYTES boundary.
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('is large')
     }
   })
 
@@ -587,6 +635,53 @@ Some content that makes the file large enough`
     if (result.hookType === 'deny') {
       expect(result.message).toContain('already read this session')
     }
+  })
+
+  it('denies 2nd read of a .markdown file (M16: re-read-denial regex previously only matched .md/.mdx)', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.markdown`)
+    fs.writeFileSync(p, '# Small\ncontent')
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('already read this session')
+    }
+  })
+
+  it('denies 2nd read of a .rst file with no snapshot (falls through to the markdown re-read denial)', () => {
+    const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.rst`)
+    fs.writeFileSync(p, 'Title\n=====\n\nSmall.\n')
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Markdown file already read this session')
+    }
+  })
+
+  it('postReadHandler stores a snapshot for .markdown files (m5: snapshot-storage regex previously excluded .markdown)', () => {
+    const content = '# Doc\n\nContent.\n'
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.markdown`,
+    )
+    fs.writeFileSync(p, content)
+    tmpFiles.push(p)
+
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content },
+    }
+    postReadHandler(postEvent)
+
+    const snap = snapshotLoad(getSessionId(), normalizePath(p))
+    expect(snap).not.toBeNull()
+    expect(snap?.toString('utf8')).toBe(content)
   })
 
   // Item 5: .improve-state-*.json re-read denial
