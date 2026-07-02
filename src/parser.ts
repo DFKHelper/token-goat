@@ -879,13 +879,39 @@ function extractJsonSymbols(content: string, filePath: string): SymbolEntry[] {
           let k = i + 1
           while (k < content.length && /\s/.test(content[k] ?? '')) k++
           if (content[k] === ':' && depthWhenStringOpened === 1) {
+            // lineEnd/body defaulted to the key's own line for every value kind. When the value is itself a string that contains an embedded literal newline, that undersells the span: scan forward past the colon and, if the value opens with a quote, walk to its matching closing quote (respecting escapes) to find the value's real end line, then widen body to cover every line in between. Non-string values (numbers, booleans, objects, arrays) keep the original single-line behavior.
+            let v = k + 1
+            while (v < content.length && /\s/.test(content[v] ?? '')) v++
+            let lineEnd = strStartLine
+            let body = (lines[strStartLine - 1] ?? '').trim()
+            if (content[v] === '"') {
+              let valueLine = line
+              let valueEscaping = false
+              for (let j = v + 1; j < content.length; j++) {
+                const vch = content[j]
+                if (vch === '\n') valueLine++
+                if (valueEscaping) {
+                  valueEscaping = false
+                  continue
+                }
+                if (vch === '\\') {
+                  valueEscaping = true
+                  continue
+                }
+                if (vch === '"') break
+              }
+              lineEnd = valueLine
+              if (lineEnd > strStartLine) {
+                body = lines.slice(strStartLine - 1, lineEnd).join('\n').trim()
+              }
+            }
             out.push({
               filePath,
               name: strChars.join(''),
               kind: 'property',
               lineStart: strStartLine,
-              lineEnd: strStartLine,
-              body: (lines[strStartLine - 1] ?? '').trim(),
+              lineEnd,
+              body,
               docstring: '',
             })
           }

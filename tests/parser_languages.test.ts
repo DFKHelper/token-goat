@@ -81,6 +81,36 @@ Some content here
 
       fs.rmSync(tmpDir, { recursive: true })
     })
+
+    it('computes lineEnd/body spanning the full value when a string value contains an embedded literal newline', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const jsonFile = path.join(tmpDir, 'multiline_value.json')
+
+      const content = [
+        '{',
+        '  "key1": "line one',
+        'line two",',
+        '  "key2": "value2"',
+        '}',
+        '',
+      ].join('\n')
+      fs.writeFileSync(jsonFile, content)
+      const result = await parseFile(jsonFile)
+
+      const key1 = result.symbols.find((s) => s.name === 'key1')
+      const key2 = result.symbols.find((s) => s.name === 'key2')
+
+      expect(key1).toBeDefined()
+      expect(key1?.lineStart).toBe(2)
+      expect(key1?.lineEnd).toBe(3)
+      expect(key1?.body).toContain('line two')
+
+      expect(key2).toBeDefined()
+      expect(key2?.lineStart).toBe(4)
+      expect(key2?.lineEnd).toBe(4)
+
+      fs.rmSync(tmpDir, { recursive: true })
+    })
   })
 
   describe('yaml symbols', () => {
