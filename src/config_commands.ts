@@ -17,7 +17,7 @@ import * as path from 'node:path'
 import { parse } from 'smol-toml'
 
 import { loadConfig, loadPersistedConfig, buildPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig } from './config.js'
-import { compactDoc } from './doc_compact.js'
+import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
 import { listBlobs } from './disk_cache.js'
@@ -365,18 +365,83 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
 
 // ── compact-doc ───────────────────────────────────────────────────────────────
 
-export function cmdCompactDoc(opts: { filePath: string; heading?: string; json?: boolean }): void {
+export function cmdCompactDoc(opts: {
+  filePath: string
+  heading?: string
+  json?: boolean
+  force?: boolean
+  sentences?: string
+  show?: boolean
+}): void {
   const resolved = path.resolve(opts.filePath)
-  const result = compactDoc(resolved, opts.heading)
-  if (result === null) {
-    emitErr(`compact-doc: could not read or compact '${resolved}'`)
-    throw new Error(`could not compact: ${resolved}`)
-  }
-  if (opts.json === true) {
-    emit(JSON.stringify({ path: resolved, compact: result }, null, 2))
+
+  // Legacy mode: extract a named section, or the content after a
+  // `<!-- COMPACT_END -->` marker, straight from the source file. This
+  // predates and is independent of the extractive-sidecar pipeline below —
+  // --force/--sentences/--show don't apply here.
+  if (opts.heading !== undefined) {
+    const result = compactDoc(resolved, opts.heading)
+    if (result === null) {
+      emitErr(`compact-doc: could not read or compact '${resolved}'`)
+      throw new Error(`could not compact: ${resolved}`)
+    }
+    if (opts.json === true) {
+      emit(JSON.stringify({ path: resolved, compact: result }, null, 2))
+      return
+    }
+    emit(result)
     return
   }
-  emit(result)
+
+  let sentences: number | undefined
+  if (opts.sentences !== undefined) {
+    const n = Number.parseInt(opts.sentences, 10)
+    if (!Number.isFinite(n) || n <= 0) {
+      emitErr(`compact-doc: --sentences must be a positive number, got: "${opts.sentences}"`)
+      throw new Error(`invalid --sentences: ${opts.sentences}`)
+    }
+    sentences = n
+  }
+
+  const compactPath = compactPathFor(resolved)
+  const fresh = isCompactFresh(compactPath, resolved)
+  let rebuilt = false
+  let body: string
+
+  if (opts.force === true || !fresh) {
+    let sourceText: string
+    try {
+      sourceText = fs.readFileSync(resolved, 'utf-8')
+    } catch {
+      emitErr(`compact-doc: could not read or compact '${resolved}'`)
+      throw new Error(`could not compact: ${resolved}`)
+    }
+    body = buildExtractiveCompact(sourceText, sentences)
+    writeCompact(compactPath, resolved, body)
+    rebuilt = true
+  } else {
+    const existing = readCompactBody(compactPath)
+    if (existing === null) {
+      emitErr(`compact-doc: could not read or compact '${resolved}'`)
+      throw new Error(`could not compact: ${resolved}`)
+    }
+    body = existing
+  }
+
+  if (opts.json === true) {
+    emit(JSON.stringify({ path: resolved, compactPath, rebuilt, compact: body }, null, 2))
+    return
+  }
+
+  if (opts.show === true) {
+    emit(body)
+    return
+  }
+
+  emit(
+    `Compact sidecar ${rebuilt ? 'built' : 'already fresh'} at ${compactPath} ` +
+      `(source: ${resolved}). Use --show to print it, --force to rebuild.`,
+  )
 }
 
 // ── fetch-image ───────────────────────────────────────────────────────────────

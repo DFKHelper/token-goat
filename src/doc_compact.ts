@@ -10,9 +10,12 @@ import * as fs from 'fs'
 import * as crypto from 'crypto'
 import * as path from 'path'
 
+import { dataDir } from './constants.js'
+
 const defaultSentencesPerSection = 2
 const headerPrefix = '<!-- token-goat doc-compact source-hash:'
 const headerRegex = /^<!-- token-goat doc-compact source-hash:(\S+) source:(.+?) -->$/
+const compactSubdir = 'doc_compacts'
 
 /**
  * Get the SHA-256 hash of a file's content.
@@ -41,6 +44,18 @@ function _compactSlug(absPathStr: string): string {
   const safeStem = stem.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 32)
 
   return `${h}_${safeStem}`
+}
+
+/**
+ * Resolve the sidecar path for a source document's extractive compact.
+ *
+ * Deterministic: the same source path always maps to the same sidecar file,
+ * under the token-goat data dir, keyed by a hash of the absolute source path
+ * so same-named docs in different projects never collide.
+ */
+export function compactPathFor(sourcePath: string): string {
+  const abs = path.resolve(sourcePath)
+  return path.join(dataDir(), compactSubdir, `${_compactSlug(abs)}.md`)
 }
 
 /**

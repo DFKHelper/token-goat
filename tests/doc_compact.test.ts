@@ -10,7 +10,9 @@ import {
   buildExtractiveCompact,
   extractDocCompact,
   compactDoc,
+  compactPathFor,
 } from '../src/doc_compact.js'
+import { dataDir } from '../src/constants.js'
 
 describe('doc_compact', () => {
   let tempDir: string
@@ -207,6 +209,50 @@ describe('doc_compact', () => {
 
       const result = compactDoc(docPath, 'API')
       expect(result).toContain('API docs')
+    })
+  })
+
+  describe('compactPathFor', () => {
+    it('is deterministic for the same source path', () => {
+      const docPath = path.join(tempDir, 'doc.md')
+      expect(compactPathFor(docPath)).toBe(compactPathFor(docPath))
+    })
+
+    it('differs for different source paths', () => {
+      const a = path.join(tempDir, 'a.md')
+      const b = path.join(tempDir, 'b.md')
+      expect(compactPathFor(a)).not.toBe(compactPathFor(b))
+    })
+
+    it('resolves relative paths to the same sidecar as their absolute form', () => {
+      const abs = path.join(tempDir, 'doc.md')
+      const cwdBefore = process.cwd()
+      try {
+        process.chdir(tempDir)
+        expect(compactPathFor('doc.md')).toBe(compactPathFor(abs))
+      } finally {
+        process.chdir(cwdBefore)
+      }
+    })
+
+    it('places the sidecar under the token-goat data dir', () => {
+      const docPath = path.join(tempDir, 'doc.md')
+      const compactPath = compactPathFor(docPath)
+      expect(compactPath.startsWith(dataDir())).toBe(true)
+      expect(compactPath.endsWith('.md')).toBe(true)
+    })
+
+    it('round-trips through writeCompact/isCompactFresh using its own resolved path', () => {
+      const docPath = path.join(tempDir, 'doc.md')
+      fs.writeFileSync(docPath, '# Title\nBody text here.\n')
+      const compactPath = compactPathFor(docPath)
+
+      expect(isCompactFresh(compactPath, docPath)).toBe(false)
+      writeCompact(compactPath, docPath, buildExtractiveCompact(fs.readFileSync(docPath, 'utf-8')))
+      expect(isCompactFresh(compactPath, docPath)).toBe(true)
+
+      fs.writeFileSync(docPath, '# Title\nChanged body.\n')
+      expect(isCompactFresh(compactPath, docPath)).toBe(false)
     })
   })
 })
