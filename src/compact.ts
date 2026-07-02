@@ -9,6 +9,8 @@ import * as path from 'node:path'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { atomicWriteText, normalizePathForwardSlash } from './util.js'
+import { readSessionStateFile } from './session_store.js'
+import type { FileEntry } from './session.js'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -92,8 +94,13 @@ export interface SessionCacheObject {
   pressureBaselineTokens?: number
   bashHistory?: Record<string, unknown>
   webHistory?: Record<string, unknown>
-  files?: Record<string, unknown>
-  editedFiles?: Record<string, unknown>
+  /**
+   * Matches the real on-disk shape session_store.ts::saveSessionState writes
+   * (`SerializedSession.files: FileEntry[]`) — a flat array, not a path-keyed
+   * dict. Each entry's `wasEdited` flag distinguishes edited from read-only
+   * files; there is no separate `editedFiles` collection on disk.
+   */
+  files?: FileEntry[]
   symbolAccessCounts?: Record<string, number>
   skillHistory?: Record<string, unknown>
 }
@@ -164,8 +171,8 @@ function pressureRawTotal(cache: SessionCacheObject): number {
   const bashCount = Object.keys(bashHistory).length
   const webHistory = cache.webHistory ?? {}
   const webCount = Object.keys(webHistory).length
-  const files = cache.files ?? {}
-  const readCount = Object.keys(files).length
+  const files = cache.files ?? []
+  const readCount = files.length
   return (
     skillTokens +
     CATALOG_TOKENS +
@@ -266,15 +273,15 @@ export function getAutoTriggerMultiplier(opts?: {
  */
 export function inferSessionGoal(cache: SessionCacheObject, maxTokens: number = 80): string {
   try {
-    const editedFilesRaw = cache.editedFiles ?? {}
+    const editedPaths = (cache.files ?? []).filter((f) => f.wasEdited).map((f) => f.path)
     const symbolAccessRaw = cache.symbolAccessCounts ?? {}
 
-    if (Object.keys(editedFilesRaw).length < 2 && Object.keys(symbolAccessRaw).length === 0) {
+    if (editedPaths.length < 2 && Object.keys(symbolAccessRaw).length === 0) {
       return ''
     }
 
     const dirCounts = new Counter<string>()
-    for (const fpath of Object.keys(editedFilesRaw)) {
+    for (const fpath of editedPaths) {
       try {
         let parent = path.dirname(fpath)
         if (parent === '.') {
@@ -412,15 +419,15 @@ export function findLatestSessionId(): string | null {
  * Count tracked events (reads + greps + edits + bash runs + web fetches) for a session.
  */
 export function eventCount(cache: SessionCacheObject): number {
-  const files = cache.files ?? {}
-  const editedFiles = cache.editedFiles ?? {}
+  const files = cache.files ?? []
+  const editedCount = files.filter((f) => f.wasEdited).length
   const bashHistory = cache.bashHistory ?? {}
   const webHistory = cache.webHistory ?? {}
   const skillHistory = cache.skillHistory ?? {}
 
   return (
-    Object.keys(files).length +
-    Object.keys(editedFiles).length +
+    files.length +
+    editedCount +
     Object.keys(bashHistory).length +
     Object.keys(webHistory).length +
     Object.keys(skillHistory).length
@@ -553,8 +560,7 @@ export function mergeSessionManifests(
 // ---------------------------------------------------------------------------
 
 function _editedFileCount(cache: SessionCacheObject): number {
-  const edited = cache.editedFiles ?? {}
-  return Object.keys(edited).length
+  return (cache.files ?? []).filter((f) => f.wasEdited).length
 }
 
 function _computeActivityMultiplier(ageSecs: number, editedCount: number): number {
@@ -594,17 +600,16 @@ function _computeActivityMultiplier(ageSecs: number, editedCount: number): numbe
 // ---------------------------------------------------------------------------
 
 function _loadSessionCache(sessionId: string): SessionCacheObject | null {
-  try {
-    const sessionsDir = path.join(tokenGoatHome(), 'sessions')
-    const cachePath = path.join(sessionsDir, `${sessionId}.json`)
-    if (!fs.existsSync(cachePath)) {
-      return null
-    }
-    const content = fs.readFileSync(cachePath, 'utf8')
-    return JSON.parse(content) as SessionCacheObject
-  } catch {
+  // Reuse session_store.ts's own read/coercion (readSessionStateFile) instead
+  // of re-parsing the JSON here: it already normalizes both the current
+  // FileEntry[] array format and the legacy Python path-keyed dict format,
+  // and reads from the same tokenGoatHome()-based path saveSessionState
+  // writes to.
+  const disk = readSessionStateFile(sessionId)
+  if (!disk) {
     return null
   }
+  return { files: disk.files }
 }
 
 // ---------------------------------------------------------------------------
@@ -616,9 +621,9 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
   lines.push('# token-goat session manifest')
   lines.push('')
 
-  const editedFiles = Object.keys(cache.editedFiles ?? {})
-  const files = cache.files ?? {}
-  const readPaths = Object.keys(files).filter((p) => !(cache.editedFiles ?? {})[p])
+  const files = cache.files ?? []
+  const editedFiles = files.filter((f) => f.wasEdited)
+  const readFiles = files.filter((f) => !f.wasEdited)
   const bashHistory = cache.bashHistory ?? {}
   const webHistory = cache.webHistory ?? {}
 
@@ -628,9 +633,9 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
   if (editedFiles.length > 0) {
     lines.push('## Edited files')
     let sectionTokens = estimateTokens('## Edited files\n')
-    for (const fpath of editedFiles) {
+    for (const entry of editedFiles) {
       if (sectionTokens > budgetRemaining * 0.4) break
-      const cleanPath = normalizePathForwardSlash(fpath)
+      const cleanPath = normalizePathForwardSlash(entry.path)
       if (!isNoisePath(cleanPath)) {
         lines.push(`- ${cleanPath}`)
         sectionTokens += estimateTokens(`- ${cleanPath}\n`)
@@ -639,21 +644,17 @@ function _buildManifestText(cache: SessionCacheObject, maxTokens: number): strin
     lines.push('')
   }
 
-  if (readPaths.length > 0) {
+  if (readFiles.length > 0) {
     lines.push('## Files read')
     let sectionTokens = estimateTokens('## Files read\n')
-    const sortedRead = readPaths.sort((a, b) => {
-      // FileEntry uses `readCount`, not `hit_count` (which is the cross-session manifest format field). Using the wrong key meant countA/B were always 0 and files were never prioritised by actual read frequency.
-      const countA = (files[a] as Record<string, number>)?.['readCount'] ?? 0
-      const countB = (files[b] as Record<string, number>)?.['readCount'] ?? 0
-      return countB - countA
-    })
-    for (const fpath of sortedRead.slice(0, 15)) {
+    const sortedRead = [...readFiles].sort((a, b) => b.readCount - a.readCount)
+    for (const entry of sortedRead.slice(0, 15)) {
       if (sectionTokens > budgetRemaining * 0.3) break
-      const cleanPath = normalizePathForwardSlash(fpath)
+      const cleanPath = normalizePathForwardSlash(entry.path)
       if (!isNoisePath(cleanPath)) {
-        lines.push(`- ${cleanPath}`)
-        sectionTokens += estimateTokens(`- ${cleanPath}\n`)
+        const truncatedTag = entry.wasTruncated ? ' (truncated)' : ''
+        lines.push(`- ${cleanPath}${truncatedTag}`)
+        sectionTokens += estimateTokens(`- ${cleanPath}${truncatedTag}\n`)
       }
     }
     lines.push('')
@@ -707,9 +708,9 @@ export function computeAdaptiveBudget(
   const editedCount = _editedFileCount(cache)
   const editedBonus = Math.min(200, editedCount * 50)
 
-  const files = cache.files ?? {}
-  const symbolFiles = Object.values(files).filter((f) => {
-    const entry = f as Record<string, unknown>
+  const files = cache.files ?? []
+  const symbolFiles = files.filter((f) => {
+    const entry = f as unknown as Record<string, unknown>
     return ((entry['symbols_read'] as unknown[]) ?? []).length > 0
   }).length
   const symbolsBonus = Math.min(150, symbolFiles * 30)
@@ -789,8 +790,9 @@ export function buildManifestWithCount(
     return ['', 0]
   }
 
-  const editedCount = Object.keys(cache.editedFiles ?? {}).length
-  const readCount = Object.keys(cache.files ?? {}).length
+  const files = cache.files ?? []
+  const editedCount = files.filter((f) => f.wasEdited).length
+  const readCount = files.length
   const bashCount = Object.keys(cache.bashHistory ?? {}).length
   const webCount = Object.keys(cache.webHistory ?? {}).length
   const skillCount = Object.keys(cache.skillHistory ?? {}).length

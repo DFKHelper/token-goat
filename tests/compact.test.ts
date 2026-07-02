@@ -26,9 +26,21 @@ import {
   mergeSessionManifests,
   normalizeForCache,
   tierForFraction,
+  type SessionCacheObject,
 } from '../src/compact.js'
 import { storeBlob } from '../src/disk_cache.js'
-import { SESSIONS_SUBDIR } from '../src/session_store.js'
+import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
+import { importSessionState, recordFileEdit, recordFileRead, type FileEntry } from '../src/session.js'
+
+/** Build a minimal {@link FileEntry} for SessionCacheObject.files fixtures. */
+function fileEntry(p: string, overrides: Partial<FileEntry> = {}): FileEntry {
+  return { path: p, readCount: 1, lastReadAt: 0, wasEdited: false, sizeBytes: 0, ...overrides }
+}
+
+/** Reset session.ts's in-memory singleton so tests don't bleed state into each other. */
+function resetSessionState(): void {
+  importSessionState({ files: [], hintsShown: [], webFetches: [], bashOutputs: [], curlDownloads: [] })
+}
 
 describe('compact', () => {
   describe('estimateTokens', () => {
@@ -100,13 +112,13 @@ describe('compact', () => {
     })
 
     it('falls back to legacy proxies when observed tokens is 0', () => {
-      const cache = {
+      const cache: SessionCacheObject = {
         loadedSkillTotalTokens: 0,
         observedToolTokens: 0,
         pressureBaselineTokens: 0,
         bashHistory: { cmd1: {}, cmd2: {} },
         webHistory: { url1: {} },
-        files: { 'a.ts': {}, 'b.ts': {}, 'c.ts': {} },
+        files: [fileEntry('a.ts'), fileEntry('b.ts'), fileEntry('c.ts')],
       }
       const pressure = getContextPressure(cache)
       const expected =
@@ -346,24 +358,24 @@ describe('compact', () => {
     })
 
     it('adds bonus for edited files', () => {
-      const cache = {
-        editedFiles: {
-          'a.ts': {},
-          'b.ts': {},
-          'c.ts': {},
-        },
+      const cache: SessionCacheObject = {
+        files: [
+          fileEntry('a.ts', { wasEdited: true }),
+          fileEntry('b.ts', { wasEdited: true }),
+          fileEntry('c.ts', { wasEdited: true }),
+        ],
       }
       const budget = computeAdaptiveBudget(cache)
       expect(budget).toBeGreaterThan(200)
     })
 
     it('caps budget based on context pressure', () => {
-      const cache = {
-        editedFiles: {
-          'a.ts': {},
-          'b.ts': {},
-          'c.ts': {},
-        },
+      const cache: SessionCacheObject = {
+        files: [
+          fileEntry('a.ts', { wasEdited: true }),
+          fileEntry('b.ts', { wasEdited: true }),
+          fileEntry('c.ts', { wasEdited: true }),
+        ],
       }
       const budgetCritical = computeAdaptiveBudget(cache, 0, {
         contextPressure: { fillFraction: 0.9, tier: 'critical' },
@@ -377,8 +389,8 @@ describe('compact', () => {
     })
 
     it('applies activity multiplier for mature sessions', () => {
-      const cache = {
-        editedFiles: { 'a.ts': {}, 'b.ts': {} },
+      const cache: SessionCacheObject = {
+        files: [fileEntry('a.ts', { wasEdited: true }), fileEntry('b.ts', { wasEdited: true })],
       }
       const budgetYoung = computeAdaptiveBudget(cache, 300)
       const budgetMature = computeAdaptiveBudget(cache, 4000)
@@ -416,14 +428,14 @@ describe('compact', () => {
 
   describe('eventCount', () => {
     it('includes webHistory in the total (fail-on-buggy: webHistory omitted from the sum, unlike buildManifestWithCount)', () => {
-      const cache = {
-        files: { 'a.ts': {} },
-        editedFiles: { 'b.ts': {} },
+      const cache: SessionCacheObject = {
+        files: [fileEntry('a.ts'), fileEntry('b.ts', { wasEdited: true })],
         bashHistory: { cmd1: {} },
         webHistory: { 'https://example.com': {}, 'https://example.org': {} },
         skillHistory: { skillA: {} },
       }
-      expect(eventCount(cache)).toBe(6)
+      // files.length(2: a.ts + b.ts) + editedCount(1: b.ts) + bash(1) + web(2) + skill(1) = 7
+      expect(eventCount(cache)).toBe(7)
     })
 
     it('returns 0 for an empty cache', () => {
@@ -453,9 +465,11 @@ describe('compact', () => {
       prevHome = process.env['TOKEN_GOAT_HOME']
       tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-compact-test-'))
       process.env['TOKEN_GOAT_HOME'] = tmpHome
+      resetSessionState()
     })
 
     afterEach(() => {
+      resetSessionState()
       if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
       else process.env['TOKEN_GOAT_HOME'] = prevHome
       try {
@@ -466,18 +480,60 @@ describe('compact', () => {
     })
 
     it('findLatestSessionId finds a session blob written under TOKEN_GOAT_HOME', () => {
-      storeBlob(SESSIONS_SUBDIR, 'real-session-id', { files: { 'a.ts': {} } })
+      storeBlob(SESSIONS_SUBDIR, 'real-session-id', { files: [] })
       expect(findLatestSessionId()).toBe('real-session-id')
     })
 
+    // Regression for the array-vs-dict shape mismatch: SessionCacheObject.files
+    // used to be typed as a path-keyed dict (`Record<string, unknown>`), the OLD
+    // Python-era on-disk format. The real writer, session_store.ts's
+    // saveSessionState (driven here through its actual public API — recordFileRead
+    // / recordFileEdit / saveSessionState — not a hand-built blob), persists
+    // `files` as a `FileEntry[]` array. Object.keys() on that array yields
+    // numeric indices ("0", "1") instead of real paths, so a manifest built from
+    // a real on-disk session used to render garbage instead of the actual
+    // read/edited files. These tests drive the real save -> load -> manifest
+    // pipeline end to end so they fail on the buggy dict-shaped reader and pass
+    // once compact.ts reads the real FileEntry[] shape.
     it('buildManifestWithCount reads real session data written under TOKEN_GOAT_HOME', () => {
-      storeBlob(SESSIONS_SUBDIR, 'real-session-id', {
-        files: { 'a.ts': {}, 'b.ts': {} },
-        bashHistory: { cmd1: {} },
-      })
+      recordFileRead('C:/proj/src/gamma.ts')
+      recordFileRead('C:/proj/src/gamma.ts')
+      recordFileEdit('C:/proj/src/delta.ts')
+      saveSessionState('real-session-id')
+
       const [manifest, count] = buildManifestWithCount('real-session-id')
+      // files.length(2: gamma.ts + delta.ts) + editedCount(1: delta.ts) = 3
       expect(count).toBe(3)
-      expect(manifest.length).toBeGreaterThan(0)
+      expect(manifest).toContain('gamma.ts')
+      expect(manifest).toContain('delta.ts')
+    })
+
+    it('buildManifest renders real file paths, not numeric array indices, from a session written by the real saveSessionState writer', () => {
+      recordFileRead('C:/proj/src/alpha.ts')
+      recordFileEdit('C:/proj/src/beta.ts')
+      saveSessionState('real-shape-session')
+
+      const manifest = buildManifest('real-shape-session')
+      expect(manifest).toContain('alpha.ts')
+      expect(manifest).toContain('beta.ts')
+      // Against the dict-shaped reader, Object.keys() on the real FileEntry[]
+      // array would render "- 0" / "- 1" instead of the actual paths.
+      expect(manifest).not.toMatch(/^- 0(\s|$)/m)
+      expect(manifest).not.toMatch(/^- 1(\s|$)/m)
+    })
+
+    it('buildManifest classifies edited vs read files correctly from a real session', () => {
+      recordFileRead('C:/proj/src/readonly.ts')
+      recordFileEdit('C:/proj/src/edited.ts')
+      saveSessionState('real-classification-session')
+
+      const manifest = buildManifest('real-classification-session')
+      const editedSection = manifest.split('## Edited files')[1]?.split('##')[0] ?? ''
+      const readSection = manifest.split('## Files read')[1]?.split('##')[0] ?? ''
+      expect(editedSection).toContain('edited.ts')
+      expect(editedSection).not.toContain('readonly.ts')
+      expect(readSection).toContain('readonly.ts')
+      expect(readSection).not.toContain('edited.ts')
     })
   })
 })
