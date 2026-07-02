@@ -22,6 +22,10 @@ import {
   extractSourceShaFromCompact,
   isCompactStale,
   formatAge,
+  hasSessionOutput,
+  getCompactAnySession,
+  getCompactAnySessionSync,
+  pruneSkillOutputs,
 } from '../src/skill_cache.js'
 import * as fs from 'fs/promises'
 import * as path from 'path'
@@ -75,19 +79,20 @@ describe('outputIdFor', () => {
     expect(id.split('-')[0]).toHaveLength(16)
   })
 
-  it('replaces colons in skill names with underscores', () => {
+  it('replaces colons in skill names with tildes', () => {
     const id = outputIdFor('session123456789', 'plugin:improve', 'sha')
-    expect(id).toContain('plugin_improve')
+    expect(id).toContain('plugin~improve')
   })
 
-  it('appends n suffix for namespaced skills', () => {
+  it('does not need a discriminator suffix for namespaced skills (tilde substitution is already injective)', () => {
     const id = outputIdFor('session123456789', 'plugin:improve', 'sha')
-    expect(id).toMatch(/plugin_improven-sha$/)
+    expect(id).toMatch(/plugin~improve-sha$/)
   })
 
-  it('does not append n for non-namespaced skills', () => {
+  it('leaves a skill name with no colon unaffected', () => {
     const id = outputIdFor('session123456789', 'improve', 'sha')
     expect(id).not.toMatch(/improven/)
+    expect(id).toContain('improve-sha')
   })
 })
 
@@ -460,6 +465,18 @@ describe('sanitizeSkillId collision regression', () => {
     expect(compactUnderscore).toContain('Content for foo_bar')
   })
 
+  it('does not let "test:a" and "test_an" collide (fail-on-buggy: the prior colon-to-underscore-plus-discriminator scheme mapped both to "test_an")', async () => {
+    const sessionId = 'session123456789'
+    await storeCompact(sessionId, 'test:a', 'Content for test:a')
+    await storeCompact(sessionId, 'test_an', 'Content for test_an')
+
+    const compactColon = await getCompact(sessionId, 'test:a')
+    const compactLiteral = await getCompact(sessionId, 'test_an')
+
+    expect(compactColon).toContain('Content for test:a')
+    expect(compactLiteral).toContain('Content for test_an')
+  })
+
   it('storing in the opposite order still keeps both skills distinct', async () => {
     const sessionId = 'session987654321'
     await storeCompact(sessionId, 'foo_bar', 'Content for foo_bar')
@@ -473,23 +490,145 @@ describe('sanitizeSkillId collision regression', () => {
   })
 })
 
+describe('listSkills regression - hyphenated session id', () => {
+  it('resolves compactLen correctly when the session id contains embedded hyphens (fail-on-buggy: splitting the outputId on the first hyphen truncated a UUID-shaped session fragment)', async () => {
+    // A realistic UUID session id: safeSessionFragment keeps all 16 leading chars,
+    // several of which are hyphens, since UUIDs are alphanumeric-and-hyphen throughout.
+    const sessionId = '550e8400-e29b-41d4-a716-446655440000'
+    const skillName = 'myskill'
+    await storeOutput(sessionId, skillName, 'Body content')
+    await storeCompact(sessionId, skillName, 'Compact content')
+
+    const skills = await listSkills(sessionId)
+    const skill = skills.find((s) => s.name === skillName)
+    expect(skill).toBeDefined()
+    expect(skill!.compactLen).toBeGreaterThan(0)
+  })
+})
+
+describe('hasSessionOutput', () => {
+  it('returns true for a skill actually cached in this session', async () => {
+    const sessionId = 'session123456789'
+    await storeOutput(sessionId, 'myskill', 'Body content')
+    expect(await hasSessionOutput(sessionId, 'myskill')).toBe(true)
+  })
+
+  it('returns false for a skill never cached in this session', async () => {
+    const sessionId = 'session123456789'
+    expect(await hasSessionOutput(sessionId, 'nonexistent')).toBe(false)
+  })
+
+  it('does not false-positive on a differently-named skill sharing a hyphen-delimited prefix (fail-on-buggy: raw outputId.startsWith(prefix) let "ralph-loop" match a stored "ralph-loop-extended" entry)', async () => {
+    const sessionId = 'session123456789'
+    await storeOutput(sessionId, 'ralph-loop-extended', 'Body for the extended skill')
+
+    expect(await hasSessionOutput(sessionId, 'ralph-loop')).toBe(false)
+    expect(await hasSessionOutput(sessionId, 'ralph-loop-extended')).toBe(true)
+  })
+})
+
+describe('getCompactAnySession / getCompactAnySessionSync', () => {
+  it('finds a compact stored by a different session', async () => {
+    await storeCompact('otherSession1234', 'myskill', 'Cross-session compact')
+    expect(await getCompactAnySession('myskill')).toContain('Cross-session compact')
+    expect(getCompactAnySessionSync('myskill')).toContain('Cross-session compact')
+  })
+
+  it('does not substring-match a differently-named skill whose sanitized name is a hyphen-bounded suffix of this one (fail-on-buggy: filename.includes(name) let "loop" match a stored "ralph-loop" compact)', async () => {
+    await storeCompact('sessionABC12345', 'ralph-loop', 'Compact for ralph-loop')
+
+    expect(await getCompactAnySession('loop')).toBeNull()
+    expect(getCompactAnySessionSync('loop')).toBeNull()
+    // sanity: the actual name still resolves
+    expect(await getCompactAnySession('ralph-loop')).toContain('Compact for ralph-loop')
+  })
+})
+
+describe('incrementSkillHit / readSkillHits - safeSkillName routing', () => {
+  it('rejects a skill name that safeSkillName would reject, consistent with every other cache-writing path (fail-on-buggy: bypassing safeSkillName let an invalid name write its own hits file anyway)', async () => {
+    const skillName = 'my skill' // a space is outside safeSkillName's allowed charset
+    await incrementSkillHit(skillName)
+    const hits = await readSkillHits(skillName)
+    expect(hits.count).toBe(0)
+
+    const files = await fs.readdir(tempDir)
+    expect(files.some((f) => f.includes('my skill'))).toBe(false)
+  })
+
+  it('still tracks hits normally for a plain skill name', async () => {
+    await incrementSkillHit('plainskill')
+    const hits = await readSkillHits('plainskill')
+    expect(hits.count).toBe(1)
+  })
+})
+
+describe('pruneSkillOutputs', () => {
+  async function setMetaTs(outputId: string, ts: number): Promise<void> {
+    const metaPath = path.join(tempDir, `${outputId}.meta`)
+    const raw = await fs.readFile(metaPath, 'utf-8')
+    const parsed = JSON.parse(raw) as { ts: number }
+    parsed.ts = ts
+    await fs.writeFile(metaPath, JSON.stringify(parsed, null, 2))
+  }
+
+  it('evicts entries beyond maxCount, keeping the newest', async () => {
+    const now = Date.now()
+    const metaA = await storeOutput('sess1', 'skillA', 'Body A')
+    const metaB = await storeOutput('sess1', 'skillB', 'Body B')
+    const metaC = await storeOutput('sess1', 'skillC', 'Body C')
+    await setMetaTs(metaA!.outputId, now - 3000)
+    await setMetaTs(metaB!.outputId, now - 2000)
+    await setMetaTs(metaC!.outputId, now - 1000)
+
+    const removed = pruneSkillOutputs(2, 365 * 24 * 3600 * 1000)
+    expect(removed).toBe(1)
+
+    const remaining = await getAllCachedSkills()
+    const names = remaining.map((s) => s.name).sort()
+    expect(names).toEqual(['skillB', 'skillC'])
+  })
+
+  it('evicts entries older than maxAgeMs', async () => {
+    const meta = await storeOutput('sess1', 'oldskill', 'Old body')
+    await setMetaTs(meta!.outputId, Date.now() - 48 * 3600 * 1000)
+
+    const removed = pruneSkillOutputs(200, 24 * 3600 * 1000)
+    expect(removed).toBe(1)
+
+    const remaining = await getAllCachedSkills()
+    expect(remaining.find((s) => s.name === 'oldskill')).toBeUndefined()
+  })
+
+  it('removes the paired .txt body along with .meta', async () => {
+    const meta = await storeOutput('sess1', 'skill', 'Body content')
+
+    pruneSkillOutputs(0, 365 * 24 * 3600 * 1000)
+
+    const files = await fs.readdir(tempDir)
+    expect(files.some((f) => f.startsWith(meta!.outputId))).toBe(false)
+  })
+
+  it('returns 0 when the skills dir does not exist', () => {
+    setSkillOutputsDirForTesting(path.resolve(__dirname, '.temp-skill-cache-test-missing'))
+    expect(pruneSkillOutputs()).toBe(0)
+  })
+})
+
 describe('outputIdFor regression - colon handling', () => {
-  it('correctly detects character replacement and appends suffix only when replaced', () => {
+  it('substitutes colons with tildes, with no discriminator suffix needed', () => {
     const id1 = outputIdFor('session123456789', 'plugin:improve', 'sha')
     const id2 = outputIdFor('session123456789', 'improve', 'sha')
-    expect(id1).toContain('plugin_improven-sha')
-    expect(id2).not.toContain('improven')
+    expect(id1).toContain('plugin~improve-sha')
     expect(id2).toContain('improve-sha')
   })
 
   it('handles multiple colons correctly', () => {
     const id = outputIdFor('session123456789', 'org:plugin:skill', 'sha')
-    expect(id).toContain('org_plugin_skilln')
+    expect(id).toContain('org~plugin~skill')
   })
 
-  it('does not append suffix when no colon exists', () => {
+  it('leaves a skill name with no colon unchanged', () => {
     const id = outputIdFor('session123456789', 'myskill', 'sha')
-    expect(id).not.toMatch(/mykilln/)
     expect(id).toContain('myskill-sha')
   })
 })

@@ -19,9 +19,16 @@ import { homedir } from 'os'
 import { dataDir } from './constants.js'
 import { atomicWriteText, isCodeFenceDelimiter } from './util.js'
 import { registerReset } from './reset.js'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, existsSync, statSync, unlinkSync } from 'node:fs'
+import { DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 
 const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
+
+// The 'skills' subdir name, exported so prune-cache/clean-cache (cache_session_commands.ts)
+// can include it in their managed-subdirs list. Unlike the other cache subdirs, entries here
+// are plain .txt/.meta/.hits/@compact files rather than disk_cache.ts's JSON blob envelope, so
+// eviction is handled by this module's own pruneSkillOutputs rather than the generic pruneBlobs.
+export const SKILLS_OUTPUT_SUBDIR = 'skills'
 
 let _skillOutputsDirOverride: string | null = null
 let _skillsSourceDirOverride: string | null = null
@@ -61,7 +68,7 @@ export interface CachedSkillInfo {
 
 export function skillOutputsDir(): string {
   if (_skillOutputsDirOverride) return _skillOutputsDirOverride
-  return resolve(dataDir(), 'skills')
+  return resolve(dataDir(), SKILLS_OUTPUT_SUBDIR)
 }
 
 // The on-disk source directory where Claude Code installs skills, one dir per skill containing a SKILL.md. Lazy homedir() so a test override (or spy) takes effect per call. This is the install location, distinct from skillOutputsDir() which is token-goat's body cache.
@@ -102,20 +109,14 @@ function safeSkillName(skillName: string): string | null {
   return skillName.replace(/[^a-zA-Z0-9_:-]/g, '_')
 }
 
-/** Return a filename-safe version of a skill name: colons are invalid on Windows and must be replaced. Used for all on-disk compact file paths so store/get/list always agree. */
+/** Return a filename-safe version of a skill name: colons are invalid on Windows and must be replaced. Used for all on-disk compact file paths so store/get/list always agree. Substitutes ':' for '~' rather than '_': '~' falls outside safeSkillName's allowed charset (A-Za-z0-9_:-), so it can never occur in a name that reaches this function, making the substitution truly injective — a literal '_' is left untouched and can never collide with a colon-derived '~'. (A prior '_' + discriminator-suffix scheme was not injective: 'test:a' and 'test_an' both produced 'test_an'.) */
 function sanitizeSkillId(name: string): string {
-  // A blind colon->underscore substitution collides two distinct skill ids ('foo:bar' and 'foo_bar' both sanitize to 'foo_bar'), silently overwriting whichever compact-cache entry was stored first. Mirror sessionSkillPrefix's convention: append a discriminator suffix whenever a colon was actually replaced, so the substituted form never matches an input that had no colon to begin with.
-  const safe = name.replace(/:/g, '_')
-  return safe === name ? safe : `${safe}n`
+  return name.replace(/:/g, '~')
 }
 
 function sessionSkillPrefix(sessionId: string, skillName: string): string {
   const safeSession = safeSessionFragment(sessionId)
-  let safeName = skillName.replace(/:/g, '_')
-  if (safeName !== skillName) {
-    safeName += 'n'
-  }
-  return `${safeSession}-${safeName}-`
+  return `${safeSession}-${sanitizeSkillId(skillName)}-`
 }
 
 export function outputIdFor(sessionId: string, skillName: string, contentSha: string): string {
@@ -363,10 +364,16 @@ export async function listOutputs(): Promise<SkillMeta[]> {
 export async function hasSessionOutput(sessionId: string, skillName: string): Promise<boolean> {
   try {
     if (!sessionId) return false
-    if (!safeSkillName(skillName)) return false
-    const prefix = sessionSkillPrefix(sessionId, skillName)
+    const name = safeSkillName(skillName)
+    if (!name) return false
+    // Exact match on the stored skillName field (not a filename-derived prefix): a raw
+    // outputId.startsWith(prefix) check let a shorter name (e.g. 'ralph-loop') falsely
+    // match a differently-named skill whose outputId happens to start with the same
+    // literal text (e.g. 'ralph-loop-extended'). Comparing the structured field instead
+    // of the flattened filename eliminates that class of collision entirely.
+    const safeSession = safeSessionFragment(sessionId)
     const metas = await listOutputs()
-    return metas.some(m => m.outputId.startsWith(prefix))
+    return metas.some(m => m.skillName === name && m.outputId.startsWith(`${safeSession}-`))
   } catch {
     return false
   }
@@ -474,7 +481,7 @@ export async function storeCompact(
     if (!name) return
 
     const safeSession = safeSessionFragment(sessionId)
-    const fileId = `${safeSession}-${sanitizeSkillId(name)}-compact`
+    const fileId = `${safeSession}@${sanitizeSkillId(name)}@compact`
     const dir = skillOutputsDir()
 
     let text = compactText
@@ -494,7 +501,7 @@ export async function getCompact(sessionId: string, skillName: string): Promise<
     if (!name) return null
 
     const safeSession = safeSessionFragment(sessionId)
-    const fileId = `${safeSession}-${sanitizeSkillId(name)}-compact`
+    const fileId = `${safeSession}@${sanitizeSkillId(name)}@compact`
     const dir = skillOutputsDir()
     const path = resolve(dir, fileId)
 
@@ -516,10 +523,15 @@ export async function getCompactAnySession(skillName: string): Promise<string | 
 
     const dir = skillOutputsDir()
     const entries = await fs.readdir(dir, { withFileTypes: true })
+    // Match the exact '@'-delimited suffix, not a raw substring: '@' cannot occur in a
+    // sanitized name (outside safeSkillName's charset), so this can never match a
+    // differently-named skill whose sanitized name merely ends with this one's text
+    // (e.g. name 'loop' must not match a stored file for 'ralph-loop').
+    const suffix = `@${sanitizeSkillId(name)}@compact`
 
     for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('-compact')) continue
-      if (!entry.name.includes(`${sanitizeSkillId(name)}-compact`)) continue
+      if (!entry.isFile() || !entry.name.endsWith('@compact')) continue
+      if (!entry.name.endsWith(suffix)) continue
 
       try {
         const text = await fs.readFile(resolve(dir, entry.name), 'utf-8')
@@ -542,9 +554,10 @@ export function getCompactAnySessionSync(skillName: string): string | null {
     if (!name) return null
     const dir = skillOutputsDir()
     const entries = readdirSync(dir, { withFileTypes: true })
+    const suffix = `@${sanitizeSkillId(name)}@compact`
     for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('-compact')) continue
-      if (!entry.name.includes(`${sanitizeSkillId(name)}-compact`)) continue
+      if (!entry.isFile() || !entry.name.endsWith('@compact')) continue
+      if (!entry.name.endsWith(suffix)) continue
       try {
         const text = readFileSync(resolve(dir, entry.name), 'utf-8')
         if (text.trim()) return text
@@ -574,11 +587,13 @@ export function isCompactStale(compactText: string | null, skillName: string, cu
   return embeddedSha !== currentSha
 }
 
-// Read or create hit count sidecar for a skill (<skillOutputsDir>/<sanitizeSkillId(name)>.hits), returning {count, lastTs}.
+// Read or create hit count sidecar for a skill (<skillOutputsDir>/<sanitizeSkillId(name)>.hits), returning {count, lastTs}. Routes skillName through safeSkillName like every other cache-writing path in this file, so a name with characters unsafe for a filename (or a scoped name like 'apps/web:deploy') can't bypass validation and produce a cache key inconsistent with storeOutput/storeCompact.
 export async function readSkillHits(skillName: string): Promise<{ count: number; lastTs: number }> {
   try {
+    const name = safeSkillName(skillName)
+    if (!name) return { count: 0, lastTs: 0 }
     const dir = skillOutputsDir()
-    const hitsFile = resolve(dir, `${sanitizeSkillId(skillName)}.hits`)
+    const hitsFile = resolve(dir, `${sanitizeSkillId(name)}.hits`)
     const content = await fs.readFile(hitsFile, 'utf-8').catch(() => null)
     if (content) {
       const parsed = JSON.parse(content) as { count: number; lastTs: number }
@@ -590,15 +605,17 @@ export async function readSkillHits(skillName: string): Promise<{ count: number;
   return { count: 0, lastTs: 0 }
 }
 
-// Increment hit count sidecar for a skill.
+// Increment hit count sidecar for a skill. Same safeSkillName routing as readSkillHits.
 export async function incrementSkillHit(skillName: string): Promise<void> {
   try {
+    const name = safeSkillName(skillName)
+    if (!name) return
     await ensureSkillsDir()
-    const hits = await readSkillHits(skillName)
+    const hits = await readSkillHits(name)
     hits.count++
     hits.lastTs = Date.now()
     const dir = skillOutputsDir()
-    const hitsFile = resolve(dir, `${sanitizeSkillId(skillName)}.hits`)
+    const hitsFile = resolve(dir, `${sanitizeSkillId(name)}.hits`)
     await atomicWriteText(hitsFile, JSON.stringify(hits, null, 2))
   } catch {
     // fail-soft
@@ -632,8 +649,17 @@ export async function listSkills(sessionId?: string): Promise<CachedSkillInfo[]>
       seen.add(meta.skillName)
 
       const dir = skillOutputsDir()
-      const safeSession = safeSessionFragment(meta.outputId.split('-')[0]!)
-      const compactFileId = `${safeSession}-${sanitizeSkillId(meta.skillName)}-compact`
+      // Recover the session fragment by stripping the known '-<name>-<sha>' suffix from
+      // the tail of outputId, rather than splitting on the first hyphen: a session id's
+      // safe fragment (up to 16 chars of [a-zA-Z0-9_-]) commonly contains its own hyphens
+      // (e.g. a UUID), so splitting on the first '-' truncated the fragment early and
+      // desynced compactFileId from the path storeCompact actually wrote.
+      const sanitizedName = sanitizeSkillId(meta.skillName)
+      const outputSuffix = `-${sanitizedName}-${meta.contentSha}`
+      const safeSession = meta.outputId.endsWith(outputSuffix)
+        ? meta.outputId.slice(0, meta.outputId.length - outputSuffix.length)
+        : safeSessionFragment(meta.outputId.split('-')[0]!)
+      const compactFileId = `${safeSession}@${sanitizedName}@compact`
 
       let compactLen = 0
       let compactText = ''
@@ -704,4 +730,79 @@ export async function installedSkillPath(skillName: string): Promise<string | nu
   } catch {
     return null
   }
+}
+
+/**
+ * Evict skill-output entries (paired .meta/.txt/.gz files, keyed by each entry's
+ * stored `ts`) beyond maxCount or older than maxAgeMs. Sync, matching prune-cache /
+ * clean-cache's synchronous CLI path (mirrors getCompactAnySessionSync's sync sibling
+ * pattern for the same reason).
+ *
+ * This directory doesn't use disk_cache.ts's generic pruneBlobs: that helper only
+ * recognizes single self-contained '<id>.json' blobs, but a skill output is a group
+ * of related files (.meta metadata + .txt body, occasionally .gz) that must be
+ * evicted together, so it needs its own eviction pass. Sidecar .hits/@compact files
+ * are left in place — they're small and self-heal via storeCompact/incrementSkillHit's
+ * own atomic writes on next access.
+ *
+ * Returns the number of evicted entries (not the number of files removed).
+ */
+export function pruneSkillOutputs(
+  maxCount: number = DEFAULT_MAX_COUNT,
+  maxAgeMs: number = DEFAULT_MAX_AGE_MS,
+): number {
+  const dir = skillOutputsDir()
+  let removed = 0
+  try {
+    if (!existsSync(dir)) return 0
+    const cutoff = Date.now() - maxAgeMs
+    const entries: Array<{ outputId: string; ts: number }> = []
+
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith('.meta')) continue
+      const outputId = file.slice(0, -'.meta'.length)
+      let ts: number
+      try {
+        const parsed = JSON.parse(readFileSync(resolve(dir, file), 'utf-8')) as SkillMeta
+        ts = parsed.ts
+      } catch {
+        try {
+          ts = statSync(resolve(dir, file)).mtimeMs
+        } catch {
+          continue
+        }
+      }
+      entries.push({ outputId, ts })
+    }
+
+    const removeEntry = (outputId: string): void => {
+      for (const ext of ['.meta', '.txt', '.gz']) {
+        try {
+          unlinkSync(resolve(dir, `${outputId}${ext}`))
+        } catch {
+          // already gone or never existed
+        }
+      }
+      removed++
+    }
+
+    const kept: Array<{ outputId: string; ts: number }> = []
+    for (const entry of entries) {
+      if (entry.ts < cutoff) {
+        removeEntry(entry.outputId)
+      } else {
+        kept.push(entry)
+      }
+    }
+
+    if (kept.length > maxCount) {
+      kept.sort((a, b) => a.ts - b.ts)
+      for (const entry of kept.slice(0, kept.length - maxCount)) {
+        removeEntry(entry.outputId)
+      }
+    }
+  } catch {
+    return removed
+  }
+  return removed
 }

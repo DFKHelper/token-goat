@@ -680,9 +680,9 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
       expect(second.status).toBe(0)
 
       const fileNames = findFileNamesRecursive(dataDir)
-      expect(fileNames).toContain('sess-alpha-myskill-compact')
-      expect(fileNames).toContain('sess-beta-myskill-compact')
-      expect(fileNames).not.toContain('default-myskill-compact')
+      expect(fileNames).toContain('sess-alpha@myskill@compact')
+      expect(fileNames).toContain('sess-beta@myskill@compact')
+      expect(fileNames).not.toContain('default@myskill@compact')
     } finally {
       cleanup()
     }
