@@ -7,7 +7,7 @@ import {
   type HookEvent,
 } from '../src/hook_registry.js'
 import { clearModuleCaches } from '../src/reset.js'
-import type { HookOutput } from '../src/types.js'
+import { HOOK_EVENTS, type HookOutput } from '../src/types.js'
 
 function makeEvent(overrides: Partial<HookEvent> = {}): HookEvent {
   return {
@@ -146,6 +146,24 @@ describe('hook registry', () => {
       expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'pre_compact')).toBe(
         JSON.stringify({ systemMessage: 'hint' }),
       )
+    })
+
+    // Full matrix over every HookEventName, cross-checked against
+    // https://code.claude.com/docs/en/hooks (verified 2026-07-02): PreCompact and
+    // Notification do not accept `additionalContext` inside `hookSpecificOutput` and
+    // must use the top-level `systemMessage` field instead; every other event does
+    // accept it there. This exists so a new event added to HOOK_EVENTS without an
+    // entry in EVENTS_WITHOUT_ADDITIONAL_CONTEXT can't silently default to the wrong
+    // shape the way pre_compact did (2026-07-02) -- every event is asserted, not just
+    // the two or three a hand-picked example test happens to cover.
+    it.each(HOOK_EVENTS)('serializes context for %s to the schema-correct shape', (eventName) => {
+      const result = JSON.parse(serializeOutput({ hookType: 'context', context: 'hint' }, eventName)) as Record<string, unknown>
+      if (eventName === 'pre_compact' || eventName === 'notification') {
+        expect(result).toEqual({ systemMessage: 'hint' })
+      } else {
+        expect(result).toHaveProperty('hookSpecificOutput.additionalContext', 'hint')
+        expect(result).not.toHaveProperty('systemMessage')
+      }
     })
 
     it('serializes update with a nested content object', () => {

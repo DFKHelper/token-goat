@@ -116,6 +116,21 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
 }
 
 /**
+ * Events whose `hookSpecificOutput` does NOT accept `additionalContext`, per
+ * https://code.claude.com/docs/en/hooks (verified 2026-07-02). Every other
+ * {@link HookEventName} does accept it there. Events listed here must instead
+ * inject context via the top-level `systemMessage` field — see {@link serializeOutput}.
+ *
+ * Kept as an explicit table rather than a single hardcoded event check so a
+ * new handler on one of these events cannot silently reproduce the pre_compact
+ * wire-format bug (2026-07-02) by inheriting the wrong default.
+ */
+const EVENTS_WITHOUT_ADDITIONAL_CONTEXT: ReadonlySet<HookEventName> = new Set([
+  'notification',
+  'pre_compact',
+])
+
+/**
  * Serialize a {@link HookOutput} to the Claude Code hook wire JSON.
  *
  * The harness reads this object from the hook process's stdout and acts on it:
@@ -123,11 +138,10 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
  * - `context` → `{"hookSpecificOutput":{"hookEventName":"<event>",
  *   "additionalContext":"<content>"}}` — the documented non-blocking hint
  *   shape (see https://code.claude.com/docs/en/hooks); `hookEventName` must
- *   match the event currently running, not be hardcoded. `PreCompact` is not
- *   a valid `hookEventName` for `hookSpecificOutput` (the harness only
- *   accepts it there for `UserPromptSubmit`/`PostToolUse`/`PostToolBatch`/
- *   `Stop`/`SubagentStop`), so `pre_compact` instead emits the top-level
- *   `{"systemMessage":"<content>"}` field.
+ *   match the event currently running, not be hardcoded. Events in
+ *   {@link EVENTS_WITHOUT_ADDITIONAL_CONTEXT} (currently `notification` and
+ *   `pre_compact`) instead emit the top-level `{"systemMessage":"<content>"}`
+ *   field, since the harness rejects `additionalContext` there outright.
  * - `update`  → `{"updatedInput":{"content":"<content>"}}`
  * - `rewriteInput` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
  *   "permissionDecision":"allow","updatedInput":<obj>}}` — the `PreToolUse`
@@ -142,11 +156,7 @@ export function serializeOutput(output: HookOutput, eventName: HookEventName): s
     case 'deny':
       return JSON.stringify({ decision: 'block', reason: output.message })
     case 'context':
-      // PreCompact has no hookSpecificOutput variant in the harness's schema (only
-      // UserPromptSubmit/PostToolUse/PostToolBatch/Stop/SubagentStop accept
-      // additionalContext there); a hookEventName of 'PreCompact' fails validation
-      // outright, so pre_compact injects context via the top-level systemMessage field.
-      if (eventName === 'pre_compact') {
+      if (EVENTS_WITHOUT_ADDITIONAL_CONTEXT.has(eventName)) {
         return JSON.stringify({ systemMessage: output.context })
       }
       return JSON.stringify({
