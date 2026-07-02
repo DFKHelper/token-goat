@@ -121,25 +121,40 @@ describe('hook registry', () => {
 
   describe('serializeOutput', () => {
     it('serializes deny to a block decision', () => {
-      expect(serializeOutput({ hookType: 'deny', message: 'nope' })).toBe(
+      expect(serializeOutput({ hookType: 'deny', message: 'nope' }, 'pre_tool_use')).toBe(
         JSON.stringify({ decision: 'block', reason: 'nope' }),
       )
     })
 
-    it('serializes context', () => {
-      expect(serializeOutput({ hookType: 'context', context: 'hint' })).toBe(
-        JSON.stringify({ context: 'hint' }),
+    it('serializes context to the documented hookSpecificOutput.additionalContext shape', () => {
+      expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'pre_tool_use')).toBe(
+        JSON.stringify({
+          hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: 'hint' },
+        }),
+      )
+    })
+
+    it('threads the current event into hookEventName instead of hardcoding it', () => {
+      expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'post_tool_use')).toBe(
+        JSON.stringify({
+          hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'hint' },
+        }),
+      )
+      expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'pre_compact')).toBe(
+        JSON.stringify({
+          hookSpecificOutput: { hookEventName: 'PreCompact', additionalContext: 'hint' },
+        }),
       )
     })
 
     it('serializes update with a nested content object', () => {
-      expect(serializeOutput({ hookType: 'update', content: 'body' })).toBe(
+      expect(serializeOutput({ hookType: 'update', content: 'body' }, 'pre_tool_use')).toBe(
         JSON.stringify({ updatedInput: { content: 'body' } }),
       )
     })
 
     it('serializes pass to an empty object', () => {
-      expect(serializeOutput({ hookType: 'pass' })).toBe('{}')
+      expect(serializeOutput({ hookType: 'pass' }, 'pre_tool_use')).toBe('{}')
     })
   })
 })

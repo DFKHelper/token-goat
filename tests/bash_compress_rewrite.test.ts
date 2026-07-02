@@ -93,10 +93,13 @@ afterAll(() => {
 
 describe('serializeOutput: rewriteInput', () => {
   it('emits the PreToolUse updatedInput wire shape', () => {
-    const json = serializeOutput({
-      hookType: 'rewriteInput',
-      updatedInput: { command: 'token-goat compress -f generic -c \'cargo build\'', description: 'build' },
-    })
+    const json = serializeOutput(
+      {
+        hookType: 'rewriteInput',
+        updatedInput: { command: 'token-goat compress -f generic -c \'cargo build\'', description: 'build' },
+      },
+      'pre_tool_use',
+    )
     expect(JSON.parse(json)).toEqual({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',

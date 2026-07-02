@@ -103,12 +103,27 @@ function clearHooks(): void {
 
 registerReset(clearHooks)
 
+/** Claude Code's PascalCase spelling for each internal {@link HookEventName}. */
+const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
+  pre_tool_use: 'PreToolUse',
+  post_tool_use: 'PostToolUse',
+  notification: 'Notification',
+  stop: 'Stop',
+  pre_compact: 'PreCompact',
+  session_start: 'SessionStart',
+  user_prompt_submit: 'UserPromptSubmit',
+  subagent_stop: 'SubagentStop',
+}
+
 /**
  * Serialize a {@link HookOutput} to the Claude Code hook wire JSON.
  *
  * The harness reads this object from the hook process's stdout and acts on it:
  * - `deny`    → `{"decision":"block","reason":"<message>"}`
- * - `context` → `{"context":"<content>"}`
+ * - `context` → `{"hookSpecificOutput":{"hookEventName":"<event>",
+ *   "additionalContext":"<content>"}}` — the documented non-blocking hint
+ *   shape (see https://code.claude.com/docs/en/hooks); `hookEventName` must
+ *   match the event currently running, not be hardcoded.
  * - `update`  → `{"updatedInput":{"content":"<content>"}}`
  * - `rewriteInput` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
  *   "permissionDecision":"allow","updatedInput":<obj>}}` — the `PreToolUse`
@@ -118,12 +133,17 @@ registerReset(clearHooks)
  * The `switch` is exhaustive over the `hookType` union; adding a variant to
  * {@link HookOutput} without handling it here is a compile error.
  */
-export function serializeOutput(output: HookOutput): string {
+export function serializeOutput(output: HookOutput, eventName: HookEventName): string {
   switch (output.hookType) {
     case 'deny':
       return JSON.stringify({ decision: 'block', reason: output.message })
     case 'context':
-      return JSON.stringify({ context: output.context })
+      return JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: CLAUDE_CODE_EVENT_NAMES[eventName],
+          additionalContext: output.context,
+        },
+      })
     case 'update':
       return JSON.stringify({ updatedInput: { content: output.content } })
     case 'rewriteInput':
