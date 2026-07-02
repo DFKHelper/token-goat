@@ -166,6 +166,7 @@ coverage/
 .temp-skill-cache-test/
 .temp-skill-source/
 .temp-skill-hits-test/
+.temp-skill-hits-race-test/
 .temp-skill-stale-test/
 .temp-hooks-skill-cache/
 .temp-hooks-skill-source/

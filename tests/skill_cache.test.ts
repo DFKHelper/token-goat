@@ -1,4 +1,50 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+// Regression (SKILL-HIT-LOCK-TOCTOU): incrementSkillHit used to do a plain read-modify-write on
+// its <skill>.hits sidecar with no concurrency protection -- two callers hitting the same skill
+// at nearly the same time could both read count:N, both increment to N+1 locally, and whichever
+// wrote last silently dropped the other caller's hit. The fix wraps the read-modify-write in an
+// mkdir-based lock (acquireSkillHitLock in skill_cache.ts).
+//
+// To prove the race deterministically instead of hoping real scheduling happens to interleave,
+// this guards fs.readFile for one specific hits file with a synchronization barrier: every
+// concurrent read of that path is held open until `expectedConcurrent` reads are simultaneously
+// pending, then all are released together -- forcing every unlocked caller to observe the same
+// pre-increment count before any of them writes. A short escape-hatch timeout releases a solo
+// pending read on its own so the locked (fixed) case -- where a correct lock never lets more than
+// one caller reach this read at a time -- doesn't hang waiting for a concurrency level the fix is
+// specifically designed to prevent. vi.spyOn cannot patch fs/promises exports (non-configurable),
+// so a module mock with hoisted state is the portable way to inject this, matching
+// pack_toctou_race.test.ts, parser_sha_race.test.ts, and worker_draining_rmfail.test.ts.
+const mockState = vi.hoisted(() => ({
+  delayReadPath: '' as string,
+  expectedConcurrent: 0,
+  pending: [] as Array<() => void>,
+}))
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof fs>()
+  const guardedReadFile = (async (p: unknown, ...rest: unknown[]) => {
+    if (mockState.delayReadPath && typeof p === 'string' && p === mockState.delayReadPath) {
+      await new Promise<void>((resolve) => {
+        mockState.pending.push(resolve)
+        if (mockState.pending.length >= mockState.expectedConcurrent) {
+          const toRelease = mockState.pending.splice(0, mockState.pending.length)
+          toRelease.forEach((r) => r())
+        } else {
+          setTimeout(() => {
+            const idx = mockState.pending.indexOf(resolve)
+            if (idx !== -1) {
+              mockState.pending.splice(idx, 1)
+              resolve()
+            }
+          }, 15)
+        }
+      })
+    }
+    return (actual.readFile as (...args: unknown[]) => Promise<unknown>)(p, ...rest)
+  }) as typeof actual.readFile
+  return { ...actual, default: actual, readFile: guardedReadFile }
+})
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   contentHash,
   outputIdFor,
@@ -720,6 +766,50 @@ describe('Hit count tracking', () => {
     expect(skill).toBeDefined()
     expect(skill!.hitCount).toBe(2)
   })
+})
+
+describe('incrementSkillHit concurrency (regression: unlocked read-modify-write lost updates)', () => {
+  const raceDir = path.resolve(__dirname, '.temp-skill-hits-race-test')
+
+  beforeEach(async () => {
+    try {
+      await fs.rm(raceDir, { recursive: true })
+    } catch {
+      // not present yet
+    }
+    setSkillOutputsDirForTesting(raceDir)
+  })
+
+  afterEach(() => {
+    setSkillOutputsDirForTesting(null)
+    mockState.delayReadPath = ''
+    mockState.expectedConcurrent = 0
+    mockState.pending = []
+  })
+
+  it(
+    'does not lose updates when many callers increment the same skill concurrently',
+    async () => {
+      const SKILL = 'race-skill'
+      const CONCURRENCY = 5
+      const hitsPath = path.join(raceDir, `${SKILL}.hits`)
+
+      // Force every concurrent read of this skill's hits file to pause until CONCURRENCY reads
+      // are simultaneously pending, then release them all together -- guaranteeing every
+      // unlocked caller observes the same pre-increment count instead of relying on real
+      // scheduling luck. A correct lock never lets more than one caller reach this read at a
+      // time, so under the fix each read hits the barrier's escape-hatch timeout and proceeds
+      // solo instead of ever reaching the CONCURRENCY threshold.
+      mockState.delayReadPath = hitsPath
+      mockState.expectedConcurrent = CONCURRENCY
+
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => incrementSkillHit(SKILL)))
+
+      const hits = await readSkillHits(SKILL)
+      expect(hits.count).toBe(CONCURRENCY)
+    },
+    15000,
+  )
 })
 
 describe('Compact staleness tracking', () => {
