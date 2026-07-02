@@ -41,15 +41,30 @@ import './image_shrink.js'
 const DEFAULT_STDIN_TIMEOUT_MS = 5000
 
 /**
+ * Default cap on accumulated stdin bytes before readStdinJson aborts the read
+ * early, rather than relying solely on DEFAULT_STDIN_TIMEOUT_MS to eventually
+ * stop a malformed or adversarial stream. Matches the magnitude of
+ * bash_runner.ts's MAX_CAPTURE_BYTES (32 MiB), the closest existing precedent
+ * for bounding an unbounded input stream in this codebase, doubled to leave
+ * headroom for JSON-string-escaping overhead on the largest legitimate
+ * payload today (a captured bash output embedded in a tool_response).
+ */
+export const MAX_STDIN_BYTES = 64 * 1024 * 1024
+
+/**
  * Read all of stdin and parse it as JSON, with a timeout.
  *
  * Resolves to the parsed value on success. Rejects when stdin yields no data
  * before `timeoutMs`, when the stream errors, or when the accumulated text is
  * not valid JSON. Callers treat any rejection as "pass" — see {@link relay}.
  */
-export function readStdinJson(timeoutMs: number = DEFAULT_STDIN_TIMEOUT_MS): Promise<unknown> {
+export function readStdinJson(
+  timeoutMs: number = DEFAULT_STDIN_TIMEOUT_MS,
+  maxBytes: number = MAX_STDIN_BYTES,
+): Promise<unknown> {
   return new Promise<unknown>((resolve, reject) => {
     const chunks: Buffer[] = []
+    let totalBytes = 0
     let settled = false
 
     const finish = (fn: () => void): void => {
@@ -67,6 +82,11 @@ export function readStdinJson(timeoutMs: number = DEFAULT_STDIN_TIMEOUT_MS): Pro
     }, timeoutMs)
 
     const onData = (chunk: Buffer): void => {
+      totalBytes += chunk.length
+      if (totalBytes > maxBytes) {
+        finish(() => reject(new Error(`readStdinJson: stdin exceeded ${maxBytes} bytes`)))
+        return
+      }
       chunks.push(chunk)
     }
     const onEnd = (): void => {

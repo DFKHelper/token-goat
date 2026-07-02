@@ -117,6 +117,19 @@ describe('readStdinJson', () => {
     // Emit no data and no end: the timeout path fires.
     await expect(readStdinJson(50)).rejects.toThrow(/timed out/)
   })
+
+  it('rejects once accumulated stdin exceeds maxBytes, instead of buffering unbounded until the timeout fires (regression: M10)', async () => {
+    // A generous timeout (5000ms) so the size cap — not the timeout — is what
+    // actually stops the read. Without the cap this payload would simply
+    // buffer in full and parse successfully well within the timeout.
+    io.emit('x'.repeat(50))
+    await expect(readStdinJson(5000, 10)).rejects.toThrow(/exceeded 10 bytes/)
+  })
+
+  it('still accepts a payload at or under maxBytes', async () => {
+    io.emit('{"a":1}')
+    await expect(readStdinJson(1000, 1000)).resolves.toEqual({ a: 1 })
+  })
 })
 
 describe('relay', () => {
