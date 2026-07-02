@@ -381,12 +381,18 @@ export function cmdCompactDoc(opts: { filePath: string; heading?: string; json?:
 
 // ── fetch-image ───────────────────────────────────────────────────────────────
 
-function fetchBuffer(url: string): Promise<Buffer> {
+const MAX_FETCH_REDIRECTS = 5
+
+function fetchBuffer(url: string, redirectsLeft = MAX_FETCH_REDIRECTS): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https://') ? https : http
     const req = mod.get(url, (res) => {
       if (res.statusCode !== undefined && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        fetchBuffer(res.headers.location).then(resolve, reject)
+        if (redirectsLeft <= 0) {
+          reject(new Error(`Too many redirects fetching ${url}`))
+          return
+        }
+        fetchBuffer(res.headers.location, redirectsLeft - 1).then(resolve, reject)
         return
       }
       if (res.statusCode === undefined || res.statusCode < 200 || res.statusCode >= 300) {

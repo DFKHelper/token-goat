@@ -9,8 +9,12 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { EventEmitter } from 'node:events'
+import type * as HttpModule from 'node:http'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const httpGetMock = vi.hoisted(() => vi.fn())
 
 // vi.mock is hoisted — redirect configPath() for config tests.
 vi.mock('../src/constants.js', async (importOriginal) => {
@@ -21,9 +25,17 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   }
 })
 
+// vi.mock is hoisted — stub node:http's `get` so the fetch-image redirect-cap test controls
+// the response chain without opening a real socket. Tests that don't configure an
+// implementation never invoke it.
+vi.mock('node:http', async (importOriginal) => {
+  const actual = await importOriginal<typeof HttpModule>()
+  return { ...actual, get: httpGetMock }
+})
+
 const _testConfigPath = path.join(os.tmpdir(), `tg-cfgcmd-test-${process.pid}.toml`)
 
-import { cmdConfig, cmdProject, cmdCompactDoc, cmdHistory } from '../src/config_commands.js'
+import { cmdConfig, cmdProject, cmdCompactDoc, cmdHistory, cmdFetchImage } from '../src/config_commands.js'
 import { invalidateConfigCache, loadConfig, saveConfig, defaultConfig } from '../src/config.js'
 import { storeBlob } from '../src/disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
@@ -59,6 +71,7 @@ beforeEach(() => {
 afterEach(() => {
   writeSpy.mockRestore()
   errSpy.mockRestore()
+  httpGetMock.mockReset()
   invalidateConfigCache()
   if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
   else process.env['TOKEN_GOAT_HOME'] = prevHome
@@ -410,6 +423,44 @@ describe('cmdCompactDoc', () => {
     const parsed = JSON.parse(captured()) as { path: string; compact: string }
     expect(typeof parsed.compact).toBe('string')
     expect(parsed.compact.length).toBeGreaterThan(0)
+  })
+})
+
+// ── fetch-image (fetchBuffer redirect cap) ────────────────────────────────────
+
+describe('cmdFetchImage redirect handling', () => {
+  it('caps a redirect chain instead of following it indefinitely', async () => {
+    let calls = 0
+    // Server-side safety valve: after 20 hops, stop redirecting and answer 200 with an empty
+    // body. A capped fetchBuffer rejects with "Too many redirects" long before this triggers
+    // (calls stays <= 6); an uncapped fetchBuffer would otherwise recurse without bound —
+    // this valve turns that into a fast, clean assertion failure instead of an unbounded
+    // memory-eating loop that OOM-crashes the test worker.
+    const SAFETY_VALVE_HOPS = 20
+    httpGetMock.mockImplementation((url: string, callback: (res: unknown) => void) => {
+      calls++
+      const fakeReq = new EventEmitter() as unknown as { on: typeof EventEmitter.prototype.on; setTimeout: (...a: unknown[]) => unknown; destroy: (...a: unknown[]) => unknown }
+      fakeReq.setTimeout = vi.fn()
+      fakeReq.destroy = vi.fn()
+      queueMicrotask(() => {
+        const fakeRes = new EventEmitter() as unknown as { statusCode: number; headers: Record<string, string>; on: typeof EventEmitter.prototype.on }
+        if (calls > SAFETY_VALVE_HOPS) {
+          fakeRes.statusCode = 200
+          fakeRes.headers = {}
+          callback(fakeRes)
+          queueMicrotask(() => fakeRes.emit('end'))
+          return
+        }
+        fakeRes.statusCode = 302
+        // Always redirects to the same URL — an uncapped follower would loop forever.
+        fakeRes.headers = { location: 'http://redirect-loop.example.test/next' }
+        callback(fakeRes)
+      })
+      return fakeReq
+    })
+    const out = path.join(tmpHome, 'redirect-loop.bin')
+    await expect(cmdFetchImage({ url: 'http://redirect-loop.example.test/start', out })).rejects.toThrow(/redirect/i)
+    expect(calls).toBeLessThanOrEqual(6)
   })
 })
 
