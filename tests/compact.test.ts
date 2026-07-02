@@ -14,6 +14,7 @@ import {
   buildManifestWithCount,
   computeAdaptiveBudget,
   estimateTokens,
+  eventCount,
   getAutoTriggerMultiplier,
   getContextPressure,
   isNoisePath,
@@ -403,6 +404,23 @@ describe('compact', () => {
       expect(result).toHaveLength(2)
       expect(typeof result[0]).toBe('string')
       expect(typeof result[1]).toBe('number')
+    })
+  })
+
+  describe('eventCount', () => {
+    it('includes webHistory in the total (fail-on-buggy: webHistory omitted from the sum, unlike buildManifestWithCount)', () => {
+      const cache = {
+        files: { 'a.ts': {} },
+        editedFiles: { 'b.ts': {} },
+        bashHistory: { cmd1: {} },
+        webHistory: { 'https://example.com': {}, 'https://example.org': {} },
+        skillHistory: { skillA: {} },
+      }
+      expect(eventCount(cache)).toBe(6)
+    })
+
+    it('returns 0 for an empty cache', () => {
+      expect(eventCount({})).toBe(0)
     })
   })
 

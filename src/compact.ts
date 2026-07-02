@@ -408,18 +408,20 @@ export function findLatestSessionId(): string | null {
 }
 
 /**
- * Count tracked events (reads + greps + edits + bash runs) for a session.
+ * Count tracked events (reads + greps + edits + bash runs + web fetches) for a session.
  */
 export function eventCount(cache: SessionCacheObject): number {
   const files = cache.files ?? {}
   const editedFiles = cache.editedFiles ?? {}
   const bashHistory = cache.bashHistory ?? {}
+  const webHistory = cache.webHistory ?? {}
   const skillHistory = cache.skillHistory ?? {}
 
   return (
     Object.keys(files).length +
     Object.keys(editedFiles).length +
     Object.keys(bashHistory).length +
+    Object.keys(webHistory).length +
     Object.keys(skillHistory).length
   )
 }
