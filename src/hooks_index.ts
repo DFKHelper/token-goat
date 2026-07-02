@@ -42,7 +42,17 @@ export function appendDirtyPath(normalizedPath: string): void {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST' || !fs.existsSync(dir)) throw e
   }
-  fs.appendFileSync(queuePath, `${normalizedPath}\n`)
+  // Guard against a torn last line left by a previous crashed write: if the queue file already
+  // exists and does not end in a newline, start this append with one so the partial line never
+  // merges with the new path into a single garbage entry.
+  let leadingNewline = ''
+  try {
+    const existing = fs.readFileSync(queuePath, 'utf8')
+    if (existing.length > 0 && !existing.endsWith('\n')) leadingNewline = '\n'
+  } catch {
+    // File doesn't exist yet (first append) -- nothing to guard against.
+  }
+  fs.appendFileSync(queuePath, `${leadingNewline}${normalizedPath}\n`)
 }
 
 /**

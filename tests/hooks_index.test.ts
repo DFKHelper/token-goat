@@ -76,6 +76,17 @@ describe('dirty queue', () => {
   it('clearDirtyQueue is idempotent when no file exists', () => {
     expect(() => clearDirtyQueue()).not.toThrow()
   })
+
+  // Regression: if a previous process crashed mid-append, the queue file's last line can lack a
+  // trailing newline. Appending directly after that torn fragment (no newline guard) merges it
+  // with the new path into one garbage combined line, silently losing both until some other edit
+  // touches either file.
+  it('does not merge a torn last line into the next appended path (crash-recovery regression)', () => {
+    fs.mkdirSync(path.dirname(dirtyQueuePath()), { recursive: true })
+    fs.writeFileSync(dirtyQueuePath(), '/a/one.t') // torn: no trailing newline
+    appendDirtyPath('/a/two.ts')
+    expect(getDirtyPaths()).toEqual(['/a/one.t', '/a/two.ts'])
+  })
 })
 
 describe('preCompactIndexHandler', () => {
