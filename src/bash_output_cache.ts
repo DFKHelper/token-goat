@@ -14,7 +14,7 @@
  * store is pruned by age/count on each write.
  */
 
-import * as fs from 'fs/promises'
+import { readFileSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
@@ -107,7 +107,7 @@ export function isUnscopedGitDiff(cmd: string): boolean {
   return !isCommandOfType(cmd, 'gitDiffScoped')
 }
 
-export async function gitStateFingerprint(cwd: string): Promise<string | null> {
+function gitStateFingerprintSync(cwd: string): string | null {
   try {
     const headResult = runGit(['rev-parse', 'HEAD'], { cwd })
     if (headResult.exitCode !== 0) return null
@@ -115,7 +115,7 @@ export async function gitStateFingerprint(cwd: string): Promise<string | null> {
 
     let indexMtime = ''
     try {
-      const stat = await fs.stat(resolve(cwd, '.git', 'index'))
+      const stat = statSync(resolve(cwd, '.git', 'index'))
       indexMtime = stat.mtimeMs.toString()
     } catch {
       // index file may not exist yet
@@ -128,9 +128,14 @@ export async function gitStateFingerprint(cwd: string): Promise<string | null> {
   }
 }
 
-export async function dirStateFingerprint(path: string): Promise<string | null> {
+/** Async wrapper kept for existing callers/tests that `await` this. */
+export async function gitStateFingerprint(cwd: string): Promise<string | null> {
+  return gitStateFingerprintSync(cwd)
+}
+
+function dirStateFingerprintSync(path: string): string | null {
   try {
-    const stat = await fs.stat(path)
+    const stat = statSync(path)
     if (!stat.isDirectory()) return null
     return shortFingerprint(stat.mtimeMs.toString())
   } catch {
@@ -138,7 +143,12 @@ export async function dirStateFingerprint(path: string): Promise<string | null> 
   }
 }
 
-export async function depLockfileFingerprint(cmd: string, cwd: string | null): Promise<string | null> {
+/** Async wrapper kept for existing callers/tests that `await` this. */
+export async function dirStateFingerprint(path: string): Promise<string | null> {
+  return dirStateFingerprintSync(path)
+}
+
+function depLockfileFingerprintSync(cmd: string, cwd: string | null): string | null {
   if (!cwd) return null
   const stripped = cmd.trim()
   const firstToken = stripped.split(/\s+/)[0]?.toLowerCase() || ''
@@ -148,7 +158,7 @@ export async function depLockfileFingerprint(cmd: string, cwd: string | null): P
 
   for (const lockfile of candidates) {
     try {
-      const content = await fs.readFile(resolve(cwd, lockfile))
+      const content = readFileSync(resolve(cwd, lockfile))
       return shortFingerprint(content)
     } catch {
       continue
@@ -157,12 +167,60 @@ export async function depLockfileFingerprint(cmd: string, cwd: string | null): P
   return null
 }
 
-export function normalizeCommandForCacheKey(cmd: string): string {
-  let normalized = cmd.trim()
-  normalized = normalized.replace(/\s+/g, ' ')
-  normalized = normalized.replace(/\\/g, '/')
+/** Async wrapper kept for existing callers/tests that `await` this. */
+export async function depLockfileFingerprint(cmd: string, cwd: string | null): Promise<string | null> {
+  return depLockfileFingerprintSync(cmd, cwd)
+}
 
-  const tokens = normalized.split(' ')
+/**
+ * Normalize a command string into a stable cache-key form: collapse
+ * whitespace runs to a single space, convert backslashes to forward
+ * slashes, strip a leading `./` and a trailing `/` from path-like tokens.
+ *
+ * Quote-aware: whitespace-collapsing and backslash normalization are only
+ * applied to characters outside a single- or double-quoted span, tracked
+ * character-by-character (same approach as `isInsideStringLiteral` in
+ * text_commands.ts / pack.ts). Applying them inside quotes would mangle
+ * quoted argument content -- e.g. `echo "a   b"` and `echo "a b"` are
+ * genuinely different commands but would otherwise collapse to the same
+ * normalized string, and a quoted regex containing a literal backslash
+ * would have it silently rewritten to a slash -- both causing distinct
+ * commands to collide on the same cache key.
+ */
+export function normalizeCommandForCacheKey(cmd: string): string {
+  const trimmed = cmd.trim()
+  const tokens: string[] = []
+  let current = ''
+  let quoteChar: string | null = null
+
+  const flush = () => {
+    if (current.length > 0) {
+      tokens.push(current)
+      current = ''
+    }
+  }
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i]!
+    if (quoteChar !== null) {
+      // Inside an open quote: copy verbatim, including whitespace and backslashes.
+      current += ch
+      if (ch === quoteChar) quoteChar = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quoteChar = ch
+      current += ch
+      continue
+    }
+    if (/\s/.test(ch)) {
+      flush()
+      continue
+    }
+    current += ch === '\\' ? '/' : ch
+  }
+  flush()
+
   const normalized_tokens = tokens.map(token => {
     if (token.startsWith('-') || ['&&', '||', '|', '>', '>>', ';', '&'].includes(token)) {
       return token
@@ -187,29 +245,78 @@ export async function commandHash(command: string, cwd: string | null = null): P
   let key = cwd ? `${normalizePath(cwd)}\x00${normalized}` : normalized
 
   if (cwd && isGitMutableCommand(command)) {
-    const fp = await gitStateFingerprint(cwd)
+    const fp = gitStateFingerprintSync(cwd)
     if (fp) key = `${key}\x00git:${fp}`
   }
 
   if (cwd && isDirListingCommand(command)) {
     const target = extractLsTarget(command, cwd)
     if (target) {
-      const fp = await dirStateFingerprint(target)
+      const fp = dirStateFingerprintSync(target)
       if (fp) key = `${key}\x00dir:${fp}`
     }
   }
 
   if (isDepListCommand(command)) {
-    const fp = await depLockfileFingerprint(command, cwd)
+    const fp = depLockfileFingerprintSync(command, cwd)
     if (fp) key = `${key}\x00lockfile:${fp}`
   }
 
   if (cwd && isNpmInstallCommand(command)) {
-    const fp = await depLockfileFingerprint(command, cwd)
+    const fp = depLockfileFingerprintSync(command, cwd)
     if (fp) key = `${key}\x00npm-install:${fp}`
   }
 
   return shortFingerprint(key)
+}
+
+/**
+ * Compute current git/dir/lockfile state fingerprints for `command` run in
+ * `cwd`. Stored on a {@link BashOutputEntry} at write time (`storeBashOutput`)
+ * and recomputed at cache-recall time ({@link isBashEntryStale}) so a cached
+ * entry whose underlying source state (HEAD commit, directory mtime, lockfile
+ * contents) has since changed is not served as if it were still fresh.
+ */
+export function computeBashFingerprints(command: string, cwd: string | null): { git?: string; dir?: string; lockfile?: string } | undefined {
+  const fingerprints: { git?: string; dir?: string; lockfile?: string } = {}
+
+  if (cwd && isGitMutableCommand(command)) {
+    const fp = gitStateFingerprintSync(cwd)
+    if (fp) fingerprints.git = fp
+  }
+
+  if (cwd && isDirListingCommand(command)) {
+    const target = extractLsTarget(command, cwd)
+    if (target) {
+      const fp = dirStateFingerprintSync(target)
+      if (fp) fingerprints.dir = fp
+    }
+  }
+
+  if (isDepListCommand(command) || (cwd && isNpmInstallCommand(command))) {
+    const fp = depLockfileFingerprintSync(command, cwd)
+    if (fp) fingerprints.lockfile = fp
+  }
+
+  return Object.keys(fingerprints).length > 0 ? fingerprints : undefined
+}
+
+/**
+ * True when `entry`'s stored fingerprints no longer match the current
+ * git/dir/lockfile state for `command` run in `cwd` — i.e. the underlying
+ * source changed since the output was cached, so it must not be recalled as
+ * fresh. An entry with no stored fingerprints (a command that doesn't
+ * fingerprint anything, or an entry written before this field existed) is
+ * never considered stale.
+ */
+export function isBashEntryStale(entry: BashOutputEntry, command: string, cwd: string | null): boolean {
+  const stored = entry.fingerprints
+  if (!stored) return false
+  const current = computeBashFingerprints(command, cwd)
+  if (stored.git !== undefined && stored.git !== current?.git) return true
+  if (stored.dir !== undefined && stored.dir !== current?.dir) return true
+  if (stored.lockfile !== undefined && stored.lockfile !== current?.lockfile) return true
+  return false
 }
 
 function extractLsTarget(cmd: string, cwd: string): string | null {
@@ -260,6 +367,7 @@ export function getBashGlobResult(sessionId: string, pattern: string, path: stri
  */
 export async function storeBashOutput(command: string, output: string, exitCode: number, cwd: string | null = null): Promise<string> {
   const id = await commandHash(command, cwd)
+  const fingerprints = computeBashFingerprints(command, cwd)
   const entry: BashOutputEntry = {
     id,
     command,
@@ -267,6 +375,7 @@ export async function storeBashOutput(command: string, output: string, exitCode:
     exitCode,
     storedAt: Date.now(),
     sizeBytes: Buffer.byteLength(output, 'utf-8'),
+    ...(fingerprints ? { fingerprints } : {}),
   }
   _byId.set(id, entry)
   // Persist so a later, separate hook process (and the CLI) can recall it.
@@ -289,7 +398,7 @@ function coerceBashEntry(raw: unknown): BashOutputEntry | null {
   ) {
     return null
   }
-  return {
+  const entry: BashOutputEntry = {
     id: o['id'],
     command: o['command'],
     output: o['output'],
@@ -297,6 +406,16 @@ function coerceBashEntry(raw: unknown): BashOutputEntry | null {
     storedAt: o['storedAt'],
     sizeBytes: o['sizeBytes'],
   }
+  const rawFingerprints = o['fingerprints']
+  if (rawFingerprints !== null && typeof rawFingerprints === 'object') {
+    const f = rawFingerprints as Record<string, unknown>
+    const fingerprints: { git?: string; dir?: string; lockfile?: string } = {}
+    if (typeof f['git'] === 'string') fingerprints.git = f['git']
+    if (typeof f['dir'] === 'string') fingerprints.dir = f['dir']
+    if (typeof f['lockfile'] === 'string') fingerprints.lockfile = f['lockfile']
+    if (Object.keys(fingerprints).length > 0) return { ...entry, fingerprints }
+  }
+  return entry
 }
 
 /**
