@@ -267,6 +267,31 @@ Examples here`
     }
   })
 
+  it('hard-denies the FIRST read of a markdown file at/above the generic large-file deny threshold, even with >=3 headings (fail-on-buggy: the markdown branch previously let any first read through via contextOutput regardless of size, bypassing the 500KB deny every other file type gets)', () => {
+    const mdContent = `# Title
+Some content here
+
+## Installation
+Instructions here
+
+### Quick Start
+More details
+
+## Usage
+How to use this
+
+### Examples
+Examples here`
+
+    // 500KB deny threshold (LARGE_FILE_DENY_BYTES in hooks_read.ts) — pad well past it.
+    const p = _makeTmpMdFile(mdContent + 'x'.repeat(520 * 1024))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Large markdown file')
+    }
+  })
+
   it('allows small markdown files to pass through even with headings', () => {
     const mdContent = `# Title
 ## Section
