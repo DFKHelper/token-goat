@@ -399,11 +399,10 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
 }
 
 /**
- * List every top-level (level-1) section name in a file, in document order.
+ * List every section heading in a file at all nesting levels, in document order.
  *
  * Returns an empty array when the file cannot be read or has no recognisable
- * sections. "Top-level" means the shallowest level present among headers, so a
- * doc whose headings start at `##` still lists those.
+ * sections.
  */
 export function listSections(filePath: string): string[] {
   let text: string
@@ -415,14 +414,7 @@ export function listSections(filePath: string): string[] {
 
   const language = detectLanguage(filePath)
   const { headers } = findHeaders(text, language)
-  if (headers.length === 0) return []
-
-  let minLevel = Number.POSITIVE_INFINITY
-  for (const h of headers) {
-    if (h.level < minLevel) minLevel = h.level
-  }
-
-  return headers.filter((h) => h.level === minLevel).map((h) => h.heading)
+  return headers.map((h) => h.heading)
 }
 
 /**
