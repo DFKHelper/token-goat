@@ -172,9 +172,15 @@ function truncateLines(lines: readonly string[], maxLines: number): string[] {
  * replaced by a single `[... N more lines in <name>]` marker. A summary
  * header is prepended so the reader knows how many files changed.
  */
-function compressGitDiff(lines: readonly string[]): string[] {
+// Returns null when the input doesn't contain a recognizable `diff --git `
+// file header — callers should fall back to the general compression path
+// rather than emit a misleading "0 files changed" summary for a diff format
+// variant this parser doesn't understand (e.g. a plain unified diff with only
+// `--- a/`/`+++ b/` headers and no `diff --git` line).
+function compressGitDiff(lines: readonly string[]): string[] | null {
   const fileHeaders = lines.filter(l => l.startsWith('diff --git '))
   const nFiles = fileHeaders.length
+  if (nFiles === 0) return null
   const result: string[] = [
     `[Git diff: ${nFiles} file${nFiles !== 1 ? 's' : ''} changed, truncated to 50 lines/file]`,
   ]
@@ -238,10 +244,20 @@ export function compressOutput(output: string, opts: CompressOptions = {}): stri
   const rawLines = text.replace(/\r/g, '\n').split('\n')
 
   // Git diff fast-path: large diffs get per-file truncation instead of head/tail.
+  // The per-file cap alone doesn't bound total output when a diff touches many
+  // files, so the result still goes through the same per-line-length and overall
+  // maxLines truncation as the general path below — no code path may emit
+  // unbounded output. If the parser can't recognize the diff format
+  // (compressGitDiff returns null), fall through to the general path instead of
+  // returning a misleading "0 files changed" summary.
   if (rawLines.length > 200) {
     const firstLine = rawLines[0] ?? ''
     if (firstLine.startsWith('diff --git ') || firstLine.startsWith('--- a/')) {
-      return compressGitDiff(rawLines).join('\n')
+      const diffLines = compressGitDiff(rawLines)
+      if (diffLines !== null) {
+        const capped = diffLines.map((l) => truncateLine(l, cfg.maxLineLength))
+        return truncateLines(capped, cfg.maxLines).join('\n')
+      }
     }
   }
 

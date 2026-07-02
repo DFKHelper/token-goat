@@ -126,24 +126,48 @@ const HASH_LINE_RE = /[ \t]*#(?!!)[^\r\n]*/gm
 const CSTYLE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.kt', '.swift', '.dart'])
 const HASH_COMMENT_EXTS = new Set(['.rb', '.sh', '.bash', '.zsh', '.fish', '.r', '.lua'])
 
+/**
+ * True when `index` (an offset into `text`) falls inside an opening quoted
+ * string on its line. Mirrors `text_commands.ts`'s `isInsideStringLiteral`:
+ * counts unescaped quote characters from the start of the line up to `index`
+ * and treats an odd count as "still inside a string". Single, double, and
+ * backtick quotes are tracked independently so a comment-like sequence
+ * (`//`, `#`, `--`) that only appears inside a string's actual content — a
+ * URL such as `https://example.com` or a CSS hex color like `#fff` — is left
+ * untouched instead of being misread as a real comment opener.
+ */
+function isInsideStringLiteral(text: string, index: number): boolean {
+  const lineStart = text.lastIndexOf('\n', index - 1) + 1
+  const before = text.slice(lineStart, index)
+  const dqCount = (before.match(/(?<!\\)"/g) ?? []).length
+  const sqCount = (before.match(/(?<!\\)'/g) ?? []).length
+  const btCount = (before.match(/(?<!\\)`/g) ?? []).length
+  return dqCount % 2 !== 0 || sqCount % 2 !== 0 || btCount % 2 !== 0
+}
+
+/** Applies a line-comment regex, skipping any match that starts inside a string literal. */
+function stripLineComments(content: string, pattern: RegExp): string {
+  return content.replace(pattern, (match, offset: number) => (isInsideStringLiteral(content, offset) ? match : ''))
+}
+
 export function stripComments(content: string, filePath: string): string {
   const ext = path.extname(filePath).toLowerCase()
 
   if (ext === '.py') {
-    return content.replace(PY_LINE_COMMENT_RE, '')
+    return stripLineComments(content, PY_LINE_COMMENT_RE)
   }
 
   if (ext === '.sql') {
-    return content.replace(SQL_LINE_RE, '')
+    return stripLineComments(content, SQL_LINE_RE)
   }
 
   if (CSTYLE_EXTS.has(ext)) {
     content = content.replace(CSTYLE_BLOCK_RE, (match) => '\n'.repeat(match.split('\n').length - 1))
-    return content.replace(CSTYLE_LINE_RE, '')
+    return stripLineComments(content, CSTYLE_LINE_RE)
   }
 
   if (HASH_COMMENT_EXTS.has(ext)) {
-    return content.replace(HASH_LINE_RE, '')
+    return stripLineComments(content, HASH_LINE_RE)
   }
 
   if (ext === '.css' || ext === '.scss') {
@@ -158,7 +182,7 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   ['AWS access key', /AKIA[0-9A-Z]{16}/],
   ['AWS secret key', /(?:aws|AWS).{0,20}secret.{0,20}["']([A-Za-z0-9/+]{40})["']/],
   ['GitHub token', /(?:gh[pousr]_|github_pat_)[A-Za-z0-9]{36,255}/],
-  ['Generic API key', /(?:api[_-]?key|apikey|api_secret)["\\s]*[:=]["\\s]*([A-Za-z0-9_\\-]{20,})/i],
+  ['Generic API key', /(?:api[_-]?key|apikey|api_secret)[\s"']*[:=][\s"']*([A-Za-z0-9_\\-]{20,})/i],
   ['Bearer token', /(?:authorization):\s*bearer\s+([A-Za-z0-9\-._~+/]+=*)/i],
   ['Private key block', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
   ['Stripe key', /sk_(?:live|test)_[A-Za-z0-9]{24,}/],

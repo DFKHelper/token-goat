@@ -136,4 +136,33 @@ describe('compressOutput', () => {
     const markers = out.split('\n').filter(l => l.includes('more lines in'))
     expect(markers.length).toBe(3)
   })
+
+  it('bounds total output on the git-diff fast path even when no single file hits the per-file cap', () => {
+    // 300 files, each with only 4 lines (well under the 50-line/file cap) — the
+    // per-file truncation alone never kicks in, so pre-fix this fast path
+    // returned all ~1200 lines completely unbounded regardless of maxLines.
+    const lines: string[] = []
+    for (let f = 0; f < 300; f++) {
+      lines.push(`diff --git a/file${f}.ts b/file${f}.ts`)
+      lines.push(`--- a/file${f}.ts`)
+      lines.push(`+++ b/file${f}.ts`)
+      lines.push(`+line ${f}`)
+    }
+    const out = compressOutput(lines.join('\n'), { maxLines: 100 })
+    const outLines = out.split('\n')
+    expect(outLines.length).toBeLessThanOrEqual(100)
+    expect(out).toContain('elided by token-goat')
+  })
+
+  it('falls back to the general path instead of a false "0 files changed" for an unrecognized diff format', () => {
+    // A plain unified diff (only `--- a/`/`+++ b/` headers, no `diff --git`
+    // line) still trips the fast-path's format sniff on its first line, but
+    // the per-file parser can't find any `diff --git ` header to count.
+    const lines = ['--- a/file1.ts', '+++ b/file1.ts']
+    for (let i = 0; i < 200; i++) lines.push(`+line ${i}`)
+    const out = compressOutput(lines.join('\n'))
+    expect(out).not.toContain('0 files changed')
+    expect(out).toContain('--- a/file1.ts')
+    expect(out).toContain('+line 0')
+  })
 })

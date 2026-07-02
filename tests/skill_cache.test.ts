@@ -447,6 +447,32 @@ describe('suite-named skill compact round-trip (colon in name)', () => {
   })
 })
 
+describe('sanitizeSkillId collision regression', () => {
+  it('does not let a colon-containing skill id collide with a literal-underscore skill id in the compact cache (fail-on-buggy: both sanitize to the same filename)', async () => {
+    const sessionId = 'session123456789'
+    await storeCompact(sessionId, 'foo:bar', 'Content for foo:bar')
+    await storeCompact(sessionId, 'foo_bar', 'Content for foo_bar')
+
+    const compactColon = await getCompact(sessionId, 'foo:bar')
+    const compactUnderscore = await getCompact(sessionId, 'foo_bar')
+
+    expect(compactColon).toContain('Content for foo:bar')
+    expect(compactUnderscore).toContain('Content for foo_bar')
+  })
+
+  it('storing in the opposite order still keeps both skills distinct', async () => {
+    const sessionId = 'session987654321'
+    await storeCompact(sessionId, 'foo_bar', 'Content for foo_bar')
+    await storeCompact(sessionId, 'foo:bar', 'Content for foo:bar')
+
+    const compactUnderscore = await getCompact(sessionId, 'foo_bar')
+    const compactColon = await getCompact(sessionId, 'foo:bar')
+
+    expect(compactUnderscore).toContain('Content for foo_bar')
+    expect(compactColon).toContain('Content for foo:bar')
+  })
+})
+
 describe('outputIdFor regression - colon handling', () => {
   it('correctly detects character replacement and appends suffix only when replaced', () => {
     const id1 = outputIdFor('session123456789', 'plugin:improve', 'sha')
