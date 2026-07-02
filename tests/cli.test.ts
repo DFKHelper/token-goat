@@ -48,6 +48,19 @@ describe('token-goat CLI', () => {
     expect(r.stdout.toLowerCase()).toContain('install')
   }, 30000)
 
+  it('context-stats --help exits 0', () => {
+    const r = runCli(['context-stats', '--help'])
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('context')
+  }, 30000)
+
+  it('context-stats --json outputs valid JSON', () => {
+    const r = runCli(['context-stats', '--json'])
+    expect(r.status).toBe(0)
+    const output = JSON.parse(r.stdout)
+    expect(typeof output.total_tokens).toBe('number')
+  }, 30000)
+
   it('hook pre_tool_use with empty stdin exits 0 and writes {} to stdout', () => {
     const r = runCli(['hook', 'pre_tool_use'], '')
     expect(r.status).toBe(0)

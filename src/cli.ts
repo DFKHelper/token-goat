@@ -86,6 +86,7 @@ import { extractFailures, formatFailuresText, formatFailuresJson } from './failu
 import { cmdTodo, cmdTrace, cmdLogfold, cmdLockdeps, cmdNote, cmdHot, cmdRecent, cmdIgnores } from './text_commands.js'
 import { cmdBashHistory, cmdWebHistory, cmdCleanCache, cmdPruneCache, cmdCacheAudit, cmdResume, cmdCompactHint, cmdSessionSummary, cmdCost, cmdBaseline } from './cache_session_commands.js'
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdFetchImage, cmdHistory } from './config_commands.js'
+import { runContextStats } from './cli_context_stats.js'
 
 /** Thrown by command handlers for a clean exit-1 with a stderr message. */
 class CliError extends Error {}
@@ -252,6 +253,10 @@ function cmdDoctor(opts: { context?: boolean }): void {
   if (code !== 0) {
     throw new CliError('doctor checks failed')
   }
+}
+
+function cmdContextStats(opts: { project?: string; json?: boolean; fix?: boolean } = {}): void {
+  runContextStats(opts)
 }
 
 function _applyFiltersAndPrint(
@@ -1217,6 +1222,13 @@ export function buildProgram(): Command {
   program.command('stats').description('show session statistics').action(guard(cmdStats))
 
   program.command('doctor').description('diagnose token-goat health').option('--context', 'include context footprint analysis').action(guard(cmdDoctor))
+  program
+    .command('context-stats')
+    .description('show context statistics')
+    .option('--project <path>', 'project root to analyze')
+    .option('--json', 'output JSON')
+    .option('--fix', 'apply automatic fixes')
+    .action(guard(cmdContextStats))
 
   program
     .command('bash-output [id]')
