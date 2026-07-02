@@ -50,6 +50,21 @@ export function extractMcpResultText(raw: Record<string, unknown>): string {
   }
 }
 
+/**
+ * Return true when a tool_response is an MCP `CallToolResult` carrying an
+ * in-band `isError: true` — a genuine tool-level failure ("tool not found",
+ * bad params, a downstream API error surfaced through MCP) rather than a hard
+ * transport failure. Such a response is still a normal, successful protocol
+ * round trip, so {@link extractMcpResultText} happily returns its text; the
+ * caller must exclude it from caching so a one-off or transient error is not
+ * served back to every identical retry until the dedup window ages out.
+ */
+export function isMcpErrorResponse(raw: Record<string, unknown>): boolean {
+  const tr = raw['tool_response']
+  if (!tr || typeof tr !== 'object') return false
+  return (tr as Record<string, unknown>)['isError'] === true
+}
+
 function preMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
   if (!toolName || !isMcpReadOnly(toolName) || !event.sessionId) return passOutput()
@@ -66,6 +81,9 @@ function preMcpHandler(event: HookEvent): HookOutput {
 function postMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
   if (!toolName || !isMcpReadOnly(toolName) || !event.sessionId) return passOutput()
+  // An in-band MCP error is a valid response, not a cacheable one — never let a
+  // transient or now-resolved failure block every later identical retry.
+  if (isMcpErrorResponse(event.raw)) return passOutput()
   const toolInput = getToolInput(event)
   const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
   // Idempotent: a re-fired post for an already-cached, still-fresh call writes nothing.
