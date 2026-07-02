@@ -16,7 +16,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, saveConfig, invalidateConfigCache, defaultConfig } from './config.js'
+import { loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig } from './config.js'
 import { compactDoc } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
@@ -172,7 +172,7 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
       throw new Error('missing value')
     }
     const parts = opts.key.split('.')
-    const cfg = loadConfig() as unknown as Record<string, unknown>
+    const cfg = loadPersistedConfig() as unknown as Record<string, unknown>
     const ref = walkParent(cfg, parts)
     if (!ref) {
       emitErr(`key not found: ${opts.key}`)
@@ -293,7 +293,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
       throw new Error('missing path')
     }
     const target = path.resolve(opts.pathArg)
-    const cfg = loadConfig()
+    const cfg = loadPersistedConfig()
     if (cfg.worker.blocked_roots.includes(target)) {
       emit(`Already excluded: ${target}`)
       return
@@ -310,7 +310,7 @@ export function cmdProject(opts: { action: string; pathArg?: string; json?: bool
   }
 
   if (action === 'prune') {
-    const cfg = loadConfig()
+    const cfg = loadPersistedConfig()
     const before = cfg.worker.blocked_roots
     const after = before.filter((r) => {
       try { return fs.existsSync(r) } catch { return false }

@@ -175,6 +175,45 @@ describe('cmdConfig set', () => {
   })
 })
 
+// ── mutate-then-save commands must not bake env overrides into disk (#M21) ───
+
+describe('config set / project exclude / prune do not persist transient env overrides (#M21)', () => {
+  function withBashCompressEnvOff(fn: () => void): void {
+    const prevEnv = process.env['TOKEN_GOAT_BASH_COMPRESS']
+    process.env['TOKEN_GOAT_BASH_COMPRESS'] = '0'
+    invalidateConfigCache()
+    try {
+      fn()
+    } finally {
+      if (prevEnv === undefined) delete process.env['TOKEN_GOAT_BASH_COMPRESS']
+      else process.env['TOKEN_GOAT_BASH_COMPRESS'] = prevEnv
+      invalidateConfigCache()
+    }
+  }
+
+  it('config set does not bake a TOKEN_GOAT_BASH_COMPRESS override into bash_compress.enabled on disk', () => {
+    withBashCompressEnvOff(() => {
+      cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '50' })
+    })
+    // The env override is gone again now, so loadConfig() reflects disk only.
+    expect(loadConfig().bash_compress.enabled).toBe(true)
+  })
+
+  it('project exclude does not bake a TOKEN_GOAT_BASH_COMPRESS override into bash_compress.enabled on disk', () => {
+    withBashCompressEnvOff(() => {
+      cmdProject({ action: 'exclude', pathArg: '/tmp/env-test-proj' })
+    })
+    expect(loadConfig().bash_compress.enabled).toBe(true)
+  })
+
+  it('project prune does not bake a TOKEN_GOAT_BASH_COMPRESS override into bash_compress.enabled on disk', () => {
+    withBashCompressEnvOff(() => {
+      cmdProject({ action: 'prune' })
+    })
+    expect(loadConfig().bash_compress.enabled).toBe(true)
+  })
+})
+
 // ── config validate ──────────────────────────────────────────────────────────
 
 describe('cmdConfig validate', () => {

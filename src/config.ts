@@ -521,6 +521,56 @@ export function invalidateConfigCache(): void {
   _cached = null
 }
 
+/**
+ * Run `fn` with every config-affecting env var (the {@link ENV_KEYS} registry) temporarily
+ * cleared, then restore the original values. Safe because `_buildConfig` is fully
+ * synchronous — no other code can observe the env vars while they are unset.
+ */
+function withoutConfigEnv<T>(fn: () => T): T {
+  const saved: Record<string, string | undefined> = {}
+  for (const k of ENV_KEYS) {
+    saved[k] = process.env[k]
+    delete process.env[k]
+  }
+  try {
+    return fn()
+  } finally {
+    for (const k of ENV_KEYS) {
+      const v = saved[k]
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  }
+}
+
+/**
+ * Build a {@link Config} from `raw` TOML-shaped data with no env-var overlay — exactly what
+ * is (or would be) persisted to disk. Used by {@link loadPersistedConfig} and by `config set`'s
+ * write-time range check, so a transient TOKEN_GOAT_* env override active for one invocation
+ * never gets baked permanently into config.toml by a mutate-then-save command.
+ */
+export function buildPersistedConfig(raw: Record<string, unknown>): Config {
+  return withoutConfigEnv(() => _buildConfig(raw))
+}
+
+/**
+ * Like {@link loadConfig} but without env-var overlay — the config exactly as it exists on
+ * disk. `config set` / `project exclude` / `project prune` must load through this (not
+ * loadConfig()) before mutating and saving, or a TOKEN_GOAT_* env override active only for
+ * the current invocation would get written to config.toml permanently.
+ */
+export function loadPersistedConfig(): Config {
+  const p = configPath()
+  let raw: Record<string, unknown> = {}
+  try {
+    const text = fs.readFileSync(p, 'utf8')
+    raw = parse(text) as Record<string, unknown>
+  } catch {
+    // missing/unreadable — fall back to defaults
+  }
+  return buildPersistedConfig(raw)
+}
+
 function _buildConfig(raw: Record<string, unknown>): Config {
   const ca_raw = section(raw, 'compact_assist')
   const ca = getDefaultConfig('compact_assist') as CompactAssistConfig
