@@ -94,6 +94,21 @@ public class Widget {
     expect(imports).toHaveLength(0)
   })
 
+  it('attaches methods to an Allman-style class (opening brace on its own line)', () => {
+    const content = `public class Foo
+{
+    public void Bar()
+    {
+        DoSomething();
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    const bar = symbols.find((s) => s.name === 'Bar')
+    expect(bar?.kind).toBe('method')
+    expect(bar?.docstring).toBe('Foo')
+  })
+
   it('detects .cs language via parseFile', async () => {
     const file = tmp('Foo.cs', 'public class Foo {}')
     const result = await parseFile(file)
@@ -765,6 +780,21 @@ function MyFunction {
     expect(names).not.toContain('foreach')
     expect(names).not.toContain('Write-Host')
     expect(names).not.toContain('Helper')
+  })
+
+  it('attaches methods to an Allman-style class (opening brace on its own line)', () => {
+    const content = `class Widget
+{
+  [void] Render()
+  {
+    Write-Host "Rendering"
+  }
+}
+`
+    const { symbols } = extractPowershell(content, 'widget.ps1')
+    const render = symbols.find((s) => s.name === 'Render')
+    expect(render?.kind).toBe('method')
+    expect(render?.docstring).toBe('Widget')
   })
 
   it('detects .ps1 and .psm1 languages via parseFile', async () => {

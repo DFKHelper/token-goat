@@ -31,6 +31,12 @@ export function extractPowershell(
 
   let currentClass: string | null = null
   let classBraceDepth = 0
+  // True once braceDepth has risen above classBraceDepth at least once, i.e. the class's own
+  // opening brace has actually been consumed. Guards the pop check below: for Allman-style
+  // declarations (`class Foo` on one line, `{` on the next) braceDepth still equals
+  // classBraceDepth on the header line itself, so an ungated pop check fires immediately and
+  // discards the class context before its body is ever seen.
+  let classBodyEntered = false
   let braceDepth = 0
   let inBlockComment = false
 
@@ -81,6 +87,7 @@ export function extractPowershell(
         if (kind === 'class') {
           currentClass = cname
           classBraceDepth = braceDepth
+          classBodyEntered = false
         }
       }
     }
@@ -105,7 +112,10 @@ export function extractPowershell(
     // Apply brace delta BEFORE scope pop check (critical ordering)
     braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
 
-    if (currentClass !== null && braceDepth <= classBraceDepth) {
+    if (currentClass !== null && braceDepth > classBraceDepth) {
+      classBodyEntered = true
+    }
+    if (currentClass !== null && classBodyEntered && braceDepth <= classBraceDepth) {
       currentClass = null
     }
   }
