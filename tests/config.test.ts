@@ -129,6 +129,20 @@ describe('loadConfig', () => {
     expect(loaded.worker.max_pool_workers).toBe(2)
     expect(loaded.image_shrink.jpeg_quality).toBe(85)
   })
+
+  it('round-trips warn_unbalanced_shell_quoting, cross_session_read_dedup, and cross_session_read_dedup_ttl_secs (fail-on-buggy: saveConfig previously omitted these three hints fields, silently resetting them to defaults on every save)', () => {
+    const cfg = defaultConfig()
+    cfg.hints.warn_unbalanced_shell_quoting = !cfg.hints.warn_unbalanced_shell_quoting
+    cfg.hints.cross_session_read_dedup = !cfg.hints.cross_session_read_dedup
+    cfg.hints.cross_session_read_dedup_ttl_secs = cfg.hints.cross_session_read_dedup_ttl_secs + 123
+
+    saveConfig(cfg)
+    const loaded = loadConfig()
+
+    expect(loaded.hints.warn_unbalanced_shell_quoting).toBe(cfg.hints.warn_unbalanced_shell_quoting)
+    expect(loaded.hints.cross_session_read_dedup).toBe(cfg.hints.cross_session_read_dedup)
+    expect(loaded.hints.cross_session_read_dedup_ttl_secs).toBe(cfg.hints.cross_session_read_dedup_ttl_secs)
+  })
 })
 
 // ---------------------------------------------------------------------------
