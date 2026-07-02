@@ -304,9 +304,11 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const isMarkdown = /\.(md|mdx|markdown|rst)$/i.test(basename)
   if (isMarkdown) {
     let fileContent: string | null = null
+    let markdownSize: number | null = null
     try {
       const sz = statSize(normalized)
       if (sz !== null && sz >= MARKDOWN_SIZE_THRESHOLD) {
+        markdownSize = sz
         fileContent = fs.readFileSync(normalized, 'utf8')
       }
     } catch {
@@ -330,9 +332,11 @@ export function preReadHandler(event: HookEvent): HookOutput {
           ? extractChangelogVersionHint(fileContent, normalized)
           : ''
         const message = hintText + wellKnownText + changelogExtra
-        // First read: let it through (contextOutput) so Claude Code's Read-before-Edit
-        // ledger is satisfied. Only hard-deny a re-read, matching every other block below.
-        return alreadyRead ? denyOutput(message) : contextOutput(message)
+        // A re-read is always hard-denied. A first read is also hard-denied when the file
+        // is at or above the generic large-file deny threshold: this branch returns before
+        // the size-based deny further below ever runs, so it must enforce that gate itself.
+        const tooLargeForFirstRead = markdownSize !== null && markdownSize >= LARGE_FILE_DENY_BYTES
+        return alreadyRead || tooLargeForFirstRead ? denyOutput(message) : contextOutput(message)
       }
     }
   }
