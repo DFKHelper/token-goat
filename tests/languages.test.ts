@@ -109,6 +109,34 @@ public class Widget {
     expect(bar?.docstring).toBe('Foo')
   })
 
+  it('ignores braces inside a /* */ block comment when tracking scope depth', () => {
+    const content = `public class Foo {
+    /*
+    if (false) {
+    */
+    public void Real() {
+    }
+    /*
+    }
+    */
+}
+
+public class Bar {
+    public void Other() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    // Regression: an unmatched brace inside a commented-out code block must not be counted
+    // toward braceDepth - otherwise depthInClass drifts and Real is never detected as a method.
+    const real = symbols.find((s) => s.name === 'Real')
+    expect(real?.kind).toBe('method')
+    expect(real?.docstring).toBe('Foo')
+    const other = symbols.find((s) => s.name === 'Other')
+    expect(other?.kind).toBe('method')
+    expect(other?.docstring).toBe('Bar')
+  })
+
   it('detects .cs language via parseFile', async () => {
     const file = tmp('Foo.cs', 'public class Foo {}')
     const result = await parseFile(file)
