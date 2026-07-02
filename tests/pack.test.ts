@@ -60,6 +60,18 @@ describe('stripComments', () => {
     const result = stripComments(code, 'file.unknown')
     expect(result).toBe(code)
   })
+
+  it('leaves a URL inside a string literal untouched (does not mistake // for a comment)', () => {
+    const code = "const url = 'https://example.com'"
+    const result = stripComments(code, 'file.ts')
+    expect(result).toBe(code)
+  })
+
+  it('leaves a CSS hex color inside a string literal untouched (does not mistake # for a comment)', () => {
+    const code = 'COLOR="#fff"\necho "$COLOR"\n'
+    const result = stripComments(code, 'script.sh')
+    expect(result).toBe(code)
+  })
 })
 
 describe('scanSecrets', () => {
@@ -90,6 +102,28 @@ describe('scanSecrets', () => {
     ]
     const hits = scanSecrets(files)
     expect(hits.length).toBe(0)
+  })
+
+  it('detects a single-quoted or unspaced api_key assignment', () => {
+    const files = [
+      {
+        path: 'a.py',
+        rel_path: 'a.py',
+        content: "api_key='abc123DEF456ghi789JKL012'",
+        lines: 1,
+        tokens: 10,
+      },
+      {
+        path: 'b.py',
+        rel_path: 'b.py',
+        content: 'api_key = abc123DEF456ghi789JKL012',
+        lines: 1,
+        tokens: 10,
+      },
+    ]
+    const hits = scanSecrets(files)
+    expect(hits.length).toBe(2)
+    expect(hits.every((h) => h.kind === 'Generic API key')).toBe(true)
   })
 })
 

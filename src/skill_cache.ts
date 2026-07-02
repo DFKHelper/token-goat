@@ -104,7 +104,9 @@ function safeSkillName(skillName: string): string | null {
 
 /** Return a filename-safe version of a skill name: colons are invalid on Windows and must be replaced. Used for all on-disk compact file paths so store/get/list always agree. */
 function sanitizeSkillId(name: string): string {
-  return name.replace(/:/g, '_')
+  // A blind colon->underscore substitution collides two distinct skill ids ('foo:bar' and 'foo_bar' both sanitize to 'foo_bar'), silently overwriting whichever compact-cache entry was stored first. Mirror sessionSkillPrefix's convention: append a discriminator suffix whenever a colon was actually replaced, so the substituted form never matches an input that had no colon to begin with.
+  const safe = name.replace(/:/g, '_')
+  return safe === name ? safe : `${safe}n`
 }
 
 function sessionSkillPrefix(sessionId: string, skillName: string): string {
