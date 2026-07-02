@@ -19,7 +19,7 @@ import { BASH_OUTPUT_SUBDIR, getBashOutput, type BashOutputEntry } from './bash_
 /** Results larger than this are not cached (recall then degrades to a re-fetch). */
 export const MCP_MAX_CACHE_BYTES = 2 * 1024 * 1024
 
-const MUTABLE_VERBS_RE = /(?:^|_)(?:create|update|delete|send|write|push|post|remove|label|unlabel|merge|modify|draft|fork|reply|move|rename|set|add|run|execute|close|copy|request|upload|insert|revoke|reset|archive|restore|annotate|register|unregister|star|unstar|like|unlike|vote|block|unblock|invite|kick|ban)(?=_|$)/i
+const MUTABLE_VERBS_RE = /^request(?=_|$)|(?:^|_)(?:create|update|delete|send|write|push|post|remove|label|unlabel|merge|modify|draft|fork|reply|move|rename|set|add|run|execute|close|copy|upload|insert|revoke|reset|archive|restore|annotate|register|unregister|star|unstar|like|unlike|vote|block|unblock|invite|kick|ban|click|fill|press|type|navigate|evaluate|drag|hover|handle|snapshot|wait|emulate|new|select|resize|audit)(?=_|$)/i
 
 /**
  * Return true when *toolName* is a read-only MCP tool safe to cache.
@@ -102,8 +102,12 @@ export function getMcpOutput(
   sessionId: string,
   toolName: string,
   toolInput: Record<string, unknown>,
+  ttlMs = Number.POSITIVE_INFINITY,
 ): string | null {
   if (!sessionId) return null
   const id = mcpOutputId(sessionId, mcpHash(toolName, toolInput))
-  return getBashOutput(id) ? id : null
+  const entry = getBashOutput(id)
+  if (!entry) return null
+  if (Date.now() - entry.storedAt > ttlMs) return null
+  return id
 }

@@ -140,6 +140,7 @@ export interface HintsConfig {
   log_large_file_hint_outcomes: boolean
   cross_session_read_dedup: boolean
   cross_session_read_dedup_ttl_secs: number
+  mcp_dedup_ttl_secs: number
 }
 
 export interface HooksConfig {
@@ -320,6 +321,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     log_large_file_hint_outcomes: false,
     cross_session_read_dedup: false,
     cross_session_read_dedup_ttl_secs: 2700,
+    mcp_dedup_ttl_secs: 45,
   },
   hooks: {
     watchdog_ms: 700,
@@ -461,6 +463,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES',
   'TOKEN_GOAT_CROSS_SESSION_READ_DEDUP',
   'TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS',
+  'TOKEN_GOAT_MCP_DEDUP_TTL_SECS',
 ]
 
 export function configEnvFingerprint(): string {
@@ -667,6 +670,8 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.cross_session_read_dedup_ttl_secs = validatedInt(hi_raw['cross_session_read_dedup_ttl_secs'], hi.cross_session_read_dedup_ttl_secs, 1, 86400)
   hi.cross_session_read_dedup = envBool('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP', hi.cross_session_read_dedup)
   hi.cross_session_read_dedup_ttl_secs = envInt('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS', hi.cross_session_read_dedup_ttl_secs)
+  hi.mcp_dedup_ttl_secs = validatedInt(hi_raw['mcp_dedup_ttl_secs'], hi.mcp_dedup_ttl_secs, 1, 3600)
+  hi.mcp_dedup_ttl_secs = envInt('TOKEN_GOAT_MCP_DEDUP_TTL_SECS', hi.mcp_dedup_ttl_secs)
   hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes)
   // parse prompt_triggers
   const triggers_raw = hi_raw['prompt_triggers']
@@ -868,6 +873,7 @@ export function saveConfig(config: Config): void {
       log_large_file_hint_outcomes: config.hints.log_large_file_hint_outcomes,
       cross_session_read_dedup: config.hints.cross_session_read_dedup,
       cross_session_read_dedup_ttl_secs: config.hints.cross_session_read_dedup_ttl_secs,
+      mcp_dedup_ttl_secs: config.hints.mcp_dedup_ttl_secs,
     },
     hooks: {
       watchdog_ms: config.hooks.watchdog_ms,

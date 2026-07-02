@@ -15,6 +15,7 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, getToolInput, passOutput, denyOutput } from './hooks_common.js'
 import { isMcpReadOnly, getMcpOutput, storeMcpOutput } from './mcp_cache.js'
+import { loadConfig } from './config.js'
 
 /**
  * Pull the textual result out of a tool_response payload. Handles the plain
@@ -52,7 +53,8 @@ export function extractMcpResultText(raw: Record<string, unknown>): string {
 function preMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
   if (!toolName || !isMcpReadOnly(toolName) || !event.sessionId) return passOutput()
-  const id = getMcpOutput(event.sessionId, toolName, getToolInput(event))
+  const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
+  const id = getMcpOutput(event.sessionId, toolName, getToolInput(event), ttlMs)
   if (!id) return passOutput()
   return denyOutput(
     'Identical read-only MCP call already cached this session. Use `token-goat bash-output ' +
@@ -65,8 +67,9 @@ function postMcpHandler(event: HookEvent): HookOutput {
   const toolName = getToolName(event)
   if (!toolName || !isMcpReadOnly(toolName) || !event.sessionId) return passOutput()
   const toolInput = getToolInput(event)
-  // Idempotent: a re-fired post for an already-cached call writes nothing.
-  if (getMcpOutput(event.sessionId, toolName, toolInput)) return passOutput()
+  const ttlMs = loadConfig().hints.mcp_dedup_ttl_secs * 1000
+  // Idempotent: a re-fired post for an already-cached, still-fresh call writes nothing.
+  if (getMcpOutput(event.sessionId, toolName, toolInput, ttlMs)) return passOutput()
   const resultText = extractMcpResultText(event.raw)
   if (!resultText) return passOutput()
   storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
