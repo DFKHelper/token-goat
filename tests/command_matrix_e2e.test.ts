@@ -166,6 +166,15 @@ const cases: Record<string, () => void> = {
     const r = run(['changed', '--since', 'HEAD~1'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/mod\.ts/)
+    // Regression: --symbol must be hunk-scoped to the lines the diff actually touched,
+    // not every symbol in a file that has any changed line. The second commit only
+    // appended gammaSym to the end of src/mod.ts, so alphaSym/betaSym (defined above
+    // the appended hunk, untouched) must not be reported as changed symbols.
+    const rs = run(['changed', '--since', 'HEAD~1', '--symbol'])
+    expect(rs.status, rs.stderr).toBe(0)
+    expect(rs.stdout).toContain('gammaSym')
+    expect(rs.stdout).not.toContain('alphaSym')
+    expect(rs.stdout).not.toContain('betaSym')
   },
   'config-get': () => expectRead(['config-get', 'pkg.json', 'version'], '3.2.1'),
   map: () => {
