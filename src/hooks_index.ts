@@ -96,13 +96,16 @@ export function clearDirtyQueue(): void {
 export function preCompactIndexHandler(_event: HookEvent): HookOutput {
   const paths = getDirtyPaths()
   if (paths.length > 0) {
+    // Informational snapshot only — the live queue is never cleared here. Nothing reads
+    // this sidecar back; the worker keeps draining queue/dirty.txt on its own cadence, so
+    // clearing it at compact time would drop any entry appended around the same moment
+    // (a TOCTOU race with appendDirtyPath) with no code left to reindex it.
     const sidecar = path.join(dataDir(), 'queue', 'pending.txt')
     try {
       fs.mkdirSync(path.dirname(sidecar), { recursive: true })
       atomicWriteBytes(sidecar, Buffer.from(`${paths.join('\n')}\n`, 'utf8'))
-      clearDirtyQueue()
     } catch {
-      // best-effort snapshot; if write fails, keep queue for retry on next compact
+      // best-effort snapshot; failures here must never affect the live queue
     }
   }
   return passOutput()
