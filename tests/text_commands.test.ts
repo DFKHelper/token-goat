@@ -115,6 +115,15 @@ describe('todo command', () => {
     expect(r.stdout).toContain('[TODO]')
     expect(r.stdout).toContain('[FIXME]')
   })
+
+  it('treats a --kinds value with regex-special characters as a literal marker, not a regex pattern (regression: unescaped --kinds crashed cmdTodo with "Invalid regular expression")', () => {
+    const src = path.join(tmpDir, 'regex_kinds.ts')
+    fs.writeFileSync(src, '// TODO: a\n', 'utf8')
+    const r = run(['todo', src, '--kinds', '('])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stderr).not.toContain('Invalid regular expression')
+    expect(r.stdout).toContain('No TODO markers found.')
+  })
 })
 
 // ── trace ───────────────────────────────────────────────────────────────────
@@ -188,6 +197,26 @@ describe('trace command', () => {
     expect(parsed.tracebacks[0]?.exception).toContain('ValueError')
     expect(parsed.tracebacks[1]?.frames.length).toBe(1)
     expect(parsed.tracebacks[1]?.frames[0]?.file).toBe('b.py')
+  })
+
+  it('does not leak a following frame header into a preceding frame\'s context when two "File" lines are consecutive (regression: a frame with no printed source line stole the next frame\'s header text as its own context)', () => {
+    const multi = [
+      'Traceback (most recent call last):',
+      '  File "a.py", line 1, in fa',
+      '  File "b.py", line 2, in fb',
+      '    do_something()',
+      'ValueError: oops',
+    ].join('\n')
+    const r = run(['trace', '--json'], { input: multi, cwd: tmpDir })
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      tracebacks: Array<{ frames: Array<{ file: string; context?: string }> }>
+    }
+    const frames = parsed.tracebacks[0]?.frames ?? []
+    expect(frames[0]?.file).toBe('a.py')
+    expect(frames[0]?.context).toBe('')
+    expect(frames[1]?.file).toBe('b.py')
+    expect(frames[1]?.context).toBe('do_something()')
   })
 })
 

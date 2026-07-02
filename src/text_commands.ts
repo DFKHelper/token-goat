@@ -63,6 +63,11 @@ function isInsideStringLiteral(line: string, markerIndex: number): boolean {
   return dqCount % 2 !== 0 || sqCount % 2 !== 0
 }
 
+/** Escape regex-special characters so a string matches only itself. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
   let text: string
   try {
@@ -70,7 +75,11 @@ function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
   } catch {
     return []
   }
-  const kindPattern = [...kindSet].join('|')
+  // --kinds is documented as a literal, comma-separated list of marker names (TODO, FIXME, ...),
+  // not a regex pattern -- escape each value before interpolating so a kind containing
+  // regex-special characters (e.g. an unbalanced paren) is matched literally instead of either
+  // throwing "Invalid regular expression" or being interpreted as regex syntax.
+  const kindPattern = [...kindSet].map(escapeRegExp).join('|')
   const re = new RegExp(`\\b(${kindPattern})\\s*:?\\s*(.*)`, 'i')
   const items: TodoItem[] = []
   const lines = splitLines(text)
@@ -188,9 +197,14 @@ function parseTracebacks(text: string): TraceBlock[] {
       const fm = /^\s{2}File "([^"]+)", line (\d+), in (\S+)/.exec(fl)
       if (fm !== null) {
         i++
-        const ctx = lines[i]?.trim()
-        if (ctx !== undefined && !ctx.startsWith('File ') && !ctx.startsWith('Traceback')) i++
-        frames.push({ file: fm[1] ?? '', lineNo: Number.parseInt(fm[2] ?? '0', 10), func: fm[3] ?? '', context: ctx ?? '' })
+        const peek = lines[i]?.trim()
+        // A frame with no printed source line is immediately followed by the next frame's
+        // "File ..." header (or the block's Traceback marker) rather than a context line --
+        // in that case leave this frame's context empty instead of consuming/borrowing the
+        // next frame's header text.
+        const hasContext = peek !== undefined && !peek.startsWith('File ') && !peek.startsWith('Traceback')
+        if (hasContext) i++
+        frames.push({ file: fm[1] ?? '', lineNo: Number.parseInt(fm[2] ?? '0', 10), func: fm[3] ?? '', context: hasContext ? (peek ?? '') : '' })
         continue
       }
       if (!/^\s/.test(fl) && fl.trim() !== '') {
