@@ -74,13 +74,26 @@ export function stripSqlLineComments(text: string): string {
 
 /**
  * True when `index` falls inside an opening single- or double-quoted string literal earlier
- * on `line` (an odd count of unescaped quote characters before it).
+ * on `line`. Tracked as a single state machine (which quote character, if any, is currently
+ * open) rather than independent odd/even counts per quote type - a line of code is inside at
+ * most one kind of string at a time, since a `'` can't open while a `"`-delimited string is
+ * already open (and vice versa). Using independent parity counters instead misreads an
+ * apostrophe inside a double-quoted string, e.g. `"don't panic"`, as opening a single-quoted
+ * string that never closes.
  */
 function isInsideStringLiteral(line: string, index: number): boolean {
-  const before = line.slice(0, index)
-  const dqCount = (before.match(/(?<!\\)"/g) ?? []).length
-  const sqCount = (before.match(/(?<!\\)'/g) ?? []).length
-  return dqCount % 2 !== 0 || sqCount % 2 !== 0
+  let openQuote: '"' | "'" | null = null
+  for (let i = 0; i < index; i++) {
+    const ch = line[i]
+    if ((ch === '"' || ch === "'") && line[i - 1] !== '\\') {
+      if (openQuote === null) {
+        openQuote = ch
+      } else if (openQuote === ch) {
+        openQuote = null
+      }
+    }
+  }
+  return openQuote !== null
 }
 
 /**
@@ -116,6 +129,20 @@ export function stripBlockCommentSpan(line: string, inComment: boolean): { code:
     }
   }
   return { code, inComment: comment }
+}
+
+/**
+ * Strip a `//` line comment from `line`, returning only the code portion before it.
+ * A `//` occurrence that falls inside an open single- or double-quoted string literal (e.g.
+ * `"http://example.com"`) is not treated as a comment opener, mirroring the quote-awareness
+ * `stripBlockCommentSpan` applies to `/*`. Returns `line` unchanged when no real `//` is found.
+ */
+export function stripLineComment(line: string): string {
+  let idx = line.indexOf('//')
+  while (idx !== -1 && isInsideStringLiteral(line, idx)) {
+    idx = line.indexOf('//', idx + 1)
+  }
+  return idx === -1 ? line : line.slice(0, idx)
 }
 
 // ---------------------------------------------------------------------------
