@@ -1,8 +1,8 @@
 import * as path from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { normalizePath, safeJoin } from '../src/paths.js'
+import { normalizePath, resolveIndexPath, safeJoin } from '../src/paths.js'
 
 describe('safeJoin', () => {
   it('joins normally when no part contains a colon', () => {
@@ -83,5 +83,52 @@ describe('normalizePath', () => {
       setPlatform('linux')
       expect(normalizePath('/c/foo')).toBe('/c/foo')
     })
+  })
+})
+
+describe('resolveIndexPath', () => {
+  // These assert on WHICH resolver is invoked (path.win32.resolve vs the ambient, host-native
+  // path.resolve), not just the output value: on a real Windows host, the ambient path.resolve
+  // is already win32-native, so a value-only assertion would pass even against the pre-fix bug
+  // that only broke on non-Windows hosts (CI's ubuntu-latest). Spying on the call is what makes
+  // this regression catchable from a Windows dev machine's local pre-push run too, not just CI.
+  it('uses path.win32.resolve, not the ambient path.resolve, when file is Windows-drive-absolute (fail-on-buggy: passes trivially on a real Windows host even without the fix, since the ambient resolve is win32-native there)', () => {
+    const win32Spy = vi.spyOn(path.win32, 'resolve')
+    try {
+      resolveIndexPath('C:/Projects/repo-a/src/foo.ts', '/some/other/base')
+      expect(win32Spy).toHaveBeenCalled()
+    } finally {
+      win32Spy.mockRestore()
+    }
+  })
+
+  it('uses path.win32.resolve, not the ambient path.resolve, when only base (cwd) is Windows-drive-absolute and file is relative', () => {
+    const win32Spy = vi.spyOn(path.win32, 'resolve')
+    try {
+      resolveIndexPath('src/foo.ts', 'C:/Projects/repo-a')
+      expect(win32Spy).toHaveBeenCalled()
+    } finally {
+      win32Spy.mockRestore()
+    }
+  })
+
+  it('does not use path.win32.resolve for a relative file against a POSIX-style base', () => {
+    const win32Spy = vi.spyOn(path.win32, 'resolve')
+    try {
+      resolveIndexPath('src/foo.ts', '/home/user/repo')
+      expect(win32Spy).not.toHaveBeenCalled()
+    } finally {
+      win32Spy.mockRestore()
+    }
+  })
+
+  it('dedups a relative-vs-Windows-absolute reference to the same file under a Windows-style cwd (fail-on-buggy: breaks if the ambient path.resolve is used instead of path.win32.resolve)', () => {
+    const cwd = 'C:/Projects/repo-a'
+    expect(resolveIndexPath('src/foo.ts', cwd)).toBe(resolveIndexPath('C:/Projects/repo-a/src/foo.ts', cwd))
+  })
+
+  it('dedups a drive-letter-case-only difference under a Windows-style cwd', () => {
+    const cwd = 'C:/Projects/repo-a'
+    expect(resolveIndexPath('C:/Projects/repo-a/src/foo.ts', cwd)).toBe(resolveIndexPath('c:/Projects/repo-a/src/foo.ts', cwd))
   })
 })
