@@ -8,6 +8,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { execSync, spawnSync } from 'child_process'
 import { extractErrorMessage } from './util.js'
+import { isWorkerRunning } from './worker.js'
+import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
 import { runContextStats } from './cli_context_stats.js'
 import { skillOutputsDir } from './skill_cache.js'
 
@@ -24,30 +26,25 @@ export interface DoctorResult {
  * Check if the token-goat worker process is running.
  */
 export function checkWorkerRunning(): boolean {
-  try {
-    const output = execSync('tasklist', { encoding: 'utf-8' })
-    return output.includes('token-goat') || output.includes('worker')
-  } catch {
-    return false
-  }
+  return isWorkerRunning()
 }
 
 /**
  * Check if the data directory and database files exist.
  */
 export function checkDbExists(dataDir: string): DoctorResult {
-  const dbPath = path.join(dataDir, 'index.db')
+  const dbPath = path.join(dataDir, 'global.db')
   if (!fs.existsSync(dbPath)) {
     return {
       name: 'Database',
       status: 'warn',
-      message: `index.db not found at ${dbPath}`,
+      message: `global.db not found at ${dbPath}`,
     }
   }
   return {
     name: 'Database',
     status: 'ok',
-    message: `index.db exists (${Math.round(fs.statSync(dbPath).size / 1024)} KB)`,
+    message: `global.db exists (${Math.round(fs.statSync(dbPath).size / 1024)} KB)`,
   }
 }
 
@@ -133,11 +130,10 @@ export function runDoctor(dataDir?: string, configPath?: string): DoctorResult[]
   results.push(checkWorkerRunning() ? { name: 'Worker', status: 'ok', message: 'running' } : { name: 'Worker', status: 'warn', message: 'not running' })
 
   // File checks
-  const homeDir = process.env['HOME'] || process.env['USERPROFILE'] || '~'
-  const actualDataDir = dataDir || path.join(homeDir, '.token-goat')
+  const actualDataDir = dataDir || defaultDataDir()
   results.push(checkDbExists(actualDataDir))
 
-  const actualConfigPath = configPath || path.join(actualDataDir, 'config.json')
+  const actualConfigPath = configPath || defaultConfigPath()
   results.push(checkConfigValid(actualConfigPath))
 
   results.push(checkDiskSpace(actualDataDir))
