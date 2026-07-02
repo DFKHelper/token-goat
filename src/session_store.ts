@@ -190,7 +190,10 @@ function mergePairs(disk: Array<[string, string]>, mem: Array<[string, string]>)
   return Array.from(new Map([...disk, ...mem]).entries())
 }
 
-/** Merge two views of the per-file served line ranges: union per file, dedup identical ranges, cap per file. */
+/** Merge two views of the per-file served line ranges: union per file, dedup identical ranges, cap per file.
+ * The cap never evicts a range already on disk (another process's confirmed, persisted work) — once a
+ * file is at the cap, a fresh range from this process's own in-memory view is simply not added rather
+ * than displacing a disk-persisted entry. */
 function mergeLineRanges(disk: Array<[string, Array<[number, number]>]>, mem: Array<[string, Array<[number, number]>]>): Array<[string, Array<[number, number]>]> {
   const byPath = new Map<string, Array<[number, number]>>()
   for (const [filePath, ranges] of disk) byPath.set(filePath, [...ranges])
@@ -199,9 +202,10 @@ function mergeLineRanges(disk: Array<[string, Array<[number, number]>]>, mem: Ar
     const seen = new Set(prev.map(([s, e]) => s + ':' + e))
     for (const [s, e] of ranges) {
       const key = s + ':' + e
-      if (!seen.has(key)) { prev.push([s, e]); seen.add(key) }
+      if (seen.has(key) || prev.length >= MAX_RANGES_PER_FILE) continue
+      prev.push([s, e])
+      seen.add(key)
     }
-    if (prev.length > MAX_RANGES_PER_FILE) prev.splice(0, prev.length - MAX_RANGES_PER_FILE)
     byPath.set(filePath, prev)
   }
   return Array.from(byPath.entries())
