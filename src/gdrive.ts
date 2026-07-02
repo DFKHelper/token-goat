@@ -5,7 +5,7 @@
  * parses heading structure, and extracts individual sections by heading name.
  */
 
-import { storeWebOutput, getWebOutputByUrl } from './web_cache.js'
+import { storeWebOutput, getWebOutputByUrlFromDisk } from './web_cache.js'
 import { estimateTokens } from './compact.js'
 
 export interface GdriveSection {
@@ -50,7 +50,7 @@ async function fetchDocFromApi(url: string): Promise<string> {
 export async function fetchDoc(fileId: string): Promise<string> {
   const url = buildExportUrl(fileId)
 
-  const cached = getWebOutputByUrl(url)
+  const cached = getWebOutputByUrlFromDisk(url)
   if (cached !== null) {
     return cached.content
   }

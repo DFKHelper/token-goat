@@ -83,12 +83,38 @@ export function getWebOutput(cacheId: string): string | null {
 /**
  * Return the cached body and id for `url`, or null if the URL was not fetched
  * this session.
+ *
+ * In-memory only (by design — see `clearModuleCaches clears the in-memory
+ * maps` in web_cache.test.ts): does not read through to the disk store, so a
+ * URL fetched by an earlier, separate process will not resolve here even
+ * though its body is still on disk. For a cross-process/cross-invocation
+ * lookup keyed on a URL (each CLI run is a fresh process with no in-memory
+ * state), use {@link getWebOutputByUrlFromDisk} instead.
  */
 export function getWebOutputByUrl(url: string): { cacheId: string; content: string } | null {
   const cacheId = _urlIndex.get(url)
   if (cacheId === undefined) return null
   const content = _byId.get(cacheId)
   if (content === undefined) return null
+  return { cacheId, content }
+}
+
+/**
+ * Return the cached body and id for `url`, reading through to the disk store
+ * on an in-memory miss.
+ *
+ * `cacheIdForUrl` is a pure function of `url` (a content-address, not a
+ * value that needs to have been seen this process to compute), so the id can
+ * be derived directly and handed to {@link getWebOutput}, which already reads
+ * through to disk. This is what lets a URL-keyed cross-process caller (e.g.
+ * `gdrive.ts`, where each CLI invocation is a fresh process) recall a body
+ * persisted by an earlier invocation instead of always re-fetching over the
+ * network.
+ */
+export function getWebOutputByUrlFromDisk(url: string): { cacheId: string; content: string } | null {
+  const cacheId = cacheIdForUrl(url)
+  const content = getWebOutput(cacheId)
+  if (content === null) return null
   return { cacheId, content }
 }
 
