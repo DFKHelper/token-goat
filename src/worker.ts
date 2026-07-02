@@ -51,6 +51,17 @@ export interface WorkerHandle {
 
 const DEFAULT_POLL_INTERVAL_MS = 2000
 
+/**
+ * Tracks '.draining' files whose content was already folded into a batch by
+ * {@link drainOnce} but could not be removed or quarantined (both cleanup
+ * attempts failed, e.g. a persistent Windows sharing violation). Keyed by the
+ * '.draining' file's absolute path, valued by the exact content already
+ * processed. Without this, a `.draining` file that survives a full drain
+ * cycle unchanged would be re-read and its paths reprocessed on every
+ * subsequent cycle until cleanup finally succeeds.
+ */
+const unclearedDrainingSnapshots = new Map<string, string>()
+
 /** Absolute path to the dirty queue file for `dir`. */
 function dirtyQueuePathFor(dir: string): string {
   return path.join(dir, 'queue', 'dirty.txt')
@@ -192,8 +203,9 @@ export function drainOnce(
 
   // (a) Crash recovery: absorb a .draining file abandoned by a previous crashed drain.
   if (fs.existsSync(draining)) {
+    let drainingContent: string
     try {
-      rawSnapshot += fs.readFileSync(draining, 'utf8')
+      drainingContent = fs.readFileSync(draining, 'utf8')
     } catch {
       // Genuinely unreadable: quarantine so stage (b)'s claim-rename cannot clobber it, then skip this cycle.
       try {
@@ -203,14 +215,26 @@ export function drainOnce(
       }
       return 0
     }
+    // Only fold this content into the batch if it was not already queued for processing
+    // on a prior cycle (see unclearedDrainingSnapshots below). Without this guard, a
+    // .draining file that outlives both cleanup attempts (e.g. a persistent Windows
+    // sharing violation) would be re-read and its paths reprocessed on every cycle.
+    if (unclearedDrainingSnapshots.get(draining) !== drainingContent) {
+      rawSnapshot += drainingContent
+    }
     // Read succeeded; lines are safely in rawSnapshot. Best-effort remove so they are not reprocessed; if removal fails (e.g. a Windows sharing violation) quarantine the file out of stage (b)'s way but do NOT discard the data already read.
     try {
       fs.rmSync(draining, { force: true })
+      unclearedDrainingSnapshots.delete(draining)
     } catch {
       try {
         fs.renameSync(draining, `${draining}.corrupt-${Date.now()}`)
+        unclearedDrainingSnapshots.delete(draining)
       } catch {
-        // best effort
+        // Both cleanup attempts failed and the file is still named .draining: remember
+        // exactly what we already folded into this cycle's batch so the next cycle can
+        // retry cleanup without reprocessing the same paths again.
+        unclearedDrainingSnapshots.set(draining, drainingContent)
       }
     }
   }
