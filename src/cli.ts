@@ -49,6 +49,7 @@ import {
   runGrep,
   extractTranscriptText,
   extractSection,
+  findSpecSeparator,
 } from './read_commands.js'
 import {
   runCallers,
@@ -615,12 +616,12 @@ async function cmdSkillSection(nameHeading: string, headingArg?: string): Promis
     skillName = nameHeading
     heading = headingArg
   } else {
-    const parts = nameHeading.split('::')
-    if (parts.length !== 2) {
+    const sepIdx = findSpecSeparator(nameHeading)
+    if (sepIdx === -1) {
       throw new CliError('skill-section requires "<name>::<heading>" format or <name> <heading> arguments')
     }
-    skillName = parts[0]!
-    heading = parts[1]!
+    skillName = nameHeading.slice(0, sepIdx)
+    heading = nameHeading.slice(sepIdx + 2)
   }
 
   const filePath = await getSkillFilePath(skillName)

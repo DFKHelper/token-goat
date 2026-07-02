@@ -54,7 +54,7 @@ function emitErr(text: string): void {
 // occurrence rather than the first: a file path is far more likely to contain a literal `::`
 // than a symbol/heading name is. Returns -1 when absent, matching `String.indexOf`'s no-match
 // contract so callers can drop straight into their existing `=== -1` checks.
-function findSpecSeparator(spec: string): number {
+export function findSpecSeparator(spec: string): number {
   return spec.lastIndexOf('::')
 }
 
