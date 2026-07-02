@@ -212,6 +212,16 @@ const cases: Record<string, () => void> = {
     expect(r.stdout.length).toBeGreaterThan(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
   },
+  'context-stats': () => {
+    const r = run(['context-stats'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('context')
+    const rj = run(['context-stats', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const output = JSON.parse(rj.stdout) as { total_tokens: number }
+    expect(typeof output.total_tokens).toBe('number')
+  },
+
   version: () => {
     const r = run(['version'])
     expect(r.status, r.stderr).toBe(0)
