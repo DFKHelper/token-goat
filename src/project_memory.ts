@@ -4,6 +4,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { atomicWriteText } from './util.js';
@@ -18,7 +19,10 @@ const KEY_RE = /^[A-Za-z0-9_-]{1,80}$/;
  */
 export function memoryPath(projectHash: string): string {
   // Import paths dynamically to avoid circular dependency at startup
-  const dataDir = process.env['XDG_DATA_HOME'] || path.join(process.env['HOME'] || process.env['USERPROFILE'] || '.', '.local', 'share');
+  // os.homedir() (not a manual HOME/USERPROFILE-only check) matches the convention used by
+  // tokenGoatHome() in disk_cache.ts: it never silently degrades to a relative '.' path when
+  // both env vars are unset.
+  const dataDir = process.env['XDG_DATA_HOME'] || path.join(os.homedir(), '.local', 'share');
   return path.join(dataDir, 'token-goat', 'projects', `${projectHash}_memory.toml`);
 }
 

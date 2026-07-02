@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type * as NodeFs from 'node:fs';
+import type * as NodeOs from 'node:os';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // vi.mock is hoisted — wrap renameSync (still delegating to the real implementation) so the
@@ -12,6 +13,18 @@ vi.mock('node:fs', async (importOriginal) => {
   return {
     ...original,
     renameSync: vi.fn((...args: Parameters<typeof original.renameSync>) => original.renameSync(...args)),
+  };
+});
+
+// vi.mock is hoisted — wrap homedir (still delegating to the real implementation by default) so
+// the #M4 test below can force a deterministic value for the "no HOME/USERPROFILE" fallback
+// without touching Node's non-configurable os module properties directly (vi.spyOn on a builtin
+// fails at runtime).
+vi.mock('node:os', async (importOriginal) => {
+  const original = await importOriginal<typeof NodeOs>();
+  return {
+    ...original,
+    homedir: vi.fn((...args: Parameters<typeof original.homedir>) => original.homedir(...args)),
   };
 });
 
@@ -58,6 +71,24 @@ describe('project_memory', () => {
     it('should have .toml extension', () => {
       const p = memoryPath('test');
       expect(p).toMatch(/\.toml$/);
+    });
+
+    it('falls back to os.homedir() (not a relative path) when XDG_DATA_HOME, HOME, and USERPROFILE are all unset (#M4)', () => {
+      const oldHome = process.env['HOME'];
+      const oldUserProfile = process.env['USERPROFILE'];
+      delete process.env['XDG_DATA_HOME'];
+      delete process.env['HOME'];
+      delete process.env['USERPROFILE'];
+      const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>;
+      homedirMock.mockReturnValueOnce('C:\\mock\\home');
+      try {
+        const p = memoryPath('test');
+        expect(path.isAbsolute(p)).toBe(true);
+        expect(p).toBe(path.join('C:\\mock\\home', '.local', 'share', 'token-goat', 'projects', 'test_memory.toml'));
+      } finally {
+        if (oldHome !== undefined) process.env['HOME'] = oldHome; else delete process.env['HOME'];
+        if (oldUserProfile !== undefined) process.env['USERPROFILE'] = oldUserProfile; else delete process.env['USERPROFILE'];
+      }
     });
   });
 
