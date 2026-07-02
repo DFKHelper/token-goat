@@ -55,6 +55,17 @@ function grepEvent(filePath: string | undefined): HookEvent {
   }
 }
 
+// The real Grep tool schema uses `path` (not `file_path`) for the search target.
+function grepPathEvent(searchPath: string | undefined): HookEvent {
+  return {
+    eventName: 'pre_tool_use',
+    toolName: 'Grep',
+    toolInput: searchPath === undefined ? {} : { path: searchPath },
+    sessionId: 'test',
+    raw: {},
+  }
+}
+
 beforeEach(() => {
   clearModuleCaches()
 })
@@ -234,6 +245,31 @@ describe('preReadHandler', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('node_modules is typically noise')
     }
+  })
+
+  it('resolves the real Grep tool schema field ("path", not "file_path") so the Grep registration actually gates instead of being a no-op', () => {
+    const result = preReadHandler(grepPathEvent('/project/node_modules/package/file.js'))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('node_modules is typically noise')
+    }
+  })
+
+  it('passes through when a Grep call has neither "path" nor "file_path"', () => {
+    const result = preReadHandler(grepPathEvent(undefined))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('does not use the "path" fallback for the Read tool (Grep-scoped only)', () => {
+    const event: HookEvent = {
+      eventName: 'pre_tool_use',
+      toolName: 'Read',
+      toolInput: { path: '/project/node_modules/package/file.js' },
+      sessionId: 'test',
+      raw: {},
+    }
+    const result = preReadHandler(event)
+    expect(result.hookType).toBe('pass')
   })
 
   it('denies 2nd read of any .md file regardless of size', () => {
@@ -429,6 +465,28 @@ Some content that makes the file large enough`
     if (r3.hookType === 'deny') {
       expect(r3.message).toContain('already read this session')
     }
+  })
+
+  it('does not deny re-reads of an image via the generic re-read-dedup branch — the large-file-deny and universal-file-type branches already exempt isImagePath, but this third branch was missing the same exemption, so a same-size-or-larger image got a nonsensical "use token-goat read/section/symbol" deny on re-read', () => {
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.png`,
+    )
+    // 60KB: below LARGE_FILE_BYTES/FILE_TYPE_THRESHOLDS.generic (100KB) so neither of those
+    // branches fires, but at/above REREAD_DENY_BYTES (50KB) so the size-based re-read deny in
+    // the generic dedup branch would fire on an un-exempted 2nd read.
+    fs.writeFileSync(p, Buffer.alloc(60 * 1024, 1))
+    tmpFiles.push(p)
+
+    const r1 = preReadHandler(readEvent(p))
+    expect(r1.hookType).toBe('pass')
+
+    const r2 = preReadHandler(readEvent(p))
+    expect(r2.hookType).toBe('pass')
+
+    // reads >= 2 unconditionally denies in the un-exempted branch, regardless of size.
+    const r3 = preReadHandler(readEvent(p))
+    expect(r3.hookType).toBe('pass')
   })
 
   // Count-based deny: 3rd+ read of source files (Item 1 — nestpilot mining)
@@ -697,6 +755,19 @@ Some content that makes the file large enough`
     }
   })
 
+  it('points the .improve-state-*.json re-read deny at a remedy that actually works — hooks_bash.ts exempts these files from every bash-output extraction site (isOrchestratorStateFile), so a bare `bash-output <id>` can never resolve to a cached entry', () => {
+    const p = path.join(os.tmpdir(), '.improve-state-bugfixing.json')
+    fs.writeFileSync(p, JSON.stringify({ phase: 'bugfixing' }))
+    tmpFiles.push(p)
+    recordFileRead(normalizePath(p))
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
+      expect(result.message).not.toContain('bash-output <id>')
+    }
+  })
+
   it('passes first read of .improve-state-*.json', () => {
     const p = path.join(os.tmpdir(), '.improve-state-foo.json')
     fs.writeFileSync(p, JSON.stringify({ phase: 'foo' }))
@@ -828,6 +899,36 @@ Some content that makes the file large enough`
     const p = path.join(
       os.tmpdir(),
       `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.rst`,
+    )
+    fs.writeFileSync(p, content1)
+    tmpFiles.push(p)
+
+    const postEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: 'test',
+      raw: { tool_response: content1 },
+    }
+    postReadHandler(postEvent)
+    recordFileRead(normalizePath(p))
+
+    fs.writeFileSync(p, content2)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Content changed since last read')
+      expect(result.message).toContain('```diff')
+    }
+  })
+
+  it('injects diff for .markdown file that changed since last read (isDocDiffable regex previously excluded .markdown, unlike its sibling regexes, so a changed .markdown fell through to the generic "already read" deny instead of serving the diff)', () => {
+    const content1 = 'Title\n=====\n\nOriginal.\n'
+    const content2 = 'Title\n=====\n\nOriginal.\n\nNew Section\n-----------\n\nAdded.\n'
+    const p = path.join(
+      os.tmpdir(),
+      `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.markdown`,
     )
     fs.writeFileSync(p, content1)
     tmpFiles.push(p)
