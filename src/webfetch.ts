@@ -1,10 +1,12 @@
 import { createHash } from 'crypto';
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, mkdirSync } from 'fs';
+import * as http from 'http';
+import * as https from 'https';
 import { isIPv4, isIPv6 } from 'net';
-import { resolve, join } from 'path';
+import { isAbsolute, relative, resolve, join, sep } from 'path';
 import { URL } from 'url';
 import { promisify } from 'util';
-import { lookup as dnsLookup } from 'dns';
+import { lookup as dnsLookup, type LookupOptions } from 'dns';
 import { atomicWriteBytes, atomicWriteText, extractErrorMessage } from './util.js';
 import { dataDir } from './constants.js';
 import { shrinkImage } from './image_shrink.js';
@@ -80,6 +82,43 @@ function truncateUrl(url: string, maxLen: number = MAX_URL_IN_ERROR): string {
   return sanitized.length > maxLen ? sanitized.slice(0, maxLen) + '…' : sanitized;
 }
 
+type SsrfResolution =
+  | { kind: 'safe'; address: string; family: number }
+  | { kind: 'blocked' }
+  | { kind: 'unresolved' };
+
+/**
+ * Resolve `hostname` and validate every returned address is not private —
+ * the single source of truth for "is this host safe to connect to". Used
+ * both as the upfront isSsrfSafe() gate and as the resolver plugged into
+ * every real socket connection (see ssrfPinnedLookup below), so the address
+ * that gets validated is always the exact address that gets connected to —
+ * closing the DNS-rebinding TOCTOU gap between a separate check and fetch.
+ */
+async function resolveSsrfSafeAddress(hostname: string): Promise<SsrfResolution> {
+  const hostnameLower = hostname.toLowerCase().replace(/\.$/, '');
+  if (BLOCKED_HOSTNAMES.has(hostnameLower)) return { kind: 'blocked' };
+
+  let results: Array<{ address: string; family: number }>;
+  try {
+    const r = await dnsLookupAsync(hostnameLower, { all: true });
+    if (!Array.isArray(r) || r.length === 0) return { kind: 'unresolved' };
+    results = r;
+  } catch {
+    return { kind: 'unresolved' };
+  }
+
+  for (const addr of results) {
+    const ip = addr.address || '';
+    const isPrivate = isIPv4(ip) ? isPrivateIPv4(ip) : isIPv6(ip) ? isPrivateIPv6(ip) : true;
+    if (isPrivate) return { kind: 'blocked' };
+  }
+
+  const first = results[0];
+  if (!first) return { kind: 'unresolved' };
+  return { kind: 'safe', address: first.address, family: first.family };
+}
+
 async function isSsrfSafe(url: string): Promise<boolean> {
   try {
     const parsed = new URL(url);
@@ -88,25 +127,65 @@ async function isSsrfSafe(url: string): Promise<boolean> {
     const hostname = parsed.hostname;
     if (!hostname) return false;
 
-    const hostnameLower = hostname.toLowerCase().replace(/\.$/, '');
-    if (BLOCKED_HOSTNAMES.has(hostnameLower)) return false;
-
-    try {
-      const results = await dnsLookupAsync(hostnameLower, { all: true });
-      if (!Array.isArray(results)) return ALLOW_UNRESOLVED;
-
-      for (const addr of results) {
-        const ip = addr.address || '';
-        const isPrivate = isIPv4(ip) ? isPrivateIPv4(ip) : isIPv6(ip) ? isPrivateIPv6(ip) : false;
-        if (isPrivate) return false;
-      }
-      return true;
-    } catch {
-      return ALLOW_UNRESOLVED;
-    }
+    const result = await resolveSsrfSafeAddress(hostname);
+    if (result.kind === 'safe') return true;
+    if (result.kind === 'unresolved') return ALLOW_UNRESOLVED;
+    return false;
   } catch {
     return false;
   }
+}
+
+/**
+ * dns.lookup-compatible resolver passed as the `lookup` option on every real
+ * HTTP(S) request this module makes (initial request and every redirect
+ * hop). Resolving here — rather than trusting a hostname string handed to
+ * http(s).request — means the address used to open the TCP/TLS socket is
+ * the exact address resolveSsrfSafeAddress just validated, with no gap for
+ * a second, independent DNS lookup (and thus DNS rebinding) to slip in.
+ */
+export function ssrfPinnedLookup(
+  hostname: string,
+  options: LookupOptions,
+  callback: (err: NodeJS.ErrnoException | null, address: string, family?: number) => void,
+): void {
+  resolveSsrfSafeAddress(hostname)
+    .then((result) => {
+      if (result.kind === 'safe') {
+        callback(null, result.address, result.family);
+        return;
+      }
+      if (result.kind === 'unresolved' && ALLOW_UNRESOLVED) {
+        dnsLookup(hostname, { ...options, all: false }, (err, address, family) => {
+          callback(err, typeof address === 'string' ? address : '', family);
+        });
+        return;
+      }
+      callback(new Error(`URL blocked by SSRF safety check: ${truncateUrl(hostname)}`) as NodeJS.ErrnoException, '');
+    })
+    .catch((err: unknown) => {
+      callback(err instanceof Error ? (err as NodeJS.ErrnoException) : new Error(String(err)), '');
+    });
+}
+
+/**
+ * True when `candidate`'s real, symlink-resolved location lives inside
+ * `rootReal` (itself already symlink-resolved) — same containment pattern
+ * as pack.ts's isRealPathWithinRoot. A cached `.meta` sidecar is
+ * attacker-writable data (whoever can write to the cache dir can plant a
+ * `shrunk_path` pointing anywhere), so it must be validated before being
+ * read back out. Takes the resolved root as a parameter (rather than always
+ * resolving webCacheDir() internally) so it is independently unit-testable.
+ */
+export function isRealPathWithinCacheDir(rootReal: string, candidate: string): boolean {
+  let candidateReal: string;
+  try {
+    candidateReal = realpathSync(candidate);
+  } catch {
+    return false;
+  }
+  const rel = relative(rootReal, candidateReal);
+  return rel !== '' && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel);
 }
 
 export function isPrivateIPv4(ip: string): boolean {
@@ -244,17 +323,160 @@ export function cleanupStaleDownloads(): number {
   return removed;
 }
 
+const MAX_REDIRECTS = 5;
+
+export interface HttpFetchResult {
+  status: number;
+  statusText: string;
+  headers: Record<string, string>;
+  body: Buffer;
+}
+
+export interface HttpFetchOpts {
+  deadlineAt: number;
+  timeoutSec: number;
+  maxSizeBytes: number;
+  requestHeaders: Record<string, string>;
+  redirectsLeft: number;
+}
+
+export function performHttpFetch(targetUrl: string, opts: HttpFetchOpts): Promise<HttpFetchResult> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(targetUrl);
+    } catch {
+      rejectPromise(new Error(`Invalid URL: ${truncateUrl(targetUrl)}`));
+      return;
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      rejectPromise(new Error(`URL blocked by SSRF safety check: ${truncateUrl(targetUrl)}`));
+      return;
+    }
+
+    const remainingMs = opts.deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      rejectPromise(new Error(`Request timed out after ${opts.timeoutSec}s fetching ${truncateUrl(targetUrl)}`));
+      return;
+    }
+
+    const mod = parsed.protocol === 'https:' ? https : http;
+    let settled = false;
+
+    const req = mod.request({
+      hostname: parsed.hostname,
+      port: parsed.port === '' ? undefined : Number(parsed.port),
+      path: parsed.pathname + parsed.search,
+      method: 'GET',
+      lookup: ssrfPinnedLookup,
+      headers: { Host: parsed.host, ...opts.requestHeaders },
+    });
+
+    const deadlineTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      req.destroy();
+      rejectPromise(new Error(`Request timed out after ${opts.timeoutSec}s fetching ${truncateUrl(targetUrl)}`));
+    }, remainingMs);
+
+    req.on('response', (res) => {
+      const status = res.statusCode ?? 0;
+
+      if (status >= 300 && status < 400 && res.headers.location) {
+        const location = res.headers.location;
+        res.resume();
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadlineTimer);
+        if (opts.redirectsLeft <= 0) {
+          rejectPromise(new Error(`Too many redirects fetching ${truncateUrl(targetUrl)}`));
+          return;
+        }
+        let nextUrl: string;
+        try {
+          nextUrl = new URL(location, targetUrl).toString();
+        } catch {
+          rejectPromise(new Error(`Invalid redirect location fetching ${truncateUrl(targetUrl)}`));
+          return;
+        }
+        performHttpFetch(nextUrl, { ...opts, redirectsLeft: opts.redirectsLeft - 1 }).then(resolvePromise, rejectPromise);
+        return;
+      }
+
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(res.headers)) {
+        if (typeof v === 'string') headers[k.toLowerCase()] = v;
+        else if (Array.isArray(v)) headers[k.toLowerCase()] = v.join(', ');
+      }
+
+      const chunks: Buffer[] = [];
+      let total = 0;
+      res.on('data', (chunk: Buffer) => {
+        if (settled) return;
+        total += chunk.length;
+        if (total > opts.maxSizeBytes) {
+          settled = true;
+          clearTimeout(deadlineTimer);
+          req.destroy();
+          rejectPromise(new Error(`File too large: ${total} bytes > ${opts.maxSizeBytes}`));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('end', () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadlineTimer);
+        resolvePromise({ status, statusText: res.statusMessage ?? '', headers, body: Buffer.concat(chunks) });
+      });
+      res.on('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadlineTimer);
+        rejectPromise(err);
+      });
+    });
+
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadlineTimer);
+      rejectPromise(err);
+    });
+
+    req.end();
+  });
+}
+
+/**
+ * Build conditional-request headers (If-None-Match / If-Modified-Since) from
+ * a cache entry's stored etag/last-modified, so a still-fresh cache can be
+ * revalidated against the origin (a 304 short-circuits back to the cache)
+ * instead of being served forever unconditionally or blindly re-downloaded
+ * in full on every revalidation.
+ */
+export function buildConditionalHeaders(meta: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const etag = meta['etag'];
+  const lastModified = meta['last_modified'];
+  if (etag) headers['If-None-Match'] = etag;
+  if (lastModified) headers['If-Modified-Since'] = lastModified;
+  return headers;
+}
+
 export async function fetchUrl(
   url: string,
   opts?: {
     shrinkIfImage?: boolean;
     timeoutSec?: number;
     maxSizeBytes?: number;
+    forceRevalidate?: boolean;
   },
 ): Promise<string> {
   const shrinkIfImage = opts?.shrinkIfImage !== false;
   const timeoutSec = opts?.timeoutSec ?? webfetchTimeout();
   const maxSizeBytes = opts?.maxSizeBytes ?? 50 * 1024 * 1024;
+  const forceRevalidate = opts?.forceRevalidate === true;
 
   if (url.length > MAX_URL_LEN) {
     throw new Error(`URL too long (${url.length} chars, max ${MAX_URL_LEN})`);
@@ -268,52 +490,60 @@ export async function fetchUrl(
   const urlSuffix = suffixFor(url);
   const cachePath = cachePathFor(url, urlSuffix);
   const cachedPathExists = existsSync(cachePath);
+  const cachedMeta = cachedPathExists ? readCacheMeta(cachePath) : {};
 
-  if (cachedPathExists) {
-    const meta = readCacheMeta(cachePath);
-    if (shrinkIfImage && meta['shrunk_path']) {
-      const shrunkPath = meta['shrunk_path'];
-      if (existsSync(shrunkPath)) {
-        return shrunkPath;
+  const serveCached = (): string => {
+    const shrunkPath = cachedMeta['shrunk_path'];
+    if (shrinkIfImage && shrunkPath && existsSync(shrunkPath)) {
+      try {
+        const cacheDirReal = realpathSync(webCacheDir());
+        if (isRealPathWithinCacheDir(cacheDirReal, shrunkPath)) {
+          return shrunkPath;
+        }
+      } catch {
+        // Cache dir itself unreadable; fall through to the unshrunk cachePath.
       }
     }
     return cachePath;
+  };
+
+  if (cachedPathExists && !forceRevalidate) {
+    return serveCached();
   }
+
+  const requestHeaders: Record<string, string> =
+    cachedPathExists && forceRevalidate ? buildConditionalHeaders(cachedMeta) : {};
 
   const responseHeaders: Record<string, string> = {};
   let contentSha: string | null;
 
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutSec * 1000);
-
-    const response = await fetch(url, {
-      method: 'GET',
-      signal: controller.signal,
-      redirect: 'follow',
+    const result = await performHttpFetch(url, {
+      deadlineAt: Date.now() + timeoutSec * 1000,
+      timeoutSec,
+      maxSizeBytes,
+      requestHeaders,
+      redirectsLeft: MAX_REDIRECTS,
     });
 
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(
-        `HTTP ${response.status} fetching ${truncateUrl(url)}: ${response.statusText}`,
-      );
+    if (result.status === 304 && cachedPathExists) {
+      return serveCached();
     }
 
-    response.headers.forEach((value, key) => {
-      responseHeaders[key.toLowerCase()] = value;
-    });
+    if (result.status < 200 || result.status >= 300) {
+      throw new Error(`HTTP ${result.status} fetching ${truncateUrl(url)}: ${result.statusText}`);
+    }
+
+    for (const [key, value] of Object.entries(result.headers)) {
+      responseHeaders[key] = value;
+    }
 
     ensureDir(webCacheDir());
 
-    const buffer = await response.arrayBuffer();
-    const content = new Uint8Array(buffer);
+    const content = result.body;
 
     if (content.length > maxSizeBytes) {
-      throw new Error(
-        `File too large: ${content.length} bytes > ${maxSizeBytes}`,
-      );
+      throw new Error(`File too large: ${content.length} bytes > ${maxSizeBytes}`);
     }
 
     atomicWriteBytes(cachePath, content);
@@ -344,14 +574,15 @@ export async function fetchUrl(
     return finalPath;
   } catch (err) {
     if (err instanceof Error) {
-      if (err.message.includes('abort')) {
-        throw new Error(`Request timed out after ${timeoutSec}s fetching ${truncateUrl(url)}`, { cause: err });
-      }
       if (
         err.message.includes('URL too long') ||
         err.message.includes('File too large') ||
         err.message.includes('HTTP ') ||
-        err.message.includes('blocked')
+        err.message.includes('blocked') ||
+        err.message.includes('timed out') ||
+        err.message.includes('Too many redirects') ||
+        err.message.includes('Invalid redirect location') ||
+        err.message.includes('Invalid URL')
       ) {
         throw err;
       }
