@@ -205,6 +205,32 @@ describe('sed line-range overlap persistence (#87)', () => {
   })
 })
 
+describe('line-range merge cap eviction fairness (#M6)', () => {
+  it('does not evict already-persisted disk ranges to make room for a new local range at the cap', () => {
+    const sid = 'sid-lr-cap'
+    fs.mkdirSync(path.join(tmpHome, 'sessions'), { recursive: true })
+    const diskRanges: Array<[number, number]> = []
+    for (let i = 0; i < 64; i++) diskRanges.push([i * 10, i * 10 + 5])
+    fs.writeFileSync(
+      sessionFile(sid),
+      JSON.stringify({ ...empty(), fileLineRanges: [['big.ts', diskRanges]] }),
+    )
+
+    // This process only saw one brand-new, small range for the same file — far less than what
+    // another process already had confirmed on disk.
+    importSessionState({ ...empty(), fileLineRanges: [['big.ts', [[9999, 10005]]]] })
+    saveSessionState(sid)
+
+    const disk = JSON.parse(fs.readFileSync(sessionFile(sid), 'utf8')) as SerializedSession
+    const savedRanges = disk.fileLineRanges!.find(([f]) => f === 'big.ts')![1]
+    // Every one of the other process's already-persisted ranges must survive the merge — none
+    // may be evicted just to make room for this process's own not-yet-persisted contribution.
+    for (const r of diskRanges) {
+      expect(savedRanges).toContainEqual(r)
+    }
+  })
+})
+
 describe('corrupt / malformed disk state', () => {
   it('load treats a corrupt file as an empty session (fail-soft)', () => {
     fs.mkdirSync(path.join(tmpHome, 'sessions'), { recursive: true })
