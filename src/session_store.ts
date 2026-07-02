@@ -26,7 +26,7 @@ import * as path from 'node:path'
 
 import { atomicWriteText } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { exportSessionState, importSessionState, MAX_RANGES_PER_FILE, type FileEntry, type SerializedSession } from './session.js'
+import { consumedPendingLargeFileHintKeys, exportSessionState, importSessionState, MAX_RANGES_PER_FILE, type FileEntry, type SerializedSession } from './session.js'
 
 const SAFE_RE = /[^a-zA-Z0-9_-]/g
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
@@ -207,6 +207,20 @@ function mergeLineRanges(disk: Array<[string, Array<[number, number]>]>, mem: Ar
   return Array.from(byPath.entries())
 }
 
+/** Merge pending large-file hints: union disk with mem, but drop any key this process
+ * explicitly consumed (took an outcome for) even if a stale disk read still has it — the
+ * other merged fields are monotonic sets where union is always correct, but this one is a
+ * pending-to-consumed lifecycle where a deletion must actually stick. */
+function mergePendingLargeFileHints(
+  disk: Array<[string, number]>,
+  mem: Array<[string, number]>,
+): Array<[string, number]> {
+  const merged = new Map(disk)
+  for (const key of consumedPendingLargeFileHintKeys()) merged.delete(key)
+  for (const [key, size] of mem) merged.set(key, size)
+  return Array.from(merged.entries())
+}
+
 /** Merge the on-disk snapshot with the in-memory one (see module invariants). */
 function mergeSessionState(disk: SerializedSession, mem: SerializedSession): SerializedSession {
   const byPath = new Map<string, FileEntry>()
@@ -223,7 +237,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     curlDownloads: mergePairs(disk.curlDownloads, mem.curlDownloads),
     fileLineRanges: mergeLineRanges(disk.fileLineRanges ?? [], mem.fileLineRanges ?? []),
     cliReads: Array.from(new Set([...(disk.cliReads ?? []), ...(mem.cliReads ?? [])])),
-    pendingLargeFileHints: Array.from(new Map([...(disk.pendingLargeFileHints ?? []), ...(mem.pendingLargeFileHints ?? [])]).entries()),
+    pendingLargeFileHints: mergePendingLargeFileHints(disk.pendingLargeFileHints ?? [], mem.pendingLargeFileHints ?? []),
   }
 }
 
