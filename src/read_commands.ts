@@ -47,6 +47,14 @@ function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
 }
 
+// Finds the `::` separator in a `file::symbol` or `file::Heading` spec, splitting on the LAST
+// occurrence rather than the first: a file path is far more likely to contain a literal `::`
+// than a symbol/heading name is. Returns -1 when absent, matching `String.indexOf`'s no-match
+// contract so callers can drop straight into their existing `=== -1` checks.
+function findSpecSeparator(spec: string): number {
+  return spec.lastIndexOf('::')
+}
+
 function didYouMean(candidates: string[]): string {
   if (candidates.length === 0) return ''
   const lines = ['Did you mean:']
@@ -118,7 +126,7 @@ export interface ReadOptions {
 }
 
 function parseReadSpec(spec: string): { file: string; symbol?: string } {
-  const colonIdx = spec.indexOf('::')
+  const colonIdx = findSpecSeparator(spec)
   if (colonIdx === -1) return { file: spec }
   return { file: spec.slice(0, colonIdx), symbol: spec.slice(colonIdx + 2) }
 }
@@ -233,7 +241,7 @@ export interface SectionOptions {
 
 /** Handle ``token-goat section "file::Heading"``. */
 export function runSection(opts: SectionOptions): number {
-  const colonIdx = opts.spec.indexOf('::')
+  const colonIdx = findSpecSeparator(opts.spec)
   if (colonIdx === -1) {
     emitErr(`Invalid section spec — expected "file::Heading", got: ${opts.spec}`)
     return 1
@@ -278,7 +286,7 @@ export interface RefsOptions {
 /** Handle ``token-goat refs file::symbol``. */
 /** Splits a refs spec into an optional `::`-prefixed file scope and the comma-separated symbol list after it. With no `::`, the whole spec is the comma-separated symbol list; with no comma, a single-element list (the original single-symbol form). */
 function parseMultiRefsSpec(spec: string): { file: string | undefined; symbols: string[] } {
-  const colonIdx = spec.indexOf('::')
+  const colonIdx = findSpecSeparator(spec)
   const file = colonIdx === -1 ? undefined : spec.slice(0, colonIdx)
   const symPart = colonIdx === -1 ? spec : spec.slice(colonIdx + 2)
   const symbols = symPart.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
