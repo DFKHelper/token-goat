@@ -864,7 +864,10 @@ export function saveConfig(config: Config): void {
       truncated_read_min_lines: config.hints.truncated_read_min_lines,
       protect_recent_reads: config.hints.protect_recent_reads,
       prompt_triggers: config.hints.prompt_triggers,
+      warn_unbalanced_shell_quoting: config.hints.warn_unbalanced_shell_quoting,
       log_large_file_hint_outcomes: config.hints.log_large_file_hint_outcomes,
+      cross_session_read_dedup: config.hints.cross_session_read_dedup,
+      cross_session_read_dedup_ttl_secs: config.hints.cross_session_read_dedup_ttl_secs,
     },
     hooks: {
       watchdog_ms: config.hooks.watchdog_ms,
