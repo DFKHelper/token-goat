@@ -137,6 +137,56 @@ public class Bar {
     expect(other?.docstring).toBe('Bar')
   })
 
+  it('does not leave a brace-less positional record "stuck" as the current class for later declarations', () => {
+    const content = `public record Point(int X, int Y);
+
+public class Foo {
+    public void Bar() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Point.cs')
+    // Regression: a brace-less one-line positional record never opens a body, so
+    // currentClass must be cleared right after it - otherwise every subsequent
+    // top-level class/member is mis-parented under the record forever.
+    const bar = symbols.find((s) => s.name === 'Bar')
+    expect(bar?.kind).toBe('method')
+    expect(bar?.docstring).toBe('Foo')
+  })
+
+  it('does not leave a fully single-line class "stuck" as the current class for later declarations', () => {
+    const content = `public class Empty { }
+
+public class Foo {
+    public void Bar() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Empty.cs')
+    // Regression: a class opened and closed on its own declaration line never rises above
+    // classStartDepth, so currentClass must be cleared right after it too.
+    const bar = symbols.find((s) => s.name === 'Bar')
+    expect(bar?.kind).toBe('method')
+    expect(bar?.docstring).toBe('Foo')
+  })
+
+  it('does not let braces inside a // line comment desync scope depth', () => {
+    const content = `public class Foo {
+    public void Before() {
+        // TODO: handle { edge case
+    }
+    public void After() {
+    }
+}
+`
+    const { symbols } = extractCsharp(content, 'Foo.cs')
+    // Regression: an unbalanced brace inside a // line comment must not be counted
+    // toward braceDepth - otherwise depthInClass drifts and After is never detected.
+    const after = symbols.find((s) => s.name === 'After')
+    expect(after?.kind).toBe('method')
+    expect(after?.docstring).toBe('Foo')
+  })
+
   it('detects .cs language via parseFile', async () => {
     const file = tmp('Foo.cs', 'public class Foo {}')
     const result = await parseFile(file)

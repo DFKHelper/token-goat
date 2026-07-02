@@ -84,6 +84,7 @@ export function extractCsharp(
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
+    let openedClassThisLine = false
 
     // Strip /* */ block-comment spans (state carried across lines) so braces inside
     // commented-out code are not counted toward braceDepth. A `/*` inside an open quote is
@@ -93,10 +94,7 @@ export function extractCsharp(
     const line = codeLine.trimEnd()
     const stripped = line.trim()
 
-    if (!stripped || stripped.startsWith('//')) {
-      braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
-      continue
-    }
+    if (!stripped || stripped.startsWith('//')) continue
 
     // using import
     const usingM = USING_RE.exec(stripped)
@@ -125,6 +123,7 @@ export function extractCsharp(
         currentClass = cname
         classStartDepth = braceDepth
         classBodyEntered = false
+        openedClassThisLine = true
       }
     }
 
@@ -156,13 +155,28 @@ export function extractCsharp(
       }
     }
 
-    braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
+    const openBraces = (line.match(/\{/g) ?? []).length
+    const closeBraces = (line.match(/\}/g) ?? []).length
+    braceDepth += openBraces - closeBraces
 
-    if (currentClass !== null && braceDepth > classStartDepth) {
-      classBodyEntered = true
-    }
-    if (currentClass !== null && classBodyEntered && braceDepth <= classStartDepth) {
+    if (
+      openedClassThisLine &&
+      ((openBraces > 0 && openBraces === closeBraces) ||
+        (openBraces === 0 && closeBraces === 0 && stripped.endsWith(';')))
+    ) {
+      // Self-contained one-liner: a brace-less positional record ending in `;`, or a
+      // class/struct/record body fully opened and closed on the declaration line itself
+      // (`class Foo { }`). Neither ever raises braceDepth above classStartDepth, so the
+      // classBodyEntered-gated pop below would never fire and currentClass would stay
+      // "stuck" on this type for the rest of the file. Clear it immediately instead.
       currentClass = null
+    } else {
+      if (currentClass !== null && braceDepth > classStartDepth) {
+        classBodyEntered = true
+      }
+      if (currentClass !== null && classBodyEntered && braceDepth <= classStartDepth) {
+        currentClass = null
+      }
     }
   }
 
