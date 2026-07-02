@@ -429,6 +429,15 @@ describe('cmdHistory', () => {
     expect(lines.length).toBeLessThanOrEqual(2)
   })
 
+  it('rejects a non-numeric --limit instead of silently returning empty output', () => {
+    storeBlob(BASH_OUTPUT_SUBDIR, 'abc123', { command: 'npm run build', storedAt: Date.now(), exitCode: 0, sizeBytes: 100 })
+    // Pre-fix, Number.parseInt('abc', 10) produced NaN, Math.max(1, NaN) stayed NaN, and
+    // Array.prototype.slice(0, NaN) returns [] — so an invalid --limit silently printed "No
+    // history entries found" even though entries existed, instead of raising a clear error.
+    expect(() => cmdHistory({ limit: 'abc' })).toThrow()
+    expect(capturedErr()).toContain('--limit')
+  })
+
   it('--json emits an array', () => {
     storeBlob(BASH_OUTPUT_SUBDIR, 'xyz', { command: 'ls', storedAt: Date.now(), exitCode: 0, sizeBytes: 10 })
     cmdHistory({ json: true })
