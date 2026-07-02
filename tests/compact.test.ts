@@ -2,7 +2,11 @@
  * Tests for compact.ts functions.
  */
 
-import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   CATALOG_TOKENS,
   CONTEXT_AUTOCOMPACT_TOKENS,
@@ -15,6 +19,7 @@ import {
   computeAdaptiveBudget,
   estimateTokens,
   eventCount,
+  findLatestSessionId,
   getAutoTriggerMultiplier,
   getContextPressure,
   isNoisePath,
@@ -22,6 +27,8 @@ import {
   normalizeForCache,
   tierForFraction,
 } from '../src/compact.js'
+import { storeBlob } from '../src/disk_cache.js'
+import { SESSIONS_SUBDIR } from '../src/session_store.js'
 
 describe('compact', () => {
   describe('estimateTokens', () => {
@@ -428,6 +435,49 @@ describe('compact', () => {
     it('returns empty string for missing session', () => {
       const manifest = buildManifestAdaptive('nonexistent-session-id')
       expect(manifest).toBe('')
+    })
+  })
+
+  describe('session directory resolution (regression)', () => {
+    // findLatestSessionId / buildManifestWithCount must read from the same base
+    // directory the real session writer (session_store.ts) uses — tokenGoatHome()
+    // (honors TOKEN_GOAT_HOME) — not dataDir() (honors XDG_DATA_HOME), a
+    // different directory nothing ever writes session blobs under. storeBlob
+    // writes through the same tokenGoatHome()-based path as the production
+    // writer, so this exercises the real read/write pairing instead of an
+    // injected seam.
+    let prevHome: string | undefined
+    let tmpHome: string
+
+    beforeEach(() => {
+      prevHome = process.env['TOKEN_GOAT_HOME']
+      tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-compact-test-'))
+      process.env['TOKEN_GOAT_HOME'] = tmpHome
+    })
+
+    afterEach(() => {
+      if (prevHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+      else process.env['TOKEN_GOAT_HOME'] = prevHome
+      try {
+        fs.rmSync(tmpHome, { recursive: true, force: true })
+      } catch {
+        // best-effort cleanup
+      }
+    })
+
+    it('findLatestSessionId finds a session blob written under TOKEN_GOAT_HOME', () => {
+      storeBlob(SESSIONS_SUBDIR, 'real-session-id', { files: { 'a.ts': {} } })
+      expect(findLatestSessionId()).toBe('real-session-id')
+    })
+
+    it('buildManifestWithCount reads real session data written under TOKEN_GOAT_HOME', () => {
+      storeBlob(SESSIONS_SUBDIR, 'real-session-id', {
+        files: { 'a.ts': {}, 'b.ts': {} },
+        bashHistory: { cmd1: {} },
+      })
+      const [manifest, count] = buildManifestWithCount('real-session-id')
+      expect(count).toBe(3)
+      expect(manifest.length).toBeGreaterThan(0)
     })
   })
 })
