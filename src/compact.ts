@@ -7,6 +7,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { dataDir } from './constants.js'
+import { tokenGoatHome } from './disk_cache.js'
 import { atomicWriteText, normalizePathForwardSlash } from './util.js'
 
 // ---------------------------------------------------------------------------
@@ -374,7 +375,7 @@ export function isNoisePath(inputPath: string): boolean {
  */
 export function findLatestSessionId(): string | null {
   try {
-    const sessionsDir = path.join(dataDir(), 'sessions')
+    const sessionsDir = path.join(tokenGoatHome(), 'sessions')
     if (!fs.existsSync(sessionsDir)) {
       return null
     }
@@ -594,7 +595,7 @@ function _computeActivityMultiplier(ageSecs: number, editedCount: number): numbe
 
 function _loadSessionCache(sessionId: string): SessionCacheObject | null {
   try {
-    const sessionsDir = path.join(dataDir(), 'sessions')
+    const sessionsDir = path.join(tokenGoatHome(), 'sessions')
     const cachePath = path.join(sessionsDir, `${sessionId}.json`)
     if (!fs.existsSync(cachePath)) {
       return null
