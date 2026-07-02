@@ -123,7 +123,11 @@ const CLAUDE_CODE_EVENT_NAMES: Record<HookEventName, string> = {
  * - `context` → `{"hookSpecificOutput":{"hookEventName":"<event>",
  *   "additionalContext":"<content>"}}` — the documented non-blocking hint
  *   shape (see https://code.claude.com/docs/en/hooks); `hookEventName` must
- *   match the event currently running, not be hardcoded.
+ *   match the event currently running, not be hardcoded. `PreCompact` is not
+ *   a valid `hookEventName` for `hookSpecificOutput` (the harness only
+ *   accepts it there for `UserPromptSubmit`/`PostToolUse`/`PostToolBatch`/
+ *   `Stop`/`SubagentStop`), so `pre_compact` instead emits the top-level
+ *   `{"systemMessage":"<content>"}` field.
  * - `update`  → `{"updatedInput":{"content":"<content>"}}`
  * - `rewriteInput` → `{"hookSpecificOutput":{"hookEventName":"PreToolUse",
  *   "permissionDecision":"allow","updatedInput":<obj>}}` — the `PreToolUse`
@@ -138,6 +142,13 @@ export function serializeOutput(output: HookOutput, eventName: HookEventName): s
     case 'deny':
       return JSON.stringify({ decision: 'block', reason: output.message })
     case 'context':
+      // PreCompact has no hookSpecificOutput variant in the harness's schema (only
+      // UserPromptSubmit/PostToolUse/PostToolBatch/Stop/SubagentStop accept
+      // additionalContext there); a hookEventName of 'PreCompact' fails validation
+      // outright, so pre_compact injects context via the top-level systemMessage field.
+      if (eventName === 'pre_compact') {
+        return JSON.stringify({ systemMessage: output.context })
+      }
       return JSON.stringify({
         hookSpecificOutput: {
           hookEventName: CLAUDE_CODE_EVENT_NAMES[eventName],

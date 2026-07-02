@@ -2,6 +2,12 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **`pre_compact` emitted an invalid hook wire shape, silently breaking the compaction manifest on every `/compact`.** `serializeOutput()` wrapped every `context` `HookOutput` in a `hookSpecificOutput.additionalContext` object tagged with the current event name, but `PreCompact` is not one of the `hookEventName` values the harness accepts in that shape (only `UserPromptSubmit`/`PostToolUse`/`PostToolBatch`/`Stop`/`SubagentStop` do) — the harness rejected the output outright, so the session manifest this hook exists to inject was never delivered before a compaction. Fixed to emit the top-level `systemMessage` field for `pre_compact` instead, matching the shape this hook was always documented to use. A prior test asserted the broken shape as correct, and is corrected alongside the fix. See [src/hook_registry.ts](src/hook_registry.ts) and [tests/hook_registry.test.ts](tests/hook_registry.test.ts).
+
 ## [2.6.0] - 2026-07-02
 
 ### Added
