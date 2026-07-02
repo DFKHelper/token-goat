@@ -7,6 +7,7 @@ import { listBlobs, pruneBlobs, DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS } from './
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
 import { SESSIONS_SUBDIR } from './session_store.js'
+import { pruneSkillOutputs, SKILLS_OUTPUT_SUBDIR } from './skill_cache.js'
 import { isInstalled } from './install.js'
 import { buildResumePacket } from './resume.js'
 import { getContextPressure, buildManifestWithCount, estimateTokens, findLatestSessionId, CONTEXT_AUTOCOMPACT_TOKENS } from './compact.js'
@@ -14,7 +15,13 @@ import { runStats } from './cli_stats.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
 
 // Confirmed storage subdirs operated on by clean-cache and prune-cache.
-const CACHE_SUBDIRS = [BASH_OUTPUT_SUBDIR, WEB_OUTPUT_SUBDIR, SESSIONS_SUBDIR] as const
+const CACHE_SUBDIRS = [BASH_OUTPUT_SUBDIR, WEB_OUTPUT_SUBDIR, SESSIONS_SUBDIR, SKILLS_OUTPUT_SUBDIR] as const
+
+// skills entries are plain .txt/.meta files, not disk_cache.ts's JSON blob envelope, so
+// they need skill_cache.ts's own eviction pass instead of the generic pruneBlobs.
+function pruneSubdir(sub: string, maxCount: number, maxAgeMs: number): number {
+  return sub === SKILLS_OUTPUT_SUBDIR ? pruneSkillOutputs(maxCount, maxAgeMs) : pruneBlobs(sub, maxCount, maxAgeMs)
+}
 
 // Cache-feature env vars: when set to '0' or 'false', the named feature is disabled.
 const CACHE_ENV_GATES: Array<{ key: string; what: string }> = [
@@ -102,7 +109,7 @@ export function cmdCleanCache(opts: { json?: boolean }): void {
   const removed: Record<string, number> = {}
   let total = 0
   for (const sub of CACHE_SUBDIRS) {
-    const n = pruneBlobs(sub)
+    const n = pruneSubdir(sub, DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS)
     removed[sub] = n
     total += n
   }
@@ -142,7 +149,7 @@ export function cmdPruneCache(opts: { maxCount?: string; maxAgeHours?: string; j
   const removed: Record<string, number> = {}
   let total = 0
   for (const sub of CACHE_SUBDIRS) {
-    const n = pruneBlobs(sub, maxCount, maxAgeMs)
+    const n = pruneSubdir(sub, maxCount, maxAgeMs)
     removed[sub] = n
     total += n
   }
