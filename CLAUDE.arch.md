@@ -52,7 +52,8 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | Module | Role |
 |--------|------|
 | [`src/hook_registry.ts`](src/hook_registry.ts) | `registerHook(eventName, handler, filter?)` — stores handlers in a `Map<HookEventName, Registration[]>`; `runHook()` dispatches by event name and optional tool-name filter |
-| [`src/hooks_cli.ts`](src/hooks_cli.ts) | Entry point for `token-goat hook <event>`: `safeRun()` reads the JSON payload from stdin, calls `normalizePayload()` (harness-aware: maps Codex/Gemini tool names to canonical names), dispatches via `runHook()`, then `denormalizeResponse()` serializes the result back to the harness wire format |
+| [`src/relay.ts`](src/relay.ts) | Entry point for `token-goat hook <event>`: `relay()` reads the JSON payload from stdin, normalizes tool-scoped events via `hooks_cli.ts::normalizePayload()` (harness-aware: maps Codex/Gemini tool names to canonical names), dispatches via `hook_registry.ts::runHook()`, then `serializeOutput()` translates the result back to the harness wire format |
+| [`src/hooks_cli.ts`](src/hooks_cli.ts) | Harness payload normalization only: `normalizePayload()` translates harness-specific tool payloads to token-goat's canonical shape before dispatch. Response serialization and hook dispatch live in `relay.ts` / `hook_registry.ts` |
 | [`src/hooks_common.ts`](src/hooks_common.ts) | Shared hook helpers: `getToolName()`, `getToolInput()`, `getFilePath()`, `passOutput()`, `denyOutput()`, `contextOutput()` |
 | [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection; `postReadHandler()` — snapshot update and session recording |
 | [`src/hooks_edit.ts`](src/hooks_edit.ts) | `postEditHandler()` — calls `recordFileEdit()` and `appendDirtyPath()` to queue the file for re-indexing; fires on `Write` and `Edit` tool events |
@@ -202,7 +203,7 @@ Project hash = `crypto.createHash('sha1').update(canonicalRoot)` from [`src/proj
 
 ### (c) Hook intercept
 
-Installed hook events (`PreToolUse`, `PostToolUse`, `PreCompact`) call `token-goat hook <event>` as a subprocess. `hooks_cli.ts::safeRun()` reads the JSON payload from stdin, calls `normalizePayload()` (translates Codex/Gemini tool name aliases to canonical names), dispatches via `hook_registry.ts::runHook()`, and serializes the result back to the harness wire format via `denormalizeResponse()`.
+Installed hook events (`PreToolUse`, `PostToolUse`, `PreCompact`) call `token-goat hook <event>` as a subprocess. `relay.ts::relay()` reads the JSON payload from stdin, calls `hooks_cli.ts::normalizePayload()` for tool-scoped events (translates Codex/Gemini tool name aliases to canonical names), dispatches via `hook_registry.ts::runHook()`, and serializes the result back to the harness wire format via `hook_registry.ts::serializeOutput()`.
 
 Registered handlers by event:
 
