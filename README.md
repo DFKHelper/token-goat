@@ -122,7 +122,6 @@ The fastest way to reduce AI token costs is fixing these five, not writing short
 | Manifest git-history section loses signal on clean main | Inline git diffs + skip git log when on clean main branch; session-awareness improves manifest hygiene |
 | Skill body lost after compaction but recovery too verbose | Recovery hint deduped skills by content_sha (same skill loaded twice = one entry); inline skill checklist |
 | Recovery hints omit critical paths when space is tight | Hint budget hard caps per kind (files=5, bash=3, web=2, skills=4); skip bash snippet when recall available |
-| `token-goat map` outputs without rank context | Semantic compact mode outputs one result per line; `--full` for old format |
 | AVIF format not supported despite better compression | AVIF image-shrink via sharp (when libvips is built with libaom); WebP fallback; codec auto-detection in docker |
 | Token-savings invisible until you run `stats` | Token-savings benchmark (slow-marked test suite) locks in measured wins; `token-goat stats` reports net-positive impact |
 | Hook crash leaves agent waiting for response | Fail-soft barrier catches `BaseException`/`MemoryError`/`SystemExit`; hook always returns `{"continue": true}` |
@@ -151,7 +150,7 @@ Numbers below come from synthetic-fixture benchmarks in the test suite. Each row
 | Source | Improvement | Measured impact | Where |
 |--------|-------------|-----------------|-------|
 | Image shrink | WebP encoder beats JPEG on screenshot-shaped images | ~39% smaller than the same image at JPEG quality 85 | `src/image_shrink.ts` (codec selection) |
-| Repomap output | Short labels (`f:`, `s:`, `c:`) and auto-compact mode below 6 KB | ~30–40% denser output for the same byte budget | `src/repomap.ts` (`token-goat map --budget`) |
+| Repomap output | Short labels (`f:`, `s:`, `c:`) and auto-compact mode below 6 KB | ~30–40% denser output for the same byte budget | `src/repomap.ts` (`token-goat map --compact`) |
 | DB reindex | Batched single transaction + composite indexes on `(file_id, kind)` | 100 files / 10K rows: 84 s → 1 s (~80× faster) | `src/parser.ts`, `src/db.ts` (index migration) |
 | Hook cold-start | Lazy import of heavy modules; unknown events short-circuit | 86 ms → 30 ms (~65% faster); unknown-event dispatch <1 ms | `src/hooks_cli.ts` |
 | Symbol start_line | TypeScript decorators captured in symbol span | One `token-goat read` returns the decorator + signature + body; no re-read | `src/parser.ts` (TypeScript adapter) |
@@ -214,11 +213,11 @@ $ ls -R . | wc -c
 51234                       # ~50 KB of raw paths, no signal about importance
 
 # With token-goat: PageRank-ranked, token-budgeted summary.
-$ token-goat map --budget 4000
+$ token-goat map --compact
 out: ~4 KB                  # top-ranked files + key symbols   (92% smaller)
 ```
 
-`--budget` is a hard cap. Below 6 KB the output automatically switches to short-label mode (`f:` files, `s:` symbols, `c:` calls) to fit more signal per byte. `token-goat map --compact` is a shortcut for a 300-token budget when you only need the high-rank cluster.
+`token-goat map --compact` caps output at a fixed 2000-token budget, switching to short-label mode (`f:` files, `s:` symbols, `c:` calls) to fit more signal per byte. Plain `token-goat map` (no flag) prints the full PageRank-ranked project map with no cap.
 
 ### 5. Bash output compression
 
@@ -355,7 +354,7 @@ To upgrade cleanly:
 
 | Command | What it does |
 |---------|-------------|
-| `token-goat symbol <name>` | Jump to a symbol definition. Add `--all-projects` to search across every indexed repo. |
+| `token-goat symbol <name>` | Jump to a symbol definition. |
 | `token-goat read "file::symbol"` | Pull one function or class, not the whole file. Supports qualified lookups (`read "file.py::Class.method"`) and line ranges: `read "file.py@10-40"` for lines 10 to 40 inclusive, or `read "file.py@42"` for one line. Line ranges read straight from disk, so they work on any file, including paths outside an indexed project. |
 | `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading. A miss that is an unambiguous prefix of exactly one heading auto-redirects with a `(redirected from: …)` marker (and a `redirectedFrom` field under `--json`). Disambiguate duplicates with `"doc.md::Heading#2"`. |
 | `token-goat skill-section "<name>::<heading>"` | Extract a named section from an installed skill without reading the full skill file. |
@@ -374,26 +373,27 @@ To upgrade cleanly:
 | `token-goat types ["file"]` | List type definitions (TypedDict, Protocol, dataclass, Pydantic models) in a file or across the project. |
 | `token-goat imports "file"` | Show the import graph for a file one level deep. |
 | `token-goat find "<query>"` | Unified search: exact/fuzzy symbol match + semantic, merged and ranked by confidence. |
-| `token-goat similar "file::symbol"` | Find the top-k symbols most semantically similar to a given symbol. |
+| `token-goat similar "file::symbol"` | Find the top-k symbols most similar to a given symbol, via full-text search over symbol names and bodies. |
 | `token-goat test-for "file"` | Find test file(s) for an implementation file and list their test functions. |
 | `token-goat dead` | Surface functions, methods, and classes with no recorded callers in the project index. Private names and common entry points (`main`, `app`, etc.) are excluded by default. `--include-private` lifts the underscore filter; `--kind` narrows to specific symbol types; `--top N` caps output; `--json` for structured output. Results are a heuristic lead — dynamic dispatch and external callers are invisible to static indexing. |
 | `token-goat coverage-gaps` | Find callables in non-test source files that never appear in a test file's reference records. Useful for spotting untested surface area before a refactor or release. `--top N` caps output; `--json` for structured output. |
 | `token-goat recent [N]` | Show the N most recently edited/accessed files with their symbols. |
-| `token-goat grep "<pattern>"` | Session-aware grep: runs `rg` and caches results; repeat patterns get a dedup hint instead of re-running. |
-| `token-goat semantic "<query>"` | Find code by meaning, not by filename. Add `--mode keyword` for BM25 term search (no embedding model needed) or `--mode hybrid` to combine both. Tune with `--max-distance <float>` or `--no-rerank`. |
-| `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a 300-token budget. |
+| `token-goat grep "<pattern>"` | Built-in fallback regex search over files (no `rg` shell-out, no caching) — session-aware dedup for raw `rg`/`grep` Bash calls is a separate hook, not this command. |
+| `token-goat semantic "<query>"` | Find code by meaning, not by filename: full-text search (BM25) over symbol names and bodies, not embedding-vector similarity. `--limit <n>` caps result count. |
+| `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a fixed 2000-token budget. |
 | `token-goat arch` | Project-wide import graph summary: hub modules (most imported), entry points (nothing imports them), and circular chains. Complements `token-goat deps <file>` for per-file depth. |
 | `token-goat ignores` | List active skip patterns for the current project — built-in skip dirs and suffixes, plus any patterns from `.tokengoatignore`. |
 | `token-goat gdrive-sections <file-id>` | List the heading outline of a Google Doc without fetching the body. |
 | `token-goat stats` | See how many tokens you have saved. Shows a per-source breakdown (image / hint / read / compact / bash / web). |
 | `token-goat cost [--session]` | Estimated tokens saved, session or all-time, broken down by savings source. |
-| `token-goat history` | Show current session access history: bash commands, URLs fetched, and grep patterns. |
-| `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head+tail view by default; pass `--full` for everything, or narrow with `--head N`, `--tail N`, or `--grep PATTERN` (cap `--grep` to the first N hits with `--max-matches N`). Read a file directly with `--file <path>` (e.g. a background task's `tasks/<id>.output`); add `--transcript` to parse that file as a subagent JSONL transcript, keeping only assistant text blocks in order before the slicers apply. |
+| `token-goat context-stats [--project <path>]` | Report estimated token overhead from `CLAUDE.md` files and `MEMORY.md` in a project. `--json` for structured output; `--fix` is not yet implemented. |
+| `token-goat history` | Show current session access history: bash commands and URLs fetched. |
+| `token-goat bash-output <id>` | Retrieve a cached Bash output by ID instead of re-running the command. Large outputs return a head(30)+tail(80) view by default; pass `--head N`/`--tail N` large enough to cover the full output, or narrow with `--grep PATTERN` (cap `--grep` to the first N hits with `--max-matches N`). Read a file directly with `--file <path>` (e.g. a background task's `tasks/<id>.output`); add `--transcript` to parse that file as a subagent JSONL transcript, keeping only assistant text blocks in order before the slicers apply. |
 | `token-goat bash-history` | List cached Bash outputs (newest first) with their IDs, byte sizes, and exit codes. |
 | `token-goat compress --cmd '<command>'` | Preview what the Bash compression hook would do to any command — runs it, applies the matching filter, and prints the compressed view. |
-| `token-goat web-output <id>` | Retrieve a cached WebFetch response body by ID — same head+tail default, `--full`, and `--head`/`--tail`/`--grep`/`--max-matches` slicers as `bash-output`. |
+| `token-goat web-output <id>` | Retrieve a cached WebFetch response body by ID — same head+tail default and `--head`/`--tail`/`--grep`/`--max-matches` slicers as `bash-output`. |
 | `token-goat web-history` | List cached WebFetch responses (newest first) with their IDs, byte sizes, status codes, and URL previews. |
-| `token-goat skill-body <name>` | Retrieve a cached Skill body by name without re-invoking the skill (which would replay side effects). Same head+tail default, `--full`, and `--head`/`--tail`/`--grep` slicers as `bash-output`. |
+| `token-goat skill-body <name>` | Retrieve a cached Skill body by name without re-invoking the skill (which would replay side effects). Prints the full body; `-c`/`--compact` prints the compact slice instead. No head/tail/grep slicers. |
 | `token-goat skill-history` | List cached Skill bodies (newest first) with their IDs, byte sizes, truncation status, and skill names. |
 | `token-goat skill-compact [name]` | Cache the compact slice for a skill so later `skill-body --compact` calls are instant, and print a confirmation. Resolves an installed skill by name (falling back to `~/.claude/skills/<name>/SKILL.md` when it was never loaded this session), or pass `--path <file>` to compact a skill straight from a file without name resolution. |
 | `token-goat skill-compact --all` | Batch-regenerate stale or missing compacts for every skill cached in the current session. Skips skills whose compact is already fresh (source SHA matches). Run after updating any skill file on disk. |
@@ -425,8 +425,6 @@ To upgrade cleanly:
 | `token-goat doctor` | Confirm everything is wired correctly. Surfaces install state, cold-import timing, cache hit rates, compaction-budget telemetry, opt-in flag status, and canonical-root sanity. Pass `--context` to show the **Context footprint** section: a fill bar with severity (ok / warn / high / URGENT), per-component breakdown (skills catalog, loaded skill bodies, CLAUDE.md+MEMORY.md, conversation estimate), session-to-session growth trend with sessions-to-URGENT projection, and tiered compaction recommendations (Tier 0–4) naming the exact commands to run. Auto-shown when fill > 40 % or any loaded skill > 2 K tokens lacks a compact. |
 | `token-goat baseline` | Attribute the per-session environmental baseline — other plugins' SessionStart hook dumps, both CLAUDE.md files, MEMORY.md, and configured MCP servers — ranked by token cost and tagged by owner (you / harness / `plugin:<name>`), a concrete fix, and whether the cost is fixed (recurs every session) or variable. Identical re-fired hook dumps are deduped to one row. `--subagent` shows only the fixed sources a freshly spawned agent inherits; `--json` for the machine view. Complements `doctor --context` (which costs skills); set `[hints] baseline_budget_tokens` to get a once-per-session SessionStart nudge when the fixed baseline exceeds your budget. |
 | `token-goat compact-doc <path>` | Build an extractive compact sidecar for a large reference doc (`.md`/`.markdown`). The compact is stored in the token-goat data dir as a SHA-keyed sidecar; `pre_read` serves it in place of the full file when it exists and is fresh, saving 80–95% of context tokens. Use `--force` to rebuild, `--sentences N` to control lines per section (default 2), `--show` to print the result. The sidecar is automatically marked stale when you edit the source file. Config: `[hints] stable_doc_compacts = true` (default on). |
-
-First `token-goat semantic` call downloads a small embedding model, about 130 MB, into the token-goat data directory. One-time. Offline after that.
 
 Missed lookups recover surgically: `symbol` auto-redirects to a single high-confidence close match (pass `--strict` to opt out), while `read` and `section` print a "Did you mean…?" list — a typo costs at most one extra glance, not a re-read.
 
@@ -483,7 +481,7 @@ The autostart command is `node <npm-prefix>/lib/node_modules/token-goat/dist/cli
 | Linux / WSL | `~/.local/share/token-goat/` |
 | macOS | `~/Library/Application Support/dfk-helper/token-goat/` |
 
-Contains the symbol index (`global.db`, per-project `.db` files), session cache, shrunken-image cache, cached skill bodies (5 MB cap, LRU-evicted), embedding model (~130 MB, downloaded on the first `semantic` call), logs, locks, and the dirty-file queue. Nothing outside this directory and `~/.claude/` is written.
+Contains the symbol index (`global.db`, per-project `.db` files), session cache, shrunken-image cache, cached skill bodies (5 MB cap, LRU-evicted), logs, locks, and the dirty-file queue. Nothing outside this directory and `~/.claude/` is written.
 
 **With `--codex`** (Codex CLI integration)
 
@@ -730,9 +728,8 @@ node -e "for(let r=0;r<256;r+=32)process.stdout.write('\x1b[48;2;0;'+r+';0m  ');
 
 **No telemetry. No analytics. No background reporting or silent outbound connections.**
 
-Outbound network is reserved to three explicit cases:
+Outbound network is reserved to two explicit cases:
 
-- First `token-goat semantic` call downloads the embedding model (~130 MB) into the data directory. Offline after that.
 - Google Drive API calls, only if you already authorized Drive in Claude Code. Token-goat never prompts for its own auth.
 - Image fetches from URLs: either explicit via `token-goat fetch-image <url>`, or when the AI agent issues a WebFetch call that returns image content — the hook intercepts and shrinks the image. The URL always originates from the agent's work, not from token-goat itself.
 
