@@ -120,8 +120,25 @@ export function cmdCleanCache(opts: { json?: boolean }): void {
 
 /** prune-cache lets the caller specify eviction bounds; clean-cache uses the defaults. */
 export function cmdPruneCache(opts: { maxCount?: string; maxAgeHours?: string; json?: boolean }): void {
-  const maxCount = opts.maxCount !== undefined ? Math.max(0, Number.parseInt(opts.maxCount, 10)) : DEFAULT_MAX_COUNT
-  const maxAgeMs = opts.maxAgeHours !== undefined ? Math.max(0, parseFloat(opts.maxAgeHours)) * 3600 * 1000 : DEFAULT_MAX_AGE_MS
+  let maxCount = DEFAULT_MAX_COUNT
+  let maxAgeMs = DEFAULT_MAX_AGE_MS
+
+  if (opts.maxCount !== undefined) {
+    const parsed = Number.parseInt(opts.maxCount, 10)
+    if (Number.isNaN(parsed)) {
+      throw new Error(`--maxCount must be a valid integer, got '${opts.maxCount}'`)
+    }
+    maxCount = Math.max(0, parsed)
+  }
+
+  if (opts.maxAgeHours !== undefined) {
+    const parsed = parseFloat(opts.maxAgeHours)
+    if (Number.isNaN(parsed)) {
+      throw new Error(`--maxAgeHours must be a valid number, got '${opts.maxAgeHours}'`)
+    }
+    maxAgeMs = Math.max(0, parsed) * 3600 * 1000
+  }
+
   const removed: Record<string, number> = {}
   let total = 0
   for (const sub of CACHE_SUBDIRS) {

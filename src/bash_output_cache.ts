@@ -51,6 +51,8 @@ export interface BashOutputEntry {
   readonly storedAt: number
   /** Byte length of `output` (UTF-8). */
   readonly sizeBytes: number
+  /** Optional fingerprints for validation on cache recall. */
+  readonly fingerprints?: { git?: string; dir?: string; lockfile?: string }
 }
 
 // id -> entry.
@@ -213,8 +215,12 @@ export async function commandHash(command: string, cwd: string | null = null): P
 function extractLsTarget(cmd: string, cwd: string): string | null {
   const tokens = cmd.trim().split(/\s+/)
   for (let i = 1; i < tokens.length; i++) {
-    if (!tokens[i]!.startsWith('-')) {
-      return tokens[i]!
+    const token = tokens[i]!
+    if (!token.startsWith('-')) {
+      if (!token.startsWith('/')) {
+        return resolve(cwd, token)
+      }
+      return token
     }
   }
   return cwd
