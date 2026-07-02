@@ -75,6 +75,19 @@ function stripOutputPipeline(cmd: string): string {
   return base.trim()
 }
 
+// A cache entry keyed on the base command (stripOutputPipeline) or a curl URL is intentionally
+// shared across different downstream pipes/redirects on the same underlying command — see
+// stripOutputPipeline's docstring. But the stored *content* is whatever that one run's pipe
+// produced, so a differently-piped recall (`| jq '.a'` vs `| jq '.b'`) can silently serve the
+// wrong value. Rather than break the intentional sharing (and the tests that pin it), surface
+// the command that actually produced the cached content whenever it differs from the one being
+// run now, so the caller can judge whether the recall still covers what they need.
+function pipelineDivergenceNote(cmd: string, entryCommand: string): string {
+  if (entryCommand === cmd) return ''
+  const preview = entryCommand.length > 60 ? entryCommand.slice(0, 57) + '...' : entryCommand
+  return ' (cached from a differently-piped run, `' + preview + '` — verify it covers what you need before trusting it)'
+}
+
 /** Extract the command string from a Bash tool_input. */
 function extractCommand(event: HookEvent): string | undefined {
   const cmd = event.toolInput['command']
@@ -363,11 +376,17 @@ function findRangeOverlap(prior: ReadonlyArray<readonly [number, number]>, start
 // Builds the recall hint when a sed range overlaps one already served this session: name the prior range and point at a `read "file@delta"` for only the not-yet-seen lines.
 function sedOverlapHint(filePath: string, prior: readonly [number, number], start: number, end: number): string {
   const base = 'You already read lines ' + prior[0] + '-' + prior[1] + ' of ' + filePath + ' via an earlier `sed` this session; this read (' + start + '-' + end + ') overlaps. '
-  const deltaStart = Math.max(start, prior[1] + 1)
-  if (deltaStart <= end) {
-    return base + 'For only the new lines, `token-goat read "' + filePath + '@' + deltaStart + '-' + end + '"`.'
+  // The never-served portion of [start, end] is whatever falls outside [prior[0], prior[1]]: a
+  // leading segment when the new request starts before the prior range, a trailing segment when
+  // it ends after, or both when the new request straddles the prior range on both sides.
+  const segments: Array<readonly [number, number]> = []
+  if (start < prior[0]) segments.push([start, Math.min(end, prior[0] - 1)])
+  if (end > prior[1]) segments.push([Math.max(start, prior[1] + 1), end])
+  if (segments.length === 0) {
+    return base + 'These lines were already served - recall them from your earlier output instead of re-reading.'
   }
-  return base + 'These lines were already served - recall them from your earlier output instead of re-reading.'
+  const reads = segments.map(([s, e]) => '`token-goat read "' + filePath + '@' + s + '-' + e + '"`').join(' and ')
+  return base + 'For only the new lines, ' + reads + '.'
 }
 
 /** Extracts file path from `node -e "fs.readFileSync(...)"` or `node -e "require('....json')"` patterns. Returns null if not this pattern or if temp file. */
@@ -1331,7 +1350,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
       if (catFile !== null) {
         recordStat('bash_compress:recall', monBytes, Math.round(monBytes / 4))
         return contextOutput(
-          'Prior output from `' + cmd + '` is cached. ' +
+          'Prior output from `' + cmd + '`' + pipelineDivergenceNote(cmd, monEntry.command) + ' is cached. ' +
           'Use `token-goat bash-output ' + monOutputId + '` to recall the full file, or ' +
           '`token-goat read \'' + catFile + '::SymbolName\'` to extract only the symbol you need.'
         )
@@ -1339,7 +1358,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
       const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
       recordStat('bash_compress:recall', monBytes, Math.round(monBytes / 4))
       return contextOutput(
-        'Prior output from `' + cmdSummary + '` is cached.\n' +
+        'Prior output from `' + cmdSummary + '`' + pipelineDivergenceNote(cmd, monEntry.command) + ' is cached.\n' +
         'Use `token-goat bash-output ' + monOutputId + ' ' + monitoringHint + '` to re-inspect without re-running.'
       )
     }
@@ -1372,7 +1391,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
       recordStat('bash_compress:recall', curlBytes, Math.round(curlBytes / 4))
       const curlPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
       return contextOutput(
-        'curl response cached (`' + curlPreview + '`). ' +
+        'curl response cached (`' + curlPreview + '`).' + pipelineDivergenceNote(cmd, curlEntry.command) + ' ' +
         'Use `token-goat bash-output ' + curlOutputId + '` to recall it. ' +
         'Append `--grep PATTERN` to filter or `--section HeadingName` for a markdown section.',
       )
@@ -1390,7 +1409,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
       recordStat('bash_compress:recall', ghBytes, Math.round(ghBytes / 4))
       const ghPreview = cmd.length > 60 ? cmd.slice(0, 57) + '...' : cmd
       return contextOutput(
-        'gh api response cached (`' + ghPreview + '`). ' +
+        'gh api response cached (`' + ghPreview + '`).' + pipelineDivergenceNote(cmd, ghEntry.command) + ' ' +
         'Use `token-goat bash-output ' + ghOutputId + '` to recall it. ' +
         "Append `--jq '.field'` on the original call, or `--grep PATTERN` / `--max-matches N` here, to narrow it.",
       )
@@ -1587,7 +1606,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // For curl GET commands, key the cache on the URL so that the same endpoint fetched with different downstream pipes (| jq vs | python3) shares a single cache entry.
     const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : stripOutputPipeline(cmd)
     const simpleHash = shortFingerprint(cacheKey)
-    const id = await storeBashOutput(cmd, output, 0, cwd)
+    const id = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
     recordBashOutput(simpleHash, id, Buffer.byteLength(output, 'utf-8'))
   } catch {
     // Never block — hook failures must be silent.
