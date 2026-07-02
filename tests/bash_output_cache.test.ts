@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 
 import {
   getBashOutput,
@@ -18,6 +21,9 @@ import {
   getBashGlobResult,
   commandHash,
   depLockfileFingerprint,
+  computeBashFingerprints,
+  isBashEntryStale,
+  type BashOutputEntry,
 } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -254,5 +260,120 @@ describe('reset', () => {
     expect(getBashOutputByCommandHash(id)?.output).toBe('gone')
     // A never-stored id stays null (no lingering state after the reset).
     expect(getBashOutput('ffffffffffffffff')).toBeNull()
+  })
+})
+
+describe('extractLsTarget cwd resolution (m32 regression)', () => {
+  it('resolves the ls target against the command cwd, not process.cwd()', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lstarget-'))
+    const subDir = path.join(tmpDir, 'sub')
+    fs.mkdirSync(subDir)
+    try {
+      const hash1 = await commandHash('ls sub', tmpDir)
+
+      // Bump the subdirectory's mtime. This is only observable in the hash if
+      // the dir-state fingerprint is computed against `resolve(tmpDir, 'sub')`
+      // (the command's own cwd) -- resolving against `process.cwd()` instead
+      // (the test runner's real cwd, which has no 'sub' dir) would fingerprint
+      // as null both times and the hash would stay identical regardless of
+      // what happens to `subDir`.
+      const future = new Date(Date.now() + 60_000)
+      fs.utimesSync(subDir, future, future)
+
+      const hash2 = await commandHash('ls sub', tmpDir)
+      expect(hash2).not.toBe(hash1)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('normalizeCommandForCacheKey — quote-aware normalization (M41 regression)', () => {
+  it('does not collapse whitespace runs inside a double-quoted argument', () => {
+    const a = normalizeCommandForCacheKey('echo "a   b"')
+    const b = normalizeCommandForCacheKey('echo "a b"')
+    // Two genuinely different commands (different quoted content) must not
+    // collapse to the same normalized cache key.
+    expect(a).not.toBe(b)
+    expect(a).toBe('echo "a   b"')
+    expect(b).toBe('echo "a b"')
+  })
+
+  it('does not collapse whitespace runs inside a single-quoted argument', () => {
+    const a = normalizeCommandForCacheKey("echo 'a   b'")
+    const b = normalizeCommandForCacheKey("echo 'a b'")
+    expect(a).not.toBe(b)
+  })
+
+  it('does not rewrite a backslash to a forward slash inside a quoted argument', () => {
+    const input = 'grep "a\\.b" file.txt'
+    expect(normalizeCommandForCacheKey(input)).toBe(input)
+  })
+
+  it('still collapses whitespace and converts backslashes outside quotes', () => {
+    expect(normalizeCommandForCacheKey('cat   C:\\foo\\bar')).toBe('cat C:/foo/bar')
+  })
+
+  it('still strips a leading ./ and trailing / from unquoted path tokens', () => {
+    expect(normalizeCommandForCacheKey('cat ./file')).toBe('cat file')
+    expect(normalizeCommandForCacheKey('ls src/')).toBe('ls src')
+  })
+})
+
+describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
+  it('never flags an entry with no stored fingerprints as stale', () => {
+    const entry: BashOutputEntry = {
+      id: 'x',
+      command: 'echo hi',
+      output: 'hi',
+      exitCode: 0,
+      storedAt: Date.now(),
+      sizeBytes: 2,
+    }
+    expect(isBashEntryStale(entry, 'echo hi', null)).toBe(false)
+  })
+
+  it('detects a stale dir-listing entry once the target directory changes', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-dir-'))
+    const subDir = path.join(tmpDir, 'sub')
+    fs.mkdirSync(subDir)
+    try {
+      const fingerprints = computeBashFingerprints('ls sub', tmpDir)
+      expect(fingerprints?.dir).toBeDefined()
+
+      const entry: BashOutputEntry = {
+        id: 'x',
+        command: 'ls sub',
+        output: 'file1\n',
+        exitCode: 0,
+        storedAt: Date.now(),
+        sizeBytes: 6,
+        fingerprints,
+      }
+      expect(isBashEntryStale(entry, 'ls sub', tmpDir)).toBe(false)
+
+      const future = new Date(Date.now() + 60_000)
+      fs.utimesSync(subDir, future, future)
+
+      expect(isBashEntryStale(entry, 'ls sub', tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('detects a stale dep-list entry once the lockfile content changes', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-lock-'))
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'requirements.txt'), 'requests==2.0.0\n')
+      const id = await storeBashOutput('pip freeze', 'requests==2.0.0\n', 0, tmpDir)
+      const entry = getBashOutput(id)
+      expect(entry?.fingerprints?.lockfile).toBeDefined()
+      expect(isBashEntryStale(entry!, 'pip freeze', tmpDir)).toBe(false)
+
+      fs.writeFileSync(path.join(tmpDir, 'requirements.txt'), 'requests==3.0.0\n')
+      expect(isBashEntryStale(entry!, 'pip freeze', tmpDir)).toBe(true)
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
   })
 })
