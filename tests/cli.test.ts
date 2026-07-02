@@ -581,12 +581,29 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
   // temp dir isolates the skill cache from the user's real one - the exact pollution
   // that masked the original bug. `skill-compact --path` bypasses name resolution,
   // so no ~/.claude/skills override is needed.
-  function runIsolated(args: string[], dataDir: string): RunResult {
+  function runIsolated(args: string[], dataDir: string, extraEnv?: Record<string, string>): RunResult {
     const res = spawnSync(process.execPath, [BUNDLE, ...args], {
       encoding: 'utf8',
-      env: { ...process.env, LOCALAPPDATA: dataDir, XDG_DATA_HOME: dataDir },
+      env: { ...process.env, LOCALAPPDATA: dataDir, XDG_DATA_HOME: dataDir, ...extraEnv },
     })
     return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
+  }
+
+  // Data dir layout under LOCALAPPDATA/XDG_DATA_HOME nests platform-specific
+  // subdirectories (e.g. dfk-helper/token-goat on Windows), so walk recursively
+  // for a cache filename instead of assuming a fixed depth.
+  function findFileNamesRecursive(dir: string): string[] {
+    if (!fs.existsSync(dir)) return []
+    const names: string[] = []
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        names.push(...findFileNamesRecursive(full))
+      } else {
+        names.push(entry.name)
+      }
+    }
+    return names
   }
 
   function makeSkill(): { dataDir: string; skillFile: string; cleanup: () => void } {
@@ -639,6 +656,35 @@ describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
       expect(r.stderr).toContain('requires a <name> or --path')
     } finally {
       fs.rmSync(base, { recursive: true, force: true })
+    }
+  }, 30000)
+
+  // Regression for SKILLCOMPACT-SESSIONID: cmdSkillCompact used to derive its
+  // cache-scoping session id from `Array.from(getSessionFiles().keys())[0]`, which
+  // is the first *file path* read this process (or 'default' when none were read -
+  // always true for a plain CLI invocation, since only the `hook` relay path loads
+  // persisted session state into that map). That silently ignored CLAUDE_CODE_SESSION_ID
+  // and always wrote the compact to a hardcoded 'default' bucket, so two different
+  // sessions compacting the same skill collided into one cache entry.
+  it('skill-compact scopes the compact cache file to CLAUDE_CODE_SESSION_ID, not an arbitrary session', () => {
+    const { dataDir, skillFile, cleanup } = makeSkill()
+    try {
+      const first = runIsolated(['skill-compact', '--path', skillFile], dataDir, {
+        CLAUDE_CODE_SESSION_ID: 'sess-alpha',
+      })
+      expect(first.status).toBe(0)
+
+      const second = runIsolated(['skill-compact', '--path', skillFile], dataDir, {
+        CLAUDE_CODE_SESSION_ID: 'sess-beta',
+      })
+      expect(second.status).toBe(0)
+
+      const fileNames = findFileNamesRecursive(dataDir)
+      expect(fileNames).toContain('sess-alpha-myskill-compact')
+      expect(fileNames).toContain('sess-beta-myskill-compact')
+      expect(fileNames).not.toContain('default-myskill-compact')
+    } finally {
+      cleanup()
     }
   }, 30000)
 })

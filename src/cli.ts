@@ -20,7 +20,7 @@ import { buildProjectMap, formatProjectMap } from './baseline.js'
 import { buildCompactMap, formatMap, getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
-import { getSessionFiles } from './session.js'
+import { getSessionId } from './session.js'
 import { searchSymbolsFts } from './index_reader.js'
 import { indexFileSync } from './parser.js'
 import { pruneDeletedFiles } from './index_prune.js'
@@ -185,8 +185,7 @@ async function cmdInstall(opts: { project?: boolean }): Promise<void> {
     if (fs.existsSync(skillDir)) {
       const entries = fs.readdirSync(skillDir, { withFileTypes: true })
       const skillNames: string[] = []
-      const sessionFiles = getSessionFiles()
-      const sessionId = Array.from(sessionFiles.keys())[0] ?? 'default'
+      const sessionId = getSessionId()
 
       for (const entry of entries) {
         if (!entry.isDirectory()) continue
@@ -434,8 +433,7 @@ async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<
 }
 
 async function cmdSkillCompact(name: string | undefined, opts: { path?: string; all?: boolean }): Promise<void> {
-  const sessionFiles = getSessionFiles()
-  const sessionId = Array.from(sessionFiles.keys())[0] ?? 'default'
+  const sessionId = getSessionId()
 
   if (opts.all === true) {
     // Regenerate compacts for all skills, skipping fresh ones.
