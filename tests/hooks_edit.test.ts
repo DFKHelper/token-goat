@@ -8,16 +8,21 @@ import type * as ConstantsModule from '../src/constants.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-edit-'))
+const TEST_CONFIG_PATH = path.join(DATA_DIR, 'config.toml')
 
 vi.mock('../src/constants.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConstantsModule>()
-  return { ...actual, dataDir: () => DATA_DIR }
+  return { ...actual, dataDir: () => DATA_DIR, configPath: () => TEST_CONFIG_PATH }
 })
 
 const { postEditHandler } = await import('../src/hooks_edit.js')
 const { dirtyQueuePath, getDirtyPaths, clearDirtyQueue } = await import('../src/hooks_index.js')
 const { normalizePath } = await import('../src/paths.js')
 const { clearModuleCaches } = await import('../src/reset.js')
+const { invalidateConfigCache } = await import('../src/config.js')
+const { compactPathFor, isCompactFresh, writeCompact, buildExtractiveCompact } = await import(
+  '../src/doc_compact.js'
+)
 const session = await import('../src/session.js')
 
 function editEvent(filePath: string | undefined, toolName = 'Edit'): HookEvent {
@@ -33,10 +38,14 @@ function editEvent(filePath: string | undefined, toolName = 'Edit'): HookEvent {
 beforeEach(() => {
   clearModuleCaches()
   clearDirtyQueue()
+  try { fs.unlinkSync(TEST_CONFIG_PATH) } catch { /* ok */ }
+  invalidateConfigCache()
 })
 
 afterEach(() => {
   clearDirtyQueue()
+  try { fs.unlinkSync(TEST_CONFIG_PATH) } catch { /* ok */ }
+  invalidateConfigCache()
 })
 
 describe('postEditHandler', () => {
@@ -162,5 +171,44 @@ describe('postEditHandler', () => {
       expect(result.context).toContain('say \\"hi\\"')
       expect(result.context).not.toContain('say "hi"')
     }
+  })
+})
+
+describe('postEditHandler — stable-doc compact staleness marking', () => {
+  function makeSourceFile(content = '# Title\nBody text.\n'): string {
+    const p = path.join(DATA_DIR, `src-${Math.random().toString(36).slice(2)}.md`)
+    fs.writeFileSync(p, content)
+    return p
+  }
+
+  it('marks a fresh compact sidecar stale after the source file is edited', () => {
+    const src = makeSourceFile()
+    const compactPath = compactPathFor(src)
+    writeCompact(compactPath, src, buildExtractiveCompact(fs.readFileSync(src, 'utf-8')))
+    expect(isCompactFresh(compactPath, src)).toBe(true)
+
+    postEditHandler(editEvent(src))
+
+    expect(isCompactFresh(compactPath, src)).toBe(false)
+  })
+
+  it('is a no-op (does not throw) when no sidecar exists for the edited file', () => {
+    const src = makeSourceFile()
+    expect(() => postEditHandler(editEvent(src))).not.toThrow()
+    expect(isCompactFresh(compactPathFor(src), src)).toBe(false)
+  })
+
+  it('does not mark stale when stable_doc_compacts is disabled', () => {
+    fs.writeFileSync(TEST_CONFIG_PATH, '[hints]\nstable_doc_compacts = false\n')
+    invalidateConfigCache()
+
+    const src = makeSourceFile()
+    const compactPath = compactPathFor(src)
+    writeCompact(compactPath, src, buildExtractiveCompact(fs.readFileSync(src, 'utf-8')))
+    expect(isCompactFresh(compactPath, src)).toBe(true)
+
+    postEditHandler(editEvent(src))
+
+    expect(isCompactFresh(compactPath, src)).toBe(true)
   })
 })
