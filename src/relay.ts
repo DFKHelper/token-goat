@@ -154,7 +154,7 @@ export async function relay(eventName: string): Promise<void> {
     } catch {
       // fail-soft: a save failure must not block the tool call
     }
-    process.stdout.write(serializeOutput(output))
+    process.stdout.write(serializeOutput(output, event.eventName))
   } catch {
     // Pass-through on every failure path — a hook must never block Claude Code.
     process.stdout.write('{}')
