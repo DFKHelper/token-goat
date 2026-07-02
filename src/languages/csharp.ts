@@ -71,6 +71,12 @@ export function extractCsharp(
 
   let currentClass: string | null = null
   let classStartDepth = 0
+  // True once braceDepth has risen above classStartDepth at least once, i.e. the class's own
+  // opening brace has actually been consumed. Guards the pop check below: for Allman-style
+  // declarations (`class Foo` on one line, `{` on the next) braceDepth still equals
+  // classStartDepth on the header line itself, so an ungated pop check fires immediately and
+  // discards the class context before its body is ever seen.
+  let classBodyEntered = false
   let braceDepth = 0
 
   for (let i = 0; i < lines.length; i++) {
@@ -109,6 +115,7 @@ export function extractCsharp(
       if (currentClass === null) {
         currentClass = cname
         classStartDepth = braceDepth
+        classBodyEntered = false
       }
     }
 
@@ -142,7 +149,10 @@ export function extractCsharp(
 
     braceDepth += (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length
 
-    if (currentClass !== null && braceDepth <= classStartDepth) {
+    if (currentClass !== null && braceDepth > classStartDepth) {
+      classBodyEntered = true
+    }
+    if (currentClass !== null && classBodyEntered && braceDepth <= classStartDepth) {
       currentClass = null
     }
   }
