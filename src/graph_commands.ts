@@ -107,7 +107,7 @@ function buildFileSymCache(): (fp: string) => SymbolEntry[] {
   return (fp: string): SymbolEntry[] => {
     let syms = cache.get(fp)
     if (syms === undefined) {
-      syms = querySymbols({ filePath: fp }, undefined)
+      syms = querySymbols({ filePath: fp, limit: 10000 }, undefined)
       cache.set(fp, syms)
     }
     return syms
@@ -438,7 +438,7 @@ export function runScope(opts: ScopeOptions): number {
   }
 
   const filePath = resolveIndexPath(file)
-  const syms = querySymbols({ filePath })
+  const syms = querySymbols({ filePath, limit: 10000 })
 
   const enclosing = syms
     .filter((s) => s.lineStart <= line && line <= s.lineEnd)
@@ -578,7 +578,7 @@ interface TestForEntry { testFile: string; testFunctions: string[] }
 
 export function runTestFor(opts: TestForOptions): number {
   const filePath = resolveIndexPath(opts.file)
-  const symbols = querySymbols({ filePath })
+  const symbols = querySymbols({ filePath, limit: 10000 })
 
   const testFileMap = new Map<string, Set<string>>()
 
@@ -593,7 +593,7 @@ export function runTestFor(opts: TestForOptions): number {
   const results: TestForEntry[] = []
 
   for (const [tf] of testFileMap) {
-    const testSyms = querySymbols({ filePath: tf })
+    const testSyms = querySymbols({ filePath: tf, limit: 10000 })
     const testFns = testSyms.filter((s) => /^(test|Test|spec|describe|it)/.test(s.name)).map((s) => s.name)
     results.push({ testFile: tf, testFunctions: testFns })
   }
