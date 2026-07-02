@@ -12,7 +12,6 @@
  * `hookSpecificOutput` (no snake_case translation needed).
  */
 
-import type { BridgeConfig } from './types.js'
 
 /**
  * Node source for the Codex hook shim.
@@ -78,16 +77,3 @@ function main() {
 main()
 `
 
-/**
- * Return the Codex bridge config.
- *
- * `hookSpecificOutput` is `true`: Codex requires `hookEventName` in every
- * `hookSpecificOutput` payload.
- */
-export function getCodexHookConfig(): BridgeConfig {
-  return {
-    harness: 'codex',
-    hookScriptPath: '.codex/token-goat-hook.cjs',
-    hookSpecificOutput: true,
-  }
-}

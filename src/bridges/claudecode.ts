@@ -13,7 +13,6 @@
  * `{}` (a no-op) on any failure rather than crashing the hook.
  */
 
-import type { BridgeConfig } from './types.js'
 
 /**
  * Node source for the Claude Code hook shim.
@@ -55,17 +54,3 @@ function main() {
 
 main()
 `
-
-/**
- * Return the Claude Code bridge config.
- *
- * Claude Code does not require a `hookEventName` const in `hookSpecificOutput`
- * (unlike Codex), so `hookSpecificOutput` is `false` here.
- */
-export function getClaudeCodeHookConfig(): BridgeConfig {
-  return {
-    harness: 'claudecode',
-    hookScriptPath: '.claude/token-goat-hook.cjs',
-    hookSpecificOutput: false,
-  }
-}
