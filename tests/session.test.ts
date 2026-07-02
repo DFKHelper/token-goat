@@ -115,11 +115,30 @@ describe('web fetch and bash output indexes', () => {
 })
 
 describe('session id', () => {
+  const ORIG_ENV = process.env['CLAUDE_CODE_SESSION_ID']
+
+  afterEach(() => {
+    if (ORIG_ENV === undefined) delete process.env['CLAUDE_CODE_SESSION_ID']
+    else process.env['CLAUDE_CODE_SESSION_ID'] = ORIG_ENV
+  })
+
   it('returns a consistent non-empty string across calls', () => {
     const a = getSessionId()
     const b = getSessionId()
     expect(a).toBe(b)
     expect(a.length).toBeGreaterThan(0)
+  })
+
+  it('uses CLAUDE_CODE_SESSION_ID from the environment when set', () => {
+    process.env['CLAUDE_CODE_SESSION_ID'] = 'test-session-abc123'
+    expect(getSessionId()).toBe('test-session-abc123')
+  })
+
+  it('falls back to a generated id when CLAUDE_CODE_SESSION_ID is unset', () => {
+    delete process.env['CLAUDE_CODE_SESSION_ID']
+    const id = getSessionId()
+    expect(id.length).toBeGreaterThan(0)
+    expect(id).not.toBe('test-session-abc123')
   })
 })
 

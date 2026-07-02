@@ -293,7 +293,7 @@ export function wasFileTruncatedThisSession(filePath: string): boolean {
 }
 
 /**
- * Generate a random session id when `CLAUDE_SESSION_ID` is unset.
+ * Generate a random session id when `CLAUDE_CODE_SESSION_ID` is unset.
  *
  * Prefers `crypto.randomUUID` (Node >= 19); falls back to hex from
  * `randomBytes` on older runtimes where `randomUUID` is unavailable.
@@ -309,12 +309,12 @@ function generateSessionId(): string {
 /**
  * Return the session id, resolved once per process.
  *
- * Uses `process.env.CLAUDE_SESSION_ID` when set and non-empty; otherwise a
+ * Uses `process.env.CLAUDE_CODE_SESSION_ID` when set and non-empty; otherwise a
  * generated id, cached so repeated calls return the same value.
  */
 export function getSessionId(): string {
   if (_sessionId !== null) return _sessionId
-  const fromEnv = process.env['CLAUDE_SESSION_ID']
+  const fromEnv = process.env['CLAUDE_CODE_SESSION_ID']
   _sessionId = fromEnv !== undefined && fromEnv !== '' ? fromEnv : generateSessionId()
   return _sessionId
 }
