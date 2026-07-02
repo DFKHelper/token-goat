@@ -160,11 +160,11 @@ describe('doc_compact', () => {
   })
 
   describe('extractDocCompact', () => {
-    it('extracts content after COMPACT_END marker', () => {
-      const body = 'Full text\n<!-- COMPACT_END -->\nCompact text\nMore'
+    it('extracts content before COMPACT_END marker', () => {
+      const body = 'Compact text\n<!-- COMPACT_END -->\nFull reference text\nMore'
       const compact = extractDocCompact(body)
       expect(compact).toContain('Compact text')
-      expect(compact).not.toContain('Full text')
+      expect(compact).not.toContain('Full reference text')
     })
 
     it('extracts content after heading', () => {
@@ -190,7 +190,7 @@ describe('doc_compact', () => {
   describe('compactDoc', () => {
     it('reads and extracts compact from file', () => {
       const docPath = path.join(tempDir, 'doc.md')
-      fs.writeFileSync(docPath, 'Intro\n<!-- COMPACT_END -->\nCompact')
+      fs.writeFileSync(docPath, 'Compact\n<!-- COMPACT_END -->\nFull reference text')
 
       const result = compactDoc(docPath)
       expect(result).toContain('Compact')

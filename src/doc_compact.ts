@@ -249,7 +249,7 @@ export function extractDocCompact(body: string, heading?: string): string {
   const idx = body.indexOf(compactMarker)
   if (idx === -1) return ''
 
-  return body.slice(idx + compactMarker.length).trim()
+  return body.slice(0, idx).trim()
 }
 
 /**
