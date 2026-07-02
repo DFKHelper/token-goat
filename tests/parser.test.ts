@@ -68,6 +68,24 @@ describe('parseFile', () => {
     expect(names).not.toContain('local')
   })
 
+  it('excludes a local named function declaration nested inside a function body from the symbol index (regression: only lexical declarations were scope-gated, not function_declaration)', async () => {
+    const file = write(
+      'nested_fn.ts',
+      [
+        'export function outer(): number {',
+        '  function localHelper(): number {',
+        '    return 1',
+        '  }',
+        '  return localHelper()',
+        '}',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    const names = result.symbols.filter((s) => s.kind === 'function').map((s) => s.name)
+    expect(names).toContain('outer')
+    expect(names).not.toContain('localHelper')
+  })
+
   it('indexes TS/JS class fields initialized with arrow functions, not data fields', async () => {
     const tsFile = write(
       'widget.ts',
@@ -384,6 +402,24 @@ describe('indexFile', () => {
     await indexFile(file, db)
     const after = querySymbols({ filePath: file }, db)
     expect(after.map((s) => s.name)).toEqual(['login'])
+  })
+
+  it('does not wipe existing rows on a transient read failure (regression: async indexFile diverged from indexFileSync, which no-ops instead)', async () => {
+    const file = write('flaky.ts', 'export function survives() { return 1; }\n')
+    const db = path.join(TMP, 'index.db')
+
+    await indexFile(file, db)
+    expect(querySymbols({ filePath: file }, db).map((s) => s.name)).toEqual(['survives'])
+
+    // Simulate a transient read failure (e.g. a Windows exclusive-lock error) on a re-index
+    // attempt: the file disappears out from under the read.
+    fs.rmSync(file)
+    await indexFile(file, db)
+
+    // A failed read must be a no-op, matching indexFileSync -- not a destructive wipe of the
+    // rows that were already indexed.
+    const after = querySymbols({ filePath: file }, db)
+    expect(after.map((s) => s.name)).toEqual(['survives'])
   })
 })
 

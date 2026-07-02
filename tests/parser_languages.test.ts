@@ -111,6 +111,38 @@ Some content here
 
       fs.rmSync(tmpDir, { recursive: true })
     })
+
+    it('counts newlines skipped between the colon and the value opening quote when computing lineEnd', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parser-test-'))
+      const jsonFile = path.join(tmpDir, 'colon_gap.json')
+
+      const content = [
+        '{',
+        '  "key1":',
+        '    "value on the next line",',
+        '  "key2": "value2"',
+        '}',
+        '',
+      ].join('\n')
+      fs.writeFileSync(jsonFile, content)
+      const result = await parseFile(jsonFile)
+
+      const key1 = result.symbols.find((s) => s.name === 'key1')
+      const key2 = result.symbols.find((s) => s.name === 'key2')
+
+      expect(key1).toBeDefined()
+      expect(key1?.lineStart).toBe(2)
+      // The value's opening quote is on line 3, not line 2 where the key/colon are -- the
+      // newline in the colon-to-quote gap must be counted, not just newlines inside the string.
+      expect(key1?.lineEnd).toBe(3)
+      expect(key1?.body).toContain('value on the next line')
+
+      expect(key2).toBeDefined()
+      expect(key2?.lineStart).toBe(4)
+      expect(key2?.lineEnd).toBe(4)
+
+      fs.rmSync(tmpDir, { recursive: true })
+    })
   })
 
   describe('yaml symbols', () => {
