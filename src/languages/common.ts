@@ -72,6 +72,52 @@ export function stripSqlLineComments(text: string): string {
   return text.replace(/--[^\n]*/g, (m) => ' '.repeat(m.length))
 }
 
+/**
+ * True when `index` falls inside an opening single- or double-quoted string literal earlier
+ * on `line` (an odd count of unescaped quote characters before it).
+ */
+function isInsideStringLiteral(line: string, index: number): boolean {
+  const before = line.slice(0, index)
+  const dqCount = (before.match(/(?<!\\)"/g) ?? []).length
+  const sqCount = (before.match(/(?<!\\)'/g) ?? []).length
+  return dqCount % 2 !== 0 || sqCount % 2 !== 0
+}
+
+/**
+ * Strip a ``/* ... *\/`` block-comment span from one line, carrying `inComment` state across
+ * calls (one per line, in order) so a comment spanning multiple lines is tracked correctly.
+ * A `/*` occurrence that falls inside an open single- or double-quoted string literal on the
+ * same line (e.g. `glob('src/*.php')`) is not treated as a comment opener, so a string that
+ * merely contains that two-character sequence doesn't swallow the rest of the file as a
+ * never-closed comment.
+ */
+export function stripBlockCommentSpan(line: string, inComment: boolean): { code: string; inComment: boolean } {
+  let code = ''
+  let j = 0
+  let comment = inComment
+  while (j < line.length) {
+    if (!comment) {
+      let open = line.indexOf('/*', j)
+      while (open !== -1 && isInsideStringLiteral(line, open)) {
+        open = line.indexOf('/*', open + 1)
+      }
+      if (open === -1) {
+        code += line.slice(j)
+        break
+      }
+      code += line.slice(j, open)
+      comment = true
+      j = open + 2
+    } else {
+      const close = line.indexOf('*/', j)
+      if (close === -1) break
+      comment = false
+      j = close + 2
+    }
+  }
+  return { code, inComment: comment }
+}
+
 // ---------------------------------------------------------------------------
 // Symbol emitter factory
 // ---------------------------------------------------------------------------

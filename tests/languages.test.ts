@@ -208,6 +208,28 @@ function tail() {}
     expect(tail?.docstring).toBe('')
   })
 
+  it('does not treat a /* that appears inside a string literal as a block-comment opener', () => {
+    const content = `<?php
+class Scanner {
+    public function scan() {
+        $files = glob('src/*.php');
+        return $files;
+    }
+}
+function afterGlob() {}
+`
+    const { symbols } = extractPhp(content, 'scanner.php')
+    const scan = symbols.find((s) => s.name === 'scan')
+    expect(scan?.kind).toBe('method')
+    expect(scan?.docstring).toBe('Scanner')
+    // Regression: 'src/*.php' inside the glob() string call must not be mistaken for a
+    // comment opener - otherwise everything after it (including this declaration) is
+    // silently swallowed as "inside a never-closed comment".
+    const afterGlob = symbols.find((s) => s.name === 'afterGlob')
+    expect(afterGlob?.kind).toBe('function')
+    expect(afterGlob?.docstring).toBe('')
+  })
+
   it('detects .php language via parseFile', async () => {
     const file = tmp('foo.php', '<?php function foo() {}')
     const result = await parseFile(file)
