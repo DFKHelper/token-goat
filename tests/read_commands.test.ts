@@ -184,6 +184,12 @@ describe('read_commands', () => {
       expect(mockQuerySymbols).not.toHaveBeenCalledWith(expect.objectContaining({ name: 'Inner' }))
     })
 
+    it('splits on the LAST :: so a file path containing a literal :: still resolves the correct symbol (#m2)', () => {
+      mockQuerySymbols.mockReturnValue([])
+      runRead({ spec: 'a::b::mySymbol' })
+      expect(mockQuerySymbols).toHaveBeenCalledWith(expect.objectContaining({ name: 'mySymbol' }))
+    })
+
     // ---- line-range reads (file@N-M) --------------------------------------
     // These exercise the @N-M syntax the Python build had and the TS port dropped. Each asserts on sliced content, so it fails on pre-feature code (where `file@2-4` fell through to symbol resolution and errored "Could not read") and passes once the range path exists.
     describe('line-range reads (file@N-M)', () => {
@@ -270,6 +276,13 @@ describe('read_commands', () => {
     it('returns 1 for invalid spec without ::', () => {
       const code = runSection({ spec: 'no-separator' })
       expect(code).toBe(1)
+    })
+
+    it('splits on the LAST :: so a file path containing a literal :: still resolves the correct heading (#m2)', () => {
+      mockReadSection.mockReturnValue(null)
+      mockListAllSections.mockReturnValue([])
+      runSection({ spec: 'a::b::Heading' })
+      expect(mockReadSection).toHaveBeenCalledWith('a::b', 'Heading')
     })
 
     it('returns 1 when section not found', () => {
@@ -749,6 +762,13 @@ describe('runRefs — multi-symbol merged references (#89 gap A)', () => {
     for (const call of mockQueryRefs.mock.calls) {
       expect((call[0] as { filePath?: string }).filePath).toBeDefined()
     }
+  })
+
+  it('splits the spec on the LAST :: so a file path containing a literal :: keeps the symbol names intact (#m2)', () => {
+    mockQueryRefs.mockReturnValue([])
+    capture(() => runRefs({ spec: 'a::b::sym1,sym2' }))
+    const names = mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string }).name)
+    expect(names).toEqual(['sym1', 'sym2'])
   })
 
   it('emits a per-symbol map under --json', () => {
