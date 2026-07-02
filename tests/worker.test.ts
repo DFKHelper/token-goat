@@ -106,6 +106,16 @@ describe('processDirtyBatch', () => {
     // The vanished path is reconciled as a deletion, not silently skipped.
     expect(removed).toEqual([ghost])
   })
+
+  // Regression: the returned count must reflect paths actually (re)indexed, not paths merely
+  // visited. An index callback that signals a no-op (returns `false`, mirroring the default
+  // indexer's sha-gate skip for byte-identical content) must not inflate the count.
+  it('does not count a path whose index callback signals a no-op skip', () => {
+    const real = path.join(DIR, 'unchanged.ts')
+    fs.writeFileSync(real, 'export const x = 1\n')
+    const count = processDirtyBatch([real], () => false)
+    expect(count).toBe(0)
+  })
 })
 
 describe('drainOnce', () => {
@@ -211,9 +221,10 @@ describe('drainOnce', () => {
       getDb(projectDb).prepare('DELETE FROM symbols WHERE file_path = ?').run(norm)
       expect(querySymbols({ name: 'shaGatedSymbol', limit: 10 }, projectDb).length).toBe(0)
 
-      // Re-queue the unchanged file and drain again; the sha gate must skip the reparse.
+      // Re-queue the unchanged file and drain again; the sha gate must skip the reparse, and the
+      // returned count must not include it (it was visited but not actually reindexed).
       writeQueue(DIR, [norm])
-      expect(drainOnce(DIR)).toBe(1)
+      expect(drainOnce(DIR)).toBe(0)
       expect(querySymbols({ name: 'shaGatedSymbol', limit: 10 }, projectDb).length).toBe(0)
     } finally {
       closeDb(projectDb)
@@ -271,6 +282,70 @@ describe('drainOnce', () => {
       expect(indexedPaths).toContain(C)
 
       // The .draining file should be cleaned up.
+      expect(fs.existsSync(drainingPath)).toBe(false)
+    })
+  })
+
+  describe('drainOnce rm-after-process (crash-safety regression)', () => {
+    it('does not lose claimed queue paths when processing crashes mid-batch (stage b)', () => {
+      // Regression: drainOnce used to delete the claimed .draining file BEFORE running
+      // processDirtyBatch, so a crash (simulated here as the index callback throwing) partway
+      // through a batch already had the queue file deleted -- the paths were lost forever until
+      // some unrelated future edit re-queued them. The fix defers the rm until after
+      // processDirtyBatch completes successfully.
+      const A = path.join(DIR, 'a.ts')
+      const B = path.join(DIR, 'b.ts')
+      fs.writeFileSync(A, 'export const a = 1\n')
+      fs.writeFileSync(B, 'export const b = 2\n')
+      writeQueue(DIR, [A, B])
+
+      const queuePath = path.join(DIR, 'queue', 'dirty.txt')
+      const drainingPath = `${queuePath}.draining`
+
+      expect(() =>
+        drainOnce(DIR, (p) => {
+          if (p === B) throw new Error('simulated crash mid-batch')
+        }),
+      ).toThrow('simulated crash mid-batch')
+
+      // Pre-fix, the claimed .draining file was already removed before processDirtyBatch ran,
+      // so it would be gone here even though the batch never finished.
+      expect(fs.existsSync(drainingPath)).toBe(true)
+
+      // A later drain (simulating a restart after the crash) must still recover both paths.
+      const indexed: string[] = []
+      const count = drainOnce(DIR, (p) => indexed.push(p))
+      expect(count).toBe(2)
+      expect(indexed).toEqual([A, B])
+      expect(fs.existsSync(drainingPath)).toBe(false)
+    })
+
+    it('does not lose recovered .draining paths when processing crashes mid-batch (stage a)', () => {
+      // Same regression as above, exercised via the crash-recovery path: an abandoned .draining
+      // file (from a previous crashed drain) must also survive a crash during ITS OWN
+      // processDirtyBatch run, rather than being deleted up front.
+      const C = path.join(DIR, 'c.ts')
+      const D = path.join(DIR, 'd.ts')
+      fs.writeFileSync(C, 'export const c = 3\n')
+      fs.writeFileSync(D, 'export const d = 4\n')
+
+      const queuePath = path.join(DIR, 'queue', 'dirty.txt')
+      const drainingPath = `${queuePath}.draining`
+      fs.mkdirSync(path.dirname(drainingPath), { recursive: true })
+      fs.writeFileSync(drainingPath, `${C}\n${D}\n`)
+
+      expect(() =>
+        drainOnce(DIR, (p) => {
+          if (p === D) throw new Error('simulated crash mid-recovery-batch')
+        }),
+      ).toThrow('simulated crash mid-recovery-batch')
+
+      expect(fs.existsSync(drainingPath)).toBe(true)
+
+      const indexed: string[] = []
+      const count = drainOnce(DIR, (p) => indexed.push(p))
+      expect(count).toBe(2)
+      expect(indexed).toEqual([C, D])
       expect(fs.existsSync(drainingPath)).toBe(false)
     })
   })
