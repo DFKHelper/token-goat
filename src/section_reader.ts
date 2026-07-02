@@ -46,9 +46,20 @@ type HeaderKind = 'markdown' | 'table' | 'keyvalue' | 'python'
  * ordinal: null }`. Only a trailing `#<digits>` is treated as an ordinal so a
  * heading that legitimately contains `#` mid-text is left intact.
  */
-function parseHeadingSpec(spec: string): { base: string; ordinal: number | null } {
+function parseHeadingSpec(
+  spec: string,
+  headers?: readonly SectionHeader[],
+): { base: string; ordinal: number | null } {
   const m = /^(.*?)#(\d+)$/.exec(spec)
   if (m !== null && m[1] !== undefined && m[2] !== undefined) {
+    // A trailing #<digits> is normally an ordinal disambiguator (e.g. "Install#2"). But if a real
+    // heading text matches the full spec verbatim, the digits are part of the heading itself
+    // (e.g. "Issue #42") -- use the spec as-is rather than splitting off an ordinal.
+    const specLower = spec.trim().toLowerCase()
+    const isLiteralHeading = headers?.some((h) => h.heading.trim().toLowerCase() === specLower) ?? false
+    if (isLiteralHeading) {
+      return { base: spec.trim(), ordinal: null }
+    }
     return { base: m[1].trim(), ordinal: Number.parseInt(m[2], 10) }
   }
   return { base: spec.trim(), ordinal: null }
@@ -347,11 +358,11 @@ function buildSectionResult(
  * occurrence by line order is returned.
  */
 export function extractSection(text: string, headingSpec: string): SectionResult | null {
-  const { base, ordinal } = parseHeadingSpec(headingSpec)
-  if (base.length === 0) return null
-
   // Language is unknown here (we only have text); the sniffer handles it.
   const { headers, kind } = findHeaders(text, 'unknown')
+  const { base, ordinal } = parseHeadingSpec(headingSpec, headers)
+  if (base.length === 0) return null
+
   const lines = text.split('\n')
 
   const resolved = resolveHeaderPos(headers, base, ordinal)
@@ -375,11 +386,11 @@ export function readSection(filePath: string, headingSpec: string): SectionResul
     return null
   }
 
-  const { base, ordinal } = parseHeadingSpec(headingSpec)
-  if (base.length === 0) return null
-
   const language = detectLanguage(filePath)
   const { headers, kind } = findHeaders(text, language)
+  const { base, ordinal } = parseHeadingSpec(headingSpec, headers)
+  if (base.length === 0) return null
+
   const lines = text.split('\n')
 
   const resolved = resolveHeaderPos(headers, base, ordinal)

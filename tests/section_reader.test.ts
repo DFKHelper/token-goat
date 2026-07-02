@@ -78,6 +78,14 @@ describe('extractSection', () => {
     expect(extractSection(MD, 'Install#5')).toBeNull()
   })
 
+  it('reaches a heading whose literal text ends in #<digits> (e.g. "Issue #42")', () => {
+    const md = ['# Title', '## Issue #42', 'bug details here', '## Other', 'x'].join('\n')
+    const result = extractSection(md, 'Issue #42')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Issue #42')
+    expect(result?.content).toBe('## Issue #42\nbug details here')
+  })
+
   it('preserves a trailing # in heading text (C#) instead of stripping it as a closing sequence', () => {
     const md = ['# Lang notes', '## C#', 'dotnet content', '## Other', 'x'].join('\n')
     const result = extractSection(md, 'C#')
