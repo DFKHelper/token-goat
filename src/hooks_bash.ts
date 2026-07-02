@@ -14,7 +14,7 @@ import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadP
 import { resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
-import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
+import { storeBashOutput, getBashOutput, isBashEntryStale } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
@@ -1322,8 +1322,9 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (monitoringHint !== null) {
     const monCmdHash = shortFingerprint(stripOutputPipeline(cmd))
     const monOutputId = getBashOutputId(monCmdHash)
-    // Only emit the recall hint if the content entry is actually present: the session index may name an id whose blob was pruned (age/count), and a hint pointing at a missing id would error instead of saving a re-run.
-    const monEntry = monOutputId !== null ? getBashOutput(monOutputId) : null
+    // Only emit the recall hint if the content entry is actually present (the session index may name an id whose blob was pruned) and not stale — a matching id whose stored git/dir/lockfile fingerprint no longer matches the current state means the source changed since it was cached, so it must not be recalled as fresh.
+    const monEntryRaw = monOutputId !== null ? getBashOutput(monOutputId) : null
+    const monEntry = monEntryRaw !== null && !isBashEntryStale(monEntryRaw, cmd, preHookCwd) ? monEntryRaw : null
     if (monOutputId !== null && monEntry !== null) {
       const monBytes = monEntry.sizeBytes
       const catFile = extractCatSourceFile(cmd)
@@ -1363,8 +1364,9 @@ export function preBashHandler(event: HookEvent): HookOutput {
     const curlCacheKey = extractCurlUrl(cmd) ?? cmd
     const curlHash = shortFingerprint(curlCacheKey)
     const curlOutputId = getBashOutputId(curlHash)
-    // Guard on the content entry, not just the index, so a pruned blob does not produce a recall hint that would error (see the monitoring case above).
-    const curlEntry = curlOutputId !== null ? getBashOutput(curlOutputId) : null
+    // Guard on the content entry and its freshness, not just the index (see the monitoring case above).
+    const curlEntryRaw = curlOutputId !== null ? getBashOutput(curlOutputId) : null
+    const curlEntry = curlEntryRaw !== null && !isBashEntryStale(curlEntryRaw, cmd, preHookCwd) ? curlEntryRaw : null
     if (curlOutputId !== null && curlEntry !== null) {
       const curlBytes = curlEntry.sizeBytes
       recordStat('bash_compress:recall', curlBytes, Math.round(curlBytes / 4))
@@ -1381,7 +1383,8 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (isReadOnlyGhApi(cmd)) {
     const ghHash = shortFingerprint(stripOutputPipeline(cmd))
     const ghOutputId = getBashOutputId(ghHash)
-    const ghEntry = ghOutputId !== null ? getBashOutput(ghOutputId) : null
+    const ghEntryRaw = ghOutputId !== null ? getBashOutput(ghOutputId) : null
+    const ghEntry = ghEntryRaw !== null && !isBashEntryStale(ghEntryRaw, cmd, preHookCwd) ? ghEntryRaw : null
     if (ghOutputId !== null && ghEntry !== null) {
       const ghBytes = ghEntry.sizeBytes
       recordStat('bash_compress:recall', ghBytes, Math.round(ghBytes / 4))
@@ -1418,8 +1421,9 @@ export function preBashHandler(event: HookEvent): HookOutput {
   // Derive the same command hash used by the session store.
   const cmdHash = shortFingerprint(stripOutputPipeline(cmd))
   const outputId = getBashOutputId(cmdHash)
-  // A cached prior run wins: recall it instead of re-running (and re-compressing). Guard on the content blob too — a pruned id would make `bash-output <id>` error.
-  const entry = outputId !== null ? getBashOutput(outputId) : null
+  // A cached prior run wins: recall it instead of re-running (and re-compressing). Guard on the content blob and its freshness — a pruned id would make `bash-output <id>` error, and a stale fingerprint means the source changed since the output was cached.
+  const entryRaw = outputId !== null ? getBashOutput(outputId) : null
+  const entry = entryRaw !== null && !isBashEntryStale(entryRaw, cmd, preHookCwd) ? entryRaw : null
   if (outputId !== null && entry !== null) {
     const bytes = entry.sizeBytes
     recordStat('bash_compress:recall', bytes, Math.round(bytes / 4))
