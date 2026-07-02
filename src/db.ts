@@ -184,7 +184,18 @@ export function getDb(dbPath: string): BetterSqlite3Database {
   }
 
   const conn = new Database(resolved)
-  initConnection(conn)
+  try {
+    initConnection(conn)
+  } catch (e) {
+    // A setup step (WAL pragma, schema exec, ...) failed after the handle was already
+    // opened. Close it before propagating so the failure does not leak a file descriptor.
+    try {
+      conn.close()
+    } catch {
+      // Best-effort: the original setup error is what matters to the caller.
+    }
+    throw e
+  }
   _connections.set(resolved, conn)
   return conn
 }

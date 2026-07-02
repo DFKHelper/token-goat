@@ -2,7 +2,9 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import Database from 'better-sqlite3'
 
 import { closeAllDbs, closeDb, getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -95,6 +97,48 @@ describe('getDb', () => {
     } finally {
       closeDb(dbPath)
     }
+  })
+})
+
+describe('getDb error handling', () => {
+  // Regression (M9): if a setup step inside initConnection throws after `new Database(...)`
+  // has already opened the file (e.g. the WAL-mode check fails), the just-opened handle was
+  // neither cached NOR closed -- a leaked file descriptor. This spies on the REAL
+  // Database.prototype.pragma (better-sqlite3's actual prototype, not a reimplementation) so
+  // getDb runs its real production code path end to end; only the `journal_mode = WAL` call
+  // is intercepted to simulate WAL failing to engage, matching initConnection's own check.
+  it('closes the just-opened handle if the WAL-mode setup step throws inside initConnection', () => {
+    const dbPath = tmpDbPath()
+    const originalPragma = Database.prototype.pragma
+    let capturedConn: InstanceType<typeof Database> | null = null
+    const captureConn = (conn: InstanceType<typeof Database>): void => {
+      capturedConn = conn
+    }
+    const spy = vi
+      .spyOn(Database.prototype, 'pragma')
+      .mockImplementation(function (this: InstanceType<typeof Database>, source: string, options?: object) {
+        captureConn(this)
+        if (typeof source === 'string' && source.startsWith('journal_mode')) {
+          // Simulate WAL mode failing to engage (e.g. an unsupported filesystem).
+          return 'memory'
+        }
+        return originalPragma.call(this, source, options as never)
+      })
+    try {
+      expect(() => getDb(dbPath)).toThrow(/failed to enable WAL mode/)
+      expect(capturedConn).not.toBeNull()
+      // Pre-fix: the handle is left open (leaked fd). Post-fix: initConnection's failure is
+      // caught at the getDb call site and the handle is closed before the error propagates.
+      expect(capturedConn!.open).toBe(false)
+    } finally {
+      spy.mockRestore()
+    }
+
+    // A closed handle releases its OS-level lock on the file, so a fresh getDb for the same
+    // path (with the mock removed) must succeed rather than hitting a stale lock from the
+    // leaked handle.
+    const recovered = getDb(dbPath)
+    expect((recovered.prepare('SELECT 1 AS one').get() as { one: number }).one).toBe(1)
   })
 })
 
