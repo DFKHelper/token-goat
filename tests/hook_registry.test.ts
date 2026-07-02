@@ -140,10 +140,11 @@ describe('hook registry', () => {
           hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'hint' },
         }),
       )
+    })
+
+    it('serializes context for pre_compact via top-level systemMessage, not hookSpecificOutput (PreCompact is not a valid hookEventName there and fails the harness schema)', () => {
       expect(serializeOutput({ hookType: 'context', context: 'hint' }, 'pre_compact')).toBe(
-        JSON.stringify({
-          hookSpecificOutput: { hookEventName: 'PreCompact', additionalContext: 'hint' },
-        }),
+        JSON.stringify({ systemMessage: 'hint' }),
       )
     })
 
