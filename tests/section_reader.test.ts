@@ -163,11 +163,11 @@ describe('extractSection', () => {
 })
 
 describe('listSections', () => {
-  it('returns all top-level headings from a real file', () => {
+  it('returns all headings at all nesting levels from a file', () => {
     const file = tmpFile('doc.md', MD)
     const sections = listSections(file)
-    // Top level here is the shallowest present (## sections under one # title). The single # Title is the shallowest, so only it is top-level.
-    expect(sections).toEqual(['Title'])
+    // listSections now returns all headings at every level, not just top-level
+    expect(sections).toEqual(['Title', 'Install', 'Usage', 'Install'])
   })
 
   it('lists ## sections when there is no # heading', () => {
@@ -362,5 +362,21 @@ describe('readSection', () => {
     const result = readSection(file, 'database')
     expect(result).not.toBeNull()
     expect(result?.heading).toBe('database')
+  })
+})
+
+describe('listSections regression: nested headings visibility', () => {
+  it('lists all heading levels when section --list is called on a nested document', () => {
+    const content = ['# Main Title', '## Section A', '### Subsection A1', '## Section B', '### Subsection B1'].join('\n')
+    const file = tmpFile('nested.md', content)
+    // This test verifies that when using section --list on a document with nested headings,
+    // the user sees the complete hierarchy, not just the top-level headings.
+    // Before the fix, listSections would only return ['Main Title'] (the shallowest level).
+    // After the fix (using listAllSections), it should return all levels.
+    const sections = listSections(file)
+    expect(sections).toContain('Section A')
+    expect(sections).toContain('Subsection A1')
+    expect(sections).toContain('Section B')
+    expect(sections).toContain('Subsection B1')
   })
 })
