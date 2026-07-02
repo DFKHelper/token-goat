@@ -20,6 +20,7 @@ import { passOutput, contextOutput } from './hooks_common.js'
 import { appendDirtyPath } from './hooks_index.js'
 import { normalizePath } from './paths.js'
 import { recordFileEdit } from './session.js'
+import { recordStat } from './stats.js'
 import type { HookOutput } from './types.js'
 
 /**
@@ -36,11 +37,19 @@ export function postEditHandler(event: HookEvent): HookOutput {
 
   const normalized = normalizePath(filePath)
   recordFileEdit(normalized)
-  appendDirtyPath(normalized)
+  try {
+    appendDirtyPath(normalized)
+  } catch (e) {
+    // Fail-soft: a transient fs error (disk full, permission, Windows file lock)
+    // must not crash the whole handler — recordFileEdit above already succeeded,
+    // and the rest of this handler's work (the markdown hint below) should still
+    // run rather than the exception propagating out of postEditHandler.
+    recordStat('dirty_queue_append_failed', 0, 0, undefined, e instanceof Error ? e.message : String(e))
+  }
 
   const editedBasename = path.basename(normalized)
   if (/\.(md|mdx|markdown|rst)$/i.test(editedBasename)) {
-    const escapedPath = normalized.replace(/`/g, '\\`')
+    const escapedPath = normalized.replace(/`/g, '\\`').replace(/"/g, '\\"')
     return contextOutput(
       editedBasename +
         ' was edited. Use `token-goat section "' +

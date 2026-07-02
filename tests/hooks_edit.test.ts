@@ -115,4 +115,52 @@ describe('postEditHandler', () => {
     const result = postEditHandler(editEvent('/project/src/index.ts'))
     expect(result.hookType).toBe('pass')
   })
+
+  it('does not crash when appendDirtyPath throws (e.g. disk full) — still records the edit', () => {
+    // Simulate a transient fs failure (disk full / permission / Windows file lock) by
+    // replacing the queue directory itself with a plain file, so the appendFileSync
+    // inside appendDirtyPath hits a real ENOTDIR error instead of a mocked one.
+    const queueDir = path.dirname(dirtyQueuePath())
+    fs.rmSync(queueDir, { recursive: true, force: true })
+    fs.writeFileSync(queueDir, 'blocked')
+    try {
+      expect(() => postEditHandler(editEvent('/a/file.ts'))).not.toThrow()
+      const result = postEditHandler(editEvent('/a/file.ts'))
+      expect(result.hookType).toBe('pass')
+      const normalized = normalizePath('/a/file.ts')
+      const entry = session.getSessionFiles().get(normalized)
+      expect(entry).toBeDefined()
+      expect(entry?.wasEdited).toBe(true)
+    } finally {
+      fs.rmSync(queueDir, { force: true })
+    }
+  })
+
+  it('still returns the markdown context hint when appendDirtyPath throws', () => {
+    const queueDir = path.dirname(dirtyQueuePath())
+    fs.rmSync(queueDir, { recursive: true, force: true })
+    fs.writeFileSync(queueDir, 'blocked')
+    try {
+      const result = postEditHandler(editEvent('/project/README.md'))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('README.md')
+      }
+    } finally {
+      fs.rmSync(queueDir, { force: true })
+    }
+  })
+
+  it('escapes double quotes in the file path within the markdown hint (in addition to backticks)', () => {
+    const rawPath = '/project/say "hi"/README.md'
+    const result = postEditHandler(editEvent(rawPath))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      // Quotes inside the path must be escaped the same way backticks already are,
+      // so the emitted `token-goat section "..."` command stays well-formed instead
+      // of the raw quote breaking out of the surrounding quoted argument.
+      expect(result.context).toContain('say \\"hi\\"')
+      expect(result.context).not.toContain('say "hi"')
+    }
+  })
 })
