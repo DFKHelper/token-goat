@@ -48,6 +48,7 @@ import {
   runFind,
   runGrep,
   extractTranscriptText,
+  extractSection,
 } from './read_commands.js'
 import {
   runCallers,
@@ -245,6 +246,13 @@ function _applyFiltersAndPrint(
   content: string,
   opts: { head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string },
 ): void {
+  if (opts.section !== undefined) {
+    const sectionResult = extractSection(content, opts.section)
+    if (sectionResult !== null) {
+      content = sectionResult.content
+    }
+  }
+
   if (opts.grep !== undefined) {
     let pattern = opts.grep
     // Normalize pattern to handle -E or --extended-regexp prefix
@@ -1193,6 +1201,7 @@ export function buildProgram(): Command {
     .option('--tail <n>', 'show last N lines')
     .option('--grep <pattern>', 'filter lines matching regex')
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
+    .option('--section <heading>', 'extract a specific section from the output')
     .option('--file <path>', 'read from raw output file instead of cache')
     .option('--transcript', 'parse the --file as a JSONL agent transcript: keep assistant text blocks in order before filtering')
     .action(guard(cmdBashOutput))
@@ -1204,6 +1213,7 @@ export function buildProgram(): Command {
     .option('--tail <n>', 'show last N lines')
     .option('--grep <pattern>', 'filter lines matching regex')
     .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
+    .option('--section <heading>', 'extract a specific section from the response')
     .action(guard(cmdWebOutput))
 
   program
