@@ -10,6 +10,7 @@ import {
   getSessionFiles,
   getSessionId,
   getWebFetchCacheId,
+  markFileTruncated,
   markHintShown,
   recordBashOutput,
   recordFileEdit,
@@ -88,6 +89,23 @@ describe('file edit tracking', () => {
     const files = [...getSessionFiles().values()]
     expect(files[0]?.wasEdited).toBe(true)
     expect(files[0]?.readCount).toBe(0)
+  })
+})
+
+describe('recordFileEdit preserves other tracked flags (#M20)', () => {
+  it('keeps wasTruncated set after an edit, matching the spread pattern recordFileRead/markFileTruncated use', () => {
+    const p = makeTmpFile()
+    recordFileRead(p)
+    markFileTruncated(p)
+    let files = [...getSessionFiles().values()]
+    expect(files[0]?.wasTruncated).toBe(true)
+
+    recordFileEdit(p)
+    files = [...getSessionFiles().values()]
+    expect(files[0]?.wasEdited).toBe(true)
+    // recordFileEdit used to rebuild the entry field-by-field, silently dropping wasTruncated
+    // instead of preserving it like the sibling read/truncate functions do.
+    expect(files[0]?.wasTruncated).toBe(true)
   })
 })
 
