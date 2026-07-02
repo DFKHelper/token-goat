@@ -1367,6 +1367,46 @@ describe('preBashHandler — curl GET recall', () => {
   })
 })
 
+describe('preBashHandler — stale cache recall by fingerprint (M44 regression)', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  // pip freeze is both a cacheable build command (BUILD_COMMAND_PATTERNS) and
+  // a dep-list command (isDepListCommand), so storeBashOutput fingerprints it
+  // against requirements.txt. Before this fix, the fingerprint was computed
+  // and stored but never re-checked at recall time -- a cached entry stayed
+  // "recallable" forever even after the underlying dependency set changed.
+  it('does not recall a cached pip freeze once requirements.txt changes since it was cached', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'tg-m44-'))
+    writeFileSync(join(tmpDir, 'requirements.txt'), 'requests==2.0.0\n')
+    try {
+      const cmd = 'pip freeze'
+      const largeOutput = 'requests==2.0.0\n'.repeat(100)
+
+      await postBashHandler(makePostBashEvent(cmd, largeOutput, tmpDir))
+
+      // Sanity check: immediately after caching (nothing has changed), the recall hint fires.
+      const freshResult = preBashHandler(makeBashEvent(cmd, tmpDir))
+      expect(freshResult.hookType).toBe('context')
+      if (freshResult.hookType === 'context') {
+        expect(freshResult.context).toContain('is cached')
+      }
+
+      // The dependency set changed since the output was cached -- the cached
+      // freeze output is now stale and must not be served as if it were fresh.
+      writeFileSync(join(tmpDir, 'requirements.txt'), 'requests==3.0.0\nnewpkg==1.0.0\n')
+
+      const staleResult = preBashHandler(makeBashEvent(cmd, tmpDir))
+      if (staleResult.hookType === 'context') {
+        expect(staleResult.context).not.toContain('is cached')
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('extractCurlDownload', () => {
   it('extracts url and output path from curl -o', () => {
     const result = extractCurlDownload('curl https://example.com/file.json -o /tmp/file.json')
