@@ -1,7 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
+import type * as NodeOs from 'node:os'
+
+// vi.mock is hoisted -- wrap homedir (still delegating to the real implementation by default) so the leading-dash-stripping regression test below can force a controlled homedir without touching Node's non-configurable os module properties directly (vi.spyOn on a builtin fails).
+vi.mock('node:os', async (importOriginal) => {
+  const original = await importOriginal<typeof NodeOs>()
+  return {
+    ...original,
+    homedir: vi.fn((...args: Parameters<typeof original.homedir>) => original.homedir(...args)),
+  }
+})
+
 import { tok, pct, findClaudeMdFiles, findMemoryMd, runContextStats } from '../src/cli_context_stats.js'
 
 describe('cli_context_stats', () => {
@@ -114,26 +125,40 @@ describe('cli_context_stats', () => {
     })
 
     it('finds MEMORY.md under the slugified project dir', () => {
+      const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
+      homedirMock.mockReturnValueOnce(tempDir)
+
       const projectRoot = path.join(tempDir, 'my-project')
       fs.mkdirSync(projectRoot)
 
-      // Build the expected slug from the real resolve() of projectRoot
-      const slug = path.resolve(projectRoot)
-        .replace(/[^A-Za-z0-9]/g, '-')
-        .replace(/^-+|-+$/g, '')
-
-      // Simulate ~/.claude/projects/<slug>/memory/MEMORY.md
-      const claudeDir = path.join(tempDir, '.claude-fake')
-      const memDir = path.join(claudeDir, 'projects', slug, 'memory')
+      // Real Claude Code convention: every non-alphanumeric char becomes '-', no trim.
+      const slug = path.resolve(projectRoot).replace(/[^A-Za-z0-9]/g, '-')
+      const memDir = path.join(tempDir, '.claude', 'projects', slug, 'memory')
       fs.mkdirSync(memDir, { recursive: true })
       const memFile = path.join(memDir, 'MEMORY.md')
       fs.writeFileSync(memFile, '# Memory')
 
-      // findMemoryMd uses os.homedir() so we can't inject the dir directly. Just verify the slug generation logic is consistent.
-      const expectedSlug = path.resolve(projectRoot)
-        .replace(/[^A-Za-z0-9]/g, '-')
-        .replace(/^-+|-+$/g, '')
-      expect(expectedSlug).toBe(slug)
+      expect(findMemoryMd(projectRoot)).toBe(memFile)
+    })
+
+    it('does not strip a leading dash that is genuinely part of the slug (fail-on-buggy: leading-dash trim mismatches the real Claude Code project-dir naming convention)', () => {
+      const homedirMock = os.homedir as unknown as ReturnType<typeof vi.fn>
+      homedirMock.mockReturnValueOnce(tempDir)
+
+      // A UNC-style root resolves to a path starting with two backslashes on Windows, which
+      // become two leading dashes once slugified -- exactly the case the old leading/trailing
+      // dash trim silently mangled.
+      const projectRoot = '\\\\server\\share\\myproject'
+      const resolvedRoot = path.resolve(projectRoot)
+      const slug = resolvedRoot.replace(/[^A-Za-z0-9]/g, '-')
+      expect(slug.startsWith('-')).toBe(true)
+
+      const memDir = path.join(tempDir, '.claude', 'projects', slug, 'memory')
+      fs.mkdirSync(memDir, { recursive: true })
+      const memFile = path.join(memDir, 'MEMORY.md')
+      fs.writeFileSync(memFile, '# Memory')
+
+      expect(findMemoryMd(projectRoot)).toBe(memFile)
     })
 
     it('does not fall back to other projects memory files', () => {

@@ -69,7 +69,8 @@ export function findMemoryMd(projectRoot: string): string | null {
     if (!fs.existsSync(projectsDir)) return null
 
     const rootStr = path.resolve(projectRoot)
-    const expectedSlug = rootStr.replace(/[^A-Za-z0-9]/g, '-').replace(/^-+|-+$/g, '')
+    // Real Claude Code project-dir naming convention: every non-alphanumeric char in the resolved path becomes '-', with no leading/trailing trim. A UNC root like \\server\share\proj starts with two backslashes, so its slug genuinely starts with two dashes -- trimming them (as this used to) points at a directory Claude Code never created and findMemoryMd silently misses it.
+    const expectedSlug = rootStr.replace(/[^A-Za-z0-9]/g, '-')
     const candidate = path.join(projectsDir, expectedSlug, 'memory', 'MEMORY.md')
     if (fs.existsSync(candidate)) return candidate
 
