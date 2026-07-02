@@ -61,3 +61,19 @@ describe('skill-section spec parsing', () => {
     expect(stdout.join('')).toContain('usage body text')
   })
 })
+
+// Regression guard: cmdSkillSection deliberately sets process.exitCode = 1 (without throwing)
+// when the requested heading isn't found in the skill file. The buildProgram() `guard()`
+// wrapper that registers every guard-wrapped command (skill-section among them) used to run
+// `process.exitCode = 0` unconditionally after the handler resolved, clobbering that 1 back to
+// 0 and reporting a real "section not found" failure as success. Drive the real run() entry so
+// this exercises the actual guard() + handler wiring, not the handler in isolation.
+describe('skill-section exit code on a missing heading', () => {
+  it('exits 1 instead of the guard() wrapper clobbering the handler-set exit code back to 0', async () => {
+    await storeOutput('sess-1', 'myskill-notfound', 'cached body', { sourcePath: skillFile })
+
+    const code = await runSkillSection('myskill-notfound::NoSuchHeading')
+
+    expect(code).toBe(1)
+  })
+})
