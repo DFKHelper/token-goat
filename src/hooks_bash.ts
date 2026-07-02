@@ -11,7 +11,7 @@ import { registerHook } from './hook_registry.js'
 import { contextOutput, denyOutput, passOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 import { getBashOutputId, recordBashOutput, recordCurlDownload, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, recordCliRead, wasFileReadThisSession, takePendingLargeFileHint } from './session.js'
-import { normalizePath } from './paths.js'
+import { resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput } from './bash_output_cache.js'
@@ -621,8 +621,8 @@ function extractCurlUrl(cmd: string): string | null {
   return m?.[1] ?? null
 }
 
-/** Match a `token-goat symbol|read|section|skill-body|skill-compact <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section; skill-body/skill-compact dedup on the raw remainder. */
-function extractTgSurgicalRead(cmd: string): { sub: string; spec: string; filePath: string | null } | null {
+/** Match a `token-goat symbol|read|section|skill-body|skill-compact <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section; skill-body/skill-compact dedup on the raw remainder. `cwd` is the bash command's working directory (from the hook event), used to resolve a relative file path the same way the CLI itself would. */
+function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; spec: string; filePath: string | null } | null {
   const m = /^token-goat\s+(symbol|read|section|skill-body|skill-compact)\s+(.+)$/.exec(cmd)
   if (!m) return null
   const sub = m[1]!
@@ -642,10 +642,12 @@ function extractTgSurgicalRead(cmd: string): { sub: string; spec: string; filePa
   if (sub === 'read' || sub === 'section') {
     const colonIdx = rawSpec.indexOf('::')
     const rawFilePath = colonIdx === -1 ? rawSpec : rawSpec.slice(0, colonIdx)
-    // Normalize before it becomes the dedup key: two invocations differing only in drive-letter
-    // case or slash direction must collide, or the CLI dedup misses them (unlike the Read-tool
-    // ledger, which already normalizes via recordFileRead).
-    filePath = normalizePath(rawFilePath)
+    // Resolve against the command's cwd (falling back to this hook process's own cwd, which is
+    // wrong but the best available signal, when the event carries none) before normalizing: a
+    // relative spec run from two different directories must NOT collide under one dedup key, and
+    // a relative spec run twice from the SAME directory must — bare normalizePath does neither,
+    // since it only canonicalizes drive-letter case and slash direction, never resolves cwd.
+    filePath = resolveIndexPath(rawFilePath, cwd ?? process.cwd())
     spec = colonIdx === -1 ? filePath : filePath + rawSpec.slice(colonIdx)
   }
   return { sub, spec, filePath }
@@ -1332,7 +1334,8 @@ export function preBashHandler(event: HookEvent): HookOutput {
   }
 
   // CLI surgical-read dedup: warn on an exact repeat `token-goat symbol|read|section` invocation, and cross-check against the Read-tool ledger (a file already fully Read this session may already cover the same content).
-  const tgRead = extractTgSurgicalRead(cmd)
+  const preHookCwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
+  const tgRead = extractTgSurgicalRead(cmd, preHookCwd)
   if (tgRead !== null) {
     const cliKey = tgRead.sub + '::' + tgRead.spec
     const notes = []
@@ -1468,7 +1471,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
 
     // Record a successful `token-goat symbol|read|section` invocation so a later identical call gets the re-read dedup hint from the pre-hook.
-    const tgRead = extractTgSurgicalRead(cmd)
+    const tgRead = extractTgSurgicalRead(cmd, cwd)
     if (tgRead !== null && (exitCode === null || exitCode === 0)) {
       recordCliRead(tgRead.sub + '::' + tgRead.spec)
       if (tgRead.filePath !== null && loadConfig().hints.log_large_file_hint_outcomes) {
