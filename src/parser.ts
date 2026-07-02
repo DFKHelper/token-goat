@@ -19,7 +19,7 @@ import { createRequire } from 'node:module'
 
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
-import { fingerprintFile } from './fingerprint.js'
+import { fingerprintContent, fingerprintFile } from './fingerprint.js'
 import { pathEqClause } from './sql_path.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
@@ -1211,10 +1211,21 @@ export function deleteFileRows(db: ReturnType<typeof getDb>, filePath: string): 
   db.prepare(`DELETE FROM files WHERE ${pathEqClause('path')}`).run(filePath)
 }
 
-function writeParseResult(filePath: string, result: ParseResult, dbPath: string): void {
+function writeParseResult(
+  filePath: string,
+  content: string | null,
+  result: ParseResult,
+  dbPath: string,
+): void {
   const db = getDb(dbPath)
 
-  const sha = safeSha(filePath)
+  // Hash the SAME content buffer that was actually parsed, not a fresh disk re-read: if the
+  // file changes between the parse read and this write, a re-read here would record a SHA
+  // that does not match the symbols/refs actually written below, and the worker's SHA-gated
+  // incremental drain would skip reindexing a file whose stored SHA happens to match a later
+  // version, leaving it permanently stuck with stale symbols. content is null only when the
+  // file could not be read at all, in which case there is nothing to fingerprint from memory.
+  const sha = content === null ? safeSha(filePath) : fingerprintContent(content)
   const mtime = safeMtime(filePath)
   const now = Date.now() / 1000
 
@@ -1250,8 +1261,24 @@ function writeParseResult(filePath: string, result: ParseResult, dbPath: string)
  * Index one file into the SQLite DB: parse it, then replace its rows.
  */
 export async function indexFile(filePath: string, dbPath: string = globalDbPath()): Promise<void> {
-  const result = await parseFile(filePath)
-  writeParseResult(filePath, result, dbPath)
+  const start = Date.now()
+  const language = detectLanguage(filePath)
+
+  let content: string
+  try {
+    content = await fs.promises.readFile(filePath, 'utf8')
+  } catch {
+    writeParseResult(
+      filePath,
+      null,
+      { symbols: [], refs: [], language, duration: Date.now() - start },
+      dbPath,
+    )
+    return
+  }
+
+  const { symbols, refs } = parseContent(content, filePath, language)
+  writeParseResult(filePath, content, { symbols, refs, language, duration: Date.now() - start }, dbPath)
 }
 
 /**
@@ -1272,7 +1299,7 @@ export function indexFileSync(filePath: string, dbPath: string = globalDbPath())
     return
   }
   const { symbols, refs } = parseContent(content, filePath, language)
-  writeParseResult(filePath, { symbols, refs, language, duration: 0 }, dbPath)
+  writeParseResult(filePath, content, { symbols, refs, language, duration: 0 }, dbPath)
 }
 
 /**
