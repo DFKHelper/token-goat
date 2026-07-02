@@ -6,6 +6,7 @@
  */
 
 import type { SymbolEntry } from '../parser_types.js'
+import { stripBlockCommentSpan } from './common.js'
 
 export interface PhpImport {
   readonly kind: string
@@ -69,23 +70,9 @@ export function extractPhp(
     const rawLine = lines[i] ?? ''
     const lineNum = i + 1
 
-    // Strip /* */ block-comment spans (state carried across lines via inComment) and keep the residual code, so a brace or declaration sharing a line with a comment is still counted and parsed - the old line-granular skip dropped them.
-    let codeLine = ''
-    let j = 0
-    while (j < rawLine.length) {
-      if (!inComment) {
-        const open = rawLine.indexOf('/*', j)
-        if (open === -1) { codeLine += rawLine.slice(j); break }
-        codeLine += rawLine.slice(j, open)
-        inComment = true
-        j = open + 2
-      } else {
-        const close = rawLine.indexOf('*/', j)
-        if (close === -1) break
-        inComment = false
-        j = close + 2
-      }
-    }
+    // Strip /* */ block-comment spans (state carried across lines via inComment) and keep the residual code, so a brace or declaration sharing a line with a comment is still counted and parsed - the old line-granular skip dropped them. A `/*` inside an open quote (e.g. glob('src/*.php')) is not treated as a comment opener.
+    const { code: codeLine, inComment: nextInComment } = stripBlockCommentSpan(rawLine, inComment)
+    inComment = nextInComment
     const line = codeLine.trimEnd()
     const stripped = line.trimStart()
 
