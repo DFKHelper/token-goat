@@ -1754,11 +1754,21 @@ export function buildProgram(): Command {
 
   program
     .command('compact-doc <path>')
-    .description('print an extractive compact of a document (note: prints to stdout; hook-serve is a planned future feature)')
-    .option('--heading <heading>', 'compact only the named section')
+    .description('build/refresh an extractive compact sidecar for a document; pre_read serves it in place of the full file when fresh. --heading is a legacy mode that extracts one section via a `<!-- COMPACT_END -->` marker instead.')
+    .option('--heading <heading>', 'legacy mode: compact only the named section (COMPACT_END marker)')
+    .option('--force', 'rebuild the sidecar even if a fresh one already exists')
+    .option('--sentences <n>', 'sentences to keep per section (default: 2)')
+    .option('--show', 'print the sidecar content to stdout')
     .option('-j, --json', 'output as JSON')
-    .action((filePath: string, opts: { heading?: string; json?: boolean }) =>
-      guard(() => cmdCompactDoc({ filePath, ...(opts.heading !== undefined ? { heading: opts.heading } : {}), ...(opts.json === true ? { json: true } : {}) }))())
+    .action((filePath: string, opts: { heading?: string; json?: boolean; force?: boolean; sentences?: string; show?: boolean }) =>
+      guard(() => cmdCompactDoc({
+        filePath,
+        ...(opts.heading !== undefined ? { heading: opts.heading } : {}),
+        ...(opts.json === true ? { json: true } : {}),
+        ...(opts.force === true ? { force: true } : {}),
+        ...(opts.sentences !== undefined ? { sentences: opts.sentences } : {}),
+        ...(opts.show === true ? { show: true } : {}),
+      }))())
 
   program
     .command('fetch-image <url>')

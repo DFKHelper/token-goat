@@ -36,6 +36,7 @@ vi.mock('node:http', async (importOriginal) => {
 const _testConfigPath = path.join(os.tmpdir(), `tg-cfgcmd-test-${process.pid}.toml`)
 
 import { cmdConfig, cmdProject, cmdCompactDoc, cmdHistory, cmdFetchImage } from '../src/config_commands.js'
+import { compactPathFor, isCompactFresh } from '../src/doc_compact.js'
 import { invalidateConfigCache, loadConfig, saveConfig, defaultConfig } from '../src/config.js'
 import { storeBlob } from '../src/disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from '../src/bash_output_cache.js'
@@ -422,6 +423,110 @@ describe('cmdCompactDoc', () => {
     cmdCompactDoc({ filePath: md, json: true })
     const parsed = JSON.parse(captured()) as { path: string; compact: string }
     expect(typeof parsed.compact).toBe('string')
+    expect(parsed.compact.length).toBeGreaterThan(0)
+  })
+})
+
+// ── compact-doc: extractive sidecar pipeline (--force/--sentences/--show) ─────
+
+describe('cmdCompactDoc extractive sidecar pipeline', () => {
+  function writeDoc(name: string): string {
+    const md = path.join(tmpHome, name)
+    fs.writeFileSync(
+      md,
+      '# Title\nLine 1\nLine 2\nLine 3\nLine 4\n\n## Section 2\nOther 1\nOther 2\nOther 3\n',
+      'utf8',
+    )
+    return md
+  }
+
+  it('builds a sidecar on disk and prints a short confirmation (no full body) by default', () => {
+    const md = writeDoc('default.md')
+    const compactPath = compactPathFor(md)
+
+    cmdCompactDoc({ filePath: md })
+
+    expect(fs.existsSync(compactPath)).toBe(true)
+    expect(isCompactFresh(compactPath, md)).toBe(true)
+    const out = captured()
+    expect(out).toContain(compactPath)
+    expect(out).not.toContain('Line 3')
+  })
+
+  it('--show prints the built sidecar content to stdout', () => {
+    const md = writeDoc('show.md')
+    cmdCompactDoc({ filePath: md, show: true })
+
+    const out = captured()
+    expect(out).toContain('# Title')
+    expect(out).toContain('## Section 2')
+  })
+
+  it('--sentences controls how many lines per section are kept', () => {
+    const md1 = writeDoc('sentences1.md')
+    cmdCompactDoc({ filePath: md1, show: true, sentences: '1' })
+    const out1 = captured()
+
+    stdoutLines.length = 0
+    const md2 = writeDoc('sentences4.md')
+    cmdCompactDoc({ filePath: md2, show: true, sentences: '4' })
+    const out2 = captured()
+
+    expect(out1).toContain('Line 1')
+    expect(out1).not.toContain('Line 2')
+    expect(out2).toContain('Line 1')
+    expect(out2).toContain('Line 4')
+  })
+
+  it('rejects a non-positive --sentences value', () => {
+    const md = writeDoc('bad-sentences.md')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: '0' })).toThrow()
+    expect(capturedErr()).toContain('--sentences')
+  })
+
+  it('rejects a non-numeric --sentences value', () => {
+    const md = writeDoc('nan-sentences.md')
+    expect(() => cmdCompactDoc({ filePath: md, sentences: 'abc' })).toThrow()
+    expect(capturedErr()).toContain('--sentences')
+  })
+
+  it('reuses a fresh sidecar without --force (rebuilt: false)', () => {
+    const md = writeDoc('reuse.md')
+    cmdCompactDoc({ filePath: md, json: true })
+    const first = JSON.parse(captured()) as { rebuilt: boolean; compact: string }
+    expect(first.rebuilt).toBe(true)
+
+    stdoutLines.length = 0
+    cmdCompactDoc({ filePath: md, json: true })
+    const second = JSON.parse(captured()) as { rebuilt: boolean; compact: string }
+    expect(second.rebuilt).toBe(false)
+    expect(second.compact).toBe(first.compact)
+  })
+
+  it('--force rebuilds even when a fresh sidecar already exists', () => {
+    const md = writeDoc('force.md')
+    cmdCompactDoc({ filePath: md, json: true })
+    const first = JSON.parse(captured()) as { rebuilt: boolean }
+    expect(first.rebuilt).toBe(true)
+
+    stdoutLines.length = 0
+    cmdCompactDoc({ filePath: md, json: true, force: true })
+    const second = JSON.parse(captured()) as { rebuilt: boolean }
+    expect(second.rebuilt).toBe(true)
+  })
+
+  it('--json includes path, compactPath, rebuilt, and compact fields', () => {
+    const md = writeDoc('json-shape.md')
+    cmdCompactDoc({ filePath: md, json: true })
+    const parsed = JSON.parse(captured()) as {
+      path: string
+      compactPath: string
+      rebuilt: boolean
+      compact: string
+    }
+    expect(parsed.path).toBe(path.resolve(md))
+    expect(parsed.compactPath).toBe(compactPathFor(md))
+    expect(parsed.rebuilt).toBe(true)
     expect(parsed.compact.length).toBeGreaterThan(0)
   })
 })
