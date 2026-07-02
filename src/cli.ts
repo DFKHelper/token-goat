@@ -1066,12 +1066,16 @@ export function buildProgram(): Command {
     .version(VERSION, '-v, --version', 'print the token-goat version')
 
   // Each action wraps the (possibly sync) handler so any thrown CliError or unexpected error maps to a stderr line + exit code 1, and success to 0.
+  // A handler that already set process.exitCode itself (a deliberate non-zero exit without throwing) is left alone -- only the still-undefined default gets the success fallback.
   const guard =
     (fn: (...a: never[]) => void | Promise<void>) =>
     async (...args: unknown[]): Promise<void> => {
+      process.exitCode = undefined
       try {
         await fn(...(args as never[]))
-        process.exitCode = 0
+        if (process.exitCode === undefined) {
+          process.exitCode = 0
+        }
       } catch (e) {
         const msg = extractErrorMessage(e)
         err(`token-goat: ${msg}`)
