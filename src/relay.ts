@@ -167,6 +167,11 @@ export function buildEvent(eventName: HookEventName, payload: unknown): HookEven
  * risk to worry about.
  */
 function harnessForNormalization(): Harness {
+  // HarnessName (bridges/registry.ts) has no 'gemini' member -- there is no
+  // live Gemini bridge/detection, so normalizePayload()'s 'gemini' branch in
+  // hooks_cli.ts is currently unreachable via this path. 'gemini' stays a
+  // valid Harness/KNOWN_HARNESSES value for config-override and will become
+  // reachable again if a Gemini bridge is restored (see module docstring).
   return detectHarness() === 'codex' ? 'codex' : 'claude'
 }
 
