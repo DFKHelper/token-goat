@@ -137,13 +137,7 @@ export function recordFileEdit(filePath: string): void {
     })
     return
   }
-  _files.set(key, {
-    path: prev.path,
-    readCount: prev.readCount,
-    lastReadAt: prev.lastReadAt,
-    wasEdited: true,
-    sizeBytes: prev.sizeBytes,
-  })
+  _files.set(key, { ...prev, wasEdited: true })
 }
 
 /** Return all tracked file entries, keyed by normalized absolute path. */
