@@ -274,6 +274,20 @@ function readDiskState(p: string): SerializedSession | null {
 }
 
 /**
+ * Read and coerce the on-disk session state for `sessionId` without touching
+ * in-memory session state (unlike {@link loadSessionState}, which imports the
+ * result into the live session maps for the hook lifecycle). Handles both the
+ * current TS array `files` format and the legacy Python dict format via the
+ * same {@link coerce} normalization `loadSessionState`/`saveSessionState`
+ * rely on. Returns null if the id is empty/unusable or no file exists.
+ */
+export function readSessionStateFile(sessionId: string): SerializedSession | null {
+  const p = sessionPath(sessionId)
+  if (!p) return null
+  return readDiskState(p)
+}
+
+/**
  * Load the persisted state for `sessionId` into the in-memory session maps.
  *
  * No-op (clean session) when the id is empty/unusable or no file exists.
