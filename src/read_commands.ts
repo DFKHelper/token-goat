@@ -55,6 +55,16 @@ function findSpecSeparator(spec: string): number {
   return spec.lastIndexOf('::')
 }
 
+// True when `full` ends with `suffix` at a path-segment boundary — the suffix is either the
+// whole string or immediately preceded by `/` or `\`. A raw `endsWith` would let a requested
+// `utils.ts` incorrectly match an indexed `myutils.ts`.
+function endsWithPathBoundary(full: string, suffix: string): boolean {
+  if (!full.endsWith(suffix)) return false
+  if (full.length === suffix.length) return true
+  const boundaryChar = full[full.length - suffix.length - 1]
+  return boundaryChar === '/' || boundaryChar === '\\'
+}
+
 function didYouMean(candidates: string[]): string {
   if (candidates.length === 0) return ''
   const lines = ['Did you mean:']
@@ -203,10 +213,26 @@ export function runRead(opts: ReadOptions): number {
   const resolved = resolveIndexPath(file)
   let candidates = querySymbols({ name: lookupName, filePath: resolved, limit: 10 })
   if (candidates.length === 0) {
-    // Partial-path fallback: resolve `worker.ts::foo` against an index keyed by `src/worker.ts` by matching on a path suffix when the exact key misses.
+    // Partial-path fallback: resolve `worker.ts::foo` against an index keyed by `src/worker.ts` by
+    // matching on a path-segment boundary when the exact key misses — a raw endsWith would let a
+    // requested `utils.ts` match an indexed `myutils.ts`.
     candidates = querySymbols({ name: lookupName, limit: 50 }).filter(
-      (s) => s.filePath === file || s.filePath.endsWith(file) || file.endsWith(s.filePath),
+      (s) => s.filePath === file || endsWithPathBoundary(s.filePath, file) || endsWithPathBoundary(file, s.filePath),
     )
+  }
+
+  // For a dotted spec ("ClassName.methodName"), symBase names the class/container. When the
+  // bare methodName lookup above is ambiguous (multiple same-named methods, e.g. two classes
+  // each with their own `refresh`), narrow to candidates whose line range falls inside a
+  // symbol named symBase in the same file — otherwise the wrong class's method can win.
+  if (methodName !== undefined && candidates.length > 1) {
+    const containers = querySymbols({ name: symBase, limit: 50 })
+    const scoped = candidates.filter((c) =>
+      containers.some(
+        (cls) => cls.filePath === c.filePath && c.lineStart >= cls.lineStart && c.lineEnd <= cls.lineEnd,
+      ),
+    )
+    if (scoped.length > 0) candidates = scoped
   }
 
   const match = candidates[0]
@@ -302,7 +328,10 @@ export function runRefs(opts: RefsOptions): number {
   let anyFound = false
   for (const sym of symbols) {
     const queryOpts: Parameters<typeof queryRefs>[0] = { name: sym }
-    if (file !== undefined) queryOpts.filePath = resolveIndexPath(file)
+    // The `file` in `file::symbol` names where the symbol is DEFINED, only used to
+    // disambiguate a same-named symbol elsewhere in the index. Callers of it can live
+    // anywhere in the codebase, so --callers must never scope the search to that file.
+    if (file !== undefined && opts.callers !== true) queryOpts.filePath = resolveIndexPath(file)
     if (opts.limit !== undefined) queryOpts.limit = opts.limit
     const results = queryRefs(queryOpts)
     if (results.length > 0) anyFound = true
@@ -330,7 +359,9 @@ function runRefsSingle(opts: RefsOptions): number {
   const symName = symbol ?? file
 
   const queryOpts: Parameters<typeof queryRefs>[0] = { name: symName }
-  if (symbol !== undefined) queryOpts.filePath = resolveIndexPath(file)
+  // Same reasoning as runRefs above: `file` only disambiguates which same-named symbol
+  // this is, by its defining file — it must not restrict --callers to that one file.
+  if (symbol !== undefined && opts.callers !== true) queryOpts.filePath = resolveIndexPath(file)
   if (opts.limit !== undefined) queryOpts.limit = opts.limit
 
   const results = queryRefs(queryOpts)
