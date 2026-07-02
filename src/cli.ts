@@ -930,7 +930,7 @@ function cmdPack(
         ? collectFiles(root, expandedList, collectOpts)
         : collectFromStdin(root, collectOpts)
     if (opts.budget !== undefined) {
-      const budgetN = Number.parseInt(opts.budget, 10)
+      const budgetN = requireInt('--budget', opts.budget)
       if (result.total_tokens > budgetN) {
         err(`token-goat: pack: token count ${result.total_tokens} exceeds budget ${budgetN}`)
         process.exitCode = 3
@@ -1282,7 +1282,7 @@ export function buildProgram(): Command {
           pattern,
           ...(pathArg !== undefined ? { path: pathArg } : {}),
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.maxLines !== undefined ? { maxLines: Number.parseInt(opts.maxLines, 10) } : {}),
+          ...(opts.maxLines !== undefined ? { maxLines: requireInt('--max-lines', opts.maxLines) } : {}),
           ...(opts.recursive === false ? { recursive: false } : {}),
         }),
       ),
@@ -1354,7 +1354,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runCallChain({
           symbol,
-          ...(opts.depth !== undefined ? { depth: Number.parseInt(opts.depth, 10) } : {}),
+          ...(opts.depth !== undefined ? { depth: requireInt('--depth', opts.depth) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -1450,7 +1450,7 @@ export function buildProgram(): Command {
         runContextFor({
           task,
           ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
-          ...(opts.budget !== undefined ? { budget: Number.parseInt(opts.budget, 10) } : {}),
+          ...(opts.budget !== undefined ? { budget: requireInt('--budget', opts.budget) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
