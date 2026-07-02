@@ -8,5 +8,5 @@
 
 export { detectHarness, getHarnessName } from './registry.js'
 export type { BridgeConfig, HarnessName } from './types.js'
-export { CLAUDECODE_HOOK_SCRIPT, getClaudeCodeHookConfig } from './claudecode.js'
-export { CODEX_HOOK_SCRIPT, getCodexHookConfig } from './codex.js'
+export { CLAUDECODE_HOOK_SCRIPT } from './claudecode.js'
+export { CODEX_HOOK_SCRIPT } from './codex.js'
