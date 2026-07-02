@@ -199,6 +199,15 @@ export function consumedPendingLargeFileHintKeys(): string[] {
   return consumed
 }
 
+/** Snapshot of pending large-file hints exactly as they were at hydration time, before this
+ * process made any changes. session_store.ts's merge uses this to tell "this process merely
+ * carried the key from load, untouched" apart from "this process genuinely added or updated
+ * it" — an untouched key must defer to the freshest disk read instead of being blindly
+ * resurrected if another process legitimately removed it in the meantime. */
+export function pendingLargeFileHintsAtLoad(): ReadonlyMap<string, number> {
+  return _pendingLargeFileHintsAtLoad
+}
+
 /** Index a web-fetch result: `url` -> `cacheId`. */
 export function recordWebFetch(url: string, cacheId: string): void {
   _webFetches.set(url, cacheId)
