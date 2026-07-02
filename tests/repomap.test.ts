@@ -15,11 +15,18 @@ import * as util from '../src/util.js'
 import * as indexReader from '../src/index_reader.js'
 import * as compact from '../src/compact.js'
 import * as parserTypes from '../src/parser_types.js'
+import * as paths from '../src/paths.js'
 
 vi.mock('../src/util.js')
 vi.mock('../src/index_reader.js')
 vi.mock('../src/compact.js')
 vi.mock('../src/parser_types.js')
+// Default to an identity pass-through so existing tests (which compare raw paths) are unaffected;
+// individual tests override the implementation to assert normalization actually happens.
+vi.mock('../src/paths.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  return { ...original, resolveIndexPath: vi.fn((p: string) => p) }
+})
 
 describe('repomap', () => {
   beforeEach(() => {
@@ -79,6 +86,31 @@ describe('repomap', () => {
   })
 
   describe('buildMap', () => {
+    it('normalizes file paths via resolveIndexPath before querying symbols', () => {
+      const cwd = '/project'
+      const rawFile = path.join(cwd, 'src/main.ts')
+
+      vi.mocked(util.runGit).mockReturnValue({
+        exitCode: 0,
+        stdout: 'src/main.ts',
+        stderr: '',
+      })
+      vi.mocked(compact.isNoisePath).mockReturnValue(false)
+      vi.mocked(parserTypes.detectLanguage).mockReturnValue('typescript')
+      vi.mocked(indexReader.querySymbols).mockReturnValue([])
+
+      // Distinguishable transform so a call with the raw (unnormalized) path is unmistakably wrong.
+      vi.mocked(paths.resolveIndexPath).mockImplementation((p: string) => `${p}::normalized`)
+
+      buildMap(cwd)
+
+      expect(paths.resolveIndexPath).toHaveBeenCalledWith(rawFile)
+      expect(indexReader.querySymbols).toHaveBeenCalledWith({
+        filePath: `${rawFile}::normalized`,
+        limit: 8,
+      })
+    })
+
     it('filters out noise paths', () => {
       const cwd = '/project'
       const mockFiles = [

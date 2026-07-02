@@ -9,6 +9,7 @@
 import * as path from 'path'
 import { runGit } from './util.js'
 import { querySymbols } from './index_reader.js'
+import { resolveIndexPath } from './paths.js'
 import { estimateTokens, isNoisePath } from './compact.js'
 import { detectLanguage } from './parser_types.js'
 
@@ -52,7 +53,7 @@ export function buildMap(cwd: string = process.cwd()): RepoEntry[] {
     const lang = detectLanguage(filePath)
     if (lang === 'unknown') continue
 
-    const symbols = querySymbols({ filePath, limit: 8 })
+    const symbols = querySymbols({ filePath: resolveIndexPath(filePath), limit: 8 })
 
     entries.push({
       filePath,
