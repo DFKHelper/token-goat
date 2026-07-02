@@ -356,6 +356,7 @@ To upgrade cleanly:
 |---------|-------------|
 | `token-goat symbol <name>` | Jump to a symbol definition. |
 | `token-goat read "file::symbol"` | Pull one function or class, not the whole file. Supports qualified lookups (`read "file.py::Class.method"`) and line ranges: `read "file.py@10-40"` for lines 10 to 40 inclusive, or `read "file.py@42"` for one line. Line ranges read straight from disk, so they work on any file, including paths outside an indexed project. |
+| `token-goat replace <file>` | Replace one string in a file using `--old-from`/`--new-from` or `--old-b64`/`--new-b64`; `--all` replaces every match. |
 | `token-goat section "doc.md::Heading"` | Pull one Markdown section by heading. A miss that is an unambiguous prefix of exactly one heading auto-redirects with a `(redirected from: …)` marker (and a `redirectedFrom` field under `--json`). Disambiguate duplicates with `"doc.md::Heading#2"`. |
 | `token-goat skill-section "<name>::<heading>"` | Extract a named section from an installed skill without reading the full skill file. |
 | `token-goat skeleton "file"` | Show all signatures in a file without bodies — typically 70–90% fewer tokens than a full read. |

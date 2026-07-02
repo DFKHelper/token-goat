@@ -1117,6 +1117,58 @@ describe('preBashHandler — sed line-range interception', () => {
     const result = preBashHandler(makeBashEvent("sed 's/foo/bar/g' file.ts"))
     expect(result.hookType).toBe('pass')
   })
+  it('emits sed line-range hint for double-semicolon multi-range on a .md file', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '24,28p;65,84p' file.md"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat read')
+      expect(result.context).toContain('file.md@24-28')
+      expect(result.context).toContain('file.md@65-84')
+      // Markdown: should also point at section by heading as the upgrade alternative.
+      expect(result.context).toContain('token-goat section')
+    }
+  })
+
+  it('emits sed line-range hint for multi-range on a source file with symbol-read fallback', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '40,90p;200,260p' src/auth.py"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat symbol')
+      expect(result.context).toContain('src/auth.py@40-90')
+      expect(result.context).toContain('src/auth.py@200-260')
+    }
+  })
+
+  it('multi-range sed on a temp path passes through (no hint)', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,20p;30,40p' /tmp/scratch.md"))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('multi-range sed with a malformed second range falls through (rejects the whole command)', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,20p;notarange' file.md"))
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('multi-range sed with three ranges lists all of them with an Oxford-comma separator', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '10,20p;100,110p;200,210p' src/foo.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/foo.ts@10-20')
+      expect(result.context).toContain('src/foo.ts@100-110')
+      expect(result.context).toContain('src/foo.ts@200-210')
+      // Three-range sed joins reads with an Oxford comma so the agent clearly sees the last
+      // run-on boundary; without it the three reads read as a single comma-separated run.
+      expect(result.context).toContain(', and ')
+    }
+  })
+
+  it('single-range sed still resolves through the multi-range path (no regression on the one-range case)', () => {
+    const result = preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('docs/report.md@13-31')
+    }
+  })
 })
 
 describe('preBashHandler — rg indented def patterns', () => {

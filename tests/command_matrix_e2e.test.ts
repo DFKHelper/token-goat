@@ -248,6 +248,16 @@ const cases: Record<string, () => void> = {
     expect(r.status, r.stderr).toBe(0)
     expect(fs.readFileSync(dest, 'utf8')).toBe('hello-matrix')
   },
+  'replace': () => {
+    const dest = path.join(mkIsolated('tg-matrix-rpl-'), 'out.txt')
+    fs.writeFileSync(dest, 'cat cat dog', 'utf8')
+    const oldB64 = Buffer.from('cat', 'utf8').toString('base64')
+    const newB64 = Buffer.from('fox', 'utf8').toString('base64')
+    const r = run(['replace', dest, '--old-b64', oldB64, '--new-b64', newB64, '--all'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(fs.readFileSync(dest, 'utf8')).toBe('fox fox dog')
+    expect(r.stdout).toContain('replaced 2 occurrences')
+  },
   install: () => {
     const proj = mkIsolated('tg-matrix-proj-')
     const r = run(['install', '--project'], { cwd: proj })

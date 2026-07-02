@@ -325,16 +325,34 @@ function extractHeadFile(cmd: string): { filePath: string; isDoc: boolean; isCon
   return { filePath, isDoc, isConfig }
 }
 
-function extractSedRange(cmd: string): { filePath: string; start: number; end: number } | null {
-  const m = /^sed\s+-n\s+['"](\d+),(\d+)p['"]\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>\/dev\/null)?\s*$/.exec(cmd)
+function extractSedRange(cmd: string): { filePath: string; ranges: Array<readonly [number, number]> } | null {
+  // Multi-range `sed -n 'N,Mp;X,Yp' file` is legal: a semicolon-separated list of `N,Mp` clauses
+  // inside a single quoted address block, followed by the same file-path argument and optional
+  // `2>/dev/null` suffix as the single-range form. The earlier single-range regex required
+  // exactly one range then end-of-string, so any `;`-joined command silently fell through with
+  // no hint at all, leaving an agent that grabs N+M ranges in one sed call getting zero
+  // guidance. The regex below matches the leading `N,Mp` plus zero or more `;N,Mp`
+  // continuations sharing the same surrounding quotes; the range list is reparsed from cmd so
+  // each clause is independently validated (start >= 1, end >= start) and empty/malformed
+  // inputs are rejected uniformly.
+  const m = /^sed\s+-n\s+['"](?:\d+,\d+p)(?:;\d+,\d+p)*['"]\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+2>\/dev\/null)?\s*$/.exec(cmd)
   if (!m) return null
-  const start = parseInt(m[1] as string, 10)
-  const end = parseInt(m[2] as string, 10)
-  const filePath = m[3] ?? m[4] ?? m[5]
+  const quotedAddress = /['"]([^'"]+)['"]/.exec(cmd)
+  if (!quotedAddress) return null
+  const ranges: Array<readonly [number, number]> = []
+  for (const clause of quotedAddress[1]!.split(';')) {
+    const cm = /^(\d+),(\d+)p$/.exec(clause ?? '')
+    if (!cm) return null
+    const start = parseInt(cm[1] as string, 10)
+    const end = parseInt(cm[2] as string, 10)
+    if (start < 1 || end < start) return null
+    ranges.push([start, end])
+  }
+  if (ranges.length === 0) return null
+  const filePath = m[1] ?? m[2] ?? m[3]
   if (filePath === undefined) return null
   if (isTempPath(filePath)) return null
-  if (start < 1 || end < start) return null
-  return { filePath, start, end }
+  return { filePath, ranges }
 }
 
 // Languages where `token-goat symbol`/`read "file::Symbol"` resolve a named definition, so a line-range read can be upgraded to a shift-robust symbol read.
@@ -343,20 +361,31 @@ const SYMBOL_BEARING_LANGUAGES: ReadonlySet<Language> = new Set<Language>([
 ])
 
 // Builds the recall hint for a `sed -n 'N,Mp' file` read, tailored to the file's language: Markdown -> section by heading; structured config -> config-get/section; source code -> symbol read (robust to line shifts); everything else -> the exact line range.
-function sedRangeHint(filePath: string, start: number, end: number): string {
+// Builds the recall hint for a `sed -n 'N,Mp' file` read (or multi-range `sed -n 'N,Mp;X,Yp' file`),
+// tailored to the file's language: Markdown -> section by heading; structured config ->
+// config-get/section; source code -> symbol read (robust to line shifts); everything else ->
+// the exact line range per requested range.
+function sedRangeHint(filePath: string, ranges: ReadonlyArray<readonly [number, number]>): string {
   const lang = detectLanguage(filePath)
-  const rangeRead = '`token-goat read "' + filePath + '@' + start + '-' + end + '"`'
+  // One token-goat read per requested range so the agent can fetch each independently. Combined
+  // into one inline list with `and` for two ranges and Oxford-comma for three or more.
+  const rangeReads = ranges.map(([s, e]) => '`token-goat read "' + filePath + '@' + s + '-' + e + '"`')
+  const allReads = rangeReads.length === 2
+    ? rangeReads.join(' and ')
+    : rangeReads.length >= 3
+      ? rangeReads.slice(0, -1).join(', ') + ', and ' + rangeReads[rangeReads.length - 1]
+      : rangeReads[0]!
   const prefix = '`sed -n` line-range reads bypass read hooks. '
   if (lang === 'markdown') {
-    return prefix + 'For Markdown, `token-goat section "' + filePath + '::<heading>"` extracts a whole section by name (robust to line shifts); or ' + rangeRead + ' for exactly those lines.'
+    return prefix + 'For Markdown, `token-goat section "' + filePath + '::<heading>"` extracts a whole section by name (robust to line shifts); or ' + allReads + ' for exactly those lines.'
   }
   if (lang === 'toml' || lang === 'json' || lang === 'yaml' || lang === 'ini') {
-    return prefix + 'For config, `token-goat config-get "' + filePath + '" <key>` or `token-goat section "' + filePath + '::<block>"` extracts one value; or ' + rangeRead + ' for exactly those lines.'
+    return prefix + 'For config, `token-goat config-get "' + filePath + '" <key>` or `token-goat section "' + filePath + '::<block>"` extracts one value; or ' + allReads + ' for exactly those lines.'
   }
   if (SYMBOL_BEARING_LANGUAGES.has(lang)) {
-    return prefix + 'For a whole function/class, `token-goat symbol <name>` or `token-goat read "' + filePath + '::<Symbol>"` is robust to line shifts; or ' + rangeRead + ' for exactly those lines.'
+    return prefix + 'For a whole function/class, `token-goat symbol <name>` or `token-goat read "' + filePath + '::<Symbol>"` is robust to line shifts; or ' + allReads + ' for exactly those lines.'
   }
-  return prefix + 'Use ' + rangeRead + ' to read exactly those lines.'
+  return prefix + 'Use ' + allReads + ' to read exactly those lines.'
 }
 
 // Returns the previously-served range that overlaps [start, end] the most (by shared line count), or null if none overlap.
@@ -1144,19 +1173,30 @@ export function preBashHandler(event: HookEvent): HookOutput {
   // Item 4b: sed line-range extraction — replaced with extractSedRange to provide specific line range
   const sedRange = extractSedRange(cmd)
   if (sedRange !== null) {
-    const { filePath, start, end } = sedRange
+    const { filePath, ranges } = sedRange
     recordStat('session_hint', 0, 0)
     // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-
     // cased) — a relative and an absolute reference to the same file must collide under one
     // key, matching how the CLI surgical-read dedup above already resolves paths. The raw
     // filePath is kept for the hint text itself so existing relative-path hints are unchanged.
+    // Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one
+    // combined min-max span) so a gap between ranges that was already read separately doesn't
+    // get misreported as newly-overlapping, and so each range's own history is tracked.
     const sedDedupKey = resolveIndexPath(filePath, preHookCwd ?? process.cwd())
-    const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey), start, end)
-    recordFileLineRange(sedDedupKey, start, end)
-    if (priorOverlap !== null) {
-      return contextOutput(sedOverlapHint(filePath, priorOverlap, start, end))
+    const overlapHints: string[] = []
+    const freshRanges: Array<readonly [number, number]> = []
+    for (const [start, end] of ranges) {
+      const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey), start, end)
+      recordFileLineRange(sedDedupKey, start, end)
+      if (priorOverlap !== null) {
+        overlapHints.push(sedOverlapHint(filePath, priorOverlap, start, end))
+      } else {
+        freshRanges.push([start, end])
+      }
     }
-    return contextOutput(sedRangeHint(filePath, start, end))
+    const hints = [...overlapHints]
+    if (freshRanges.length > 0) hints.push(sedRangeHint(filePath, freshRanges))
+    return contextOutput(hints.join(' '))
   }
 
   const catJsonPipe = extractCatJsonPipe(cmd)

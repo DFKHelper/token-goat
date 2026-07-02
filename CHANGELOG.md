@@ -2,11 +2,19 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
-## [Unreleased]
+## [2.6.1] - 2026-07-02
+
+### Added
+
+- **A new `token-goat replace <file>` CLI command closes the "Read denied → Edit permanently blocked" trap.** Claude Code's Edit tool requires a prior successful Read; several of token-goat's own `pre_read` denials (markdown re-read, source-file re-read, generic re-read, files over the large-file first-read cap, and both truncated-file re-read sites) leave no way to ever successfully Read a file again this session, permanently blocking Edit on it too — reproduced live multiple times this session, independently, across unrelated projects. `token-goat replace <file> --old-from <oldfile> --new-from <newfile>` (or `--old-b64`/`--new-b64`, plus `--all` to replace every occurrence) edits the file directly via Node `fs`, bypassing Read/Edit and their hooks entirely; it requires the old string to match exactly once by default, erroring clearly on zero or multiple matches, and writes back atomically via the existing `atomicWriteBuffer`. The six deny messages that actually block Edit now point at it. See [src/cli.ts](src/cli.ts) and [src/hooks_read.ts](src/hooks_read.ts); regression-tested in [tests/cli.test.ts](tests/cli.test.ts) and [tests/hooks_read.test.ts](tests/hooks_read.test.ts).
+
+- **A `sed -n` command with multiple semicolon-joined ranges (`sed -n '24,28p;65,84p' file`) now gets one hint covering every range, not just the first.** `extractSedRange` parses each `N,Mp` clause independently and validates it; each range is checked against this session's already-read line ranges for that file, so a mix of overlapping and fresh ranges in one command reports an overlap hint for what's already been read and a fresh-range hint (`token-goat read "file@start-end"`) for the rest, joined with an Oxford comma for three or more ranges. See [src/hooks_bash.ts](src/hooks_bash.ts); regression-tested in [tests/hooks_bash.test.ts](tests/hooks_bash.test.ts).
 
 ### Fixed
 
 - **`pre_compact` emitted an invalid hook wire shape, silently breaking the compaction manifest on every `/compact`.** `serializeOutput()` wrapped every `context` `HookOutput` in a `hookSpecificOutput.additionalContext` object tagged with the current event name, but per the harness's docs, `PreCompact` (and `Notification`) reject `additionalContext` there entirely — the harness rejected the output outright for `pre_compact`, so the session manifest this hook exists to inject was never delivered before a compaction. Fixed to route those two events through the top-level `systemMessage` field instead, driven by an explicit `EVENTS_WITHOUT_ADDITIONAL_CONTEXT` table (verified against https://code.claude.com/docs/en/hooks) rather than a single hardcoded event check, so a future handler on either event can't silently reproduce the bug. A prior test asserted the broken shape as correct; it's corrected, and a matrix test now covers every hook event's serialized shape rather than a hand-picked subset. See [src/hook_registry.ts](src/hook_registry.ts) and [tests/hook_registry.test.ts](tests/hook_registry.test.ts).
+
+- **`write-file` (and the new `replace`) never told the background indexer a file had changed.** Only the Edit tool's `postEditHandler` called `appendDirtyPath`; both CLI-side write commands wrote directly via `atomicWriteBuffer` with no equivalent enqueue, so a file edited through either command stayed stale in the symbol index until a manual `token-goat index` — caught live while testing `replace` against token-goat's own source. A new `enqueueDirtyPathSafe` helper (fail-soft — a queue-append error never blocks the write it follows) is now called from all four write paths (`write-file`'s `--from`/`--b64`/stdin modes and `replace`). See [src/cli.ts](src/cli.ts).
 
 ## [2.6.0] - 2026-07-02
 

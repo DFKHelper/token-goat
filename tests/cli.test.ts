@@ -373,6 +373,105 @@ describe('token-goat CLI', () => {
     }
   })
 
+  describe('replace', () => {
+    it('replace --help exits 0', () => {
+      const r = runCli(['replace', '--help'])
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain('replace')
+    })
+
+    it('replace --old-from/--new-from replaces a unique match', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-from-${Date.now()}.txt`)
+      const oldFile = path.join(os.tmpdir(), `tg-rpl-old-${Date.now()}.txt`)
+      const newFile = path.join(os.tmpdir(), `tg-rpl-new-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'alpha beta gamma', 'utf8')
+      fs.writeFileSync(oldFile, 'beta', 'utf8')
+      fs.writeFileSync(newFile, 'delta', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        expect(r.status).toBe(0)
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha delta gamma')
+        expect(r.stdout).toContain(tmp)
+        expect(r.stdout).toContain('replaced 1 occurrence')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(oldFile, { force: true })
+        fs.rmSync(newFile, { force: true })
+      }
+    })
+
+    it('replace --old-b64/--new-b64 replaces a unique match', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-b64-${Date.now()}.txt`)
+      const oldText = 'needle'
+      const newText = 'thread'
+      const oldB64 = Buffer.from(oldText, 'utf8').toString('base64')
+      const newB64 = Buffer.from(newText, 'utf8').toString('base64')
+      fs.writeFileSync(tmp, 'haystack needle haystack', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        expect(r.status).toBe(0)
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('haystack thread haystack')
+        expect(r.stdout).toContain(tmp)
+        expect(r.stdout).toContain('replaced 1 occurrence')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    it('replace zero matches exits 1', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-zero-${Date.now()}.txt`)
+      const oldText = 'needle'
+      const newText = 'thread'
+      const oldB64 = Buffer.from(oldText, 'utf8').toString('base64')
+      const newB64 = Buffer.from(newText, 'utf8').toString('base64')
+      fs.writeFileSync(tmp, 'haystack only', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('old string not found')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('haystack only')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    it('replace multiple matches without --all exits 1', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-multi-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'red blue red blue red', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-b64', Buffer.from('red', 'utf8').toString('base64'), '--new-b64', Buffer.from('green', 'utf8').toString('base64')])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('appears 3 times')
+        expect(r.stderr).toContain('--all')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('red blue red blue red')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    it('replace --all replaces every occurrence', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-all-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'cat dog cat bird cat', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-b64', Buffer.from('cat', 'utf8').toString('base64'), '--new-b64', Buffer.from('fox', 'utf8').toString('base64'), '--all'])
+        expect(r.status).toBe(0)
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('fox dog fox bird fox')
+        expect(r.stdout).toContain('replaced 3 occurrences')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
+    it('replace target file not found exits 1 with a mapFsError-style message', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-missing-${Date.now()}.txt`)
+      const oldB64 = Buffer.from('old', 'utf8').toString('base64')
+      const newB64 = Buffer.from('new', 'utf8').toString('base64')
+      const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+      expect(r.status).toBe(1)
+      expect(r.stderr).toContain('not found')
+    })
+  })
+
   it('write-file --from and --b64 together exits 1', () => {
     const r = runCli(['write-file', '/tmp/nope', '--from', '/tmp/a', '--b64', 'dGVzdA=='])
     expect(r.status).toBe(1)
@@ -600,6 +699,7 @@ describe('token-goat CLI', () => {
     }
   })
 })
+
 
 describe('skill-compact --path / skill-list --json (isolated data dir)', () => {
   // These drive the REAL built bundle. dataDir() is computed once at module load
