@@ -139,6 +139,21 @@ describe('MCP caching hooks (real runHook dispatch)', () => {
     expect(pre.hookType).toBe('pass')
   })
 
+  it('does not cache an in-band MCP error result, and lets the identical retry through', async () => {
+    // MCP's CallToolResult shape signals a tool-level failure via `isError: true`
+    // alongside normal `content` — it is still a successful protocol response,
+    // not a transport error, so extractMcpResultText would otherwise happily
+    // pull text out of it and cache it like any other result.
+    const errorResult = { content: [{ type: 'text', text: 'tool not found' }], isError: true }
+    const post = await runHook(buildEvent('post_tool_use', postPayload(errorResult)))
+    expect(post.hookType).toBe('pass')
+
+    // Nothing was cached for the error response, so the identical call is not
+    // treated as a dedup hit and is allowed through to actually retry.
+    const pre = await runHook(buildEvent('pre_tool_use', prePayload()))
+    expect(pre.hookType).toBe('pass')
+  })
+
   it('ignores a non-mcp tool entirely', async () => {
     const pre = await runHook(
       buildEvent('pre_tool_use', {
