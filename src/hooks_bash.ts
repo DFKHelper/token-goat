@@ -20,7 +20,7 @@ import { loadConfig } from './config.js'
 import { detectFromCommand, shlexSplit } from './tool_filters/index.js'
 import { canRunWrappedShell } from './shell.js'
 import { detectLanguage, type Language } from './parser_types.js'
-import { statSync } from 'node:fs'
+import { statSync, existsSync } from 'node:fs'
 
 /** Strip one or more `cd <dir> &&` prefixes so interceptors match the actual command. */
 function stripCdPrefix(cmd: string): string {
@@ -224,7 +224,7 @@ function extractWslCatFile(cmd: string): { filePath: string; isDoc: boolean; isE
 
 /** Returns the file path if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
 function extractPythonFileRead(cmd: string): { filePath: string; isDoc: boolean; isTranscript: boolean } | null {
-  if (!/python3?/.test(cmd)) return null
+  if (!/^python3?\b/.test(cmd)) return null
   // Return null when the command shows write intent — these are edits, not reads
   if (/open\s*\([^)]*,\s*['"][wa]/i.test(cmd) || /\.write\s*\(/.test(cmd)) return null
 
@@ -628,9 +628,20 @@ function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; 
   const sub = m[1]!
   const rest = m[2]!.trim()
 
-  // skill-body/skill-compact take a name (or --path/--all flags), not a file::symbol spec — dedup
-  // on the exact remainder so distinct flag/name combos never collide under one key.
+  // skill-body/skill-compact take a name (or --path/--all flags), not a file::symbol spec.
   if (sub === 'skill-body' || sub === 'skill-compact') {
+    // `--path <file>` takes an actual file path — resolve it the same way read/section do
+    // (against cwd, normalized) so relative/differently-cased/slash-direction variants of the
+    // same file collide under one dedup key, instead of the raw --path text differing byte-for-
+    // byte across equivalent invocations. A plain NAME arg (or --all) isn't a file path, so it
+    // still dedups on the raw remainder unchanged.
+    const pathFlagMatch = /--path\s+(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(rest)
+    if (pathFlagMatch !== null) {
+      const rawPathArg = pathFlagMatch[1] ?? pathFlagMatch[2] ?? pathFlagMatch[3] ?? ''
+      const resolvedPath = resolveIndexPath(rawPathArg, cwd ?? process.cwd())
+      const spec = rest.slice(0, pathFlagMatch.index) + '--path ' + resolvedPath + rest.slice(pathFlagMatch.index + pathFlagMatch[0].length)
+      return { sub, spec, filePath: null }
+    }
     return { sub, spec: rest, filePath: null }
   }
 
@@ -640,15 +651,23 @@ function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; 
   let filePath: string | null = null
   let spec = rawSpec
   if (sub === 'read' || sub === 'section') {
-    const colonIdx = rawSpec.indexOf('::')
-    const rawFilePath = colonIdx === -1 ? rawSpec : rawSpec.slice(0, colonIdx)
+    // A `read` spec may carry a `@N-M`/`@N` line-range suffix (read_commands.ts's own
+    // parseLineRange, mirrored here so the split stays in sync) ahead of any `::symbol` split.
+    // Strip it before extracting the file path so the dedup/pending-hint key is the bare path a
+    // plain-path lookup expects — otherwise a range read's filePath still carries the @N-M
+    // suffix and never matches the file it actually reads.
+    const rangeMatch = /^(.+)@(\d+)(?:-(\d+))?$/.exec(rawSpec)
+    const rangeSuffix = rangeMatch !== null ? '@' + rangeMatch[2] + (rangeMatch[3] !== undefined ? '-' + rangeMatch[3] : '') : ''
+    const specWithoutRange = rangeMatch !== null ? rangeMatch[1]! : rawSpec
+    const colonIdx = specWithoutRange.indexOf('::')
+    const rawFilePath = colonIdx === -1 ? specWithoutRange : specWithoutRange.slice(0, colonIdx)
     // Resolve against the command's cwd (falling back to this hook process's own cwd, which is
     // wrong but the best available signal, when the event carries none) before normalizing: a
     // relative spec run from two different directories must NOT collide under one dedup key, and
     // a relative spec run twice from the SAME directory must — bare normalizePath does neither,
     // since it only canonicalizes drive-letter case and slash direction, never resolves cwd.
     filePath = resolveIndexPath(rawFilePath, cwd ?? process.cwd())
-    spec = colonIdx === -1 ? filePath : filePath + rawSpec.slice(colonIdx)
+    spec = (colonIdx === -1 ? filePath : filePath + specWithoutRange.slice(colonIdx)) + rangeSuffix
   }
   return { sub, spec, filePath }
 }
@@ -907,6 +926,39 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
     }
 
     // Bare code (outside quotes)
+
+    // Backslash-escapes the next character (real bash semantics outside a string): a `\"`
+    // or `\'` here is a literal character, not a quote open — skip both without toggling
+    // any quote state.
+    if (ch === '\\' && i + 1 < cmd.length) {
+      i += 2
+      continue
+    }
+
+    // Arithmetic expansion `$(( ... ))`: skip the whole span as opaque (tracking nested
+    // parens) so a shift operator like `<<`/`>>` inside it is never mistaken for a heredoc
+    // redirect.
+    if (ch === '$' && cmd[i + 1] === '(' && cmd[i + 2] === '(') {
+      let depth = 2
+      let j = i + 3
+      while (j < cmd.length && depth > 0) {
+        if (cmd[j] === '(') depth++
+        else if (cmd[j] === ')') depth--
+        j++
+      }
+      i = j
+      continue
+    }
+
+    // A `#` that starts a word (preceded by whitespace, or at the very start of the command)
+    // opens a real shell comment running to end of line — quote-like characters in it (e.g.
+    // an apostrophe in "don't") are literal text, not shell syntax.
+    if (ch === '#' && (i === 0 || /\s/.test(cmd[i - 1] ?? ''))) {
+      const nl = cmd.indexOf('\n', i)
+      i = nl === -1 ? cmd.length : nl + 1
+      continue
+    }
+
     if (ch === "'") {
       inSingle = true
       i++
@@ -1006,6 +1058,10 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (rawCmd === undefined) return passOutput()
   const cmd = stripCdPrefix(rawCmd)
   const cdStripped = cmd !== rawCmd
+  // The bash event's cwd, used to resolve any relative file path the same way the CLI/shell
+  // itself would — hoisted here (rather than computed right before its first use) so every
+  // path-keyed dedup check below (sed line-ranges, CLI surgical reads) shares one resolution.
+  const preHookCwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
 
   // Check for unbalanced shell quoting or unterminated heredocs
   const cfg = loadConfig()
@@ -1071,8 +1127,13 @@ export function preBashHandler(event: HookEvent): HookOutput {
   if (sedRange !== null) {
     const { filePath, start, end } = sedRange
     recordStat('session_hint', 0, 0)
-    const priorOverlap = findRangeOverlap(getFileLineRanges(filePath), start, end)
-    recordFileLineRange(filePath, start, end)
+    // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-
+    // cased) — a relative and an absolute reference to the same file must collide under one
+    // key, matching how the CLI surgical-read dedup above already resolves paths. The raw
+    // filePath is kept for the hint text itself so existing relative-path hints are unchanged.
+    const sedDedupKey = resolveIndexPath(filePath, preHookCwd ?? process.cwd())
+    const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey), start, end)
+    recordFileLineRange(sedDedupKey, start, end)
     if (priorOverlap !== null) {
       return contextOutput(sedOverlapHint(filePath, priorOverlap, start, end))
     }
@@ -1334,7 +1395,6 @@ export function preBashHandler(event: HookEvent): HookOutput {
   }
 
   // CLI surgical-read dedup: warn on an exact repeat `token-goat symbol|read|section` invocation, and cross-check against the Read-tool ledger (a file already fully Read this session may already cover the same content).
-  const preHookCwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
   const tgRead = extractTgSurgicalRead(cmd, preHookCwd)
   if (tgRead !== null) {
     const cliKey = tgRead.sub + '::' + tgRead.spec
@@ -1458,17 +1518,24 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // If the pre-hook rewrote this into a `token-goat compress` wrapper, recover the original command so the cache keys on it (matching the pre-hook hash).
     const rawCmd = unwrapCompressCommand(rawCmdRaw) ?? rawCmdRaw
     const cmd = stripCdPrefix(rawCmd)
-
-    // Item 2: record curl -o downloads by URL for cross-command dedup
-    const curlDl = extractCurlDownload(cmd)
-    if (curlDl !== null) {
-      recordCurlDownload(curlDl.url, curlDl.outputPath)
-    }
-
-    // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
     const output = extractBashOutput(event.raw)
     const exitCode = extractExitCode(event.raw)
     const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
+
+    // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming
+    // the download actually succeeded. Recording it unconditionally (before checking exit code
+    // or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got
+    // recorded as if it succeeded, and the recall-deny above would then block the user from
+    // ever retrying the same download.
+    const curlDl = extractCurlDownload(cmd)
+    if (curlDl !== null && (exitCode === null || exitCode === 0)) {
+      const resolvedOutputPath = resolveIndexPath(curlDl.outputPath, cwd ?? process.cwd())
+      if (existsSync(resolvedOutputPath)) {
+        recordCurlDownload(curlDl.url, curlDl.outputPath)
+      }
+    }
+
+    // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
 
     // Record a successful `token-goat symbol|read|section` invocation so a later identical call gets the re-read dedup hint from the pre-hook.
     const tgRead = extractTgSurgicalRead(cmd, cwd)
