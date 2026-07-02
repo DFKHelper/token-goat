@@ -7,7 +7,7 @@ import * as webCache from '../src/web_cache.js'
 
 vi.mock('../src/web_cache.js', () => ({
   storeWebOutput: vi.fn().mockResolvedValue(undefined),
-  getWebOutputByUrl: vi.fn().mockReturnValue(null),
+  getWebOutputByUrlFromDisk: vi.fn().mockReturnValue(null),
 }))
 
 import * as gdrive from '../src/gdrive.js'
@@ -15,7 +15,7 @@ import * as gdrive from '../src/gdrive.js'
 describe('gdrive', () => {
   beforeEach(() => {
     mockFetch.mockClear()
-    vi.mocked(webCache.getWebOutputByUrl).mockReturnValue(null)
+    vi.mocked(webCache.getWebOutputByUrlFromDisk).mockReturnValue(null)
   })
 
   describe('fetchDoc', () => {
@@ -34,7 +34,7 @@ describe('gdrive', () => {
       expect(result1).toBe(docText)
       expect(mockFetch).toHaveBeenCalledOnce()
 
-      vi.mocked(webCache.getWebOutputByUrl).mockReturnValueOnce({ cacheId: 'test', content: docText })
+      vi.mocked(webCache.getWebOutputByUrlFromDisk).mockReturnValueOnce({ cacheId: 'test', content: docText })
 
       const result2 = await gdrive.fetchDoc(fileId)
       expect(result2).toBe(docText)
