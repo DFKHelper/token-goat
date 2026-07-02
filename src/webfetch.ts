@@ -156,8 +156,26 @@ export function ssrfPinnedLookup(
         return;
       }
       if (result.kind === 'unresolved' && ALLOW_UNRESOLVED) {
+        // Even though the pinned (all:true) lookup didn't resolve, whatever
+        // address this raw fallback lookup DOES come back with must still be
+        // validated before it's handed to the socket — otherwise a hostname
+        // engineered to fail the pinned lookup but resolve here (a DNS
+        // rebinding technique) would bypass private-IP blocking entirely.
         dnsLookup(hostname, { ...options, all: false }, (err, address, family) => {
-          callback(err, typeof address === 'string' ? address : '', family);
+          if (err) {
+            callback(err, '', family);
+            return;
+          }
+          const addr = typeof address === 'string' ? address : '';
+          const isPrivate = isIPv4(addr) ? isPrivateIPv4(addr) : isIPv6(addr) ? isPrivateIPv6(addr) : true;
+          if (isPrivate) {
+            callback(
+              new Error(`URL blocked by SSRF safety check: ${truncateUrl(hostname)}`) as NodeJS.ErrnoException,
+              '',
+            );
+            return;
+          }
+          callback(null, addr, family);
         });
         return;
       }
@@ -197,19 +215,108 @@ export function isPrivateIPv4(ip: string): boolean {
   const a = octets[0] as number;
   const b = octets[1] as number;
   return (
+    a === 0 || // 0.0.0.0/8 ("this network" / unspecified-source range)
     a === 127 || // 127.x.x.x
     a === 10 || // 10.x.x.x
+    (a === 100 && b >= 64 && b <= 127) || // 100.64.0.0/10 (carrier-grade NAT, RFC 6598)
     (a === 172 && b >= 16 && b <= 31) || // 172.16-31.x.x
     (a === 192 && b === 168) || // 192.168.x.x
     (a === 169 && b === 254) // 169.254.x.x
   );
 }
 
-function isPrivateIPv6(ip: string): boolean {
+/**
+ * Parse a syntactically valid IPv6 literal (per net.isIPv6) into its 8
+ * 16-bit groups, expanding "::" zero-compression and any embedded
+ * dotted-decimal IPv4 suffix (the IPv4-mapped/IPv4-translated forms, e.g.
+ * `::ffff:1.2.3.4` or `::ffff:0:1.2.3.4`). Returns null only if `ip` fails
+ * net.isIPv6 or otherwise can't be decoded.
+ */
+function parseIPv6Groups(ip: string): number[] | null {
+  if (!isIPv6(ip)) return null;
+
+  const withoutZone = ip.split('%')[0] ?? ip; // strip a zone/scope id, e.g. "fe80::1%eth0"
+  const halves = withoutZone.split('::');
+  if (halves.length > 2) return null;
+
+  const parseSide = (side: string): number[] | null => {
+    if (side === '') return [];
+    const tokens = side.split(':');
+    const groups: number[] = [];
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i] as string;
+      if (tok.includes('.')) {
+        if (i !== tokens.length - 1 || !isIPv4(tok)) return null; // embedded IPv4 must be the final token
+        const octets = tok.split('.').map(Number);
+        groups.push(((octets[0] as number) << 8) | (octets[1] as number));
+        groups.push(((octets[2] as number) << 8) | (octets[3] as number));
+      } else {
+        const val = parseInt(tok, 16);
+        if (!Number.isFinite(val) || val < 0 || val > 0xffff) return null;
+        groups.push(val);
+      }
+    }
+    return groups;
+  };
+
+  if (halves.length === 1) {
+    const groups = parseSide(halves[0] ?? '');
+    return groups && groups.length === 8 ? groups : null;
+  }
+
+  const left = parseSide(halves[0] ?? '');
+  const right = parseSide(halves[1] ?? '');
+  if (!left || !right) return null;
+  const missing = 8 - left.length - right.length;
+  if (missing < 0) return null;
+  return [...left, ...new Array(missing).fill(0), ...right];
+}
+
+/** True when the leading `prefixBits` bits of `groups` match `prefixGroups`. */
+function matchesIPv6Prefix(groups: number[], prefixGroups: number[], prefixBits: number): boolean {
+  let bitsLeft = prefixBits;
+  for (let i = 0; i < 8 && bitsLeft > 0; i++) {
+    const take = Math.min(16, bitsLeft);
+    const mask = take === 16 ? 0xffff : (0xffff << (16 - take)) & 0xffff;
+    if (((groups[i] ?? 0) & mask) !== ((prefixGroups[i] ?? 0) & mask)) return false;
+    bitsLeft -= take;
+  }
+  return true;
+}
+
+const FC00_PREFIX = [0xfc00, 0, 0, 0, 0, 0, 0, 0]; // fc00::/7 (unique local addresses)
+const FE80_PREFIX = [0xfe80, 0, 0, 0, 0, 0, 0, 0]; // fe80::/10 (link-local addresses)
+
+/**
+ * True when `ip` is an IPv6 loopback/unique-local/link-local address, or an
+ * IPv4-mapped (`::ffff:a.b.c.d`) or IPv4-translated (`::ffff:0:a.b.c.d`)
+ * address whose embedded IPv4 address is private — a private IPv4 address
+ * wrapped in IPv6 notation must not slip past this check just because the
+ * string "looks like" IPv6. fc00::/7 and fe80::/10 are matched as true CIDR
+ * ranges (not literal string prefixes), so e.g. fd12:3456:: — which is
+ * inside fc00::/7 but does not start with the literal "fc00:" — is still
+ * caught.
+ */
+export function isPrivateIPv6(ip: string): boolean {
   const lower = ip.toLowerCase();
   if (lower === '::1') return true; // loopback
-  if (lower.startsWith('fc00:') || lower.startsWith('fd00:')) return true; // fc00::/7
-  if (lower.startsWith('fe80:')) return true; // fe80::/10
+
+  const groups = parseIPv6Groups(lower);
+  if (!groups) return true; // couldn't decode a claimed-valid IPv6 address — fail closed
+
+  const isIPv4Mapped =
+    groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0 && groups[5] === 0xffff;
+  const isIPv4Translated =
+    groups[0] === 0 && groups[1] === 0 && groups[2] === 0 && groups[3] === 0 && groups[4] === 0xffff && groups[5] === 0;
+  if (isIPv4Mapped || isIPv4Translated) {
+    const hi = groups[6] ?? 0;
+    const lo = groups[7] ?? 0;
+    const embedded = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isPrivateIPv4(embedded);
+  }
+
+  if (matchesIPv6Prefix(groups, FC00_PREFIX, 7)) return true; // fc00::/7
+  if (matchesIPv6Prefix(groups, FE80_PREFIX, 10)) return true; // fe80::/10
   return false;
 }
 

@@ -31,6 +31,7 @@ const {
   isImageContentType,
   fetchUrl,
   isPrivateIPv4,
+  isPrivateIPv6,
   isRealPathWithinCacheDir,
   ssrfPinnedLookup,
   performHttpFetch,
@@ -132,6 +133,21 @@ describe('webfetch', () => {
       expect(isPrivateIPv4('169.254.255.255')).toBe(true);
     });
 
+    it('should recognize the 0.0.0.0/8 "this network" range (IPV4-MISSING-0000-8)', () => {
+      expect(isPrivateIPv4('0.0.0.0')).toBe(true);
+      expect(isPrivateIPv4('0.1.2.3')).toBe(true);
+      expect(isPrivateIPv4('0.255.255.255')).toBe(true);
+    });
+
+    it('should recognize the 100.64.0.0/10 carrier-grade NAT range (IPV4-MISSING-0000-8)', () => {
+      expect(isPrivateIPv4('100.64.0.0')).toBe(true);
+      expect(isPrivateIPv4('100.100.50.1')).toBe(true);
+      expect(isPrivateIPv4('100.127.255.255')).toBe(true);
+      // boundaries just outside the /10 must stay public
+      expect(isPrivateIPv4('100.63.255.255')).toBe(false);
+      expect(isPrivateIPv4('100.128.0.0')).toBe(false);
+    });
+
     it('should reject octets out of valid 0-255 range', () => {
       expect(isPrivateIPv4('256.0.0.1')).toBe(false);
       expect(isPrivateIPv4('10.300.0.1')).toBe(false);
@@ -151,6 +167,50 @@ describe('webfetch', () => {
       expect(isPrivateIPv4('10.0.0')).toBe(false);
       expect(isPrivateIPv4('10.0.0.1.1')).toBe(false);
       expect(isPrivateIPv4('not.an.ip.addr')).toBe(false);
+    });
+  });
+
+  describe('isPrivateIPv6 (IPV6-CLASSIFIER-GAPS)', () => {
+    it('should recognize the loopback address', () => {
+      expect(isPrivateIPv6('::1')).toBe(true);
+    });
+
+    it('should unwrap IPv4-mapped addresses (::ffff:a.b.c.d) and check the embedded IPv4', () => {
+      expect(isPrivateIPv6('::ffff:127.0.0.1')).toBe(true);
+      expect(isPrivateIPv6('::ffff:192.168.1.1')).toBe(true);
+      expect(isPrivateIPv6('::ffff:10.0.0.1')).toBe(true);
+      expect(isPrivateIPv6('::ffff:8.8.8.8')).toBe(false);
+    });
+
+    it('should unwrap IPv4-translated addresses (::ffff:0:a.b.c.d) and check the embedded IPv4', () => {
+      expect(isPrivateIPv6('::ffff:0:127.0.0.1')).toBe(true);
+      expect(isPrivateIPv6('::ffff:0:192.168.1.1')).toBe(true);
+      expect(isPrivateIPv6('::ffff:0:8.8.8.8')).toBe(false);
+    });
+
+    it('should match the full fc00::/7 CIDR range, not just the literal "fc00:" prefix', () => {
+      expect(isPrivateIPv6('fc00::1')).toBe(true);
+      expect(isPrivateIPv6('fd00::1')).toBe(true);
+      // fd12:3456:: is inside fc00::/7 but does not start with the literal "fc00:" prefix
+      expect(isPrivateIPv6('fd12:3456::1')).toBe(true);
+      expect(isPrivateIPv6('fc01::1')).toBe(true);
+      expect(isPrivateIPv6('fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff')).toBe(true);
+      // just outside the /7 range must stay public
+      expect(isPrivateIPv6('fe00::1')).toBe(false);
+    });
+
+    it('should match the full fe80::/10 CIDR range, not just the literal "fe80:" prefix', () => {
+      expect(isPrivateIPv6('fe80::1')).toBe(true);
+      // fe95:: is inside fe80::/10 but does not start with the literal "fe80:" prefix
+      expect(isPrivateIPv6('fe95::1')).toBe(true);
+      expect(isPrivateIPv6('febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff')).toBe(true);
+      // just outside the /10 range must stay public
+      expect(isPrivateIPv6('fec0::1')).toBe(false);
+    });
+
+    it('should reject public IPv6 addresses', () => {
+      expect(isPrivateIPv6('2001:4860:4860::8888')).toBe(false);
+      expect(isPrivateIPv6('2606:4700:4700::1111')).toBe(false);
     });
   });
 
@@ -330,6 +390,62 @@ describe('webfetch', () => {
         redirectsLeft: 5,
       }).catch(() => {});
       expect(httpRequestMock).toHaveBeenCalled();
+    });
+  });
+
+  describe('ssrfPinnedLookup ALLOW_UNRESOLVED fallback (SSRF-PINNED-LOOKUP-BYPASS)', () => {
+    const ENV_KEY = 'TOKEN_GOAT_WEBFETCH_ALLOW_UNRESOLVED';
+    const originalEnv = process.env[ENV_KEY];
+
+    afterEach(() => {
+      if (originalEnv === undefined) delete process.env[ENV_KEY];
+      else process.env[ENV_KEY] = originalEnv;
+      vi.resetModules();
+    });
+
+    it('still rejects a raw fallback lookup that resolves to a private address (DNS-rebinding bypass)', async () => {
+      process.env[ENV_KEY] = 'true';
+      vi.resetModules();
+      const fresh = await import('../src/webfetch.js');
+
+      // Primary pinned (all:true) lookup fails/comes back empty, forcing the
+      // ALLOW_UNRESOLVED fallback branch to run.
+      dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
+        callback(new Error('primary lookup failed'));
+      });
+      // The raw fallback dns.lookup(..., { all: false }) then resolves to a
+      // private/internal address - a classic DNS-rebinding SSRF payload.
+      dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
+        callback(null, '127.0.0.1', 4);
+      });
+
+      await expect(
+        new Promise((res, rej) => {
+          fresh.ssrfPinnedLookup('rebind-fallback.example.test', {}, (err, address) => {
+            if (err) rej(err); else res(address);
+          });
+        }),
+      ).rejects.toThrow(/SSRF/);
+    });
+
+    it('still allows a raw fallback lookup that resolves to a public address', async () => {
+      process.env[ENV_KEY] = 'true';
+      vi.resetModules();
+      const fresh = await import('../src/webfetch.js');
+
+      dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
+        callback(new Error('primary lookup failed'));
+      });
+      dnsLookupMock.mockImplementationOnce((_hostname, _options, callback) => {
+        callback(null, '93.184.216.34', 4);
+      });
+
+      const address = await new Promise((res, rej) => {
+        fresh.ssrfPinnedLookup('public-fallback.example.test', {}, (err, addr) => {
+          if (err) rej(err); else res(addr);
+        });
+      });
+      expect(address).toBe('93.184.216.34');
     });
   });
 
