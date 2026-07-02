@@ -9,6 +9,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { SKIP_DIRS } from './baseline.js'
 import { querySymbols, queryRefs } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { readSection, listSections, extractSection, listAllSections } from './section_reader.js'
@@ -424,10 +425,15 @@ export function runSkeleton(opts: SkeletonOptions): number {
     return 1
   }
 
+  const filtered =
+    opts.minLines !== undefined
+      ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
+      : symbols
+
   if (opts.json === true) {
     emit(
       JSON.stringify(
-        symbols.map((s) => ({
+        filtered.map((s) => ({
           name: s.name,
           kind: s.kind,
           lineStart: s.lineStart,
@@ -439,11 +445,6 @@ export function runSkeleton(opts: SkeletonOptions): number {
     )
     return 0
   }
-
-  const filtered =
-    opts.minLines !== undefined
-      ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
-      : symbols
 
   const totalLines = filtered.at(-1)?.lineEnd ?? 0
   emit(`# Skeleton: ${opts.file}  (${filtered.length} symbols, ${totalLines} lines)`)
@@ -471,15 +472,15 @@ export function runOutline(opts: OutlineOptions): number {
     return 1
   }
 
-  if (opts.json === true) {
-    emit(JSON.stringify(symbols, null, 2))
-    return 0
-  }
-
   const filtered =
     opts.minLines !== undefined
       ? symbols.filter((s) => s.lineEnd - s.lineStart + 1 >= (opts.minLines ?? 0))
       : symbols
+
+  if (opts.json === true) {
+    emit(JSON.stringify(filtered, null, 2))
+    return 0
+  }
 
   emit(`# Outline: ${opts.file}  (${filtered.length} symbols)`)
   for (const sym of filtered) {
@@ -562,6 +563,42 @@ export interface ChangedOptions {
   projectRoot?: string
 }
 
+/**
+ * Parse a `git diff --unified=0` (or wider-context) unified diff into a map of file path
+ * (matching the relative-path convention of `git diff --name-only`, taken from each hunk's
+ * `+++ b/<path>` header) to the changed line ranges on the new/current side of the diff.
+ *
+ * A pure-deletion hunk (new-side count of 0) has no new-side lines to report; it is anchored
+ * to its single insertion point instead, so a symbol sitting at that point still counts as touched.
+ */
+export function parseDiffHunks(diffText: string): Map<string, Array<{ start: number; end: number }>> {
+  const hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
+  let currentFile: string | null = null
+  for (const line of diffText.split(/\r?\n/)) {
+    const fileMatch = /^\+\+\+ b\/(.+)$/.exec(line)
+    if (fileMatch) {
+      currentFile = fileMatch[1] ?? null
+      continue
+    }
+    const hunkMatch = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line)
+    if (hunkMatch !== null && currentFile !== null) {
+      const newStart = parseInt(hunkMatch[1]!, 10)
+      const newLines = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1
+      const range =
+        newLines === 0
+          ? { start: Math.max(newStart, 1), end: Math.max(newStart, 1) }
+          : { start: newStart, end: newStart + newLines - 1 }
+      const existing = hunksByFile.get(currentFile)
+      if (existing !== undefined) {
+        existing.push(range)
+      } else {
+        hunksByFile.set(currentFile, [range])
+      }
+    }
+  }
+  return hunksByFile
+}
+
 /** Handle ``token-goat changed`` (plain file list, or `--symbol` for changed symbols). */
 export function runChanged(opts: ChangedOptions = {}): number {
   const ref = opts.ref ?? 'HEAD~5'
@@ -586,9 +623,30 @@ export function runChanged(opts: ChangedOptions = {}): number {
   }
 
   if (opts.symbolMode === true) {
+    // Scope to symbols whose own line range overlaps a changed diff hunk, not every
+    // symbol in any file that has any changed line — a one-line edit in a large file
+    // shouldn't report the whole file as "changed" at symbol granularity.
+    let hunksByFile = new Map<string, Array<{ start: number; end: number }>>()
+    try {
+      const diffResult = runGit(['diff', ref, '--unified=0'], { cwd: projectRoot })
+      if (diffResult.exitCode === 0) {
+        hunksByFile = parseDiffHunks(diffResult.stdout)
+      }
+    } catch {
+      // Hunk-level diff unavailable — fall back to file-level scoping below.
+    }
+
     const allSymbols: SymbolEntry[] = []
     for (const f of changedFiles) {
-      allSymbols.push(...querySymbols({ filePath: resolveIndexPath(f, projectRoot), limit: 1000 }))
+      const fileSymbols = querySymbols({ filePath: resolveIndexPath(f, projectRoot), limit: 1000 })
+      const hunks = hunksByFile.get(f)
+      // No hunks parsed for this file (rename, binary, or the diff call failed) —
+      // fall back to every symbol in the file rather than silently dropping it.
+      const scoped =
+        hunks === undefined
+          ? fileSymbols
+          : fileSymbols.filter((s) => hunks.some((h) => h.start <= s.lineEnd && h.end >= s.lineStart))
+      allSymbols.push(...scoped)
     }
     if (allSymbols.length === 0) {
       emit('No symbols changed.')
@@ -660,6 +718,7 @@ export function runGrep(opts: GrepOptions): number {
         const full = path.join(dir, entry)
         const stat = fs.statSync(full)
         if (stat.isDirectory()) {
+          if (SKIP_DIRS.has(entry)) continue
           if (opts.recursive !== false) searchDir(full)
         } else {
           searchFile(full)
