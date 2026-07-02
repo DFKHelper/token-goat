@@ -84,6 +84,31 @@ describe('postBashHandler', () => {
     expect(id).not.toBeNull()
   })
 
+  it('records the real exit code, not a hardcoded 0, when caching a failed build command (BASH-EXITCODE-0-HARDCODED regression)', async () => {
+    const cmd = 'cargo build'
+    const largeOutput = 'error[E0433]: failed to resolve\nerror: could not compile `token_goat`\n'.repeat(40)
+    const failedEvent: HookEvent = {
+      eventName: 'post_tool_use',
+      toolName: 'Bash',
+      toolInput: { command: cmd },
+      sessionId: 'test-session',
+      raw: {
+        tool_name: 'Bash',
+        tool_input: { command: cmd },
+        tool_response: { output: largeOutput, exit_code: 101 },
+      },
+    }
+    await postBashHandler(failedEvent)
+
+    const { fingerprintContent } = await import('../src/fingerprint.js')
+    const simpleHash = fingerprintContent(cmd).slice(0, 16)
+    const id = getBashOutputId(simpleHash)
+    expect(id).not.toBeNull()
+    const entry = getBashOutputByCommandHash(id!)
+    expect(entry).not.toBeNull()
+    expect(entry!.exitCode).toBe(101)
+  })
+
   it('stores codex AI review output', async () => {
     const largeOutput = 'Reviewing code...\nSuggestion: extract method\nConclusion: LGTM\n'.repeat(30)
     const event = makePostBashEvent('codex review prompt.md', largeOutput)
@@ -509,6 +534,32 @@ describe('preBashHandler — cat source file recall', () => {
       expect(result.context).toContain('already read')
       expect(result.context).toContain('10-60')
       expect(result.context).toContain('src/paging_demo.ts@61-100')
+    }
+  })
+
+  it('an overlapping sed read that starts BEFORE the prior range surfaces the leading new lines, not a false "already served" (SEDOVERLAP-LEADING-DELTA regression)', () => {
+    // First read records lines 50-100 for this file.
+    preBashHandler(makeBashEvent("sed -n '50,100p' src/paging_demo.ts"))
+    // Second read starts before the prior range and only partially overlaps it; lines 40-49 were never served.
+    const result = preBashHandler(makeBashEvent("sed -n '40,60p' src/paging_demo.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('already read')
+      expect(result.context).toContain('50-100')
+      expect(result.context).toContain('src/paging_demo.ts@40-49')
+      expect(result.context).not.toContain('already served')
+    }
+  })
+
+  it('an overlapping sed read that straddles the prior range on both sides surfaces both the leading and trailing new lines', () => {
+    // First read records lines 50-60 for this file.
+    preBashHandler(makeBashEvent("sed -n '50,60p' src/paging_demo.ts"))
+    // Second read fully surrounds the prior range; lines 40-49 and 61-70 were never served.
+    const result = preBashHandler(makeBashEvent("sed -n '40,70p' src/paging_demo.ts"))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('src/paging_demo.ts@40-49')
+      expect(result.context).toContain('src/paging_demo.ts@61-70')
     }
   })
 
@@ -1363,6 +1414,23 @@ describe('preBashHandler — curl GET recall', () => {
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat bash-output')
+    }
+  })
+
+  it('names the actual differently-piped command that produced the cached value, instead of silently implying it matches the new filter (BASHCACHE-KEY-STRIPS-PIPELINE regression)', async () => {
+    const url = 'https://api.example.com/data'
+    const firstCmd = 'curl -s ' + url + ' | jq .items'
+    const secondCmd = 'curl -s ' + url + ' | jq .total'
+    const largeOutput = JSON.stringify({ items: new Array(200).fill({ id: 1, name: 'foo' }), total: 200 })
+
+    await postBashHandler(makePostBashEvent(firstCmd, largeOutput))
+
+    const result = preBashHandler(makeBashEvent(secondCmd))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('token-goat bash-output')
+      expect(result.context).toContain(firstCmd)
+      expect(result.context).toContain('differently-piped')
     }
   })
 })
