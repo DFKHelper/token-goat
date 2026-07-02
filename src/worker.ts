@@ -113,11 +113,11 @@ export function getDirtyPathsFor(dir: string): string[] {
  * read failure on one file is swallowed so a single bad file never aborts the
  * batch or crashes the drain loop.
  */
-function makeIndexer(dbPath: string): (absPath: string, sha: string) => void {
+function makeIndexer(dbPath: string): (absPath: string, sha: string) => unknown {
   return (absPath, sha) => {
     try {
-      // Skip files whose content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed.
-      if (getFileEntry(absPath, dbPath)?.sha === sha) return
+      // Skip files whose content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed. Return false so processDirtyBatch's count reflects files actually (re)indexed, not ones the gate skipped.
+      if (getFileEntry(absPath, dbPath)?.sha === sha) return false
       indexFileSync(absPath, dbPath)
     } catch {
       // One bad file must not abort the rest of the batch.
@@ -142,13 +142,15 @@ function makeRemover(dbPath: string): (absPath: string) => void {
  * For each path: skip if the file no longer exists or cannot be fingerprinted,
  * otherwise re-index it. The default `index` callback parses the file and
  * writes its rows into the global index DB; tests inject their own callback to
- * observe the plumbing in isolation. Returns the number of paths indexed.
+ * observe the plumbing in isolation. Returns the number of paths actually
+ * (re)indexed -- a path whose callback returns `false` (the default indexer's
+ * sha-gate skip for byte-identical content) is visited but not counted.
  *
  * Exported for unit tests so the drain logic can be exercised without a thread.
  */
 export function processDirtyBatch(
   paths: string[],
-  index: (absPath: string, sha: string) => void = makeIndexer(globalDbPath()),
+  index: (absPath: string, sha: string) => unknown = makeIndexer(globalDbPath()),
   remove: (absPath: string) => void = makeRemover(globalDbPath()),
 ): number {
   let indexed = 0
@@ -161,8 +163,9 @@ export function processDirtyBatch(
     }
     const sha = fingerprintFile(p)
     if (sha === null) continue
-    index(p, sha)
-    indexed += 1
+    // `false` means the sha-gate skipped a no-op reindex; any other return value (including
+    // void/undefined from callers that don't bother returning anything) counts as indexed.
+    if (index(p, sha) !== false) indexed += 1
   }
   return indexed
 }
@@ -188,18 +191,28 @@ function sleepSyncMs(ms: number): void {
  * On Windows, rename can fail with EPERM if the file is open for append; the
  * loop retries 5 times with 50ms sleeps before deferring (returning 0).
  *
+ * Each stage's claimed/recovered file is only cleared (rm'd or quarantined)
+ * AFTER its batch has been durably processed by {@link processDirtyBatch} --
+ * never before. If the process dies partway through a batch (SIGTERM, a
+ * crash, `worker --kill-duplicate`), the .draining file is still on disk for
+ * the next startup's crash recovery to pick back up, instead of having
+ * already been deleted while the paths it named were never indexed.
+ *
  * Returns the number of paths processed. When no `index` callback is injected,
  * files are indexed into `dir`'s `global.db` (the real shipping path); in
  * production `dir` is the data dir, so this is {@link globalDbPath}.
  */
 export function drainOnce(
   dir: string,
-  index?: (absPath: string, sha: string) => void,
+  index?: (absPath: string, sha: string) => unknown,
   remove?: (absPath: string) => void,
 ): number {
   const queuePath = dirtyQueuePathFor(dir)
   const draining = `${queuePath}.draining`
-  let rawSnapshot = ''
+  const dbPath = path.join(dir, 'global.db')
+  const indexFn = index ?? makeIndexer(dbPath)
+  const removeFn = remove ?? makeRemover(dbPath)
+  let processed = 0
 
   // (a) Crash recovery: absorb a .draining file abandoned by a previous crashed drain.
   if (fs.existsSync(draining)) {
@@ -215,14 +228,17 @@ export function drainOnce(
       }
       return 0
     }
-    // Only fold this content into the batch if it was not already queued for processing
-    // on a prior cycle (see unclearedDrainingSnapshots below). Without this guard, a
-    // .draining file that outlives both cleanup attempts (e.g. a persistent Windows
-    // sharing violation) would be re-read and its paths reprocessed on every cycle.
+    // Only process this content if it was not already folded into a batch on a prior cycle
+    // (see unclearedDrainingSnapshots below). Without this guard, a .draining file that
+    // outlives both cleanup attempts (e.g. a persistent Windows sharing violation) would be
+    // re-read and its paths reprocessed on every cycle.
     if (unclearedDrainingSnapshots.get(draining) !== drainingContent) {
-      rawSnapshot += drainingContent
+      processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn)
     }
-    // Read succeeded; lines are safely in rawSnapshot. Best-effort remove so they are not reprocessed; if removal fails (e.g. a Windows sharing violation) quarantine the file out of stage (b)'s way but do NOT discard the data already read.
+    // Only clear the recovered file now that its batch has been durably processed (or
+    // recognized above as already processed) -- never before -- so a crash partway through
+    // processDirtyBatch leaves the .draining file in place for the next startup to recover,
+    // instead of deleting it up front and losing every path it named.
     try {
       fs.rmSync(draining, { force: true })
       unclearedDrainingSnapshots.delete(draining)
@@ -252,21 +268,42 @@ export function drainOnce(
       }
     }
     if (claimed) {
+      let claimedContent = ''
+      let readOk = false
       try {
-        rawSnapshot += fs.readFileSync(draining, 'utf8')
-        fs.rmSync(draining, { force: true })
+        claimedContent = fs.readFileSync(draining, 'utf8')
+        readOk = true
       } catch {
-        // read/clear failure is fail-soft
+        // read failure is fail-soft: leave the claimed file in place; the next cycle's stage
+        // (a) crash recovery will pick it up.
       }
-    } else if (rawSnapshot === '') {
-      return 0 // queue busy and nothing recovered; retry next poll
+      if (readOk) {
+        // Deliberately NOT wrapped in the try above: a throw from processDirtyBatch (e.g. the
+        // process crashing mid-batch) must propagate to the caller, not be swallowed as a
+        // "read failure", so the cleanup below never runs and the claimed file survives.
+        processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn)
+        // Only clear the claimed file now that its batch has been durably processed -- never
+        // before -- so a crash partway through processDirtyBatch leaves it in place for stage
+        // (a) to recover on the next startup instead of losing the paths it named.
+        try {
+          fs.rmSync(draining, { force: true })
+        } catch {
+          try {
+            fs.renameSync(draining, `${draining}.corrupt-${Date.now()}`)
+          } catch {
+            // Both cleanup attempts failed: record it the same way stage (a) does, so a
+            // leftover .draining file here is recognized as already-processed (and not
+            // silently reprocessed) by stage (a)'s crash recovery on the next cycle.
+            unclearedDrainingSnapshots.set(draining, claimedContent)
+          }
+        }
+      }
     }
+    // If the claim-rename never succeeded after 5 retries, the live queue is left untouched
+    // and will be retried on the next poll cycle.
   }
 
-  if (rawSnapshot.trim() === '') return 0
-  const paths = parseDirtyQueueLines(rawSnapshot)
-  const dbPath = path.join(dir, 'global.db')
-  return processDirtyBatch(paths, index ?? makeIndexer(dbPath), remove ?? makeRemover(dbPath))
+  return processed
 }
 
 /** Is `pid` a live process? Uses signal 0 (probe) — no signal is delivered. */
