@@ -35,8 +35,8 @@ function renderReadRow(entry: FileEntry): string {
  */
 export function buildManifest(): string {
   const files = [...getSessionFiles().values()]
-  const readFiles = files.filter((f) => f.readCount > 0)
   const editedFiles = files.filter((f) => f.wasEdited)
+  const readFiles = files.filter((f) => f.readCount > 0 && !f.wasEdited)
   const webFetches = [...getSessionWebFetches().entries()]
 
   const lines: string[] = []
