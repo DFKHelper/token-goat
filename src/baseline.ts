@@ -29,7 +29,7 @@ export interface ProjectMap {
 }
 
 // Directories never worth walking for a project overview. Matched by basename.
-const SKIP_DIRS: ReadonlySet<string> = new Set([
+export const SKIP_DIRS: ReadonlySet<string> = new Set([
   'node_modules',
   '.git',
   '.hg',
