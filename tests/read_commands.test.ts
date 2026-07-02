@@ -591,8 +591,8 @@ describe('read_commands', () => {
 
     it('deduplicates files', () => {
       const syms: MockSymbol[] = [
-        { name: 'a', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 5, body: 'function a() {}', docstring: '' },
-        { name: 'b', kind: 'function', filePath: 'src/foo.ts', lineStart: 6, lineEnd: 10, body: 'function b() {}', docstring: '' },
+        { name: 'fooHelper', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 5, body: 'function fooHelper() {}', docstring: '' },
+        { name: 'fooUtil', kind: 'function', filePath: 'src/foo.ts', lineStart: 6, lineEnd: 10, body: 'function fooUtil() {}', docstring: '' },
       ]
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue(syms as any)
@@ -600,6 +600,47 @@ describe('read_commands', () => {
       const lines = stdout.trim().split('\n')
       expect(lines).toHaveLength(1)
       expect(lines[0]).toContain('foo.ts')
+    })
+
+    it('matches a substring pattern, not just an exact symbol name (m31)', () => {
+      // The command's own help text promises "pattern"-style matching over an exact name —
+      // a partial pattern like 'Helper' must find a symbol named 'sessionHelper'.
+      const syms: MockSymbol[] = [
+        { name: 'sessionHelper', kind: 'function', filePath: 'src/session.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
+        { name: 'unrelatedThing', kind: 'function', filePath: 'src/other.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runFind({ pattern: 'Helper' }) })
+      expect(stdout).toContain('session.ts')
+      expect(stdout).not.toContain('other.ts')
+    })
+
+    it('matches case-insensitively (m31)', () => {
+      const syms: MockSymbol[] = [
+        { name: 'SessionHelper', kind: 'function', filePath: 'src/session.ts', lineStart: 1, lineEnd: 5, body: '', docstring: '' },
+      ]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runFind({ pattern: 'helper' }) })
+      expect(stdout).toContain('session.ts')
+    })
+
+    it('caps the number of returned files at --limit (m31)', () => {
+      const syms: MockSymbol[] = Array.from({ length: 5 }, (_, i) => ({
+        name: `fooItem${i}`,
+        kind: 'function',
+        filePath: `src/foo${i}.ts`,
+        lineStart: 1,
+        lineEnd: 5,
+        body: '',
+        docstring: '',
+      }))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue(syms as any)
+      const { stdout } = capture(() => { runFind({ pattern: 'foo', limit: 2 }) })
+      const lines = stdout.trim().split('\n')
+      expect(lines).toHaveLength(2)
     })
   })
 

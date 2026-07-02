@@ -19,6 +19,9 @@ import type { SymbolEntry, RefEntry } from './parser_types.js'
 
 const DIDYOUMEAN_LIMIT = 5
 const GREP_MAX_LINES = 200
+// Symbol rows scanned when matching `find <pattern>` by substring — large enough to cover
+// this tool's own index (thousands of symbols) without paging.
+const FIND_SCAN_LIMIT = 20_000
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -499,8 +502,13 @@ export interface FindOptions {
 
 /** Handle ``token-goat find <pattern>``. */
 export function runFind(opts: FindOptions): number {
-  const symbols = querySymbols({ name: opts.pattern, limit: opts.limit ?? 50 })
-  const files = [...new Set(symbols.map((s) => s.filePath))]
+  // "find <pattern>" — the command's own help text promises pattern-style matching, not an
+  // exact name lookup, so scan the index and match by case-insensitive substring.
+  const patternLower = opts.pattern.toLowerCase()
+  const symbols = querySymbols({ limit: FIND_SCAN_LIMIT }).filter((s) =>
+    s.name.toLowerCase().includes(patternLower),
+  )
+  const files = [...new Set(symbols.map((s) => s.filePath))].slice(0, opts.limit ?? 50)
 
   if (files.length === 0) {
     emitErr(`No indexed files match '${opts.pattern}'`)
