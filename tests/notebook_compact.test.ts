@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 
-import { stripNotebook, getOrCreateSidecar, NB_STRIP_MIN_SAVINGS } from '../src/notebook_compact.js'
+import { stripNotebook, getOrCreateSidecar, pruneSidecars, NB_STRIP_MIN_SAVINGS } from '../src/notebook_compact.js'
 
 describe('stripNotebook', () => {
   it('clears outputs from code cells', () => {
@@ -274,5 +274,68 @@ describe('getOrCreateSidecar', () => {
     expect(stripped.nbformat_minor).toBe(2)
     expect(stripped.metadata).toBeDefined()
     expect(stripped.metadata.kernelspec.name).toBe('python3')
+  })
+})
+
+describe('pruneSidecars', () => {
+  let tempDir: string
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nb-prune-test-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  })
+
+  it('evicts the least-recently-modified sidecars beyond maxCount (fail-on-buggy: unbounded accumulation with no pruning)', () => {
+    const dirs: string[] = []
+    for (let i = 0; i < 5; i++) {
+      const content = JSON.stringify({ nbformat: 4, cells: [{ cell_type: 'code', outputs: [], execution_count: i }] })
+      const [sidecarPath] = getOrCreateSidecar(Buffer.from(content), tempDir, { maxCount: 1000 })
+      const dir = path.dirname(sidecarPath)
+      const t = new Date(Date.now() - (5 - i) * 60_000)
+      fs.utimesSync(dir, t, t)
+      dirs.push(dir)
+    }
+
+    pruneSidecars(tempDir, 2, 24 * 3600 * 1000)
+
+    const nbStripDir = path.join(tempDir, 'nb_strip')
+    const remaining = fs.readdirSync(nbStripDir)
+    expect(remaining).toHaveLength(2)
+    expect(fs.existsSync(dirs[3]!)).toBe(true)
+    expect(fs.existsSync(dirs[4]!)).toBe(true)
+    expect(fs.existsSync(dirs[0]!)).toBe(false)
+  })
+
+  it('drops sidecars older than maxAgeMs', () => {
+    const content1 = JSON.stringify({ nbformat: 4, cells: [{ cell_type: 'code', outputs: [], execution_count: 1 }] })
+    const content2 = JSON.stringify({ nbformat: 4, cells: [{ cell_type: 'code', outputs: [], execution_count: 2 }] })
+    const [path1] = getOrCreateSidecar(Buffer.from(content1), tempDir, { maxCount: 1000 })
+    const [path2] = getOrCreateSidecar(Buffer.from(content2), tempDir, { maxCount: 1000 })
+    const dir1 = path.dirname(path1)
+    const past = new Date(Date.now() - 48 * 3600 * 1000)
+    fs.utimesSync(dir1, past, past)
+
+    const removed = pruneSidecars(tempDir, 1000, 24 * 3600 * 1000)
+
+    expect(removed).toBeGreaterThanOrEqual(1)
+    expect(fs.existsSync(dir1)).toBe(false)
+    expect(fs.existsSync(path2)).toBe(true)
+  })
+
+  it('getOrCreateSidecar wires opts through to pruning after each write (fail-on-buggy: unbounded growth when opts is ignored)', () => {
+    for (let i = 0; i < 5; i++) {
+      const content = JSON.stringify({ nbformat: 4, cells: [{ cell_type: 'code', outputs: [], execution_count: i }] })
+      getOrCreateSidecar(Buffer.from(content), tempDir, { maxCount: 2, maxAgeMs: 24 * 3600 * 1000 })
+    }
+    const nbStripDir = path.join(tempDir, 'nb_strip')
+    const remaining = fs.readdirSync(nbStripDir)
+    expect(remaining.length).toBeLessThanOrEqual(2)
+  })
+
+  it('returns 0 for a cache root with no nb_strip directory', () => {
+    expect(pruneSidecars(tempDir, 10, 1000)).toBe(0)
   })
 })
