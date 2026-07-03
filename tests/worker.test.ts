@@ -2,7 +2,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   drainOnce,
@@ -12,6 +12,7 @@ import {
   stopWorker,
   workerPidPath,
 } from '../src/worker.js'
+import * as parserModule from '../src/parser.js'
 import { querySymbols, queryRefs } from '../src/index_reader.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
@@ -348,5 +349,58 @@ describe('drainOnce', () => {
       expect(indexed).toEqual([C, D])
       expect(fs.existsSync(drainingPath)).toBe(false)
     })
+  })
+})
+
+// Regression: makeIndexer's catch block used to swallow a genuine indexFileSync failure with
+// zero logging anywhere, and the caught exception's implicit `undefined` return was `!== false`,
+// so processDirtyBatch counted the failed file as successfully indexed and dequeued it from the
+// dirty queue forever -- no error surfaced anywhere, and the file's index silently went stale
+// for good. This drives the real shipping path: `drainOnce(DIR)` with NO injected index/remove
+// callbacks, so the actual default `makeIndexer` -> `indexFileSync` pipeline runs. Only
+// `indexFileSync` itself is mocked (genuinely throwing for one specific path, genuinely calling
+// through to the real implementation for the other), which is the narrowest possible seam for
+// deterministic failure injection -- the orchestration under test (makeIndexer,
+// processDirtyBatch, drainOnce) is entirely real.
+describe('makeIndexer failure handling (regression)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('logs a swallowed indexFileSync failure, does not count it as indexed, and still indexes the rest of the batch', () => {
+    const realIndexFileSync = parserModule.indexFileSync
+    const good = path.join(DIR, 'good.ts')
+    const bad = path.join(DIR, 'bad.ts')
+    fs.writeFileSync(good, 'export function knownGoodSymbol(): number {\n  return 1\n}\n')
+    fs.writeFileSync(bad, 'export function neverIndexedSymbol(): number {\n  return 2\n}\n')
+    writeQueue(DIR, [good, bad])
+
+    vi.spyOn(parserModule, 'indexFileSync').mockImplementation((filePath, dbPath) => {
+      if (filePath === bad) throw new Error('simulated parse failure')
+      return realIndexFileSync(filePath, dbPath)
+    })
+
+    const projectDb = path.join(DIR, 'global.db')
+    try {
+      // (b) Batch isolation: one bad file must not abort the rest of the batch.
+      const count = drainOnce(DIR)
+      // (c) The failed file must not be counted as a successful index.
+      expect(count).toBe(1)
+      expect(
+        querySymbols({ name: 'knownGoodSymbol', limit: 10 }, projectDb).length,
+      ).toBeGreaterThan(0)
+      expect(querySymbols({ name: 'neverIndexedSymbol', limit: 10 }, projectDb).length).toBe(0)
+
+      // (a) The swallowed failure must be surfaced somewhere discoverable: the worker's error
+      // log, since the detached worker process's stdio is discarded (startDetachedWorker uses
+      // `stdio: 'ignore'`) and nothing in this file otherwise logs anything.
+      const logPath = path.join(DIR, 'worker-errors.log')
+      expect(fs.existsSync(logPath)).toBe(true)
+      const logContent = fs.readFileSync(logPath, 'utf8')
+      expect(logContent).toContain(bad)
+      expect(logContent).toContain('simulated parse failure')
+    } finally {
+      closeDb(projectDb)
+    }
   })
 })
