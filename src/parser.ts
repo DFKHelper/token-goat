@@ -19,6 +19,8 @@ import { createRequire } from 'node:module'
 
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
+import { loadConfig } from './config.js'
+import { indexFile as embedIndexFile } from './embeddings.js'
 import { fingerprintContent, fingerprintFile } from './fingerprint.js'
 import { pathEqClause } from './sql_path.js'
 import { eachUnfencedLine } from './markdown_lines.js'
@@ -1328,6 +1330,43 @@ export function indexFileSync(filePath: string, dbPath: string = globalDbPath())
   }
   const { symbols, refs } = parseContent(content, filePath, language)
   writeParseResult(filePath, content, { symbols, refs, language, duration: 0 }, dbPath)
+}
+
+/**
+ * Best-effort semantic-embeddings indexing for one file, run alongside (not instead of) the
+ * syntactic parse in {@link indexFileSync}. Gated on `indexing.embeddings_enabled` (default
+ * true); a no-op when disabled.
+ *
+ * Reads the file itself, independently of indexFileSync's own read, so callers never need to
+ * thread file content through just for this optional step, then delegates to embeddings.ts's
+ * `indexFile` (imported here as embedIndexFile), which chunks the content and upserts it into
+ * `chunks`/`chunk_vectors`.
+ *
+ * Never throws: an unreadable file, a missing optional dependency (@xenova/transformers or
+ * sqlite-vec — embeddings.ts's own isAvailable()/chunkVectorsTableExists() checks already
+ * degrade gracefully for those), or a genuine embedding-pipeline error must never fail the
+ * overall index — the syntactic symbols/refs indexFileSync already wrote stand on their own
+ * regardless of what happens here.
+ *
+ * Callers that can afford to wait for embeddings (cmdIndex, a one-shot foreground command)
+ * should await this. Callers on a latency-sensitive synchronous path (the worker's incremental
+ * drain, which must return instantly per indexFileSync's own contract) should fire it and
+ * forget instead of awaiting it.
+ */
+export async function indexFileEmbeddings(filePath: string, dbPath: string = globalDbPath()): Promise<void> {
+  if (!loadConfig().indexing.embeddings_enabled) return
+  let content: string
+  try {
+    content = await fs.promises.readFile(filePath, 'utf8')
+  } catch {
+    return
+  }
+  try {
+    const db = getDb(dbPath)
+    await embedIndexFile(db, filePath, content)
+  } catch {
+    // Best-effort: never fail the overall index over an embeddings-only error.
+  }
 }
 
 /**

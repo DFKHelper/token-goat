@@ -57,3 +57,16 @@ process.on('exit', () => {
     // best-effort
   }
 })
+
+// Embeddings generation (indexing.embeddings_enabled) defaults to true in production so a
+// real `token-goat index` populates chunks/chunk_vectors for `token-goat semantic` out of the
+// box, but that means every test in this suite that touches indexFileSync/cmdIndex/the worker
+// drain would otherwise load a real transformer model and run real inference on every index
+// call - slow, and a hard network dependency on a machine without the model already cached
+// (e.g. a fresh CI checkout). Force it off by default for the whole suite, exactly like
+// TOKEN_GOAT_HOME above: a test that sets this env var itself (e.g. the embeddings-in-index
+// regression tests, which additionally gate on the real optional deps being available) still
+// wins, because that assignment runs after this file's setup.
+if (!process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']) {
+  process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'false'
+}

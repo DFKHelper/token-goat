@@ -84,8 +84,6 @@ export interface HintBudgetConfig {
 }
 
 export interface ImageShrinkConfig {
-  prefer_avif: boolean
-  avif_quality: number
   jpeg_quality: number
   max_image_pixels: number
   screenshot_redirect: boolean
@@ -164,6 +162,14 @@ export interface IndexingConfig {
   large_file_symbol_only_kb: number
   large_file_skip_kb: number
   skip_dirs: string[]
+  // Whether indexing (token-goat index and the worker's incremental drain) also chunks and
+  // embeds file content for `token-goat semantic`, in addition to the always-on syntactic
+  // symbols/refs parse. Defaults to true to match the feature's advertised behavior; set
+  // false to skip the (meaningfully slower, model-inference-backed) embeddings step and keep
+  // indexing purely syntactic. Independently gated at the point of use on whether
+  // @xenova/transformers and sqlite-vec are actually installed - this flag only controls
+  // whether embeddings are attempted at all.
+  embeddings_enabled: boolean
 }
 
 export interface CompressionConfig {
@@ -272,8 +278,6 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     max_index_only_per_session: 30,
   },
   image_shrink: {
-    prefer_avif: true,
-    avif_quality: 60,
     jpeg_quality: 75,
     max_image_pixels: 16_000_000,
     screenshot_redirect: true,
@@ -339,6 +343,7 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     large_file_symbol_only_kb: 500,
     large_file_skip_kb: 2048,
     skip_dirs: [],
+    embeddings_enabled: true,
   },
   compression: {
     profile: 'auto',
@@ -433,7 +438,6 @@ const ENV_KEYS = [
   'TOKEN_GOAT_BASH_COMPRESS',
   'TOKEN_GOAT_SESSION_BRIEF',
   'TOKEN_GOAT_SKILL_PRESERVATION',
-  'TOKEN_GOAT_PREFER_AVIF',
   'TOKEN_GOAT_MAX_IMAGE_PIXELS',
   'TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD',
   'TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS',
@@ -460,6 +464,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_CROSS_SESSION_READ_DEDUP',
   'TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS',
   'TOKEN_GOAT_MCP_DEDUP_TTL_SECS',
+  'TOKEN_GOAT_EMBEDDINGS_ENABLED',
 ]
 
 export function configEnvFingerprint(): string {
@@ -642,12 +647,9 @@ function _buildConfig(raw: Record<string, unknown>): Config {
 
   const is_raw = section(raw, 'image_shrink')
   const is_cfg = getDefaultConfig('image_shrink') as ImageShrinkConfig
-  is_cfg.prefer_avif = validatedBool(is_raw['prefer_avif'], is_cfg.prefer_avif)
-  is_cfg.avif_quality = validatedInt(is_raw['avif_quality'], is_cfg.avif_quality, 1, 100)
   is_cfg.jpeg_quality = validatedInt(is_raw['jpeg_quality'], is_cfg.jpeg_quality, 1, 100)
   is_cfg.max_image_pixels = validatedInt(is_raw['max_image_pixels'], is_cfg.max_image_pixels, 0, 1_000_000_000)
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
-  is_cfg.prefer_avif = envBool('TOKEN_GOAT_PREFER_AVIF', is_cfg.prefer_avif)
   is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, 0, 1_000_000_000)
 
   const cur_raw = section(raw, 'curator')
@@ -757,6 +759,8 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   ix.large_file_symbol_only_kb = validatedInt(ix_raw['large_file_symbol_only_kb'], ix.large_file_symbol_only_kb, 1, 1048576)
   ix.large_file_skip_kb = validatedInt(ix_raw['large_file_skip_kb'], ix.large_file_skip_kb, 1, 1048576)
   ix.skip_dirs = validatedStrList(ix_raw['skip_dirs'], ix.skip_dirs)
+  ix.embeddings_enabled = validatedBool(ix_raw['embeddings_enabled'], ix.embeddings_enabled)
+  ix.embeddings_enabled = envBool('TOKEN_GOAT_EMBEDDINGS_ENABLED', ix.embeddings_enabled)
 
   const cpr_raw = section(raw, 'compression')
   const cpr = getDefaultConfig('compression') as CompressionConfig
@@ -836,6 +840,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'compression.profile': ['TOKEN_GOAT_COMPRESS_PROFILE'],
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
+  'indexing.embeddings_enabled': ['TOKEN_GOAT_EMBEDDINGS_ENABLED'],
 }
 
 export function saveConfig(config: Config): void {
@@ -910,8 +915,6 @@ export function saveConfig(config: Config): void {
       max_index_only_per_session: config.hint_budget.max_index_only_per_session,
     },
     image_shrink: {
-      prefer_avif: is_cfg.prefer_avif,
-      avif_quality: is_cfg.avif_quality,
       jpeg_quality: is_cfg.jpeg_quality,
       max_image_pixels: is_cfg.max_image_pixels,
       screenshot_redirect: is_cfg.screenshot_redirect,
@@ -977,6 +980,7 @@ export function saveConfig(config: Config): void {
       large_file_symbol_only_kb: config.indexing.large_file_symbol_only_kb,
       large_file_skip_kb: config.indexing.large_file_skip_kb,
       skip_dirs: config.indexing.skip_dirs,
+      embeddings_enabled: config.indexing.embeddings_enabled,
     },
     compression: {
       profile: config.compression.profile,

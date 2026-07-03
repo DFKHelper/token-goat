@@ -147,6 +147,14 @@ const cases: Record<string, () => void> = {
   symbol: () => expectRead(['symbol', 'alphaSym'], 'alphaSym'),
   read: () => expectRead(['read', 'src/mod.ts::alphaSym'], 'return 1'),
   section: () => expectRead(['section', 'README.md::Install'], 'npm install'),
+  // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this
+  // shared fixture is indexed with embeddings disabled (isolate-home.ts sets
+  // TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, and tgEnv inherits it), so this
+  // case only exercises the FTS keyword fallback and would pass identically whether or not
+  // real semantic search is wired up - it is not a substitute for that proof. The dedicated
+  // proof - a meaning-only natural-language query finding a symbol whose name/body never uses
+  // the query's words, with a control run showing the same query genuinely misses under FTS
+  // alone - lives in tests/semantic_embeddings_e2e.test.ts.
   semantic: () => expectRead(['semantic', 'alphamarker'], 'alphaSym'),
   skeleton: () => expectRead(['skeleton', 'src/mod.ts'], 'alphaSym'),
   outline: () => expectRead(['outline', 'src/mod.ts'], 'alphaSym'),
