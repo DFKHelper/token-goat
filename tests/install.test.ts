@@ -59,6 +59,32 @@ describe('installHooks', () => {
     expect(settings.hooks['PreToolUse']).toHaveLength(1)
   })
 
+  it('recognizes legacy-branded and legacy Python-era hook commands as already installed, without appending duplicates', () => {
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ matcher: '', hooks: [{ type: 'command', command: 'tokenwise hook pre_tool_use' }] }],
+          PostToolUse: [
+            { matcher: '', hooks: [{ type: 'command', command: 'pythonw -m token_goat.cli hook post_tool_use' }] },
+          ],
+        },
+      }),
+    )
+
+    installHooks('project')
+
+    const settings = JSON.parse(fs.readFileSync(p, 'utf8')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>
+    }
+    const preCommands = settings.hooks['PreToolUse']?.flatMap((g) => g.hooks.map((h) => h.command)) ?? []
+    const postCommands = settings.hooks['PostToolUse']?.flatMap((g) => g.hooks.map((h) => h.command)) ?? []
+    expect(preCommands).toEqual(['tokenwise hook pre_tool_use'])
+    expect(postCommands).toEqual(['pythonw -m token_goat.cli hook post_tool_use'])
+  })
+
   it('preserves pre-existing unrelated settings and hooks', () => {
     const p = settingsPath('project')
     fs.mkdirSync(path.dirname(p), { recursive: true })
@@ -95,6 +121,28 @@ describe('isInstalled / uninstallHooks', () => {
     installHooks('project')
     expect(uninstallHooks('project')).toBe(true)
     expect(isInstalled('project')).toBe(false)
+  })
+
+  it('uninstallHooks strips legacy-branded and legacy Python-era hook commands', () => {
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [{ matcher: '', hooks: [{ type: 'command', command: 'tokenwise hook pre_tool_use' }] }],
+          PostToolUse: [
+            { matcher: '', hooks: [{ type: 'command', command: 'pythonw -m token_goat.cli hook post_tool_use' }] },
+          ],
+        },
+      }),
+    )
+
+    expect(uninstallHooks('project')).toBe(true)
+
+    const settings = JSON.parse(fs.readFileSync(p, 'utf8')) as { hooks?: Record<string, unknown> }
+    expect(settings.hooks?.['PreToolUse']).toBeUndefined()
+    expect(settings.hooks?.['PostToolUse']).toBeUndefined()
   })
 
   it('uninstallHooks returns false when nothing is installed', () => {
