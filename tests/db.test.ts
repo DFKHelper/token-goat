@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Database from 'better-sqlite3'
 
-import { closeAllDbs, closeDb, getDb } from '../src/db.js'
+import { closeAllDbs, closeDb, getDb, SCHEMA_VERSION } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 const tmpDirs: string[] = []
@@ -138,6 +138,86 @@ describe('getDb error handling', () => {
     // path (with the mock removed) must succeed rather than hitting a stale lock from the
     // leaked handle.
     const recovered = getDb(dbPath)
+    expect((recovered.prepare('SELECT 1 AS one').get() as { one: number }).one).toBe(1)
+  })
+})
+
+describe('getDb schema version', () => {
+  // No SQLite schema-version/migration mechanism existed before this: SCHEMA_SQL only used
+  // CREATE TABLE IF NOT EXISTS, and initConnection never touched PRAGMA user_version. A future
+  // schema change (e.g. an ALTER TABLE on an existing table) would have had nowhere to hook a
+  // migration step, so a full reindex would hard-crash on the first mismatched file and the
+  // worker's incremental drain would silently stop updating the index. These tests exercise the
+  // version check + migration-runner scaffolding added to close that gap.
+
+  it('stamps a brand-new DB with PRAGMA user_version = SCHEMA_VERSION', () => {
+    const db = getDb(tmpDbPath())
+    const version = Number(db.pragma('user_version', { simple: true }))
+    expect(version).toBe(SCHEMA_VERSION)
+  })
+
+  it('does not rewrite user_version when reopening a DB already at SCHEMA_VERSION', () => {
+    const p = tmpDbPath()
+    getDb(p) // First open: creates the schema and stamps user_version to SCHEMA_VERSION.
+    closeDb(p) // Evict the cached handle so the next getDb() call re-runs initConnection for real.
+
+    const spy = vi.spyOn(Database.prototype, 'pragma')
+    try {
+      const db = getDb(p)
+      // The migration-runner path only ever writes user_version via `user_version = N`; a DB
+      // already at SCHEMA_VERSION must not take that branch at all.
+      const versionWrites = spy.mock.calls.filter(
+        ([source]) => typeof source === 'string' && /^user_version\s*=/.test(source),
+      )
+      expect(versionWrites).toHaveLength(0)
+      expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('migrates a DB with a lower user_version up to SCHEMA_VERSION without erroring', () => {
+    const p = tmpDbPath()
+    getDb(p)
+    closeDb(p)
+
+    // Simulate a DB from before this migration mechanism existed: open the raw file directly
+    // (bypassing token-goat's getDb/initConnection) and force user_version back down, the same
+    // state every pre-existing on-disk index is actually in today (never stamped, reads as 0).
+    const raw = new Database(p)
+    raw.pragma('user_version = 0')
+    raw.close()
+
+    const db = getDb(p)
+    expect(Number(db.pragma('user_version', { simple: true }))).toBe(SCHEMA_VERSION)
+    // No real migration step is registered yet, so this must be a non-destructive no-op: the DB
+    // stays fully usable, not just re-stamped.
+    const row = db.prepare('SELECT 1 AS one').get() as { one: number }
+    expect(row.one).toBe(1)
+  })
+
+  it('refuses to open a DB whose user_version is newer than this build supports', () => {
+    const p = tmpDbPath()
+    getDb(p)
+    closeDb(p)
+
+    // Simulate an older binary opening a database written by a newer one (a downgrade, or two
+    // globally-installed versions pointed at the same project).
+    const raw = new Database(p)
+    raw.pragma(`user_version = ${SCHEMA_VERSION + 1}`)
+    raw.close()
+
+    expect(() => getDb(p)).toThrow(/schema version/i)
+    // getDb's existing error-handling path closes the just-opened handle on any initConnection
+    // throw, so this must fail the same way on every attempt, not just the first.
+    expect(() => getDb(p)).toThrow(/schema version/i)
+
+    // Rolling the stored version back down (e.g. reinstalling a matching build) must recover
+    // cleanly -- no leaked fd/lock from the refused attempts above.
+    const raw2 = new Database(p)
+    raw2.pragma(`user_version = ${SCHEMA_VERSION}`)
+    raw2.close()
+    const recovered = getDb(p)
     expect((recovered.prepare('SELECT 1 AS one').get() as { one: number }).one).toBe(1)
   })
 })
