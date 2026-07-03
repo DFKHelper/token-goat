@@ -33,7 +33,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import { installHooks, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
-import { isWorkerRunning, startDetachedWorker, stopWorker } from './worker.js'
+import { isWorkerRunning, runDetachedWorkerDaemon, startDetachedWorker, stopWorker } from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getWebOutput } from './web_cache.js'
 import * as bashRunner from './bash_runner.js'
@@ -2097,6 +2097,15 @@ export function buildProgram(): Command {
  * let the process exit naturally so buffered stdout flushes first.
  */
 export async function run(argv: string[] = process.argv): Promise<void> {
+  // `--worker-daemon` is how startDetachedWorker's spawned child is invoked (see worker.ts).
+  // It is not a registered commander option or command anywhere in buildProgram, so it must be
+  // intercepted here, before parseAsync ever sees argv -- otherwise commander rejects it as an
+  // unknown option and the freshly-spawned daemon child exits immediately, silently disabling
+  // the entire detached background-indexing feature (`token-goat worker start`).
+  if (argv.includes('--worker-daemon')) {
+    runDetachedWorkerDaemon()
+    return
+  }
   const program = buildProgram()
   // Commander's exitOverride lets us catch its internal exits (help, version, unknown command) instead of letting it call process.exit() mid-flush.
   program.exitOverride()
