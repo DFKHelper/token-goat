@@ -213,7 +213,13 @@ type RequestedSlice =
 function estimateRequestedSlice(event: HookEvent, absPath: string): RequestedSlice {
   const offset = readIntToolInput(event, 'offset')
   const limit = readIntToolInput(event, 'limit')
-  if (limit === undefined) return { kind: 'unbounded' }
+  // A non-positive limit (zero or negative) has no well-defined real-world slice size: fed
+  // straight into scanRequestedSlice, offset + limit <= offset makes the window close before it
+  // opens, so the byte counter never advances and the very first line break trips the "window
+  // closed" branch -- fabricating a trustworthy-looking {bytes: 0} instead of reporting that the
+  // requested size genuinely can't be estimated. Treat it exactly like a missing limit: fall back
+  // to gating on the whole file.
+  if (limit === undefined || limit <= 0) return { kind: 'unbounded' }
   const effectiveOffset = offset !== undefined && offset >= 1 ? offset : 1
   const scan = scanRequestedSlice(absPath, effectiveOffset, limit)
   if (scan === null) return { kind: 'unbounded' }

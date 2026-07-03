@@ -121,10 +121,24 @@ function requireInt(flag: string, raw: string): number {
   return n
 }
 
+// Same numeric parse as requireInt, plus a sign check. Every current --limit/--top flag feeds
+// either a SQL `LIMIT ?` bind or a `.slice(0, n)` row cap, and a negative value breaks both in the
+// opposite direction from what the flag promises: SQLite treats a negative LIMIT as "no limit"
+// (LIMIT -1 returns every row instead of none), and `.slice(0, -1)` silently reinterprets as
+// "everything except the last element" per JS's slice-from-the-end semantics. Zero is fine (both
+// SQL and slice() correctly return nothing for 0), so only strictly-negative is rejected.
+function requireNonNegativeInt(flag: string, raw: string): number {
+  const n = requireInt(flag, raw)
+  if (n < 0) {
+    throw new CliError(`${flag} must be a non-negative number, got: "${raw}"`)
+  }
+  return n
+}
+
 // --- Command handlers -------------------------------------------------------
 
 function cmdSemantic(query: string, opts: { limit?: string }): void {
-  const limit = opts.limit !== undefined ? requireInt('--limit', opts.limit) : 20
+  const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
   // No embeddings table in this port → fall back to FTS over symbol names/bodies.
   const results = searchSymbolsFts(query, Number.isFinite(limit) ? limit : 20)
   if (results.length === 0) {
@@ -1202,7 +1216,7 @@ function cmdTokens(
     const result = estimateBudget(root, expandGlobs(root, patterns ?? []))
     let entries = [...result.entries]
     if (opts.asc === true) entries.reverse()
-    if (opts.top !== undefined) entries = entries.slice(0, requireInt('--top', opts.top))
+    if (opts.top !== undefined) entries = entries.slice(0, requireNonNegativeInt('--top', opts.top))
     if (opts.json === true) {
       out(JSON.stringify({ entries, total_tokens: result.total_tokens, total_lines: result.total_lines }, null, 2))
       process.exitCode = 0
@@ -1323,7 +1337,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runSymbol({
           name,
-          limit: opts.limit !== undefined ? requireInt('--limit', opts.limit) : 20,
+          limit: opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20,
           ...(opts.file !== undefined ? { file: opts.file } : {}),
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
           ...(opts.json === true ? { json: true } : {}),
@@ -1400,7 +1414,7 @@ export function buildProgram(): Command {
           spec,
           ...(opts.callers === true ? { callers: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -1507,7 +1521,7 @@ export function buildProgram(): Command {
         runFind({
           pattern,
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -1582,7 +1596,7 @@ export function buildProgram(): Command {
         runCallers({
           symbol,
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -1611,7 +1625,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runImpact({
           symbol,
-          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -1629,7 +1643,7 @@ export function buildProgram(): Command {
         runDead({
           ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
           ...(opts.includePrivate === true ? { includePrivate: true } : {}),
-          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -1653,7 +1667,7 @@ export function buildProgram(): Command {
         runTypes({
           ...(file !== undefined ? { file } : {}),
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requireInt('--limit', opts.limit) } : {}),
+          ...(opts.limit !== undefined ? { limit: requireNonNegativeInt('--limit', opts.limit) } : {}),
         }),
       ),
     )
@@ -1675,7 +1689,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runSimilar({
           spec,
-          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -1691,7 +1705,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runContextFor({
           task,
-          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.budget !== undefined ? { budget: requireInt('--budget', opts.budget) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
@@ -1715,7 +1729,7 @@ export function buildProgram(): Command {
     .action((opts: { top?: string; includePrivate?: boolean; json?: boolean }) =>
       runExit(() =>
         runCoverageGaps({
-          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.includePrivate === true ? { includePrivate: true } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
@@ -1730,7 +1744,7 @@ export function buildProgram(): Command {
     .action((opts: { top?: string; json?: boolean }) =>
       runExit(() =>
         runArch({
-          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),
@@ -1753,7 +1767,7 @@ export function buildProgram(): Command {
       runExit(() =>
         runAsk({
           question,
-          ...(opts.top !== undefined ? { top: requireInt('--top', opts.top) } : {}),
+          ...(opts.top !== undefined ? { top: requireNonNegativeInt('--top', opts.top) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         }),
       ),

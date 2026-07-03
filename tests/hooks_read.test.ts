@@ -205,6 +205,25 @@ describe('preReadHandler', () => {
     }
   })
 
+  // Regression guard: estimateRequestedSlice already clamps a sub-1 offset up to 1, but used to
+  // pass a negative limit straight through unguarded. scanRequestedSlice computes
+  // `windowEnd = offset + limit`; a negative limit makes windowEnd < offset, so the byte counter
+  // never advances (the [offset, windowEnd) window is empty) and the very first line break trips
+  // the "window closed" branch, returning a fabricated {bytes: 0, trustworthy: true} almost
+  // immediately -- telling the pre-read size gate the requested window is trivially small even
+  // though a Read call with a negative limit has no well-defined real-world size. That silently
+  // bypassed the large-file deny for a genuinely huge file. Fixed by treating a non-positive
+  // limit the same as a missing one: fall back to `kind: 'unbounded'` and gate on the whole file.
+  it('does not treat a negative --limit as a trustworthy small slice on a large file', () => {
+    const p = makeTmpMultilineFile(600 * 1024)
+
+    const result = preReadHandler(readEventWithRange(p, 1, -1))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is very large')
+    }
+  })
+
   // Regression coverage for the undercounted-trustworthy scan-cap bug: scanRequestedSlice's
   // cap-hit branch used to mark its partial in-window byte count "trustworthy" any time the
   // window had merely started (lineNumber >= offset), even though the window hadn't closed and
