@@ -333,19 +333,21 @@ describe('built bundle exposes exports / imports / find / web-output', () => {
 })
 
 describe('cmdIndex prunes deleted files (shipping path)', () => {
-  it('removes a deleted file\'s symbols on re-index via --walk', () => {
+  // cmdIndex is async (it awaits the per-file embeddings step alongside the syntactic parse),
+  // so this test must await it too - a bare call returns before the walk/prune loop finishes.
+  it('removes a deleted file\'s symbols on re-index via --walk', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdindex-prune-'))
     const dbPath = path.join(dir, 'idx.db')
     fs.writeFileSync(path.join(dir, 'keep.ts'), 'export const keepSym = 1\n')
     const goneFile = path.join(dir, 'gone.ts')
     fs.writeFileSync(goneFile, 'export const goneSym = 2\n')
-    cmdIndex(dir, { walk: true, dbPath })
+    await cmdIndex(dir, { walk: true, dbPath })
     const db = getDb(dbPath)
     const count = (sym: string): number =>
       (db.prepare('SELECT COUNT(*) AS n FROM symbols WHERE name = ?').get(sym) as { n: number }).n
     expect(count('goneSym')).toBeGreaterThan(0)
     fs.rmSync(goneFile)
-    cmdIndex(dir, { walk: true, dbPath })
+    await cmdIndex(dir, { walk: true, dbPath })
     expect(count('goneSym')).toBe(0)
     expect(count('keepSym')).toBeGreaterThan(0)
     try {

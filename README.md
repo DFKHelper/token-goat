@@ -380,7 +380,7 @@ To upgrade cleanly:
 | `token-goat coverage-gaps` | Find callables in non-test source files that never appear in a test file's reference records. Useful for spotting untested surface area before a refactor or release. `--top N` caps output; `--json` for structured output. |
 | `token-goat recent [N]` | Show the N most recently edited/accessed files with their symbols. |
 | `token-goat grep "<pattern>"` | Built-in fallback regex search over files (no `rg` shell-out, no caching) — session-aware dedup for raw `rg`/`grep` Bash calls is a separate hook, not this command. |
-| `token-goat semantic "<query>"` | Find code by meaning, not by filename: full-text search (BM25) over symbol names and bodies, not embedding-vector similarity. `--limit <n>` caps result count. |
+| `token-goat semantic "<query>"` | Find code by meaning, not by filename: embedding-vector similarity search over indexed file chunks, falling back to full-text search (BM25) over symbol names/bodies if no vector index exists yet (e.g. optional embedding deps unavailable, or `indexing.embeddings_enabled` is off). `--limit <n>` caps result count. |
 | `token-goat map` | Get a compact orientation of the repo. Add `--compact` to fit a fixed 2000-token budget. |
 | `token-goat arch` | Project-wide import graph summary: hub modules (most imported), entry points (nothing imports them), and circular chains. Complements `token-goat deps <file>` for per-file depth. |
 | `token-goat ignores` | List active skip patterns for the current project — built-in skip dirs and suffixes, plus any patterns from `.tokengoatignore`. |

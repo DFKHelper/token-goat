@@ -22,7 +22,9 @@ import { collectWalkIndexFiles } from './walk_index.js'
 import { globalDbPath, VERSION } from './constants.js'
 import { getSessionId } from './session.js'
 import { searchSymbolsFts } from './index_reader.js'
-import { indexFileSync } from './parser.js'
+import { getDb } from './db.js'
+import { searchSemantic, mergeNearbyHits } from './embeddings.js'
+import { indexFileSync, indexFileEmbeddings } from './parser.js'
 import { pruneDeletedFiles } from './index_prune.js'
 import { detectLanguage } from './parser_types.js'
 import { resolveIndexPath } from './paths.js'
@@ -137,10 +139,28 @@ function requireNonNegativeInt(flag: string, raw: string): number {
 
 // --- Command handlers -------------------------------------------------------
 
-function cmdSemantic(query: string, opts: { limit?: string }): void {
+async function cmdSemantic(query: string, opts: { limit?: string }): Promise<void> {
   const limit = opts.limit !== undefined ? requireNonNegativeInt('--limit', opts.limit) : 20
-  // No embeddings table in this port → fall back to FTS over symbol names/bodies.
-  const results = searchSymbolsFts(query, Number.isFinite(limit) ? limit : 20)
+  const n = Number.isFinite(limit) ? limit : 20
+
+  // Real embedding-vector similarity search first: chunks/chunk_vectors are populated during
+  // indexing whenever indexing.embeddings_enabled is on and the optional @xenova/transformers
+  // and sqlite-vec dependencies are present. searchSemantic degrades to an empty array rather
+  // than throwing when either is unavailable or nothing has been embedded yet, so this is
+  // always safe to try before falling back to keyword search.
+  const hits = mergeNearbyHits(await searchSemantic(getDb(globalDbPath()), query, n))
+  if (hits.length > 0) {
+    const blocks = hits.map(
+      (h) => `# ${h.filePath}:${h.startLine}-${h.endLine} (distance ${h.distance.toFixed(3)})\n${previewLines(h.text, 3)}`,
+    )
+    out(blocks.join('\n\n'))
+    return
+  }
+
+  // Fall back to full-text search over symbol names/bodies: no semantic index yet (never
+  // indexed with embeddings enabled, or the optional deps are absent), or no hit cleared the
+  // distance threshold.
+  const results = searchSymbolsFts(query, n)
   if (results.length === 0) {
     throw new CliError(`no matches for '${query}'`)
   }
@@ -148,7 +168,7 @@ function cmdSemantic(query: string, opts: { limit?: string }): void {
   out(blocks.join('\n\n'))
 }
 
-export function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?: string } = {}): void {
+export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?: string } = {}): Promise<void> {
   const root = pathArg ?? process.cwd()
   const dbPath = opts.dbPath ?? globalDbPath()
   let files = getTrackedFiles(root)
@@ -168,6 +188,10 @@ export function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?: stri
     const key = resolveIndexPath(f)
     if (detectLanguage(key) === 'unknown') continue
     indexFileSync(key, dbPath)
+    // Best-effort semantic-embeddings step for the same file, run right after its syntactic
+    // parse; awaited here because this is a one-shot foreground command the caller waits on,
+    // unlike the worker's incremental drain which fires this and forgets it.
+    await indexFileEmbeddings(key, dbPath)
     indexed += 1
   }
   const pruned = pruneDeletedFiles(resolveIndexPath(root), dbPath)

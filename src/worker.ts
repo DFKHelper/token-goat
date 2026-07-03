@@ -24,7 +24,7 @@ import { fileURLToPath } from 'node:url'
 
 import { dataDir, globalDbPath } from './constants.js'
 import { fingerprintFile } from './fingerprint.js'
-import { indexFileSync } from './parser.js'
+import { indexFileSync, indexFileEmbeddings } from './parser.js'
 import { getFileEntry } from './index_reader.js'
 import { normalizePath } from './paths.js'
 import { foldPath } from './util.js'
@@ -113,12 +113,21 @@ export function getDirtyPathsFor(dir: string): string[] {
  * read failure on one file is swallowed so a single bad file never aborts the
  * batch or crashes the drain loop.
  */
-function makeIndexer(dbPath: string): (absPath: string, sha: string) => unknown {
+export function makeIndexer(dbPath: string): (absPath: string, sha: string) => unknown {
   return (absPath, sha) => {
     try {
       // Skip files whose content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed. Return false so processDirtyBatch's count reflects files actually (re)indexed, not ones the gate skipped.
       if (getFileEntry(absPath, dbPath)?.sha === sha) return false
       indexFileSync(absPath, dbPath)
+      // Embeddings are fired and forgotten here, never awaited: the worker's drain loop is
+      // synchronous by design (drainOnce/processDirtyBatch must return instantly so the dirty
+      // queue clears promptly), and chunk/vector freshness can safely lag a beat behind symbol
+      // freshness since semantic search tolerates staleness in a way exact symbol lookups do
+      // not. indexFileEmbeddings already swallows its own errors internally and this .catch is
+      // a defensive backstop against a future regression there ever rejecting; returning the
+      // promise (rather than voiding it) lets a caller that wants to - such as a test - await
+      // it explicitly instead of racing it.
+      return indexFileEmbeddings(absPath, dbPath).catch(() => undefined)
     } catch {
       // One bad file must not abort the rest of the batch.
     }
