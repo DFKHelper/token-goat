@@ -51,8 +51,8 @@ export function handlePdf(filePath: string, contentLength: number): FileTypeResu
 }
 
 /** HTML handler — blocks when file exceeds threshold. */
-export function handleHtml(filePath: string, content: string): FileTypeResult {
-  if (content.length < FILE_TYPE_THRESHOLDS.html) return { shouldBlock: false, message: '' }
+export function handleHtml(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+  if ((contentLengthHint ?? content.length) < FILE_TYPE_THRESHOLDS.html) return { shouldBlock: false, message: '' }
 
   const title = content.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]?.trim()
   const headings = [...content.matchAll(/<h([1-6])[^>]*>([^<]+)<\/h\1>/gi)]
@@ -85,8 +85,8 @@ export function handleHtml(filePath: string, content: string): FileTypeResult {
 }
 
 /** Plain text / log handler — blocks when file exceeds threshold. */
-export function handleTxt(filePath: string, content: string): FileTypeResult {
-  if (content.length < FILE_TYPE_THRESHOLDS.txt) return { shouldBlock: false, message: '' }
+export function handleTxt(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+  if ((contentLengthHint ?? content.length) < FILE_TYPE_THRESHOLDS.txt) return { shouldBlock: false, message: '' }
 
   const lines = content.split('\n')
   const isLog = /\.(log|out|err|trace)$/i.test(filePath) || filePath.includes('/logs/')
@@ -125,8 +125,8 @@ export function handleOfficeBinary(filePath: string): FileTypeResult {
 }
 
 /** CSV/TSV handler — blocks when file exceeds threshold. */
-export function handleCsv(filePath: string, content: string): FileTypeResult {
-  if (content.length < FILE_TYPE_THRESHOLDS.csv) return { shouldBlock: false, message: '' }
+export function handleCsv(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+  if ((contentLengthHint ?? content.length) < FILE_TYPE_THRESHOLDS.csv) return { shouldBlock: false, message: '' }
 
   const lines = content.split('\n').filter(l => l.trim())
   const headers = lines[0] ?? ''
@@ -177,10 +177,10 @@ export function dispatchFileTypeHandler(
   const effectiveLength = contentLengthHint ?? content.length
 
   if (ext === 'pdf') return handlePdf(filePath, effectiveLength)
-  if (['html', 'htm', 'xhtml'].includes(ext)) return handleHtml(filePath, content)
-  if (['txt', 'log', 'out', 'err', 'trace'].includes(ext)) return handleTxt(filePath, content)
+  if (['html', 'htm', 'xhtml'].includes(ext)) return handleHtml(filePath, content, effectiveLength)
+  if (['txt', 'log', 'out', 'err', 'trace'].includes(ext)) return handleTxt(filePath, content, effectiveLength)
   if (['docx', 'xlsx', 'pptx', 'odt', 'ods', 'ott', 'odp'].includes(ext)) return handleOfficeBinary(filePath)
-  if (ext === 'csv' || ext === 'tsv') return handleCsv(filePath, content)
+  if (ext === 'csv' || ext === 'tsv') return handleCsv(filePath, content, effectiveLength)
 
   // Generic catch-all
   return handleGenericLarge(filePath, effectiveLength)

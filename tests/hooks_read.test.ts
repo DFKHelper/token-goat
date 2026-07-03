@@ -71,6 +71,20 @@ function makeTmpMultilineFile(totalBytes: number): string {
   return makeTmpFile(content)
 }
 
+// Same shape as makeTmpMultilineFile but with a configurable extension, so offset/limit
+// narrowing can be exercised through the HTML/CSV per-type branches (not just .txt).
+function makeTmpMultilineFileWithExt(totalBytes: number, ext: string): string {
+  const lineTemplate = (i: number) => `line ${i.toString().padStart(6, '0')}: some sample content here\n`
+  const perLine = lineTemplate(0).length
+  const lineCount = Math.ceil(totalBytes / perLine)
+  let content = ''
+  for (let i = 0; i < lineCount; i++) content += lineTemplate(i)
+  const p = path.join(os.tmpdir(), `tg-read-${process.pid}-${Math.random().toString(36).slice(2)}.${ext}`)
+  fs.writeFileSync(p, content)
+  tmpFiles.push(p)
+  return p
+}
+
 function grepEvent(filePath: string | undefined): HookEvent {
   return {
     eventName: 'pre_tool_use',
@@ -264,6 +278,30 @@ describe('preReadHandler', () => {
     // 50KB: above FILE_TYPE_THRESHOLDS.txt (20KB) but below LARGE_FILE_BYTES (100KB), so this
     // is gated by the per-type handler branch, not the earlier whole-file size branch.
     const p = makeTmpMultilineFile(50 * 1024)
+
+    const whole = preReadHandler(readEvent(p))
+    expect(whole.hookType).toBe('deny')
+
+    const sliced = preReadHandler(readEventWithRange(p, 1, 50))
+    expect(sliced.hookType).not.toBe('deny')
+  })
+
+  it('allows a mid-size (50-100KB) .html read when offset/limit narrows it to a small slice — exercises the universal file-type-handler branch (handleHtml), not just the top-level large-file gate', () => {
+    // 60KB: above FILE_TYPE_THRESHOLDS.html (50KB) but below LARGE_FILE_BYTES (100KB), so this
+    // is gated by the per-type handler branch, not the earlier whole-file size branch.
+    const p = makeTmpMultilineFileWithExt(60 * 1024, 'html')
+
+    const whole = preReadHandler(readEvent(p))
+    expect(whole.hookType).toBe('deny')
+
+    const sliced = preReadHandler(readEventWithRange(p, 1, 50))
+    expect(sliced.hookType).not.toBe('deny')
+  })
+
+  it('allows a mid-size (10-100KB) .csv read when offset/limit narrows it to a small slice — exercises the universal file-type-handler branch (handleCsv), not just the top-level large-file gate', () => {
+    // 20KB: above FILE_TYPE_THRESHOLDS.csv (10KB) but below LARGE_FILE_BYTES (100KB), so this
+    // is gated by the per-type handler branch, not the earlier whole-file size branch.
+    const p = makeTmpMultilineFileWithExt(20 * 1024, 'csv')
 
     const whole = preReadHandler(readEvent(p))
     expect(whole.hookType).toBe('deny')

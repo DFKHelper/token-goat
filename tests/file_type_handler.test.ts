@@ -81,6 +81,35 @@ describe('handleHtml', () => {
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain(title)
   })
+
+  it('a small contentLengthHint overrides a large content.length and allows the read through', () => {
+    const lines = [
+      '<html><head><title>My Page</title></head><body>',
+      ...Array.from({ length: 100 }, (_, i) => `<p>Paragraph ${i}</p>`),
+      '</body></html>',
+    ]
+    // Real content is well above the HTML threshold, but the hint (a narrowed offset/limit
+    // slice) is tiny — the hint must drive the block decision, not content.length.
+    const content = lines.join('\n') + makeStr(FILE_TYPE_THRESHOLDS.html * 2)
+    const result = handleHtml('/path/to/page.html', content, 100)
+    expect(result.shouldBlock).toBe(false)
+  })
+
+  it('blocks based on the hint while still extracting title/headings from the real full content, not something truncated to the hint', () => {
+    const title = 'Real Title'
+    const lines = [
+      `<html><head><title>${title}</title></head><body>`,
+      '<h1>Real Heading</h1>',
+      ...Array.from({ length: 100 }, (_, i) => `<p>Paragraph ${i}</p>`),
+      '</body></html>',
+    ]
+    const content = lines.join('\n') + makeStr(FILE_TYPE_THRESHOLDS.html * 2)
+    // Hint is just barely above threshold — far smaller than the real content — but still blocks.
+    const result = handleHtml('/path/to/page.html', content, FILE_TYPE_THRESHOLDS.html + 1)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain(title)
+    expect(result.message).toContain('Real Heading')
+  })
 })
 
 describe('handleTxt', () => {
@@ -114,6 +143,22 @@ describe('handleTxt', () => {
     const result = handleTxt('/path/to/notes.txt', content)
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('offset')
+  })
+
+  it('a small contentLengthHint overrides a large content.length and allows the read through', () => {
+    const content = makeStr(FILE_TYPE_THRESHOLDS.txt * 2)
+    const result = handleTxt('/path/to/file.txt', content, 100)
+    expect(result.shouldBlock).toBe(false)
+  })
+
+  it('blocks based on the hint while still showing the real full content preview and line count, not something truncated to the hint', () => {
+    const lines = Array.from({ length: 500 }, (_, i) => `Line ${i + 1}`)
+    const content = lines.join('\n') + makeStr(FILE_TYPE_THRESHOLDS.txt * 2)
+    // Hint is just barely above threshold — far smaller than the real content — but still blocks.
+    const result = handleTxt('/path/to/notes.txt', content, FILE_TYPE_THRESHOLDS.txt + 1)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('500')
+    expect(result.message).toContain('Line 1')
   })
 })
 
@@ -180,6 +225,25 @@ describe('handleCsv', () => {
     const content = `col1\tcol2\n${makeStr(FILE_TYPE_THRESHOLDS.tsv + 1)}`
     const result = handleCsv('/path/to/data.tsv', content)
     expect(result.shouldBlock).toBe(true)
+  })
+
+  it('a small contentLengthHint overrides a large content.length and allows the read through', () => {
+    const header = 'name,age,city'
+    const dataRows = Array.from({ length: 500 }, (_, i) => `Person${i},${i + 20},City${i}`)
+    const content = [header, ...dataRows].join('\n') + makeStr(FILE_TYPE_THRESHOLDS.csv * 2)
+    const result = handleCsv('/path/to/data.csv', content, 50)
+    expect(result.shouldBlock).toBe(false)
+  })
+
+  it('blocks based on the hint while still showing the real column headers and sample rows, not something truncated to the hint', () => {
+    const header = 'name,age,city'
+    const dataRows = Array.from({ length: 500 }, (_, i) => `Person${i},${i + 20},City${i}`)
+    const content = [header, ...dataRows].join('\n') + makeStr(FILE_TYPE_THRESHOLDS.csv * 2)
+    // Hint is just barely above threshold — far smaller than the real content — but still blocks.
+    const result = handleCsv('/path/to/data.csv', content, FILE_TYPE_THRESHOLDS.csv + 1)
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('name,age,city')
+    expect(result.message).toContain('Person0')
   })
 })
 
@@ -288,6 +352,24 @@ describe('dispatchFileTypeHandler', () => {
 
   it('generic small file passes through', () => {
     const result = dispatchFileTypeHandler('/path/to/file.bin', '', FILE_TYPE_THRESHOLDS.generic - 1)
+    expect(result?.shouldBlock).toBe(false)
+  })
+
+  it('honors a narrowed contentLengthHint for HTML — passes through even though the real content is large', () => {
+    const content = `<html><body>${makeStr(FILE_TYPE_THRESHOLDS.html * 2)}</body></html>`
+    const result = dispatchFileTypeHandler('/path/to/page.html', content, 100)
+    expect(result?.shouldBlock).toBe(false)
+  })
+
+  it('honors a narrowed contentLengthHint for TXT — passes through even though the real content is large', () => {
+    const content = makeStr(FILE_TYPE_THRESHOLDS.txt * 2)
+    const result = dispatchFileTypeHandler('/path/to/notes.txt', content, 100)
+    expect(result?.shouldBlock).toBe(false)
+  })
+
+  it('honors a narrowed contentLengthHint for CSV — passes through even though the real content is large', () => {
+    const content = `col1,col2\n${makeStr(FILE_TYPE_THRESHOLDS.csv * 2)}`
+    const result = dispatchFileTypeHandler('/path/to/data.csv', content, 100)
     expect(result?.shouldBlock).toBe(false)
   })
 })
