@@ -35,7 +35,7 @@ import {
   extractChangelogVersionHint,
   MARKDOWN_SIZE_THRESHOLD,
 } from './hints/markdown_hints.js'
-import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
+import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS, BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
 import { recordStat } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
 import { isCompactStale, contentHash, getCompactAnySessionSync } from './skill_cache.js'
@@ -111,6 +111,129 @@ function statSize(absPath: string): number | null {
   } catch {
     return null
   }
+}
+
+/** Reads a numeric tool-input param (Read's `offset`/`limit`), tolerating a numeric string. */
+function readIntToolInput(event: HookEvent, key: string): number | undefined {
+  const value = event.toolInput[key]
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value)
+    if (Number.isFinite(n)) return n
+  }
+  return undefined
+}
+
+/** Cap on bytes scanned while estimating an offset/limit slice — keeps the estimate itself cheap. */
+const SLICE_ESTIMATE_SCAN_CAP_BYTES = 2 * 1024 * 1024
+
+/** Below this many lines-scanned-so-far, a scan that didn't close its window reads as near-single-line. */
+const NEAR_SINGLE_LINE_SCAN_THRESHOLD = 20
+
+interface SliceScan {
+  /** Bytes counted as falling inside the requested [offset, offset+limit) window so far. */
+  bytes: number
+  /** True when `bytes` is safe to treat as the real slice size: either the window genuinely
+   *  closed (a line number >= offset+limit was reached), or the scan reached real EOF — both
+   *  give full visibility into what a Read call would actually return. False only for the
+   *  scan-cap case where the window hadn't even started (e.g. a very deep offset into a huge
+   *  file) — there, `bytes` is just "0 so far" and would be misleading to trust. */
+  trustworthy: boolean
+  /** True when the scan ended (EOF or cap) after seeing very few line breaks relative to bytes
+   *  scanned — the base64/minified-blob shape where there's ~1 "line" to window over, so
+   *  line-based offset/limit can't help regardless of what's requested. */
+  nearSingleLine: boolean
+}
+
+/**
+ * Scans the 1-indexed line window [offset, offset + limit) — matching the Read tool's own
+ * offset/limit semantics — without reading the whole file into memory. Reads in bounded
+ * chunks and stops as soon as the window closes, EOF is hit, or the scan cap is hit.
+ *
+ * Returns null only when the file can't be opened at all.
+ */
+function scanRequestedSlice(absPath: string, offset: number, limit: number): SliceScan | null {
+  const windowEnd = offset + limit // exclusive, 1-indexed line numbers
+  let fd: number
+  try {
+    fd = fs.openSync(absPath, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const buf = Buffer.alloc(64 * 1024)
+    let lineNumber = 1
+    let sliceBytes = 0
+    let totalScanned = 0
+    for (;;) {
+      if (totalScanned >= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+        const nearSingleLine = lineNumber < NEAR_SINGLE_LINE_SCAN_THRESHOLD
+        return { bytes: sliceBytes, trustworthy: nearSingleLine, nearSingleLine }
+      }
+      const bytesRead = fs.readSync(fd, buf, 0, buf.length, null)
+      if (bytesRead === 0) {
+        // Real EOF — full visibility into the file, so `bytes` is exact even if the window
+        // never formally "closed" (the file simply has fewer lines than the request asked for).
+        return {
+          bytes: sliceBytes,
+          trustworthy: true,
+          nearSingleLine: lineNumber < NEAR_SINGLE_LINE_SCAN_THRESHOLD && totalScanned > 2000,
+        }
+      }
+      totalScanned += bytesRead
+      for (let i = 0; i < bytesRead; i++) {
+        if (lineNumber >= offset && lineNumber < windowEnd) sliceBytes++
+        if (buf[i] === 0x0a) {
+          lineNumber++
+          if (lineNumber >= windowEnd) return { bytes: sliceBytes, trustworthy: true, nearSingleLine: false }
+        }
+      }
+    }
+  } finally {
+    try {
+      fs.closeSync(fd)
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+/** Outcome of trying to size a Read call's requested offset/limit window instead of the whole file. */
+type RequestedSlice =
+  | { readonly kind: 'bytes'; readonly bytes: number } // a trustworthy slice size — safe to gate on
+  | { readonly kind: 'unbounded' } // no offset/limit given, missing limit, or couldn't be cheaply sized — gate on the whole file
+  | { readonly kind: 'nearSingleLine' } // content shape makes any line window meaningless regardless of what's requested
+
+/**
+ * Reads `offset`/`limit` off the Read tool call (when present) and estimates the size of
+ * just that slice, so a genuinely small, bounded request isn't gated on the whole file's
+ * size. Only Read tool calls carry offset/limit — Grep/Glob events always resolve to
+ * `unbounded` since they have no notion of a line window.
+ */
+function estimateRequestedSlice(event: HookEvent, absPath: string): RequestedSlice {
+  const offset = readIntToolInput(event, 'offset')
+  const limit = readIntToolInput(event, 'limit')
+  if (limit === undefined) return { kind: 'unbounded' }
+  const effectiveOffset = offset !== undefined && offset >= 1 ? offset : 1
+  const scan = scanRequestedSlice(absPath, effectiveOffset, limit)
+  if (scan === null) return { kind: 'unbounded' }
+  if (scan.nearSingleLine) return { kind: 'nearSingleLine' }
+  if (scan.trustworthy) return { kind: 'bytes', bytes: scan.bytes }
+  return { kind: 'unbounded' } // cap hit before the window even started — can't tell cheaply, fall back safely
+}
+
+/** Phrases the retry advice for a large-file deny based on whether/how offset/limit would help. */
+function describeSliceAdvice(slice: RequestedSlice, absPath: string): string {
+  if (slice.kind === 'nearSingleLine') {
+    return BYTE_RANGE_ADVICE(absPath)
+  }
+  if (slice.kind === 'bytes') {
+    return (
+      `The requested offset/limit range is still ~${Math.round(slice.bytes / 1024)}KB — ` +
+      'narrow the range further (a smaller limit) rather than reading the whole file.'
+    )
+  }
+  return 'Use Read with offset/limit to sample specific sections.'
 }
 
 /** Source/style/data extensions eligible for diff-on-reread when serve_diff_on_reread is enabled. */
@@ -333,7 +456,8 @@ export function preReadHandler(event: HookEvent): HookOutput {
           '(source unchanged since the last `compact-doc` build):\n\n' +
           compactBody +
           '\n\nUse `token-goat compact-doc "' + normalized + '" --force` to rebuild it, ' +
-          'or `token-goat compact-doc "' + normalized + '" --show` to view it directly.',
+          'or `token-goat compact-doc "' + normalized + '" --show` to view it directly. ' +
+          'To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
         )
       }
     }
@@ -370,12 +494,16 @@ export function preReadHandler(event: HookEvent): HookOutput {
         const changelogExtra = basename.toLowerCase() === 'changelog.md'
           ? extractChangelogVersionHint(fileContent, normalized)
           : ''
-        const message = hintText + wellKnownText + changelogExtra
+        let message = hintText + wellKnownText + changelogExtra
         // A re-read is always hard-denied. A first read is also hard-denied when the file
         // is at or above the generic large-file deny threshold: this branch returns before
         // the size-based deny further below ever runs, so it must enforce that gate itself.
         const tooLargeForFirstRead = markdownSize !== null && markdownSize >= LARGE_FILE_DENY_BYTES
-        return alreadyRead || tooLargeForFirstRead ? denyOutput(message) : contextOutput(message)
+        if (alreadyRead || tooLargeForFirstRead) {
+          message += ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.'
+          return denyOutput(message)
+        }
+        return contextOutput(message)
       }
     }
   }
@@ -561,7 +689,10 @@ export function preReadHandler(event: HookEvent): HookOutput {
     }
   }
 
-  if (!isImagePath(normalized) && wasFileReadThisSession(normalized)) {
+  // Grep's cost/relevance depends on its pattern, not just the directory/file it's scoped to —
+  // re-scoping several Greps at the same path with different patterns is a legitimate workflow,
+  // so Grep is exempt from the count-based re-read dedup below (unlike a repeated whole-file Read).
+  if (event.toolName !== 'Grep' && !isImagePath(normalized) && wasFileReadThisSession(normalized)) {
     const entry = getSessionFiles().get(normalized)
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
@@ -620,19 +751,30 @@ export function preReadHandler(event: HookEvent): HookOutput {
 
   const size = statSize(normalized)
   if (size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized)) {
+    // A genuine, bounded offset/limit request gates on the requested slice's size instead
+    // of the whole file's — a small window into a huge file should be let through. Whole-file
+    // requests (no offset/limit, or an unboundable window) keep gating on the real file size.
+    const slice = estimateRequestedSlice(event, normalized)
+    const gateSize = slice.kind === 'bytes' ? Math.min(slice.bytes, size) : size
+
+    if (gateSize < LARGE_FILE_BYTES) {
+      recordFileRead(normalized)
+      return passOutput()
+    }
+
     const kb = Math.round(size / 1024)
     const config = loadConfig()
     const hint = _isDocFile(normalized)
       ? 'Use `token-goat section "' + normalized + '::SectionName"` to read one section.'
       : 'Consider token-goat skeleton or token-goat section.'
     recordStat('session_hint', size, Math.round(size / 4))
-    if (size >= LARGE_FILE_DENY_BYTES) {
+    if (gateSize >= LARGE_FILE_DENY_BYTES) {
       // The read is blocked outright, so it never actually happened — don't record it
       // against re-read dedup. Otherwise a retry (this hook doesn't distinguish
       // offset/limit params from a plain re-read) hits "already read this session"
       // instead of this same actionable deny, leaving no way to follow its own advice.
       return denyOutput(
-        normalized + ' is very large (' + kb + 'KB). ' + hint + ' Use Read with offset/limit to sample specific sections.' +
+        normalized + ' is very large (' + kb + 'KB). ' + hint + ' ' + describeSliceAdvice(slice, normalized) +
         ' To edit it anyway, use `token-goat replace "' + normalized + '" --old-from <oldfile> --new-from <newfile>` — Read/Edit\'s own precondition can\'t be satisfied after this deny.',
       )
     }
@@ -661,7 +803,11 @@ export function preReadHandler(event: HookEvent): HookOutput {
         // best-effort — empty content will pass through
       }
     }
-    const ftResult = dispatchFileTypeHandler(normalized, ftContent, fileStatSize)
+    // Same offset/limit honoring as above: gate the per-type handlers (handleTxt/handleCsv/
+    // handleHtml/handleGenericLarge) on the requested slice's size when one was given.
+    const ftSlice = estimateRequestedSlice(event, normalized)
+    const ftEffectiveLength = ftSlice.kind === 'bytes' ? Math.min(ftSlice.bytes, fileStatSize) : fileStatSize
+    const ftResult = dispatchFileTypeHandler(normalized, ftContent, ftEffectiveLength)
     if (ftResult?.shouldBlock) {
       // Blocked read never happened — don't count it against re-read dedup. These
       // messages (large txt/log/csv/generic) tell the caller to retry with
