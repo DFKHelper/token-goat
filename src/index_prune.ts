@@ -37,7 +37,17 @@ export function pruneDeletedFiles(rootPrefix: string, dbPath: string = globalDbP
   for (const { path: p } of rows) {
     const foldedP = foldPath(p)
     if (foldedP !== foldedRootPrefix && !foldedP.startsWith(foldedPrefix)) continue
-    if (fs.existsSync(p)) continue
+    let stillExists: boolean
+    try {
+      stillExists = fs.statSync(p, { throwIfNoEntry: false }) !== undefined
+    } catch {
+      // Stat failed for a reason other than "file is gone" (EPERM, EBUSY, an
+      // antivirus/search-indexer holding a transient lock, etc.). We can't
+      // confirm the file was actually deleted, so don't wipe its index rows
+      // this pass -- it will be re-evaluated the next time pruning runs.
+      continue
+    }
+    if (stillExists) continue
     try {
       removeFileFromIndex(db, p)
       pruned += 1
