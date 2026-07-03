@@ -255,8 +255,8 @@ describe('defaultConfig field spot-checks', () => {
 
   it('ImageShrinkConfig defaults', () => {
     const cfg = defaultConfig()
-    expect(cfg.image_shrink.prefer_avif).toBe(true)
-    expect(cfg.image_shrink.avif_quality).toBe(60)
+    expect(cfg.image_shrink.jpeg_quality).toBe(75)
     expect(cfg.image_shrink.max_image_pixels).toBe(16_000_000)
+    expect(cfg.image_shrink.screenshot_redirect).toBe(true)
   })
 })
