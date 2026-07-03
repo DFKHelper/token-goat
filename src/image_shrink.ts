@@ -17,6 +17,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import { loadConfig } from './config.js'
 import { getFilePath } from './hooks_common.js'
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -36,9 +37,6 @@ const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
 
 /** Claude Vision's optimal max edge: images larger than this gain nothing. */
 const DEFAULT_MAX_DIMENSION = 1568
-
-/** JPEG/WebP encode quality (0-100). 85 is visually lossless at reading size. */
-const DEFAULT_QUALITY = 85
 
 /** Below this byte count an image is left untouched (encode CPU > savings). */
 const DEFAULT_SIZE_THRESHOLD_BYTES = 512 * 1024
@@ -74,7 +72,7 @@ interface SharpInstance {
   webp(opts: { quality: number }): SharpInstance
   toBuffer(): Promise<Buffer>
 }
-type SharpFactory = (input: Buffer) => SharpInstance
+type SharpFactory = (input: Buffer, options?: { limitInputPixels?: number | false }) => SharpInstance
 
 /**
  * Cached lazy import of `sharp`.
@@ -125,9 +123,16 @@ export async function shrinkImage(
     sizeThresholdBytes?: number
   },
 ): Promise<ShrinkResult | null> {
+  const cfg = loadConfig().image_shrink
   const maxDimension = opts?.maxDimension ?? DEFAULT_MAX_DIMENSION
-  const quality = opts?.quality ?? DEFAULT_QUALITY
+  const quality = opts?.quality ?? cfg.jpeg_quality
   const sizeThreshold = opts?.sizeThresholdBytes ?? DEFAULT_SIZE_THRESHOLD_BYTES
+  // max_image_pixels is sharp's decode-time decompression-bomb guard (mirrors
+  // Python's Image.MAX_IMAGE_PIXELS), not the resize target — the resize edge
+  // is always DEFAULT_MAX_DIMENSION (Claude Vision's fixed optimum, never
+  // configurable in the original Python port either). 0 means "no cap",
+  // matching the original TOKEN_GOAT_MAX_IMAGE_PIXELS semantics.
+  const limitInputPixels = cfg.max_image_pixels > 0 ? cfg.max_image_pixels : false
 
   const originalBytes = input.length
   if (originalBytes < sizeThreshold) return null
@@ -137,12 +142,12 @@ export async function shrinkImage(
 
   try {
     // Encode both candidates from independent pipelines (a sharp instance is single-shot once consumed) and keep the smaller output.
-    const jpegBuf = await sharp(input)
+    const jpegBuf = await sharp(input, { limitInputPixels })
       .rotate()
       .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
       .jpeg({ quality, mozjpeg: true })
       .toBuffer()
-    const webpBuf = await sharp(input)
+    const webpBuf = await sharp(input, { limitInputPixels })
       .rotate()
       .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
       .webp({ quality })

@@ -2,8 +2,17 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
+
+// The jpeg_quality/max_image_pixels regression tests need a writable config, so
+// configPath() is redirected (hoisted vi.mock) to a per-test-run temp file — the
+// same pattern tests/config.test.ts and tests/bash_compress_rewrite.test.ts use.
+const _testConfigPath = path.join(os.tmpdir(), `tg-image-shrink-config-${process.pid}.toml`)
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  return { ...original, configPath: () => _testConfigPath }
+})
 
 import { isImagePath, preReadImageHandler, shrinkImage } from '../src/image_shrink.js'
 import type { HookEvent } from '../src/hook_registry.js'
@@ -13,6 +22,7 @@ import type { HookEvent } from '../src/hook_registry.js'
 // pre_tool_use decision both handlers produce together, not either in isolation.
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
+import { invalidateConfigCache } from '../src/config.js'
 
 function makeEvent(filePath: string | undefined): HookEvent {
   return {
@@ -58,6 +68,24 @@ afterAll(() => {
   fs.rmSync(TMP, { recursive: true, force: true })
 })
 
+beforeEach(() => {
+  try {
+    fs.unlinkSync(_testConfigPath)
+  } catch {
+    // no config file → schema defaults, matching this suite's behaviour before the mock existed
+  }
+  invalidateConfigCache()
+})
+
+afterEach(() => {
+  try {
+    fs.unlinkSync(_testConfigPath)
+  } catch {
+    // already absent
+  }
+  invalidateConfigCache()
+})
+
 describe('isImagePath', () => {
   it('recognises image extensions case-insensitively', () => {
     expect(isImagePath('a.PNG')).toBe(true)
@@ -88,6 +116,37 @@ describe('shrinkImage', () => {
 
   it('honours a custom size threshold (large threshold => null)', async () => {
     expect(await shrinkImage(largeJpeg, { sizeThresholdBytes: 1024 * 1024 * 1024 })).toBeNull()
+  })
+
+  it('honours a configured jpeg_quality with no explicit opts (lower quality => smaller output)', async () => {
+    // Baseline under the schema default (jpeg_quality=75; no config file present).
+    const baseline = await shrinkImage(largeJpeg)
+    expect(baseline).not.toBeNull()
+    if (baseline === null) return
+
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\njpeg_quality = 10\n', 'utf8')
+    invalidateConfigCache()
+    const lowQuality = await shrinkImage(largeJpeg)
+    expect(lowQuality).not.toBeNull()
+    if (lowQuality === null) return
+
+    // Same input, same call shape (no opts) — the only difference is the
+    // configured jpeg_quality, so a real wiring bug (falling back to a
+    // hardcoded constant) would make this fail: both calls would produce
+    // identical output.
+    expect(lowQuality.shrunkBytes).toBeLessThan(baseline.shrunkBytes)
+  })
+
+  it('honours a configured max_image_pixels with no explicit opts (cap below actual size => sharp rejects decode)', async () => {
+    // largeJpeg is 3000x3000 = 9,000,000px. The schema default (16,000,000)
+    // comfortably covers it, so it shrinks normally (see the "returns a smaller
+    // ShrinkResult" test above). Capping max_image_pixels below the image's
+    // real pixel count wires straight into sharp's own decode-time
+    // decompression-bomb guard (limitInputPixels), so the decode is now
+    // refused and shrinkImage degrades to its normal "undecodable input" path.
+    fs.writeFileSync(_testConfigPath, '[image_shrink]\nmax_image_pixels = 1000000\n', 'utf8')
+    invalidateConfigCache()
+    expect(await shrinkImage(largeJpeg)).toBeNull()
   })
 })
 
