@@ -24,6 +24,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import sharp from 'sharp'
 
 import { allCommandNames } from './registry.js'
 
@@ -731,6 +732,53 @@ const cases: Record<string, () => void> = {
     expect(Array.isArray(arr)).toBe(true)
   },
 }
+
+describe('built bundle image shrink (real sharp dlopen through the full CLI import graph)', () => {
+  // Regression test: embeddings.ts used to `require('@xenova/transformers')`
+  // eagerly at module load time. index_prune.ts (reachable from every real CLI
+  // invocation via cmdIndex) imports embeddings.ts, so every run of the built
+  // bundle loaded @xenova/transformers — and transitively its own bundled
+  // onnxruntime-node and a nested, differently-versioned copy of sharp's native
+  // libvips binaries — before image_shrink.ts's own `import('sharp')` ever ran.
+  // That poisoned the Windows DLL search order: the top-level sharp's dlopen
+  // then failed with ERR_DLOPEN_FAILED, caught and silently swallowed as
+  // "sharp unavailable" by loadSharp()'s catch block, so image shrinking was a
+  // silent no-op in the shipped binary despite every image_shrink.test.ts case
+  // passing (those import image_shrink.ts directly, never through the CLI's
+  // full import graph, so @xenova/transformers was never loaded in-process).
+  // This spawns the real dist/token-goat.mjs as a separate process and drives
+  // it through the actual `hook pre_tool_use` dispatch path with a real
+  // oversized image, asserting a genuine shrink happened — not just "no crash".
+  it('shrinks an oversized image end-to-end through the built bundle', async () => {
+    const side = 700 // 490,000px: comfortably under the default max_image_pixels cap
+    const noise = Buffer.allocUnsafe(side * side * 3)
+    for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256)
+    const jpegBuf = await sharp(noise, { raw: { width: side, height: side, channels: 3 } })
+      .jpeg({ quality: 100 })
+      .toBuffer()
+    expect(jpegBuf.length).toBeGreaterThan(512 * 1024) // must clear image_shrink's own threshold
+
+    const imgDir = mkIsolated('tg-matrix-img-')
+    const imgPath = path.join(imgDir, 'big.jpg')
+    fs.writeFileSync(imgPath, jpegBuf)
+
+    const payload = JSON.stringify({
+      tool_name: 'Read',
+      tool_input: { file_path: imgPath },
+      session_id: 'matrix-image-shrink',
+    })
+    const r = run(['hook', 'pre_tool_use'], { input: payload })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stderr).not.toContain('sharp unavailable')
+
+    const out = JSON.parse(r.stdout) as {
+      hookSpecificOutput?: { additionalContext?: string }
+    }
+    const context = out.hookSpecificOutput?.additionalContext ?? ''
+    expect(context).toContain('smaller')
+    expect(context).toMatch(/data:image\/(jpeg|webp);base64,/)
+  }, 30000)
+})
 
 describe('built bundle command matrix', () => {
   it('every registered command has a matrix case (and vice versa)', () => {
