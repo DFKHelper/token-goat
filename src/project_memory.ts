@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { atomicWriteText } from './util.js';
+import { atomicWriteText, ensureDirSync } from './util.js';
 
 const MAX_ENTRIES = 30;
 const MAX_VALUE_LEN = 300;
@@ -97,7 +97,7 @@ function save(filePath: string, entries: Record<string, string>): void {
 
   const content = lines.length > 0 ? lines.join('\n') + '\n' : '';
   const dir = path.dirname(filePath);
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDirSync(dir);
 
   // Atomic write via the shared helper (unique pid+hrtime temp filename, retries on transient
   // Windows file-lock errors) instead of a hand-rolled fixed `.tmp` name that two concurrent
@@ -119,7 +119,7 @@ export function setEntry(projectHash: string, key: string, value: string): void 
   validateKey(key);
   const p = memoryPath(projectHash);
   const dir = path.dirname(p);
-  fs.mkdirSync(dir, { recursive: true });
+  ensureDirSync(dir);
   const entries = loadRaw(p);
   entries[key] = value;
   save(p, entries);

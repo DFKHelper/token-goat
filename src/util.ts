@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { closeSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { normalizePath } from './paths.js'
@@ -96,6 +96,30 @@ function isRetryable(err: unknown): boolean {
 function isEExist(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false
   return (err as { code?: unknown }).code === 'EEXIST'
+}
+
+/**
+ * Create a directory recursively, ignoring EEXIST errors from concurrent mkdir races.
+ *
+ * Node.js `mkdirSync(..., { recursive: true })` is not atomic: the existence check
+ * and actual mkdir syscall have a TOCTOU (time-of-check-to-time-of-use) window where
+ * two concurrent calls can both pass the check but only one wins the actual mkdir,
+ * leaving the second with an EEXIST error despite `recursive: true`. This is a
+ * known issue on Windows and some Unix systems.
+ *
+ * This function catches and ignores EEXIST specifically (the desired end-state
+ * — the directory exists — is already true), while propagating all other errors.
+ */
+export function ensureDirSync(dir: string): void {
+  try {
+    mkdirSync(dir, { recursive: true })
+  } catch (err) {
+    if (!isEExist(err)) {
+      // Propagate all errors except EEXIST (EACCES, ENOSPC, EINVAL, etc.)
+      throw err
+    }
+    // Directory exists; the race condition resolved successfully.
+  }
 }
 
 /**

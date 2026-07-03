@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 
@@ -24,7 +24,7 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import type * as fs from 'node:fs'
 
-import { atomicWriteBytes, atomicWriteText, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, ensureDirSync, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
 
 describe('sleepSync', () => {
   it('blocks for approximately the requested duration', () => {
@@ -232,4 +232,37 @@ describe('runGit', () => {
     expect(result.exitCode).not.toBe(0)
   })
 
+})
+
+describe('ensureDirSync', () => {
+  let testDir: string
+
+  beforeEach(() => {
+    testDir = mkdtempSync(path.join(tmpdir(), 'tg-ensure-dir-'))
+  })
+
+  afterEach(() => {
+    rmSync(testDir, { recursive: true, force: true })
+  })
+
+  it('creates a directory if it does not exist', () => {
+    const newDir = path.join(testDir, 'new-dir')
+    ensureDirSync(newDir)
+    expect(existsSync(newDir)).toBe(true)
+  })
+
+  it('does not throw when called on an existing directory', () => {
+    const existingDir = path.join(testDir, 'existing-dir')
+    mkdirSync(existingDir, { recursive: true })
+    // Second call to ensureDirSync on the same path should not throw
+    expect(() => {
+      ensureDirSync(existingDir)
+    }).not.toThrow()
+  })
+
+  it('creates nested directories with recursive behavior', () => {
+    const nestedDir = path.join(testDir, 'a', 'b', 'c')
+    ensureDirSync(nestedDir)
+    expect(existsSync(nestedDir)).toBe(true)
+  })
 })
