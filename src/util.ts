@@ -99,55 +99,73 @@ function isEExist(err: unknown): boolean {
 }
 
 /**
+ * Runs `fn`, retrying up to 5 times with a `50 * attempt` ms backoff when it throws a
+ * transient Windows file-lock error (EPERM/EBUSY/ETXTBSY) -- the errno set a brief
+ * AV-scanner/search-indexer lock on the destination produces. Any other error, or the
+ * 5th consecutive failure, propagates immediately.
+ *
+ * Shared by every fs mutation in this codebase that can race a transient Windows lock:
+ * atomicWriteCore's rename below, and cli.ts's `atomicWriteBuffer` rename (which nests
+ * its own EXDEV cross-device fallback inside `fn`, so a successful fallback still counts
+ * as success here).
+ */
+export function withRetryOnLock(fn: () => void): void {
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      fn()
+      return
+    } catch (err) {
+      lastErr = err
+      if (!isRetryable(err) || attempt === 5) throw err
+      sleepSync(50 * attempt)
+    }
+  }
+  // Unreachable: the loop either returns or throws, but satisfies tsc.
+  throw lastErr
+}
+
+/**
  * Shared atomic-write core for text and bytes.
  *
  * Writes `content` to a sibling temp file (created with 0o600 so it is never
  * world-readable even transiently on POSIX), then renames over `dest`. On
  * Windows a brief exclusive-lock window can make the rename fail with
  * EPERM/EBUSY/ETXTBSY; we retry up to 5 times with a `50 * attempt` ms backoff.
+ * Any failure past this point -- a failed write (ENOSPC, EIO, ...) just as much as a
+ * failed rename -- cleans up the temp file before the error propagates, so a partial
+ * write never leaks a `.tmp` file next to `dest`.
  */
 function atomicWriteCore(dest: string, content: string | Uint8Array): void {
   // Two-component temp name: pid + high-resolution time avoids collisions across concurrent and rapid sequential writes to the same path.
   const tmp = `${dest}.${process.pid}.${process.hrtime.bigint().toString()}.tmp`
 
-  // mode 0o600: owner read/write only (no effect on Windows ACLs, but harmless).
-  const fd = openSync(tmp, 'w', 0o600)
   try {
-    if (typeof content === 'string') {
-      // Encode ourselves so we control the encoding; a Buffer write avoids the CRLF translation a text-mode stream could apply on Windows.
-      writeSync(fd, Buffer.from(content, 'utf-8'))
-    } else {
-      writeSync(fd, Buffer.from(content))
+    // mode 0o600: owner read/write only (no effect on Windows ACLs, but harmless).
+    const fd = openSync(tmp, 'w', 0o600)
+    try {
+      if (typeof content === 'string') {
+        // Encode ourselves so we control the encoding; a Buffer write avoids the CRLF translation a text-mode stream could apply on Windows.
+        writeSync(fd, Buffer.from(content, 'utf-8'))
+      } else {
+        writeSync(fd, Buffer.from(content))
+      }
+    } finally {
+      closeSync(fd)
     }
-  } finally {
-    closeSync(fd)
-  }
 
-  let renamed = false
-  try {
-    let lastErr: unknown
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      try {
-        renameSync(tmp, dest)
-        renamed = true
-        return
-      } catch (err) {
-        lastErr = err
-        if (!isRetryable(err) || attempt === 5) throw err
-        sleepSync(50 * attempt)
-      }
+    withRetryOnLock(() => renameSync(tmp, dest))
+  } catch (err) {
+    // Clean up the orphaned temp file on ANY failure past this point, not just a failed
+    // rename: the temp file is created by openSync before the write attempt, so it exists
+    // (and leaks) whether the write or the rename is what failed. Best-effort: a failed
+    // cleanup-unlink must never mask the original error.
+    try {
+      unlinkSync(tmp)
+    } catch {
+      // ignore: temp cleanup is best-effort
     }
-    // Unreachable: the loop either returns or throws, but satisfies tsc.
-    throw lastErr
-  } finally {
-    if (!renamed) {
-      // Clean up the orphaned temp file on a failed write or rename. Best-effort. The `wrote` guard was wrong: the temp file is created by openSync *before* the write attempt, so it exists (and leaks) whether the write succeeded or failed. We must clean up whenever the rename did not happen.
-      try {
-        unlinkSync(tmp)
-      } catch {
-        // ignore: temp cleanup is best-effort
-      }
-    }
+    throw err
   }
 }
 

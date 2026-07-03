@@ -71,7 +71,7 @@ import {
 } from './graph_commands.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
-import { isWindows, ensureNewline, extractErrorMessage } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock } from './util.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -706,19 +706,24 @@ function atomicWriteBuffer(dest: string, data: Buffer): void {
   try {
     // mode 0o600 applies on POSIX only; on Windows Node.js ignores it and the tmp file inherits the default ACL.
     fs.writeFileSync(tmp, data, { mode: 0o600 })
-    try {
-      fs.renameSync(tmp, dest)
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
-        // copyFileSync is non-atomic; EXDEV should not occur normally (tmp is same-dir) but can appear on overlay/bind-mount filesystems.
-        fs.copyFileSync(tmp, dest)
-        try { fs.unlinkSync(tmp) } catch (ue) {
-          process.stderr.write(`token-goat write-file: warning: could not remove temp file ${tmp}: ${(ue as NodeJS.ErrnoException).message}\n`)
+    // Retries the rename on the same transient Windows lock errno (EPERM/EBUSY/ETXTBSY)
+    // that atomicWriteCore retries, so a briefly-locked destination behaves the same way
+    // here as it does for every other atomic write path in the codebase.
+    withRetryOnLock(() => {
+      try {
+        fs.renameSync(tmp, dest)
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EXDEV') {
+          // copyFileSync is non-atomic; EXDEV should not occur normally (tmp is same-dir) but can appear on overlay/bind-mount filesystems.
+          fs.copyFileSync(tmp, dest)
+          try { fs.unlinkSync(tmp) } catch (ue) {
+            process.stderr.write(`token-goat write-file: warning: could not remove temp file ${tmp}: ${(ue as NodeJS.ErrnoException).message}\n`)
+          }
+          return
         }
-      } else {
         throw e
       }
-    }
+    })
   } catch (e) {
     try { fs.unlinkSync(tmp) } catch { /* ignore cleanup failure */ }
     throw e
