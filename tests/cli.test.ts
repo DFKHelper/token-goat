@@ -462,6 +462,42 @@ describe('token-goat CLI', () => {
       }
     })
 
+    it('replace does not corrupt non-UTF-8 bytes elsewhere in the file', () => {
+      // Regression test: the target file used to be read via fs.readFileSync(path, 'utf8') — a
+      // lossy decode that silently rewrites ANY invalid UTF-8 byte in the whole file to U+FFFD,
+      // then re-encodes on write, permanently corrupting it to ef bf bd — even though the edit
+      // itself only targets a small, unrelated span elsewhere in the file.
+      const tmp = path.join(os.tmpdir(), `tg-rpl-nonutf8-${Date.now()}.txt`)
+      const strayByte = 0xe9 // a lone byte that is not valid UTF-8 on its own when followed by ASCII
+      const content = Buffer.concat([
+        Buffer.from('START-', 'utf8'),
+        Buffer.from([strayByte]),
+        Buffer.from('-MIDDLE needle END', 'utf8'),
+      ])
+      const strayIndex = Buffer.from('START-', 'utf8').length
+      fs.writeFileSync(tmp, content)
+      try {
+        const oldB64 = Buffer.from('needle', 'utf8').toString('base64')
+        const newB64 = Buffer.from('thread', 'utf8').toString('base64')
+        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        expect(r.status).toBe(0)
+        expect(r.stdout).toContain('replaced 1 occurrence')
+
+        const result = fs.readFileSync(tmp) // raw Buffer — no utf8 decode, so corruption would be visible
+        // The stray non-UTF-8 byte, unrelated to the edit, must survive completely untouched.
+        expect(result[strayIndex]).toBe(strayByte)
+        // The intended, unrelated replacement must still have happened correctly.
+        const expected = Buffer.concat([
+          Buffer.from('START-', 'utf8'),
+          Buffer.from([strayByte]),
+          Buffer.from('-MIDDLE thread END', 'utf8'),
+        ])
+        expect(result.equals(expected)).toBe(true)
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
     it('replace target file not found exits 1 with a mapFsError-style message', () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-missing-${Date.now()}.txt`)
       const oldB64 = Buffer.from('old', 'utf8').toString('base64')
