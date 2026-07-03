@@ -213,6 +213,19 @@ function stripLineComments(content: string, pattern: RegExp): string {
   return content.replace(pattern, (match, offset: number) => (isInsideStringLiteral(content, offset) ? match : ''))
 }
 
+/**
+ * Applies a block-comment regex, skipping any match whose opener starts inside a string
+ * literal. A block comment can span multiple lines, but isInsideStringLiteral only needs
+ * to check the match's start offset: none of the CSTYLE_EXTS/CSS languages allow an unescaped
+ * string literal to span multiple lines, so if the block-comment opener is inside a string,
+ * the whole match is part of that string's content.
+ */
+function stripBlockComments(content: string, pattern: RegExp): string {
+  return content.replace(pattern, (match, offset: number) =>
+    isInsideStringLiteral(content, offset) ? match : '\n'.repeat(match.split('\n').length - 1),
+  )
+}
+
 export function stripComments(content: string, filePath: string): string {
   const ext = path.extname(filePath).toLowerCase()
 
@@ -225,7 +238,7 @@ export function stripComments(content: string, filePath: string): string {
   }
 
   if (CSTYLE_EXTS.has(ext)) {
-    content = content.replace(CSTYLE_BLOCK_RE, (match) => '\n'.repeat(match.split('\n').length - 1))
+    content = stripBlockComments(content, CSTYLE_BLOCK_RE)
     return stripLineComments(content, CSTYLE_LINE_RE)
   }
 
@@ -234,7 +247,7 @@ export function stripComments(content: string, filePath: string): string {
   }
 
   if (ext === '.css' || ext === '.scss') {
-    return content.replace(CSTYLE_BLOCK_RE, (match) => '\n'.repeat(match.split('\n').length - 1))
+    return stripBlockComments(content, CSTYLE_BLOCK_RE)
   }
 
   return content

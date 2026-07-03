@@ -72,6 +72,25 @@ describe('stripComments', () => {
     const result = stripComments(code, 'script.sh')
     expect(result).toBe(code)
   })
+
+  it('leaves a block-comment-looking sequence inside a string literal untouched (.ts)', () => {
+    const code = 'const s = "a /* b */ c"'
+    const result = stripComments(code, 'file.ts')
+    expect(result).toBe(code)
+  })
+
+  it('still strips a real block comment outside any string literal (.ts)', () => {
+    const code = '/* real comment */\nconst x = 1'
+    const result = stripComments(code, 'file.ts')
+    expect(result).not.toContain('real comment')
+    expect(result).toContain('const x = 1')
+  })
+
+  it('leaves a block-comment-looking sequence inside a string literal untouched (.css)', () => {
+    const code = 'content: "a /* b */ c";'
+    const result = stripComments(code, 'file.css')
+    expect(result).toBe(code)
+  })
 })
 
 describe('scanSecrets', () => {
