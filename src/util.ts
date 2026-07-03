@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { closeSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { normalizePath } from './paths.js'
@@ -93,6 +93,11 @@ function isRetryable(err: unknown): boolean {
   return typeof code === 'string' && RETRYABLE_ERRNO.has(code)
 }
 
+function isEExist(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false
+  return (err as { code?: unknown }).code === 'EEXIST'
+}
+
 /**
  * Shared atomic-write core for text and bytes.
  *
@@ -166,6 +171,83 @@ export function atomicWriteText(filePath: string, content: string): void {
  */
 export function atomicWriteBytes(filePath: string, content: Buffer | Uint8Array): void {
   atomicWriteCore(filePath, content)
+}
+
+// Bounds how long withFileLock waits behind another holder before giving up (never hangs
+// the caller indefinitely), and how old an unreleased lock file must be before a crashed
+// holder's lock is treated as abandoned and stolen.
+const LOCK_WAIT_MS = 2000
+const LOCK_STALE_MS = 5000
+
+/**
+ * Runs `fn` while holding an exclusive lock at `lockPath`, so the same critical section
+ * never runs concurrently across separate OS processes. The mutex primitive is an atomic
+ * exclusive-create write (`wx`), which behaves identically on Windows and POSIX, unlike
+ * advisory `flock`.
+ *
+ * If another process already holds the lock, this waits (backoff style mirrors
+ * atomicWriteCore's rename retry) for up to `waitMs` before giving up. A lock file whose
+ * mtime is older than `staleMs` is treated as abandoned by a holder that crashed without
+ * releasing it and is stolen, so one crashed process can never permanently wedge every
+ * future caller of this critical section.
+ *
+ * Returns `undefined` -- without ever calling `fn` -- if the lock could not be acquired in
+ * time. Callers whose own persistence must never block forever should treat that as
+ * "proceed without the lock" (e.g. fall back to an unprotected write), not as a hard failure.
+ */
+export function withFileLock<T>(
+  lockPath: string,
+  fn: () => T,
+  opts: { waitMs?: number; staleMs?: number } = {},
+): T | undefined {
+  const waitMs = opts.waitMs ?? LOCK_WAIT_MS
+  const staleMs = opts.staleMs ?? LOCK_STALE_MS
+  // Unique per acquisition attempt (not just per process) so release can confirm it still
+  // owns the lock file before deleting it -- the same pid+hrtime idiom atomicWriteCore uses
+  // for its temp-file name.
+  const token = `${process.pid}:${process.hrtime.bigint().toString()}`
+  const deadline = Date.now() + waitMs
+  let attempt = 0
+  for (;;) {
+    try {
+      writeFileSync(lockPath, token, { flag: 'wx' })
+      break
+    } catch (err) {
+      if (!isEExist(err)) return undefined // can't lock at all (e.g. missing dir); let the caller fall back
+    }
+    // Someone else holds it. A holder that crashed without releasing it would otherwise
+    // wedge every future caller of this critical section forever, so treat a lock file
+    // older than staleMs as abandoned and steal it.
+    let stale: boolean
+    try {
+      const st = statSync(lockPath)
+      stale = Date.now() - st.mtimeMs > staleMs
+    } catch {
+      stale = true // lock vanished between the failed create and this stat; clear to retry
+    }
+    if (stale) {
+      try {
+        unlinkSync(lockPath)
+      } catch {
+        // another waiter may already be stealing/holding it; the retried create sorts it out
+      }
+      continue // no sleep: stealing (or losing the steal race) always makes forward progress
+    }
+    if (Date.now() >= deadline) return undefined
+    sleepSync(Math.min(20 * ++attempt, 200))
+  }
+  try {
+    return fn()
+  } finally {
+    // Only remove the lock if it still carries our own token: if a stall let a waiter decide
+    // this lock was abandoned and steal it, that waiter's lock is now the live one and must
+    // not be deleted out from under it.
+    try {
+      if (readFileSync(lockPath, 'utf8') === token) unlinkSync(lockPath)
+    } catch {
+      // best-effort: release is advisory, a missing/unreadable lock file is not an error
+    }
+  }
 }
 
 /** Truncate `s` to `maxChars`, appending a single ellipsis when it overflows. */
