@@ -108,12 +108,51 @@ export function getDirtyPathsFor(dir: string): string[] {
 
 
 /**
+ * Absolute path to the worker's incremental-index error log for `dir`. Appended to (never
+ * truncated) whenever {@link makeIndexer}'s default callback swallows a per-file indexing
+ * failure. This is the only place such a failure is ever discoverable: the detached worker
+ * process spawned by {@link startDetachedWorker} runs with `stdio: 'ignore'`, so anything the
+ * worker process writes to stdout/stderr is silently discarded.
+ */
+function workerErrorLogPath(dir: string): string {
+  return path.join(dir, 'worker-errors.log')
+}
+
+/**
+ * Sentinel returned by {@link makeIndexer}'s default callback when `indexFileSync` (or the
+ * sha-gate lookup preceding it) throws. Distinct from the sha-gate's own `false` no-op-skip
+ * return so {@link processDirtyBatch} never conflates "nothing needed reindexing" with "indexing
+ * was attempted and failed" -- both must be excluded from the indexed count, but only the latter
+ * is a real problem worth logging.
+ */
+const INDEX_FAILED = Symbol('indexFailed')
+
+/**
+ * Append one failure line to the error log for `dir`. Best-effort: a failure to write the log
+ * itself must not throw back out of the indexer's own catch handler.
+ */
+function logIndexFailure(dir: string, absPath: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err)
+  const line = `${new Date().toISOString()} indexFileSync failed for ${absPath}: ${message}\n`
+  try {
+    fs.appendFileSync(workerErrorLogPath(dir), line)
+  } catch {
+    // best-effort: nothing more we can do if even the log write itself fails.
+  }
+}
+
+/**
  * Build the index callback the drain loop uses by default: parse each changed
  * file and write its symbol/ref rows into the index DB at `dbPath`. A parse or
  * read failure on one file is swallowed so a single bad file never aborts the
- * batch or crashes the drain loop.
+ * batch or crashes the drain loop -- but the failure is logged to
+ * {@link workerErrorLogPath} and signalled via the {@link INDEX_FAILED} sentinel so
+ * `processDirtyBatch` never counts it as a successful index. The file's `files.sha` row is left
+ * exactly as it was before this attempt, so if the file is ever touched again the sha-gate below
+ * will not match its (still un-indexed) content and a reindex will be retried automatically.
  */
 export function makeIndexer(dbPath: string): (absPath: string, sha: string) => unknown {
+  const dir = path.dirname(dbPath)
   return (absPath, sha) => {
     try {
       // Skip files whose content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed. Return false so processDirtyBatch's count reflects files actually (re)indexed, not ones the gate skipped.
@@ -128,8 +167,11 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       // promise (rather than voiding it) lets a caller that wants to - such as a test - await
       // it explicitly instead of racing it.
       return indexFileEmbeddings(absPath, dbPath).catch(() => undefined)
-    } catch {
-      // One bad file must not abort the rest of the batch.
+    } catch (err) {
+      // One bad file must not abort the rest of the batch -- but a swallowed failure must not be
+      // silently indistinguishable from a successful index either. See the doc comment above.
+      logIndexFailure(dir, absPath, err)
+      return INDEX_FAILED
     }
   }
 }
@@ -153,7 +195,9 @@ function makeRemover(dbPath: string): (absPath: string) => void {
  * writes its rows into the global index DB; tests inject their own callback to
  * observe the plumbing in isolation. Returns the number of paths actually
  * (re)indexed -- a path whose callback returns `false` (the default indexer's
- * sha-gate skip for byte-identical content) is visited but not counted.
+ * sha-gate skip for byte-identical content) or `INDEX_FAILED` (the default
+ * indexer's sentinel for a swallowed, logged indexing failure -- see
+ * makeIndexer) is visited but not counted.
  *
  * Exported for unit tests so the drain logic can be exercised without a thread.
  */
@@ -172,9 +216,12 @@ export function processDirtyBatch(
     }
     const sha = fingerprintFile(p)
     if (sha === null) continue
-    // `false` means the sha-gate skipped a no-op reindex; any other return value (including
-    // void/undefined from callers that don't bother returning anything) counts as indexed.
-    if (index(p, sha) !== false) indexed += 1
+    // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default
+    // indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any
+    // other return value (including void/undefined from callers that don't bother returning
+    // anything) counts as indexed.
+    const result = index(p, sha)
+    if (result !== false && result !== INDEX_FAILED) indexed += 1
   }
   return indexed
 }
