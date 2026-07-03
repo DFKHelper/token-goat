@@ -271,6 +271,12 @@ describe('preBashHandler — unbalanced shell quoting false positives (detectUnb
       expect(result.context).toContain('unclosed single quote')
     }
   })
+
+  it('does not false-positive on a valid heredoc with CRLF line endings', () => {
+    const crlfCommand = 'cat <<EOF\r\nhello\r\nworld\r\nEOF\r\n'
+    const result = preBashHandler(makeBashEvent(crlfCommand))
+    expect(result.hookType).toBe('pass')
+  })
 })
 
 describe('preBashHandler — cd-prefix stripping', () => {
