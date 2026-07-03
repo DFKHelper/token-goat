@@ -517,35 +517,54 @@ export async function runWorkerLoop(
 }
 
 /**
- * Worker-thread / daemon entry point.
+ * Run the detached daemon's drain loop in the current (main-thread) process.
  *
- * Runs only when this module is loaded off the main thread (via {@link
- * startWorker}) or as the detached daemon child (`--worker-daemon`). The thread
- * case reads config from `workerData`; the daemon case reads it from env.
+ * Reads its poll interval and data dir from the `TG_WORKER_POLL_MS` /
+ * `TG_WORKER_DATA_DIR` env vars set by {@link startDetachedWorker} on the child
+ * it spawns, registers a SIGTERM handler for a clean exit, and starts {@link
+ * runWorkerLoop} without awaiting it -- the loop's own setTimeout chain keeps
+ * the event loop (and therefore the process) alive indefinitely.
+ *
+ * This must be called explicitly by the CLI entrypoint (`cli.ts`'s `run()`)
+ * when `--worker-daemon` is present in argv, BEFORE commander ever sees argv:
+ * `--worker-daemon` is not a registered commander option or command anywhere
+ * in `buildProgram`, so letting commander parse first makes it reject the
+ * flag as unknown and the freshly-spawned daemon child exits immediately.
+ * This is the sole trigger point for the daemon loop in the shipped CLI --
+ * nothing else should call it, since {@link runWorkerLoop} would then be
+ * running twice against the same dirty queue.
+ */
+export function runDetachedWorkerDaemon(): void {
+  const dir = process.env['TG_WORKER_DATA_DIR'] ?? dataDir()
+  const interval = parseInt(process.env['TG_WORKER_POLL_MS'] ?? '0', 10)
+  const safeInterval = Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_POLL_INTERVAL_MS
+  process.on('SIGTERM', () => process.exit(0))
+  void runWorkerLoop(dir, safeInterval)
+}
+
+/**
+ * Worker-thread entry point.
+ *
+ * Runs only when this module is loaded off the main thread, i.e. as the
+ * {@link startWorker} in-process worker_threads variant, and reads its config
+ * from `workerData`. The detached-daemon case is dispatched explicitly via
+ * {@link runDetachedWorkerDaemon} instead of from here, so this is a no-op on
+ * the main thread.
  */
 function workerEntry(): void {
-  if (!isMainThread) {
-    const wd = (workerData ?? {}) as { pollIntervalMs?: number; dataDir?: string }
-    const dir = wd.dataDir ?? dataDir()
-    const interval = wd.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
-    let stop = false
-    const onStop = (msg: string) => {
-      if (msg === 'stop') {
-        stop = true
-        parentPort?.removeListener('message', onStop)
-      }
+  if (isMainThread) return
+  const wd = (workerData ?? {}) as { pollIntervalMs?: number; dataDir?: string }
+  const dir = wd.dataDir ?? dataDir()
+  const interval = wd.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
+  let stop = false
+  const onStop = (msg: string) => {
+    if (msg === 'stop') {
+      stop = true
+      parentPort?.removeListener('message', onStop)
     }
-    parentPort?.on('message', onStop)
-    void runWorkerLoop(dir, interval, () => stop)
-    return
   }
-  if (process.argv.includes('--worker-daemon')) {
-    const dir = process.env['TG_WORKER_DATA_DIR'] ?? dataDir()
-    const interval = parseInt(process.env['TG_WORKER_POLL_MS'] ?? '0', 10)
-    const safeInterval = Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_POLL_INTERVAL_MS
-    process.on('SIGTERM', () => process.exit(0))
-    void runWorkerLoop(dir, safeInterval)
-  }
+  parentPort?.on('message', onStop)
+  void runWorkerLoop(dir, interval, () => stop)
 }
 
 workerEntry()
