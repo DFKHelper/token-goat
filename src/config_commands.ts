@@ -23,7 +23,7 @@ import { findProject } from './project.js'
 import { listBlobs } from './disk_cache.js'
 import { BASH_OUTPUT_SUBDIR } from './bash_output_cache.js'
 import { WEB_OUTPUT_SUBDIR } from './web_cache.js'
-import { ensureNewline } from './util.js'
+import { ensureNewline, ensureDirSync } from './util.js'
 import { configPath } from './constants.js'
 
 function emit(text: string): void {
@@ -36,7 +36,7 @@ function emitErr(text: string): void {
 
 /** Ensure the config parent directory exists then call saveConfig. */
 function saveConfigSafe(cfg: Parameters<typeof saveConfig>[0]): void {
-  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+  ensureDirSync(path.dirname(configPath()))
   saveConfig(cfg)
 }
 
