@@ -1,10 +1,10 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { atomicWriteBytes, atomicWriteText, runGit, sleepSync, noWindowCreationFlags } from '../src/util.js'
+import { atomicWriteBytes, atomicWriteText, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
 
 describe('sleepSync', () => {
   it('blocks for approximately the requested duration', () => {
@@ -75,6 +75,86 @@ describe('atomic writes', () => {
     expect(existsSync(target)).toBe(true)
     const read = readFileSync(target)
     expect(Buffer.compare(read, payload)).toBe(0)
+  })
+})
+
+describe('withFileLock', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'tg-lock-'))
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('runs fn while holding the lock, then releases it so a later acquire succeeds', () => {
+    const lockPath = path.join(dir, 'a.lock')
+    const calls: number[] = []
+
+    const first = withFileLock(lockPath, () => {
+      calls.push(1)
+      return 'first'
+    })
+    expect(first).toBe('first')
+    expect(existsSync(lockPath)).toBe(false) // released after fn returns
+
+    const second = withFileLock(lockPath, () => {
+      calls.push(2)
+      return 'second'
+    })
+    expect(second).toBe('second')
+    expect(calls).toEqual([1, 2])
+  })
+
+  it('releases the lock even when fn throws, and propagates the error', () => {
+    const lockPath = path.join(dir, 'b.lock')
+    expect(() =>
+      withFileLock(lockPath, () => {
+        throw new Error('boom')
+      }),
+    ).toThrow('boom')
+    expect(existsSync(lockPath)).toBe(false)
+  })
+
+  it('gives up within waitMs (never hangs) when a live holder keeps the lock', () => {
+    const lockPath = path.join(dir, 'c.lock')
+    // Simulate another process holding a freshly-created (non-stale) lock.
+    writeFileSync(lockPath, 'live-holder', { flag: 'wx' })
+
+    let called = false
+    const start = Date.now()
+    const result = withFileLock(
+      lockPath,
+      () => {
+        called = true
+        return true
+      },
+      { waitMs: 200, staleMs: 60_000 },
+    )
+    const elapsed = Date.now() - start
+
+    expect(result).toBeUndefined()
+    expect(called).toBe(false)
+    expect(elapsed).toBeGreaterThanOrEqual(150) // it actually waited/retried, not an instant give-up
+    expect(elapsed).toBeLessThan(2000) // bounded: a live holder can never wedge the caller forever
+  })
+
+  it('steals a lock file abandoned by a crashed holder instead of waiting out the full timeout (regression: task #15)', () => {
+    const lockPath = path.join(dir, 'd.lock')
+    // Simulate a holder that crashed without releasing: an old lock file with a stale mtime.
+    writeFileSync(lockPath, 'crashed-holder', { flag: 'wx' })
+    const old = new Date(Date.now() - 60_000)
+    utimesSync(lockPath, old, old)
+
+    const start = Date.now()
+    const result = withFileLock(lockPath, () => 'stolen', { waitMs: 2000, staleMs: 50 })
+    const elapsed = Date.now() - start
+
+    expect(result).toBe('stolen')
+    expect(existsSync(lockPath)).toBe(false) // released after the steal + run
+    expect(elapsed).toBeLessThan(1000) // stealing is immediate, not bounded by the full waitMs
   })
 })
 

@@ -24,7 +24,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { atomicWriteText } from './util.js'
+import { atomicWriteText, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { consumedPendingLargeFileHintKeys, exportSessionState, importSessionState, MAX_RANGES_PER_FILE, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
@@ -311,12 +311,24 @@ export function saveSessionState(sessionId: string): void {
   const p = sessionPath(sessionId)
   if (!p) return
   try {
-    const mem = exportSessionState()
-    const disk = readDiskState(p)
-    const merged = capFiles(disk ? mergeSessionState(disk, mem) : mem, MAX_FILES)
     const dir = path.dirname(p)
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-    atomicWriteText(p, JSON.stringify(merged))
+    const mem = exportSessionState()
+    // saveSessionState is the actual race: every hook call is a fresh OS process, and two
+    // concurrent processes for the same session can each read the pre-update disk state,
+    // merge it with their own view, and write -- whichever write lands last silently
+    // clobbers the other's update, with no error. A short-lived lockfile around just this
+    // read-merge-write section serializes concurrent savers, so each one's disk read
+    // reflects every write that already landed. Losing the race to acquire the lock in
+    // time falls back to the old unprotected write instead of dropping the update
+    // outright, so this can never block or break the caller's real hook.
+    const writeMerged = (): true => {
+      const disk = readDiskState(p)
+      const merged = capFiles(disk ? mergeSessionState(disk, mem) : mem, MAX_FILES)
+      atomicWriteText(p, JSON.stringify(merged))
+      return true
+    }
+    if (withFileLock(`${p}.lock`, writeMerged) === undefined) writeMerged()
   } catch {
     // fail-soft: never let persistence break a hook
   }
