@@ -449,6 +449,10 @@ export function normalizeForCache(manifestText: string): string {
   return manifestText
 }
 
+// Mirrors session_store.ts's module-private sessionPath sanitization: replace unsafe
+// chars and cap length so a session id can never be used to escape the sessions dir.
+const SESSION_ID_SAFE_RE = /[^a-zA-Z0-9_-]/g
+
 /**
  * Write per-session manifest JSON for cross-session deduplication.
  */
@@ -457,11 +461,13 @@ export function writeSessionManifest(
   sessionId: string,
   manifestJson: Record<string, unknown>
 ): void {
+  const safeSessionId = sessionId.replace(SESSION_ID_SAFE_RE, '_').slice(0, 64)
+  if (!safeSessionId) return
   const sessionsDir = path.join(dataDir(), 'projects', projectHash, 'sessions')
   if (!fs.existsSync(sessionsDir)) {
     fs.mkdirSync(sessionsDir, { recursive: true })
   }
-  const dest = path.join(sessionsDir, `${sessionId}.json`)
+  const dest = path.join(sessionsDir, `${safeSessionId}.json`)
   atomicWriteText(dest, JSON.stringify(manifestJson))
 }
 
