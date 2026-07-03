@@ -1042,21 +1042,24 @@ function diagnoseNearMiss(targetText: string, oldText: string): string | undefin
   if (oldWithoutTrailingNewline !== oldText && oldWithoutTrailingNewline !== '' && targetText.includes(oldWithoutTrailingNewline)) {
     return `a near-match exists that differs only by a trailing newline — --old-from/--old-b64 has a trailing newline that is not present at that point in the file; check the exact content`
   }
-  // Whole-snippet CRLF vs LF mismatch.
-  if (oldText.includes('\r\n')) {
-    const asLF = oldText.replace(/\r\n/g, '\n')
-    if (targetText.includes(asLF)) {
+
+  // Whole-snippet CRLF vs LF mismatch — check both directions symmetrically.
+  const normalize = (s: string) => s.replace(/\r\n/g, '\n')
+  const normalizedOld = normalize(oldText)
+  const normalizedTarget = normalize(targetText)
+
+  if (targetText !== oldText && normalizedTarget.includes(normalizedOld) && !targetText.includes(oldText)) {
+    // Determine which direction the mismatch is
+    if (oldText.includes('\r\n') && !targetText.includes('\r\n')) {
       return `a near-match exists that differs only by line endings — --old-from/--old-b64 uses CRLF but the file uses LF at that location; check the exact content`
     }
-  } else if (oldText.includes('\n')) {
-    const asCRLF = oldText.replace(/\n/g, '\r\n')
-    if (targetText.includes(asCRLF)) {
+    if (oldText.includes('\n') && !oldText.includes('\r\n') && targetText.includes('\r\n')) {
       return `a near-match exists that differs only by line endings — --old-from/--old-b64 uses LF but the file uses CRLF at that location; check the exact content`
     }
   }
+
   return undefined
 }
-
 function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean }): void {
   validateWritablePath(file, 'target file')
 
