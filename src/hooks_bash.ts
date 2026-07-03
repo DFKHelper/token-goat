@@ -1068,7 +1068,11 @@ function detectUnbalancedShellSyntax(cmd: string): string | null {
           while (scanPos <= cmd.length) {
             const nl = cmd.indexOf('\n', scanPos)
             const lineEnd = nl === -1 ? cmd.length : nl
-            const line = cmd.slice(scanPos, lineEnd)
+            let line = cmd.slice(scanPos, lineEnd)
+            // Strip trailing backslash-r (CRLF line ending) to match closing delimiter
+            if (line.endsWith('\r')) {
+              line = line.slice(0, -1)
+            }
             const isMatch = hasIndentModifier ? line.trim() === delimiter : line === delimiter
             if (isMatch) {
               terminatorEnd = nl === -1 ? cmd.length : nl + 1
