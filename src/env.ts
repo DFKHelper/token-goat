@@ -58,12 +58,18 @@ export function envFloat(key: string, defaultVal: number): number {
  *
  * Uses a strict `^[+-]?\d+$` regex so floats (`1.5`) and scientific notation
  * (`1e3`) are rejected rather than silently truncated by `parseInt`.
+ *
+ * When `min`/`max` are supplied, the parsed value is clamped into that range —
+ * matching `validatedInt`'s file-value clamp — so an out-of-range env var
+ * (e.g. `TOKEN_GOAT_MCP_DEDUP_TTL_SECS=99999999`) can't bypass the bounds the
+ * file value is already validated against.
  */
-export function envInt(key: string, defaultVal: number): number {
+export function envInt(key: string, defaultVal: number, min?: number, max?: number): number {
   const raw = process.env[key]
   if (raw === undefined || raw === '') return defaultVal
   if (!/^[+-]?\d+$/.test(raw)) return defaultVal
   const val = parseInt(raw, 10)
   if (!Number.isFinite(val)) return defaultVal
+  if (min !== undefined && max !== undefined) return Math.max(min, Math.min(max, val))
   return val
 }

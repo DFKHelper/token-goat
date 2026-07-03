@@ -16,7 +16,7 @@ import * as path from 'node:path'
 
 import { parse } from 'smol-toml'
 
-import { loadConfig, loadPersistedConfig, buildPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig } from './config.js'
+import { loadConfig, loadPersistedConfig, buildPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES } from './config.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
@@ -219,6 +219,23 @@ export function cmdConfig(opts: { action: string; key?: string; value?: string; 
     }
     saveConfigSafe(cfg as unknown as Parameters<typeof saveConfig>[0])
     invalidateConfigCache()
+    // The write above only ever touches the env-free persisted config, so if an env var
+    // currently overrides this same key, loadConfig() (env-layered, same as `get`/`list`)
+    // will keep returning the env-forced value instead of what was just saved — surface
+    // that shadowing here or the user is told the change succeeded when it has no runtime
+    // effect until the env var is unset.
+    const envOverrides = CONFIG_KEY_ENV_OVERRIDES[opts.key]
+    if (envOverrides !== undefined) {
+      const effective = walkGet(loadConfig() as unknown as Record<string, unknown>, parts)
+      if (effective.found && effective.value !== coerced) {
+        const active = envOverrides.find((name) => {
+          const raw = process.env[name]
+          return raw !== undefined && raw.trim() !== ''
+        })
+        const envVar = active ?? envOverrides[0]
+        emitErr(`config set: warning: ${opts.key} was saved to config.toml, but ${envVar} is currently set and overrides it at runtime — unset ${envVar} for this change to take effect`)
+      }
+    }
     if (opts.json === true) {
       emit(JSON.stringify({ key: opts.key, value: coerced }, null, 2))
       return

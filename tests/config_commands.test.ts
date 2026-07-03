@@ -233,6 +233,50 @@ describe('cmdConfig set input validation hardening', () => {
   })
 })
 
+// ── config set warns when an active env var shadows the just-written value ──
+
+describe('cmdConfig set warns when an active env var shadows the write', () => {
+  function withEnv(key: string, value: string | undefined, fn: () => void): void {
+    const orig = process.env[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+    invalidateConfigCache()
+    try {
+      fn()
+    } finally {
+      if (orig === undefined) delete process.env[key]
+      else process.env[key] = orig
+      invalidateConfigCache()
+    }
+  }
+
+  it('emits a stderr warning naming the env var when it forces a different value than what was just written', () => {
+    withEnv('TOKEN_GOAT_BASH_COMPRESS', '0', () => {
+      cmdConfig({ action: 'set', key: 'bash_compress.enabled', value: 'true' })
+      expect(capturedErr()).toContain('warning')
+      expect(capturedErr()).toContain('TOKEN_GOAT_BASH_COMPRESS')
+      expect(capturedErr()).toContain('bash_compress.enabled')
+    })
+    // The write to disk must still have gone through despite the active env var —
+    // only the runtime effect is shadowed, not the persisted value.
+    withEnv('TOKEN_GOAT_BASH_COMPRESS', undefined, () => {
+      expect(loadConfig().bash_compress.enabled).toBe(true)
+    })
+  })
+
+  it('does not warn when the key being set has no env-var override at all', () => {
+    cmdConfig({ action: 'set', key: 'compact_assist.min_events', value: '55' })
+    expect(capturedErr()).toBe('')
+  })
+
+  it('does not warn when an env var is active but its value matches what was just written', () => {
+    withEnv('TOKEN_GOAT_BASH_COMPRESS', '1', () => {
+      cmdConfig({ action: 'set', key: 'bash_compress.enabled', value: 'true' })
+      expect(capturedErr()).toBe('')
+    })
+  })
+})
+
 // ── mutate-then-save commands must not bake env overrides into disk (#M21) ───
 
 describe('config set / project exclude / prune do not persist transient env overrides (#M21)', () => {

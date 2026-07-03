@@ -91,6 +91,71 @@ describe('loadConfig', () => {
     }
   })
 
+  // Regression: envInt() applied an env-var override AFTER the file-value min/max clamp with
+  // no reclamp, so an out-of-range env var silently overwrote an already-validated value with
+  // anything outside its documented range. Each case below sets the env var to a value clearly
+  // outside the field's documented range and asserts loadConfig() clamps it back in, instead of
+  // passing the raw out-of-range value through.
+  it('clamps an out-of-range env var override for TOKEN_GOAT_MCP_DEDUP_TTL_SECS to the documented max (1-3600s)', () => {
+    const orig = process.env['TOKEN_GOAT_MCP_DEDUP_TTL_SECS']
+    try {
+      process.env['TOKEN_GOAT_MCP_DEDUP_TTL_SECS'] = '99999999'
+      const cfg = loadConfig()
+      expect(cfg.hints.mcp_dedup_ttl_secs).toBe(3600)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_MCP_DEDUP_TTL_SECS']
+      } else {
+        process.env['TOKEN_GOAT_MCP_DEDUP_TTL_SECS'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS to the documented max (1-86400s)', () => {
+    const orig = process.env['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS']
+    try {
+      process.env['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS'] = '999999999'
+      const cfg = loadConfig()
+      expect(cfg.hints.cross_session_read_dedup_ttl_secs).toBe(86400)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS']
+      } else {
+        process.env['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_WORKER_MAX_POOL to the documented max (1-8)', () => {
+    const orig = process.env['TOKEN_GOAT_WORKER_MAX_POOL']
+    try {
+      process.env['TOKEN_GOAT_WORKER_MAX_POOL'] = '999'
+      const cfg = loadConfig()
+      expect(cfg.worker.max_pool_workers).toBe(8)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_WORKER_MAX_POOL']
+      } else {
+        process.env['TOKEN_GOAT_WORKER_MAX_POOL'] = orig
+      }
+    }
+  })
+
+  it('clamps a below-range env var override for TOKEN_GOAT_HOOK_WATCHDOG_MS to the documented min (100ms)', () => {
+    const orig = process.env['TOKEN_GOAT_HOOK_WATCHDOG_MS']
+    try {
+      process.env['TOKEN_GOAT_HOOK_WATCHDOG_MS'] = '1'
+      const cfg = loadConfig()
+      expect(cfg.hooks.watchdog_ms).toBe(100)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_HOOK_WATCHDOG_MS']
+      } else {
+        process.env['TOKEN_GOAT_HOOK_WATCHDOG_MS'] = orig
+      }
+    }
+  })
+
   it('mtime cache: second call with unchanged file returns same object reference', () => {
     // Write a minimal TOML so the file exists
     fs.writeFileSync(_testConfigPath, '[compact_assist]\nmin_events = 4\n', 'utf8')

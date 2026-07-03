@@ -75,6 +75,26 @@ describe('env parsers', () => {
       process.env[KEY] = '+8'
       expect(envInt(KEY, 0)).toBe(8)
     })
+
+    it('does not clamp when min/max are omitted (unchanged behavior)', () => {
+      process.env[KEY] = '99999999'
+      expect(envInt(KEY, 10)).toBe(99999999)
+    })
+
+    it('clamps a value above max into range when min/max are supplied', () => {
+      process.env[KEY] = '99999999'
+      expect(envInt(KEY, 10, 1, 3600)).toBe(3600)
+    })
+
+    it('clamps a value below min into range when min/max are supplied', () => {
+      process.env[KEY] = '-5'
+      expect(envInt(KEY, 10, 1, 3600)).toBe(1)
+    })
+
+    it('leaves an in-range value untouched when min/max are supplied', () => {
+      process.env[KEY] = '42'
+      expect(envInt(KEY, 10, 1, 3600)).toBe(42)
+    })
   })
 
   describe('envStr', () => {
