@@ -15,13 +15,27 @@ import { pathEqClause } from './sql_path.js'
 const _require = createRequire(import.meta.url)
 
 // Optional transformer import; catches both missing package and load failures.
+// Deferred to first use (ensureTransformerLoaded), not required eagerly at module
+// load time: @xenova/transformers transitively pulls in its own bundled onnxruntime-node
+// and a nested, differently-versioned copy of sharp's native libvips binaries.
+// Loading it eagerly here — as every real CLI invocation does, since index_prune.ts
+// (needed by cmdIndex) imports this module unconditionally — poisons the process's
+// Windows DLL search order before image_shrink.ts's own `sharp` gets a chance to
+// dlopen, breaking image shrinking with ERR_DLOPEN_FAILED even though sharp loads
+// fine in isolation. Only requiring it when a caller actually needs the transformer
+// (isAvailable()/embedTexts()) means the CLI's hot hook path never touches it.
 let _transformer: unknown = null
 let _transformerError: Error | null = null
+let _transformerLoadAttempted = false
 
-try {
-  _transformer = _require('@xenova/transformers')
-} catch (e) {
-  _transformerError = e instanceof Error ? e : new Error(String(e))
+function ensureTransformerLoaded(): void {
+  if (_transformerLoadAttempted) return
+  _transformerLoadAttempted = true
+  try {
+    _transformer = _require('@xenova/transformers')
+  } catch (e) {
+    _transformerError = e instanceof Error ? e : new Error(String(e))
+  }
 }
 
 // BAAI/bge-small-en-v1.5 is the smallest BGE model for code retrieval. The 384-dimensional output is native to this checkpoint; do not change DEFAULT_DIM without re-creating all chunk_vectors tables.
@@ -184,6 +198,7 @@ export interface SearchHit {
  * Returns false if @xenova/transformers is not installed or failed to load.
  */
 export function isAvailable(): boolean {
+  ensureTransformerLoaded()
   return _transformer !== null && _transformerError === null
 }
 
