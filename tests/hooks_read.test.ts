@@ -45,6 +45,32 @@ function readEvent(filePath: string | undefined): HookEvent {
   }
 }
 
+// A Read call with offset/limit — the real Read tool schema's line-window params.
+function readEventWithRange(filePath: string, offset?: number, limit?: number): HookEvent {
+  const toolInput: Record<string, unknown> = { file_path: filePath }
+  if (offset !== undefined) toolInput['offset'] = offset
+  if (limit !== undefined) toolInput['limit'] = limit
+  return {
+    eventName: 'pre_tool_use',
+    toolName: 'Read',
+    toolInput,
+    sessionId: 'test',
+    raw: {},
+  }
+}
+
+// A file made of many short lines totaling roughly `totalBytes` — realistic multi-line
+// content (as opposed to a single padded-out line), so line-based offset/limit slicing
+// actually has lines to work with.
+function makeTmpMultilineFile(totalBytes: number): string {
+  const lineTemplate = (i: number) => `line ${i.toString().padStart(6, '0')}: some sample content here\n`
+  const perLine = lineTemplate(0).length
+  const lineCount = Math.ceil(totalBytes / perLine)
+  let content = ''
+  for (let i = 0; i < lineCount; i++) content += lineTemplate(i)
+  return makeTmpFile(content)
+}
+
 function grepEvent(filePath: string | undefined): HookEvent {
   return {
     eventName: 'pre_tool_use',
@@ -137,6 +163,94 @@ describe('preReadHandler', () => {
       expect(result.message).toContain('To edit it anyway')
       expect(result.message).toContain('token-goat replace')
     }
+  })
+
+  // Regression coverage for the false "retry with offset/limit" advice bug: the deny message
+  // told callers to retry with offset/limit, but the hook never read those params at all, so
+  // the retry always hit the byte-identical deny. These tests drive the fix end-to-end.
+  it('allows a large file read when offset/limit narrows it to a small slice', () => {
+    const p = makeTmpMultilineFile(600 * 1024)
+
+    // Whole-file request still denies (sanity check the fixture is genuinely large).
+    const wholeFile = preReadHandler(readEvent(p))
+    expect(wholeFile.hookType).toBe('deny')
+
+    // A real, bounded offset/limit request covering only a handful of lines is a tiny read —
+    // it must be let through instead of gating on the whole file's size.
+    const result = preReadHandler(readEventWithRange(p, 1, 50))
+    expect(result.hookType).not.toBe('deny')
+  })
+
+  it('still denies a large file read with no offset/limit (a whole-file request)', () => {
+    const p = makeTmpMultilineFile(600 * 1024)
+
+    const result = preReadHandler(readEvent(p))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is very large')
+    }
+  })
+
+  it('still denies a large file read when offset/limit is given but the requested window is itself still large', () => {
+    const p = makeTmpMultilineFile(600 * 1024)
+
+    // limit covers effectively the whole file — not a genuinely narrowed request.
+    const result = preReadHandler(readEventWithRange(p, 1, 100_000))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is very large')
+      // True advice now that offset/limit is honored: tells the caller to narrow it further,
+      // not to blindly retry with offset/limit again (which is what caused the original bug).
+      expect(result.message).toContain('narrow the range further')
+    }
+  })
+
+  // Regression coverage for the undercounted-trustworthy scan-cap bug: scanRequestedSlice's
+  // cap-hit branch used to mark its partial in-window byte count "trustworthy" any time the
+  // window had merely started (lineNumber >= offset), even though the window hadn't closed and
+  // the count was only "bytes seen so far", not the true window size. That handed the large-file
+  // gate an undercounted figure and let a genuinely huge read pass as safe.
+  it('does not let a huge read pass as safe via an undercounted trustworthy slice estimate when the scan cap is hit mid-window (fail-on-buggy: the cap-hit branch previously trusted a partial in-window byte count whenever the window had started, instead of falling back to gating on the whole file)', () => {
+    // 2.3MB file: comfortably past the 2MB scan cap, so the scan gives up before EOF. With
+    // offset=55100 sitting just below the ~55189th line where the cap lands, and limit=500000
+    // keeping the window open well past the cap, the scan has only counted a few KB in-window
+    // by the time it gives up — the old bug trusted that tiny partial count and let this
+    // through, even though the true requested window is enormous relative to the file.
+    const p = makeTmpMultilineFile(2_300_000)
+
+    const result = preReadHandler(readEventWithRange(p, 55100, 500000))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is very large')
+    }
+  })
+
+  it('denies a large mostly-single-line (base64-like) file without suggesting offset/limit, since line-windowing cannot shrink it', () => {
+    const p = makeTmpFile('x'.repeat(600 * 1024))
+
+    // Retrying with offset/limit — exactly what the old message suggested — must not be
+    // treated as a valid narrowing for this shape, since there's ~1 line to window over.
+    const result = preReadHandler(readEventWithRange(p, 1, 50))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('is very large')
+      expect(result.message).toContain('mostly one long line')
+      // Must not repeat the old, false "use offset/limit" suggestion for this content shape.
+      expect(result.message).not.toContain('Use Read with offset/limit to sample specific sections')
+      expect(result.message).not.toContain('narrow the range further')
+    }
+  })
+
+  it('allows a mid-size (20-100KB) .txt read when offset/limit narrows it to a small slice — exercises the universal file-type-handler branch (handleTxt), not just the top-level large-file gate', () => {
+    // 50KB: above FILE_TYPE_THRESHOLDS.txt (20KB) but below LARGE_FILE_BYTES (100KB), so this
+    // is gated by the per-type handler branch, not the earlier whole-file size branch.
+    const p = makeTmpMultilineFile(50 * 1024)
+
+    const whole = preReadHandler(readEvent(p))
+    expect(whole.hookType).toBe('deny')
+
+    const sliced = preReadHandler(readEventWithRange(p, 1, 50))
+    expect(sliced.hookType).not.toBe('deny')
   })
 
   it('does not poison re-read dedup when a first read is denied for being too large (>500KB) — a retry sees the same deny, not "already read"', () => {
@@ -276,6 +390,43 @@ describe('preReadHandler', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  it('does not hard-deny repeated Grep calls scoped to the same directory with different patterns — Grep cost/relevance depends on the pattern, not just the path, so it is exempt from the count-based re-read dedup', () => {
+    const dir = '/project/src/components'
+    const grepWithPattern = (pattern: string): HookEvent => ({
+      eventName: 'pre_tool_use',
+      toolName: 'Grep',
+      toolInput: { path: dir, pattern },
+      sessionId: 'test',
+      raw: {},
+    })
+
+    const r1 = preReadHandler(grepWithPattern('useEffect'))
+    expect(r1.hookType).not.toBe('deny')
+
+    const r2 = preReadHandler(grepWithPattern('useState'))
+    expect(r2.hookType).not.toBe('deny')
+
+    // Before the fix, this 3rd Grep call on the same directory hard-denied via the
+    // count-based re-read dedup (reads >= 2), even though the pattern differs each time.
+    const r3 = preReadHandler(grepWithPattern('useMemo'))
+    expect(r3.hookType).not.toBe('deny')
+
+    const r4 = preReadHandler(grepWithPattern('useCallback'))
+    expect(r4.hookType).not.toBe('deny')
+  })
+
+  it('still hard-denies the 3rd+ Read call on the same path — the Grep exemption does not leak to Read', () => {
+    const dir = '/project/src/components'
+    const r1 = preReadHandler(readEvent(dir))
+    expect(r1.hookType).not.toBe('deny')
+
+    const r2 = preReadHandler(readEvent(dir))
+    expect(r2.hookType).not.toBe('deny')
+
+    const r3 = preReadHandler(readEvent(dir))
+    expect(r3.hookType).toBe('deny')
+  })
+
   it('denies 2nd read of any .md file regardless of size', () => {
     const p = _makeTmpMdFile()
     recordFileRead(normalizePath(p))
@@ -352,6 +503,7 @@ Examples here`
       expect(result.message).toContain('# Title')
       expect(result.message).toContain('## Installation')
       expect(result.message).toContain('token-goat section')
+      expect(result.message).toContain('token-goat replace')
     }
   })
 
@@ -377,6 +529,7 @@ Examples here`
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('Large markdown file')
+      expect(result.message).toContain('token-goat replace')
     }
   })
 
