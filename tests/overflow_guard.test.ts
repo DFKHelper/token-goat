@@ -126,4 +126,18 @@ describe('overflow_guard', () => {
       expect(firstLine).toBe('y'.repeat(charBudget))
     })
   })
+
+  it('does not split UTF-16 surrogate pairs when trimming to budget', () => {
+    const emoji = '😀'
+    const text = 'x'.repeat(5) + emoji + 'y'.repeat(100) + '\n' + 'z'.repeat(100)
+    const result = trimToBudget(text, 200)
+    const resultLines = result.split('\n')
+    const firstLine = resultLines[0]!
+    if (firstLine.length > 0) {
+      const lastCodeUnit = firstLine.charCodeAt(firstLine.length - 1)
+      const isHighSurrogate = lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff
+      expect(isHighSurrogate).toBe(false)
+    }
+  })
+
 })

@@ -127,6 +127,18 @@ function applyFilters(line: string): string | null {
 }
 
 /** Truncate one line to `maxLineLength`, appending a count of elided chars. */
+const safeSlice = (str: string, endIndex: number): string => {
+  // Ensure we don't split a UTF-16 surrogate pair. If the code unit at endIndex
+  // is a low surrogate (0xDC00-0xDFFF), back up one so the high surrogate stays with it.
+  if (endIndex > 0 && endIndex < str.length) {
+    const codeUnit = str.charCodeAt(endIndex)
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      endIndex--
+    }
+  }
+  return str.slice(0, endIndex)
+}
+
 function truncateLine(line: string, maxLineLength: number): string {
   if (line.length <= maxLineLength) return line
   // The elided count itself sits in the message, and its digit width affects how much content fits. Reserve digits for the worst case (eliding the whole line) so the rendered message never overflows maxLineLength, then report the exact number of characters actually dropped (line.length - contentLength) — larger than the naive line.length - maxLineLength, since the message also costs budget.
@@ -134,12 +146,12 @@ function truncateLine(line: string, maxLineLength: number): string {
 
   // If even the message alone can't fit, hard-slice (rare edge case).
   if (reservedMessageLen >= maxLineLength) {
-    return line.slice(0, maxLineLength)
+    return safeSlice(line, maxLineLength)
   }
 
   const contentLength = maxLineLength - reservedMessageLen
   const elided = line.length - contentLength
-  return `${line.slice(0, contentLength)}… [${elided} chars truncated]`
+  return `${safeSlice(line, contentLength)}… [${elided} chars truncated]`
 }
 
 /**
