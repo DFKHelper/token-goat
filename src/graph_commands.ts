@@ -4,7 +4,8 @@
  * Implements callers, call-chain, impact, dead, deps, types, and scope.
  * All commands query the global symbol index (one global.db keyed by absolute path).
  * Pure exported helpers (enclosingSymbol, bfsCallChains, looksLikeTypeClass,
- * isDeadSymbol) are kept side-effect-free so they can be unit-tested without a DB.
+ * isDeadSymbol, compareHopEntries) are kept side-effect-free so they can be
+ * unit-tested without a DB.
  */
 
 import * as fs from 'node:fs'
@@ -215,6 +216,22 @@ export interface ImpactOptions {
   json?: boolean
 }
 
+/**
+ * Deterministic tiebreak for impact-hop entries: primary key is hop distance,
+ * secondary is a plain ordinal (UTF-16 code-unit) string comparison. Never use
+ * localeCompare() here -- with no explicit locale it resolves to the host's
+ * default ICU collation (Windows regional setting, or LANG/LC_ALL on
+ * Linux/CI), which genuinely differs across locales for non-ASCII names (for
+ * example sv-SE collates the letter after 'z' in the Swedish alphabet
+ * differently than en-US/de-DE do). Since runImpact() sorts BEFORE slicing to
+ * top-N, a locale-dependent tiebreak can silently return a different SET of
+ * impacted callers on different machines, not just a different order.
+ */
+export function compareHopEntries(a: readonly [string, number], b: readonly [string, number]): number {
+  if (a[1] !== b[1]) return a[1] - b[1]
+  return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0
+}
+
 export function runImpact(opts: ImpactOptions): number {
   const top = opts.top ?? 20
   const DEPTH_CAP = 8
@@ -245,7 +262,7 @@ export function runImpact(opts: ImpactOptions): number {
   hops.delete(opts.symbol)
 
   const sorted = [...hops.entries()]
-    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+    .sort(compareHopEntries)
     .slice(0, top)
 
   if (sorted.length === 0) {
