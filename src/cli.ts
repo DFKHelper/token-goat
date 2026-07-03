@@ -809,7 +809,8 @@ function parseMaxStdinMB(): number {
   return maxMB
 }
 
-function readTextFileBounded(filePath: string, label: string, allowStdIn = false): string {
+/** Shared validation + raw read for readTextFileBounded and cmdReplace's target-file read. Returns the file's exact bytes, unmodified — callers that need text decode it themselves. */
+function readFileBoundedRaw(filePath: string, label: string, allowStdIn = false): Buffer {
   if (!filePath || !filePath.trim()) {
     throw new CliError(`${label} path cannot be empty`)
   }
@@ -829,11 +830,15 @@ function readTextFileBounded(filePath: string, label: string, allowStdIn = false
     if (st.size > maxBytes) {
       throw new CliError(`${label} '${filePath}' exceeds size limit (${Math.round(st.size / 1024 / 1024)} MB); set TOKEN_GOAT_MAX_STDIN_MB to override`)
     }
-    return fs.readFileSync(filePath, 'utf8')
+    return fs.readFileSync(filePath)
   } catch (e) {
     if (e instanceof CliError) throw e
     mapFsError(e, filePath)
   }
+}
+
+function readTextFileBounded(filePath: string, label: string, allowStdIn = false): string {
+  return readFileBoundedRaw(filePath, label, allowStdIn).toString('utf8')
 }
 
 function decodeBase64Text(payload: string, label: string): string {
@@ -987,10 +992,32 @@ function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Prom
   })
 }
 
+/** Diagnoses a zero-match --old-from/--old-b64 lookup for the common near-miss cause: the same content is present in the file but differs from oldText only by a trailing newline or by CRLF-vs-LF line endings. Returns a message suffix to fold into the error, or undefined if no such near match exists. Diagnostic only — it never changes what gets matched or written. */
+function diagnoseNearMiss(targetText: string, oldText: string): string | undefined {
+  // oldText carries a trailing newline the file doesn't have at that exact position (e.g. a snippet file saved with an added final newline).
+  const oldWithoutTrailingNewline = oldText.replace(/\r?\n$/, '')
+  if (oldWithoutTrailingNewline !== oldText && oldWithoutTrailingNewline !== '' && targetText.includes(oldWithoutTrailingNewline)) {
+    return `a near-match exists that differs only by a trailing newline — --old-from/--old-b64 has a trailing newline that is not present at that point in the file; check the exact content`
+  }
+  // Whole-snippet CRLF vs LF mismatch.
+  if (oldText.includes('\r\n')) {
+    const asLF = oldText.replace(/\r\n/g, '\n')
+    if (targetText.includes(asLF)) {
+      return `a near-match exists that differs only by line endings — --old-from/--old-b64 uses CRLF but the file uses LF at that location; check the exact content`
+    }
+  } else if (oldText.includes('\n')) {
+    const asCRLF = oldText.replace(/\n/g, '\r\n')
+    if (targetText.includes(asCRLF)) {
+      return `a near-match exists that differs only by line endings — --old-from/--old-b64 uses LF but the file uses CRLF at that location; check the exact content`
+    }
+  }
+  return undefined
+}
+
 function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; oldB64?: string; newB64?: string; all?: boolean }): void {
   validateWritablePath(file, 'target file')
 
-  const targetText = readTextFileBounded(file, 'target file', true)
+  const targetBuf = readFileBoundedRaw(file, 'target file', true)
   const usingFrom = opts.oldFrom !== undefined || opts.newFrom !== undefined
   const usingB64 = opts.oldB64 !== undefined || opts.newB64 !== undefined
 
@@ -1021,23 +1048,43 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
     throw new CliError('old string cannot be empty')
   }
 
-  let occurrences = 0
+  // Byte-exact match/replace: the target file may contain bytes that are not valid UTF-8 anywhere
+  // in the file, not just near the edit. Decoding the whole file to a string (even losslessly for
+  // the matched region) and re-encoding it would silently replace every such byte with U+FFFD
+  // (ef bf bd) on write. Matching and splicing on the raw Buffer leaves every byte outside the
+  // matched span — valid UTF-8 or not — completely untouched.
+  const oldBytes = Buffer.from(oldText, 'utf8')
+  const newBytes = Buffer.from(newText, 'utf8')
+
+  const matches: number[] = []
   let cursor = 0
-  while ((cursor = targetText.indexOf(oldText, cursor)) !== -1) {
-    occurrences += 1
-    cursor += oldText.length
+  while ((cursor = targetBuf.indexOf(oldBytes, cursor)) !== -1) {
+    matches.push(cursor)
+    cursor += oldBytes.length
   }
+  const occurrences = matches.length
 
   if (occurrences === 0) {
-    throw new CliError(`old string not found in ${file}`)
+    // Diagnostic only: decoding lossily here is fine — it only shapes the human-readable near-miss
+    // hint and never feeds back into what gets matched or written.
+    const nearMiss = diagnoseNearMiss(targetBuf.toString('utf8'), oldText)
+    throw new CliError(nearMiss !== undefined ? `old string not found in ${file} — ${nearMiss}` : `old string not found in ${file}`)
   }
   if (occurrences > 1 && !opts.all) {
     throw new CliError(`old string appears ${occurrences} times in ${file} — pass --all to replace every occurrence, or provide a more specific match`)
   }
 
-  const replaced = occurrences === 1 && !opts.all ? targetText.replace(oldText, () => newText) : targetText.replaceAll(oldText, () => newText)
+  const parts: Buffer[] = []
+  let prevEnd = 0
+  for (const pos of matches) {
+    parts.push(targetBuf.subarray(prevEnd, pos))
+    parts.push(newBytes)
+    prevEnd = pos + oldBytes.length
+  }
+  parts.push(targetBuf.subarray(prevEnd))
+  const replacedBuf = Buffer.concat(parts)
   try {
-    atomicWriteBuffer(file, Buffer.from(replaced, 'utf8'))
+    atomicWriteBuffer(file, replacedBuf)
   } catch (e) {
     mapFsError(e, undefined, file)
   }
