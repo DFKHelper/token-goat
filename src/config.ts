@@ -88,8 +88,6 @@ export interface ImageShrinkConfig {
   avif_quality: number
   jpeg_quality: number
   max_image_pixels: number
-  orphan_sweep_enabled: boolean
-  orphan_age_secs: number
   screenshot_redirect: boolean
 }
 
@@ -278,8 +276,6 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     avif_quality: 60,
     jpeg_quality: 75,
     max_image_pixels: 16_000_000,
-    orphan_sweep_enabled: true,
-    orphan_age_secs: 604800,
     screenshot_redirect: true,
   },
   repomap: {
@@ -650,8 +646,6 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   is_cfg.avif_quality = validatedInt(is_raw['avif_quality'], is_cfg.avif_quality, 1, 100)
   is_cfg.jpeg_quality = validatedInt(is_raw['jpeg_quality'], is_cfg.jpeg_quality, 1, 100)
   is_cfg.max_image_pixels = validatedInt(is_raw['max_image_pixels'], is_cfg.max_image_pixels, 0, 1_000_000_000)
-  is_cfg.orphan_sweep_enabled = validatedBool(is_raw['orphan_sweep_enabled'], is_cfg.orphan_sweep_enabled)
-  is_cfg.orphan_age_secs = validatedInt(is_raw['orphan_age_secs'], is_cfg.orphan_age_secs, 1, 2_592_000)
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
   is_cfg.prefer_avif = envBool('TOKEN_GOAT_PREFER_AVIF', is_cfg.prefer_avif)
   is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, 0, 1_000_000_000)
@@ -920,8 +914,6 @@ export function saveConfig(config: Config): void {
       avif_quality: is_cfg.avif_quality,
       jpeg_quality: is_cfg.jpeg_quality,
       max_image_pixels: is_cfg.max_image_pixels,
-      orphan_sweep_enabled: is_cfg.orphan_sweep_enabled,
-      orphan_age_secs: is_cfg.orphan_age_secs,
       screenshot_redirect: is_cfg.screenshot_redirect,
     },
     repomap: {
