@@ -28,6 +28,16 @@ function formatBytes(n: number): string {
   return `${(n / 1_048_576).toFixed(1)} MB`
 }
 
+/** Advice for a file whose content shape (e.g. one long minified/base64 line) makes any
+ *  line-based offset/limit window meaningless — point at raw byte sampling instead. */
+export function BYTE_RANGE_ADVICE(filePath: string): string {
+  return (
+    `This file is mostly one long line (e.g. base64 or minified content) — offset/limit ` +
+    `line-windowing won't shrink a read here. Sample raw bytes instead, e.g.: ` +
+    `dd if="${filePath}" bs=1 skip=<N> count=<M> status=none`
+  )
+}
+
 /** PDF handler — always blocks regardless of size. */
 export function handlePdf(filePath: string, contentLength: number): FileTypeResult {
   return {
