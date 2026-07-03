@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 
@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // pattern as tests/index_prune.test.ts. Every other fs call passes straight through to the real
 // module untouched; only writeSync is ever intercepted, and only for the one call after the flag
 // is set.
-const mockState = vi.hoisted(() => ({ failNextWrite: false }))
+const mockState = vi.hoisted(() => ({ failNextWrite: false, failNextMkdir: '' }))
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
   const guardedWriteSync = ((...args: Parameters<typeof fs.writeSync>) => {
@@ -19,7 +19,15 @@ vi.mock('node:fs', async (importOriginal) => {
     }
     return actual.writeSync(...args)
   }) as typeof fs.writeSync
-  return { ...actual, default: actual, writeSync: guardedWriteSync }
+  const guardedMkdirSync = ((...args: Parameters<typeof fs.mkdirSync>) => {
+    if (mockState.failNextMkdir) {
+      const code = mockState.failNextMkdir
+      mockState.failNextMkdir = ''
+      throw Object.assign(new Error(`${code}: simulated mkdir failure`), { code })
+    }
+    return actual.mkdirSync(...args)
+  }) as typeof fs.mkdirSync
+  return { ...actual, default: actual, writeSync: guardedWriteSync, mkdirSync: guardedMkdirSync }
 })
 
 import type * as fs from 'node:fs'
@@ -251,13 +259,20 @@ describe('ensureDirSync', () => {
     expect(existsSync(newDir)).toBe(true)
   })
 
-  it('does not throw when called on an existing directory', () => {
-    const existingDir = path.join(testDir, 'existing-dir')
-    mkdirSync(existingDir, { recursive: true })
-    // Second call to ensureDirSync on the same path should not throw
+  it('swallows a synthetic EEXIST from a racing mkdirSync (recursive:true does not fully close this window)', () => {
+    const racyDir = path.join(testDir, 'racy-dir')
+    mockState.failNextMkdir = 'EEXIST'
     expect(() => {
-      ensureDirSync(existingDir)
+      ensureDirSync(racyDir)
     }).not.toThrow()
+  })
+
+  it('still propagates a non-EEXIST mkdirSync error (e.g. EACCES)', () => {
+    const deniedDir = path.join(testDir, 'denied-dir')
+    mockState.failNextMkdir = 'EACCES'
+    expect(() => {
+      ensureDirSync(deniedDir)
+    }).toThrow(/EACCES/)
   })
 
   it('creates nested directories with recursive behavior', () => {
