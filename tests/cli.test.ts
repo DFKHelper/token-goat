@@ -435,6 +435,73 @@ describe('token-goat CLI', () => {
       }
     })
 
+    it('replace zero matches reports a trailing-newline near-match diagnostic instead of a bare "not found"', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-trail-${Date.now()}.txt`)
+      const oldFile = path.join(os.tmpdir(), `tg-rpl-trail-old-${Date.now()}.txt`)
+      const newFile = path.join(os.tmpdir(), `tg-rpl-trail-new-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'alpha\nbeta\ngamma', 'utf8')
+      fs.writeFileSync(oldFile, 'beta\ngamma\n', 'utf8')
+      fs.writeFileSync(newFile, 'BETA\nGAMMA', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('old string not found')
+        expect(r.stderr).toContain('near-match')
+        expect(r.stderr).toContain('trailing newline')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha\nbeta\ngamma')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(oldFile, { force: true })
+        fs.rmSync(newFile, { force: true })
+      }
+    })
+
+    it('replace zero matches reports a CRLF-vs-LF near-match diagnostic', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-${Date.now()}.txt`)
+      const oldFile = path.join(os.tmpdir(), `tg-rpl-crlf-old-${Date.now()}.txt`)
+      const newFile = path.join(os.tmpdir(), `tg-rpl-crlf-new-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'alpha\r\nbeta\r\ngamma\r\n', 'utf8')
+      fs.writeFileSync(oldFile, 'beta\ngamma', 'utf8')
+      fs.writeFileSync(newFile, 'BETA\nGAMMA', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('old string not found')
+        expect(r.stderr).toContain('near-match')
+        expect(r.stderr).toContain('line endings')
+        expect(r.stderr).toContain('CRLF')
+        // Diagnostic only — the file must be left untouched.
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha\r\nbeta\r\ngamma\r\n')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(oldFile, { force: true })
+        fs.rmSync(newFile, { force: true })
+      }
+    })
+
+    it('replace zero matches reports a CRLF-vs-LF near-match diagnostic (opposite direction)', () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-crlf-opp-${Date.now()}.txt`)
+      const oldFile = path.join(os.tmpdir(), `tg-rpl-crlf-opp-old-${Date.now()}.txt`)
+      const newFile = path.join(os.tmpdir(), `tg-rpl-crlf-opp-new-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'alpha\nbeta\ngamma\n', 'utf8')
+      fs.writeFileSync(oldFile, 'beta\r\ngamma', 'utf8')
+      fs.writeFileSync(newFile, 'BETA\r\nGAMMA', 'utf8')
+      try {
+        const r = runCli(['replace', tmp, '--old-from', oldFile, '--new-from', newFile])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('old string not found')
+        expect(r.stderr).toContain('near-match')
+        expect(r.stderr).toContain('line endings')
+        expect(r.stderr).toContain('LF')
+        // Diagnostic only — the file must be left untouched.
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('alpha\nbeta\ngamma\n')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+        fs.rmSync(oldFile, { force: true })
+        fs.rmSync(newFile, { force: true })
+      }
+    })
+
     it('replace multiple matches without --all exits 1', () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-multi-${Date.now()}.txt`)
       fs.writeFileSync(tmp, 'red blue red blue red', 'utf8')
