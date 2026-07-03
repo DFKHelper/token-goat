@@ -109,6 +109,31 @@ CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
 END;
 `
 
+// Bump this the day SCHEMA_SQL changes in a way `CREATE TABLE IF NOT EXISTS` can't express on an
+// already-populated table -- a column add/rename/drop, a type change, a data backfill -- and add
+// the matching step to MIGRATIONS below. It represents the schema as it exists today; every
+// database on disk right now (freshly created or from a prior release) is already compatible
+// with version 1, since nothing has structurally changed yet.
+export const SCHEMA_VERSION = 1 as const
+
+type Migration = (conn: BetterSqlite3Database) => void
+
+// Keyed by the FROM version: MIGRATIONS[1] upgrades a v1 database to v2, MIGRATIONS[2] upgrades
+// v2 to v3, and so on. Empty today -- there is only one schema version in this codebase's history
+// so far, so there is nothing to migrate from yet. A version with no registered step is a no-op,
+// which also covers a SCHEMA_VERSION bump for a purely additive change already handled by
+// `CREATE TABLE IF NOT EXISTS` in SCHEMA_SQL (no ALTER TABLE needed).
+const MIGRATIONS: Record<number, Migration> = {}
+
+// Walks a database from its stamped version up to (but not including) `toVersion`, applying each
+// registered migration step in order. Does not itself touch PRAGMA user_version -- the caller
+// stamps that once every step has run.
+function runMigrations(conn: BetterSqlite3Database, fromVersion: number, toVersion: number): void {
+  for (let v = fromVersion; v < toVersion; v++) {
+    MIGRATIONS[v]?.(conn)
+  }
+}
+
 /**
  * Apply pragmas + schema to a freshly opened connection.
  *
@@ -125,6 +150,19 @@ function initConnection(conn: BetterSqlite3Database): void {
   conn.pragma('synchronous = NORMAL')
   // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging.
   conn.pragma('busy_timeout = 15000')
+
+  // A single cheap read on every open -- this runs on the hot path (every hook call, every CLI
+  // invocation), so no schema work happens here beyond one PRAGMA read. Anything ABOVE
+  // SCHEMA_VERSION means an older binary opened a database written by a newer one (a downgrade,
+  // or two globally-installed versions pointed at the same project): refuse rather than risk an
+  // old binary misinterpreting or corrupting a schema shape it doesn't understand.
+  const storedVersion = Number(conn.pragma('user_version', { simple: true }))
+  if (storedVersion > SCHEMA_VERSION) {
+    throw new Error(
+      `db: index schema version ${storedVersion} is newer than this token-goat build supports (expected ${SCHEMA_VERSION}). ` +
+        `Update token-goat, or delete the stale index database and let it rebuild.`,
+    )
+  }
 
   conn.exec(SCHEMA_SQL)
 
@@ -146,6 +184,17 @@ function initConnection(conn: BetterSqlite3Database): void {
     )
   } catch {
     // sqlite-vec not installed or extension load failed — semantic search is disabled but every other index feature works.
+  }
+
+  // BELOW SCHEMA_VERSION covers two cases identically: a brand-new DB (storedVersion 0, tables
+  // just created above) and an old DB from a pre-migration-mechanism release (also storedVersion
+  // 0, since older code never stamped it, but already schema-shape-compatible with version 1 --
+  // that constant IS today's schema). Both are stamped current with no real migration step to
+  // run. A genuine future gap -- SCHEMA_VERSION bumped for a change `CREATE TABLE IF NOT EXISTS`
+  // can't express, e.g. an ALTER TABLE on an existing table -- runs through MIGRATIONS above.
+  if (storedVersion < SCHEMA_VERSION) {
+    runMigrations(conn, storedVersion, SCHEMA_VERSION)
+    conn.pragma(`user_version = ${SCHEMA_VERSION}`)
   }
 }
 
