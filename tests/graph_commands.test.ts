@@ -8,12 +8,13 @@ import { readdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { join, resolve, delimiter } from 'node:path'
 import { tmpdir } from 'node:os'
 
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import {
   bfsCallChains,
+  compareHopEntries,
   enclosingSymbol,
   findCycles,
   isDeadSymbol,
@@ -482,6 +483,80 @@ describe('runImpact integration', () => {
   it('exits 1 for an unknown symbol', () => {
     const code = runImpact({ symbol: '__xyzzy_no_such_symbol_9f3k__' })
     expect(code).toBe(1)
+  })
+})
+
+// ---- compareHopEntries (runImpact tiebreak) ---------------------------------
+//
+// Regression coverage for a locale-dependent-output bug: runImpact() used to
+// tiebreak same-hop-distance entries with a no-explicit-locale
+// localeCompare(), which resolves to the host's default ICU collation. Because
+// the sort ran BEFORE slicing to top-N, a tie at the boundary meant the
+// returned top-N SET (not just its order) could differ across machines with
+// different regional settings. compareHopEntries() replaces that with a
+// plain ordinal (UTF-16 code-unit) comparison so the same input always yields
+// the same top-N set everywhere.
+
+describe('compareHopEntries (runImpact tiebreak)', () => {
+  it('demonstrates the root cause: localeCompare() collates the same pair of names in opposite order across locales', () => {
+    expect('öffnen'.localeCompare('zebra_util', 'en')).toBeLessThan(0)
+    expect('öffnen'.localeCompare('zebra_util', 'sv')).toBeGreaterThan(0)
+  })
+
+  it('sorts by hop distance first, then by ordinal (non-locale) string order', () => {
+    const entries: Array<[string, number]> = [
+      ['zebra_util', 2],
+      ['öffnen', 1],
+      ['apple_util', 1],
+      ['mid_util', 1],
+    ]
+    const sorted = [...entries].sort(compareHopEntries).map(([name]) => name)
+    expect(sorted).toEqual(['apple_util', 'mid_util', 'öffnen', 'zebra_util'])
+  })
+
+  it('never calls String.prototype.localeCompare, so it cannot be locale-dependent on any host', () => {
+    const spy = vi.spyOn(String.prototype, 'localeCompare')
+    const entries: Array<[string, number]> = [
+      ['zebra_util', 1],
+      ['öffnen', 1],
+      ['apple_util', 1],
+    ]
+    entries.sort(compareHopEntries)
+    const callCount = spy.mock.calls.length
+    spy.mockRestore()
+    expect(callCount).toBe(0)
+  })
+
+  it('regression: a boundary tie no longer changes the returned top-N SET across host locales', () => {
+    // Reproduces runImpact's post-BFS reduction step: hop-tied entries get
+    // sorted, then sliced to top-N. Four names tie at hop=1; top=3 means
+    // exactly one of them gets dropped, and which one depends on the tiebreak.
+    const hops = new Map<string, number>([
+      ['apple_util', 1],
+      ['öffnen', 1],
+      ['zebra_util', 1],
+      ['mid_util', 1],
+    ])
+    const top = 3
+
+    // Pre-fix behavior, reconstructed here only to document the bug (not
+    // exercised by the fix itself): an en-US/de-DE host's default localeCompare()
+    // tiebreak drops 'zebra_util' and keeps 'öffnen'; an sv-SE host's drops
+    // 'öffnen' and keeps 'zebra_util' instead. That is a different SET, not
+    // merely a different order, which is exactly the bug this test guards.
+    const preFixEn = [...hops.entries()]
+      .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'en'))
+      .slice(0, top)
+      .map(([name]) => name)
+    const preFixSv = [...hops.entries()]
+      .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0], 'sv'))
+      .slice(0, top)
+      .map(([name]) => name)
+    expect(new Set(preFixEn)).not.toEqual(new Set(preFixSv))
+
+    // Fixed behavior: exactly one deterministic set regardless of host locale.
+    const fixed = [...hops.entries()].sort(compareHopEntries).slice(0, top).map(([name]) => name)
+    expect(new Set(fixed)).toEqual(new Set(['apple_util', 'mid_util', 'zebra_util']))
   })
 })
 
