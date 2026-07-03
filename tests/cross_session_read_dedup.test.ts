@@ -260,4 +260,36 @@ describe('Cross-session read dedup', () => {
     const written = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
     expect(written.files.some((f: { rel_path: string }) => f.rel_path === 'roundtrip.txt')).toBe(true)
   })
+
+  it('sanitizes a session id with path-traversal characters instead of escaping the sessions dir', () => {
+    const repoDir = makeRepo()
+    const project = makeProjectAt(repoDir)
+    const maliciousId = '../../evil'
+
+    writeSessionManifest(project.hash, maliciousId, { files: [] })
+
+    const projectsRoot = path.join(dataDir(), 'projects')
+    const sessionsDir = path.join(projectsRoot, project.hash, 'sessions')
+    const escapedTarget = path.join(projectsRoot, 'evil.json')
+
+    expect(fs.existsSync(escapedTarget)).toBe(false)
+
+    const written = fs.existsSync(sessionsDir) ? fs.readdirSync(sessionsDir) : []
+    for (const file of written) {
+      expect(path.dirname(path.join(sessionsDir, file))).toBe(sessionsDir)
+    }
+  })
+
+  it('still writes and round-trips a normal well-formed session id (UUID) exactly as before', () => {
+    const repoDir = makeRepo()
+    const project = makeProjectAt(repoDir)
+    const uuid = '123e4567-e89b-12d3-a456-426614174000'
+
+    writeSessionManifest(project.hash, uuid, { files: [{ rel_path: 'a.txt', hit_count: 2 }] })
+
+    const manifestPath = path.join(dataDir(), 'projects', project.hash, 'sessions', `${uuid}.json`)
+    expect(fs.existsSync(manifestPath)).toBe(true)
+    const written = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    expect(written).toEqual({ files: [{ rel_path: 'a.txt', hit_count: 2 }] })
+  })
 })
