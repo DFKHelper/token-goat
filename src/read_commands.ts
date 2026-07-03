@@ -13,7 +13,7 @@ import { SKIP_DIRS } from './baseline.js'
 import { querySymbols, queryRefs } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { readSection, listSections, extractSection, listAllSections } from './section_reader.js'
-import { runGit, ensureNewline } from './util.js'
+import { runGit, ensureNewline, foldPath } from './util.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
 
 // ---- constants --------------------------------------------------------------
@@ -219,10 +219,19 @@ export function runRead(opts: ReadOptions): number {
   if (candidates.length === 0) {
     // Partial-path fallback: resolve `worker.ts::foo` against an index keyed by `src/worker.ts` by
     // matching on a path-segment boundary when the exact key misses — a raw endsWith would let a
-    // requested `utils.ts` match an indexed `myutils.ts`.
-    candidates = querySymbols({ name: lookupName, limit: 50 }).filter(
-      (s) => s.filePath === file || endsWithPathBoundary(s.filePath, file) || endsWithPathBoundary(file, s.filePath),
-    )
+    // requested `utils.ts` match an indexed `myutils.ts`. Fold case on case-insensitive
+    // filesystems (Windows/macOS) the same way foldPath/pathEqClause do elsewhere in this
+    // codebase (index_prune.ts, walk_index.ts, worker.ts) — this filter runs in plain JS, not
+    // SQL, so it is not covered by querySymbols' own COLLATE NOCASE and needs its own fold.
+    const foldedFile = foldPath(file)
+    candidates = querySymbols({ name: lookupName, limit: 50 }).filter((s) => {
+      const foldedFilePath = foldPath(s.filePath)
+      return (
+        foldedFilePath === foldedFile ||
+        endsWithPathBoundary(foldedFilePath, foldedFile) ||
+        endsWithPathBoundary(foldedFile, foldedFilePath)
+      )
+    })
   }
 
   // For a dotted spec ("ClassName.methodName"), symBase names the class/container. When the
