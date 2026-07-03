@@ -602,10 +602,10 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   bc.cache_max_bytes = validatedInt(bc_raw['cache_max_bytes'], bc.cache_max_bytes, 1024, 4 * 1024 * 1024 * 1024)
   bc.cache_max_bytes_per_output = validatedInt(bc_raw['cache_max_bytes_per_output'], bc.cache_max_bytes_per_output, 1024, 4 * 1024 * 1024 * 1024)
   bc.enabled = envBool('TOKEN_GOAT_BASH_COMPRESS', bc.enabled)
-  bc.cache_min_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MIN_BYTES', bc.cache_min_bytes)
-  bc.cache_max_file_count = envInt('TOKEN_GOAT_BASH_CACHE_MAX_FILES', bc.cache_max_file_count)
-  bc.cache_max_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES', bc.cache_max_bytes)
-  bc.cache_max_bytes_per_output = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT', bc.cache_max_bytes_per_output)
+  bc.cache_min_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MIN_BYTES', bc.cache_min_bytes, 0, 100 * 1024 * 1024)
+  bc.cache_max_file_count = envInt('TOKEN_GOAT_BASH_CACHE_MAX_FILES', bc.cache_max_file_count, 1, 1_000_000)
+  bc.cache_max_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES', bc.cache_max_bytes, 1024, 4 * 1024 * 1024 * 1024)
+  bc.cache_max_bytes_per_output = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT', bc.cache_max_bytes_per_output, 1024, 4 * 1024 * 1024 * 1024)
 
   const bd_raw = section(raw, 'bash_diff')
   const bd = getDefaultConfig('bash_diff') as BashDiffConfig
@@ -654,7 +654,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   is_cfg.orphan_age_secs = validatedInt(is_raw['orphan_age_secs'], is_cfg.orphan_age_secs, 1, 2_592_000)
   is_cfg.screenshot_redirect = validatedBool(is_raw['screenshot_redirect'], is_cfg.screenshot_redirect)
   is_cfg.prefer_avif = envBool('TOKEN_GOAT_PREFER_AVIF', is_cfg.prefer_avif)
-  is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels)
+  is_cfg.max_image_pixels = envInt('TOKEN_GOAT_MAX_IMAGE_PIXELS', is_cfg.max_image_pixels, 0, 1_000_000_000)
 
   const cur_raw = section(raw, 'curator')
   const cur = getDefaultConfig('curator') as CuratorConfig
@@ -675,7 +675,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const rm = getDefaultConfig('repomap') as RepomapConfig
   rm.compact_file_threshold = validatedInt(rm_raw['compact_file_threshold'], rm.compact_file_threshold, 0, 100_000)
   rm.exclude_tests = validatedBool(rm_raw['exclude_tests'], rm.exclude_tests)
-  rm.compact_file_threshold = envInt('TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD', rm.compact_file_threshold)
+  rm.compact_file_threshold = envInt('TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD', rm.compact_file_threshold, 0, 100_000)
   rm.exclude_tests = envBool('TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS', rm.exclude_tests)
 
   const og_raw = section(raw, 'overflow_guard')
@@ -719,10 +719,10 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.cross_session_read_dedup = validatedBool(hi_raw['cross_session_read_dedup'], hi.cross_session_read_dedup)
   hi.cross_session_read_dedup_ttl_secs = validatedInt(hi_raw['cross_session_read_dedup_ttl_secs'], hi.cross_session_read_dedup_ttl_secs, 1, 86400)
   hi.cross_session_read_dedup = envBool('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP', hi.cross_session_read_dedup)
-  hi.cross_session_read_dedup_ttl_secs = envInt('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS', hi.cross_session_read_dedup_ttl_secs)
+  hi.cross_session_read_dedup_ttl_secs = envInt('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS', hi.cross_session_read_dedup_ttl_secs, 1, 86400)
   hi.mcp_dedup_ttl_secs = validatedInt(hi_raw['mcp_dedup_ttl_secs'], hi.mcp_dedup_ttl_secs, 1, 3600)
-  hi.mcp_dedup_ttl_secs = envInt('TOKEN_GOAT_MCP_DEDUP_TTL_SECS', hi.mcp_dedup_ttl_secs)
-  hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes)
+  hi.mcp_dedup_ttl_secs = envInt('TOKEN_GOAT_MCP_DEDUP_TTL_SECS', hi.mcp_dedup_ttl_secs, 1, 3600)
+  hi.min_session_hint_savings_bytes = envInt('TOKEN_GOAT_SESSION_HINT_MIN_BYTES', hi.min_session_hint_savings_bytes, 0, 1_000_000)
   // parse prompt_triggers
   const triggers_raw = hi_raw['prompt_triggers']
   if (Array.isArray(triggers_raw)) {
@@ -738,7 +738,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const hk_raw = section(raw, 'hooks')
   const hk = getDefaultConfig('hooks') as HooksConfig
   hk.watchdog_ms = validatedInt(hk_raw['watchdog_ms'], hk.watchdog_ms, 100, 30000)
-  hk.watchdog_ms = envInt('TOKEN_GOAT_HOOK_WATCHDOG_MS', hk.watchdog_ms)
+  hk.watchdog_ms = envInt('TOKEN_GOAT_HOOK_WATCHDOG_MS', hk.watchdog_ms, 100, 30000)
 
   const wf_raw = section(raw, 'webfetch')
   const wf = getDefaultConfig('webfetch') as WebFetchConfig
@@ -756,7 +756,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   wk.max_pool_workers = validatedInt(wk_raw['max_pool_workers'], wk.max_pool_workers, 1, 8)
   wk.blocked_roots = validatedStrList(wk_raw['blocked_roots'], wk.blocked_roots)
   wk.watchdog_enabled = envBool('TOKEN_GOAT_WORKER_WATCHDOG', wk.watchdog_enabled)
-  wk.max_pool_workers = envInt('TOKEN_GOAT_WORKER_MAX_POOL', wk.max_pool_workers)
+  wk.max_pool_workers = envInt('TOKEN_GOAT_WORKER_MAX_POOL', wk.max_pool_workers, 1, 8)
 
   const ix_raw = section(raw, 'indexing')
   const ix = getDefaultConfig('indexing') as IndexingConfig
@@ -772,7 +772,7 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const ctx_raw = section(raw, 'context')
   const ctx = getDefaultConfig('context') as ContextConfig
   ctx.model_window_tokens = validatedInt(ctx_raw['model_window_tokens'], ctx.model_window_tokens, 10_000, 10_000_000)
-  ctx.model_window_tokens = envInt('TOKEN_GOAT_MODEL_WINDOW_TOKENS', ctx.model_window_tokens)
+  ctx.model_window_tokens = envInt('TOKEN_GOAT_MODEL_WINDOW_TOKENS', ctx.model_window_tokens, 10_000, 10_000_000)
 
   const inj_raw = section(raw, 'injection')
   const inj = getDefaultConfig('injection') as InjectionConfig
@@ -802,6 +802,46 @@ function _buildConfig(raw: Record<string, unknown>): Config {
     context: ctx,
     injection: inj,
   }
+}
+
+/**
+ * Maps each dotted config key that has an env-var override in {@link _buildConfig} to the
+ * TOKEN_GOAT_* env var name(s) that can override it, highest-precedence first. Used by
+ * `config set` (see cmdConfig in config_commands.ts) to warn when a value just written to
+ * config.toml is shadowed by an active env var. Keep in sync with the env-override
+ * assignments in _buildConfig.
+ */
+export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]>> = {
+  'compact_assist.enabled': ['TOKEN_GOAT_COMPACT_ASSIST', 'TOKENWISE_COMPACT_ASSIST'],
+  'bash_compress.enabled': ['TOKEN_GOAT_BASH_COMPRESS'],
+  'bash_compress.cache_min_bytes': ['TOKEN_GOAT_BASH_CACHE_MIN_BYTES'],
+  'bash_compress.cache_max_file_count': ['TOKEN_GOAT_BASH_CACHE_MAX_FILES'],
+  'bash_compress.cache_max_bytes': ['TOKEN_GOAT_BASH_CACHE_MAX_BYTES'],
+  'bash_compress.cache_max_bytes_per_output': ['TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT'],
+  'session_brief.enabled': ['TOKEN_GOAT_SESSION_BRIEF'],
+  'skill_preservation.enabled': ['TOKEN_GOAT_SKILL_PRESERVATION'],
+  'skill_preservation.compress_bodies': ['TOKEN_GOAT_SKILL_COMPRESS'],
+  'skill_preservation.pre_skill_enabled': ['TOKEN_GOAT_PRE_SKILL'],
+  'skill_preservation.orphan_sweep_enabled': ['TOKEN_GOAT_ORPHAN_SWEEP'],
+  'image_shrink.max_image_pixels': ['TOKEN_GOAT_MAX_IMAGE_PIXELS'],
+  'curator.enabled': ['TOKEN_GOAT_CURATOR'],
+  'hint_budget.enabled': ['TOKEN_GOAT_HINT_BUDGET'],
+  'repomap.compact_file_threshold': ['TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD'],
+  'repomap.exclude_tests': ['TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS'],
+  'hints.warn_unbalanced_shell_quoting': ['TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING'],
+  'hints.serve_diff_on_reread': ['TOKEN_GOAT_SERVE_DIFF_ON_REREAD'],
+  'hints.log_large_file_hint_outcomes': ['TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES'],
+  'hints.cross_session_read_dedup': ['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP'],
+  'hints.cross_session_read_dedup_ttl_secs': ['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS'],
+  'hints.mcp_dedup_ttl_secs': ['TOKEN_GOAT_MCP_DEDUP_TTL_SECS'],
+  'hints.min_session_hint_savings_bytes': ['TOKEN_GOAT_SESSION_HINT_MIN_BYTES'],
+  'hooks.watchdog_ms': ['TOKEN_GOAT_HOOK_WATCHDOG_MS'],
+  'webfetch.compress_bodies': ['TOKEN_GOAT_WEB_COMPRESS'],
+  'worker.watchdog_enabled': ['TOKEN_GOAT_WORKER_WATCHDOG'],
+  'worker.max_pool_workers': ['TOKEN_GOAT_WORKER_MAX_POOL'],
+  'compression.profile': ['TOKEN_GOAT_COMPRESS_PROFILE'],
+  'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
+  'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
 }
 
 export function saveConfig(config: Config): void {
