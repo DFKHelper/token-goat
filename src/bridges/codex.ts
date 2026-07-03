@@ -16,11 +16,17 @@
 /**
  * Node source for the Codex hook shim.
  *
- * Behavior matches the Claude Code shim (stdin → `token-goat hook <event>` →
- * stdout) with two Codex-specific fixups applied to the child's JSON output:
+ * Behavior matches the Claude Code shim (validate `eventName` against the closed set of known
+ * hook events, then stdin → `token-goat hook <event>` → stdout) with two Codex-specific
+ * fixups applied to the child's JSON output:
  * 1. strip top-level and nested `_tg_*` keys (additionalProperties: false), and
  * 2. ensure `hookSpecificOutput.hookEventName` is set, defaulting to the
  *    event name passed in argv when the handler omitted it.
+ *
+ * `eventName` is concatenated into a shell command string below (`shell: true` is required
+ * on Windows to resolve the token-goat `.cmd`/`.bat` shim), so it is validated against
+ * `VALID_HOOK_EVENTS` first — a closed set that must be kept in sync with `HOOK_EVENTS` in
+ * src/types.ts.
  *
  * On any error the shim prints `{}` so the tool call proceeds unchanged.
  */
@@ -28,6 +34,20 @@ export const CODEX_HOOK_SCRIPT = `#!/usr/bin/env node
 // token-goat Codex hook shim. Forwards the hook payload to \`token-goat hook <event>\`, then strips _tg_* keys and injects hookEventName so the response satisfies Codex's strict (additionalProperties:false) schema.
 'use strict'
 const { spawnSync } = require('node:child_process')
+
+// Keep in sync with HOOK_EVENTS in src/types.ts. eventName is validated against this closed
+// set before being concatenated into a shell command string, so a hostile argv (e.g.
+// 'pre_tool_use & calc.exe') can never reach the shell parser.
+const VALID_HOOK_EVENTS = new Set([
+  'pre_tool_use',
+  'post_tool_use',
+  'notification',
+  'stop',
+  'pre_compact',
+  'session_start',
+  'user_prompt_submit',
+  'subagent_stop',
+])
 
 function stripTg(value) {
   if (Array.isArray(value)) return value.map(stripTg)
@@ -44,6 +64,10 @@ function stripTg(value) {
 
 function main() {
   const eventName = process.argv[2] || ''
+  if (!VALID_HOOK_EVENTS.has(eventName)) {
+    process.stdout.write('{}')
+    return
+  }
   let input = ''
   try {
     input = require('node:fs').readFileSync(0, 'utf8')
@@ -51,9 +75,10 @@ function main() {
     process.stdout.write('{}')
     return
   }
-  const res = spawnSync('token-goat', ['hook', eventName], {
+  const res = spawnSync('token-goat hook ' + eventName, {
     input,
     encoding: 'utf8',
+    shell: true,
   })
   if (res.status !== 0 || !res.stdout) {
     process.stdout.write('{}')
