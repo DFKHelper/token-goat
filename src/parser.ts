@@ -1142,6 +1142,11 @@ export async function parseFile(filePath: string): Promise<ParseResult> {
     return { symbols: [], refs: [], language, duration: Date.now() - start }
   }
 
+  // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix
+  if (content.charCodeAt(0) === 0xfeff) {
+    content = content.slice(1)
+  }
+
   const { symbols, refs } = parseContent(content, filePath, language)
   return { symbols, refs, language, duration: Date.now() - start }
 }

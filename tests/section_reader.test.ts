@@ -380,3 +380,22 @@ describe('listSections regression: nested headings visibility', () => {
     expect(sections).toContain('Subsection B1')
   })
 })
+
+describe('BOM stripping regression', () => {
+  it('finds markdown heading in file with UTF-8 BOM', () => {
+    const BOM = '﻿'
+    const md = BOM + '# Section Title\nContent here'
+    const file = tmpFile('bom.md', md)
+    const result = readSection(file, 'Section Title')
+    expect(result).not.toBeNull()
+    expect(result?.heading).toBe('Section Title')
+  })
+
+  it('lists all sections in file with UTF-8 BOM', () => {
+    const BOM = '﻿'
+    const md = BOM + '# First\n## Second\n### Third'
+    const file = tmpFile('nested-bom.md', md)
+    const sections = listAllSections(file)
+    expect(sections).toEqual(['First', 'Second', 'Third'])
+  })
+})
