@@ -1,4 +1,4 @@
-import { execSync, spawnSync } from 'node:child_process'
+import { execSync, spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -671,6 +671,54 @@ describe('token-goat CLI', () => {
     const r = runCli(['write-file', tmp, '--from', ''])
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('--from path cannot be empty')
+  })
+
+  it('write-file retries past a transient lock on the destination instead of failing immediately (regression: cli.ts atomicWriteBuffer had no retry-on-EPERM/EBUSY, unlike every other atomic write path in util.ts)', async () => {
+    const dest = path.join(os.tmpdir(), `tg-wf-lock-${Date.now()}.txt`)
+    const src = path.join(os.tmpdir(), `tg-wf-lock-src-${Date.now()}.txt`)
+    const holderScript = path.join(os.tmpdir(), `tg-wf-lock-holder-${Date.now()}.mjs`)
+    fs.writeFileSync(dest, 'original')
+    fs.writeFileSync(src, 'new content')
+    // A second real process holding an open handle on `dest` reliably makes a concurrent rename
+    // onto it fail with EPERM on Windows -- exactly the transient AV-scanner/search-indexer lock
+    // atomicWriteCore already retries around. It has to be a genuinely separate process (not just
+    // another thread in this test process) because the CLI command below runs in its own spawned
+    // process; the holder's own setTimeout keeps running independently of this test's event loop.
+    fs.writeFileSync(
+      holderScript,
+      "import { openSync } from 'node:fs'\n" +
+        "const fd = openSync(process.argv[2], 'r+')\n" +
+        "void fd\n" +
+        "process.stdout.write('LOCKED\\n')\n" +
+        "setTimeout(() => { process.exit(0) }, Number(process.argv[3]))\n",
+    )
+
+    const holdMs = 400
+    const holder = spawn(process.execPath, [holderScript, dest, String(holdMs)], { stdio: ['ignore', 'pipe', 'ignore'] })
+
+    try {
+      // Deterministic handshake: don't start the real command until the holder has genuinely
+      // opened the handle, instead of guessing a fixed pre-delay.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('lock holder never signaled ready')), 5000)
+        holder.stdout?.on('data', (chunk: Buffer) => {
+          if (chunk.toString('utf8').includes('LOCKED')) {
+            clearTimeout(timer)
+            resolve()
+          }
+        })
+      })
+
+      const r = spawnSync(process.execPath, [BUNDLE, 'write-file', dest, '--from', src], { encoding: 'utf8' })
+
+      expect(r.status).toBe(0)
+      expect(fs.readFileSync(dest, 'utf8')).toBe('new content')
+    } finally {
+      holder.kill()
+      fs.rmSync(dest, { force: true })
+      fs.rmSync(src, { force: true })
+      fs.rmSync(holderScript, { force: true })
+    }
   })
 
   it('write-file --b64 whitespace-only exits 1', function () {

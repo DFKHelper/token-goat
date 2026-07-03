@@ -2,7 +2,27 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync,
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// vi.spyOn cannot patch node:fs (its namespace exports are non-configurable: "Cannot redefine
+// property"), so simulating a writeSync failure needs a module mock with a hoisted flag -- same
+// pattern as tests/index_prune.test.ts. Every other fs call passes straight through to the real
+// module untouched; only writeSync is ever intercepted, and only for the one call after the flag
+// is set.
+const mockState = vi.hoisted(() => ({ failNextWrite: false }))
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof fs>()
+  const guardedWriteSync = ((...args: Parameters<typeof fs.writeSync>) => {
+    if (mockState.failNextWrite) {
+      mockState.failNextWrite = false
+      throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+    }
+    return actual.writeSync(...args)
+  }) as typeof fs.writeSync
+  return { ...actual, default: actual, writeSync: guardedWriteSync }
+})
+
+import type * as fs from 'node:fs'
 
 import { atomicWriteBytes, atomicWriteText, runGit, sleepSync, noWindowCreationFlags, withFileLock } from '../src/util.js'
 
@@ -59,6 +79,26 @@ describe('atomic writes', () => {
     const temps = entries.filter((e) => e.endsWith('.tmp'))
     expect(temps).toHaveLength(0)
     expect(readFileSync(target, 'utf-8')).toBe('third')
+  })
+
+  it('leaves no orphaned .tmp file and leaves an existing destination untouched when writeSync throws (regression: atomicWriteCore only cleaned up the temp file on a rename failure, not a write failure -- a write-time error like ENOSPC used to leak the temp file forever)', () => {
+    const target = path.join(dir, 'fails.txt')
+    atomicWriteText(target, 'original')
+
+    mockState.failNextWrite = true
+    try {
+      expect(() => atomicWriteText(target, 'new content')).toThrow('ENOSPC')
+    } finally {
+      mockState.failNextWrite = false
+    }
+
+    // The failed write never reached rename, so the pre-existing destination survives untouched.
+    expect(readFileSync(target, 'utf-8')).toBe('original')
+
+    // No orphaned .tmp file should remain in the directory.
+    const entries2 = readdirSync(dir)
+    const temps2 = entries2.filter((e) => e.endsWith('.tmp'))
+    expect(temps2).toHaveLength(0)
   })
 
   it('atomicWriteText does not double newlines (no CRLF expansion)', () => {
