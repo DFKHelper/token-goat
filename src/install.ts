@@ -48,6 +48,36 @@ const HOOK_EVENT_MAP: ReadonlyArray<readonly [string, string]> = [
 /** Marker substring identifying a token-goat hook command for idempotency. */
 const COMMAND_MARKER = 'token-goat hook'
 
+/**
+ * Command substrings from earlier product eras that must still be recognized
+ * as token-goat's own, so an upgrade doesn't leave a dead duplicate behind:
+ * - `tokenwise` — the pre-rename product name (2026-05-13 rename to token-goat).
+ * - `token_goat` — the pre-TS-port Python invocation (`pythonw -m token_goat.cli hook ...`).
+ * - `tg-hook` — the Python-era persistent wrapper script (`tg-hook.cmd` / `tg-hook.sh`).
+ * - `token-goat-hook` — the Python-era GUI-subsystem exe wrapper (`token-goat-hook.exe`).
+ * None of these resolve on a machine running the current build, so a settings.json
+ * entry carrying one is always a stale leftover to detect and strip, never a
+ * legitimately different install to leave alone.
+ */
+const LEGACY_COMMAND_MARKERS = ['tokenwise', 'token_goat', 'tg-hook', 'token-goat-hook']
+
+/**
+ * Builds a regex that matches `marker` only at a word/path boundary, so a plain
+ * substring check can't false-positive on a marker embedded inside a longer
+ * identifier (e.g. a user hook literally named `my-token-goat-hook-config`).
+ */
+function anchoredMarkerPattern(marker: string): RegExp {
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?<![a-zA-Z0-9_-])${escaped}(?![a-zA-Z0-9_-])`)
+}
+
+const HOOK_MARKER_PATTERNS = [COMMAND_MARKER, ...LEGACY_COMMAND_MARKERS].map(anchoredMarkerPattern)
+
+/** True when `command` is a current-or-legacy token-goat hook invocation. */
+function isTokenGoatHookCommand(command: string): boolean {
+  return HOOK_MARKER_PATTERNS.some((pattern) => pattern.test(command))
+}
+
 /** Build the hook command string for an internal event arg. */
 function hookCommand(eventArg: string): string {
   return `token-goat hook ${eventArg}`
@@ -98,12 +128,11 @@ function readSettings(p: string): Settings {
 }
 
 /** True when `group` already contains a token-goat hook for `eventArg`. */
-function groupHasTokenGoat(groups: HookMatcherGroup[] | undefined, eventArg: string): boolean {
+function groupHasTokenGoat(groups: HookMatcherGroup[] | undefined): boolean {
   if (groups === undefined) return false
-  const want = hookCommand(eventArg)
   for (const group of groups) {
     for (const h of group.hooks ?? []) {
-      if (h.command === want) return true
+      if (isTokenGoatHookCommand(h.command)) return true
     }
   }
   return false
@@ -124,7 +153,7 @@ export function installHooks(scope: HookScope = 'user'): InstallResult {
   let changed = false
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
     const groups = hooks[eventKey] ?? []
-    if (groupHasTokenGoat(groups, eventArg)) continue
+    if (groupHasTokenGoat(groups)) continue
     groups.push({ matcher: '', hooks: [{ type: 'command', command: hookCommand(eventArg) }] })
     hooks[eventKey] = groups
     changed = true
@@ -161,7 +190,7 @@ export function uninstallHooks(scope: HookScope = 'user'): boolean {
     const keptGroups: HookMatcherGroup[] = []
     for (const group of groups) {
       const keptHooks = (group.hooks ?? []).filter((h) => {
-        const isOurs = typeof h.command === 'string' && h.command.includes(COMMAND_MARKER)
+        const isOurs = typeof h.command === 'string' && isTokenGoatHookCommand(h.command)
         if (isOurs) removed = true
         return !isOurs
       })
@@ -203,8 +232,8 @@ export function isInstalled(scope: HookScope = 'user'): boolean {
   const settings = readSettings(settingsPath(scope))
   const hooks = settings.hooks
   if (hooks === undefined) return false
-  for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
-    if (!groupHasTokenGoat(hooks[eventKey], eventArg)) return false
+  for (const [eventKey] of HOOK_EVENT_MAP) {
+    if (!groupHasTokenGoat(hooks[eventKey])) return false
   }
   return true
 }
