@@ -76,6 +76,17 @@ describe('non-numeric --limit/--top validation', () => {
     expect(message).not.toContain('datatype mismatch')
     expect(message).toContain('--limit')
   })
+
+  it('rejects a numeric-prefixed garbage --limit (e.g. "5abc") with a clean error instead of silently parsing it as 5', async () => {
+    captureStderr()
+    const code = await runCli(['symbol', 'nonexistent-symbol-zzz', '--limit', '5abc'])
+    expect(code).toBe(1)
+    const message = stderr.join('')
+    expect(message).not.toContain('datatype mismatch')
+    expect(message).toContain('--limit')
+    // Verify that "5abc" is reported, not silently accepted as "5"
+    expect(message).toContain('5abc')
+  })
 })
 
 describe('non-numeric --max-lines validation on grep', () => {
