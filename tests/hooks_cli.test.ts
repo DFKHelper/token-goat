@@ -53,14 +53,26 @@ describe('normalizePayload', () => {
   })
 
   it('remaps Gemini tool names and input keys', () => {
+    // Gemini's real_file tool sends `file_path`, not token-goat's internal `path` -
+    // this must come out the other side keyed by token-goat's internal name.
     const payload: HookPayload = {
       tool_name: 'read_file',
-      tool_input: { path: '/tmp/test.txt' },
+      tool_input: { file_path: '/tmp/test.txt' },
     }
     const result = normalizePayload(payload, 'gemini')
     expect(result['tool_name']).toBe('Read')
-    expect(result['tool_input']).toEqual({ file_path: '/tmp/test.txt' })
+    expect(result['tool_input']).toEqual({ path: '/tmp/test.txt' })
     expect(result['_tg_harness']).toBe('gemini')
+  })
+
+  it('remaps every Gemini Edit input key (file_path/old_string/new_string) to token-goat names', () => {
+    const payload: HookPayload = {
+      tool_name: 'replace',
+      tool_input: { file_path: '/tmp/test.txt', old_string: 'foo', new_string: 'bar' },
+    }
+    const result = normalizePayload(payload, 'gemini')
+    expect(result['tool_name']).toBe('Edit')
+    expect(result['tool_input']).toEqual({ path: '/tmp/test.txt', old_str: 'foo', new_str: 'bar' })
   })
 
   it('remaps Gemini functionCallId to toolUseId', () => {
