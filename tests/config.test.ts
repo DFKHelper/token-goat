@@ -384,3 +384,28 @@ describe('defaultConfig field spot-checks', () => {
     expect(cfg.image_shrink.screenshot_redirect).toBe(true)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Cross-field config invariants
+// ---------------------------------------------------------------------------
+
+describe('cross-field config clamping', () => {
+  beforeEach(() => {
+    invalidateConfigCache()
+    try { fs.unlinkSync(_testConfigPath) } catch { /* ok */ }
+  })
+
+  afterEach(() => {
+    invalidateConfigCache()
+  })
+
+  it('clamps large_file_symbol_only_kb to not exceed large_file_skip_kb when symbol_only_kb is configured larger', () => {
+    fs.writeFileSync(
+      _testConfigPath,
+      '[indexing]\nlarge_file_symbol_only_kb = 1000\nlarge_file_skip_kb = 500\n'
+    )
+    const cfg = loadConfig()
+    expect(cfg.indexing.large_file_symbol_only_kb).toBe(500)
+    expect(cfg.indexing.large_file_skip_kb).toBe(500)
+  })
+})
