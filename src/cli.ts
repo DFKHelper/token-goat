@@ -79,7 +79,8 @@ import {
 } from './graph_commands.js'
 import { contentHash, extractCompactFromMarker, extractNamedSection, formatAge, getSkillFilePath, incrementSkillHit, listOutputs, listSkills, skillOutputsDir, storeCompact, storeOutput } from './skill_cache.js'
 import { buildLineDiff } from './hooks_read.js'
-import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock } from './util.js'
+import { isWindows, ensureNewline, extractErrorMessage, withRetryOnLock, isUnderBlockedRoot } from './util.js'
+import { loadConfig } from './config.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit } from './cli_doctor.js'
 import { getDocSections, formatSections, getSectionContent } from './gdrive.js'
@@ -188,10 +189,14 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // Opt-in non-git fallback: a bounded directory walk, guarded against over-broad roots / oversized trees and stripped of .env / generated files.
     files = collectWalkIndexFiles(root)
   }
+  const blockedRoots = loadConfig().worker.blocked_roots
   let indexed = 0
   for (const f of files) {
     // Key on the same canonical absolute-normalized path every reader resolves to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so a relative root (the natural `token-goat index .`) yields relative paths; normalizePath alone would store a relative key that no reader can match.
     const key = resolveIndexPath(f)
+    // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from
+    // indexing entirely -- skip before the language check so a blocked file is never touched.
+    if (isUnderBlockedRoot(key, blockedRoots)) continue
     if (detectLanguage(key) === 'unknown') continue
     indexFileSync(key, dbPath)
     // Best-effort semantic-embeddings step for the same file, run right after its syntactic

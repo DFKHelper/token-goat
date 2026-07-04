@@ -7,7 +7,8 @@
  */
 
 import * as path from 'path'
-import { runGit } from './util.js'
+import { runGit, isTestFile } from './util.js'
+import { loadConfig } from './config.js'
 import { querySymbols } from './index_reader.js'
 import { resolveIndexPath } from './paths.js'
 import { estimateTokens, isNoisePath } from './compact.js'
@@ -46,9 +47,11 @@ export function getTrackedFiles(cwd: string = process.cwd()): string[] {
 export function buildMap(cwd: string = process.cwd()): RepoEntry[] {
   const files = getTrackedFiles(cwd)
   const entries: RepoEntry[] = []
+  const excludeTests = loadConfig().repomap.exclude_tests
 
   for (const filePath of files) {
     if (isNoisePath(filePath)) continue
+    if (excludeTests && isTestFile(filePath)) continue
 
     const lang = detectLanguage(filePath)
     if (lang === 'unknown') continue

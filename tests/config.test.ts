@@ -91,6 +91,130 @@ describe('loadConfig', () => {
     }
   })
 
+  // Regression: overflow_guard.enabled/max_tokens and hints.json_sidecar/large_read_redirect_bytes/
+  // baseline_budget_tokens were validated from TOML in _buildConfig but never given an envBool/
+  // envInt call afterward, unlike every sibling field -- so their documented env vars (present in
+  // CHANGELOG.md since v1.0.0-v1.6.0) silently had zero effect on the loaded config.
+  it('applies env var override for TOKEN_GOAT_OVERFLOW_GUARD', () => {
+    const orig = process.env['TOKEN_GOAT_OVERFLOW_GUARD']
+    try {
+      process.env['TOKEN_GOAT_OVERFLOW_GUARD'] = '0'
+      const cfg = loadConfig()
+      expect(cfg.overflow_guard.enabled).toBe(false)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_OVERFLOW_GUARD']
+      } else {
+        process.env['TOKEN_GOAT_OVERFLOW_GUARD'] = orig
+      }
+    }
+  })
+
+  it('applies env var override for TOKEN_GOAT_OVERFLOW_MAX_TOKENS', () => {
+    const orig = process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS']
+    try {
+      process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = '5000'
+      const cfg = loadConfig()
+      expect(cfg.overflow_guard.max_tokens).toBe(5000)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS']
+      } else {
+        process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = orig
+      }
+    }
+  })
+
+  it('applies env var override for TOKEN_GOAT_HINT_JSON_SIDECAR', () => {
+    const orig = process.env['TOKEN_GOAT_HINT_JSON_SIDECAR']
+    try {
+      process.env['TOKEN_GOAT_HINT_JSON_SIDECAR'] = '1'
+      const cfg = loadConfig()
+      expect(cfg.hints.json_sidecar).toBe(true)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_HINT_JSON_SIDECAR']
+      } else {
+        process.env['TOKEN_GOAT_HINT_JSON_SIDECAR'] = orig
+      }
+    }
+  })
+
+  it('applies env var override for TOKEN_GOAT_LARGE_READ_BYTES', () => {
+    const orig = process.env['TOKEN_GOAT_LARGE_READ_BYTES']
+    try {
+      process.env['TOKEN_GOAT_LARGE_READ_BYTES'] = '1000'
+      const cfg = loadConfig()
+      expect(cfg.hints.large_read_redirect_bytes).toBe(1000)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_LARGE_READ_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_LARGE_READ_BYTES'] = orig
+      }
+    }
+  })
+
+  it('applies env var override for TOKEN_GOAT_BASELINE_BUDGET_TOKENS', () => {
+    const orig = process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS']
+    try {
+      process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'] = '1234'
+      const cfg = loadConfig()
+      expect(cfg.hints.baseline_budget_tokens).toBe(1234)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS']
+      } else {
+        process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_OVERFLOW_MAX_TOKENS to the documented max (1000-1_000_000)', () => {
+    const orig = process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS']
+    try {
+      process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = '99999999'
+      const cfg = loadConfig()
+      expect(cfg.overflow_guard.max_tokens).toBe(1_000_000)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS']
+      } else {
+        process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_LARGE_READ_BYTES to the documented max (0-100_000_000)', () => {
+    const orig = process.env['TOKEN_GOAT_LARGE_READ_BYTES']
+    try {
+      process.env['TOKEN_GOAT_LARGE_READ_BYTES'] = '999999999'
+      const cfg = loadConfig()
+      expect(cfg.hints.large_read_redirect_bytes).toBe(100_000_000)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_LARGE_READ_BYTES']
+      } else {
+        process.env['TOKEN_GOAT_LARGE_READ_BYTES'] = orig
+      }
+    }
+  })
+
+  it('clamps an out-of-range env var override for TOKEN_GOAT_BASELINE_BUDGET_TOKENS to the documented max (0-10_000_000)', () => {
+    const orig = process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS']
+    try {
+      process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'] = '999999999999'
+      const cfg = loadConfig()
+      expect(cfg.hints.baseline_budget_tokens).toBe(10_000_000)
+    } finally {
+      if (orig === undefined) {
+        delete process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS']
+      } else {
+        process.env['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'] = orig
+      }
+    }
+  })
+
   // Regression: envInt() applied an env-var override AFTER the file-value min/max clamp with
   // no reclamp, so an out-of-range env var silently overwrote an already-validated value with
   // anything outside its documented range. Each case below sets the env var to a value clearly

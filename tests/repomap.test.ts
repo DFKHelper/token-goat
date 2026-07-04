@@ -16,11 +16,13 @@ import * as indexReader from '../src/index_reader.js'
 import * as compact from '../src/compact.js'
 import * as parserTypes from '../src/parser_types.js'
 import * as paths from '../src/paths.js'
+import { loadConfig } from '../src/config.js'
 
 vi.mock('../src/util.js')
 vi.mock('../src/index_reader.js')
 vi.mock('../src/compact.js')
 vi.mock('../src/parser_types.js')
+vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 // Default to an identity pass-through so existing tests (which compare raw paths) are unaffected;
 // individual tests override the implementation to assert normalization actually happens.
 vi.mock('../src/paths.js', async (importOriginal) => {
@@ -31,6 +33,11 @@ vi.mock('../src/paths.js', async (importOriginal) => {
 describe('repomap', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Permissive default so tests that don't care about exclude_tests aren't affected;
+    // individual tests override as needed.
+    vi.mocked(loadConfig).mockReturnValue({
+      repomap: { exclude_tests: false },
+    } as unknown as ReturnType<typeof loadConfig>)
   })
 
   describe('getTrackedFiles', () => {
@@ -224,6 +231,54 @@ describe('repomap', () => {
       for (let i = 0; i < entries.length - 1; i++) {
         expect(entries[i].symbolCount).toBeGreaterThanOrEqual(entries[i + 1].symbolCount)
       }
+    })
+
+    // Regression: repomap.exclude_tests was validated from TOML and reported by `token-goat
+    // ignores`/`doctor`, but buildMap never consulted it -- test files always showed up in
+    // `token-goat map` regardless of the setting.
+    it('excludes test files when repomap.exclude_tests is true', () => {
+      const cwd = '/project'
+      vi.mocked(loadConfig).mockReturnValue({
+        repomap: { exclude_tests: true },
+      } as unknown as ReturnType<typeof loadConfig>)
+
+      vi.mocked(util.runGit).mockReturnValue({
+        exitCode: 0,
+        stdout: 'src/main.ts\ntests/main.test.ts',
+        stderr: '',
+      })
+      vi.mocked(compact.isNoisePath).mockReturnValue(false)
+      vi.mocked(parserTypes.detectLanguage).mockReturnValue('typescript')
+      vi.mocked(util.isTestFile).mockImplementation((p: string) => p.includes('tests'))
+      vi.mocked(indexReader.querySymbols).mockReturnValue([])
+      vi.mocked(indexReader.getFileEntry).mockReturnValue(null)
+
+      const entries = buildMap(cwd)
+
+      expect(entries.some((e) => e.filePath.includes('main.ts') && !e.filePath.includes('tests'))).toBe(true)
+      expect(entries.every((e) => !e.filePath.includes('tests'))).toBe(true)
+    })
+
+    it('includes test files when repomap.exclude_tests is false', () => {
+      const cwd = '/project'
+      vi.mocked(loadConfig).mockReturnValue({
+        repomap: { exclude_tests: false },
+      } as unknown as ReturnType<typeof loadConfig>)
+
+      vi.mocked(util.runGit).mockReturnValue({
+        exitCode: 0,
+        stdout: 'src/main.ts\ntests/main.test.ts',
+        stderr: '',
+      })
+      vi.mocked(compact.isNoisePath).mockReturnValue(false)
+      vi.mocked(parserTypes.detectLanguage).mockReturnValue('typescript')
+      vi.mocked(util.isTestFile).mockImplementation((p: string) => p.includes('tests'))
+      vi.mocked(indexReader.querySymbols).mockReturnValue([])
+      vi.mocked(indexReader.getFileEntry).mockReturnValue(null)
+
+      const entries = buildMap(cwd)
+
+      expect(entries.some((e) => e.filePath.includes('tests'))).toBe(true)
     })
   })
 

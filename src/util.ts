@@ -331,3 +331,28 @@ export function normalizePathForwardSlash(p: string, toLowerCase?: boolean): str
   if (toLowerCase) result = result.toLowerCase()
   return result
 }
+
+/** Return true when a path looks like a test file (tests/ dir or .test./.spec./_test. suffix). Moved here from graph_commands.ts (re-exported there) so other file-walk consumers (repomap, baseline) can share the same heuristic without a circular import. */
+export function isTestFile(p: string): boolean {
+  return /(^|[/\\])(tests?)[/\\]/i.test(p) || /\.(test|spec)\.|_test\.|(^|[/\\])test_/i.test(p)
+}
+
+/**
+ * True when `filePath` lives under any of `blockedRoots` (each an absolute path prefix set via
+ * `token-goat project exclude`). Comparison resolves and case-folds both sides (see
+ * normalizePath/foldPath) so a Windows drive-letter or separator difference cannot let a blocked
+ * file slip through, and respects path boundaries so a blocked root of `foo` does not also match
+ * a sibling directory named `foo-bar`.
+ */
+export function isUnderBlockedRoot(filePath: string, blockedRoots: readonly string[]): boolean {
+  if (blockedRoots.length === 0) return false
+  const target = foldPath(normalizePath(path.resolve(filePath)))
+  for (const root of blockedRoots) {
+    if (!root) continue
+    const normRoot = foldPath(normalizePath(path.resolve(root)))
+    if (target === normRoot) return true
+    const boundary = normRoot.endsWith('/') ? normRoot : `${normRoot}/`
+    if (target.startsWith(boundary)) return true
+  }
+  return false
+}

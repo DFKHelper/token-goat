@@ -16,13 +16,27 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import Database from 'better-sqlite3'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { cmdIndex } from '../src/cli.js'
 import { getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
+import { loadConfig } from '../src/config.js'
+import type * as ConfigModule from '../src/config.js'
 
 import { BUNDLE } from './helpers/bundle.js'
+
+// Partial mock that defaults to calling through to the REAL loadConfig (so the spawned-bundle
+// tests and the prune test above see identical behavior to before this mock existed -- they
+// never read blocked_roots either way). Only the new blocked_roots test below overrides the
+// return value, and restores the pass-through afterward via vi.importActual (see its own
+// describe block) rather than a module-level variable, since vi.mock's factory is hoisted
+// above all top-level code in this file and a captured variable would still be in its
+// temporal dead zone when the hoisted factory closure first runs.
+vi.mock('../src/config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ConfigModule>()
+  return { ...actual, loadConfig: vi.fn(actual.loadConfig) }
+})
 
 let repo: string
 let dataBase: string
@@ -347,6 +361,46 @@ describe('cmdIndex prunes deleted files (shipping path)', () => {
     await cmdIndex(dir, { walk: true, dbPath })
     expect(count('goneSym')).toBe(0)
     expect(count('keepSym')).toBeGreaterThan(0)
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // Cleanup may fail on Windows if database file is still locked
+    }
+  })
+})
+
+describe('cmdIndex honors worker.blocked_roots (shipping path)', () => {
+  afterEach(async () => {
+    // Restore pass-through so this override never leaks into another test file/run order.
+    const actual = await vi.importActual<typeof ConfigModule>('../src/config.js')
+    vi.mocked(loadConfig).mockImplementation(actual.loadConfig)
+  })
+
+  // Regression: worker.blocked_roots (set via `token-goat project exclude`) was validated from
+  // TOML and reported by `token-goat ignores`/`doctor`, but cmdIndex never consulted it -- a
+  // file under a blocked root was indexed exactly like any other file.
+  it('skips files under a blocked root during --walk indexing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdindex-blocked-'))
+    const dbPath = path.join(dir, 'idx.db')
+    fs.writeFileSync(path.join(dir, 'keep.ts'), 'export const keepSym = 1\n')
+    const blockedDir = path.join(dir, 'vendor')
+    fs.mkdirSync(blockedDir, { recursive: true })
+    fs.writeFileSync(path.join(blockedDir, 'lib.ts'), 'export const blockedSym = 2\n')
+
+    const real = loadConfig()
+    vi.mocked(loadConfig).mockReturnValue({
+      ...real,
+      worker: { ...real.worker, blocked_roots: [blockedDir] },
+    })
+
+    await cmdIndex(dir, { walk: true, dbPath })
+
+    const db = getDb(dbPath)
+    const count = (sym: string): number =>
+      (db.prepare('SELECT COUNT(*) AS n FROM symbols WHERE name = ?').get(sym) as { n: number }).n
+    expect(count('keepSym')).toBeGreaterThan(0)
+    expect(count('blockedSym')).toBe(0)
+
     try {
       fs.rmSync(dir, { recursive: true, force: true })
     } catch {
