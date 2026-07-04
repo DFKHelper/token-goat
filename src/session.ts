@@ -188,6 +188,17 @@ export function wasFileReadThisSession(filePath: string): boolean {
   return entry !== undefined && entry.readCount > 0
 }
 
+/**
+ * Case-fold-aware lookup of a file's session entry -- resolves `filePath` through
+ * {@link resolveFilesKey} the same way `recordFileRead`/`wasFileReadThisSession` do, so a
+ * caller that only has a differently-cased path than the one first recorded (case-insensitive
+ * filesystems) still finds the existing entry instead of missing it. Use this instead of a
+ * direct `getSessionFiles().get(filePath)` for any single-entry lookup.
+ */
+export function getSessionFileEntry(filePath: string): FileEntry | undefined {
+  return _files.get(resolveFilesKey(normalizePath(filePath)))
+}
+
 /** True if `hintKey` has already been marked shown this session. */
 export function wasHintShown(hintKey: string): boolean {
   return _hintsShown.has(hintKey)
