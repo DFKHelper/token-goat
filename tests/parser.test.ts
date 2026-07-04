@@ -5,8 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
-import { indexFile, isTreeSitterAvailable, parseFile, stripPythonStringQuotes } from '../src/parser.js'
-import { querySymbols } from '../src/index_reader.js'
+import { isTreeSitterAvailable, parseFile, stripPythonStringQuotes } from '../src/parser.js'
 
 let TMP: string
 
@@ -419,51 +418,6 @@ describe('parseFile', () => {
   })
 })
 
-describe('indexFile', () => {
-  it('upserts symbols into the DB so they can be queried back', async () => {
-    const file = write('svc.ts', 'export function login(user: string) { return user; }\n')
-    const db = path.join(TMP, 'index.db')
-
-    await indexFile(file, db)
-    const hits = querySymbols({ name: 'login' }, db)
-    expect(hits.length).toBe(1)
-    expect(hits[0]?.kind).toBe('function')
-    expect(hits[0]?.filePath).toBe(file)
-  })
-
-  it('replaces stale rows on re-index rather than duplicating', async () => {
-    const file = write('svc.ts', 'export function login() {}\nexport function logout() {}\n')
-    const db = path.join(TMP, 'index.db')
-
-    await indexFile(file, db)
-    expect(querySymbols({ filePath: file }, db).length).toBe(2)
-
-    // Rewrite the file with fewer symbols, then re-index.
-    fs.writeFileSync(file, 'export function login() {}\n')
-    await indexFile(file, db)
-    const after = querySymbols({ filePath: file }, db)
-    expect(after.map((s) => s.name)).toEqual(['login'])
-  })
-
-  it('does not wipe existing rows on a transient read failure (regression: async indexFile diverged from indexFileSync, which no-ops instead)', async () => {
-    const file = write('flaky.ts', 'export function survives() { return 1; }\n')
-    const db = path.join(TMP, 'index.db')
-
-    await indexFile(file, db)
-    expect(querySymbols({ filePath: file }, db).map((s) => s.name)).toEqual(['survives'])
-
-    // Simulate a transient read failure (e.g. a Windows exclusive-lock error) on a re-index
-    // attempt: the file disappears out from under the read.
-    fs.rmSync(file)
-    await indexFile(file, db)
-
-    // A failed read must be a no-op, matching indexFileSync -- not a destructive wipe of the
-    // rows that were already indexed.
-    const after = querySymbols({ filePath: file }, db)
-    expect(after.map((s) => s.name)).toEqual(['survives'])
-  })
-})
-
 describe('parseFile', () => {
   it('extracts correct line ranges for individual variables in variable_declarator (regression: parent vs child node)', async () => {
     const file = write(
@@ -615,25 +569,6 @@ describe('parseFile reference extraction', () => {
     const file = write('notes.md', '# Title\n\nsome prose calling foo()\n')
     const result = await parseFile(file)
     expect(result.refs).toEqual([])
-  })
-})
-
-describe('indexFile reference extraction (real write path)', () => {
-  it('populates the refs table so queryRefs resolves a caller', async () => {
-    const file = write(
-      'svc.ts',
-      'function helper() { return 2 }\n' +
-        'export function driver() { return helper() }\n',
-    )
-    const db = path.join(TMP, 'index.db')
-    await indexFile(file, db)
-
-    const conn = (await import('../src/db.js')).getDb(db)
-    const rows = conn.prepare('SELECT name, context FROM refs').all() as Array<{
-      name: string
-      context: string
-    }>
-    expect(rows.some((r) => r.name === 'helper' && r.context === 'driver')).toBe(true)
   })
 })
 

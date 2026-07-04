@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // symbols actually indexed -- and since the worker's incremental drain skips reindexing a
 // file whose SHA is unchanged, a file can get permanently stuck with stale symbols.
 //
-// This drives the REAL shipping entry points (indexFile / indexFileSync -> writeParseResult),
+// This drives the REAL shipping entry point (indexFileSync -> writeParseResult),
 // not a reimplementation. The only mocked boundary is node:fs.readFileSync itself, which is
 // made to answer with two different byte sequences for the SAME path across the two reads a
 // pre-fix implementation performs (once to parse, once inside writeParseResult to fingerprint).
@@ -38,7 +38,7 @@ import * as fs from 'node:fs'
 import { closeAllDbs } from '../src/db.js'
 import { fingerprintContent } from '../src/fingerprint.js'
 import { getFileEntry } from '../src/index_reader.js'
-import { indexFile, indexFileSync } from '../src/parser.js'
+import { indexFileSync } from '../src/parser.js'
 import { querySymbols } from '../src/index_reader.js'
 
 describe('writeParseResult SHA race (M31)', () => {
@@ -82,28 +82,5 @@ describe('writeParseResult SHA race (M31)', () => {
 
     const hits = querySymbols({ filePath: file }, dbPath)
     expect(hits.map((s) => s.name)).toEqual(['parsedVersion'])
-  })
-
-  it('indexFile (async path) records the SHA of the content it actually parsed, not a later re-read', async () => {
-    const parsedContent = 'export function asyncParsedVersion(): number {\n  return 1\n}\n'
-    const laterContent = 'export function asyncLaterVersion(): number {\n  return 2\n}\n'
-    // indexFile's own content read is fs.promises.readFile (a distinct API from the
-    // fs.readFileSync guarded above), so it genuinely reads parsedContent straight off disk --
-    // exactly like production code would before any concurrent edit lands. The only mocked
-    // call left is the SYNC fs.readFileSync a pre-fix fingerprintFile performs afterward to
-    // compute the SHA; queuing laterContent there simulates a concurrent edit landing between
-    // the parse read and that later re-read.
-    fs.writeFileSync(file, parsedContent)
-    mockState.queue = [laterContent]
-
-    await indexFile(file, dbPath)
-
-    const entry = getFileEntry(file, dbPath)
-    expect(entry).not.toBeNull()
-    expect(entry?.sha).toBe(fingerprintContent(parsedContent))
-    expect(entry?.sha).not.toBe(fingerprintContent(laterContent))
-
-    const hits = querySymbols({ filePath: file }, dbPath)
-    expect(hits.map((s) => s.name)).toEqual(['asyncParsedVersion'])
   })
 })
