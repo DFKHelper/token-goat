@@ -132,13 +132,54 @@ const INDEX_FAILED = Symbol('indexFailed')
  * Append one failure line to the error log for `dir`. Best-effort: a failure to write the log
  * itself must not throw back out of the indexer's own catch handler.
  */
-function logIndexFailure(dir: string, absPath: string, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err)
-  const line = `${new Date().toISOString()} indexFileSync failed for ${absPath}: ${message}\n`
+function appendWorkerErrorLog(dir: string, line: string): void {
   try {
     fs.appendFileSync(workerErrorLogPath(dir), line)
   } catch {
     // best-effort: nothing more we can do if even the log write itself fails.
+  }
+}
+
+function logIndexFailure(dir: string, absPath: string, err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err)
+  appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileSync failed for ${absPath}: ${message}\n`)
+}
+
+// A dirty path that exists (fs.existsSync true) but whose fingerprintFile call returns null is
+// a transient read failure -- a lock held by an AV scanner/editor/OneDrive sync, a permission
+// error, or a race with an external writer -- not a permanent parse/index error. Before this
+// fix, processDirtyBatch silently `continue`d past it: the path was dropped from this batch and,
+// once drainOnce unconditionally clears the .draining marker right after processDirtyBatch
+// returns, it was gone for good with no log entry and no way to retry it short of the file being
+// touched again. Log it distinctly from an indexing failure and requeue it so the next drain
+// cycle gets another chance once the lock clears.
+function logTransientReadFailure(dir: string, absPath: string): void {
+  appendWorkerErrorLog(
+    dir,
+    `${new Date().toISOString()} fingerprintFile returned null for existing file ${absPath} (transient read failure -- requeued for retry)\n`,
+  )
+}
+
+// Re-adds `absPath` to the live dirty queue after a transient read failure. Mirrors
+// appendDirtyPath's crash-safe append (mkdir + torn-last-line guard) in hooks_index.ts, but is
+// parameterized by `dir` (rather than hardcoding dataDir()) so it targets the same queue
+// processDirtyBatch/drainOnce were given -- including an isolated dir under test. Best-effort:
+// if the requeue write itself fails, the path is lost for this cycle, but the failure is still
+// captured via logTransientReadFailure above.
+function requeueDirtyPath(dir: string, absPath: string): void {
+  const queuePath = dirtyQueuePathFor(dir)
+  try {
+    fs.mkdirSync(path.dirname(queuePath), { recursive: true })
+    let leadingNewline = ''
+    try {
+      const existing = fs.readFileSync(queuePath, 'utf8')
+      if (existing.length > 0 && !existing.endsWith('\n')) leadingNewline = '\n'
+    } catch {
+      // File doesn't exist yet -- nothing to guard against.
+    }
+    fs.appendFileSync(queuePath, `${leadingNewline}${absPath}\n`)
+  } catch {
+    // best-effort -- see doc comment above.
   }
 }
 
@@ -206,6 +247,7 @@ export function processDirtyBatch(
   paths: string[],
   index: (absPath: string, sha: string) => unknown = makeIndexer(globalDbPath()),
   remove: (absPath: string) => void = makeRemover(globalDbPath()),
+  dir: string = dataDir(),
 ): number {
   const blockedRoots = loadConfig().worker.blocked_roots
   let indexed = 0
@@ -221,7 +263,13 @@ export function processDirtyBatch(
       continue
     }
     const sha = fingerprintFile(p)
-    if (sha === null) continue
+    if (sha === null) {
+      // The file exists but couldn't be read right now (lock/permission/race) -- see
+      // logTransientReadFailure's doc comment. Log and requeue instead of silently dropping it.
+      logTransientReadFailure(dir, p)
+      requeueDirtyPath(dir, p)
+      continue
+    }
     // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default
     // indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any
     // other return value (including void/undefined from callers that don't bother returning
@@ -296,7 +344,7 @@ export function drainOnce(
     // outlives both cleanup attempts (e.g. a persistent Windows sharing violation) would be
     // re-read and its paths reprocessed on every cycle.
     if (unclearedDrainingSnapshots.get(draining) !== drainingContent) {
-      processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn)
+      processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn, dir)
     }
     // Only clear the recovered file now that its batch has been durably processed (or
     // recognized above as already processed) -- never before -- so a crash partway through
@@ -344,7 +392,7 @@ export function drainOnce(
         // Deliberately NOT wrapped in the try above: a throw from processDirtyBatch (e.g. the
         // process crashing mid-batch) must propagate to the caller, not be swallowed as a
         // "read failure", so the cleanup below never runs and the claimed file survives.
-        processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn)
+        processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir)
         // Only clear the claimed file now that its batch has been durably processed -- never
         // before -- so a crash partway through processDirtyBatch leaves it in place for stage
         // (a) to recover on the next startup instead of losing the paths it named.

@@ -203,6 +203,43 @@ describe('processDirtyBatch', () => {
     expect(count).toBe(1)
     expect(indexed).toEqual([real])
   })
+
+  // Regression: a dirty path that exists (fs.existsSync true) but whose fingerprintFile call
+  // returns null -- a transient read failure such as a lock held by an AV scanner/editor/OneDrive
+  // sync, a permission error, or a race with an external writer -- used to be silently dropped:
+  // `continue`d past with no log entry and no way to retry short of the file being touched again,
+  // since drainOnce unconditionally clears the .draining marker right after this function
+  // returns. Trigger the failure with a REAL, unmocked read error (a directory sitting at the
+  // dirty-queued path, so fs.existsSync is true but fs.readFileSync throws EISDIR and
+  // fingerprintFile returns null) rather than mocking fingerprintFile, exercising the actual
+  // production call.
+  it('logs and requeues a path whose fingerprintFile call fails despite the file existing', () => {
+    const lockedPath = path.join(DIR, 'locked.ts')
+    fs.mkdirSync(lockedPath) // exists (fs.existsSync true), but reading it as a file throws EISDIR
+    const real = path.join(DIR, 'real.ts')
+    fs.writeFileSync(real, 'export const x = 1\n')
+
+    const indexed: string[] = []
+    const removed: string[] = []
+    const count = processDirtyBatch(
+      [lockedPath, real],
+      (p) => indexed.push(p),
+      (p) => removed.push(p),
+      DIR,
+    )
+
+    expect(count).toBe(1)
+    expect(indexed).toEqual([real])
+    expect(removed).toEqual([])
+
+    // Requeued into the live dirty queue for the next drain cycle.
+    expect(getDirtyPathsFor(DIR)).toEqual([lockedPath])
+
+    // Logged distinctly from an indexing failure.
+    const log = fs.readFileSync(path.join(DIR, 'worker-errors.log'), 'utf8')
+    expect(log).toContain(lockedPath)
+    expect(log).toContain('transient read failure')
+  })
 })
 
 describe('drainOnce', () => {
