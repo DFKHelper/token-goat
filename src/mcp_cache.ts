@@ -31,6 +31,9 @@ export function isMcpReadOnly(toolName: string): boolean {
     return false
   }
   const method = toolName.split('__').pop() || ''
+  // Screenshots are not idempotent: page content can change between calls,
+  // so they must never be cached/dedup'd.
+  if (/screenshot/i.test(method)) return false
   return !MUTABLE_VERBS_RE.test(method)
 }
 
