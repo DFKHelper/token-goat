@@ -293,4 +293,36 @@ ${longBody}
       expect(result.runner).toBe('go');
     });
   });
+
+  describe('ANSI-colorized output', () => {
+    it('should detect and count colorized pytest FAILED lines (ANSI-wrapped)', () => {
+      // Real `pytest --color=yes` output colors the FAILED token itself. Without
+      // stripping ANSI codes first, the escape sequence right before "FAILED"
+      // breaks the fallback `line.startsWith('FAILED ')` check, and the escape
+      // codes touching "FAILED" also break detectRunner's `\bFAILED\b` boundary,
+      // so real failures were silently reported as zero.
+      const output = `
+short test summary info
+\x1b[31mFAILED\x1b[0m tests/test_a.py::test_foo - assertion error
+`;
+      const result = extractFailures(output);
+      expect(result.runner).toBe('pytest');
+      expect(getFailureCount(result)).toBeGreaterThan(0);
+    });
+
+    it('should detect and extract colorized Go --- FAIL: blocks (ANSI-wrapped)', () => {
+      // Real colorized `go test` output wraps the whole "--- FAIL: ..." line in an
+      // escape sequence, so it no longer starts with the literal "-" the anchored
+      // GO_FAIL/detectRunner regexes require.
+      const output = `
+\x1b[31m--- FAIL: TestExample (0.00s)\x1b[0m
+        main_test.go:15: assertion failed
+\x1b[31mFAIL\x1b[0m
+`;
+      const result = extractFailures(output);
+      expect(result.runner).toBe('go');
+      expect(result.blocks.length).toBeGreaterThan(0);
+      expect(result.blocks[0]?.name).toContain('TestExample');
+    });
+  });
 });

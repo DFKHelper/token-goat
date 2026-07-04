@@ -2,6 +2,8 @@
  * Extract failing test blocks from test runner output.
  */
 
+import { stripAnsi } from './render/ansi.js';
+
 /**
  * A single failure block with name and body.
  */
@@ -250,8 +252,9 @@ function extractGeneric(lines: string[]): FailureResult {
  * Parse test runner output and return only the failing blocks.
  */
 export function extractFailures(text: string, options?: { runner?: string }): FailureResult {
-  const lines = text.split('\n');
-  const detected = options?.runner ?? detectRunner(text);
+  const cleaned = stripAnsi(text);
+  const lines = cleaned.split('\n');
+  const detected = options?.runner ?? detectRunner(cleaned);
 
   if (detected === 'pytest') {
     return extractPytest(lines);
