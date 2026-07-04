@@ -48,8 +48,12 @@ const _GH_LOG_ENDGROUP_RE = /^##\[endgroup\]/
 // ##[command]… — command-echo noise
 const _GH_LOG_COMMAND_RE = /^##\[command\]/
 
-// gh run view --log format: step-name TAB timestamp
-const _GH_LOG_STEP_PREFIX_RE = /^[^\t]+\t/
+// gh run view --log format: job-name TAB step-name TAB timestamp. Both
+// tab-delimited fields must be stripped — leaving just the step-name field
+// behind lets it collide with downstream ^-anchored regexes (e.g. a step
+// literally named "Run actions/checkout@v3" would falsely match
+// _GH_LOG_SETUP_ACTION_RE and sweep genuine content into that bucket).
+const _GH_LOG_STEP_PREFIX_RE = /^[^\t]+\t[^\t]+\t/
 
 // Run actions/checkout@v3 setup lines
 const _GH_LOG_SETUP_ACTION_RE = /^Run [a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+@/
