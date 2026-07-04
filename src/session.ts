@@ -47,6 +47,12 @@ export interface FileEntry {
 // path -> entry. The key is the normalized absolute path so a file referenced via different relative strings collapses to one entry.
 let _files = new Map<string, FileEntry>()
 
+// Snapshot of each file's readCount at hydration time, so session_store.ts's merge can tell
+// "this process's own genuinely new reads since load" apart from "whatever was already on
+// disk" -- Math.max(disk, mem) silently drops a concurrent process's distinct increment
+// whenever the two values happen to coincide (see mergeFileEntry in session_store.ts).
+let _filesAtLoad = new Map<string, number>()
+
 // Hint fingerprints already emitted this session (dedup, matches session.py mark_hint_seen / has_hint_fingerprint).
 let _hintsShown = new Set<string>()
 
@@ -143,6 +149,15 @@ export function recordFileRead(filePath: string): void {
     lastReadAt: now,
     sizeBytes: size,
   })
+}
+
+/** Snapshot of each file's readCount exactly as it was at hydration time, before this process
+ * made any changes. session_store.ts's merge uses this to compute how many *new* reads this
+ * process actually contributed since its own load, rather than assuming the larger of the two
+ * counters reflects every read that ever happened -- two concurrent processes that both start
+ * from the same on-disk count and each record one genuine read must sum to two, not one. */
+export function filesReadCountAtLoad(): ReadonlyMap<string, number> {
+  return _filesAtLoad
 }
 
 /**
@@ -412,6 +427,7 @@ export function importSessionState(s: SerializedSession): void {
   for (const e of s.files) {
     if (e && typeof e.path === 'string') _files.set(e.path, e)
   }
+  _filesAtLoad = new Map(Array.from(_files, ([key, e]) => [key, e.readCount]))
   _hintsShown = new Set(s.hintsShown)
   _webFetches = new Map(s.webFetches)
   _bashOutputs = new Map(s.bashOutputs)
@@ -424,6 +440,7 @@ export function importSessionState(s: SerializedSession): void {
 
 registerReset(() => {
   _files = new Map()
+  _filesAtLoad = new Map()
   _hintsShown = new Set()
   _webFetches = new Map()
   _bashOutputs = new Map()

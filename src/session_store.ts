@@ -26,7 +26,7 @@ import * as path from 'node:path'
 
 import { atomicWriteText, foldPath, withFileLock } from './util.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { consumedPendingLargeFileHintKeys, exportSessionState, importSessionState, MAX_RANGES_PER_FILE, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { consumedPendingLargeFileHintKeys, exportSessionState, filesReadCountAtLoad, importSessionState, MAX_RANGES_PER_FILE, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
 
 const SAFE_RE = /[^a-zA-Z0-9_-]/g
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
@@ -175,9 +175,19 @@ function coerce(raw: unknown): SerializedSession {
  * the size from the more recent read. Never loses a positive flag. */
 function mergeFileEntry(a: FileEntry, b: FileEntry): FileEntry {
   const newest = a.lastReadAt >= b.lastReadAt ? a : b
+  // readCount is reconciled, not maxed: b (this process's own in-memory view) may have
+  // started from a stale disk snapshot and incremented independently of whatever other
+  // concurrent processes already wrote into a (the freshest disk read, taken under the
+  // save lock in saveSessionState). Math.max(a, b) silently drops a concurrent process's
+  // distinct increment whenever the two counters happen to coincide. Instead, add only the
+  // reads this process genuinely made since its own load (b.readCount minus its baseline at
+  // hydration time) on top of the freshest disk count, so two processes that each record one
+  // real read from the same starting point sum to two instead of collapsing to one.
+  const baseline = filesReadCountAtLoad().get(b.path) ?? 0
+  const newReadsThisProcess = Math.max(0, b.readCount - baseline)
   const merged: FileEntry = {
     path: a.path,
-    readCount: Math.max(a.readCount, b.readCount),
+    readCount: a.readCount + newReadsThisProcess,
     lastReadAt: Math.max(a.lastReadAt, b.lastReadAt),
     wasEdited: a.wasEdited || b.wasEdited,
     sizeBytes: newest.sizeBytes,
