@@ -35,7 +35,7 @@ const _DOCKER_PULL_LAYER_RE =
   /^\s*[a-f0-9]{12}:\s+(?:Pull complete|Verifying Checksum|Download complete|Already exists|Waiting|Pulling fs layer)/i
 // old-format (non-BuildKit) patterns
 const _DOCKER_OLD_CACHE_RE = /^ *---> Using cache\s*$/
-const _DOCKER_OLD_SHA_RE = /^ *---> sha256:[0-9a-f]{12,}\s*$/
+const _DOCKER_OLD_SHA_RE = /^ *---> (?:sha256:)?[0-9a-f]{12,}\s*$/
 const _DOCKER_OLD_STEP_RE = /^Step \d+\/\d+ : /
 const _DOCKER_OLD_SUCCESS_RE = /^Successfully built [0-9a-f]+/
 const _DOCKER_OLD_INTERMEDIATE_RE = /^Removing intermediate container [0-9a-f]+/
