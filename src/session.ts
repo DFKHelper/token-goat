@@ -296,7 +296,7 @@ export const MAX_RANGES_PER_FILE = 64
 
 /** Record that inclusive line range [start, end] of `filePath` was served via a sed line-range read this session. Deduplicates identical ranges and caps retained ranges per file. */
 export function recordFileLineRange(filePath: string, start: number, end: number): void {
-  const key = foldPath(filePath)
+  const key = foldPath(normalizePath(filePath))
   const ranges = _fileLineRanges.get(key) ?? []
   if (ranges.some(([s, e]) => s === start && e === end)) return
   ranges.push([start, end])
@@ -306,7 +306,7 @@ export function recordFileLineRange(filePath: string, start: number, end: number
 
 /** Inclusive line ranges of `filePath` already served via sed this session (empty if none). */
 export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [number, number]> {
-  return _fileLineRanges.get(foldPath(filePath)) ?? []
+  return _fileLineRanges.get(foldPath(normalizePath(filePath))) ?? []
 }
 
 /**

@@ -205,6 +205,18 @@ describe('recordFileEdit clears stale line ranges', () => {
     expect(getFileLineRanges(edited)).toEqual([])
     expect(getFileLineRanges(other)).toEqual([[1, 10]])
   })
+
+  it('drops stale line ranges when the record and edit calls use differently-formatted (but equivalent) path strings for the same file', () => {
+    const p = normalizePath(makeTmpFile())
+    const backslashForm = p.replace(/\//g, '\\')
+    recordFileLineRange(backslashForm, 1, 50)
+    expect(getFileLineRanges(p)).toEqual([[1, 50]])
+
+    recordFileEdit(p)
+
+    expect(getFileLineRanges(p)).toEqual([])
+    expect(getFileLineRanges(backslashForm)).toEqual([])
+  })
 })
 
 describe('hint dedup', () => {
