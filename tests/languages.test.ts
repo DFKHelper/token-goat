@@ -427,6 +427,15 @@ describe('html adapter', () => {
     expect(result.language).toBe('html')
     fs.rmSync(path.dirname(file), { recursive: true, force: true })
   })
+
+  it('extracts a heading whose text spans multiple lines', () => {
+    // Regression: HEADING_RE lacked the `s` (dotall) flag, so `.` in `(.*?)` couldn't match
+    // the newlines a formatter/pretty-printer commonly inserts between the tag and its text,
+    // and the heading/section was silently dropped rather than falling back to anything.
+    const content = `<h1>\n  Multi-line Title\n</h1>\n<p>body</p>`
+    const { sections } = extractHtml(content, 'multiline.html')
+    expect(sections.some((s) => s.heading === 'Multi-line Title')).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -467,6 +476,15 @@ describe('liquid adapter', () => {
     const result = await parseFile(file)
     expect(result.language).toBe('liquid')
     fs.rmSync(path.dirname(file), { recursive: true, force: true })
+  })
+
+  it('extracts a heading whose text spans multiple lines', () => {
+    // Regression: HEADING_RE lacked the `s` (dotall) flag, so `.` in `(.*?)` couldn't match
+    // the newlines a formatter/pretty-printer commonly inserts between the tag and its text,
+    // and the heading/section was silently dropped rather than falling back to anything.
+    const content = `<h1>\n  Multi-line Title\n</h1>`
+    const { sections } = extractLiquid(content, 'multiline.liquid', 'multiline.liquid')
+    expect(sections.some((s) => s.heading === 'Multi-line Title')).toBe(true)
   })
 })
 
@@ -788,6 +806,20 @@ debug = true
     expect(symbols[0]?.kind).toBe('ini_section')
   })
 
+  it('extracts a quoted git-config-style subsection header', () => {
+    // Regression: HEADER_RE's name charset didn't allow spaces or quotes, so a real,
+    // common git-config-style header like [branch "master"] never matched and the whole
+    // line was silently skipped rather than producing an ini_section symbol.
+    const content = `[branch "master"]
+remote = origin
+merge = refs/heads/master
+`
+    const symbols = extractIni(content, '.git/config')
+    const names = symbols.map((s) => s.name)
+    expect(names).toContain('branch "master"')
+    expect(symbols.find((s) => s.name === 'branch "master"')?.kind).toBe('ini_section')
+  })
+
   it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
     const content = `
 CREATE INDEX CONCURRENTLY idx_name ON users (id);
@@ -1049,6 +1081,41 @@ service UserService {
     const result = await parseFile(file)
     expect(result.language).toBe('proto')
     fs.rmSync(path.dirname(file), { recursive: true, force: true })
+  })
+
+  it('captures nested message/enum with correct end lines, not just column-0 top-level ones', () => {
+    const content = `message Outer {
+  message Inner {
+    string x = 1;
+  }
+  enum Status {
+    ACTIVE = 0;
+  }
+  int32 y = 1;
+}
+`
+    const { symbols } = extractProto(content, 'nested.proto')
+    const names = symbols.map((s) => s.name)
+    // Regression: TOP_LEVEL_RE was anchored to column 0 with no leading-whitespace
+    // allowance, so an indented nested message/enum never matched at all.
+    expect(names).toContain('Inner')
+    expect(names).toContain('Status')
+
+    const outer = symbols.find((s) => s.name === 'Outer')
+    const inner = symbols.find((s) => s.name === 'Inner')
+    const status = symbols.find((s) => s.name === 'Status')
+    expect(inner?.kind).toBe('proto_message')
+    expect(status?.kind).toBe('proto_enum')
+
+    // Regression: the shared flat end-line propagation assumes siblings, not nesting, so
+    // without brace-matching Outer's range gets truncated to right before Inner starts, and
+    // Inner (the last section in file order) over-extends all the way to EOF.
+    expect(inner?.lineStart).toBe(2)
+    expect(inner?.lineEnd).toBe(4)
+    expect(status?.lineStart).toBe(5)
+    expect(status?.lineEnd).toBe(7)
+    expect(outer?.lineStart).toBe(1)
+    expect(outer?.lineEnd).toBe(9)
   })
 
 describe('PowerShell adapter', () => {

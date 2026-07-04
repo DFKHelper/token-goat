@@ -13,8 +13,10 @@ const MAX_SECTIONS = 200
 const MAX_HEADING_LEN = 200
 const MAX_ENV_KEYS = 200
 
-// Column-0-anchored [name] header. Allows letters, digits, underscores, hyphens, dots, colons, slashes — covers [tool.black], [mysqld:replica], [group/sub].
-const HEADER_RE = /^\[([A-Za-z0-9_\-.:/]+)\]\s*(?:[;#].*)?$/
+// Column-0-anchored [name] header. Captures anything up to the next `]` — covers plain names
+// like [tool.black]/[mysqld:replica]/[group/sub] as well as quoted/spaced git-config-style
+// subsection headers like [branch "master"], which a name-charset allowlist would reject.
+const HEADER_RE = /^\[([^\]\r\n]+)\]\s*(?:[;#].*)?$/
 
 // Optional leading `export ` (shell-sourced .env / direnv .envrc) is consumed so the captured key is the variable name, not the literal `export`. A var literally named `export` (`export=5`, no following space) still captures as `export` because the prefix group requires whitespace.
 const ENV_KEY_RE = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[:=]/

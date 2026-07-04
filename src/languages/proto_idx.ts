@@ -34,11 +34,14 @@ function stripComments(text: string): string {
 }
 
 // Top-level: message Name {, enum Name {, service Name {
+// Leading [ \t]* tolerates indentation so a nested message/enum (e.g. a request/response
+// wrapper declared inside another message) is matched too, not just column-0 declarations.
 const TOP_LEVEL_RE =
-  /^(?<keyword>message|enum|service)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{/gm
+  /^[ \t]*(?<keyword>message|enum|service)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{/gm
 
-// extend QualifiedName { } — target may be dotted (google.protobuf.X)
-const EXTEND_RE = /^extend\s+(?<name>[A-Za-z_][A-Za-z0-9_.]*)\s*\{/gm
+// extend QualifiedName { } — target may be dotted (google.protobuf.X). Same indentation
+// tolerance as TOP_LEVEL_RE: extend blocks may be nested inside a message.
+const EXTEND_RE = /^[ \t]*extend\s+(?<name>[A-Za-z_][A-Za-z0-9_.]*)\s*\{/gm
 
 // rpc MethodName(...) inside a service block
 const RPC_RE = /^\s+rpc\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/gm
@@ -55,6 +58,39 @@ const KIND_MAP: ReadonlyMap<string, string> = new Map([
   ['service', 'proto_service'],
 ])
 
+// message/enum/service/extend/oneof blocks can nest arbitrarily (a message can contain
+// another message or enum). The shared assignFlatEndLines/propagateEndLinesToSymbols
+// helpers only do flat "ends where the next section starts" propagation, which is wrong
+// once nesting is possible: an outer block's end gets truncated to right before its first
+// nested child, and an innermost/last-in-file nested block over-extends to EOF instead of
+// stopping at its own closing brace. For these block kinds we know the exact offset of the
+// opening `{` (each regex ends with `\{`), so find the true matching closing brace instead.
+function findBlockEndLine(content: string, openBraceIndex: number, totalLines: number): number {
+  let depth = 0
+  // Track single/double-quoted string literals (backslash-escape aware) so a brace character
+  // inside a quoted default value or option (e.g. `option (x) = "{"`) is never miscounted as
+  // real nesting -- the same desync bug already fixed for csharp.ts/php.ts/kotlin.ts/
+  // powershell_idx.ts's line-oriented brace counters, adapted here for this whole-text scan.
+  let quote: string | null = null
+  for (let i = openBraceIndex; i < content.length; i++) {
+    const ch = content[i]
+    if (quote !== null) {
+      if (ch === '\\') { i++; continue }
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) {
+        return content.slice(0, i).split('\n').length
+      }
+    }
+  }
+  return totalLines
+}
+
 export function extractProto(
   content: string,
   filePath: string,
@@ -67,6 +103,11 @@ export function extractProto(
 
   const stripped = stripComments(content)
   const totalLines = content.split('\n').length
+
+  // name+lineStart -> true end line for block kinds whose opening `{` offset is known, so
+  // nested message/enum/extend/oneof blocks get a correct end line regardless of the flat
+  // section propagation below (see findBlockEndLine).
+  const blockEndLines = new Map<string, number>()
 
   // Imports
   for (const m of stripped.matchAll(IMPORT_RE)) {
@@ -84,6 +125,8 @@ export function extractProto(
     if (name) {
       const kind = KIND_MAP.get(keyword) ?? 'proto_message'
       const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const openBraceIndex = (m.index ?? 0) + m[0].length - 1
+      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines))
       emit(name, kind, line)
     }
   }
@@ -93,6 +136,8 @@ export function extractProto(
     const name = m.groups?.['name']?.trim() ?? ''
     if (name) {
       const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const openBraceIndex = (m.index ?? 0) + m[0].length - 1
+      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines))
       emit(name, 'proto_extend', line)
     }
   }
@@ -111,13 +156,20 @@ export function extractProto(
     const name = m[1]?.trim() ?? ''
     if (name) {
       const line = stripped.slice(0, m.index ?? 0).split('\n').length
+      const openBraceIndex = (m.index ?? 0) + m[0].length - 1
+      blockEndLines.set(`${name}\0${line}`, findBlockEndLine(stripped, openBraceIndex, totalLines))
       emit(name, 'proto_oneof', line)
     }
   }
 
   sections.sort((a, b) => a.line - b.line)
   assignFlatEndLines(sections, totalLines)
-  const finalSymbols = propagateEndLinesToSymbols(symbols, sections)
+  const finalSymbols = propagateEndLinesToSymbols(symbols, sections).map((sym) => {
+    const braceEndLine = blockEndLines.get(`${sym.name}\0${sym.lineStart}`)
+    return braceEndLine !== undefined && braceEndLine !== sym.lineEnd
+      ? { ...sym, lineEnd: braceEndLine }
+      : sym
+  })
 
   return { symbols: finalSymbols, imports }
 }

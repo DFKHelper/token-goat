@@ -37,8 +37,12 @@ const CLASS_RE = /class=["']([^"']+)["']/gi
 const LINK_RE = /<link[^>]*href=["']([^"']+)["']/gi
 const SCRIPT_RE = /<script[^>]*src=["']([^"']+)["']/gi
 
-// ATX headings (h1–h6)
-const HEADING_RE = /<h([1-6])[^>]*>(.*?)<\/h\1>/gi
+// ATX headings (h1–h6). `s` (dotall) lets `.*?` cross newlines so a heading formatted across
+// multiple lines (e.g. `<h1>\n  Title\n</h1>`, common HTML-formatter/pretty-printer output)
+// still matches — the existing non-greedy `.*?` still stops at the first matching `</hN>`,
+// so this doesn't introduce over-greedy matches. The `.trim()` below already strips the
+// resulting leading/trailing whitespace from a multi-line match.
+const HEADING_RE = /<h([1-6])[^>]*>(.*?)<\/h\1>/gis
 const TAG_STRIP_RE = /<[^>]+>/g
 
 // Common/noisy ids and classes to suppress
