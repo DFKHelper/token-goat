@@ -6,7 +6,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { extractErrorMessage } from './util.js';
+import { extractErrorMessage, foldPath } from './util.js';
 import { lowercaseDriveLetter } from './paths.js';
 
 /**
@@ -101,9 +101,16 @@ export function canonicalize(inputPath: string | URL, baseDir?: string): string 
  * Return SHA256 hash (first 16 chars, hex) of canonical posix path.
  */
 export function projectHash(canonicalRoot: string): string {
+  // canonicalize() only lowercases the drive letter, not the rest of the path, so two
+  // differently-cased strings for the identical physical directory on a case-insensitive
+  // filesystem (Windows/macOS) would otherwise hash to different keys and split one
+  // project's state directory (compact.ts's writeSessionManifest keys sessions by this
+  // hash) across two hashes. Fold through foldPath (util.ts) first, matching the
+  // platform-gated convention used elsewhere (isUnderBlockedRoot, assertWalkableRoot,
+  // pruneDeletedFiles).
   const hash = crypto
     .createHash('sha256')
-    .update(canonicalRoot, 'utf-8')
+    .update(foldPath(canonicalRoot), 'utf-8')
     .digest('hex');
   return hash.slice(0, 16);
 }
@@ -209,7 +216,13 @@ export function findProject(cwd: string): Project | null {
   let current = p;
 
   while (true) {
-    if (sysTemp && current === sysTemp) {
+    // canonicalize() only lowercases the drive letter, not the rest of the path. `current`
+    // (from cwd) and `sysTemp` (from os.tmpdir(), which reads TEMP/TMP/TMPDIR) can
+    // legitimately differ in case beyond the drive letter, so fold both sides before
+    // comparing -- matching the platform-gated convention used elsewhere (isUnderBlockedRoot,
+    // assertWalkableRoot, pruneDeletedFiles) -- or this guard silently stops matching and the
+    // walk continues past the temp boundary.
+    if (sysTemp && foldPath(current) === foldPath(sysTemp)) {
       break;
     }
 
