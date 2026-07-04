@@ -84,11 +84,19 @@ describe('buildManifest', () => {
   })
 
   it('includes a web URLs section when fetches exist', () => {
-    recordWebFetch('https://example.com', 'abc123')
+    recordWebFetch('https://example.com', '', 'abc123')
     const manifest = buildManifest()
     expect(manifest).toContain('### Web URLs fetched')
     expect(manifest).toContain('https://example.com')
     expect(manifest).toContain('cacheId: abc123')
+  })
+
+  it('does not clobber same-url fetches made with different prompts', () => {
+    recordWebFetch('https://example.com/doc', 'prompt A', 'cache-a')
+    recordWebFetch('https://example.com/doc', 'prompt B', 'cache-b')
+    const manifest = buildManifest()
+    expect(manifest).toContain('cacheId: cache-a')
+    expect(manifest).toContain('cacheId: cache-b')
   })
 
   it('stays under 2000 chars for a typical session', () => {
@@ -97,7 +105,7 @@ describe('buildManifest', () => {
       recordFileRead(p)
       if (i % 2 === 0) recordFileEdit(p)
     }
-    recordWebFetch('https://example.com/docs', 'cache-xyz')
+    recordWebFetch('https://example.com/docs', '', 'cache-xyz')
     const manifest = buildManifest()
     expect(manifest.length).toBeLessThan(2000)
   })

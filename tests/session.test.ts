@@ -231,8 +231,16 @@ describe('hint dedup', () => {
 describe('web fetch and bash output indexes', () => {
   it('web fetch tracking round-trips', () => {
     expect(getWebFetchCacheId('https://example.com')).toBeNull()
-    recordWebFetch('https://example.com', 'cache-abc')
+    recordWebFetch('https://example.com', '', 'cache-abc')
     expect(getWebFetchCacheId('https://example.com')).toBe('cache-abc')
+  })
+
+  it('retains separate cacheIds when the same url is fetched with different prompts', () => {
+    recordWebFetch('https://example.com/doc', 'prompt A', 'cache-a')
+    recordWebFetch('https://example.com/doc', 'prompt B', 'cache-b')
+    expect(getWebFetchCacheId('https://example.com/doc', 'prompt A')).toBe('cache-a')
+    expect(getWebFetchCacheId('https://example.com/doc', 'prompt B')).toBe('cache-b')
+    expect(exportSessionState().webFetches.length).toBe(2)
   })
 
   it('bash output tracking round-trips', () => {
@@ -275,7 +283,7 @@ describe('reset', () => {
     const p = makeTmpFile()
     recordFileRead(p)
     markHintShown('h')
-    recordWebFetch('u', 'c')
+    recordWebFetch('u', '', 'c')
     recordBashOutput('cmd', 'oid', 1)
 
     clearModuleCaches()
