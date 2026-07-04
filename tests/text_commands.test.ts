@@ -215,6 +215,27 @@ describe('trace command', () => {
     expect(frames[1]?.file).toBe('b.py')
     expect(frames[1]?.context).toBe('do_something()')
   })
+
+  it.skipIf(process.platform !== 'win32')(
+    'recognizes a WSL-style /mnt/<drive>/... frame path as a project frame when cwd is the native Windows path to the same directory (regression: isProjectFrame did a raw path.resolve + lowercase compare with no WSL/MSYS drive-letter rewrite, so an in-project WSL-mount-path frame was dropped)',
+    () => {
+      const driveMatch = /^([A-Za-z]):[\\/](.*)$/.exec(tmpDir)
+      if (!driveMatch) throw new Error(`tmpDir is not a drive-letter path: ${tmpDir}`)
+      const wslFrame = `/mnt/${driveMatch[1]!.toLowerCase()}/${driveMatch[2]!.replace(/\\/g, '/')}/worker.py`
+      const traceback = [
+        'Traceback (most recent call last):',
+        `  File "${wslFrame}", line 7, in run_worker`,
+        '    do_work()',
+        'RuntimeError: boom',
+      ].join('\n')
+      const r = run(['trace', '--json'], { input: traceback, cwd: tmpDir })
+      expect(r.status, r.stderr).toBe(0)
+      const parsed = JSON.parse(r.stdout) as { tracebacks: Array<{ frames: Array<{ file: string }> }> }
+      const frames = parsed.tracebacks[0]?.frames ?? []
+      expect(frames.length).toBe(1)
+      expect(frames[0]?.file).toBe(wslFrame)
+    },
+  )
 })
 
 // ── logfold ─────────────────────────────────────────────────────────────────

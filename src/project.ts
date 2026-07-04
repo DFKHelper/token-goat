@@ -63,21 +63,25 @@ function normalizeShellDrivePrefix(posixStr: string): string {
 /**
  * Resolve symlinks, normalize, lowercase the Windows drive letter.
  */
-export function canonicalize(inputPath: string | URL): string {
+export function canonicalize(inputPath: string | URL, baseDir?: string): string {
   const pathStr = typeof inputPath === 'string' ? inputPath : inputPath.pathname;
   // Windows-only: rewrites MSYS/WSL/Cygwin style paths (e.g. /mnt/c/foo) to drive-letter form
   // before path.resolve() runs. On real POSIX Node, path.resolve() is POSIX resolve and doesn't
   // understand drive-letter syntax, so rewriting first would corrupt an otherwise-valid POSIX
   // path. Mirrors the win32 gate in paths.ts's normalizePath().
   const isWin32 = process.platform === 'win32';
+  // baseDir lets a caller resolve a relative/WSL-mount path against a directory other than
+  // this process's cwd (e.g. isProjectFrame in text_commands.ts, resolving a traceback frame
+  // against the cwd captured by the trace command rather than assuming it matches process.cwd()).
+  const base = baseDir ?? process.cwd();
 
   // Pre-resolve normalization: convert MSYS/WSL/Cygwin prefix before resolve.
   const slashed = pathStr.replace(/\\/g, '/');
   let pre = isWin32 ? normalizeShellDrivePrefix(slashed) : slashed;
   if (pre !== slashed) {
-    pre = (isWin32 ? path.win32.resolve : path.resolve)(pre);
+    pre = (isWin32 ? path.win32.resolve : path.resolve)(base, pre);
   } else {
-    pre = (isWin32 ? path.win32.resolve : path.resolve)(pathStr);
+    pre = (isWin32 ? path.win32.resolve : path.resolve)(base, pathStr);
   }
 
   // Convert to forward slashes and normalize shell prefixes.
