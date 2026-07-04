@@ -23,6 +23,12 @@ vi.mock('../src/util.js', async (importOriginal) => {
   return { ...actual, runGit: vi.fn() }
 })
 
+// Stub config so overflow-guard tests can set a small max_tokens without writing a real
+// config.toml; other tests get a permissive default (enabled, 25000) from beforeEach below.
+vi.mock('../src/config.js', () => ({
+  loadConfig: vi.fn(),
+}))
+
 import {
   runSymbol,
   runRead,
@@ -45,12 +51,14 @@ import { querySymbols, queryRefs } from '../src/index_reader.js'
 import { runGit } from '../src/util.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { readSection, listSections, listAllSections } from '../src/section_reader.js'
+import { loadConfig } from '../src/config.js'
 
 const mockQuerySymbols = vi.mocked(querySymbols)
 const mockQueryRefs = vi.mocked(queryRefs)
 const mockReadSection = vi.mocked(readSection)
 const mockListSections = vi.mocked(listSections)
 const mockListAllSections = vi.mocked(listAllSections)
+const mockLoadConfig = vi.mocked(loadConfig)
 
 /** Capture stdout/stderr for a function call. */
 function capture(fn: () => void): { stdout: string; stderr: string } {
@@ -89,6 +97,9 @@ describe('read_commands', () => {
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-read-cmds-'))
     vi.clearAllMocks()
+    mockLoadConfig.mockReturnValue({
+      overflow_guard: { enabled: true, max_tokens: 25000 },
+    } as unknown as ReturnType<typeof loadConfig>)
   })
 
   afterEach(() => {
@@ -143,6 +154,33 @@ describe('read_commands', () => {
       expect(stdout).toContain('hello world')
     })
 
+    it('caps an oversized plain-file dump per config.overflow_guard.max_tokens (#52)', () => {
+      // Regression: checkOverflow/trimToBudget had zero production callers, so tuning
+      // config.overflow_guard.max_tokens did nothing. Fails on pre-fix code (full content
+      // passes through untouched, no marker) and passes once runRead's whole-file emit
+      // routes through emitGuarded.
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: true, max_tokens: 50 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      const f = path.join(tempDir, 'huge.txt')
+      fs.writeFileSync(f, 'x'.repeat(2000))
+      const { stdout } = capture(() => { runRead({ spec: f }) })
+      expect(stdout).toContain('output capped at ~50 tokens')
+      expect(stdout).not.toContain('x'.repeat(2000))
+    })
+
+    it('does not cap the plain-file dump when overflow_guard is disabled (real no-op)', () => {
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: false, max_tokens: 50 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      const f = path.join(tempDir, 'huge2.txt')
+      const body = 'x'.repeat(2000)
+      fs.writeFileSync(f, body)
+      const { stdout } = capture(() => { runRead({ spec: f }) })
+      expect(stdout).toContain(body)
+      expect(stdout).not.toContain('output capped at')
+    })
+
     it('returns 1 when file does not exist', () => {
       const code = runRead({ spec: path.join(tempDir, 'nope.txt') })
       expect(code).toBe(1)
@@ -160,6 +198,19 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([sym as any])
       const { stdout } = capture(() => { runRead({ spec: 'src/foo.ts::myFn' }) })
       expect(stdout).toContain('myFn')
+    })
+
+    it('caps an oversized symbol body and tags the truncation hint for "symbol" (#52)', () => {
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: true, max_tokens: 50 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      const sym: MockSymbol = { name: 'hugeFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 500, body: 'x'.repeat(2000), docstring: '' }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockQuerySymbols.mockReturnValue([sym as any])
+      const { stdout } = capture(() => { runRead({ spec: 'src/foo.ts::hugeFn' }) })
+      expect(stdout).toContain('output capped at ~50 tokens')
+      expect(stdout).toContain('Request a specific method (file.py::Class.method) or use --json for structured access.')
+      expect(stdout).not.toContain('x'.repeat(2000))
     })
 
     it('prints correct line count in header (inclusive both ends)', () => {
@@ -308,6 +359,18 @@ describe('read_commands', () => {
         runRead({ spec: 'src/foo.ts::myFn' })
         expect(mockQuerySymbols).toHaveBeenCalled()
       })
+
+      it('caps an oversized line-range slice and tags the truncation hint for "lines" (#52)', () => {
+        mockLoadConfig.mockReturnValue({
+          overflow_guard: { enabled: true, max_tokens: 50 },
+        } as unknown as ReturnType<typeof loadConfig>)
+        const f = path.join(tempDir, 'biglines.txt')
+        const bigLines = Array.from({ length: 200 }, (_, i) => `line ${i} `.repeat(10)).join('\n')
+        fs.writeFileSync(f, bigLines)
+        const { stdout } = capture(() => { runRead({ spec: `${f}@1-200` }) })
+        expect(stdout).toContain('output capped at ~50 tokens')
+        expect(stdout).toContain("Request a smaller line range, e.g. 'file.py::100-150'.")
+      })
     })
   })
 
@@ -371,6 +434,18 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runSection({ spec: 'doc.md::Hello', json: true }) })
       const parsed = JSON.parse(stdout) as { heading: string }
       expect(parsed.heading).toBe('Hello')
+    })
+
+    it('caps an oversized section body and tags the truncation hint for "heading" (#52)', () => {
+      mockLoadConfig.mockReturnValue({
+        overflow_guard: { enabled: true, max_tokens: 50 },
+      } as unknown as ReturnType<typeof loadConfig>)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockReadSection.mockReturnValue({ content: 'x'.repeat(2000), heading: 'Install', lineStart: 1, lineEnd: 400 } as any)
+      const { stdout } = capture(() => { runSection({ spec: 'README.md::Install' }) })
+      expect(stdout).toContain('output capped at ~50 tokens')
+      expect(stdout).toContain("Request a narrower sub-heading, e.g. 'doc.md::Section#2'.")
+      expect(stdout).not.toContain('x'.repeat(2000))
     })
   })
 
