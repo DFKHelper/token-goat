@@ -1244,8 +1244,8 @@ function extractSymbolsNoTreeSitter(
  * the file in a single transaction (DELETE + INSERT, matching the Python
  * bulk-replace strategy) so a re-index never leaves stale symbols behind.
  *
- * Shared by the async {@link indexFile} and the synchronous {@link
- * indexFileSync} the worker drain loop calls.
+ * Called by {@link indexFileSync}, the worker drain loop's synchronous entry
+ * point.
  */
 /**
  * Delete every index row (symbols, refs, files) for one file. On a
@@ -1306,31 +1306,11 @@ function writeParseResult(
 }
 
 /**
- * Index one file into the SQLite DB: parse it, then replace its rows.
- */
-export async function indexFile(filePath: string, dbPath: string = globalDbPath()): Promise<void> {
-  const start = Date.now()
-  const language = detectLanguage(filePath)
-
-  let content: string
-  try {
-    content = await fs.promises.readFile(filePath, 'utf8')
-  } catch {
-    // Transient read failure (e.g. a Windows exclusive-lock error): no-op, matching
-    // indexFileSync, rather than destructively wiping this file's existing rows.
-    return
-  }
-
-  const { symbols, refs } = parseContent(content, filePath, language)
-  writeParseResult(filePath, content, { symbols, refs, language, duration: Date.now() - start }, dbPath)
-}
-
-/**
  * Synchronous index: read, parse, and write one file's rows in a single call.
  *
  * The worker drain loop runs synchronously — it clears the dirty queue only
- * after the batch has been written — so it needs a sync entry point rather than
- * the Promise-returning {@link indexFile}. Reads with `readFileSync`, runs the
+ * after the batch has been written — so it needs a synchronous entry point.
+ * Reads with `readFileSync`, runs the
  * same `parseContent` extractor, and shares {@link writeParseResult}. A file
  * genuinely gone (ENOENT — deleted in the race window between being
  * fingerprinted and this read) is skipped silently, never throws. Any other
@@ -1386,26 +1366,6 @@ export async function indexFileEmbeddings(filePath: string, dbPath: string = glo
     await embedIndexFile(db, filePath, content)
   } catch {
     // Best-effort: never fail the overall index over an embeddings-only error.
-  }
-}
-
-/**
- * Index multiple files sequentially. Called by the worker drain loop.
- *
- * A failure on one file (parse error, transient read race) is swallowed so the
- * rest of the batch still indexes — the worker should never crash on a single
- * bad file.
- */
-export async function indexFiles(
-  filePaths: string[],
-  dbPath: string = globalDbPath(),
-): Promise<void> {
-  for (const filePath of filePaths) {
-    try {
-      await indexFile(filePath, dbPath)
-    } catch {
-      // Skip this file; continue draining the batch.
-    }
   }
 }
 
