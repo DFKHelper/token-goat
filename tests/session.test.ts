@@ -7,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import {
+  exportSessionState,
   getBashOutputId,
   getFileLineRanges,
   getSessionFiles,
   getSessionId,
   getWebFetchCacheId,
+  importSessionState,
   markFileTruncated,
   markHintShown,
   recordBashOutput,
@@ -73,6 +75,64 @@ describe('file read tracking', () => {
     const files = [...getSessionFiles().values()]
     expect(files.length).toBe(1)
     expect(files[0]?.sizeBytes).toBe(10)
+  })
+})
+
+describe('case-insensitive filesystem path matching (#47)', () => {
+  const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+  afterEach(() => {
+    if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+    else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+  })
+
+  // Regression: recordFileRead/wasFileReadThisSession/markFileTruncated/recordLargeFileHintPending
+  // keyed their maps by normalizePath(filePath) alone. normalizePath only lowercases the drive
+  // letter, so a second Read of the SAME physical file under different casing beyond the drive
+  // letter (e.g. "Worker.ts" vs "worker.ts" -- Windows/macOS filesystems are case-insensitive)
+  // missed the existing cache entry entirely and the "already read this session" dedup hint
+  // silently failed to fire. Fold the map key with foldPath(), matching the established pattern
+  // in worker.ts/index_prune.ts/sql_path.ts/walk_index.ts/read_commands.ts.
+  it('recognizes a re-read of the same file under different casing as the same entry', () => {
+    process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+    const p = makeTmpFile()
+    const differentlyCased = p.toUpperCase()
+
+    expect(wasFileReadThisSession(p)).toBe(false)
+    recordFileRead(p)
+    expect(wasFileReadThisSession(p)).toBe(true)
+
+    // Same physical file, different literal casing -- must still be recognized as already read.
+    expect(wasFileReadThisSession(differentlyCased)).toBe(true)
+
+    const files = [...getSessionFiles().values()]
+    expect(files.length).toBe(1)
+  })
+
+  it('control: case-sensitive FS treats differently-cased paths as distinct entries', () => {
+    process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'
+    const p = makeTmpFile()
+    const differentlyCased = p.toUpperCase()
+
+    recordFileRead(p)
+    expect(wasFileReadThisSession(p)).toBe(true)
+    expect(wasFileReadThisSession(differentlyCased)).toBe(false)
+  })
+
+  // The read-dedup map is round-tripped to disk between hook process invocations via
+  // exportSessionState/importSessionState (see session_store.ts::loadSessionState /
+  // saveSessionState). If importSessionState rebuilt the in-memory map keyed by the raw,
+  // case-preserved FileEntry.path instead of a folded key, the fold fix above would only hold
+  // for the lifetime of a single process and silently regress on the very next hook invocation.
+  it('preserves the case-fold across an exportSessionState/importSessionState round-trip', () => {
+    process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+    const p = makeTmpFile()
+    recordFileRead(p)
+
+    const snapshot = exportSessionState()
+    importSessionState(snapshot)
+
+    const differentlyCased = p.toUpperCase()
+    expect(wasFileReadThisSession(differentlyCased)).toBe(true)
   })
 })
 

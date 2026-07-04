@@ -20,6 +20,7 @@ import * as fs from 'node:fs'
 
 import { normalizePath } from './paths.js'
 import { registerReset } from './reset.js'
+import { foldPath } from './util.js'
 
 /**
  * Tracks reads/edits of a single file within the session.
@@ -29,7 +30,7 @@ import { registerReset } from './reset.js'
  * edited (which invalidates any cached read window), and its size at last read.
  */
 export interface FileEntry {
-  /** Normalized absolute path (the dedup map key). */
+  /** Normalized absolute path, case-preserved -- also the literal `_files` map key for this entry's first-seen casing. See {@link resolveFilesKey} for how a later read of the same physical file under different casing (case-insensitive filesystems) still resolves to this same entry. */
   readonly path: string
   /** Number of times Read fired for this file this session. */
   readonly readCount: number
@@ -90,15 +91,41 @@ function fileSize(absPath: string): number {
 }
 
 /**
+ * Resolve `normalized` to the literal key already used in `_files`, falling back to a
+ * case-folded scan only when no exact match exists.
+ *
+ * `_files`'s primary key stays case-preserved (not folded) rather than folding it outright,
+ * because `getSessionFiles()` exposes the raw map and hooks_read.ts's re-read-count branch does
+ * a direct `getSessionFiles().get(normalized)` lookup with its own `normalizePath(filePath)` --
+ * folding the stored key out from under that direct lookup would break it even for the common
+ * case of the identical path queried twice. normalizePath only lowercases the drive letter, so
+ * without this fallback, a second Read of the SAME physical file under different casing beyond
+ * the drive letter (e.g. "Worker.ts" vs "worker.ts" -- Windows/macOS filesystems are
+ * case-insensitive) would create a second, separate entry instead of being recognized as the
+ * existing one. The fallback scan is bounded by the small, capped number of files tracked per
+ * session (see session_store.ts's capFiles).
+ */
+function resolveFilesKey(normalized: string): string {
+  if (_files.has(normalized)) return normalized
+  const folded = foldPath(normalized)
+  if (folded === normalized) return normalized
+  for (const existingKey of _files.keys()) {
+    if (foldPath(existingKey) === folded) return existingKey
+  }
+  return normalized
+}
+
+/**
  * Record that `filePath` was read.
  *
  * First read creates an entry; subsequent reads increment `readCount` and
  * refresh `lastReadAt` / `sizeBytes` while preserving the `wasEdited` flag.
  */
 export function recordFileRead(filePath: string): void {
-  const key = normalizePath(filePath)
+  const normalized = normalizePath(filePath)
+  const key = resolveFilesKey(normalized)
   const now = Date.now()
-  const size = fileSize(key)
+  const size = fileSize(normalized)
   const prev = _files.get(key)
   if (prev === undefined) {
     _files.set(key, {
@@ -128,8 +155,9 @@ export function recordFileRead(filePath: string): void {
  * pre-edit range can no longer be trusted by hooks_bash.ts's overlap check.
  */
 export function recordFileEdit(filePath: string): void {
-  const key = normalizePath(filePath)
-  _fileLineRanges.delete(key)
+  const normalized = normalizePath(filePath)
+  const key = resolveFilesKey(normalized)
+  _fileLineRanges.delete(foldPath(normalized))
   const prev = _files.get(key)
   if (prev === undefined) {
     _files.set(key, {
@@ -137,7 +165,7 @@ export function recordFileEdit(filePath: string): void {
       readCount: 0,
       lastReadAt: 0,
       wasEdited: true,
-      sizeBytes: fileSize(key),
+      sizeBytes: fileSize(normalized),
     })
     return
   }
@@ -156,7 +184,7 @@ export function getSessionFiles(): ReadonlyMap<string, FileEntry> {
  * re-read-hint semantics: there is no prior read to dedup against.
  */
 export function wasFileReadThisSession(filePath: string): boolean {
-  const entry = _files.get(normalizePath(filePath))
+  const entry = _files.get(resolveFilesKey(normalizePath(filePath)))
   return entry !== undefined && entry.readCount > 0
 }
 
@@ -182,12 +210,12 @@ export function recordCliRead(cliReadKey: string): void {
 
 /** Record that a large-file hint fired for `filePath` (size in bytes), pending an outcome resolution. */
 export function recordLargeFileHintPending(filePath: string, sizeBytes: number): void {
-  _pendingLargeFileHints.set(normalizePath(filePath), sizeBytes)
+  _pendingLargeFileHints.set(foldPath(normalizePath(filePath)), sizeBytes)
 }
 
 /** Consume and return the pending large-file-hint size for `filePath`, or null if none is pending. */
 export function takePendingLargeFileHint(filePath: string): number | null {
-  const key = normalizePath(filePath)
+  const key = foldPath(normalizePath(filePath))
   const size = _pendingLargeFileHints.get(key)
   if (size === undefined) return null
   _pendingLargeFileHints.delete(key)
@@ -257,16 +285,17 @@ export const MAX_RANGES_PER_FILE = 64
 
 /** Record that inclusive line range [start, end] of `filePath` was served via a sed line-range read this session. Deduplicates identical ranges and caps retained ranges per file. */
 export function recordFileLineRange(filePath: string, start: number, end: number): void {
-  const ranges = _fileLineRanges.get(filePath) ?? []
+  const key = foldPath(filePath)
+  const ranges = _fileLineRanges.get(key) ?? []
   if (ranges.some(([s, e]) => s === start && e === end)) return
   ranges.push([start, end])
   if (ranges.length > MAX_RANGES_PER_FILE) ranges.splice(0, ranges.length - MAX_RANGES_PER_FILE)
-  _fileLineRanges.set(filePath, ranges)
+  _fileLineRanges.set(key, ranges)
 }
 
 /** Inclusive line ranges of `filePath` already served via sed this session (empty if none). */
 export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [number, number]> {
-  return _fileLineRanges.get(filePath) ?? []
+  return _fileLineRanges.get(foldPath(filePath)) ?? []
 }
 
 /**
@@ -277,7 +306,8 @@ export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [num
  * with a skeleton/surgical-read hint instead of allowing another full read.
  */
 export function markFileTruncated(filePath: string): void {
-  const key = normalizePath(filePath)
+  const normalized = normalizePath(filePath)
+  const key = resolveFilesKey(normalized)
   const prev = _files.get(key)
   if (prev === undefined) {
     _files.set(key, {
@@ -285,7 +315,7 @@ export function markFileTruncated(filePath: string): void {
       readCount: 1,
       lastReadAt: Date.now(),
       wasEdited: false,
-      sizeBytes: fileSize(key),
+      sizeBytes: fileSize(normalized),
       wasTruncated: true,
     })
     return
@@ -295,7 +325,7 @@ export function markFileTruncated(filePath: string): void {
 
 /** True if the file was truncated during a Read this session. */
 export function wasFileTruncatedThisSession(filePath: string): boolean {
-  const entry = _files.get(normalizePath(filePath))
+  const entry = _files.get(resolveFilesKey(normalizePath(filePath)))
   return entry?.wasTruncated === true
 }
 
