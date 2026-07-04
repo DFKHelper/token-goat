@@ -250,9 +250,10 @@ function sleepSyncMs(ms: number): void {
  * Each stage's claimed/recovered file is only cleared (rm'd or quarantined)
  * AFTER its batch has been durably processed by {@link processDirtyBatch} --
  * never before. If the process dies partway through a batch (SIGTERM, a
- * crash, `worker --kill-duplicate`), the .draining file is still on disk for
- * the next startup's crash recovery to pick back up, instead of having
- * already been deleted while the paths it named were never indexed.
+ * crash, or this daemon being killed as a duplicate after losing the
+ * {@link claimWorkerPidFile} startup race), the .draining file is still on
+ * disk for the next startup's crash recovery to pick back up, instead of
+ * having already been deleted while the paths it named were never indexed.
  *
  * Returns the number of paths processed. When no `index` callback is injected,
  * files are indexed into `dir`'s `global.db` (the real shipping path); in
@@ -452,12 +453,77 @@ export function startWorker(opts?: WorkerOptions): WorkerHandle {
 }
 
 /**
+ * Thrown by {@link startDetachedWorker} when it loses the {@link claimWorkerPidFile} startup
+ * race to a daemon that already holds the pid-file slot (a genuine already-running worker, or a
+ * concurrent `worker start` invocation that won the race first).
+ */
+export class WorkerAlreadyRunningError extends Error {
+  constructor(message = 'worker already running') {
+    super(message)
+    this.name = 'WorkerAlreadyRunningError'
+  }
+}
+
+/**
+ * Atomically claim the worker pid file for `pid`, closing the TOCTOU race where two
+ * near-simultaneous `worker start` invocations could otherwise both pass an
+ * {@link isWorkerRunning} pre-check and then unconditionally overwrite each other's pid file --
+ * orphaning whichever daemon lost, with no pid file left pointing at it for a later
+ * {@link stopWorker} to find.
+ *
+ * Uses exclusive-create (`wx`) so only one writer can ever create the file fresh; a losing
+ * writer sees `EEXIST` instead of silently clobbering the winner's entry, and then checks
+ * whether the pid already recorded there is a live process:
+ *
+ *   - alive: refuse -- a real daemon already holds the slot. Returns false.
+ *   - dead/stale/unreadable: safe to reclaim -- remove the stale file and retry the exclusive
+ *     create once.
+ *
+ * Exported for tests; the boolean return lets {@link startDetachedWorker} decide whether to kill
+ * the child process it just spawned when it loses the race.
+ */
+export function claimWorkerPidFile(dir: string, pid: number): boolean {
+  const pidPath = workerPidPath(dir)
+  try {
+    fs.writeFileSync(pidPath, `${pid}\n`, { flag: 'wx' })
+    return true
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+  }
+  const existingPid = readPidFile(dir)
+  if (existingPid !== null && pidAlive(existingPid)) {
+    return false
+  }
+  // Stale, dead, or unreadable: reclaim the slot.
+  try {
+    fs.rmSync(pidPath, { force: true })
+  } catch {
+    // best-effort
+  }
+  try {
+    fs.writeFileSync(pidPath, `${pid}\n`, { flag: 'wx' })
+    return true
+  } catch (e2) {
+    // Lost a second, much narrower race on the reclaim retry itself: be conservative and
+    // report already-running rather than clobber whoever just won it.
+    if ((e2 as NodeJS.ErrnoException).code === 'EEXIST') return false
+    throw e2
+  }
+}
+
+/**
  * Spawn the drain loop as a detached child process and record its pid.
  *
  * The child runs `node <thisModule> --worker-daemon` with the poll interval and
  * data dir passed via env (a detached process cannot share `workerData`). The
  * child is `unref`'d so the launching CLI can exit immediately. Returns the
  * child pid (or throws if the spawn itself fails synchronously).
+ *
+ * The pid file is claimed via {@link claimWorkerPidFile} AFTER the child is spawned (a detached
+ * child's real pid can't be known beforehand) but BEFORE it is `unref`'d or returned to the
+ * caller: if the claim loses the race to an already-running daemon, the just-spawned duplicate
+ * child is killed immediately and {@link WorkerAlreadyRunningError} is thrown, so no orphaned
+ * second daemon is ever left running.
  */
 export function startDetachedWorker(opts?: WorkerOptions): number {
   const pollIntervalMs = opts?.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
@@ -487,7 +553,17 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
   if (pid === undefined) {
     throw new Error('startDetachedWorker: spawn produced no pid')
   }
-  fs.writeFileSync(workerPidPath(dir), `${pid}\n`)
+
+  if (!claimWorkerPidFile(dir, pid)) {
+    try {
+      process.kill(pid)
+    } catch {
+      // already gone
+    }
+    child.unref()
+    throw new WorkerAlreadyRunningError()
+  }
+
   child.unref()
   return pid
 }
@@ -533,12 +609,29 @@ export async function runWorkerLoop(
  * This is the sole trigger point for the daemon loop in the shipped CLI --
  * nothing else should call it, since {@link runWorkerLoop} would then be
  * running twice against the same dirty queue.
+ *
+ * Registers a `process.on('exit', ...)` handler that clears this daemon's own pid file so any
+ * exit path other than a clean {@link stopWorker} call (the SIGTERM handler above, an uncaught
+ * exception, or the process simply crashing) doesn't leave a stale pid file behind forever. The
+ * handler only removes the file when it still names this exact process -- never unconditionally
+ * -- so a daemon that lost the {@link claimWorkerPidFile} startup race (and was killed as a
+ * duplicate) or was already stopped and superseded by a newer daemon can never clobber the
+ * *current* owner's pid file on its own delayed exit.
  */
 export function runDetachedWorkerDaemon(): void {
   const dir = process.env['TG_WORKER_DATA_DIR'] ?? dataDir()
   const interval = parseInt(process.env['TG_WORKER_POLL_MS'] ?? '0', 10)
   const safeInterval = Number.isFinite(interval) && interval > 0 ? interval : DEFAULT_POLL_INTERVAL_MS
   process.on('SIGTERM', () => process.exit(0))
+  process.on('exit', () => {
+    if (readPidFile(dir) === process.pid) {
+      try {
+        fs.rmSync(workerPidPath(dir), { force: true })
+      } catch {
+        // best-effort cleanup
+      }
+    }
+  })
   void runWorkerLoop(dir, safeInterval)
 }
 

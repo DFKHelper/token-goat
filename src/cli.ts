@@ -33,7 +33,13 @@ import type { SymbolEntry } from './parser_types.js'
 import { relay } from './relay.js'
 import { installHooks, uninstallHooks } from './install.js'
 import type { HookScope } from './install.js'
-import { isWorkerRunning, runDetachedWorkerDaemon, startDetachedWorker, stopWorker } from './worker.js'
+import {
+  isWorkerRunning,
+  runDetachedWorkerDaemon,
+  startDetachedWorker,
+  stopWorker,
+  WorkerAlreadyRunningError,
+} from './worker.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { getWebOutput } from './web_cache.js'
 import * as bashRunner from './bash_runner.js'
@@ -266,8 +272,21 @@ function cmdWorkerStart(): void {
     out('Worker already running.')
     return
   }
-  const pid = startDetachedWorker()
-  out(`Worker started (pid ${pid}).`)
+  // startDetachedWorker's own atomic pid-file claim (see worker.ts::claimWorkerPidFile) is the
+  // real guard against the TOCTOU race above: two near-simultaneous `worker start` invocations
+  // can both pass the isWorkerRunning() check above, but only one of them can win the exclusive
+  // pid-file create that follows, so the loser reports this cleanly instead of orphaning a
+  // second, unstoppable daemon.
+  try {
+    const pid = startDetachedWorker()
+    out(`Worker started (pid ${pid}).`)
+  } catch (e) {
+    if (e instanceof WorkerAlreadyRunningError) {
+      out('Worker already running.')
+      return
+    }
+    throw e
+  }
 }
 
 function cmdWorkerStop(): void {
