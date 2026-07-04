@@ -112,6 +112,20 @@ describe('helpers: capping', () => {
     expect(capBytes('short', 1000)).toBe('short')
   })
 
+  it('capBytes never splits a multi-byte UTF-8 character when no newline is nearby', () => {
+    // '中' is 3 bytes in UTF-8 (E4 B8 AD). No newlines, so the line-boundary
+    // rescue never triggers and the raw byte cut must fall back to a
+    // character-boundary-safe cut instead.
+    const filler = 'a'.repeat(50)
+    const text = filler + '中'.repeat(50)
+    const markerLen = Buffer.byteLength('\n... [999 bytes elided by token-goat]', 'utf8')
+    // Land the cut 1 byte into the first CJK character.
+    const maxBytes = filler.length + 1 + markerLen
+    const out = capBytes(text, maxBytes)
+    expect(out).not.toContain('�')
+    expect(byteLength(out)).toBeLessThanOrEqual(maxBytes)
+  })
+
   it('squeezeBlankLines collapses 3+ blank lines to one', () => {
     expect(squeezeBlankLines('a\n\n\n\nb')).toBe('a\n\nb')
   })
