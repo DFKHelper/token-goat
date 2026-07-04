@@ -171,6 +171,33 @@ describe('DockerFilter', () => {
     const result = apply(f, text, '', 0, ['docker', 'build'])
     expect(result).toContain('[token-goat: dropped')
   })
+
+  it('collapses legacy (non-BuildKit) "---> <hex>" intermediate-layer lines', () => {
+    // Classic `DOCKER_BUILDKIT=0 docker build` output prints a bare 12-char-hex intermediate
+    // layer hash per step (` ---> a1b2c3d4e5f6`), with no `sha256:` label -- that labeled form
+    // is specific to the *different*, already-handled BuildKit `#N ... sha256:...` lines
+    // covered by the tests above.
+    const text = [
+      'Step 1/4 : FROM node:18',
+      ' ---> aaaaaaaaaaaa',
+      'Step 2/4 : RUN npm install',
+      ' ---> Using cache',
+      ' ---> bbbbbbbbbbbb',
+      'Step 3/4 : COPY . .',
+      ' ---> cccccccccccc',
+      'Step 4/4 : CMD ["node", "index.js"]',
+      'Removing intermediate container dddddddddddd',
+      ' ---> eeeeeeeeeeee',
+      'Successfully built ffffffffffff',
+    ].join('\n')
+    const result = apply(f, text, '', 0, ['docker', 'build'])
+    expect(result).not.toContain('aaaaaaaaaaaa')
+    expect(result).not.toContain('bbbbbbbbbbbb')
+    expect(result).not.toContain('cccccccccccc')
+    expect(result).not.toContain('eeeeeeeeeeee')
+    expect(result).toContain('building 4 layers, 1 cached')
+    expect(result).toContain('Successfully built ffffffffffff')
+  })
 })
 
 // ---------------------------------------------------------------------------
