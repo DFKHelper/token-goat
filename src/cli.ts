@@ -123,6 +123,10 @@ function symbolHeader(s: SymbolEntry): string {
 // CliError instead of letting NaN flow into a downstream SQL LIMIT bind (which better-sqlite3
 // rejects with an opaque "datatype mismatch" error).
 function requireInt(flag: string, raw: string): number {
+  // Only accept exact integer literals (optional leading minus, followed by digits)
+  if (!/^-?\d+$/.test(raw)) {
+    throw new CliError(`${flag} must be a number, got: "${raw}"`)
+  }
   const n = Number.parseInt(raw, 10)
   if (!Number.isFinite(n)) {
     throw new CliError(`${flag} must be a number, got: "${raw}"`)
