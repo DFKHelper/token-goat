@@ -30,6 +30,7 @@ const { compactPathFor, isCompactFresh, writeCompact, buildExtractiveCompact } =
   '../src/doc_compact.js'
 )
 const { clearModuleCaches } = await import('../src/reset.js')
+const { makeHookEvent } = await import('./helpers/hook-event.js')
 
 const tmpFiles: string[] = []
 
@@ -41,13 +42,11 @@ function makeMdFile(content = '# Title\nLine 1\nLine 2\nLine 3\n'): string {
 }
 
 function readEvent(filePath: string): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Read',
     toolInput: { file_path: filePath },
     sessionId: 'test',
-    raw: {},
-  }
+  })
 }
 
 /** Extract whatever text a hook result carries, regardless of which branch fired. */

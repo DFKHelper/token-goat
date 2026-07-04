@@ -19,15 +19,12 @@ import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { isAvailable } from '../src/embeddings.js'
 
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.join(HERE, '..')
-const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
+import { BUNDLE } from './helpers/bundle.js'
 
 type Vec0State = 'working' | 'broken' | 'absent'
 

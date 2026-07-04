@@ -21,16 +21,13 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import sharp from 'sharp'
 
 import { allCommandNames } from './registry.js'
 
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.join(HERE, '..')
-const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
+import { BUNDLE, ROOT } from './helpers/bundle.js'
 
 let repo: string // indexed fixture; default cwd for read commands
 let dataBase: string // isolated data dir holding the shared index
@@ -516,7 +513,7 @@ const cases: Record<string, () => void> = {
   },
   lockdeps: () => {
     // token-goat ships a package-lock.json; run against the repo root.
-    const r = run(['lockdeps', 'package-lock.json'], { cwd: path.join(HERE, '..') })
+    const r = run(['lockdeps', 'package-lock.json'], { cwd: ROOT })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('commander')
     expect(r.stdout).toContain('package-lock.json')

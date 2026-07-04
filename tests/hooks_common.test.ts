@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 
-import type { HookEvent } from '../src/hook_registry.js'
 import {
   contextOutput,
   denyOutput,
@@ -13,17 +12,7 @@ import {
   isWriteTool,
   passOutput,
 } from '../src/hooks_common.js'
-
-function makeEvent(overrides: Partial<HookEvent> = {}): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
-    toolName: 'Read',
-    toolInput: {},
-    sessionId: 's1',
-    raw: {},
-    ...overrides,
-  }
-}
+import { makeHookEvent as makeEvent } from './helpers/hook-event.js'
 
 describe('hooks_common', () => {
   describe('accessors', () => {

@@ -14,13 +14,10 @@ import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.join(HERE, '..')
-const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
+import { BUNDLE, ROOT } from './helpers/bundle.js'
 
 interface RunResult {
   status: number | null
@@ -307,6 +304,7 @@ describe('lockdeps command', () => {
     expect(r.stdout).toContain('requests')
     expect(r.stdout).toContain('numpy')
   })
+
   it('parses an npm v1 lockfile (nested dependencies tree, no packages map) (regression: v1 lockfiles reported "Total: 0 packages" because only the v2/v3 packages map was read)', () => {
     const v1Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-v1-lock-'))
     const lockPath = path.join(v1Dir, 'package-lock.json')

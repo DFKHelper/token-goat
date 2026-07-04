@@ -19,8 +19,9 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { ROOT } from './helpers/bundle.js'
+
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.join(HERE, '..')
 const WORKER = path.join(HERE, 'fixtures', 'session_race_worker.ts')
 // Spawn tsx's own CLI entry via `node`, not the node_modules/.bin/tsx(.cmd) shim -- the
 // shim is a shell script / batch file on POSIX/Windows respectively, and Node's spawn()

@@ -82,7 +82,7 @@ const tempDir = path.resolve(__dirname, '.temp-skill-cache-test')
 
 beforeEach(async () => {
   try {
-    await fs.rm(tempDir, { recursive: true })
+    await fs.rm(tempDir, { recursive: true, force: true })
   } catch {
     // directory doesn't exist yet
   }
@@ -684,7 +684,7 @@ describe('getSkillFilePath / installedSkillPath disk fallback', () => {
 
   beforeEach(async () => {
     try {
-      await fs.rm(sourceDir, { recursive: true })
+      await fs.rm(sourceDir, { recursive: true, force: true })
     } catch {
       // not present yet
     }
@@ -728,7 +728,7 @@ describe('Hit count tracking', () => {
 
   beforeEach(async () => {
     try {
-      await fs.rm(hitDir, { recursive: true })
+      await fs.rm(hitDir, { recursive: true, force: true })
     } catch {
       // not present yet
     }
@@ -773,7 +773,7 @@ describe('incrementSkillHit concurrency (regression: unlocked read-modify-write 
 
   beforeEach(async () => {
     try {
-      await fs.rm(raceDir, { recursive: true })
+      await fs.rm(raceDir, { recursive: true, force: true })
     } catch {
       // not present yet
     }
@@ -817,7 +817,7 @@ describe('Compact staleness tracking', () => {
 
   beforeEach(async () => {
     try {
-      await fs.rm(staleDir, { recursive: true })
+      await fs.rm(staleDir, { recursive: true, force: true })
     } catch {
       // not present yet
     }

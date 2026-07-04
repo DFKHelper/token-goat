@@ -23,15 +23,13 @@ import type { HookEvent } from '../src/hook_registry.js'
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { invalidateConfigCache } from '../src/config.js'
+import { makeHookEvent } from './helpers/hook-event.js'
 
 function makeEvent(filePath: string | undefined): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Read',
     toolInput: filePath === undefined ? {} : { file_path: filePath },
-    sessionId: 's1',
-    raw: {},
-  }
+  })
 }
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-img-'))

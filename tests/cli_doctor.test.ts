@@ -13,7 +13,7 @@ describe('cli_doctor', () => {
 
   afterEach(() => {
     if (fs.existsSync(tempDir)) {
-      fs.rmSync(tempDir, { recursive: true })
+      fs.rmSync(tempDir, { recursive: true, force: true })
     }
   })
 

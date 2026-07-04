@@ -23,7 +23,6 @@ import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -39,28 +38,26 @@ import { preBashHandler, postBashHandler } from '../src/hooks_bash.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 
-const HERE = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.join(HERE, '..')
-const BUNDLE = path.join(ROOT, 'dist', 'token-goat.mjs')
+import { BUNDLE } from './helpers/bundle.js'
+import { makeHookEvent } from './helpers/hook-event.js'
 
 function preEvent(toolInput: Record<string, unknown>): HookEvent {
-  return {
-    eventName: 'pre_tool_use',
+  return makeHookEvent({
     toolName: 'Bash',
     toolInput,
     sessionId: 's',
     raw: { tool_name: 'Bash', tool_input: toolInput },
-  }
+  })
 }
 
 function postEvent(command: string, output: string): HookEvent {
-  return {
+  return makeHookEvent({
     eventName: 'post_tool_use',
     toolName: 'Bash',
     toolInput: { command },
     sessionId: 's',
     raw: { tool_name: 'Bash', tool_input: { command }, tool_response: output },
-  }
+  })
 }
 
 const ORIG_BC = process.env['TOKEN_GOAT_BASH_COMPRESS']
