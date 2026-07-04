@@ -15,6 +15,8 @@ import { resolveIndexPath } from './paths.js'
 import { readSection, listSections, extractSection, listAllSections } from './section_reader.js'
 import { runGit, ensureNewline, foldPath } from './util.js'
 import type { SymbolEntry, RefEntry } from './parser_types.js'
+import { loadConfig } from './config.js'
+import { trimToBudget } from './overflow_guard.js'
 
 // ---- constants --------------------------------------------------------------
 
@@ -49,6 +51,20 @@ function emit(text: string): void {
 
 function emitErr(text: string): void {
   process.stderr.write(ensureNewline(text))
+}
+
+/**
+ * Emit text through the overflow guard: caps output at `config.overflow_guard.max_tokens`
+ * (when enabled), appending a truncation marker with a hint tailored to `command`.
+ * Mirrors the pre-port Python `_emit_text_result` -> `overflow_guard.guard` call, which
+ * capped the same three text paths (read's symbol body, read's line-range slice, and
+ * section's heading body) before the TS port dropped the wiring. JSON output paths must
+ * never call this — line-based truncation would corrupt the JSON payload.
+ */
+function emitGuarded(text: string, command: string): void {
+  const cfg = loadConfig()
+  const payload = cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
+  emit(payload)
 }
 
 // Finds the `::` separator in a `file::symbol` or `file::Heading` spec, splitting on the LAST
@@ -184,7 +200,10 @@ function runLineRange(range: { file: string; start: number; end: number }, opts:
     return 0
   }
   const tok = Math.ceil(slice.join('\n').length / 4)
-  emit([`# lines ${start}-${clampedEnd} of ${allLines.length} (~${tok} tok)`, slice.join('\n')].join('\n'))
+  emitGuarded(
+    [`# lines ${start}-${clampedEnd} of ${allLines.length} (~${tok} tok)`, slice.join('\n')].join('\n'),
+    'lines',
+  )
   return 0
 }
 
@@ -201,7 +220,7 @@ export function runRead(opts: ReadOptions): number {
       emitErr(`Could not read: ${file}`)
       return 1
     }
-    emit(text)
+    emitGuarded(text, 'symbol')
     return 0
   }
 
@@ -267,7 +286,7 @@ export function runRead(opts: ReadOptions): number {
     `# ${bodyLen} lines (~${Math.ceil(match.body.length / 4)} tok)`,
     match.body,
   ]
-  emit(trimBlankLines(lines).join('\n'))
+  emitGuarded(trimBlankLines(lines).join('\n'), 'symbol')
   return 0
 }
 
@@ -309,7 +328,10 @@ export function runSection(opts: SectionOptions): number {
 
   const redirectNote =
     result.redirectedFrom !== undefined ? ` (redirected from: '${result.redirectedFrom}')` : ''
-  emit(`# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`)
+  emitGuarded(
+    `# ${result.heading} — ${filePath}:${result.lineStart}-${result.lineEnd}${redirectNote}\n${result.content}`,
+    'heading',
+  )
   return 0
 }
 
