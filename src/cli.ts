@@ -899,11 +899,7 @@ function readFileBoundedRaw(filePath: string, label: string, allowStdIn = false)
   }
 }
 
-function readTextFileBounded(filePath: string, label: string, allowStdIn = false): string {
-  return readFileBoundedRaw(filePath, label, allowStdIn).toString('utf8')
-}
-
-function decodeBase64Text(payload: string, label: string): string {
+function decodeBase64Buffer(payload: string, label: string): Buffer {
   const normalized = payload.replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/')
   if (payload !== '' && normalized === '') {
     throw new CliError(`${label} payload contains only whitespace — likely a shell expansion error; pass an empty string explicitly for a zero-byte file`)
@@ -919,7 +915,7 @@ function decodeBase64Text(payload: string, label: string): string {
   if (normalized.replace(/=+$/, '').length % 4 === 1) {
     throw new CliError(`${label} payload length is invalid (trailing single base64 character cannot decode to any bytes — payload is likely truncated)`)
   }
-  return Buffer.from(normalized, 'base64').toString('utf8')
+  return Buffer.from(normalized, 'base64')
 }
 
 function cmdWriteFile(dest: string, opts: { from?: string; b64?: string }): Promise<void> | void {
@@ -1102,24 +1098,21 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
     }
   }
 
-  const oldText = usingFrom
-    ? readTextFileBounded(opts.oldFrom!, '--old-from')
-    : decodeBase64Text(opts.oldB64!, '--old-b64')
-  const newText = usingFrom
-    ? readTextFileBounded(opts.newFrom!, '--new-from')
-    : decodeBase64Text(opts.newB64!, '--new-b64')
+  const oldBytes = usingFrom
+    ? readFileBoundedRaw(opts.oldFrom!, '--old-from')
+    : decodeBase64Buffer(opts.oldB64!, '--old-b64')
+  const newBytes = usingFrom
+    ? readFileBoundedRaw(opts.newFrom!, '--new-from')
+    : decodeBase64Buffer(opts.newB64!, '--new-b64')
 
-  if (oldText === '') {
+  if (oldBytes.length === 0) {
     throw new CliError('old string cannot be empty')
   }
 
-  // Byte-exact match/replace: the target file may contain bytes that are not valid UTF-8 anywhere
-  // in the file, not just near the edit. Decoding the whole file to a string (even losslessly for
-  // the matched region) and re-encoding it would silently replace every such byte with U+FFFD
-  // (ef bf bd) on write. Matching and splicing on the raw Buffer leaves every byte outside the
-  // matched span — valid UTF-8 or not — completely untouched.
-  const oldBytes = Buffer.from(oldText, 'utf8')
-  const newBytes = Buffer.from(newText, 'utf8')
+  // Byte-exact match/replace: the target file (and the --old-from/--new-from/--old-b64/--new-b64
+  // inputs themselves) may contain bytes that are not valid UTF-8. Decoding any of them to a string
+  // and re-encoding would silently replace every such byte with U+FFFD (ef bf bd) on write. Reading
+  // and matching everything as raw Buffers leaves every byte — valid UTF-8 or not — untouched.
 
   const matches: number[] = []
   let cursor = 0
@@ -1132,7 +1125,7 @@ function cmdReplace(file: string, opts: { oldFrom?: string; newFrom?: string; ol
   if (occurrences === 0) {
     // Diagnostic only: decoding lossily here is fine — it only shapes the human-readable near-miss
     // hint and never feeds back into what gets matched or written.
-    const nearMiss = diagnoseNearMiss(targetBuf.toString('utf8'), oldText)
+    const nearMiss = diagnoseNearMiss(targetBuf.toString('utf8'), oldBytes.toString('utf8'))
     throw new CliError(nearMiss !== undefined ? `old string not found in ${file} — ${nearMiss}` : `old string not found in ${file}`)
   }
   if (occurrences > 1 && !opts.all) {
