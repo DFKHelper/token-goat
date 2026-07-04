@@ -776,6 +776,10 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const ix = getDefaultConfig('indexing') as IndexingConfig
   ix.large_file_symbol_only_kb = validatedInt(ix_raw['large_file_symbol_only_kb'], ix.large_file_symbol_only_kb, 1, 1048576)
   ix.large_file_skip_kb = validatedInt(ix_raw['large_file_skip_kb'], ix.large_file_skip_kb, 1, 1048576)
+  // A symbol-only threshold larger than the skip threshold is nonsensical: files would be
+  // skipped entirely before the symbol-only tier's condition could ever apply. Clamp
+  // symbol_only_kb so it never exceeds skip_kb.
+  ix.large_file_symbol_only_kb = Math.min(ix.large_file_symbol_only_kb, ix.large_file_skip_kb)
   ix.skip_dirs = validatedStrList(ix_raw['skip_dirs'], ix.skip_dirs)
   ix.embeddings_enabled = validatedBool(ix_raw['embeddings_enabled'], ix.embeddings_enabled)
   ix.embeddings_enabled = envBool('TOKEN_GOAT_EMBEDDINGS_ENABLED', ix.embeddings_enabled)
