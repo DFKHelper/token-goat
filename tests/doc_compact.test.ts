@@ -159,6 +159,17 @@ describe('doc_compact', () => {
       expect(result).not.toContain('title: test')
       expect(result).toContain('# Heading')
     })
+
+    it('does not discard the whole document when the front-matter fence is never closed', () => {
+      // A leading '---' with no matching closing '---' anywhere in the document (malformed/
+      // truncated front matter, or a bare '---' divider used as a horizontal rule) must not
+      // cause the entire document to be skipped -- it should be treated as having no real
+      // front matter, and all of the real content below must survive.
+      const md = '---\n# Heading\nText that must survive'
+      const result = buildExtractiveCompact(md)
+      expect(result).toContain('# Heading')
+      expect(result).toContain('Text that must survive')
+    })
   })
 
   describe('extractDocCompact', () => {

@@ -169,11 +169,17 @@ export function buildExtractiveCompact(text: string, maxSentences?: number): str
   const n = lines.length
 
   if (lines[0]?.trim() === '---') {
-    i = 1
-    while (i < n && lines[i]?.trim() !== '---') {
-      i++
+    let j = 1
+    while (j < n && lines[j]?.trim() !== '---') {
+      j++
     }
-    i++
+    if (j < n) {
+      // Found a closing fence -- skip the front-matter block.
+      i = j + 1
+    }
+    // else: no closing fence anywhere in the document (malformed/truncated front matter,
+    // or a bare '---' divider with no match). Leave i at 0 so the whole document is still
+    // processed as content instead of being silently discarded.
   }
 
   let inCodeBlock = false
