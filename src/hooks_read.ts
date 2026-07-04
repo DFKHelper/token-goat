@@ -756,7 +756,12 @@ export function preReadHandler(event: HookEvent): HookOutput {
   }
 
   const size = statSize(normalized)
-  if (size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized)) {
+  // Grep never reads/returns the whole file — its cost is the search pattern's match count,
+  // not the file's total size (same rationale as the re-read dedup exemption above), and
+  // estimateRequestedSlice() always reports 'unbounded' for it (no offset/limit on its schema),
+  // which would otherwise gate it on the full file size and hard-deny it with an "edit it
+  // anyway" message that makes no sense for a search operation.
+  if (event.toolName !== 'Grep' && size !== null && size >= LARGE_FILE_BYTES && !isImagePath(normalized)) {
     // A genuine, bounded offset/limit request gates on the requested slice's size instead
     // of the whole file's — a small window into a huge file should be let through. Whole-file
     // requests (no offset/limit, or an unboundable window) keep gating on the real file size.
@@ -800,7 +805,12 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const textTypeExts = new Set(['html', 'htm', 'xhtml', 'txt', 'log', 'out', 'err', 'trace', 'csv', 'tsv'])
   const fileStatSize = size ?? statSize(normalized) ?? 0
   const isKnownFileType = binaryExts.has(fileTypeExt) || textTypeExts.has(fileTypeExt)
-  if (!isImagePath(normalized) && (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic)) {
+  // Same Grep exemption as the large-file gate above: this catch-all's per-type handlers
+  // (handleTxt/handleCsv/handleHtml/handleGenericLarge/handlePdf/handleOfficeBinary) block
+  // purely on the whole file's size/type, with no notion of a search pattern — without this,
+  // a Grep call would fall through from the exempted gate above straight into an equally
+  // tool-blind deny here for any large .txt/.log/.csv/.html/binary file.
+  if (event.toolName !== 'Grep' && !isImagePath(normalized) && (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic)) {
     let ftContent = ''
     if (!binaryExts.has(fileTypeExt)) {
       try {
