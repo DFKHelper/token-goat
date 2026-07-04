@@ -325,6 +325,29 @@ describe('preBashHandler — cd-prefix stripping', () => {
     // When cd prefix was stripped, path-sensitive denies become contextOutput
     expect(result.hookType).toBe('context')
   })
+
+  it('resolves the hint path against the cd target directory, not the raw post-strip path', () => {
+    const result = preBashHandler(makeBashEvent('cd subdir && cat file.py', '/repo'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      // The suggested command must not name the bare path extracted from the stripped
+      // command — that path is relative to `subdir`, not to the actual cwd the model runs
+      // its next command from, so it would fail to resolve if followed literally.
+      expect(result.context).not.toContain('"file.py::')
+      const expectedPath = resolveIndexPath('file.py', resolveIndexPath('subdir', '/repo'))
+      expect(result.context).toContain(expectedPath)
+    }
+  })
+
+  it('resolves the hint path through chained cd prefixes in order', () => {
+    const result = preBashHandler(makeBashEvent('cd a && cd b && cat file.py', '/repo'))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      const expectedDir = resolveIndexPath('b', resolveIndexPath('a', '/repo'))
+      const expectedPath = resolveIndexPath('file.py', expectedDir)
+      expect(result.context).toContain(expectedPath)
+    }
+  })
 })
 
 describe('preBashHandler — cat source file recall', () => {

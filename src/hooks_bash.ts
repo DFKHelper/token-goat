@@ -30,6 +30,42 @@ function stripCdPrefix(cmd: string): string {
 }
 
 /**
+ * Extracts each `cd <dir>` target from a leading `cd <dir> && cd <dir2> && ...` prefix, in the
+ * order stripCdPrefix consumes them. Used to resolve a relative filePath extracted from the
+ * remaining command against the directory the shell would actually land in — not this hook's
+ * own cwd — before that path is embedded in a suggested follow-up command.
+ */
+function extractCdPrefixDirs(rawCmd: string): string[] {
+  const prefixMatch = rawCmd.match(/^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*)+/)
+  if (prefixMatch === null) return []
+  const dirs: string[] = []
+  const segmentPattern = /cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))\s*&&/g
+  let match: RegExpExecArray | null
+  while ((match = segmentPattern.exec(prefixMatch[0])) !== null) {
+    const dir = match[1] ?? match[2] ?? match[3]
+    if (dir !== undefined) dirs.push(dir)
+  }
+  return dirs
+}
+
+/**
+ * Resolves filePath against the directory a stripped `cd DIR && ...` prefix leaves the shell in
+ * (each cd resolved in turn — relative ones against the previous directory, starting from cwd —
+ * mirroring real shell semantics), so a hint naming filePath is resolvable from the hook's actual
+ * cwd rather than silently relative to a directory the model never navigated to. Falls back to
+ * filePath unchanged if the prefix can't be parsed into at least one directory.
+ */
+function resolveCdHintPath(rawCmd: string, filePath: string, cwd: string): string {
+  const dirs = extractCdPrefixDirs(rawCmd)
+  if (dirs.length === 0) return filePath
+  let targetDir = cwd
+  for (const dir of dirs) {
+    targetDir = resolveIndexPath(dir, targetDir)
+  }
+  return resolveIndexPath(filePath, targetDir)
+}
+
+/**
  * Strips a command's downstream pipeline and trailing redirections, returning the
  * base command. Used to key the bash-output cache so that the same build/test
  * command run with different downstream filters (`| tail -40` vs `| grep ERROR`)
@@ -1114,6 +1150,9 @@ export function preBashHandler(event: HookEvent): HookOutput {
   // itself would — hoisted here (rather than computed right before its first use) so every
   // path-keyed dedup check below (sed line-ranges, CLI surgical reads) shares one resolution.
   const preHookCwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
+  // When a cd prefix was stripped, path-based hints below resolve their filePath against the
+  // directory that cd would actually leave the shell in, not this hook's own cwd.
+  const hintCwd = preHookCwd ?? process.cwd()
 
   // Check for unbalanced shell quoting or unterminated heredocs
   const cfg = loadConfig()
@@ -1215,72 +1254,76 @@ export function preBashHandler(event: HookEvent): HookOutput {
   const catResult = extractCatFile(cmd)
   if (catResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql, cmd0 } = catResult
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
     if (isSql) {
       return contextOutput(
-        '`' + cmd0 + '` loads the entire file into context. Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
+        '`' + cmd0 + '` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
     const hint = isEnv
-      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` to read a specific variable.'
+      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
       : isConfig
-        ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
         : isDoc
-          ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-          : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
+          ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
     return cdStripped ? contextOutput('`' + cmd0 + '` loads the entire file into context. ' + hint) : denyOutput('`' + cmd0 + '` loads the entire file into context. ' + hint)
   }
 
   const psGetContentResult = extractPowerShellWrappedGetContent(cmd)
   if (psGetContentResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql } = psGetContentResult
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
     const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context. '
     if (isSql) {
       return cdStripped
-        ? contextOutput(lead + 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
-        : denyOutput(lead + 'Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+        ? contextOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
+        : denyOutput(lead + 'Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.')
     }
     const hint = isEnv
-      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` to read a specific variable.'
+      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
       : isConfig
-        ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
         : isDoc
-          ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-          : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
+          ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
     return cdStripped ? contextOutput(lead + hint) : denyOutput(lead + hint)
   }
 
   const wslCatResult = extractWslCatFile(cmd)
   if (wslCatResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql } = wslCatResult
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
     if (isSql) {
       return contextOutput(
-        '`cat` loads the entire file into context. Use `token-goat section "' + filePath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
+        '`cat` loads the entire file into context. Use `token-goat section "' + hintPath + '::table_name"` to pull one CREATE TABLE / CREATE TYPE block.',
       )
     }
     const hint = isEnv
-      ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` to read a specific variable.'
+      ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` to read a specific variable.'
       : isConfig
-        ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
+        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
         : isDoc
-          ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-          : 'Use `token-goat read "' + filePath + '::SymbolName"` to read one function or class.'
+          ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+          : 'Use `token-goat read "' + hintPath + '::SymbolName"` to read one function or class.'
     return cdStripped ? contextOutput('`cat` loads the entire file into context. ' + hint) : denyOutput('`cat` loads the entire file into context. ' + hint)
   }
 
   const pyRead = extractPythonFileRead(cmd)
   if (pyRead !== null) {
     const { filePath, isDoc, isTranscript } = pyRead
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     recordStat('session_hint', 0, 0)
     if (isTranscript) {
-      const tHint = '`.output` files are JSONL agent transcripts. Use `token-goat bash-output --file "' + filePath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
+      const tHint = '`.output` files are JSONL agent transcripts. Use `token-goat bash-output --file "' + hintPath + '" --transcript` to read the assistant text, then narrow with `--grep PATTERN` or `--tail N`, instead of hand-parsing the JSONL.'
       return cdStripped ? contextOutput(tHint) : denyOutput(tHint)
     }
     const hint = isDoc
-      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
-      : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
+      ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
+      : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
     return cdStripped ? contextOutput('Python `open()` file reads bypass read hooks. ' + hint) : denyOutput('Python `open()` file reads bypass read hooks. ' + hint)
   }
 
@@ -1331,11 +1374,12 @@ export function preBashHandler(event: HookEvent): HookOutput {
   const nodeRead = extractNodeFileRead(cmd)
   if (nodeRead !== null) {
     const { filePath, isDoc, isConfig } = nodeRead
+    const hintPath = cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath
     const hint = isDoc
-      ? 'Use `token-goat section "' + filePath + '::SectionHeading"` to read one section.'
+      ? 'Use `token-goat section "' + hintPath + '::SectionHeading"` to read one section.'
       : isConfig
-        ? 'Use `token-goat config-get "' + filePath + '" KEY_NAME` or `token-goat section "' + filePath + '::sectionName"` to read a specific value.'
-        : 'Use `token-goat read "' + filePath + '::SymbolName"` to extract a specific symbol.'
+        ? 'Use `token-goat config-get "' + hintPath + '" KEY_NAME` or `token-goat section "' + hintPath + '::sectionName"` to read a specific value.'
+        : 'Use `token-goat read "' + hintPath + '::SymbolName"` to extract a specific symbol.'
     recordStat('session_hint', 0, 0)
     return cdStripped ? contextOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint) : denyOutput('Node.js `fs.readFileSync()` bypasses read hooks. ' + hint)
   }
