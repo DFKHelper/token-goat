@@ -227,3 +227,39 @@ describe('storeBlob — config-driven cache limits for bash_outputs/web_outputs'
     expect(remaining).toHaveLength(5) // nothing evicted — well under the generic 200 default
   })
 })
+
+// Regression coverage for a bug where storeBlob() reported success (`true`) for a
+// blob that was written to disk and then immediately deleted again by its own
+// pruneBlobs() call, whenever cache_max_bytes_per_output (per-item ceiling) was
+// configured larger than cache_max_bytes (total-directory budget) — the item
+// would pass the per-item check, get written, then get evicted oldest-first by
+// the byte-budget pass because nothing protected "the item this same call just
+// wrote" from its own eviction sweep. Fixed two ways: config.ts now clamps
+// cache_max_bytes_per_output down to cache_max_bytes so the misconfiguration
+// can't happen via config; pruneBlobs() also now never evicts the blob the
+// current storeBlob() call just wrote, as defense in depth for callers that
+// bypass config validation via storeBlob()'s own maxBytes/maxBytesPerItem opts.
+describe('storeBlob — does not self-evict the blob it just wrote', () => {
+  it('config.ts clamps cache_max_bytes_per_output <= cache_max_bytes, so a misconfigured per-item ceiling larger than the total budget is rejected up front instead of silently wiped after writing', () => {
+    const cfg = defaultConfig()
+    cfg.bash_compress.cache_max_bytes = 1024 // total-directory budget
+    cfg.bash_compress.cache_max_bytes_per_output = 4096 // per-item ceiling — larger than the total budget
+    saveConfig(cfg)
+
+    // Serializes to well over 1024 bytes but under the (unclamped) 4096 per-item ceiling.
+    const ok = storeBlob('bash_outputs', 'victim', { payload: 'x'.repeat(1500) })
+
+    expect(ok).toBe(false)
+    expect(loadBlob('bash_outputs', 'victim')).toBeNull()
+    const dir = path.join(tmpHome, 'bash_outputs')
+    const remaining = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith('.json')) : []
+    expect(remaining).toHaveLength(0)
+  })
+
+  it('pruneBlobs() protects the just-written blob from its own byte-budget eviction pass even when maxBytesPerItem > maxBytes is set directly via storeBlob() opts, bypassing config validation entirely', () => {
+    const ok = storeBlob('bash_outputs', 'victim2', { payload: 'x'.repeat(1500) }, { maxBytes: 1024, maxBytesPerItem: 4096 })
+
+    expect(ok).toBe(true)
+    expect(loadBlob('bash_outputs', 'victim2')).not.toBeNull()
+  })
+})

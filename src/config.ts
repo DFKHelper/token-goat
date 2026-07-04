@@ -610,6 +610,11 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   bc.cache_max_file_count = envInt('TOKEN_GOAT_BASH_CACHE_MAX_FILES', bc.cache_max_file_count, 1, 1_000_000)
   bc.cache_max_bytes = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES', bc.cache_max_bytes, 1024, 4 * 1024 * 1024 * 1024)
   bc.cache_max_bytes_per_output = envInt('TOKEN_GOAT_BASH_CACHE_MAX_BYTES_PER_OUTPUT', bc.cache_max_bytes_per_output, 1024, 4 * 1024 * 1024 * 1024)
+  // A per-item cap larger than the total-directory budget is nonsensical: pruneBlobs()
+  // would otherwise evict a freshly-written item (and everything else) in the same
+  // storeBlob() call that just wrote it. Clamp it so the per-item cap can never
+  // exceed the total budget.
+  bc.cache_max_bytes_per_output = Math.min(bc.cache_max_bytes_per_output, bc.cache_max_bytes)
 
   const bd_raw = section(raw, 'bash_diff')
   const bd = getDefaultConfig('bash_diff') as BashDiffConfig

@@ -115,11 +115,16 @@ export function storeBlob(
   } catch {
     return false
   }
+  // Protect the blob this call just wrote from its own eviction pass below — a
+  // misconfigured (or future) maxBytesPerItem/maxBytes pairing where the per-item
+  // ceiling exceeds the total-directory budget must not silently delete the data
+  // storeBlob() is about to report as successfully stored.
   pruneBlobs(
     subdir,
     opts.maxCount ?? defaults.maxCount,
     opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS,
     opts.maxBytes ?? defaults.maxBytes,
+    p,
   )
   return true
 }
@@ -174,6 +179,7 @@ export function pruneBlobs(
   maxCount: number = DEFAULT_MAX_COUNT,
   maxAgeMs: number = DEFAULT_MAX_AGE_MS,
   maxBytes: number = Number.POSITIVE_INFINITY,
+  protectedPath?: string,
 ): number {
   const dir = blobDir(subdir)
   let removed = 0
@@ -181,6 +187,10 @@ export function pruneBlobs(
     if (!fs.existsSync(dir)) return 0
     const cutoff = Date.now() - maxAgeMs
     let kept: Array<[string, number, number]> = []
+    // The blob just written by this storeBlob() call, if any — never a candidate
+    // for eviction in this pass, no matter how the age/count/byte-budget policies
+    // below would otherwise treat it.
+    let protectedEntry: [string, number, number] | undefined
     for (const file of fs.readdirSync(dir)) {
       if (!file.endsWith('.json')) continue
       const full = path.join(dir, file)
@@ -188,6 +198,10 @@ export function pruneBlobs(
       try {
         stat = fs.statSync(full)
       } catch {
+        continue
+      }
+      if (protectedPath !== undefined && full === protectedPath) {
+        protectedEntry = [full, stat.mtimeMs, stat.size]
         continue
       }
       if (stat.mtimeMs < cutoff) {
@@ -201,10 +215,12 @@ export function pruneBlobs(
         kept.push([full, stat.mtimeMs, stat.size])
       }
     }
-    if (kept.length > maxCount) {
+    // The protected entry still occupies one of the maxCount slots.
+    const countBudget = protectedEntry ? Math.max(0, maxCount - 1) : maxCount
+    if (kept.length > countBudget) {
       kept.sort((a, b) => a[1] - b[1])
-      const excess = kept.slice(0, kept.length - maxCount)
-      kept = kept.slice(kept.length - maxCount)
+      const excess = kept.slice(0, kept.length - countBudget)
+      kept = kept.slice(kept.length - countBudget)
       for (const [full] of excess) {
         try {
           fs.unlinkSync(full)
@@ -216,7 +232,7 @@ export function pruneBlobs(
     }
     if (Number.isFinite(maxBytes)) {
       kept.sort((a, b) => a[1] - b[1])
-      let total = kept.reduce((sum, [, , size]) => sum + size, 0)
+      let total = kept.reduce((sum, [, , size]) => sum + size, 0) + (protectedEntry ? protectedEntry[2] : 0)
       while (total > maxBytes && kept.length > 0) {
         const oldest = kept.shift()
         if (!oldest) break
@@ -229,6 +245,10 @@ export function pruneBlobs(
           break
         }
       }
+      // If the protected entry alone still exceeds maxBytes even with every other
+      // evictable entry gone, that's a real "budget too small for this item"
+      // situation — leave it in place rather than deleting the caller's just-written
+      // data out from under a storeBlob() call that already reported success.
     }
   } catch {
     return removed
