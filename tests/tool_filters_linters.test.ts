@@ -210,6 +210,35 @@ describe('ESLintFilter', () => {
     // Stanza with no issue lines is suppressed
     expect(result.text).not.toContain('clean.ts')
   })
+
+  it('parses --format compact violations across multiple files instead of dropping them all (regression: every violation line also looks like a file header)', () => {
+    const input = [
+      "/project/src/foo.ts: line 10, col 5, Error - 'foo' is not defined. (no-undef)",
+      "/project/src/foo.ts: line 12, col 3, Warning - 'bar' is defined but never used. (no-unused-vars)",
+      '/project/src/bar.ts: line 4, col 1, Error - Parsing error: Unexpected token (no-rule)',
+      '',
+      '3 problems',
+    ].join('\n')
+    const result = eslintFilter.apply(input, '', 1, ['eslint', '--format', 'compact', 'src/'])
+    expect(result.text).toContain('foo.ts')
+    expect(result.text).toContain("'foo' is not defined")
+    expect(result.text).toContain("'bar' is defined but never used")
+    expect(result.text).toContain('bar.ts')
+    expect(result.text).toContain('Parsing error: Unexpected token')
+  })
+
+  it('parses --format unix violations instead of dropping them all (regression: every violation line also looks like a file header)', () => {
+    const input = [
+      "/project/src/foo.ts:10:5: 'foo' is not defined [Error/no-undef]",
+      "/project/src/foo.ts:12:3: 'bar' is defined but never used [Warning/no-unused-vars]",
+      '',
+      '2 problems',
+    ].join('\n')
+    const result = eslintFilter.apply(input, '', 1, ['eslint', '--format', 'unix', 'src/'])
+    expect(result.text).toContain('foo.ts')
+    expect(result.text).toContain("'foo' is not defined")
+    expect(result.text).toContain("'bar' is defined but never used")
+  })
 })
 
 // ---------------------------------------------------------------------------

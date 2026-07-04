@@ -354,6 +354,33 @@ class TscFilter extends ToolFilter {
 // ESLint issue line: "  12:8  error   msg   rule-name"
 const _ESLINT_ISSUE_RE = /^\s+\d+:\d+\s+(error|warning|info)\s+.+\S\s+\S+$/
 
+// ESLint --format compact: "<path>: line N, col N, Severity - message (rule)"
+const _ESLINT_COMPACT_ISSUE_RE = /^(.+?): line \d+, col \d+, (Error|Warning|Info)\b/
+// ESLint --format unix: "<path>:N:N: message [Severity/rule]" (rule suffix optional)
+const _ESLINT_UNIX_ISSUE_RE = /^(.+?):\d+:\d+: .+ \[(Error|Warning|Info)(?:\/\S+)?\]$/
+
+// Returns the lowercased severity for a stylish, compact, or unix format issue
+// line, or null if the line doesn't match any known ESLint issue format.
+function _eslintIssueSeverity(issue: string): string | null {
+  const stylish = _ESLINT_ISSUE_RE.exec(issue)
+  if (stylish) return stylish[1]!.toLowerCase()
+  const compact = _ESLINT_COMPACT_ISSUE_RE.exec(issue)
+  if (compact) return compact[2]!.toLowerCase()
+  const unix = _ESLINT_UNIX_ISSUE_RE.exec(issue)
+  if (unix) return unix[2]!.toLowerCase()
+  return null
+}
+
+// Returns the file path captured from a compact/unix single-line issue, or
+// null if the line is a stylish-format issue/header line instead.
+function _eslintSingleLineIssuePath(line: string): string | null {
+  const compact = _ESLINT_COMPACT_ISSUE_RE.exec(line)
+  if (compact) return compact[1]!
+  const unix = _ESLINT_UNIX_ISSUE_RE.exec(line)
+  if (unix) return unix[1]!
+  return null
+}
+
 class ESLintFilter extends ToolFilter {
   readonly name = 'eslint'
   override readonly binaries = new Set(['eslint'])
@@ -389,8 +416,8 @@ class ESLintFilter extends ToolFilter {
       // Group warnings by rule; errors always kept
       const warnByRule = new Map<string, string[]>()
       for (const issue of currentIssues) {
-        const m = _ESLINT_ISSUE_RE.exec(issue)
-        if (m && m[1] === 'warning') {
+        const severity = _eslintIssueSeverity(issue)
+        if (severity === 'warning') {
           const rule = issue.trimEnd().split(/\s+/).pop() ?? '__unknown__'
           const bucket = warnByRule.get(rule) ?? []
           bucket.push(issue)
@@ -413,6 +440,20 @@ class ESLintFilter extends ToolFilter {
       if (_ESLINT_SUMMARY_RE.test(line.trim())) {
         flushFile()
         out.push(line)
+        continue
+      }
+      // --format compact/unix: each violation is a self-contained single line
+      // that also happens to start with a file path, so it must be checked
+      // BEFORE _ESLINT_FILE_RE or every violation is misread as a new (empty)
+      // file header and silently dropped by flushFile's no-issues branch.
+      const singleLinePath = _eslintSingleLineIssuePath(line)
+      if (singleLinePath !== null) {
+        if (currentFileHeader !== singleLinePath) {
+          flushFile()
+          currentFileHeader = singleLinePath
+        }
+        currentIssues.push(line)
+        currentHasIssues = true
         continue
       }
       if (_ESLINT_FILE_RE.test(line)) {
