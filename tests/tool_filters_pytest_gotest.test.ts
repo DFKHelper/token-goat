@@ -279,6 +279,44 @@ describe('go-test filter', () => {
     expect(result.text).toContain('goroutine frames omitted')
   })
 
+  it('collapses stack frames under the primary "Write at"/"Read at" headers, not just under "Goroutine N ... created at:" trailers', () => {
+    // Real `go test -race` output's *first* conflicting access is reported as a bare
+    // "Write at ADDR by goroutine N:" / "Read at ADDR by goroutine N:" line (no "Previous"
+    // prefix) -- only the *second*, comparison access gets a "Previous read/write at ..."
+    // prefix. GOROUTINE_HEADER_RE previously only matched "Goroutine N", "Previous", and
+    // "Current", so the largest and most important stack in every race report (the one
+    // right under the un-prefixed "Write at"/"Read at" line) was never recognized as a
+    // header and its frames were never collapsed.
+    const writeFrames = Array.from({ length: 10 }, (_, i) => `      write_frame_${i}()`).join('\n')
+    const readFrames = Array.from({ length: 10 }, (_, i) => `      read_frame_${i}()`).join('\n')
+    const text =
+      '==================\n' +
+      'WARNING: DATA RACE\n' +
+      'Write at 0x00c0001a2010 by goroutine 7:\n' +
+      writeFrames +
+      '\n' +
+      'Previous read at 0x00c0001a2010 by goroutine 6:\n' +
+      readFrames +
+      '\n' +
+      'Goroutine 7 (running) created at:\n' +
+      '      main.main()\n' +
+      'Goroutine 6 (running) created at:\n' +
+      '      main.main()\n' +
+      '==================\n' +
+      'FAIL\tgithub.com/org/repo\t0.10s\n'
+    const result = goTestFilter.apply(text, '', 1, ['go', 'test', '-race'])
+    expect(result.text).toContain('WARNING: DATA RACE')
+    expect(result.text).toContain('Write at 0x00c0001a2010 by goroutine 7:')
+    expect(result.text).toContain('Previous read at 0x00c0001a2010 by goroutine 6:')
+    // Only the first MAX_RACE_GOROUTINE_FRAMES (5) of the 10-frame "Write at" stack survive.
+    expect(result.text).toContain('write_frame_0()')
+    expect(result.text).toContain('write_frame_4()')
+    expect(result.text).not.toContain('write_frame_5()')
+    expect(result.text).not.toContain('write_frame_9()')
+    expect(result.text).toContain('read_frame_0()')
+    expect(result.text).not.toContain('read_frame_5()')
+  })
+
   it('routes "go test" to go-test but "go build" elsewhere', () => {
     expect(selectFilter(['go', 'test', './...'])?.name).toBe('go-test')
     expect(selectFilter(['go', 'build', './...'])?.name).not.toBe('go-test')
