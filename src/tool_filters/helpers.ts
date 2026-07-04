@@ -314,6 +314,12 @@ export function capBytes(text: string, maxBytes: number): string {
   let slice = encoded.subarray(0, budget)
   const nl = slice.lastIndexOf(0x0a)
   if (nl > budget / 2) slice = slice.subarray(0, nl)
+  // Never cut inside a multi-byte UTF-8 sequence: if the byte immediately
+  // after the slice is a continuation byte (10xxxxxx), the cut landed
+  // mid-character, so back up until it doesn't.
+  while (slice.length > 0 && (encoded[slice.length]! & 0xc0) === 0x80) {
+    slice = slice.subarray(0, slice.length - 1)
+  }
   return slice.toString('utf8') + marker
 }
 
