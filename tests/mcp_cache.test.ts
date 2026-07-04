@@ -85,9 +85,16 @@ describe('isMcpReadOnly', () => {
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_console_messages')).toBe(true)
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__get_network_request')).toBe(true)
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__list_network_requests')).toBe(true)
-    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot')).toBe(true)
     // Borderline (triggers a page reload/navigation): conservative default is to exclude it.
     expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__lighthouse_audit')).toBe(false)
+  })
+
+  it('returns false for screenshot tools (not idempotent, content changes between calls)', () => {
+    // Screenshots are not idempotent: the page content can change between calls,
+    // so they must never be cached/dedup'd. This test ensures the pre_screenshot hook
+    // can always capture a fresh screenshot within the cache TTL window.
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__take_screenshot')).toBe(false)
+    expect(isMcpReadOnly('mcp__plugin_chrome-devtools-mcp_chrome-devtools__browser_take_screenshot')).toBe(false)
   })
 })
 
