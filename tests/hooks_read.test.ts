@@ -700,6 +700,42 @@ Some content that makes the file large enough`
     }
   })
 
+  it('counts a 3rd physical read as reads=2 even when it arrives under different path casing than the first-seen key (regression: the reread-count lookup used a direct getSessionFiles().get(normalized) instead of the case-fold-aware resolution recordFileRead/wasFileReadThisSession use, so a differently-cased 3rd read under-reported as reads=1 and returned "context" instead of "deny")', () => {
+    const prevCaseEnv = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+    try {
+      // Vary only the basename's casing (keep the directory untouched) -- os.tmpdir() may
+      // already be all-lowercase (e.g. Linux CI's "/tmp"), and resolveFilesKey's fold-scan is
+      // only exercised when the queried string's own fold differs from itself, so uppercasing
+      // just the basename reliably produces a "differently-cased" query on every platform.
+      const p = makeTmpFile('x'.repeat(5 * 1024))
+      const name = path.basename(p)
+      const dir = path.dirname(p)
+      const pUpper = path.join(dir, name.toUpperCase())
+      const pTitle = path.join(dir, name.charAt(0).toUpperCase() + name.slice(1))
+
+      // First read (first-seen casing): pass, records the _files key at this exact casing.
+      const r1 = preReadHandler(readEvent(p))
+      expect(r1.hookType).toBe('pass')
+
+      // Second read under different casing: context (readCount is 1 after the first pass).
+      const r2 = preReadHandler(readEvent(pUpper))
+      expect(r2.hookType).toBe('context')
+
+      // Third read under yet another casing: deny (readCount is now 2, so reads >= 2). Before
+      // the fix this fell back to reads=1 and returned "context" because getSessionFiles().get()
+      // missed the differently-cased key.
+      const r3 = preReadHandler(readEvent(pTitle))
+      expect(r3.hookType).toBe('deny')
+      if (r3.hookType === 'deny') {
+        expect(r3.message).toContain('already read this session (2 reads)')
+      }
+    } finally {
+      if (prevCaseEnv === undefined) delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+      else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = prevCaseEnv
+    }
+  })
+
   it('does not deny re-reads of an image via the generic re-read-dedup branch — the large-file-deny and universal-file-type branches already exempt isImagePath, but this third branch was missing the same exemption, so a same-size-or-larger image got a nonsensical "use token-goat read/section/symbol" deny on re-read', () => {
     const p = path.join(
       os.tmpdir(),

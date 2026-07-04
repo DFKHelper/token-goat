@@ -21,7 +21,7 @@ import { registerHook } from './hook_registry.js'
 import { normalizePath } from './paths.js'
 import { foldPath } from './util.js'
 import { loadConfig } from './config.js'
-import { recordFileRead, wasFileReadThisSession, getSessionFiles, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState } from './session.js'
+import { recordFileRead, wasFileReadThisSession, getSessionFileEntry, markFileTruncated, wasFileTruncatedThisSession, getSessionId, recordLargeFileHintPending, takePendingLargeFileHint, exportSessionState } from './session.js'
 import { writeSessionManifest, readAllSessionManifests } from './compact.js'
 import { store as snapshotStore, load as snapshotLoad } from './snapshots.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -699,7 +699,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   // re-scoping several Greps at the same path with different patterns is a legitimate workflow,
   // so Grep is exempt from the count-based re-read dedup below (unlike a repeated whole-file Read).
   if (event.toolName !== 'Grep' && !isImagePath(normalized) && wasFileReadThisSession(normalized)) {
-    const entry = getSessionFiles().get(normalized)
+    const entry = getSessionFileEntry(normalized)
     const reads = entry?.readCount ?? 1
     const plural = reads === 1 ? 'read' : 'reads'
     recordFileRead(normalized)
