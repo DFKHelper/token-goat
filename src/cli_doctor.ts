@@ -98,26 +98,58 @@ export function checkConfigValid(configPath: string): DoctorResult {
 }
 
 /**
+ * Format a byte count as a human-readable disk-space string (e.g. "650.0 GB").
+ */
+function formatDiskSpace(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex++
+  }
+  return `${value.toFixed(1)} ${units[unitIndex]}`
+}
+
+/**
  * Check available disk space in data directory.
+ *
+ * Prefers Node's built-in `fs.statfsSync` (Node 18.15+): no subprocess, and it works on
+ * stock Windows where there is no `df` binary. Falls back to shelling out to `df` on
+ * platforms/Node versions where `statfsSync` isn't available. If neither path works --
+ * notably plain Windows without Git Bash/WSL on PATH and an old Node -- reports that
+ * explicitly instead of silently claiming "could not determine" every single time.
  */
 export function checkDiskSpace(dataDir: string): DoctorResult {
-  try {
-    // Use spawnSync with an array argv so dataDir cannot inject shell metacharacters.
-    const result = spawnSync('df', ['-h', dataDir], { encoding: 'utf-8' })
-    const stdout = typeof result.stdout === 'string' ? result.stdout : ''
-    if (result.error !== undefined || result.status !== 0 || !stdout) {
-      return { name: 'Disk Space', status: 'warn', message: 'could not determine' }
+  if (typeof fs.statfsSync === 'function') {
+    try {
+      const stats = fs.statfsSync(dataDir)
+      const availableBytes = stats.bavail * stats.bsize
+      return { name: 'Disk Space', status: 'ok', message: `${formatDiskSpace(availableBytes)} available` }
+    } catch {
+      // Fall through to the df-based check below.
     }
-    const lines = stdout.trim().split('\n')
-    if (lines.length < 2) {
-      return { name: 'Disk Space', status: 'warn', message: 'could not determine' }
-    }
-    const parts = lines[1]!.trim().split(/\s+/)
-    const available = parts[3] || 'unknown'
-    return { name: 'Disk Space', status: 'ok', message: `${available} available` }
-  } catch {
-    return { name: 'Disk Space', status: 'warn', message: 'could not determine' }
   }
+
+  if (process.platform !== 'win32') {
+    try {
+      // Use spawnSync with an array argv so dataDir cannot inject shell metacharacters.
+      const result = spawnSync('df', ['-h', dataDir], { encoding: 'utf-8' })
+      const stdout = typeof result.stdout === 'string' ? result.stdout : ''
+      if (result.error === undefined && result.status === 0 && stdout) {
+        const lines = stdout.trim().split('\n')
+        if (lines.length >= 2) {
+          const parts = lines[1]!.trim().split(/\s+/)
+          const available = parts[3] || 'unknown'
+          return { name: 'Disk Space', status: 'ok', message: `${available} available` }
+        }
+      }
+    } catch {
+      // Fall through to the explicit "unavailable" result below.
+    }
+  }
+
+  return { name: 'Disk Space', status: 'warn', message: 'disk space check unavailable on this platform' }
 }
 
 /**

@@ -167,4 +167,34 @@ describe('cli_doctor', () => {
       expect(result.message).not.toContain('INJECTED')
     })
   })
+
+  describe('checkDiskSpace platform coverage (task #104)', () => {
+    it('reports a real, non-placeholder available size for an existing directory', () => {
+      // Regression: on stock Windows (no df on PATH) the old implementation always fell
+      // through to the generic "could not determine" message, silently never reporting a
+      // real number. fs.statfsSync works cross-platform (including Windows), so a valid,
+      // existing directory should now produce an actual size, not the placeholder text.
+      const result = checkDiskSpace(tempDir)
+      expect(result.status).toBe('ok')
+      expect(result.message).not.toBe('could not determine')
+      expect(result.message).toMatch(/[\d.]+ (B|KB|MB|GB|TB) available/)
+    })
+
+    it('reports an explicit unavailable message, not a silent pass, when no check path works', () => {
+      // A nonexistent path makes fs.statfsSync throw a genuine ENOENT -- no module mocking
+      // needed (fs's ESM namespace exports are non-configurable, so statfsSync can't be
+      // stubbed directly). Forcing platform to win32 makes the df fallback correctly get
+      // skipped, matching a real stock-Windows machine where df is not on PATH either.
+      const originalPlatform = process.platform
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      try {
+        const result = checkDiskSpace(path.join(tempDir, 'does-not-exist-xyz'))
+        expect(result.name).toBe('Disk Space')
+        expect(result.status).toBe('warn')
+        expect(result.message).toBe('disk space check unavailable on this platform')
+      } finally {
+        Object.defineProperty(process, 'platform', { value: originalPlatform })
+      }
+    })
+  })
 })
