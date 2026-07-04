@@ -648,6 +648,41 @@ describe('read_commands', () => {
       expect(stdout.trim()).toBe('2.0.0')
     })
 
+    it('reads a TOML/INI key with aligned multi-space formatting before the equals sign', () => {
+      // Regression: startsWith(`${leafKey} =`) / startsWith(`${leafKey}=`) only recognized
+      // exactly zero or one space before '=', so aligned-key files (tox.ini/setup.cfg style)
+      // failed to resolve a present, valid key.
+      const f = path.join(tempDir, 'aligned.toml')
+      fs.writeFileSync(f, '[testenv]\ndeps       = pytest\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'testenv.deps' }) })
+      expect(stdout.trim()).toBe('pytest')
+    })
+
+    it('reads a TOML/INI key with a tab before the equals sign', () => {
+      const f = path.join(tempDir, 'tabbed.toml')
+      fs.writeFileSync(f, '[testenv]\ndeps\t= pytest\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'testenv.deps' }) })
+      expect(stdout.trim()).toBe('pytest')
+    })
+
+    it('does not match a longer key name as a prefix of the requested key', () => {
+      // Regression guard: the fix must not turn `startsWith` into an unanchored regex that
+      // lets "deps" match a "deps2 = ..." line.
+      const f = path.join(tempDir, 'prefix.toml')
+      fs.writeFileSync(f, '[testenv]\ndeps2 = wrong\ndeps       = pytest\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'testenv.deps' }) })
+      expect(stdout.trim()).toBe('pytest')
+    })
+
+    it('treats a key containing regex metacharacters as a literal, not a pattern', () => {
+      // leafKey is embedded in a RegExp; it must be escaped so metacharacters in a
+      // user-supplied key are matched literally instead of throwing or misbehaving.
+      const f = path.join(tempDir, 'special.toml')
+      fs.writeFileSync(f, '[testenv]\na(b)+  = special\n')
+      const { stdout } = capture(() => { runConfigGet({ file: f, key: 'testenv.a(b)+' }) })
+      expect(stdout.trim()).toBe('special')
+    })
+
     it('reads a flat top-level key from a YAML file', () => {
       const f = path.join(tempDir, 'c.yaml')
       fs.writeFileSync(f, '# comment\nname: myapp\nother: x\n')
