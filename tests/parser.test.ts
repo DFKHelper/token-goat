@@ -40,6 +40,47 @@ describe('parseFile', () => {
     expect(names).toContain('bar')
   })
 
+  it('parses .tsx files with the JSX-aware tsx grammar, not plain typescript (regression: both extensions shared the typescript grammar, which errors on JSX and silently drops trailing symbols)', async () => {
+    const file = write(
+      'ItemList.tsx',
+      [
+        "import React from 'react'",
+        '',
+        'interface ItemListProps {',
+        '  items: string[]',
+        '}',
+        '',
+        'export function ItemList(props: ItemListProps) {',
+        '  return (',
+        '    <>',
+        '      {props.items.map((item) => (',
+        '        <div key={item} className="item">',
+        '          <span>{item}</span>',
+        '        </div>',
+        '      ))}',
+        '    </>',
+        '  )',
+        '}',
+        '',
+        'export function formatLabel(raw: string): string {',
+        '  return raw.trim().toUpperCase()',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    expect(result.language).toBe('typescript')
+    const names = result.symbols.map((s) => s.name)
+    // Under the plain `typescript` grammar this JSX produces ERROR nodes and both
+    // functions are dropped entirely; only the tsx grammar recovers them.
+    expect(names).toContain('ItemListProps')
+    expect(names).toContain('ItemList')
+    expect(names).toContain('formatLabel')
+    const itemList = result.symbols.find((s) => s.name === 'ItemList')
+    expect(itemList?.lineStart).toBe(7)
+    expect(itemList?.lineEnd).toBe(17)
+  })
+
   it('excludes function-local variable declarations from the symbol index (regression: nested lexical_declaration walked unconditionally)', async () => {
     const file = write(
       'scope.ts',
