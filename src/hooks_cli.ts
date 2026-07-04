@@ -43,6 +43,7 @@ const CODEX_TOOL_NAME_MAP: Record<string, string> = {
   bash: 'Bash',
   edit_file: 'Edit',
   edit: 'Edit',
+  apply_patch: 'Edit',
   write_file: 'Write',
   search_files: 'Grep',
   grep: 'Grep',
