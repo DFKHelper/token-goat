@@ -88,6 +88,16 @@ function resolveProfile(explicit: string | undefined): string {
   }
 }
 
+/** Resolve the bash_compress line/byte compression caps from config, falling back to the tool-filter layer's own built-in defaults on load failure. */
+function resolveCompressLimits(): { maxLines: number; maxBytes: number } {
+  try {
+    const bc = loadConfig().bash_compress
+    return { maxLines: bc.max_lines, maxBytes: bc.max_bytes }
+  } catch {
+    return { maxLines: 1000, maxBytes: 64 * 1024 }
+  }
+}
+
 /**
  * Run *command* through the system shell, compress its output, and return the
  * wrapped subprocess's exit code (124 on wrapper-induced timeout, `128 + signum`
@@ -180,8 +190,11 @@ function wrapAndCompress(
     argv = [command]
   }
 
+  const limits = resolveCompressLimits()
   const compressed = compressOutput(filter, stdoutText, stderrText, exitCode, argv, {
     compressionProfile: profile,
+    maxLines: limits.maxLines,
+    maxBytes: limits.maxBytes,
   })
   // Apply the pressure-scaled token cap to the body BEFORE appending the marker so the savings marker survives truncation and stays visible to the agent.
   let text = compressed.text

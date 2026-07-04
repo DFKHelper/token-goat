@@ -19,6 +19,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 
+import { loadConfig } from './config.js'
 import { atomicWriteText } from './util.js'
 
 /** Default cap on blobs kept per subdir before the oldest are evicted. */
@@ -73,22 +74,53 @@ export function blobPath(subdir: string, id: string): string | null {
  * Fail-soft: returns false on any error (never throws). A prune failure never
  * undoes the store. The parent dir is created on demand.
  */
+/**
+ * Resolve the maxCount/maxBytes/maxBytesPerItem eviction budget for a subdir from
+ * its matching config section (bash_compress for bash outputs, webfetch for web
+ * outputs), falling back to the generic defaults for subdirs with no dedicated
+ * config (e.g. the skill/image caches, which manage their own pruning elsewhere).
+ */
+function subdirCacheDefaults(subdir: string): { maxCount: number; maxBytes: number; maxBytesPerItem: number } {
+  try {
+    if (subdir === 'bash_outputs') {
+      const bc = loadConfig().bash_compress
+      return { maxCount: bc.cache_max_file_count, maxBytes: bc.cache_max_bytes, maxBytesPerItem: bc.cache_max_bytes_per_output }
+    }
+    if (subdir === 'web_outputs') {
+      const wf = loadConfig().webfetch
+      return { maxCount: wf.max_file_count, maxBytes: wf.max_bytes, maxBytesPerItem: Number.POSITIVE_INFINITY }
+    }
+  } catch {
+    // Config load failed — fall through to the generic, config-independent defaults.
+  }
+  return { maxCount: DEFAULT_MAX_COUNT, maxBytes: Number.POSITIVE_INFINITY, maxBytesPerItem: Number.POSITIVE_INFINITY }
+}
+
 export function storeBlob(
   subdir: string,
   id: string,
   value: unknown,
-  opts: { maxCount?: number; maxAgeMs?: number } = {},
+  opts: { maxCount?: number; maxAgeMs?: number; maxBytes?: number; maxBytesPerItem?: number } = {},
 ): boolean {
   const p = blobPath(subdir, id)
   if (!p) return false
+  const defaults = subdirCacheDefaults(subdir)
+  const maxBytesPerItem = opts.maxBytesPerItem ?? defaults.maxBytesPerItem
+  const json = JSON.stringify(value)
+  if (Number.isFinite(maxBytesPerItem) && Buffer.byteLength(json, 'utf-8') > maxBytesPerItem) return false
   try {
     const dir = path.dirname(p)
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-    atomicWriteText(p, JSON.stringify(value))
+    atomicWriteText(p, json)
   } catch {
     return false
   }
-  pruneBlobs(subdir, opts.maxCount ?? DEFAULT_MAX_COUNT, opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS)
+  pruneBlobs(
+    subdir,
+    opts.maxCount ?? defaults.maxCount,
+    opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS,
+    opts.maxBytes ?? defaults.maxBytes,
+  )
   return true
 }
 
@@ -141,23 +173,24 @@ export function pruneBlobs(
   subdir: string,
   maxCount: number = DEFAULT_MAX_COUNT,
   maxAgeMs: number = DEFAULT_MAX_AGE_MS,
+  maxBytes: number = Number.POSITIVE_INFINITY,
 ): number {
   const dir = blobDir(subdir)
   let removed = 0
   try {
     if (!fs.existsSync(dir)) return 0
     const cutoff = Date.now() - maxAgeMs
-    const kept: Array<[string, number]> = []
+    let kept: Array<[string, number, number]> = []
     for (const file of fs.readdirSync(dir)) {
       if (!file.endsWith('.json')) continue
       const full = path.join(dir, file)
-      let mtime: number
+      let stat: fs.Stats
       try {
-        mtime = fs.statSync(full).mtimeMs
+        stat = fs.statSync(full)
       } catch {
         continue
       }
-      if (mtime < cutoff) {
+      if (stat.mtimeMs < cutoff) {
         try {
           fs.unlinkSync(full)
           removed++
@@ -165,17 +198,35 @@ export function pruneBlobs(
           continue
         }
       } else {
-        kept.push([full, mtime])
+        kept.push([full, stat.mtimeMs, stat.size])
       }
     }
     if (kept.length > maxCount) {
       kept.sort((a, b) => a[1] - b[1])
-      for (const [full] of kept.slice(0, kept.length - maxCount)) {
+      const excess = kept.slice(0, kept.length - maxCount)
+      kept = kept.slice(kept.length - maxCount)
+      for (const [full] of excess) {
         try {
           fs.unlinkSync(full)
           removed++
         } catch {
           continue
+        }
+      }
+    }
+    if (Number.isFinite(maxBytes)) {
+      kept.sort((a, b) => a[1] - b[1])
+      let total = kept.reduce((sum, [, , size]) => sum + size, 0)
+      while (total > maxBytes && kept.length > 0) {
+        const oldest = kept.shift()
+        if (!oldest) break
+        const [full, , size] = oldest
+        try {
+          fs.unlinkSync(full)
+          removed++
+          total -= size
+        } catch {
+          break
         }
       }
     }

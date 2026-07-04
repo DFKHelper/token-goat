@@ -234,7 +234,10 @@ const CONFIG_DEFAULTS: Record<string, object> = {
     max_lines: 1000,
     max_bytes: 64 * 1024,
     timeout_seconds: 600,
-    cache_min_bytes: 0,
+    // Matches the hardcoded MIN_CACHE_BYTES floor hooks_bash.ts used before this
+    // knob was wired to a real consumer, so untouched-config installs see no
+    // behavior change now that hooks_bash.ts reads this value instead.
+    cache_min_bytes: 512,
     cache_max_file_count: 4096,
     cache_max_bytes: 16 * 1024 * 1024,
     cache_max_bytes_per_output: 50 * 1024 * 1024,
