@@ -42,6 +42,16 @@ describe('normalizePayload', () => {
     expect(result['_tg_harness']).toBe('codex')
   })
 
+  it('remaps Codex apply_patch to Edit', () => {
+    const payload: HookPayload = {
+      tool_name: 'apply_patch',
+      tool_input: { file_path: '/src/foo.ts', patch: 'some diff' },
+    }
+    const result = normalizePayload(payload, 'codex')
+    expect(result['tool_name']).toBe('Edit')
+    expect(result['_tg_harness']).toBe('codex')
+  })
+
   it('remaps Gemini tool names and input keys', () => {
     const payload: HookPayload = {
       tool_name: 'read_file',
