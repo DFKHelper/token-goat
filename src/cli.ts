@@ -148,6 +148,14 @@ function requireNonNegativeInt(flag: string, raw: string): number {
   return n
 }
 
+function requirePositiveInt(flag: string, raw: string): number {
+  const n = requireInt(flag, raw)
+  if (n <= 0) {
+    throw new CliError(`${flag} must be a positive number, got: "${raw}"`)
+  }
+  return n
+}
+
 // --- Command handlers -------------------------------------------------------
 
 async function cmdSemantic(query: string, opts: { limit?: string }): Promise<void> {
@@ -1551,7 +1559,7 @@ export function buildProgram(): Command {
           pattern,
           ...(pathArg !== undefined ? { path: pathArg } : {}),
           ...(opts.json === true ? { json: true } : {}),
-          ...(opts.maxLines !== undefined ? { maxLines: requireInt('--max-lines', opts.maxLines) } : {}),
+          ...(opts.maxLines !== undefined ? { maxLines: requirePositiveInt('--max-lines', opts.maxLines) } : {}),
           ...(opts.recursive === false ? { recursive: false } : {}),
         }),
       ),

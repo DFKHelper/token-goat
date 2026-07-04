@@ -104,6 +104,52 @@ describe('non-numeric --max-lines validation on grep', () => {
   })
 })
 
+// Regression guard (task #105): a negative --max-lines is a *finite* number, so it sailed
+// straight past a NaN-only check. Array.prototype.slice treats a negative end index as
+// "count back from the end" rather than "cap at N", so hits.slice(0, maxLines) with a
+// negative maxLines silently drops elements off the *end* instead of capping the front, and
+// the "N more lines omitted" message computes hits.length - maxLines -- adding the negative
+// value's magnitude instead of subtracting it -- producing an omitted-count larger than the
+// total number of matches that ever existed. --max-lines 0 is equally nonsensical: it silently
+// discards every match without ever surfacing that the flag value itself is unusable.
+describe('negative/zero --max-lines validation on grep (task #105)', () => {
+  it('rejects a negative --max-lines instead of producing a nonsensical truncation message', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-grep-negmaxlines-'))
+    try {
+      writeFileSync(
+        join(dir, 'fixture.txt'),
+        'UNIQUE_GREP_MATCH_TOKEN one\nUNIQUE_GREP_MATCH_TOKEN two\nUNIQUE_GREP_MATCH_TOKEN three\n',
+        'utf-8',
+      )
+      captureStdout()
+      captureStderr()
+      const code = await runCli(['grep', 'UNIQUE_GREP_MATCH_TOKEN', dir, '--max-lines', '-1'])
+      expect(code).toBe(1)
+      // Pre-fix: hits.slice(0, -1) on 3 matches silently drops the last one and then reports
+      // "... (4 more lines omitted)" -- more than the 3 matches that exist in total. Post-fix
+      // this is rejected before runGrep ever executes, so no matches are printed at all.
+      expect(stdout.join('')).not.toContain('UNIQUE_GREP_MATCH_TOKEN')
+      expect(stderr.join('')).toContain('--max-lines')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects --max-lines 0 instead of silently truncating all output', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-grep-zeromaxlines-'))
+    try {
+      writeFileSync(join(dir, 'fixture.txt'), 'UNIQUE_GREP_MATCH_TOKEN\n', 'utf-8')
+      captureStdout()
+      captureStderr()
+      const code = await runCli(['grep', 'UNIQUE_GREP_MATCH_TOKEN', dir, '--max-lines', '0'])
+      expect(code).toBe(1)
+      expect(stderr.join('')).toContain('--max-lines')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('non-numeric --depth validation on call-chain', () => {
   it('rejects a non-numeric --depth with a clean error instead of silently ignoring the depth cap', async () => {
     captureStderr()
