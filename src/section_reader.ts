@@ -336,7 +336,10 @@ function buildSectionResult(
       : sectionEndIndex(headers, headerPos, lines.length)
   // Trim a single trailing blank line so adjacent sections don't accrue the separator line into the earlier section's body.
   let endExclusive = endIndex
-  while (endExclusive > header.index + 1 && lines[endExclusive - 1] === '') {
+  while (
+    endExclusive > header.index + 1 &&
+    (lines[endExclusive - 1] === '' || lines[endExclusive - 1] === '\r')
+  ) {
     endExclusive--
   }
   const content = lines.slice(header.index, endExclusive).join('\n')
