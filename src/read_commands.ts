@@ -913,12 +913,12 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       continue
     }
 
-    // Check if we're in the right section (if a section path is specified)
-    if (sectionPath !== null) {
-      // For a nested path like "tool.ruff.line-length", the section should be "tool.ruff"
-      if (currentSection !== sectionPath) {
-        continue
-      }
+    // Check we're in the right section. A section-qualified key ("tool.ruff.line-length")
+    // must match that exact section. A bare key (no dots) must be genuinely top-level --
+    // i.e. appear before any [section] header -- not merely present somewhere inside an
+    // unrelated section that happens to declare a same-named key.
+    if (currentSection !== (sectionPath ?? '')) {
+      continue
     }
 
     // Look for the leaf key in a key=value line. Allow any amount of whitespace
