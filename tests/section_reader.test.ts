@@ -162,6 +162,27 @@ describe('extractSection', () => {
   })
 })
 
+describe('extractSection — CRLF line endings', () => {
+  const CRLF = '## A\r\n\r\ncontent A\r\n\r\n## B\r\n\r\ncontent B\r\n'
+  const LF = '## A\n\ncontent A\n\n## B\n\ncontent B\n'
+
+  it('trims the trailing blank line on a CRLF file the same as on the LF-equivalent', () => {
+    const crlfResult = extractSection(CRLF, 'A')
+    const lfResult = extractSection(LF, 'A')
+
+    expect(crlfResult).not.toBeNull()
+    expect(lfResult).not.toBeNull()
+
+    // The last line of the returned content must not be a blank/`\r`-only separator line.
+    const lastCrlfLine = crlfResult?.content.split('\n').at(-1)
+    expect(lastCrlfLine).not.toBe('')
+    expect(lastCrlfLine).not.toBe('\r')
+
+    // lineEnd must match what the LF-only equivalent produces, not one line larger.
+    expect(crlfResult?.lineEnd).toBe(lfResult?.lineEnd)
+  })
+})
+
 describe('listSections', () => {
   it('returns all headings at all nesting levels from a file', () => {
     const file = tmpFile('doc.md', MD)
