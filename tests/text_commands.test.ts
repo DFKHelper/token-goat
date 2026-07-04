@@ -307,6 +307,36 @@ describe('lockdeps command', () => {
     expect(r.stdout).toContain('requests')
     expect(r.stdout).toContain('numpy')
   })
+  it('parses an npm v1 lockfile (nested dependencies tree, no packages map) (regression: v1 lockfiles reported "Total: 0 packages" because only the v2/v3 packages map was read)', () => {
+    const v1Dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-v1-lock-'))
+    const lockPath = path.join(v1Dir, 'package-lock.json')
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        name: 'v1-fixture',
+        version: '1.0.0',
+        lockfileVersion: 1,
+        dependencies: {
+          foo: { version: '1.0.0', dependencies: { bar: { version: '2.0.0' } } },
+          baz: { version: '3.0.0', dev: true },
+        },
+      }),
+      'utf8',
+    )
+    const r = run(['lockdeps', lockPath, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as {
+      format: string
+      total: number
+      deps: Array<{ name: string; version: string; kind: string }>
+    }
+    expect(parsed.format).toBe('npm')
+    expect(parsed.total).toBe(3)
+    expect(parsed.deps).toContainEqual({ name: 'foo', version: '1.0.0', kind: 'direct' })
+    expect(parsed.deps).toContainEqual({ name: 'bar', version: '2.0.0', kind: 'transitive' })
+    expect(parsed.deps).toContainEqual({ name: 'baz', version: '3.0.0', kind: 'direct' })
+    fs.rmSync(v1Dir, { recursive: true, force: true })
+  })
 
   it('errors when no lockfile is found', () => {
     const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-nolockfile-'))

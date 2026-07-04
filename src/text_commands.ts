@@ -393,11 +393,37 @@ function findLockfile(startPath: string): { file: string; others: string[] } | n
   return { file: primary, others: found.slice(1) }
 }
 
+interface V1PackageLockDependency {
+  version?: string
+  dev?: boolean
+  optional?: boolean
+  dependencies?: Record<string, V1PackageLockDependency>
+}
+
+// npm v1 lockfiles (lockfileVersion: 1, npm 5/6) have no `packages` map; deps instead
+// live in a nested `dependencies` tree. Recursively flatten it into the same DepEntry
+// shape the v2/v3 `packages` path produces, so downstream output is format-agnostic.
+function collectV1Dependencies(
+  deps: Record<string, V1PackageLockDependency>,
+  isDirect: boolean,
+  out: DepEntry[],
+): void {
+  for (const [name, val] of Object.entries(deps)) {
+    out.push({ name, version: val.version ?? '', kind: isDirect ? 'direct' : 'transitive' })
+    if (val.dependencies !== undefined) collectV1Dependencies(val.dependencies, false, out)
+  }
+}
+
 function parsePackageLockJson(content: string): DepEntry[] {
   const raw = JSON.parse(content) as {
     packages?: Record<string, { version?: string; dev?: boolean; peer?: boolean }>
     name?: string
-    dependencies?: Record<string, unknown>
+    dependencies?: Record<string, V1PackageLockDependency>
+  }
+  if (raw.packages === undefined && raw.dependencies !== undefined) {
+    const deps: DepEntry[] = []
+    collectV1Dependencies(raw.dependencies, true, deps)
+    return deps
   }
   const pkgs = raw.packages ?? {}
   const directDeps = (pkgs[''] as { dependencies?: Record<string, unknown>; devDependencies?: Record<string, unknown> } | undefined) ?? {}
