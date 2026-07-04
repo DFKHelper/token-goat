@@ -134,4 +134,19 @@ describe('pre_screenshot (real runHook dispatch)', () => {
     const result = await runHook(buildEvent('pre_tool_use', prePayload(CHROME_DEVTOOLS_TOOL, {})))
     expect(result.hookType).toBe('pass')
   })
+
+  it('denies any MCP tool ending in "screenshot" (not just "take_screenshot") when called with no destination', async () => {
+    // Regression test: SCREENSHOT_TOOL_RE must match tools ending in "screenshot",
+    // not just "take_screenshot". A hypothetical puppeteer_screenshot tool should
+    // trigger the same deny-with-hint behavior.
+    const PUPPETEER_TOOL = 'mcp__some-mcp-server_puppeteer__puppeteer_screenshot'
+    const result = await runHook(buildEvent('pre_tool_use', prePayload(PUPPETEER_TOOL, { fullPage: true })))
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain(PUPPETEER_TOOL)
+      // Since this tool doesn't match PLAYWRIGHT_SCREENSHOT_RE, it should suggest
+      // filePath as the fallback parameter name
+      expect(result.message).toContain('filePath')
+    }
+  })
 })
