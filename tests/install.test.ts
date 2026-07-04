@@ -108,6 +108,44 @@ describe('installHooks', () => {
     expect(commands).toContain('my-own-hook')
     expect(commands).toContain('token-goat hook pre_tool_use')
   })
+
+  it('still installs normally when settings.json does not exist yet (non-regression for the legitimate empty case)', () => {
+    const p = settingsPath('project')
+    expect(fs.existsSync(p)).toBe(false)
+
+    const result = installHooks('project')
+
+    expect(result.alreadyInstalled).toBe(false)
+    expect(fs.existsSync(p)).toBe(true)
+    const settings = JSON.parse(fs.readFileSync(p, 'utf8')) as { hooks: Record<string, unknown> }
+    expect(settings.hooks['PreToolUse']).toBeDefined()
+  })
+
+  it('throws on an existing settings.json with invalid JSON, and leaves the file byte-for-byte untouched', () => {
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    // Deliberately unparseable: a trailing comma before the closing brace.
+    const corrupt = '{ "model": "opus", "hooks": {}, }'
+    fs.writeFileSync(p, corrupt)
+
+    expect(() => installHooks('project')).toThrow(/invalid JSON/)
+
+    // installHooks must never reach atomicWriteText when the settings file
+    // existed but failed to parse -- the corrupt-but-recoverable file must be
+    // left exactly as the user left it, not silently clobbered with just the
+    // newly-added hook groups.
+    expect(fs.readFileSync(p, 'utf8')).toBe(corrupt)
+  })
+
+  it('throws on an existing settings.json whose top-level value is not an object, and leaves the file untouched', () => {
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const nonObject = '[1, 2, 3]'
+    fs.writeFileSync(p, nonObject)
+
+    expect(() => installHooks('project')).toThrow(/does not contain a JSON object/)
+    expect(fs.readFileSync(p, 'utf8')).toBe(nonObject)
+  })
 })
 
 describe('isInstalled / uninstallHooks', () => {

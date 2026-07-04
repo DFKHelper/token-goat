@@ -107,24 +107,54 @@ interface Settings {
   [key: string]: unknown
 }
 
-/** Parse the settings file at `p`, returning `{}` when absent or malformed. */
-function readSettings(p: string): Settings {
+/**
+ * Thrown by {@link readSettings} in strict mode when the settings file exists
+ * but isn't parseable JSON, or parses to something other than a JSON object.
+ * A caller about to overwrite the file (installHooks) must let this propagate
+ * rather than silently proceeding as if the file were empty -- otherwise a
+ * single JSON typo in the user's settings.json gets clobbered on write.
+ */
+export class SettingsParseError extends Error {}
+
+/**
+ * Parse the settings file at `p`.
+ *
+ * A missing file always yields `{}` -- that's the legitimate "nothing
+ * installed yet" case. When `opts.strict` is true, a file that *exists* but
+ * fails to parse (or parses to something other than a JSON object) throws
+ * {@link SettingsParseError} instead of returning `{}`, so a caller about to
+ * overwrite the file can tell "genuinely empty" apart from "corrupt, do not
+ * touch." Non-strict callers (read-only, or a no-op on corrupt) keep the old
+ * lenient `{}` fallback.
+ */
+function readSettings(p: string, opts: { strict?: boolean } = {}): Settings {
   let raw: string
   try {
     raw = fs.readFileSync(p, 'utf8')
   } catch {
     return {}
   }
+  let parsed: unknown
   try {
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-      return parsed as Settings
-    }
-    return {}
+    parsed = JSON.parse(raw)
   } catch {
+    if (opts.strict === true) {
+      throw new SettingsParseError(
+        `settings file '${p}' exists but contains invalid JSON. Fix or back up the file before running install.`,
+      )
+    }
     // Corrupt JSON: do not clobber it silently — but for our read we treat it as empty so callers can decide. (installHooks rewrites the whole file.)
     return {}
   }
+  if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+    return parsed as Settings
+  }
+  if (opts.strict === true) {
+    throw new SettingsParseError(
+      `settings file '${p}' does not contain a JSON object at the top level. Fix or back up the file before running install.`,
+    )
+  }
+  return {}
 }
 
 /** True when `group` already contains a token-goat hook for `eventArg`. */
@@ -147,7 +177,10 @@ function groupHasTokenGoat(groups: HookMatcherGroup[] | undefined): boolean {
  */
 export function installHooks(scope: HookScope = 'user'): InstallResult {
   const p = settingsPath(scope)
-  const settings = readSettings(p)
+  // strict: true -- a settings file that exists but fails to parse must abort
+  // before any write (see SettingsParseError), not silently proceed as if it
+  // were empty and get clobbered below.
+  const settings = readSettings(p, { strict: true })
   const hooks = settings.hooks ?? {}
 
   let changed = false
