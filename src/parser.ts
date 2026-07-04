@@ -16,6 +16,7 @@
 
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
+import * as path from 'node:path'
 
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
@@ -77,9 +78,9 @@ interface TsParserCtor {
 /** Grammar object handed to `parser.setLanguage`. Opaque to us. */
 type Grammar = unknown
 
-// Cache the Parser constructor and each resolved grammar across calls so the native binding is loaded at most once per process. `null` means "tried and unavailable"; `undefined` means "not yet attempted".
+// Cache the Parser constructor and each resolved grammar across calls so the native binding is loaded at most once per process. `null` means "tried and unavailable"; `undefined` means "not yet attempted". Keyed by string, not just `Language`, because TypeScript has two grammar variants (plain `.ts` vs JSX-aware `.tsx`) sharing one `Language` value.
 let _parserCtor: TsParserCtor | null | undefined
-const _grammarCache = new Map<Language, Grammar | null>()
+const _grammarCache = new Map<string, Grammar | null>()
 
 function loadParserCtor(): TsParserCtor | null {
   if (_parserCtor !== undefined) return _parserCtor
@@ -91,15 +92,23 @@ function loadParserCtor(): TsParserCtor | null {
   return _parserCtor
 }
 
-function loadGrammar(lang: Language): Grammar | null {
-  const cached = _grammarCache.get(lang)
+// `tree-sitter-typescript` ships two distinct grammars from one package: `typescript` (plain
+// .ts/.mts/.cts — rejects JSX syntax) and `tsx` (a superset that also parses JSX). Both share
+// the `Language` value 'typescript', so the caller's file path — not the Language — is what
+// distinguishes them. Parsing a .tsx file with the `typescript` grammar still "succeeds" (tree-sitter's
+// error recovery doesn't throw) but produces ERROR nodes around JSX, silently dropping or
+// mis-scoping symbols/refs.
+function loadGrammar(lang: Language, filePath?: string): Grammar | null {
+  const useTsx = lang === 'typescript' && filePath !== undefined && path.extname(filePath).toLowerCase() === '.tsx'
+  const cacheKey = useTsx ? 'typescript:tsx' : lang
+  const cached = _grammarCache.get(cacheKey)
   if (cached !== undefined) return cached
 
   let grammar: Grammar | null = null
   try {
     if (lang === 'typescript') {
-      const mod = _require('tree-sitter-typescript') as { typescript: Grammar }
-      grammar = mod.typescript
+      const mod = _require('tree-sitter-typescript') as { typescript: Grammar; tsx: Grammar }
+      grammar = useTsx ? mod.tsx : mod.typescript
     } else if (lang === 'javascript') {
       grammar = _require('tree-sitter-javascript') as Grammar
     } else if (lang === 'python') {
@@ -1162,7 +1171,7 @@ function parseContent(content: string, filePath: string, language: Language): Pa
   if (isTreeSitterAvailable(language)) {
     try {
       const Ctor = loadParserCtor()
-      const grammar = loadGrammar(language)
+      const grammar = loadGrammar(language, filePath)
       if (Ctor !== null && grammar !== null) {
         const parser = new Ctor()
         parser.setLanguage(grammar)
