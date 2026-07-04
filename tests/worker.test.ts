@@ -17,6 +17,9 @@ import * as parserModule from '../src/parser.js'
 import { querySymbols, queryRefs } from '../src/index_reader.js'
 import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
+import { loadConfig } from '../src/config.js'
+
+vi.mock('../src/config.js', () => ({ loadConfig: vi.fn() }))
 
 let DIR: string
 
@@ -32,6 +35,11 @@ function writeQueue(dir: string, lines: string[]): void {
 
 beforeEach(() => {
   DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-worker-'))
+  // Permissive default so existing tests (which don't set blocked_roots) are unaffected;
+  // individual tests override as needed.
+  vi.mocked(loadConfig).mockReturnValue({
+    worker: { blocked_roots: [] },
+  } as unknown as ReturnType<typeof loadConfig>)
 })
 
 afterEach(() => {
@@ -146,6 +154,54 @@ describe('processDirtyBatch', () => {
     fs.writeFileSync(real, 'export const x = 1\n')
     const count = processDirtyBatch([real], () => false)
     expect(count).toBe(0)
+  })
+
+  // Regression: worker.blocked_roots (set via `token-goat project exclude`) was validated from
+  // TOML and reported by `token-goat ignores`/`doctor`, but processDirtyBatch never consulted
+  // it -- a dirty-queued path under a blocked root was reindexed (or pruned) exactly like any
+  // other path.
+  it('skips a dirty path under a blocked root -- neither indexed nor pruned', () => {
+    const blockedDir = path.join(DIR, 'vendor')
+    fs.mkdirSync(blockedDir, { recursive: true })
+    const blockedFile = path.join(blockedDir, 'lib.ts')
+    fs.writeFileSync(blockedFile, 'export const x = 1\n')
+    // Deliberately absent, so a pre-fix run would prune it via the remove callback.
+    const blockedGhost = path.join(blockedDir, 'ghost.ts')
+
+    vi.mocked(loadConfig).mockReturnValue({
+      worker: { blocked_roots: [blockedDir] },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const indexed: string[] = []
+    const removed: string[] = []
+    const count = processDirtyBatch(
+      [blockedFile, blockedGhost],
+      (p) => indexed.push(p),
+      (p) => removed.push(p),
+    )
+
+    expect(count).toBe(0)
+    expect(indexed).toEqual([])
+    expect(removed).toEqual([])
+  })
+
+  it('still indexes a path outside the blocked root in the same batch', () => {
+    const blockedDir = path.join(DIR, 'vendor')
+    fs.mkdirSync(blockedDir, { recursive: true })
+    const blockedFile = path.join(blockedDir, 'lib.ts')
+    fs.writeFileSync(blockedFile, 'export const x = 1\n')
+    const real = path.join(DIR, 'real.ts')
+    fs.writeFileSync(real, 'export const y = 2\n')
+
+    vi.mocked(loadConfig).mockReturnValue({
+      worker: { blocked_roots: [blockedDir] },
+    } as unknown as ReturnType<typeof loadConfig>)
+
+    const indexed: string[] = []
+    const count = processDirtyBatch([blockedFile, real], (p) => indexed.push(p))
+
+    expect(count).toBe(1)
+    expect(indexed).toEqual([real])
   })
 })
 

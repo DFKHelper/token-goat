@@ -18,7 +18,7 @@ import { resolveIndexPath } from './paths.js'
 import { extractImports } from './read_commands.js'
 import { getTrackedFiles } from './repomap.js'
 import { estimateTokens } from './overflow_guard.js'
-import { runGit, ensureNewline } from './util.js'
+import { runGit, ensureNewline, isTestFile } from './util.js'
 import type { SymbolEntry } from './parser_types.js'
 
 // ---- helpers ----------------------------------------------------------------
@@ -485,11 +485,10 @@ export function runScope(opts: ScopeOptions): number {
 }
 
 // ---- isTestFile (exported pure helper) --------------------------------------
-
-/** Return true when a path looks like a test file (tests/ dir or .test./.spec./_test. suffix). */
-export function isTestFile(p: string): boolean {
-  return /(^|[/\\])(tests?)[/\\]/i.test(p) || /\.(test|spec)\.|_test\.|(^|[/\\])test_/i.test(p)
-}
+// Implementation lives in util.ts (shared with repomap.ts/baseline.ts's file-walk
+// exclude_tests filtering) and is imported above; re-exported here so existing
+// importers of this module are unaffected.
+export { isTestFile }
 
 // ---- findCycles (exported pure helper) --------------------------------------
 

@@ -15,9 +15,11 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { globalDbPath } from './constants.js'
+import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { detectLanguage } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
+import { isTestFile } from './util.js'
 
 /** Summary of a project's shape: file/language counts and headline symbols. */
 export interface ProjectMap {
@@ -65,10 +67,11 @@ export interface WalkResult {
  * Recursively collect source files under `rootDir`, skipping {@link SKIP_DIRS}
  * and any non-source ('unknown') extensions, tallying a language histogram.
  */
-export function walkProject(rootDir: string): WalkResult {
+export function walkProject(rootDir: string, opts: { excludeTests?: boolean } = {}): WalkResult {
   const files: string[] = []
   const languages: Record<string, number> = {}
   const stack: string[] = [rootDir]
+  const excludeTests = opts.excludeTests === true
 
   while (stack.length > 0 && files.length < MAX_FILES_SCANNED) {
     const dir = stack.pop()
@@ -93,6 +96,7 @@ export function walkProject(rootDir: string): WalkResult {
       } else if (entry.isFile()) {
         const lang: Language = detectLanguage(full)
         if (lang === 'unknown') continue
+        if (excludeTests && isTestFile(full)) continue
         files.push(full)
         languages[lang] = (languages[lang] ?? 0) + 1
         if (files.length >= MAX_FILES_SCANNED) break
@@ -157,7 +161,7 @@ export function buildProjectMap(
   opts: { compact?: boolean } = {},
 ): ProjectMap {
   const root = path.resolve(rootDir)
-  const { files, languages } = walkProject(root)
+  const { files, languages } = walkProject(root, { excludeTests: loadConfig().repomap.exclude_tests })
   const symbolLimit = opts.compact ? 10 : 30
   const topSymbols = fetchTopSymbols(symbolLimit, globalDbPath())
 

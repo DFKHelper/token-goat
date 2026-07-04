@@ -444,6 +444,11 @@ const ENV_KEYS = [
   'TOKEN_GOAT_MAX_IMAGE_PIXELS',
   'TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD',
   'TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS',
+  'TOKEN_GOAT_OVERFLOW_GUARD',
+  'TOKEN_GOAT_OVERFLOW_MAX_TOKENS',
+  'TOKEN_GOAT_HINT_JSON_SIDECAR',
+  'TOKEN_GOAT_LARGE_READ_BYTES',
+  'TOKEN_GOAT_BASELINE_BUDGET_TOKENS',
   'TOKEN_GOAT_CURATOR',
   'TOKEN_GOAT_HINT_BUDGET',
   'TOKEN_GOAT_HOOK_WATCHDOG_MS',
@@ -686,6 +691,8 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   const og = getDefaultConfig('overflow_guard') as OverflowGuardConfig
   og.enabled = validatedBool(og_raw['enabled'], og.enabled)
   og.max_tokens = validatedInt(og_raw['max_tokens'], og.max_tokens, 1000, 1_000_000)
+  og.enabled = envBool('TOKEN_GOAT_OVERFLOW_GUARD', og.enabled)
+  og.max_tokens = envInt('TOKEN_GOAT_OVERFLOW_MAX_TOKENS', og.max_tokens, 1000, 1_000_000)
 
   const st_raw = section(raw, 'stats')
   const st = getDefaultConfig('stats') as StatsConfig
@@ -720,6 +727,9 @@ function _buildConfig(raw: Record<string, unknown>): Config {
   hi.warn_unbalanced_shell_quoting = envBool('TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING', hi.warn_unbalanced_shell_quoting)
   hi.serve_diff_on_reread = envBool('TOKEN_GOAT_SERVE_DIFF_ON_REREAD', hi.serve_diff_on_reread)
   hi.log_large_file_hint_outcomes = envBool('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', hi.log_large_file_hint_outcomes)
+  hi.json_sidecar = envBool('TOKEN_GOAT_HINT_JSON_SIDECAR', hi.json_sidecar)
+  hi.large_read_redirect_bytes = envInt('TOKEN_GOAT_LARGE_READ_BYTES', hi.large_read_redirect_bytes, 0, 100_000_000)
+  hi.baseline_budget_tokens = envInt('TOKEN_GOAT_BASELINE_BUDGET_TOKENS', hi.baseline_budget_tokens, 0, 10_000_000)
   hi.cross_session_read_dedup = validatedBool(hi_raw['cross_session_read_dedup'], hi.cross_session_read_dedup)
   hi.cross_session_read_dedup_ttl_secs = validatedInt(hi_raw['cross_session_read_dedup_ttl_secs'], hi.cross_session_read_dedup_ttl_secs, 1, 86400)
   hi.cross_session_read_dedup = envBool('TOKEN_GOAT_CROSS_SESSION_READ_DEDUP', hi.cross_session_read_dedup)
@@ -834,6 +844,11 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hint_budget.enabled': ['TOKEN_GOAT_HINT_BUDGET'],
   'repomap.compact_file_threshold': ['TOKEN_GOAT_REPOMAP_COMPACT_THRESHOLD'],
   'repomap.exclude_tests': ['TOKEN_GOAT_REPOMAP_EXCLUDE_TESTS'],
+  'overflow_guard.enabled': ['TOKEN_GOAT_OVERFLOW_GUARD'],
+  'overflow_guard.max_tokens': ['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'],
+  'hints.json_sidecar': ['TOKEN_GOAT_HINT_JSON_SIDECAR'],
+  'hints.large_read_redirect_bytes': ['TOKEN_GOAT_LARGE_READ_BYTES'],
+  'hints.baseline_budget_tokens': ['TOKEN_GOAT_BASELINE_BUDGET_TOKENS'],
   'hints.warn_unbalanced_shell_quoting': ['TOKEN_GOAT_WARN_UNBALANCED_SHELL_QUOTING'],
   'hints.serve_diff_on_reread': ['TOKEN_GOAT_SERVE_DIFF_ON_REREAD'],
   'hints.log_large_file_hint_outcomes': ['TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES'],
