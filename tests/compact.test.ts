@@ -347,6 +347,45 @@ describe('compact', () => {
       expect(result).toHaveLength(2)
       expect((result[0] as Record<string, unknown>).rel_path).toBe(manifestPath)
     })
+
+    // Regression (#47): rel_path is computed per-session from FileEntry.path (session.ts),
+    // which is case-preserved. Two DIFFERENT sessions can read the same physical file via
+    // different literal casing on a case-insensitive filesystem (Windows/macOS) -- e.g. one
+    // session's hook records "src/Worker.ts", another records "src/worker.ts". Without folding
+    // the merge key, these were treated as two distinct files: hit_count never combined and the
+    // manifest could double-list the same physical file.
+    it('merges entries for the same physical file recorded under different rel_path casing', () => {
+      const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+      try {
+        const manifests = [
+          { files: [{ rel_path: 'src/Worker.ts', hit_count: 2 }] },
+          { files: [{ rel_path: 'src/worker.ts', hit_count: 5 }] },
+        ]
+        const result = mergeSessionManifests(manifests as Record<string, unknown>[], 1000)
+        expect(result).toHaveLength(1)
+        expect((result[0] as Record<string, unknown>).hit_count).toBe(5)
+      } finally {
+        if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+        else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+      }
+    })
+
+    it('control: case-sensitive FS keeps differently-cased rel_path as distinct entries', () => {
+      const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+      process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'
+      try {
+        const manifests = [
+          { files: [{ rel_path: 'src/Worker.ts', hit_count: 2 }] },
+          { files: [{ rel_path: 'src/worker.ts', hit_count: 5 }] },
+        ]
+        const result = mergeSessionManifests(manifests as Record<string, unknown>[], 1000)
+        expect(result).toHaveLength(2)
+      } finally {
+        if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+        else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+      }
+    })
   })
 
   describe('computeAdaptiveBudget', () => {

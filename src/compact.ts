@@ -8,7 +8,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { dataDir } from './constants.js'
 import { tokenGoatHome } from './disk_cache.js'
-import { atomicWriteText, normalizePathForwardSlash } from './util.js'
+import { atomicWriteText, foldPath, normalizePathForwardSlash } from './util.js'
 import { readSessionStateFile } from './session_store.js'
 import type { FileEntry } from './session.js'
 
@@ -529,12 +529,18 @@ export function mergeSessionManifests(
       const rel = (entry['rel_path'] as string) ?? ''
       if (!rel) continue
 
-      const existing = merged.get(rel)
+      // rel_path is computed per-session from FileEntry.path (see hooks_read.ts::postReadHandler),
+      // which is case-preserved, not case-folded -- two sessions can read the same physical file
+      // via different literal casing (e.g. "Worker.ts" vs "worker.ts") on a case-insensitive
+      // filesystem (Windows/macOS). Fold the merge key the same way session.ts folds its own
+      // read-dedup map key, or the two entries never merge and the manifest double-lists one file.
+      const dedupeKey = foldPath(rel)
+      const existing = merged.get(dedupeKey)
       const entryHitCount = (entry['hit_count'] as number) ?? 0
       const existingHitCount = (existing?.['hit_count'] as number) ?? 0
 
       if (!existing || entryHitCount > existingHitCount) {
-        merged.set(rel, entry)
+        merged.set(dedupeKey, entry)
       }
     }
   }
