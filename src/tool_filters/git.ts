@@ -163,6 +163,23 @@ function _compressGitLogFull(stdout: string, stderr: string): string {
 }
 
 /** Compress -p/--patch log: truncate large diff sections per commit. */
+// Caps the diff/patch portion of a single commit block (header lines kept in full, diff lines
+// truncated past `maxLines`). Factored out of _compressGitLogPatch so the oneline+patch combo in
+// _compressGitLogEnhanced can apply the identical per-commit truncation to blocks split on the
+// oneline commit-header boundary instead of the verbose "commit <hash>" boundary.
+function _capPatchLinesInBlock(block: string, maxLines: number): string {
+  const lines = block.split('\n')
+  const diffStart = lines.findIndex((ln) => _GIT_DIFF_FILE_RE.test(ln))
+  if (diffStart === -1) return block
+  const headerLines = lines.slice(0, diffStart)
+  let diffLines = lines.slice(diffStart)
+  if (diffLines.length > maxLines) {
+    const elided = diffLines.length - maxLines
+    diffLines = [...diffLines.slice(0, maxLines), `--- patch: ${elided} lines omitted by token-goat ---`]
+  }
+  return [...headerLines, ...diffLines].join('\n')
+}
+
 function _compressGitLogPatch(stdout: string, stderr: string): string {
   const MAX_PATCH_LINES = 30
   const blocks = splitBlocks(stdout, _GIT_LOG_COMMIT_RE)
@@ -170,25 +187,7 @@ function _compressGitLogPatch(stdout: string, stderr: string): string {
   const prelude = !_GIT_LOG_COMMIT_RE.test(blocks[0]!) ? blocks[0]! : ''
   const commits = blocks.filter((b) => _GIT_LOG_COMMIT_RE.test(b))
 
-  const outBlocks: string[] = []
-  for (const block of commits) {
-    const lines = block.split('\n')
-    const diffStart = lines.findIndex((ln) => _GIT_DIFF_FILE_RE.test(ln))
-    if (diffStart === -1) {
-      outBlocks.push(block)
-      continue
-    }
-    const headerLines = lines.slice(0, diffStart)
-    let diffLines = lines.slice(diffStart)
-    if (diffLines.length > MAX_PATCH_LINES) {
-      const elided = diffLines.length - MAX_PATCH_LINES
-      diffLines = [
-        ...diffLines.slice(0, MAX_PATCH_LINES),
-        `--- patch: ${elided} lines omitted by token-goat ---`,
-      ]
-    }
-    outBlocks.push([...headerLines, ...diffLines].join('\n'))
-  }
+  const outBlocks = commits.map((block) => _capPatchLinesInBlock(block, MAX_PATCH_LINES))
 
   let text = (prelude ? prelude + '\n' : '') + outBlocks.join('\n')
   if (stderr.trim()) text += '\n---\n' + stderr.replace(/\s+$/, '')
@@ -196,6 +195,34 @@ function _compressGitLogPatch(stdout: string, stderr: string): string {
 }
 
 /** Compress --stat log: limit file list per commit block. */
+// Caps the stat-line portion of a single commit block (all other lines kept in full, stat lines
+// past `maxFiles` truncated). Factored out of _compressGitLogStat so the oneline+stat combo in
+// _compressGitLogEnhanced can apply the identical per-commit truncation to blocks split on the
+// oneline commit-header boundary instead of the verbose "commit <hash>" boundary.
+function _capStatLinesInBlock(block: string, maxFiles: number): string {
+  const lines = block.split('\n')
+  const statLines = lines.filter((ln) => ln.includes(' | ') && (ln.includes('+') || ln.includes('-')))
+  if (statLines.length <= maxFiles) return block
+  const elided = statLines.length - maxFiles
+  const newLines: string[] = []
+  let statIdx = 0
+  let replaced = false
+  for (const ln of lines) {
+    if (ln.includes(' | ') && (ln.includes('+') || ln.includes('-'))) {
+      if (statIdx < maxFiles) {
+        newLines.push(ln)
+      } else if (!replaced) {
+        newLines.push(`[token-goat: +${elided} more stat lines omitted]`)
+        replaced = true
+      }
+      statIdx++
+    } else {
+      newLines.push(ln)
+    }
+  }
+  return newLines.join('\n')
+}
+
 function _compressGitLogStat(stdout: string, stderr: string): string {
   const MAX_STAT_FILES = 20
   const blocks = splitBlocks(stdout, _GIT_LOG_COMMIT_RE)
@@ -203,34 +230,7 @@ function _compressGitLogStat(stdout: string, stderr: string): string {
   const prelude = !_GIT_LOG_COMMIT_RE.test(blocks[0]!) ? blocks[0]! : ''
   const commits = blocks.filter((b) => _GIT_LOG_COMMIT_RE.test(b))
 
-  const outBlocks: string[] = []
-  for (let block of commits) {
-    const lines = block.split('\n')
-    const statLines = lines.filter(
-      (ln) => ln.includes(' | ') && (ln.includes('+') || ln.includes('-')),
-    )
-    if (statLines.length > MAX_STAT_FILES) {
-      const elided = statLines.length - MAX_STAT_FILES
-      const newLines: string[] = []
-      let statIdx = 0
-      let replaced = false
-      for (const ln of lines) {
-        if (ln.includes(' | ') && (ln.includes('+') || ln.includes('-'))) {
-          if (statIdx < MAX_STAT_FILES) {
-            newLines.push(ln)
-          } else if (!replaced) {
-            newLines.push(`[token-goat: +${elided} more stat lines omitted]`)
-            replaced = true
-          }
-          statIdx++
-        } else {
-          newLines.push(ln)
-        }
-      }
-      block = newLines.join('\n')
-    }
-    outBlocks.push(block)
-  }
+  const outBlocks = commits.map((block) => _capStatLinesInBlock(block, MAX_STAT_FILES))
 
   let text = (prelude ? prelude + '\n' : '') + outBlocks.join('\n')
   if (stderr.trim()) text += '\n---\n' + stderr.replace(/\s+$/, '')
@@ -255,25 +255,42 @@ function _compressGitLogEnhanced(stdout: string, stderr: string, argv: string[])
     }
   }
 
+  const isPatch = flags.has('-p') || flags.has('--patch') || flags.has('-u')
+  const isStat = flags.has('--stat') || flags.has('--shortstat') || flags.has('--name-status')
+
   if (isOneline) {
     const ONELINE_CAP = 50
-    const lines = stdout.split('\n').filter((ln) => ln.trim())
-    let keptLines: string[]
-    if (lines.length > ONELINE_CAP) {
-      const elided = lines.length - ONELINE_CAP
-      keptLines = [...lines.slice(0, ONELINE_CAP), `[token-goat: +${elided} more commits]`]
+    let blocks: string[]
+    if (isPatch || isStat) {
+      // `--oneline` combined with `--stat`/`-p` interleaves each commit's one-line header with
+      // its own stat/patch body. This branch used to run before isStat/isPatch were ever
+      // consulted and capped by raw non-empty LINE count -- so a multi-line stat/patch body
+      // inflated the apparent commit count, tearing a kept commit's body off mid-way and making
+      // the "+N more commits" figure count stat/patch lines instead of commits. Cap by commit
+      // BLOCK (header + full body) instead, and apply the same per-commit stat/patch truncation
+      // the non-oneline isStat/isPatch paths already use below.
+      const MAX_STAT_FILES = 20
+      const MAX_PATCH_LINES = 30
+      blocks = splitBlocks(stdout, _GIT_LOG_ONELINE_RE)
+        .filter((b) => b.trim())
+        .map((b) => (isPatch ? _capPatchLinesInBlock(b, MAX_PATCH_LINES) : _capStatLinesInBlock(b, MAX_STAT_FILES)))
     } else {
-      keptLines = lines
+      blocks = stdout.split('\n').filter((ln) => ln.trim())
+    }
+
+    let keptLines: string[]
+    if (blocks.length > ONELINE_CAP) {
+      const elided = blocks.length - ONELINE_CAP
+      keptLines = [...blocks.slice(0, ONELINE_CAP), `[token-goat: +${elided} more commits]`]
+    } else {
+      keptLines = blocks
     }
     let out = keptLines.join('\n')
     if (stderr.trim()) out += '\n---\n' + stderr.replace(/\s+$/, '')
     return out
   }
 
-  const isPatch = flags.has('-p') || flags.has('--patch') || flags.has('-u')
   if (isPatch) return _compressGitLogPatch(stdout, stderr)
-
-  const isStat = flags.has('--stat') || flags.has('--shortstat') || flags.has('--name-status')
   if (isStat) return _compressGitLogStat(stdout, stderr)
 
   return _compressGitLogFull(stdout, stderr)
@@ -306,6 +323,37 @@ function _isDiffRemove(line: string): boolean {
 }
 
 /** Roll up per-file stat lines into per-directory summaries. */
+// Resolves git's diff --stat rename notation for a single path column (the text before " | ")
+// to the path's NEW (post-rename) location, so the directory rollup below groups it under where
+// the file actually ended up.
+//
+// Git emits renames in two forms:
+//   - Full two-path form when old and new share no useful common prefix/suffix:
+//     "old/full/path.ts => new/full/path.ts"
+//   - Brace-compressed form otherwise, with only the varying segment wrapped in "{old => new}"
+//     and any common prefix/suffix left outside the braces:
+//     "src/{old => new}/file.ts", "{old-dir => new-dir}/file.ts", "dir/{a.ts => b.ts}"
+// The previous implementation only stripped a leading "{" / trailing "}" from the *entire*
+// pathPart, which only happens to work when the braces span the whole string (no prefix or
+// suffix outside them). The much more common case -- a prefix or suffix outside the braces --
+// left a stray "}" or "{" stuck to the resolved segment, corrupting the rollup's directory key
+// (e.g. "src/{old => new}/file.ts" resolved to "new}/file.ts", not "src/new/file.ts").
+function _resolveRenameNewPath(pathPart: string): string {
+  const braceStart = pathPart.indexOf('{')
+  const braceEnd = braceStart === -1 ? -1 : pathPart.indexOf('}', braceStart + 1)
+  if (braceStart !== -1 && braceEnd !== -1) {
+    const prefix = pathPart.slice(0, braceStart)
+    const suffix = pathPart.slice(braceEnd + 1)
+    const braced = pathPart.slice(braceStart + 1, braceEnd)
+    const newSegment = braced.includes(' => ') ? (braced.split(' => ').pop() ?? '').trim() : braced.trim()
+    return `${prefix}${newSegment}${suffix}`
+  }
+  if (pathPart.includes(' => ')) {
+    return (pathPart.split(' => ').pop() ?? '').trim()
+  }
+  return pathPart
+}
+
 function _diffStatDirRollup(statLines: string[]): string[] {
   const dirAdds = new Map<string, number>()
   const dirDels = new Map<string, number>()
@@ -314,11 +362,7 @@ function _diffStatDirRollup(statLines: string[]): string[] {
   for (const ln of statLines) {
     const stripped = ln.trimStart()
     if (!stripped.includes(' | ')) continue
-    let pathPart = stripped.split(' | ')[0]!.trim()
-    // Resolve rename notation: "old/path => new/path"
-    if (pathPart.includes(' => ')) {
-      pathPart = (pathPart.split(' => ').pop() ?? '').trim().replace(/^\{/, '').replace(/\}$/, '')
-    }
+    const pathPart = _resolveRenameNewPath(stripped.split(' | ')[0]!.trim())
     const topDir = pathPart.includes('/') ? pathPart.split('/')[0]! + '/' : '(root)'
     const statPart = stripped.includes(' | ') ? stripped.split(' | ').slice(1).join(' | ') : ''
     dirAdds.set(topDir, (dirAdds.get(topDir) ?? 0) + (statPart.match(/\+/g) ?? []).length)
