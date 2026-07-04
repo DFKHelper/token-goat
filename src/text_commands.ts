@@ -12,7 +12,7 @@ import { walkProject } from './baseline.js'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
 import { FILTERS } from './filters.js'
-import { findProject } from './project.js'
+import { canonicalize, findProject } from './project.js'
 import { clearAll, loadEntries, setEntry, unsetEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
 
@@ -225,9 +225,11 @@ function parseTracebacks(text: string): TraceBlock[] {
 }
 
 function isProjectFrame(framePath: string, cwd: string): boolean {
-  const abs = path.resolve(cwd, framePath)
-  const normalCwd = cwd.toLowerCase()
-  const normalAbs = abs.toLowerCase()
+  // Route through canonicalize (project.ts) so a WSL/MSYS-style frame path (e.g.
+  // /mnt/c/Projects/token-goat/...) is recognized as the same file as its native
+  // Windows drive-letter form, instead of being compared as a raw resolved string.
+  const normalCwd = canonicalize(cwd)
+  const normalAbs = canonicalize(framePath, cwd)
   if (normalAbs.startsWith(normalCwd)) return true
   if (framePath.includes('site-packages') || framePath.includes('lib/python')) return false
   if (/^<.+>$/.test(framePath)) return false
