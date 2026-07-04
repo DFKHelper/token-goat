@@ -401,12 +401,38 @@ describe('preReadHandler', () => {
 
   it('blocks node_modules paths case-insensitively on Windows', () => {
     if (process.platform !== 'win32') {
-      // Skip on non-Windows since the behavior is intentionally case-sensitive there
+      // Covered regardless of platform by the case-insensitive-fs test below (#isNodeModulesPath foldPath fix)
       expect(true).toBe(true)
       return
     }
     const result = preReadHandler(readEvent('C:\\PROJECT\\NODE_MODULES\\foo.js'))
     expect(result.hookType).toBe('deny')
+  })
+
+  it('blocks node_modules paths case-insensitively on a case-insensitive filesystem regardless of platform (#isNodeModulesPath foldPath fix)', () => {
+    // Regression: isNodeModulesPath used to gate its case fold on isWindows() instead of
+    // isCaseInsensitiveFs(), so a case-insensitive filesystem on a non-Windows platform (e.g.
+    // macOS, which is case-insensitive by default) never got its path folded and a
+    // differently-cased node_modules segment slipped through undetected. Force a non-Windows
+    // platform AND a forced case-insensitive-fs override at the same time: under the old
+    // isWindows()-gated code this combination fails (isWindows() is false, so no fold happens),
+    // proving the test actually exercises the bug rather than passing trivially on a real
+    // Windows dev machine where isWindows() is already true.
+    const realPlatform = process.platform
+    const prevCaseEnv = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+    try {
+      const result = preReadHandler(readEvent('/project/NODE_MODULES/foo.js'))
+      expect(result.hookType).toBe('deny')
+      if (result.hookType === 'deny') {
+        expect(result.message).toContain('node_modules is typically noise')
+      }
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
+      if (prevCaseEnv === undefined) delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+      else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = prevCaseEnv
+    }
   })
 
   it('does not block paths with similar names outside node_modules', () => {

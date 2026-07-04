@@ -16,6 +16,7 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { canonicalize, projectHash, makeProjectAt, findProject, PROJECT_MARKERS } from '../src/project.js';
+import { lowercaseDriveLetter } from '../src/paths.js';
 
 describe('project', () => {
   let tmpDir: string;
@@ -41,6 +42,45 @@ describe('project', () => {
         const result = canonicalize('C:\\Windows');
         expect(result[0]).toBe('c');
       }
+    });
+
+    // Deterministic (not host-OS-gated, unlike the test above) coverage of canonicalize's
+    // drive-letter lowercasing, now delegated to paths.ts's shared lowercaseDriveLetter instead
+    // of project.ts's own drifted, unconditional inline copy. setPlatform mirrors the
+    // 'WSL mount-path rewrite (win32-gated, #M25)' block below: forcing process.platform to
+    // 'win32' makes canonicalize take its path.win32.resolve branch regardless of the host OS
+    // running the test, so this runs for real on Linux CI instead of no-op'ing like the test
+    // above does there.
+    describe('drive-letter lowercasing (shared lowercaseDriveLetter, host-independent)', () => {
+      const realPlatform = process.platform;
+      const setPlatform = (p: string): void => {
+        Object.defineProperty(process, 'platform', { value: p, configurable: true });
+      };
+      afterEach(() => setPlatform(realPlatform));
+
+      it('lowercases an uppercase Windows drive-letter prefix', () => {
+        setPlatform('win32');
+        expect(canonicalize('C:\\Windows')).toBe('c:/Windows');
+      });
+
+      it('leaves an already-lowercase Windows drive-letter prefix unchanged', () => {
+        setPlatform('win32');
+        expect(canonicalize('c:\\Windows')).toBe('c:/Windows');
+      });
+    });
+
+    // The one input where paths.ts's original inline guard (ASCII-only /^[A-Z]$/) and
+    // project.ts's original inline check (unconditional toLowerCase()) could have disagreed —
+    // a non-ASCII uppercase letter immediately before a colon — never actually reaches
+    // canonicalize in practice: path.win32.resolve() doesn't recognize anything but ASCII A-Z
+    // as a drive letter, so a string like that is treated as relative and gets a real cwd
+    // prefixed onto it before the lowercase step ever sees index 0/1 in that shape. Asserting
+    // the shared helper's own guard behavior (paths.test.ts's 'lowercaseDriveLetter' describe
+    // block) is what actually pins this down; canonicalize now shares that exact function, so
+    // it inherits the same guarantee by construction rather than by a second, harder-to-write
+    // integration test here.
+    it('shares its drive-letter lowercasing with normalizePath via the same exported helper', () => {
+      expect(lowercaseDriveLetter('C:/foo')).toBe('c:/foo');
     });
 
     it('should resolve relative paths to absolute', () => {
