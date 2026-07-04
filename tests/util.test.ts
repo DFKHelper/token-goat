@@ -251,24 +251,59 @@ describe('runGit', () => {
     expect(result.stdout.toLowerCase()).toContain('git version')
   })
 
+})
+
+describe('runGit large output handling', () => {
+  let repoDir: string
+  let msgDir: string
+
+  beforeEach(() => {
+    repoDir = mkdtempSync(path.join(tmpdir(), 'tg-biglog-repo-'))
+    msgDir = mkdtempSync(path.join(tmpdir(), 'tg-biglog-msg-'))
+
+    runGit(['init'], { cwd: repoDir })
+    runGit(['config', 'user.email', 'test@token-goat.local'], { cwd: repoDir })
+    runGit(['config', 'user.name', 'Token Goat Test'], { cwd: repoDir })
+    runGit(['config', 'commit.gpgsign', 'false'], { cwd: repoDir })
+
+    // 4 commits with ~350 KB commit-message bodies comfortably exceed the 1 MB
+    // threshold via git log's combined output, regardless of the real repo's
+    // history size (unlike the previous version of this test). The message body
+    // is passed via `-F <file>` rather than `-m <string>` so it never has to go
+    // through argv/CreateProcess, which caps command-line length on Windows.
+    const filePath = path.join(repoDir, 'file.txt')
+    const msgPath = path.join(msgDir, 'msg.txt')
+    const bigBody = 'x'.repeat(350 * 1024)
+    for (let i = 0; i < 4; i++) {
+      writeFileSync(filePath, `content ${i}`)
+      writeFileSync(msgPath, `commit ${i}\n\n${bigBody}`)
+      runGit(['add', 'file.txt'], { cwd: repoDir })
+      runGit(['commit', '-F', msgPath], { cwd: repoDir })
+    }
+  })
+
+  afterEach(() => {
+    rmSync(repoDir, { recursive: true, force: true })
+    rmSync(msgDir, { recursive: true, force: true })
+  })
+
   it('handles large git output (>1MB) without ENOBUFS truncation', () => {
     // Regression test for: runGit() previously had no maxBuffer option, causing
     // Node's default 1 MiB limit to truncate large git commands (ls-files, log, diff).
     // When output exceeded 1 MiB, spawnSync would set result.error=ENOBUFS, and runGit
     // would return { stdout: '', stderr: <error>, exitCode: -1 }, silently losing output.
-    // This test ensures runGit can handle large output by running git log with verbose format.
-    const result = runGit([
-      'log',
-      '--format=%H%n%an%n%ae%n%ai%n%B%n---END---',
-      '--all'
-    ])
+    //
+    // This drives a synthetic temp repo (built above) instead of this project's own
+    // git history: CI's actions/checkout runs with the default fetch-depth (a shallow,
+    // effectively single-commit clone), so `git log --all` against the real repo would
+    // return only a few hundred bytes there, and this assertion would never actually
+    // exercise runGit's maxBuffer handling in CI.
+    const result = runGit(['log', '--format=%H%n%an%n%ae%n%ai%n%B%n---END---', '--all'], { cwd: repoDir })
     expect(result.exitCode).toBe(0)
     expect(result.stdout).not.toBe('')
-    // Verify output is actually large (the repo's git log is ~1.65 MB)
     expect(result.stdout.length).toBeGreaterThan(1024 * 1024)
     expect(result.stderr).toBe('')
   })
-
 })
 
 describe('ensureDirSync', () => {
