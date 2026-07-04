@@ -18,7 +18,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { estimateTokens } from './compact.js'
-import { atomicWriteText } from './util.js'
+import { atomicWriteText, foldPath } from './util.js'
 
 // Entry regex: matches markdown link entries in MEMORY.md.
 const ENTRY_RE = /^\s*-\s*\[(?<title>[^\]]+)\]\((?<target>[^)]+?\.md)\)/
@@ -128,12 +128,13 @@ export function pruneIndex(memoryDir: string, opts?: { dryRun?: boolean }): Prun
 
   for (const entry of entries) {
     const targetPath = path.join(memoryDir, entry.target)
+    const foldedTarget = foldPath(entry.target)
     if (!fs.existsSync(targetPath)) {
       dead.push(entry)
-    } else if (seenTargets.has(entry.target)) {
+    } else if (seenTargets.has(foldedTarget)) {
       dups.push(entry)
     } else {
-      seenTargets.add(entry.target)
+      seenTargets.add(foldedTarget)
       keep.push(entry)
     }
   }
