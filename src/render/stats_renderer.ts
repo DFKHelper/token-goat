@@ -583,9 +583,14 @@ function _renderByKindSection(stats: StatsData): string[] {
     grpKinds.sort((a, b) => share(b) - share(a))
   }
 
+  // Include 'Other' after the defined groups so kinds that _kindGroupLabel falls back to
+  // 'Other' for (i.e. not a member of any _KIND_GROUPS set) still get rendered instead of
+  // silently vanishing from this table while still being nameable by the Insights section.
+  const groupLabels = [..._KIND_GROUPS.map((g) => g.label), 'Other']
+
   let firstGroup = true
-  for (const group of _KIND_GROUPS) {
-    const groupKinds = byGroup.get(group.label)
+  for (const label of groupLabels) {
+    const groupKinds = byGroup.get(label)
     if (!groupKinds || groupKinds.length === 0) {
       continue
     }
@@ -593,7 +598,7 @@ function _renderByKindSection(stats: StatsData): string[] {
       lines.push('')
     }
     firstGroup = false
-    lines.push(_groupSeparator(group.label))
+    lines.push(_groupSeparator(label))
     for (const k of groupKinds) {
       const s = share(k)
       lines.push(
@@ -752,12 +757,10 @@ function _renderByProjectSection(stats: StatsData): string[] {
     return []
   }
 
-  const projectTotalBytes = stats.by_project.reduce((s, p) => s + p.bytes, 0)
-  const projectTotalTokens = stats.by_project.reduce((s, p) => s + p.tokens, 0)
   const lines = [..._sectionHeader(`By project (top ${stats.by_project.length})`), _tableHeader('project')]
 
   function share(p: ProjectStat): number {
-    return _tokenOrByteShare(p.tokens, p.bytes, projectTotalTokens, projectTotalBytes)
+    return _tokenOrByteShare(p.tokens, p.bytes, stats.totals.tokens, stats.totals.bytes)
   }
 
   for (const p of [...stats.by_project].sort((a, b) => share(b) - share(a))) {
