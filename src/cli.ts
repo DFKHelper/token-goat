@@ -195,6 +195,7 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
   }
   const blockedRoots = loadConfig().worker.blocked_roots
   let indexed = 0
+  let failed = 0
   for (const f of files) {
     // Key on the same canonical absolute-normalized path every reader resolves to via resolveIndexPath. getTrackedFiles returns path.join(root, rel), so a relative root (the natural `token-goat index .`) yields relative paths; normalizePath alone would store a relative key that no reader can match.
     const key = resolveIndexPath(f)
@@ -202,7 +203,19 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     // indexing entirely -- skip before the language check so a blocked file is never touched.
     if (isUnderBlockedRoot(key, blockedRoots)) continue
     if (detectLanguage(key) === 'unknown') continue
-    indexFileSync(key, dbPath)
+    try {
+      indexFileSync(key, dbPath)
+    } catch (e) {
+      // A single locked/permission-denied file (AV scan, open editor, OneDrive sync -- all
+      // common on Windows) must not abort the rest of a bulk walk. indexFileSync itself only
+      // fail-softs on ENOENT (the file vanished between discovery and read, a benign race) and
+      // rethrows everything else so callers can report it -- worker.ts's makeIndexer already
+      // catches and logs that per-file via an INDEX_FAILED sentinel, but this foreground loop
+      // had no try/catch at all, so the same rethrow aborted the whole command uncaught.
+      failed += 1
+      err(`token-goat: index: failed to index '${key}': ${extractErrorMessage(e)}`)
+      continue
+    }
     // Best-effort semantic-embeddings step for the same file, run right after its syntactic
     // parse; awaited here because this is a one-shot foreground command the caller waits on,
     // unlike the worker's incremental drain which fires this and forgets it.
@@ -210,7 +223,11 @@ export async function cmdIndex(pathArg?: string, opts: { walk?: boolean; dbPath?
     indexed += 1
   }
   const pruned = pruneDeletedFiles(resolveIndexPath(root), dbPath)
-  out(`Indexed ${indexed} files into the symbol index.${pruned > 0 ? ` Pruned ${pruned} deleted file(s).` : ''}`)
+  out(
+    `Indexed ${indexed} files into the symbol index.` +
+      `${pruned > 0 ? ` Pruned ${pruned} deleted file(s).` : ''}` +
+      `${failed > 0 ? ` Failed to index ${failed} file(s) (see stderr).` : ''}`,
+  )
 }
 
 function cmdMap(opts: { compact?: boolean }): void {
