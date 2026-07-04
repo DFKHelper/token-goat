@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
 import { postBashHandler, preBashHandler, extractCurlDownload, extractMarkdownHeadingGrep, extractRgSymbolSearch, extractPowerShellWrappedGetContent, extractGhViewForBatchAdvisory } from '../src/hooks_bash.js'
 import { getBashOutputId, recordFileRead } from '../src/session.js'
@@ -8,6 +8,22 @@ import { resolveIndexPath } from '../src/paths.js'
 import { writeFileSync, unlinkSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+// vi.mock is hoisted — this redirects configPath() to a per-test-file temp
+// file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests
+// near the bottom of this file can set a non-default config value
+// deterministically. Mirrors tests/config.test.ts and tests/disk_cache.test.ts.
+vi.mock('../src/constants.js', async (importOriginal) => {
+  const original = await importOriginal<Record<string, unknown>>()
+  return {
+    ...original,
+    configPath: () => _testConfigPath,
+  }
+})
+
+const _testConfigPath = join(tmpdir(), `tg-hooks-bash-config-test-${process.pid}.toml`)
+
+import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 
 function makePostBashEvent(command: string, output: string, cwd?: string): HookEvent {
   return {
@@ -2370,5 +2386,84 @@ describe('postBashHandler — gh view field-batching advisory (one-time per sess
     const out = '{"title":"x","body":"y","labels":[]}\n'.repeat(40)
     const result = await postBashHandler(makePostBashEvent('gh pr view 1 --json title,body,labels', out))
     expect(result.hookType).toBe('pass')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Config-driven bash_compress.cache_min_bytes / timeout_seconds. Before this
+// fix, hooks_bash.ts always used a hardcoded MIN_CACHE_BYTES=512 floor and
+// never emitted --timeout at all (the compress action silently fell back to
+// bash_runner.ts's hardcoded DEFAULT_TIMEOUT_SECONDS), so these two config.ts
+// knobs were validated/saved but had zero effect on real behavior.
+// ---------------------------------------------------------------------------
+describe('postBashHandler — config-driven bash_compress.cache_min_bytes', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+  })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      unlinkSync(_testConfigPath)
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  it('does not cache an output that clears the old hardcoded 512-byte floor but misses a configured, higher cache_min_bytes', async () => {
+    const cfg = defaultConfig()
+    cfg.bash_compress.cache_min_bytes = 5000
+    saveConfig(cfg)
+
+    const output = 'Compiling token_goat v1.0.0 release output line '.repeat(20)
+    expect(Buffer.byteLength(output, 'utf-8')).toBeGreaterThan(512)
+    expect(Buffer.byteLength(output, 'utf-8')).toBeLessThan(5000)
+
+    const cmd = 'cargo build'
+    await postBashHandler(makePostBashEvent(cmd, output))
+
+    const { fingerprintContent } = await import('../src/fingerprint.js')
+    const simpleHash = fingerprintContent(cmd).slice(0, 16)
+    expect(getBashOutputId(simpleHash)).toBeNull()
+  })
+
+  it('still caches an output that clears a configured cache_min_bytes floor', async () => {
+    const cfg = defaultConfig()
+    cfg.bash_compress.cache_min_bytes = 5000
+    saveConfig(cfg)
+
+    const output = 'Compiling token_goat v1.0.0 release output line '.repeat(200)
+    expect(Buffer.byteLength(output, 'utf-8')).toBeGreaterThan(5000)
+
+    const cmd = 'cargo build'
+    await postBashHandler(makePostBashEvent(cmd, output))
+
+    const { fingerprintContent } = await import('../src/fingerprint.js')
+    const simpleHash = fingerprintContent(cmd).slice(0, 16)
+    expect(getBashOutputId(simpleHash)).not.toBeNull()
+  })
+})
+
+describe('preBashHandler — config-driven bash_compress.timeout_seconds', () => {
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      unlinkSync(_testConfigPath)
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  it('threads a configured timeout_seconds into the compress wrapper command instead of always falling back to bash_runner.ts hardcoded default', () => {
+    const cfg = defaultConfig()
+    cfg.bash_compress.timeout_seconds = 42
+    saveConfig(cfg)
+
+    const event = makeBashEvent('rg "TODO" src/foo.ts')
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('rewriteInput')
+    if (result.hookType === 'rewriteInput') {
+      expect(String(result.updatedInput['command'])).toContain('--timeout 42')
+    }
   })
 })

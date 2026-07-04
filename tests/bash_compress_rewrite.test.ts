@@ -118,7 +118,7 @@ describe('preBashHandler: compression rewrite', () => {
     const result = preBashHandler(preEvent({ command: 'cargo build' }))
     expect(result.hookType).toBe('rewriteInput')
     if (result.hookType === 'rewriteInput') {
-      expect(result.updatedInput['command']).toBe("token-goat compress -f cargo -c 'cargo build'")
+      expect(result.updatedInput['command']).toBe("token-goat compress -f cargo --timeout 600 -c 'cargo build'")
     }
   })
 
@@ -130,7 +130,7 @@ describe('preBashHandler: compression rewrite', () => {
     if (result.hookType === 'rewriteInput') {
       expect(result.updatedInput['description']).toBe('compile')
       expect(result.updatedInput['timeout']).toBe(120000)
-      expect(result.updatedInput['command']).toBe("token-goat compress -f go -c 'go build ./...'")
+      expect(result.updatedInput['command']).toBe("token-goat compress -f go --timeout 600 -c 'go build ./...'")
     }
   })
 
@@ -140,7 +140,7 @@ describe('preBashHandler: compression rewrite', () => {
     if (result.hookType === 'rewriteInput') {
       // The compressor shell-runs the -c arg; the cd must survive so cargo runs in /repo.
       expect(result.updatedInput['command']).toBe(
-        "token-goat compress -f cargo -c 'cd /repo && cargo test'",
+        "token-goat compress -f cargo --timeout 600 -c 'cd /repo && cargo test'",
       )
     }
   })
@@ -230,7 +230,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
     expect(parsed.hookSpecificOutput?.hookEventName).toBe('PreToolUse')
     expect(parsed.hookSpecificOutput?.permissionDecision).toBe('allow')
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f go -c 'go build ./...'",
+      "token-goat compress -f go --timeout 600 -c 'go build ./...'",
     )
   })
 
@@ -246,7 +246,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f vitest -c 'npx vitest run'",
+      "token-goat compress -f vitest --timeout 600 -c 'npx vitest run'",
     )
   })
 
@@ -262,7 +262,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f pytest -c 'python -m pytest tests/'",
+      "token-goat compress -f pytest --timeout 600 -c 'python -m pytest tests/'",
     )
   })
 
@@ -288,7 +288,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f pip -c 'pip install requests'",
+      "token-goat compress -f pip --timeout 600 -c 'pip install requests'",
     )
   })
 
@@ -304,7 +304,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f eslint -c 'eslint src/'",
+      "token-goat compress -f eslint --timeout 600 -c 'eslint src/'",
     )
   })
 
@@ -320,7 +320,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f git-diff -c 'git diff HEAD'",
+      "token-goat compress -f git-diff --timeout 600 -c 'git diff HEAD'",
     )
   })
 
@@ -336,7 +336,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f make -c 'make all'",
+      "token-goat compress -f make --timeout 600 -c 'make all'",
     )
   })
 
@@ -352,7 +352,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f cargo -c 'cargo build --release'",
+      "token-goat compress -f cargo --timeout 600 -c 'cargo build --release'",
     )
   })
 
@@ -368,7 +368,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f docker -c 'docker build .'",
+      "token-goat compress -f docker --timeout 600 -c 'docker build .'",
     )
   })
 
@@ -384,7 +384,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f gh-run-log -c 'gh run view 1234 --log'",
+      "token-goat compress -f gh-run-log --timeout 600 -c 'gh run view 1234 --log'",
     )
   })
 
@@ -400,7 +400,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f terraform -c 'terraform plan'",
+      "token-goat compress -f terraform --timeout 600 -c 'terraform plan'",
     )
   })
 
@@ -416,7 +416,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f aider -c 'aider --model claude-3-5-sonnet'",
+      "token-goat compress -f aider --timeout 600 -c 'aider --model claude-3-5-sonnet'",
     )
   })
 
@@ -432,7 +432,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f rg -c 'rg -C 3 TODO src/'",
+      "token-goat compress -f rg --timeout 600 -c 'rg -C 3 TODO src/'",
     )
   })
 
@@ -449,7 +449,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f python -c 'python3 train.py'",
+      "token-goat compress -f python --timeout 600 -c 'python3 train.py'",
     )
   })
 
@@ -465,7 +465,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f psql -c 'psql -U postgres'",
+      "token-goat compress -f psql --timeout 600 -c 'psql -U postgres'",
     )
   })
 
@@ -481,7 +481,7 @@ describe('compression rewrite (built-bundle e2e)', () => {
       hookSpecificOutput?: { updatedInput?: { command?: string } }
     }
     expect(parsed.hookSpecificOutput?.updatedInput?.command).toBe(
-      "token-goat compress -f playwright -c 'playwright test'",
+      "token-goat compress -f playwright --timeout 600 -c 'playwright test'",
     )
   })
 

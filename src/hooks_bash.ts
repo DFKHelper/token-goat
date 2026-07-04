@@ -883,7 +883,7 @@ function isCompressibleSingleCommand(cmd: string): boolean {
  */
 function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): HookOutput | null {
   if (process.env['TOKEN_GOAT_BASH_COMPRESS'] === '0') return null
-  let cfg: { enabled: boolean; disabled_filters: string[] }
+  let cfg: { enabled: boolean; disabled_filters: string[]; timeout_seconds: number }
   try {
     cfg = loadConfig().bash_compress
   } catch {
@@ -905,7 +905,7 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string): Ho
   }
   if (cfg.disabled_filters.includes(filterName)) return null
 
-  const wrapped = `token-goat compress -f ${filterName} -c ${shellQuoteSingle(rawCmd)}`
+  const wrapped = `token-goat compress -f ${filterName} --timeout ${cfg.timeout_seconds} -c ${shellQuoteSingle(rawCmd)}`
   return { hookType: 'rewriteInput', updatedInput: { ...event.toolInput, command: wrapped } }
 }
 
@@ -1499,9 +1499,6 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
 registerHook('pre_tool_use', preBashHandler, { toolName: 'Bash' })
 
-/** Minimum output size (bytes) worth caching; smaller outputs aren't worth the overhead. */
-const MIN_CACHE_BYTES = 512
-
 /**
  * Extract the tool response text from a post_tool_use event.
  * Claude Code may send a string or an object with an output/content field.
@@ -1588,6 +1585,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const output = extractBashOutput(event.raw)
     const exitCode = extractExitCode(event.raw)
     const cwd = typeof event.raw['cwd'] === 'string' ? event.raw['cwd'] : null
+    // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an
+    // untouched install sees identical behavior; a configured cache_min_bytes now
+    // actually moves the floor instead of being silently ignored.
+    const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
 
     // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming
     // the download actually succeeded. Recording it unconditionally (before checking exit code
@@ -1617,7 +1618,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     }
 
     // Cache a successful, read-only `gh api` GET so a later identical call recalls it instead of re-fetching. Done as a side effect before the advisory-hint return below, so a wide-JSON response is both nudged toward --jq and cached. Gated on exit 0 (and the shared size floor) so an error/permission body is never stored as content.
-    if (isReadOnlyGhApi(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= MIN_CACHE_BYTES) {
+    if (isReadOnlyGhApi(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
       const ghCacheHash = shortFingerprint(stripOutputPipeline(cmd))
       const ghCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
       recordBashOutput(ghCacheHash, ghCacheId, Buffer.byteLength(output, 'utf-8'))
@@ -1633,7 +1634,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const ghView = extractGhViewForBatchAdvisory(cmd)
     if (ghView !== null && (exitCode === null || exitCode === 0) && !wasHintShown(GH_VIEW_BATCH_HINT_KEY)) {
       markHintShown(GH_VIEW_BATCH_HINT_KEY)
-      if (Buffer.byteLength(output, 'utf-8') >= MIN_CACHE_BYTES) {
+      if (Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
         const ghViewId = await storeBashOutput(cmd, output, exitCode ?? 0, cwd)
         recordBashOutput(shortFingerprint(stripOutputPipeline(cmd)), ghViewId, Buffer.byteLength(output, 'utf-8'))
       }
@@ -1645,7 +1646,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const isMonitoring = getMonitoringRecallHint(cmd) !== null
     if (!isMonitoring && !isBuildCommand(cmd) && !isCurlGetCommand(cmd)) return passOutput()
 
-    if (Buffer.byteLength(output, 'utf-8') < MIN_CACHE_BYTES) return passOutput()
+    if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return passOutput()
 
     // For curl GET commands, key the cache on the URL so that the same endpoint fetched with different downstream pipes (| jq vs | python3) shares a single cache entry.
     const cacheKey = isCurlGetCommand(cmd) ? (extractCurlUrl(cmd) ?? cmd) : stripOutputPipeline(cmd)

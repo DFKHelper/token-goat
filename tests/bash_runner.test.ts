@@ -21,7 +21,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.join(HERE, '..')
@@ -33,6 +33,8 @@ const _savedXdg = process.env['XDG_DATA_HOME']
 process.env['LOCALAPPDATA'] = DATA_DIR_TMP
 process.env['XDG_DATA_HOME'] = DATA_DIR_TMP
 const { run, runRaw } = await import('../src/bash_runner.js')
+const { defaultConfig, invalidateConfigCache, saveConfig } = await import('../src/config.js')
+const { configPath } = await import('../src/constants.js')
 // DATA_DIR is now frozen to the temp dir; restore env to avoid leaking the override into sibling test modules that run in the same worker.
 if (_savedLocal === undefined) delete process.env['LOCALAPPDATA']
 else process.env['LOCALAPPDATA'] = _savedLocal
@@ -108,6 +110,55 @@ describe('bash_runner.run (in-process)', () => {
     expect(runRaw('exit 4')).toBe(4)
   })
 })
+// ---------------------------------------------------------------------------
+// Config-driven bash_compress.max_lines / max_bytes. Before this fix,
+// wrapAndCompress never passed maxLines/maxBytes to compressOutput at all, so
+// changing these config.ts knobs had zero effect on the real compression path
+// — it silently used the tool-filter layer's own internal defaults instead.
+// ---------------------------------------------------------------------------
+describe('bash_runner.run — config-driven compress limits (bash_compress.max_lines / max_bytes)', () => {
+  // saveConfig does not create configPath()'s parent directory itself; when
+  // this describe block runs in isolation (e.g. via -t filtering) no earlier
+  // test has created it as a side effect, so do it explicitly here.
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      fs.unlinkSync(path.join(DATA_DIR_TMP, 'config.toml'))
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  it('honors a configured max_lines well below the default (unconfigured) line count', () => {
+    const cfg = defaultConfig()
+    cfg.bash_compress.max_lines = 50 // config.ts's validated floor for this field
+    saveConfig(cfg)
+
+    const s = script('manylines.js', "for (let i = 0; i < 300; i++) console.log('unique-line-' + i)\n")
+    let out = ''
+    run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    const lineCount = out.split('\n').filter((l) => l.startsWith('unique-line-')).length
+    // Unconfigured, the 'balanced' profile cap (200) would leave ~200 lines; a
+    // configured max_lines=50 should cut that down well below that.
+    expect(lineCount).toBeLessThanOrEqual(55)
+  })
+
+  it('honors a configured max_bytes well below the built-in 64KB default', () => {
+    const cfg = defaultConfig()
+    cfg.bash_compress.max_bytes = 200
+    saveConfig(cfg)
+
+    const s = script('bigout.js', "console.log('x'.repeat(50000))\n")
+    let out = ''
+    run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    // Unconfigured, the output would be capped at the built-in 64KB default;
+    // a configured max_bytes=200 should cut that down to a few hundred bytes.
+    expect(Buffer.byteLength(out, 'utf-8')).toBeLessThan(2000)
+  })
+})
+
 
 describe('compress command (built-bundle e2e)', () => {
   let dataBase: string
