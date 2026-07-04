@@ -496,6 +496,15 @@ export function readAllSessionManifests(
         const fullPath = path.join(sessionsDir, file)
         const stat = fs.statSync(fullPath)
         if (now - stat.mtimeMs / 1000 > maxAgeSecs) {
+          // Opportunistic cleanup: an expired manifest is never coming back into the
+          // TTL window, so delete it here instead of leaving it to accumulate forever.
+          // Best-effort -- a delete failure (concurrent access, permissions) must never
+          // break the read path itself.
+          try {
+            fs.unlinkSync(fullPath)
+          } catch {
+            // ignore cleanup failure
+          }
           continue
         }
         const text = fs.readFileSync(fullPath, 'utf8')

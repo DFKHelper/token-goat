@@ -6,7 +6,7 @@ import type { HookEvent } from '../src/hook_registry'
 import { loadConfig } from '../src/config'
 import { getSessionId } from '../src/session'
 import { makeProjectAt } from '../src/project'
-import { writeSessionManifest } from '../src/compact'
+import { readAllSessionManifests, writeSessionManifest } from '../src/compact'
 import { dataDir } from '../src/constants'
 import os from 'node:os'
 
@@ -291,6 +291,26 @@ describe('Cross-session read dedup', () => {
     expect(fs.existsSync(manifestPath)).toBe(true)
     const written = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
     expect(written).toEqual({ files: [{ rel_path: 'a.txt', hit_count: 2 }] })
+  })
+
+  it('deletes an expired manifest file as opportunistic cleanup, but keeps a fresh sibling', () => {
+    const repoDir = makeRepo()
+    const project = makeProjectAt(repoDir)
+
+    writeSessionManifest(project.hash, 'stale-session', { files: [{ rel_path: 'a.txt', hit_count: 1 }] })
+    writeSessionManifest(project.hash, 'fresh-session', { files: [{ rel_path: 'b.txt', hit_count: 1 }] })
+
+    const sessionsDir = path.join(dataDir(), 'projects', project.hash, 'sessions')
+    const staleManifestPath = path.join(sessionsDir, 'stale-session.json')
+    const freshManifestPath = path.join(sessionsDir, 'fresh-session.json')
+    const oldTime = new Date(Date.now() - 3600 * 1000)
+    fs.utimesSync(staleManifestPath, oldTime, oldTime)
+
+    const results = readAllSessionManifests(project.hash, 60)
+
+    expect(fs.existsSync(staleManifestPath)).toBe(false)
+    expect(fs.existsSync(freshManifestPath)).toBe(true)
+    expect(results).toEqual([{ files: [{ rel_path: 'b.txt', hit_count: 1 }] }])
   })
 
   describe('cross-session case-fold (case-insensitive FS)', () => {
