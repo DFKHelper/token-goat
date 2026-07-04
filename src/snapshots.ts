@@ -44,7 +44,7 @@ function pathKey(filePath: string): string {
   // same physical file. normalizePath only lowercases the drive letter, so fold the whole
   // string through foldPath (util.ts) -- matching the established convention from session.ts's
   // read-dedup map key -- or a file read under two casings in one session gets two different
-  // snapshot files on disk, and symbol_changed_since_read silently fails to find the prior
+  // snapshot files on disk, and load() silently fails to find the prior
   // snapshot under the new casing.
   return crypto.createHash('sha256').update(foldPath(normalizePath(filePath)), 'utf8').digest('hex').slice(0, 32)
 }
@@ -254,42 +254,6 @@ export function cleanup_session(sessionId: string): number {
   }
 
   return removed
-}
-
-export function symbol_changed_since_read(
-  sessionId: string,
-  filePath: string,
-  symbolName: string,
-  currentStartLine: number,
-  currentEndLine: number,
-  currentText: string,
-): boolean {
-  if (!sessionId || !filePath || !symbolName) {
-    return false
-  }
-
-  const snapshotBytes = load(sessionId, filePath)
-  if (!snapshotBytes) return false
-
-  try {
-    const snapshotText = snapshotBytes.toString('utf8', 0, Math.min(snapshotBytes.length, 1024 * 1024))
-    const snapshotLines = snapshotText.split('\n')
-
-    const nLines = currentEndLine - currentStartLine + 1
-    const snapStart = Math.max(0, currentStartLine - 1)
-    const snapEnd = snapStart + nLines
-
-    const snapshotSlice = snapshotLines.slice(snapStart, snapEnd).join('\n').replace(/\n$/, '')
-    const currentStripped = currentText.replace(/\n$/, '')
-
-    if (snapshotSlice === currentStripped) {
-      return false
-    }
-
-    return !(currentStripped && snapshotText.includes(currentStripped))
-  } catch {
-    return false
-  }
 }
 
 export function cleanup_stale(maxAgeHours: number = 24.0): number {

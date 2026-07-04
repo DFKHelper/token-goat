@@ -47,7 +47,7 @@ describe('pathKey case folding (case-insensitive FS)', () => {
   // Regression: pathKey() hashed the raw filePath string. normalizePath only lowercases the
   // drive letter (project convention), so a file read under two different literal casings in
   // one session (e.g. "Worker.ts" vs "worker.ts") on a case-insensitive filesystem resolved to
-  // two DIFFERENT snapshot files on disk -- defeating change-detection (symbol_changed_since_read
+  // two DIFFERENT snapshot files on disk -- defeating change-detection (load()
   // would silently fail to find the prior snapshot under the new casing).
   it('produces the same snapshot path for two case variants of the same file', () => {
     process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
