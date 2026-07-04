@@ -155,6 +155,36 @@ describe('project', () => {
         fs.rmSync(tmpDir2, { recursive: true, force: true });
       }
     });
+
+    describe('case folding (case-insensitive FS)', () => {
+      const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS;
+      afterEach(() => {
+        if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS;
+        else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv;
+      });
+
+      // Regression: projectHash hashed the raw canonicalize() string. canonicalize() only
+      // lowercases the drive letter (lowercaseDriveLetter), so opening the same physical
+      // directory via two differently-cased path strings (e.g. C:\Projects\Foo vs
+      // c:\projects\foo) produced two different hashes -- and therefore two different
+      // per-project state directories (compact.ts's writeSessionManifest keys sessions by
+      // this hash) for what is really one project on a case-insensitive filesystem.
+      it('produces the same hash for two case variants of the same canonical root', () => {
+        process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1';
+        const canonical = canonicalize(tmpDir);
+        const hash1 = projectHash(canonical);
+        const hash2 = projectHash(canonical.toUpperCase());
+        expect(hash1).toBe(hash2);
+      });
+
+      it('control: case-sensitive FS mode still hashes case variants differently', () => {
+        process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0';
+        const canonical = canonicalize(tmpDir);
+        const hash1 = projectHash(canonical);
+        const hash2 = projectHash(canonical.toUpperCase());
+        expect(hash1).not.toBe(hash2);
+      });
+    });
   });
 
   describe('makeProjectAt', () => {
@@ -262,6 +292,56 @@ describe('project', () => {
 
       const project = findProject(subdir);
       expect(project).toBeNull();
+    });
+
+    describe('temp-boundary guard casing (case-insensitive FS)', () => {
+      const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS;
+      const prevTMPDIR = process.env.TMPDIR;
+      const prevTMP = process.env.TMP;
+      const prevTEMP = process.env.TEMP;
+
+      afterEach(() => {
+        if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS;
+        else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv;
+        if (prevTMPDIR === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = prevTMPDIR;
+        if (prevTMP === undefined) delete process.env.TMP;
+        else process.env.TMP = prevTMP;
+        if (prevTEMP === undefined) delete process.env.TEMP;
+        else process.env.TEMP = prevTEMP;
+      });
+
+      // Regression: findProject broke the upward walk on `current === sysTemp`, a raw string
+      // compare. canonicalize() only lowercases the drive letter (lowercaseDriveLetter), so
+      // when `current` (derived from cwd) and `sysTemp` (derived from os.tmpdir(), which reads
+      // TEMP/TMP/TMPDIR from process.env at call time) differ in case beyond the drive letter
+      // -- a realistic drift between a process's cwd string and its TEMP/TMP env var on
+      // Windows -- the guard never matched. The walk then kept going past the temp boundary
+      // and could attribute a temp-resident file to an unrelated ancestor's PROJECT_MARKER.
+      it('stops at the temp boundary even when os.tmpdir() casing differs from cwd beyond the drive letter, instead of misattributing an unrelated ancestor marker', () => {
+        process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1';
+
+        // Simulate the OS temp root as a directory nested inside our own scratch tmpDir, so
+        // this test never touches or plants markers in the real OS temp tree.
+        const fakeTempRoot = path.join(tmpDir, 'faketemp');
+        fs.mkdirSync(fakeTempRoot);
+        // A marker ABOVE the simulated temp root: if the guard fails to stop the walk at
+        // fakeTempRoot, findProject wrongly keeps walking up and picks this up as the root.
+        fs.mkdirSync(path.join(tmpDir, '.git'));
+        const workDir = path.join(fakeTempRoot, 'work');
+        fs.mkdirSync(workDir);
+
+        // os.tmpdir() reads TMPDIR (POSIX) / TEMP or TMP (Windows) from process.env at call
+        // time. Point it at an uppercase variant of fakeTempRoot: the identical physical
+        // directory, differing only in case beyond the drive letter.
+        const upperFakeTempRoot = fakeTempRoot.toUpperCase();
+        process.env.TMPDIR = upperFakeTempRoot;
+        process.env.TMP = upperFakeTempRoot;
+        process.env.TEMP = upperFakeTempRoot;
+
+        const project = findProject(workDir);
+        expect(project).toBeNull();
+      });
     });
   });
 
