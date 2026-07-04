@@ -4,7 +4,7 @@
  * populated before this suite runs — the fixture is the token-goat repo itself).
  */
 
-import { readdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { readdirSync, mkdtempSync, writeFileSync, rmSync, chmodSync } from 'node:fs'
 import { join, resolve, delimiter } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -886,5 +886,83 @@ describe('runAsk', () => {
     expect(code).toBe(0)
     expect(captured).not.toMatch(/degraded mode/)
     expect(captured).toContain('shim-answer-12345')
+  })
+
+  // Regression for the CRITICAL bug: askArgs used to be hardcoded to
+  // ['--print', '--bare', '--no-session-persistence'] for every backend, including codex --
+  // those are Claude-Code-CLI-specific top-level flags that codex rejects outright. The shim
+  // below stands in for real codex: it exits non-zero (like real codex does on '--print') unless
+  // invoked as `exec --ephemeral --output-last-message <path>`, in which case it writes a known
+  // answer to that file and, to prove the fix reads the file and not stdout, also emits noisy
+  // stdout of the kind real codex produces (reasoning summaries, hook logs).
+  it('uses the codex-shaped invocation (exec --ephemeral --output-last-message) and reads the answer from the output file, not stdout', () => {
+    const shimDir = mkdtempSync(join(tmpdir(), 'tg-ask-codex-shim-'))
+    const isWin = process.platform === 'win32'
+    const shimPath = isWin ? join(shimDir, 'codex.cmd') : join(shimDir, 'codex')
+
+    if (isWin) {
+      const script = [
+        '@echo off',
+        'if "%~1"=="exec" (',
+        '  echo codex: reasoning summary noise',
+        '  echo hook: SessionStart',
+        '  > "%~4" echo codex-known-answer-98765',
+        '  exit /b 0',
+        ') else (',
+        '  echo error: unexpected argument \'--print\' found 1>&2',
+        '  exit /b 2',
+        ')',
+        '',
+      ].join('\r\n')
+      writeFileSync(shimPath, script, 'utf-8')
+    } else {
+      const script = [
+        '#!/usr/bin/env bash',
+        'if [ "$1" = "exec" ]; then',
+        '  echo "codex: reasoning summary noise"',
+        '  echo "hook: SessionStart"',
+        '  prev=""',
+        '  outpath=""',
+        '  for a in "$@"; do',
+        '    if [ "$prev" = "--output-last-message" ]; then outpath="$a"; fi',
+        '    prev="$a"',
+        '  done',
+        '  echo "codex-known-answer-98765" > "$outpath"',
+        '  exit 0',
+        'else',
+        '  echo "error: unexpected argument \'--print\' found" >&2',
+        '  exit 2',
+        'fi',
+        '',
+      ].join('\n')
+      writeFileSync(shimPath, script, 'utf-8')
+      chmodSync(shimPath, 0o755)
+    }
+
+    const origPath = process.env['PATH']
+    const origBackend = process.env['TOKEN_GOAT_ASK_BACKEND']
+    process.env['PATH'] = `${shimDir}${delimiter}${origPath ?? ''}`
+    process.env['TOKEN_GOAT_ASK_BACKEND'] = 'codex'
+
+    let captured = ''
+    const origWrite = process.stdout.write.bind(process.stdout)
+    process.stdout.write = (chunk: unknown) => { captured += String(chunk); return true }
+    let code: number
+    try {
+      code = runAsk({ question: 'how are refs stored' })
+    } finally {
+      process.stdout.write = origWrite
+      if (origPath !== undefined) process.env['PATH'] = origPath
+      else delete process.env['PATH']
+      if (origBackend !== undefined) process.env['TOKEN_GOAT_ASK_BACKEND'] = origBackend
+      else delete process.env['TOKEN_GOAT_ASK_BACKEND']
+      rmSync(shimDir, { recursive: true, force: true })
+    }
+    expect(code).toBe(0)
+    expect(captured).not.toMatch(/degraded mode/)
+    expect(captured).toContain('codex-known-answer-98765')
+    // Codex's noisy stdout must never leak into the emitted answer.
+    expect(captured).not.toMatch(/reasoning summary noise/)
+    expect(captured).not.toMatch(/SessionStart/)
   })
 })
