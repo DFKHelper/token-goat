@@ -70,6 +70,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     encoding: 'utf-8',
     windowsHide: true,
+    maxBuffer: 200 * 1024 * 1024, // 200 MB - allow large git outputs (ls-files, log, diff on large repos)
   })
 
   if (result.error) {

@@ -251,6 +251,24 @@ describe('runGit', () => {
     expect(result.stdout.toLowerCase()).toContain('git version')
   })
 
+  it('handles large git output (>1MB) without ENOBUFS truncation', () => {
+    // Regression test for: runGit() previously had no maxBuffer option, causing
+    // Node's default 1 MiB limit to truncate large git commands (ls-files, log, diff).
+    // When output exceeded 1 MiB, spawnSync would set result.error=ENOBUFS, and runGit
+    // would return { stdout: '', stderr: <error>, exitCode: -1 }, silently losing output.
+    // This test ensures runGit can handle large output by running git log with verbose format.
+    const result = runGit([
+      'log',
+      '--format=%H%n%an%n%ae%n%ai%n%B%n---END---',
+      '--all'
+    ])
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).not.toBe('')
+    // Verify output is actually large (the repo's git log is ~1.65 MB)
+    expect(result.stdout.length).toBeGreaterThan(1024 * 1024)
+    expect(result.stderr).toBe('')
+  })
+
 })
 
 describe('ensureDirSync', () => {
