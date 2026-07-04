@@ -143,6 +143,51 @@ describe('GitLogFilter oneline', () => {
 })
 
 // ---------------------------------------------------------------------------
+// GitLogFilter — --oneline combined with --stat/-p
+// ---------------------------------------------------------------------------
+
+function makeOnelineStat(n: number): string {
+  const blocks = Array.from({ length: n }, (_, i) => {
+    const hash = `abc${String(i).padStart(4, '0')}ef`
+    return [
+      `${hash} Commit subject ${i}`,
+      ` src/module/file${i}.ts | 3 +++`,
+      ' 1 file changed, 3 insertions(+)',
+      '',
+    ].join('\n')
+  })
+  return blocks.join('\n').replace(/\n$/, '')
+}
+
+describe('GitLogFilter --oneline --stat combo', () => {
+  // Regression: --oneline combined with --stat interleaves each commit's one-line header with
+  // its own stat lines, so the isOneline branch used to cap by raw non-empty LINE count instead
+  // of commit count -- with ~20 real commits (well under the 50-commit cap) but ~80 raw lines
+  // (over the 50-LINE cap this branch used to apply), it wrongly elided commits that should have
+  // been shown in full.
+  it('~20 commits: no bogus elision (commit count, not raw line count, drives the cap)', () => {
+    const text = makeOnelineStat(20)
+    const result = apply(gitLogFilter, text, ['git', 'log', '--oneline', '--stat'])
+    expect(result).not.toContain('more commits')
+    for (let i = 0; i < 20; i++) {
+      expect(result).toContain(`Commit subject ${i}`)
+      expect(result).toContain(`file${i}.ts`)
+    }
+  })
+
+  // 60 real commits, ~240 raw lines. The old line-based cap would report "+190 more commits"
+  // (240 - 50) -- wildly wrong for only 60 actual commits. The fixed commit-block-based cap must
+  // report exactly the 10 commits actually elided (60 - 50).
+  it('60 commits: "+N more commits" reflects actual commit count, not raw stat-line count', () => {
+    const text = makeOnelineStat(60)
+    const result = apply(gitLogFilter, text, ['git', 'log', '--oneline', '--stat'])
+    expect(result).toContain('+10 more commits')
+    expect(result).toContain('Commit subject 0')
+    expect(result).not.toContain('Commit subject 59')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // GitLogFilter — full format
 // ---------------------------------------------------------------------------
 
@@ -462,6 +507,43 @@ describe('GitDiffFilter stat rollup', () => {
     const result = apply(gitDiffFilter, text, ['git', 'diff', '--stat'])
     expect(result).toContain('(root) (25 files,')
     expect(result).not.toContain('file0.txt')
+  })
+
+  // Regression: git's brace-compressed rename notation ("prefix/{old => new}/suffix") only had
+  // its stray leading "{" / trailing "}" stripped when the braces spanned the ENTIRE path column
+  // (no prefix or suffix outside them) -- the common real-world case of a prefix and/or suffix
+  // left the braces mid-string, so e.g. "src/{old => new}/file.py" resolved to "new}/file.py"
+  // and got rolled up under a garbage "new}/" directory instead of the correct "src/". The full
+  // two-path form ("old/path => new/path", no braces) already worked and must keep working.
+  it('rename notation (brace-compressed and full two-path) rolls up under the correct new-path directory', () => {
+    const bracedWithPrefixSuffix = Array.from(
+      { length: 11 },
+      (_, i) => ` src/{old => new}/file${i}.py | ${i + 1} ${'+'.repeat(i + 1)}`,
+    )
+    const bracedWholeTopDir = Array.from(
+      { length: 10 },
+      (_, i) => ` {old-root => new-root}/file${i}.py | ${i + 1} ${'+'.repeat(i + 1)}`,
+    )
+    const summary = ' 21 files changed, 231 insertions(+)'
+    const text = [...bracedWithPrefixSuffix, ...bracedWholeTopDir, summary].join('\n')
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--stat'])
+    expect(result).toContain('src/ (11 files,')
+    expect(result).toContain('new-root/ (10 files,')
+    // Not corrupted into a garbage directory carrying a stray brace character.
+    expect(result).not.toMatch(/new\}/)
+    expect(result).not.toMatch(/\{old/)
+  })
+
+  it('full two-path rename notation (no braces) still rolls up under the new path directory', () => {
+    const renamed = Array.from(
+      { length: 21 },
+      (_, i) => ` old/dir/file${i}.py => new/dir/file${i}.py | ${i + 1} ${'+'.repeat(i + 1)}`,
+    )
+    const summary = ' 21 files changed, 231 insertions(+)'
+    const text = [...renamed, summary].join('\n')
+    const result = apply(gitDiffFilter, text, ['git', 'diff', '--stat'])
+    expect(result).toContain('new/ (21 files,')
+    expect(result).not.toContain('old/')
   })
 })
 
