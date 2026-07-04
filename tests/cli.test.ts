@@ -565,6 +565,35 @@ describe('token-goat CLI', () => {
       }
     })
 
+    it('replace preserves non-UTF-8 bytes supplied via --new-b64 in the replacement text', () => {
+      // Regression test: --old-b64/--new-b64 used to be decoded via decodeBase64Text, which base64-
+      // decodes the payload then calls .toString('utf8') on it; the byte-exact match/replace logic
+      // then re-encoded that string back to bytes via Buffer.from(text, 'utf8'). Any invalid-UTF-8
+      // byte in the b64 payload itself (as opposed to elsewhere in the target file, covered above)
+      // got silently rewritten by that round-trip to the 3-byte U+FFFD sequence (ef bf bd) — so the
+      // replacement text the caller explicitly supplied byte-for-byte came out corrupted on disk.
+      const tmp = path.join(os.tmpdir(), `tg-rpl-newb64-nonutf8-${Date.now()}.txt`)
+      const strayByte = 0xe9 // valid Windows-1252/Latin-1 but invalid as a standalone UTF-8 byte
+      const newRaw = Buffer.concat([Buffer.from('BE', 'utf8'), Buffer.from([strayByte]), Buffer.from('TA', 'utf8')])
+      fs.writeFileSync(tmp, 'alpha NEEDLE gamma', 'utf8')
+      try {
+        const oldB64 = Buffer.from('NEEDLE', 'utf8').toString('base64')
+        const newB64 = newRaw.toString('base64')
+        const r = runCli(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        expect(r.status).toBe(0)
+        expect(r.stdout).toContain('replaced 1 occurrence')
+
+        const result = fs.readFileSync(tmp) // raw Buffer — no utf8 decode, so corruption would be visible
+        const expected = Buffer.concat([Buffer.from('alpha ', 'utf8'), newRaw, Buffer.from(' gamma', 'utf8')])
+        expect(result.equals(expected)).toBe(true)
+        // The stray byte itself must land at its exact expected position, unchanged.
+        const strayIndex = Buffer.from('alpha BE', 'utf8').length
+        expect(result[strayIndex]).toBe(strayByte)
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+
     it('replace target file not found exits 1 with a mapFsError-style message', () => {
       const tmp = path.join(os.tmpdir(), `tg-rpl-missing-${Date.now()}.txt`)
       const oldB64 = Buffer.from('old', 'utf8').toString('base64')
