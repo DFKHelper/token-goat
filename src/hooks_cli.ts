@@ -75,10 +75,10 @@ const GEMINI_TOOL_NAME_MAP: Record<string, string> = {
  * Only keys that differ between Gemini and token-goat need to appear here.
  */
 const GEMINI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
-  Read: { path: 'file_path' },
-  Write: { path: 'file_path' },
-  Edit: { path: 'file_path', old_str: 'old_string', new_str: 'new_string' },
-  Grep: { query: 'pattern' },
+  Read: { file_path: 'path' },
+  Write: { file_path: 'path' },
+  Edit: { file_path: 'path', old_string: 'old_str', new_string: 'new_str' },
+  Grep: { pattern: 'query' },
 }
 
 /**
