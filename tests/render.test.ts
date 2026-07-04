@@ -419,6 +419,42 @@ describe('Stats rendering', () => {
     expect(result).toContain('TestProject')
     expect(result).toContain('def456')
   })
+
+  it('renderStats "By kind" table does not silently drop kinds unmapped to any _KIND_GROUPS bucket', () => {
+    const stats = { ...minimalStats }
+    // 'mystery_new_kind' is not a member of any group in _KIND_GROUPS, so _kindGroupLabel()
+    // falls back to 'Other' for it. It is also responsible for the majority of bytes/tokens,
+    // so Insights will name it as the biggest saver -- the By-kind table must not contradict
+    // that by omitting it entirely.
+    stats.by_kind = [
+      { kind: 'mystery_new_kind', bytes: 40000, tokens: 4000, events: 50 },
+      { kind: 'read_replacement', bytes: 10000, tokens: 1000, events: 20 },
+    ]
+    const result = renderStats(stats)
+    const byKindBlock = result.split('By kind')[1]?.split('By source')[0] ?? ''
+    expect(byKindBlock).toContain('mystery_new_kind')
+    expect(byKindBlock).toContain('Other')
+    // Insights should still name it as the biggest saver -- both sections must agree.
+    const insightsBlock = result.split('Insights')[1] ?? ''
+    expect(insightsBlock).toContain('mystery_new_kind')
+  })
+
+  it('renderByProjectSection percentages use the grand total, not the sum of displayed rows', () => {
+    const stats = { ...minimalStats }
+    // Grand total across the whole period is far larger than what these 3 displayed
+    // (top-N filtered) projects sum to -- each is truly worth 10% of the grand total,
+    // but naively summing just the displayed rows would make each look like 33.3%.
+    stats.totals = { ...stats.totals, bytes: 100000, tokens: 10000 }
+    stats.by_project = [
+      { project: 'ProjectA', hash: 'aaa111', path: '/a', bytes: 10000, tokens: 1000, events: 10 },
+      { project: 'ProjectB', hash: 'bbb222', path: '/b', bytes: 10000, tokens: 1000, events: 10 },
+      { project: 'ProjectC', hash: 'ccc333', path: '/c', bytes: 10000, tokens: 1000, events: 10 },
+    ]
+    const result = renderStats(stats)
+    const byProjectBlock = result.split('By project')[1]?.split('Insights')[0] ?? ''
+    expect(byProjectBlock).toContain('10.0%')
+    expect(byProjectBlock).not.toContain('33.3%')
+  })
 })
 
 describe('Edge cases', () => {
