@@ -180,6 +180,27 @@ describe('CypressFilter compression', () => {
     expect(out).not.toMatch(/─{30,}/)
     expect(out).toContain('Test output')
   })
+
+  it('suppresses passing test lines even when the run has failures (nonzero exit code)', () => {
+    const stdout = [
+      '  Login Flow',
+      '    ✓ logs in with valid credentials (120ms)',
+      '    ✓ logs out (80ms)',
+      '    ✓ remembers session (95ms)',
+      '    1) rejects invalid credentials',
+      '',
+      '  0 passing',
+      '  1 failing',
+    ].join('\n')
+    const out = apply(cypressFilter, stdout, ['cypress', 'run'], { exitCode: 1 })
+    // Passing lines must be suppressed regardless of overall exit code
+    expect(out).not.toContain('✓ logs in with valid credentials')
+    expect(out).not.toContain('✓ logs out')
+    expect(out).not.toContain('✓ remembers session')
+    expect(out).toContain('suppressed 3 passing test lines')
+    // The failing test itself must survive
+    expect(out).toContain('rejects invalid credentials')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -266,14 +287,46 @@ describe('MySQLFilter query compression', () => {
 })
 
 describe('MySQLFilter dump compression', () => {
+  // Realistic mysqldump per-table structure: leading `--` comment lines, a
+  // blank line, THEN the DROP TABLE/CREATE TABLE body, ending in another
+  // blank line. (A fixture without the `--` comments before the blank line
+  // masks the backwards blank-line-skip bug entirely — see regression below.)
+  const table = (i: number): string => [
+    '--',
+    `-- Table structure for table \`tbl${i}\``,
+    '--',
+    '',
+    `DROP TABLE IF EXISTS \`tbl${i}\`;`,
+    `CREATE TABLE \`tbl${i}\` (`,
+    '  `id` int NOT NULL AUTO_INCREMENT,',
+    '  PRIMARY KEY (`id`)',
+    ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;',
+    '',
+  ].join('\n')
+
   it('keeps first 3 CREATE TABLE blocks, collapses rest', () => {
-    const dump = Array.from({ length: 5 }, (_, i) =>
-      `-- Table structure for table 'tbl${i}'\nCREATE TABLE tbl${i} (id INT);\n\n`
-    ).join('')
+    const dump = Array.from({ length: 5 }, (_, i) => table(i)).join('')
     const out = apply(mySQLFilter, dump, ['mysqldump', 'mydb'])
-    expect(out).toContain("Table structure for table 'tbl0'")
-    expect(out).toContain("Table structure for table 'tbl2'")
-    expect(out).not.toContain("Table structure for table 'tbl4'")
+    expect(out).toContain("Table structure for table `tbl0`")
+    expect(out).toContain("Table structure for table `tbl2`")
+    expect(out).not.toContain("Table structure for table `tbl4`")
+  })
+
+  it('actually compresses the CREATE TABLE DDL body for collapsed tables (regression: blank line precedes DROP/CREATE in real mysqldump output, not just follows it)', () => {
+    const dump = Array.from({ length: 5 }, (_, i) => table(i)).join('')
+    const out = apply(mySQLFilter, dump, ['mysqldump', 'mydb'])
+
+    // First 3 tables' full DDL survives
+    expect(out).toContain('CREATE TABLE `tbl0`')
+    expect(out).toContain('CREATE TABLE `tbl1`')
+    expect(out).toContain('CREATE TABLE `tbl2`')
+
+    // Tables beyond DUMP_KEEP_TABLES (3) must have their DDL collapsed, not survive unfiltered
+    expect(out).not.toContain('CREATE TABLE `tbl3`')
+    expect(out).not.toContain('CREATE TABLE `tbl4`')
+    expect(out).not.toContain('DROP TABLE IF EXISTS `tbl3`')
+    expect(out).not.toContain('DROP TABLE IF EXISTS `tbl4`')
+    expect(out).toContain('Dumping 5 tables')
   })
 })
 

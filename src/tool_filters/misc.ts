@@ -95,7 +95,7 @@ export class CypressFilter extends ToolFilter {
   }
 
   // Override compress() directly — Cypress concatenates stdout+stderr itself.
-  override compress(stdout: string, stderr: string, exitCode: number, _argv: string[]): string {
+  override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
     const lines = (stdout + stderr).split('\n')
     const kept: string[] = []
     let state: 'NORMAL' | 'PRE_BOX' | 'IN_BOX' | 'IN_VIDEO' | 'IN_SUMMARY' = 'NORMAL'
@@ -153,7 +153,7 @@ export class CypressFilter extends ToolFilter {
         if (!s.toLowerCase().includes('error')) { nSep++ } else { kept.push(line) }
         continue
       }
-      if (exitCode === 0 && CY_PASS_TEST_RE.test(s) && !s.toLowerCase().includes('error')) {
+      if (CY_PASS_TEST_RE.test(s) && !s.toLowerCase().includes('error')) {
         nPass++; continue
       }
       kept.push(line)
@@ -348,21 +348,34 @@ export class MySQLFilter extends ToolFilter {
     const lines = text.split('\n')
     const kept: string[] = []
     let tablesKept = 0, tablesCollapsed = 0
-    let inCreate = false, skipBlock = false
+    // Real mysqldump per-table structure is: leading `--` comment lines (including
+    // the "-- Table structure for table" line itself), a blank line, THEN the
+    // DROP TABLE/CREATE TABLE body, ending with another blank line. `inCreate`
+    // spans the whole section; `sawHeaderBlank` tracks whether we've passed the
+    // header's blank line and are inside the actual DDL body yet — only a blank
+    // line encountered there ends the section.
+    let inCreate = false, sawHeaderBlank = false, skipBlock = false
 
     for (const line of lines) {
       if (MYSQL_ERROR_RE.test(line)) { kept.push(line); continue }
       if (MYSQLDUMP_BANNER_RE.test(line) || MYSQLDUMP_DATA_RE.test(line)) { kept.push(line); continue }
       if (MYSQLDUMP_TABLE_STRUCT_RE.test(line)) {
         if (tablesKept < MySQLFilter.DUMP_KEEP_TABLES) {
-          tablesKept++; inCreate = true; skipBlock = false; kept.push(line)
+          tablesKept++; inCreate = true; sawHeaderBlank = false; skipBlock = false; kept.push(line)
         } else {
-          tablesCollapsed++; inCreate = true; skipBlock = true
+          tablesCollapsed++; inCreate = true; sawHeaderBlank = false; skipBlock = true
         }
         continue
       }
       if (inCreate) {
+        if (!sawHeaderBlank) {
+          // Still inside the leading `--` comment block for this table.
+          if (!skipBlock) kept.push(line)
+          if (!line.trim()) sawHeaderBlank = true
+          continue
+        }
         if (!line.trim()) {
+          // Blank line after the DDL body: this table's structure block is done.
           inCreate = false
           if (!skipBlock) kept.push(line)
           skipBlock = false
