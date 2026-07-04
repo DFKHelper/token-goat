@@ -46,9 +46,11 @@ vi.mock('node:fs', async (importOriginal) => {
 
 import * as fs from 'node:fs'
 
+import { cmdIndex } from '../src/cli.js'
 import { closeAllDbs } from '../src/db.js'
 import { getFileEntry, querySymbols } from '../src/index_reader.js'
 import { indexFileSync } from '../src/parser.js'
+import { resolveIndexPath } from '../src/paths.js'
 import { drainOnce } from '../src/worker.js'
 
 function writeQueue(dir: string, lines: string[]): void {
@@ -138,5 +140,71 @@ describe('indexFileSync read-failure handling (regression)', () => {
     const logContent = fs.readFileSync(logPath, 'utf8')
     expect(logContent).toContain(bad)
     expect(logContent).toContain('EBUSY')
+  })
+})
+
+describe('cmdIndex per-file failure handling (regression)', () => {
+  let TMP: string
+  let dbPath: string
+
+  beforeEach(() => {
+    TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdindex-filefail-'))
+    dbPath = path.join(TMP, 'index.db')
+    mockState.target = ''
+    mockState.errorCode = ''
+  })
+
+  afterEach(() => {
+    mockState.target = ''
+    mockState.errorCode = ''
+    closeAllDbs()
+    fs.rmSync(TMP, { recursive: true, force: true })
+  })
+
+  // Regression: e833b00f made indexFileSync rethrow any non-ENOENT read failure instead of
+  // silently miscounting the file as indexed -- correct for worker.ts's makeIndexer, which
+  // already wraps its call in a try/catch and logs an INDEX_FAILED sentinel (see the sibling
+  // describe block above). But cmdIndex's own per-file loop in cli.ts called indexFileSync with
+  // NO try/catch at all, so the very first transient per-file failure (EBUSY/EPERM from an AV
+  // scan or an open editor -- both common on Windows) in a real `token-goat index` walk aborted
+  // the whole command uncaught, leaving every file after the failing one unindexed -- the
+  // opposite of what indexFileSync's own ENOENT fail-soft design intends for a bulk walk.
+  it('skips a file whose read throws and still indexes the rest of the walk', async () => {
+    const good = path.join(TMP, 'good.ts')
+    const bad = path.join(TMP, 'bad.ts')
+    fs.writeFileSync(good, 'export function knownGoodSymbol(): number {\n  return 1\n}\n')
+    fs.writeFileSync(bad, 'export function neverIndexedSymbol(): number {\n  return 2\n}\n')
+
+    mockState.target = resolveIndexPath(bad)
+    mockState.errorCode = 'EBUSY'
+
+    const stdoutChunks: string[] = []
+    const stderrChunks: string[] = []
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdoutChunks.push(String(chunk))
+      return true
+    })
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderrChunks.push(String(chunk))
+      return true
+    })
+    try {
+      await cmdIndex(TMP, { walk: true, dbPath })
+    } finally {
+      stdoutSpy.mockRestore()
+      stderrSpy.mockRestore()
+    }
+
+    // The rest of the walk must still be indexed...
+    expect(querySymbols({ name: 'knownGoodSymbol', limit: 10 }, dbPath).length).toBeGreaterThan(0)
+    // ...and the failing file must not be silently counted as indexed.
+    expect(querySymbols({ name: 'neverIndexedSymbol', limit: 10 }, dbPath).length).toBe(0)
+    expect(getFileEntry(bad, dbPath)).toBeNull()
+
+    // The failure must be surfaced to the user, not swallowed: file path + error on stderr, and
+    // a non-zero failure count folded into the final summary.
+    expect(stderrChunks.join('')).toContain(path.basename(bad))
+    expect(stderrChunks.join('')).toContain('EBUSY')
+    expect(stdoutChunks.join('')).toMatch(/failed to index 1 file/i)
   })
 })
