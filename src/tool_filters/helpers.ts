@@ -596,9 +596,18 @@ export function shlexSplit(cmd: string): string[] {
 
 /** Truncate individual lines exceeding `maxChars` with an inline marker. */
 export function capLongLines(lines: string[], maxChars = FALLBACK_MAX_LINE_CHARS): string[] {
-  return lines.map((line) =>
-    line.length > maxChars ? `${line.slice(0, maxChars)}  … [${line.length - maxChars} chars elided]` : line,
-  )
+  return lines.map((line) => {
+    if (line.length <= maxChars) return line
+    let cut = maxChars
+    // Never split a surrogate pair: `maxChars` counts UTF-16 code units, so a
+    // cut landing between a high surrogate and its low surrogate (e.g. inside
+    // an emoji) leaves a lone surrogate that serializes as U+FFFD on UTF-8
+    // output. Back off by one code unit so the pair stays whole.
+    const high = line.charCodeAt(cut - 1)
+    const low = line.charCodeAt(cut)
+    if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) cut -= 1
+    return `${line.slice(0, cut)}  … [${line.length - cut} chars elided]`
+  })
 }
 
 /** Head/tail-truncated dump used when a filter cannot run (over budget / raised). */
