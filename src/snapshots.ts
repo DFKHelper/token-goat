@@ -5,6 +5,8 @@ import * as path from 'node:path'
 import * as crypto from 'node:crypto'
 import * as os from 'node:os'
 
+import { foldPath, normalizePath } from './util.js'
+
 export const MAX_SNAPSHOTS_PER_SESSION = 150
 export const MAX_SNAPSHOT_BYTES = 256 * 1024
 export const SNAPSHOT_TRUNCATE_BYTES = 50 * 1024
@@ -38,7 +40,13 @@ function sessionDir(sessionId: string): string | null {
 }
 
 function pathKey(filePath: string): string {
-  return crypto.createHash('sha256').update(filePath, 'utf8').digest('hex').slice(0, 32)
+  // Case-insensitive filesystems (Windows, macOS) resolve two differently-cased paths to the
+  // same physical file. normalizePath only lowercases the drive letter, so fold the whole
+  // string through foldPath (util.ts) -- matching the established convention from session.ts's
+  // read-dedup map key -- or a file read under two casings in one session gets two different
+  // snapshot files on disk, and symbol_changed_since_read silently fails to find the prior
+  // snapshot under the new casing.
+  return crypto.createHash('sha256').update(foldPath(normalizePath(filePath)), 'utf8').digest('hex').slice(0, 32)
 }
 
 export function snapshot_path(sessionId: string, filePath: string): string | null {

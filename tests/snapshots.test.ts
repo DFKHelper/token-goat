@@ -37,6 +37,33 @@ describe('snapshot_path', () => {
   })
 })
 
+describe('pathKey case folding (case-insensitive FS)', () => {
+  const prevCaseEnv = process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+  afterEach(() => {
+    if (prevCaseEnv === undefined) delete process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS
+    else process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = prevCaseEnv
+  })
+
+  // Regression: pathKey() hashed the raw filePath string. normalizePath only lowercases the
+  // drive letter (project convention), so a file read under two different literal casings in
+  // one session (e.g. "Worker.ts" vs "worker.ts") on a case-insensitive filesystem resolved to
+  // two DIFFERENT snapshot files on disk -- defeating change-detection (symbol_changed_since_read
+  // would silently fail to find the prior snapshot under the new casing).
+  it('produces the same snapshot path for two case variants of the same file', () => {
+    process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '1'
+    const p1 = snapshot_path('sess', 'src/Worker.ts')
+    const p2 = snapshot_path('sess', 'src/worker.ts')
+    expect(p1).toBe(p2)
+  })
+
+  it('control: case-sensitive FS mode still produces different snapshot paths for case variants', () => {
+    process.env.TOKEN_GOAT_CASE_INSENSITIVE_FS = '0'
+    const p1 = snapshot_path('sess', 'src/Worker.ts')
+    const p2 = snapshot_path('sess', 'src/worker.ts')
+    expect(p1).not.toBe(p2)
+  })
+})
+
 describe('store and load', () => {
   it('stores and retrieves snapshot content', () => {
     const content = Buffer.from('function foo() { return 42 }')
