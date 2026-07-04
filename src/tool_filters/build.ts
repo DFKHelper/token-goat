@@ -44,7 +44,7 @@ const GO_GET_DOWNLOADING_RE = /^go: (?:downloading|extracting|finding|fetching)\
 export class MakeFilter extends ToolFilter {
   name = 'make'
   override binaries = new Set([
-    'make', 'gmake', 'ninja', 'gradle', 'mvn', 'maven', 'bazel', 'buck', 'go', 'goimports',
+    'make', 'gmake', 'ninja', 'buck', 'go', 'goimports',
   ])
 
   override matches(argv: string[]): boolean {
@@ -745,7 +745,7 @@ export class MesonFilter extends ToolFilter {
 // ---------------------------------------------------------------------------
 
 const MSBUILD_ERROR_RE = /.*\(\d+(?:,\d+)?\)\s*:\s*error\s+/
-const MSBUILD_WARNING_RE = /.*\(\d+(?:,\d+)?\)\s*:\s*warning\s+(\w+)/
+const MSBUILD_WARNING_RE = /(.*?)\(\d+(?:,\d+)?\)\s*:\s*warning\s+(\w+)/
 const MSBUILD_BUILD_STARTED_RE = /^Build started/
 const MSBUILD_PROJECT_BUILDING_RE = /^------ Build started: Project:/
 const MSBUILD_COPY_RE = /^\s+(?:Copy|CopyFilesToOutputDirectory|CopyToOutputDirectory)\b/
@@ -783,12 +783,14 @@ export class MSBuildFilter extends ToolFilter {
         kept.push(line)
         continue
       }
-      // Deduplicate warnings by code
+      // Deduplicate warnings by file path + code (same code in different files/lines is distinct)
       const warnMatch = MSBUILD_WARNING_RE.exec(line)
       if (warnMatch) {
-        const code = warnMatch[1] ?? ""
-        if (!seenWarningCodes.has(code)) {
-          seenWarningCodes.add(code)
+        const filePath = (warnMatch[1] ?? "").trim()
+        const code = warnMatch[2] ?? ""
+        const dedupKey = `${filePath}|${code}`
+        if (!seenWarningCodes.has(dedupKey)) {
+          seenWarningCodes.add(dedupKey)
           kept.push(line)
         } else {
           droppedWarningDupes++
