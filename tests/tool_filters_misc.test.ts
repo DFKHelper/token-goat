@@ -532,9 +532,17 @@ describe('SassFilter compression', () => {
 // ---------------------------------------------------------------------------
 
 describe('ToxFilter dispatch', () => {
-  // Note: `tox -e py312` is stripped by TWO_TOKEN_PREFIXES (tox: Set(['-e'])); use bare `tox` or flags that don't match prefix-strip.
+  // `tox` is deliberately absent from TWO_TOKEN_PREFIXES, so `-e <env>` is never
+  // mistaken for a launcher token and stripped down to a bare env name like
+  // `py312` (which would match no registered filter and run unfiltered).
   it('selectFilter routes tox', () => expect(selectFilter(['tox'])).toBeInstanceOf(ToxFilter))
   it('selectFilter routes tox --parallel', () => expect(selectFilter(['tox', '--parallel'])).toBeInstanceOf(ToxFilter))
+  it('selectFilter routes tox -e py312 (regression: was mis-stripped to a bare env name)', () => {
+    expect(selectFilter(['tox', '-e', 'py312'])).toBeInstanceOf(ToxFilter)
+  })
+  it('selectFilter routes tox -e py312,py313 (multi-env selector)', () => {
+    expect(selectFilter(['tox', '-e', 'py312,py313'])).toBeInstanceOf(ToxFilter)
+  })
 })
 
 describe('ToxFilter compression', () => {

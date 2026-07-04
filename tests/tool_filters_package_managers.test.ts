@@ -442,6 +442,36 @@ describe('PipFilter', () => {
     const result = pipFilter.apply(stdout, '', 1, ['pip', 'install', 'nonexistent-package'])
     expect(result.text).toContain('ERROR: Could not find')
   })
+
+  // Regression: pip list/freeze dispatch to PipFilter (it precedes DepListFilter
+  // in dispatch order), but PipFilter had no truncation logic of its own -- a
+  // long `pip freeze` passed straight through the generic install-noise
+  // stripper unchanged, since none of its patterns match plain package lines.
+  it('pip freeze ≤50 packages: passthrough', () => {
+    const out = Array.from({ length: 40 }, (_, i) => `package-${i}==1.${i}`).join('\n')
+    const result = pipFilter.apply(out, '', 0, ['pip', 'freeze'])
+    expect(result.text).toContain('package-0==')
+    expect(result.text).toContain('package-39==')
+    expect(result.text).not.toMatch(/collapsed \d+ package lines/)
+  })
+
+  it('pip freeze 60 packages: first 20 shown, rest collapsed', () => {
+    const out = Array.from({ length: 60 }, (_, i) => `package-${i}==1.${i}`).join('\n')
+    const result = pipFilter.apply(out, '', 0, ['pip', 'freeze'])
+    expect(result.text).toContain('package-0==')
+    expect(result.text).toContain('package-19==')
+    expect(result.text).not.toContain('package-20==')
+    expect(result.text).toContain('collapsed 40 package lines')
+  })
+
+  it('pip list 60 packages: first 20 shown, rest collapsed', () => {
+    const out = Array.from({ length: 60 }, (_, i) => `package-${i}==1.${i}`).join('\n')
+    const result = pipFilter.apply(out, '', 0, ['pip', 'list'])
+    expect(result.text).toContain('package-0==')
+    expect(result.text).toContain('package-19==')
+    expect(result.text).not.toContain('package-20==')
+    expect(result.text).toContain('collapsed 40 package lines')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1175,5 +1205,50 @@ describe('Dispatch: package-manager filters in TOOL_FILTERS', () => {
   it('detectFromCommand resolves cargo tree to dep-list filter', () => {
     const result = detectFromCommand('cargo tree')
     expect(result?.filter.name).toBe('dep-list')
+  })
+
+  // Regression: TWO_TOKEN_PREFIXES used to list `tool` as a generic two-token
+  // trigger for `uv`, so `uv tool install/run <bin>` was stripped the same way
+  // as `uv run <bin>` (consume 2 -> ['install'|'run', bin]), landing on a
+  // subcommand token that matches no filter. `uv tool install` must stay
+  // unstripped (UvFilter's own `tool` branch claims it -- it's uv's own
+  // package-management output, not the tool's own output), while
+  // `uv tool run` needs a dedicated 3-token strip since it really does
+  // execute `<bin>` and stream its output.
+  it('uv tool install <bin> dispatches to the uv filter (real argv-stripping path)', () => {
+    const f = selectFilter(['uv', 'tool', 'install', 'ruff'])
+    expect(f?.name).toBe('uv')
+  })
+
+  it('uv tool run <bin> dispatches to the binary\'s own filter, not uv (real argv-stripping path)', () => {
+    const f = selectFilter(['uv', 'tool', 'run', 'ruff', 'check', '.'])
+    expect(f?.name).toBe('ruff')
+  })
+
+  // Regression: NodePackageFilter/PnpmFilter/YarnFilter each matched their
+  // binary unconditionally (no subcommand gate), so `npm list`/`pnpm list`/
+  // `yarn list` never reached DepListFilter's 30-line cap -- they were
+  // intercepted first. Direct `.matches()` calls on the isolated DepListFilter
+  // instance (see the `DepListFilter` describe block above) don't exercise
+  // this: they skip the earlier filters in PACKAGE_MANAGER_FILTERS entirely.
+  // These go through the real selectFilter/stripPrefixes dispatch path.
+  it('npm list dispatches to dep-list filter (real dispatch path, not npm/npm_install)', () => {
+    const f = selectFilter(['npm', 'list'])
+    expect(f?.name).toBe('dep-list')
+  })
+
+  it('pnpm list dispatches to dep-list filter (real dispatch path, not pnpm)', () => {
+    const f = selectFilter(['pnpm', 'list'])
+    expect(f?.name).toBe('dep-list')
+  })
+
+  it('yarn list dispatches to dep-list filter (real dispatch path, not yarn)', () => {
+    const f = selectFilter(['yarn', 'list'])
+    expect(f?.name).toBe('dep-list')
+  })
+
+  it('pnpm install still dispatches to npm_install filter (list-only carve-out doesn\'t break install)', () => {
+    const f = selectFilter(['pnpm', 'install'])
+    expect(f?.name).toBe('npm_install')
   })
 })
