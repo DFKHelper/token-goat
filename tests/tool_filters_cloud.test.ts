@@ -317,6 +317,113 @@ describe('GcloudFilter', () => {
     const { text } = apply(f, '', '', 0, ['gcloud', 'compute', 'instances', 'list'])
     expect(typeof text).toBe('string')
   })
+
+  // Regression: _maybeCollapseStructured used to fire on ANY output over 20
+  // non-blank lines where >=70% of lines contained {}/[]/:/- -- which is
+  // ordinary YAML key-value/list syntax, so it fired on nearly every real
+  // `describe` output and replaced it with a single placeholder line,
+  // destroying the actual answer (status/IPs/config) the command was run to
+  // retrieve. It must now require 2+ `---` document separators (gcloud's own
+  // marker for repeated resource blocks from `list --format=yaml`) before
+  // collapsing anything.
+  it('does NOT collapse a single `describe` YAML document (the actual answer)', () => {
+    const stdout = [
+      'name: my-instance',
+      'zone: us-central1-a',
+      'machineType: n1-standard-2',
+      'status: RUNNING',
+      'statusMessage: Instance is running',
+      "creationTimestamp: '2026-01-15T08:23:11.123-08:00'",
+      "id: '1234567890123456789'",
+      'selfLink: https://compute.googleapis.com/compute/v1/projects/my-project/zones/us-central1-a/instances/my-instance',
+      'networkInterfaces:',
+      '- name: nic0',
+      '  network: https://www.googleapis.com/compute/v1/projects/my-project/global/networks/default',
+      '  networkIP: 10.128.0.5',
+      '  subnetwork: https://www.googleapis.com/compute/v1/projects/my-project/regions/us-central1/subnetworks/default',
+      '  accessConfigs:',
+      '  - name: External NAT',
+      '    natIP: 34.121.45.67',
+      '    type: ONE_TO_ONE_NAT',
+      'disks:',
+      '- boot: true',
+      '  autoDelete: true',
+      '  deviceName: persistent-disk-0',
+      '  mode: READ_WRITE',
+      '  source: https://www.googleapis.com/compute/v1/projects/my-project/zones/us-central1-a/disks/my-instance',
+      'labels:',
+      '  env: production',
+      '  team: platform',
+    ].join('\n')
+    const { text } = apply(f, stdout, '', 0, ['gcloud', 'compute', 'instances', 'describe', 'my-instance', '--format=yaml'])
+    expect(text).not.toMatch(/\[Resource description:/)
+    expect(text).toContain('status: RUNNING')
+    expect(text).toContain('networkIP: 10.128.0.5')
+    expect(text).toContain('natIP: 34.121.45.67')
+    expect(text).toContain('deviceName: persistent-disk-0')
+  })
+
+  it('DOES collapse a genuinely repeated multi-resource `list --format=yaml` dump', () => {
+    const oneInstance = (n: number, ip: string) => [
+      '---',
+      `name: instance-${n}`,
+      'zone: us-central1-a',
+      'machineType: n1-standard-2',
+      'status: RUNNING',
+      'networkInterfaces:',
+      '- name: nic0',
+      `  networkIP: 10.128.0.${n}`,
+      '  accessConfigs:',
+      `  - natIP: ${ip}`,
+      'disks:',
+      '- boot: true',
+      '  deviceName: persistent-disk-0',
+      'labels:',
+      '  env: production',
+    ]
+    const stdout = [
+      ...oneInstance(1, '34.121.45.10'),
+      ...oneInstance(2, '34.121.45.11'),
+      ...oneInstance(3, '34.121.45.12'),
+    ].join('\n')
+    const { text } = apply(f, stdout, '', 0, ['gcloud', 'compute', 'instances', 'list', '--format=yaml'])
+    expect(text).toMatch(/\[Resource description:/)
+    expect(text).not.toContain('instance-1')
+    expect(text).not.toContain('instance-2')
+    expect(text).not.toContain('instance-3')
+  })
+
+  it('does not collapse a single `list --format=yaml` result (only 1 separator, above the 20-line gate)', () => {
+    const stdout = [
+      '---',
+      'name: only-instance',
+      'zone: us-central1-a',
+      'machineType: n1-standard-2',
+      'status: RUNNING',
+      "creationTimestamp: '2026-01-15T08:23:11.123-08:00'",
+      "id: '9876543210987654321'",
+      'networkInterfaces:',
+      '- name: nic0',
+      '  networkIP: 10.128.0.9',
+      '  accessConfigs:',
+      '  - natIP: 34.121.45.99',
+      '    type: ONE_TO_ONE_NAT',
+      'disks:',
+      '- boot: true',
+      '  deviceName: persistent-disk-0',
+      '  mode: READ_WRITE',
+      '  source: https://www.googleapis.com/compute/v1/projects/my-project/zones/us-central1-a/disks/only-instance',
+      'labels:',
+      '  env: production',
+      '  team: platform',
+      'tags:',
+      '  items:',
+      '  - http-server',
+    ].join('\n')
+    const { text } = apply(f, stdout, '', 0, ['gcloud', 'compute', 'instances', 'list', '--format=yaml'])
+    expect(text).not.toMatch(/\[Resource description:/)
+    expect(text).toContain('name: only-instance')
+  })
 })
 
 // ---------------------------------------------------------------------------
