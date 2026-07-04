@@ -5,7 +5,6 @@ import {
   applyHintPriorityLimit,
   dedupHints,
   computeStaleThreshold,
-  buildBashDedupHint,
   buildPackageManifestHint,
   HINT_PRIORITY_CRITICAL,
   HINT_PRIORITY_HIGH,
@@ -187,69 +186,6 @@ describe("computeStaleThreshold", () => {
 
   it("applies formula: clamp(session_age * 0.25, 900, 1800)", () => {
     expect(computeStaleThreshold(4000)).toBeLessThanOrEqual(STALE_READ_AGE_SECONDS);
-  });
-});
-
-describe("buildBashDedupHint", () => {
-  it("returns null when session_id is missing", () => {
-    const result = buildBashDedupHint({
-      session_id: "",
-      command: "echo test",
-    });
-    expect(result).toBeNull();
-  });
-
-  it("returns null when command is missing", () => {
-    const result = buildBashDedupHint({
-      session_id: "test-session",
-      command: "",
-    });
-    expect(result).toBeNull();
-  });
-
-  it("returns null when cache is missing", () => {
-    const result = buildBashDedupHint({
-      session_id: "test-session",
-      command: "echo test",
-    });
-    expect(result).toBeNull();
-  });
-
-  it("returns hint for valid inputs with cache", () => {
-    const mockCache = {
-      get_file_access_count: vi.fn(() => 3),
-    };
-
-    const result = buildBashDedupHint({
-      session_id: "test-session",
-      command: "echo test",
-      cache: mockCache as never,
-    });
-
-    expect(result).not.toBeNull();
-    if (result) {
-      expect(result).toContain("echo");
-      expect(result).toContain("cached");
-    }
-  });
-
-  it("truncates long bash commands", () => {
-    const mockCache = {
-      get_file_access_count: vi.fn(() => 3),
-    };
-
-    const longCmd = "pytest " + "x".repeat(100) + " --verbose --extra --options";
-    const result = buildBashDedupHint({
-      session_id: "test-session",
-      command: longCmd,
-      cache: mockCache as never,
-    });
-
-    expect(result).not.toBeNull();
-    if (result) {
-      expect(result.length).toBeLessThan(longCmd.length);
-      expect(result).toContain("…");
-    }
   });
 });
 
