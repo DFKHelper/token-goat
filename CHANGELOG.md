@@ -2,6 +2,38 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [2.6.2] - 2026-07-03
+
+### Added
+
+- **SQLite schema-version check and migration scaffolding.** `db.ts` now stamps `PRAGMA user_version` with a `SCHEMA_VERSION` constant on init, refuses to open a DB whose stored version is newer than the running build supports (a clear error instead of silent corruption), and walks a `MIGRATIONS` table for any older on-disk schema — currently a no-op walker since no migrations exist yet, but it closes a real gap: index DB format changes had no upgrade path at all. See [src/db.ts](src/db.ts); regression-tested in [tests/db.test.ts](tests/db.test.ts).
+
+- **The `pre_screenshot` hook — documented in the README and CHANGELOG since the Python-to-TS port, but never actually implemented — now exists.** `image_shrink.screenshot_redirect` (default on) was fully wired into config with no handler behind it, so MCP screenshot calls without a destination file landed raw in context. `hooks_screenshot.ts` denies `mcp__*take_screenshot` calls that omit a destination argument, naming the correct parameter for the specific tool — chrome-devtools-mcp's `take_screenshot` takes `filePath`, while Microsoft's `@playwright/mcp` `browser_take_screenshot` takes `filename`, a discrepancy from what the shipped docs implied. See [src/hooks_screenshot.ts](src/hooks_screenshot.ts) and [src/relay.ts](src/relay.ts); regression-tested in [tests/hooks_screenshot.test.ts](tests/hooks_screenshot.test.ts).
+
+### Fixed
+
+- **The background worker daemon never actually stayed running.** `--worker-daemon` was rejected outright by commander before `workerEntry()`'s dispatch logic ever ran, so incremental reindexing driven by the detached daemon process was entirely non-functional. `cli.ts::run()` now checks for the flag and dispatches straight to the daemon loop before commander parses argv. See [src/cli.ts](src/cli.ts) and [src/worker.ts](src/worker.ts); regression-tested in [tests/worker_daemon_e2e.test.ts](tests/worker_daemon_e2e.test.ts), which spawns the real built bundle and confirms the daemon stays alive and drains a seeded dirty-queue entry.
+
+- **A missing export broke the build on HEAD.** `hooks_read.ts` imported `BYTE_RANGE_ADVICE` from `file_type_handler.ts`, which never exported it — `npm run typecheck` and the bundle build were broken, silently invalidating every test run made against that state. See [src/hints/file_type_handler.ts](src/hints/file_type_handler.ts).
+
+- **`dispatchFileTypeHandler` ignored the narrowed offset/limit size hint for three of its five handlers.** `contentLengthHint` was already threaded through `handlePdf`/`handleGenericLarge` but not `handleHtml`/`handleTxt`/`handleCsv`, so a narrowed read of a large HTML/text/CSV file was still gated on the full file's size instead of the requested slice. See [src/hints/file_type_handler.ts](src/hints/file_type_handler.ts); regression-tested in [tests/file_type_handler.test.ts](tests/file_type_handler.test.ts) and [tests/hooks_read.test.ts](tests/hooks_read.test.ts).
+
+- **The worker silently counted a genuinely failed reindex as a success.** A caught indexing exception returned the same falsy sentinel as "file unchanged, skip," so `processDirtyBatch` treated a real parse/write failure identically to a no-op. Failures are now logged to `worker-errors.log` next to `global.db` and returned as a distinct sentinel; the file's stored SHA is left untouched so the next edit naturally retriggers reindexing. See [src/worker.ts](src/worker.ts); regression-tested in [tests/worker.test.ts](tests/worker.test.ts).
+
+- **`read_commands.ts`'s partial-path symbol fallback didn't fold case on case-insensitive filesystems.** Every other path-comparison site in the codebase (`parser.ts`, `index_prune.ts`, `sql_path.ts`, `walk_index.ts`, `worker.ts`) already uses the established `foldPath`/`isCaseInsensitiveFs` pattern; this one fallback filter compared raw paths, so a symbol lookup by a differently-cased path could silently miss on Windows/macOS. See [src/read_commands.ts](src/read_commands.ts); regression-tested in [tests/read_commands_collation.test.ts](tests/read_commands_collation.test.ts).
+
+- **A UTF-8 BOM on a markdown/YAML/TOML file could hide its first heading or top-level key from symbol extraction.** `parseFile`, `readSection`, `listSections`, and `listAllSections` now strip a leading BOM before parsing. See [src/parser.ts](src/parser.ts) and [src/section_reader.ts](src/section_reader.ts); regression-tested in [tests/section_reader.test.ts](tests/section_reader.test.ts).
+
+- **A `mkdirSync` race between two processes creating the same directory could throw `EEXIST` and crash a write path.** A new shared `ensureDirSync()` helper swallows `EEXIST` (still propagating every other error) and replaces five raw `mkdirSync` call sites across `config_commands.ts`, `project_memory.ts`, and `install.ts`. See [src/util.ts](src/util.ts); regression-tested in [tests/util.test.ts](tests/util.test.ts) with a synthetic-EEXIST injection — the initial test only exercised the native `recursive: true` path and never actually reached the catch block, since strengthened to genuinely fail without the fix.
+
+- **A CRLF-terminated heredoc closing delimiter was false-flagged as unbalanced shell syntax.** `detectUnbalancedShellSyntax` now strips a trailing `\r` before comparing the closing line to the delimiter. See [src/hooks_bash.ts](src/hooks_bash.ts); regression-tested in [tests/hooks_bash.test.ts](tests/hooks_bash.test.ts).
+
+- **Truncation in `bash_compress.ts`/`overflow_guard.ts` could split a UTF-16 surrogate pair**, corrupting an emoji or other astral character sitting at the truncation boundary. Both now use a `safeSlice` helper that backs off one code unit when it would land inside a low surrogate. Regression-tested in [tests/bash_compress.test.ts](tests/bash_compress.test.ts) and [tests/overflow_guard.test.ts](tests/overflow_guard.test.ts).
+
+- **`diagnoseNearMiss`'s CRLF/LF mismatch diagnostic only checked one direction.** A file using LF whose search text used CRLF was silently missed. Both directions are now normalized and compared. See [src/cli.ts](src/cli.ts); regression-tested in [tests/cli.test.ts](tests/cli.test.ts).
+
+- **A stale test still asserted removed `ImageShrinkConfig` fields** (`prefer_avif`, `avif_quality`) instead of the current schema. See [tests/config.test.ts](tests/config.test.ts).
+
 ## [2.6.1] - 2026-07-02
 
 ### Added
